@@ -835,6 +835,10 @@ struct Param {
     // declared anywhere (YAMLish: `::GrammarType:U :$schema`), so the undeclared-
     // type checks pass it by. Only this parameter: a later `T $y` is still invalid.
     bool typeMayBeUndeclared = false;
+    // `CORE::Int $x`: `type` is the SETTING's Int, whatever a scope makes of the
+    // short name — DateTime::Timezones writes `CORE::DateTime $self` beside a
+    // DateTime of its own — so no lexical lookup re-reads it
+    bool typeIsSetting = false;
     std::string namedKey; // external name for `:name($var)` (else = var name)
     bool aliasBoth = false; // `:name(:$var)` — BOTH the alias and the var name bind
     std::vector<std::string> aliasKeys; // nested aliases `:x(:y(:z($a)))` — every layer's key answers

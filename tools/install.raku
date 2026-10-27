@@ -1451,7 +1451,8 @@ class InstallableDist does Distribution {
 # this leg the suite dies loading a dylib nobody built). Two: a Build.rakumod
 # (or Build.pm6/Build.pm) at the dist root with `method build($cwd)` —
 # OpenSSL generates its resources/libraries.json in it, which is why the
-# file is in META resources but in nobody's archive. Either child sees the
+# file is in META resources but in nobody's archive — or with only a
+# `sub MAIN` that does the work. Either child sees the
 # target store as `-I inst#<prefix>`, so the builder dist (a build-depends
 # this plan just installed) and any `use JSON::Fast` resolve.
 # The ecosystem's build recipes (MakeFromJSON, LibraryMake and their kin) read
@@ -1539,9 +1540,16 @@ sub run-build-hook(%e, $root, Str $prefix --> Bool) {
     }
     progress("building %e<name>: {$hook.basename}");
     trace("build: %e<name> via {$hook.basename}");
+    # zef's own command: the file is `require`d by its PATH — not `use`d by
+    # name — and that is what runs a hook that is a script rather than a class:
+    # Timezones::ZoneInfo's Build.pm6 is a `sub MAIN` that writes its resources
+    # and exits, and a required file's MAIN runs. (`use Build` ran the mainline
+    # only, and `Build.new` was then an undeclared name.)
+    my $file = $hook.absolute.trans(['\\', "'"] => ['\\\\', "\\'"]);
     my $p = run $*EXECUTABLE.absolute, '-I', "inst#$prefix", '-I', $root.IO.Str, '-e',
                 vm-toolchain-shim()
-                  ~ 'use Build; my $r = Build.new.build($*CWD.Str); exit(($r === False) ?? 1 !! 0)',
+                  ~ "require '$file'; "
+                  ~ 'my $r = ::(\'Build\').new.build($*CWD.Str); exit(($r === False) ?? 1 !! 0)',
                 :out, :err, :cwd($root), :env(child-env());
     my $out = $p.out.slurp(:close);
     my $err = $p.err.slurp(:close);

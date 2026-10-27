@@ -1162,6 +1162,47 @@ uint64_t Interpreter::lexicalRoutineFrame() {
     return 0;
 }
 
+// The routine whose body lexically encloses the running code: `&?ROUTINE`, and
+// what `samewith` calls again. In a block another routine runs, the RUNNING
+// routine is that other one — `sub g { apply({ &?ROUTINE.name }) }` answered
+// "apply". The routine's scope is found on the call frames while it runs; once
+// it has returned (a block it made outlives it), or from another thread (a
+// `start` block), the record a block made in it left there answers.
+const Value* Interpreter::lexicalRoutineVal() {
+    for (Env* e = tctx().cur.get(); e; e = e->parent.get()) {
+        if (!e->routineFrame) continue;
+        bool block = false;
+        for (auto it = tctx().callFrames.rbegin(); it != tctx().callFrames.rend(); ++it)
+            if (it->calleeEnv == e) {
+                if (it->code && it->code->t == VT::Code && it->code->code() && !it->code->code()->ci().isBlock)
+                    return it->code;
+                block = true;   // a block's own frame (a `start` block's): look further out
+                break;
+            }
+        if (block) continue;
+        if (e->ex && e->ex->lexRoutine.t == VT::Code) return &e->ex->lexRoutine;
+        break;   // not running here, and nothing recorded
+    }
+    return tctx().curRoutineVal;
+}
+void Interpreter::recordLexicalRoutine() {
+    for (Env* e = tctx().cur.get(); e; e = e->parent.get()) {
+        if (!e->routineFrame) continue;
+        if (e->ex && e->ex->lexRoutine.t == VT::Code) return;
+        bool block = false;
+        for (auto it = tctx().callFrames.rbegin(); it != tctx().callFrames.rend(); ++it)
+            if (it->calleeEnv == e) {
+                if (it->code && it->code->t == VT::Code && it->code->code() && !it->code->code()->ci().isBlock) {
+                    e->x().lexRoutine = *it->code;
+                    return;
+                }
+                block = true;
+                break;
+            }
+        if (!block) return;
+    }
+}
+
 // ---- gather as a coroutine -------------------------------------------------
 // `gather BLOCK` runs nothing when it is evaluated. It is a Seq whose block
 // runs on a stack of its own (Coro.h) the first time something pulls from it,

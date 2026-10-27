@@ -3337,12 +3337,11 @@ ValueList toList(const Value& v) {
     // interpreter (itemized stays one item)
     if (v.t == VT::Str && !v.itemized && (v.hashKind == "Blob" || v.hashKind == "Buf"))
         return v.blobList();
-    // A Pod block is an OBJECT that happens to be stored as a hash. It is not
-    // Iterable and not Associative, so it lists as ITSELF — flattening it into
-    // its own `podclass`/`contents` pairs is what `Array.new($block)` did, and
-    // Pod::Utils' pod-title built a two-pair soup where Rakudo builds a
-    // one-element array holding the block.
-    if (v.t == VT::Hash && v.hashKind == "Pod") return {v};
+    // An engine OBJECT stored as a hash — a Pod block, a DateTime, a Lock — is
+    // not Iterable and not Associative, so it lists as ITSELF: `Array.new($block)`
+    // made a two-pair soup of Pod::Utils' pod-title, `my @a = DateTime.new(0)`
+    // eight Pairs, and a Lock nothing at all (Rakudo: one element, the object).
+    if (v.t == VT::Hash && opaqueHashKind(v.hashKind)) return {v};
     if (v.t == VT::Hash && v.hash()) {
         ValueList out;
         // The object-hash test is hoisted: this is the hot path for every hash
@@ -4623,7 +4622,7 @@ std::shared_ptr<Param> signatureParamCopy(const Param& p) {
     q->slurpyKind = p.slurpyKind; q->named = p.named; q->slurpy = p.slurpy;
     q->optional = p.optional; q->required = p.required; q->invocant = p.invocant; q->pastDoubleSemi = p.pastDoubleSemi;
     q->defConstraint = p.defConstraint; q->coerce = p.coerce; q->coerceFrom = p.coerceFrom;
-    q->isRw = p.isRw; q->isCopy = p.isCopy;
+    q->isRw = p.isRw; q->isCopy = p.isCopy; q->typeIsSetting = p.typeIsSetting;
     q->hadWhere = p.whereExpr != nullptr || p.hadWhere;
     q->defaultRaku = renderDefault(p);
     return q;
@@ -8305,7 +8304,8 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
     // builtinExt_ (keyed by type name). Consult it — walking the native ancestry,
     // so augmenting Cool/Any reaches Int/Str too — for native values and type
     // objects, ahead of the built-in method table.
-    if (Value* f = builtinExtMethod(inv, m)) {
+    // (not for skipOwn, the built-in's own: a wrapped one reaches it so, wrapBuiltinMethod)
+    if (Value* f = m.skipOwn ? nullptr : builtinExtMethod(inv, m)) {
         // An augment ADDS candidates; it does not hide the built-in ones. A multi
         // whose candidates all reject the args falls through to the built-in
         // method instead of dying — `augment class DateTime { multi method
@@ -8915,6 +8915,7 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
                 return Value::typeObj("Mu");
             Value code; code.t = VT::Code; code.setCode(makePayload<Callable>());
             code.code()->ciM().name = mn; code.code()->ciM().isMethod = true;
+            code.code()->ciM().pkg = inv.t == VT::Type ? (tn.empty() ? std::string(inv.s) : tn) : inv.typeName(); // (wrapBuiltinMethod)
             code.code()->ciM().builtin = [mn](Interpreter& I, ValueList& a) -> Value {
                 if (a.empty()) return Value::any();
                 Value in2 = a[0]; ValueList rest(a.begin() + 1, a.end());
@@ -9990,6 +9991,7 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
                 od->boxed() = r;
                 return Value::object(od);
             }
+            if (r.t == VT::Hash && r.hashKind == "DateTime") return rewrapDerivedDateTime(inv, m, r);   // …and a subclassed DateTime's
             return r;
         }
     }
@@ -10276,10 +10278,8 @@ Value Interpreter::methodCallUnresolved(const Value& inv, const MName& m, ValueL
                 if (!callCallable(fb.first, ca).truthy()) continue;
                 ValueList ka{inv, Value::str(m)};
                 Value meth = callCallable(fb.second, ka);
-                ValueList margs; margs.reserve(args.size() + 1);
-                margs.push_back(inv);
-                for (auto& a : args) margs.push_back(a);
-                return callCallable(meth, margs);
+                // container and all: DateTime::Timezones' `is rw` olson-id upgrades a `$dt`
+                return callInvocantFirst(meth, inv, args, liveInvocantExpr(inv), rwArgs);
             }
         }
     }

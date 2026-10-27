@@ -641,10 +641,19 @@ void Interpreter::registerBuiltins() {
     B["samewith"] = [dispTop](Interpreter& I, ValueList& a) -> Value {
         // re-dispatch the CURRENT routine from scratch with new args, returning its result
         auto* d = dispTop(I);
-        if (!d || !d->restart)
-            I.throwTypedV("X::NoDispatcher", {{"redispatcher", Value::str("samewith")}},
-                              "samewith is not in the dynamic scope of a dispatcher");
-        return d->restart(a);
+        if (d && d->restart) return d->restart(a);
+        // An ONLY routine has no dispatcher to restart, and Rakudo's samewith
+        // just calls the enclosing routine again with the new arguments
+        // (control.pm6: `$caller(|c)`) — Timezones::ZoneInfo's `sub
+        // timezone-data` resolves a link with `samewith $_`. ENCLOSING is
+        // lexical, as Rakudo walks ctxouter (lexicalRoutineVal): in a block
+        // another routine runs, the running routine is that other one.
+        if (const Value* r = I.lexicalRoutineVal(); r && r->t == VT::Code && r->code()) {
+            Value routine = *r;
+            return I.callCallable(routine, a, nullptr, /*ownFrame=*/false, /*arityCheck=*/true);
+        }
+        I.throwTypedV("X::NoDispatcher", {{"redispatcher", Value::str("samewith")}},
+                      "samewith is not in the dynamic scope of a dispatcher");
     };
     B["nextwith"] = [dispTop, builtinNext](Interpreter& I, ValueList& a) -> Value {
         auto* d = dispTop(I);

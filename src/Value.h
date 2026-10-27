@@ -1696,7 +1696,13 @@ inline ValueMap& Value::hashRef() {
 // as its default: holds it as ONE thing, so `my @a = $x` is one element and
 // `.raku` shows `$[…]`. (`is raw` binds the container itself and does not.)
 inline void itemizeScalar(Value& v) {
-    if (v.t == VT::Array || (v.t == VT::Hash && (v.hashKind.empty() || v.hashKind == "Map"))) v.itemized = true;
+    if (v.t == VT::Array) { v.itemized = true; return; }
+    if (v.t != VT::Hash) return;
+    // (a Set, Bag or Mix too: `-> $s { my @a = $s }` is one element in Rakudo)
+    const IStr& k = v.hashKind;
+    if (k.empty() || k == "Map" || k == "Set" || k == "SetHash" || k == "Bag" || k == "BagHash" ||
+        k == "Mix" || k == "MixHash")
+        v.itemized = true;
 }
 // …as expressions, for the code `--exe` emits: what a `$` parameter holds,
 // and what an `@` or `%` one does (the container itself, never an item of it)

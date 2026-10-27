@@ -488,6 +488,10 @@ struct EnvExtras {
     // `given @a` / `with @a`: `$_` IS the Array, not a Scalar holding it, so
     // assigning the topic list-assigns @a (`with @a { .=uc }`, inplace.t)
     bool topicBindsArray = false;
+    // A ROUTINE scope's own routine, when a block made in it mentions
+    // `&?ROUTINE` or `samewith` and may run after it returns or on another
+    // thread (recordLexicalRoutine / lexicalRoutineVal)
+    Value lexRoutine;
     // rw-param write-through: paramName → (caller's argument expr, caller env).
     // An assignment to the param writes through the caller's lvalue IMMEDIATELY
     // (so the caller sees it mid-call); rwSynced records the last value pushed
@@ -2724,6 +2728,17 @@ public:
     // Does this candidate bind a CONTAINER argument to an `is rw` parameter?
     // Between two otherwise tied candidates that one is the narrower.
     bool rwCandidateBinds(const Value& cand, const std::vector<ExprPtr>* rwArgs);
+    // A SUB called with a method call's invocant as its first argument (`$d.&f`,
+    // the method a `.^add_fallback` computes): the invocant's expression leads
+    // the call's own as its rwArgs, so an `is rw` parameter takes the caller's
+    // container and a multi picks its `is rw` candidate only for one
+    Value callInvocantFirst(const Value& code, const Value& inv, const ValueList& args,
+                            Expr* invExpr, const std::vector<ExprPtr>* argExprs);
+    Expr* liveInvocantExpr(const Value& inv);   // …tctx()'s, when it is this invocant's
+    // a DateTime against a number, and a class DERIVING DateTime: operators and
+    // the DateTimes its methods answer go by Rakudo's definitions (InterpreterCalls.cpp)
+    std::optional<Value> dateTimeArith(const std::string& op, const Value& l, const Value& r);
+    Value rewrapDerivedDateTime(const Value& inv, const std::string& m, Value r);
     // Could a method call by this NAME hand back a CONTAINER? Only if some type
     // declares an `is rw` public attribute of that name, or a routine of that
     // name returns `is rw`/`is raw`, or the engine itself answers a container
@@ -2767,6 +2782,7 @@ public:
     }
     // A method `augment`-ed onto a BUILT-IN type, if there is one for this invocant.
     Value* builtinExtMethod(const Value& inv, const std::string& m);
+    Value wrapBuiltinMethod(const std::string& type, const std::string& name, const Value& wrapper); // `.wrap` of a core method
     // What an object contributes when assigned to a `%` container: its own
     // `.list`/`.iterator` (declared or `handles`-delegated), if it has one.
     bool objListItems(const Value& v, ValueList& out);
@@ -2842,6 +2858,7 @@ public:
     // `@a.grep(PRED)`: @a's storage and the positions grep keeps (its containers)
     std::shared_ptr<std::pair<PRef<ValueList>, std::vector<size_t>>> grepArrayView(Expr* e);
     std::shared_ptr<std::pair<PRef<ValueList>, std::vector<size_t>>> sliceArrayView(Expr* e);   // `for @a[^2]`
+    std::shared_ptr<std::pair<PRef<ValueList>, std::vector<size_t>>> endsArrayView(Expr* e);    // `@a.head(2)`, `.first`
     // The array behind `for @a.values` / `for @a.list` — the array twin of
     // valuesAliasSource; likewise.
     PRef<ValueList> valuesArrayAlias(Expr* listExpr);
@@ -3230,6 +3247,8 @@ public:
     bool subsetMatches(const std::string& name, const Value& v, int depth = 0);
     bool typeOrSubsetMatches(const Value& v, const std::string& type); // typeMatchesArg + subsets
     uint64_t lexicalRoutineFrame(); // the frame a `return` written here belongs to
+    const Value* lexicalRoutineVal();   // …and that routine itself: `&?ROUTINE`, what `samewith` calls
+    void recordLexicalRoutine();        // (a block that asks for it, as it is made)
     // Nested BEGIN/CHECK/INIT phasers run before the code around them, in a
     // STATIC environment of the scopes that enclose them (the lexicals exist,
     // unset, as they do at Rakudo's compile time). The first run of each such
@@ -4682,6 +4701,11 @@ public:
     // `$repo.need` of an explicit store loads THIS dist's source (see loadModuleImpl)
     struct PinnedInstall { std::string name, repo, distId, srcId; };
     std::optional<PinnedInstall> pinnedInstall_;
+    // `require "path"` and `require Stub:file(path)` load THAT file, not what
+    // the search path makes of its name, and run its `sub MAIN` (loadModuleImpl)
+    struct PinnedFile { std::string name, path; };
+    std::optional<PinnedFile> pinnedFile_;
+    std::string requireFilePath(const std::string& spec); // the file a `require "spec"` names, or ""
     Value buildInstalledDistribution(const std::string& repo, const std::string& distId); // CURI dist/<id> meta → $?DISTRIBUTION
     Value buildEmbeddedResourceMap(const std::string& distKey); // resources compiled INTO this binary → resource Hash
     Value buildEmbeddedDistribution(const std::string& distKey); // embedded META6 → $?DISTRIBUTION

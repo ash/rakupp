@@ -3781,6 +3781,12 @@ static bool quoteBlockedHere(const std::vector<Token>& out, bool spaced) {
     // A name TIGHT after ':' is an adverb pair — `:y(2)` is y => 2, never a `y///`
     // transliteration; `:q<x>` is q => 'x'. (A spaced `$fh.say: q/hi/` stays a quote.)
     if (pv.kind == Tok::Op && pv.text == ":" && !spaced) return true;
+    // …and so is one tight after the digits of `:4m`, which is m => 4: with a
+    // comma next, `make-time(:4m, :5s)` opened an `m,…,` match (the tests of
+    // Timezones::ZoneInfo write their times that way)
+    if (pv.kind == Tok::IntLit && !spaced && !pv.spaceBefore && out.size() >= 2 &&
+        out[out.size() - 2].kind == Tok::Op && out[out.size() - 2].text == ":")
+        return true;
     // A name TIGHT after `|` or `\` is a capture/sigilless PARAMETER name —
     // `-> \s, |q { … }` (Log::Async wraps a method with exactly this); the `q`
     // must not open a q{…} quote that swallows the block.

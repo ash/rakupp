@@ -223,6 +223,7 @@ std::string joinValues(const ValueList& items, const std::string& sep);
 Value makeInfArray(long long start);
 std::string markFold(const std::string& in);
 ValueList toList(const Value& v);
+bool opaqueHashKind(const IStr& k); // an engine object kept in a hash: one item (Value.cpp)
 // NativeCall's types live in NativeCall::Types, and their `.^name` and a type
 // object's `.raku` say so; typeName() keeps the short name every check uses
 inline std::string ncQualifiedName(const std::string& n) {

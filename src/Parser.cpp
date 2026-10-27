@@ -55,6 +55,7 @@ static bool rxUsesSym(const std::string& pat) {
 }
 
 bool isKnownTypeName(const std::string& n); // InterpreterModules.cpp
+bool endsElementCall(const Expr* rv);        // InterpreterCalls.cpp
 
 bool isPragmaName(const std::string& n);  // Interpreter.cpp — `use` names with no file behind them
 
@@ -5335,7 +5336,7 @@ void Parser::unmarkSigillessContainer(Assign* a) {
     const Expr* rv = a->value.get();
     if (rv->kind == NK::Assign && static_cast<const Assign*>(rv)->op == "=") rv = static_cast<const Assign*>(rv)->target.get();
     const bool container = rv->kind == NK::Index || rv->kind == NK::ArrayLit || rv->kind == NK::HashLit ||
-        rv->kind == NK::NameTerm ||
+        rv->kind == NK::NameTerm || endsElementCall(rv) ||
         (rv->kind == NK::VarExpr && !static_cast<const VarExpr*>(rv)->name.empty() &&
          std::strchr("$@%", static_cast<const VarExpr*>(rv)->name[0]));
     if (container) sigillessRO_.erase(tv->name);
@@ -12335,6 +12336,10 @@ std::vector<Param> Parser::parseSignature(Tok closeTok) {
         // optional type constraint: a bare Ident (possibly Foo::Bar, with :D/:U smiley, [..])
         if (isKind(Tok::Ident)) {
             p.type = advance().text; // type name (used for multi-dispatch)
+            if (p.type.size() > 6 && p.type.compare(0, 6, "CORE::") == 0 && isKnownTypeName(p.type.substr(6))) {
+                p.type = p.type.substr(6);   // …which `.type` and every message name as Int
+                p.typeIsSetting = true;
+            }
             // `-> True { }` — a literal Bool smartmatches everything (True) or
             // nothing (False): Rakudo worries at compile time
             if ((p.type == "True" || p.type == "False") && !strictSep_)

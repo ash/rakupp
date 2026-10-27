@@ -17,7 +17,7 @@ e24f05f1 (NUM-UNBOX-PLAN P0); 8644846a; 74806a6d; 93f9a4af and c7a12943;
 12af490d (RACE-DETECTOR-PLAN P0-P4); 42f79e98, b9108e1d, 0b9950b1, 500c29e2,
 1b182b8e, 828e52d5, 4d1c7cc3, 80ea9030, d972abe7, 166334a9 and 29b10450;
 5d31d4a2 and aff5032b (issue #202); 5d0e7ce9 and 170802d4 (issue #203);
-cb7933f3 (issue #204).*
+cb7933f3 (issue #204); cb5b360a, d5184116 and 50aebf54.*
 
 ---
 
@@ -553,8 +553,73 @@ does not.
   (`M::<$x>:delete` was a parse error).
   t/regression/export-tags-and-package-stashes.raku agrees with Rakudo
   2026.09.
+- **A file required by its path is that file, and its `sub MAIN` runs**
+  (cb5b360a). `require "/abs/Build.pm6"` loaded nothing and said nothing:
+  the path was looked up as a module name. `require "path"` and `require
+  Stub:file(path)` now load the file named (an absolute path as it stands, a
+  relative one under each search-path directory) and run its `sub MAIN` on
+  @*ARGS after its mainline, once; a `use` of it still does not, and a
+  missing absolute path is X::NotFoundInRepository. `rakupp install` runs a
+  `Build.*` hook with zef's own command, which requires it by path, so a hook
+  that is only a `sub MAIN` script runs (Timezones::ZoneInfo's died with
+  "Undeclared name 'Build'").
+- **`:4m, :5s` is two pairs** (cb5b360a): after the digits of a `:4m` pair
+  the lexer opened an `m,…,` match (`rx,` too), "Malformed radix number".
+- **`samewith` works in a routine that is not a multi** (cb5b360a), calling
+  the routine it is written in again with the new arguments, as Rakudo
+  does; it died with X::NoDispatcher.
+  Timezones::ZoneInfo 0.5.0 now builds, passes its suite and installs. The
+  three t/regression files (require-path-loads-file-runs-main,
+  colonpair-digits-regex-key, samewith-only-routine) agree with Rakudo
+  2026.09.
+- **A module may extend the core DateTime in place, and `rakupp install
+  DateTime::Timezones` installs** (d5184116). `CORE::DateTime` is the
+  setting's DateTime, as a term and as a parameter type, whatever the scope
+  has made of the short name; `class DateTime is DateTime` in a module is a
+  subclass of the core one (only `class A is A`, with nothing outside, is
+  refused); `.wrap` of a core method's object
+  (`DateTime.^find_method('in-timezone').wrap(…)`) wraps it for every
+  DateTime, where it was accepted and ignored, and `callsame` reaches the
+  core method; a sub called with a method call's invocant first (a
+  `.^add_fallback` method, `$d.&up`) takes the invocant's container, so an
+  `is rw` parameter assigns the caller's variable and a multi picks its
+  `is rw` candidate only for one (`3.&m`, `my \d = DateTime.new(…)` take the
+  other). A class deriving DateTime keeps its class through `±` a Duration
+  (`$dt - $day` was a Num), and through `.later`, `.in-timezone`, `.clone`
+  and kin; a difference is a Duration, `$dt + 60` an Instant, and
+  `DateTime but R` keeps its role. DateTime::Timezones 0.4.2 installs with
+  its suite green, and a program using it prints what Rakudo prints from the
+  same store. t/regression/core-class-extended-in-place.raku agrees with
+  Rakudo 2026.09.
+- **What was found beside it** (50aebf54), each the same on v5.5.0 before.
+  An engine object kept in a hash (a DateTime, Date, Promise, Channel, Lock,
+  …) is ONE element: `my @a = DateTime.new(0)` held eight Pairs, a Lock
+  none, and `.elems` was 8; a Set, Bag or Mix in a `$` parameter or loop
+  variable is one item. A DateTime against a plain number is its Instant:
+  `$d + 60` is Instant:70 (it moved the date), `$d * 2` 20 (it was 0), `$d
+  == 10` True; a Duration still moves it. `sub f(CORE::Int $x)` checks its
+  argument, at compile time too, and its `.signature` is `:(Int $x)`
+  (Param.typeIsSetting, AST cache v52). `&?ROUTINE` is the routine a block is
+  written in, after it returns and from a `start` block as well (it named
+  whichever routine ran the block), and `samewith` calls that one. `my \x =
+  @a.first`, `$x := @a.tail`, `for @a.head(2) { $_ = 7 }` and
+  `@a.grep(…).first` reach the elements' own containers. A top-level `class
+  DateTime is CORE::DateTime`, the core class's own name outside a package,
+  is refused as X::NYI where it crashed. The five t/regression files
+  (engine-objects-list-as-one, datetime-number-is-instant,
+  core-qualified-parameter-type, routine-is-lexical,
+  array-ends-are-containers) agree with Rakudo 2026.09.
 
 ### Left open
+
+- Two types of one name are still one here (50aebf54): a top-level class of
+  a core class's own name that inherits it is refused as X::NYI (Rakudo
+  accepts it; in a package it works), a top-level class of a core name that
+  does not inherit replaces the core type, and two `my class A` in two
+  blocks are one class. Types are known by their names throughout.
+- `%h.values.head` hands back a value, where Rakudo's is the hash entry's
+  container (an Array's `.first`/`.head`/`.tail` do now); a Block's `.gist`
+  is `sub { ... }` where Rakudo writes `-> { #`(Block|…) ... }`.
 
 - A store into an array element can still land in a buffer a sibling worker's
   growth has just moved, in a program that races the two (90bc6e23): an

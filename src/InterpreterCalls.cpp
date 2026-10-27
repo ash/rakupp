@@ -150,6 +150,12 @@ bool Interpreter::rwCandidateRejects(const Value& cand, size_t nargs,
                           !static_cast<MethodCall*>(ae)->methodExpr &&
                           !static_cast<MethodCall*>(ae)->hyper &&
                           !methodMayYieldContainer(static_cast<MethodCall*>(ae)->method));
+        // …and so is a SIGILLESS name bound to a bare value (`my \d =
+        // DateTime.new(…)`), where one bound to a variable is that variable's
+        // container (`my \x = $y`) and stays eligible
+        if (p.isRw && !neverCont && ae && ae->kind == NK::NameTerm && tctx().cur)
+            if (const Value* bv = tctx().cur->find(static_cast<const NameTerm*>(ae)->name))
+                neverCont = bv->readonly && bv->immutableBind;
         if (p.isRw && neverCont) return true;
         // a NATIVE `is rw` parameter binds only a native container: `int $rw is rw`
         // does not take an Int variable (it could not write back through it)
@@ -160,6 +166,146 @@ bool Interpreter::rwCandidateRejects(const Value& cand, size_t nargs,
         pi++;
     }
     return false;
+}
+
+// Rakudo hands a method call's invocant over as it is, container and all, and a
+// sub called in its place takes it as its first argument: `sub up($s is rw)`
+// called as `$d.&up` assigns `$d`, and DateTime::Timezones' fallbacks upgrade a
+// `$dt` to a time-zone-aware DateTime that way. The expressions are only LENT
+// (the AST owns them): taken back before the vector goes.
+Value Interpreter::callInvocantFirst(const Value& code, const Value& inv, const ValueList& args,
+                                     Expr* invExpr, const std::vector<ExprPtr>* argExprs) {
+    ValueList ca; ca.reserve(args.size() + 1);
+    ca.push_back(inv);
+    for (auto& a : args) ca.push_back(a);
+    // (a METHOD takes its invocant's expression from tctx(), not from rwArgs)
+    if (!invExpr || code.t != VT::Code || !code.code() || code.code()->ci().isMethod)
+        return callCallable(code, std::move(ca));
+    struct Borrow {
+        std::vector<ExprPtr> v;
+        ~Borrow() { for (auto& p : v) (void)p.release(); }
+    } b;
+    b.v.emplace_back(invExpr);
+    if (argExprs) for (auto& e : *argExprs) b.v.emplace_back(e.get());
+    return callCallable(code, std::move(ca), &b.v);
+}
+
+// …and the tctx() invocant expression a method call left, when it is THIS
+// invocant's: a built-in that dispatches a method of its own leaves the outer
+// call's in place. A variable must still hold this very value; anything else
+// is lent only when it can be no container, which can only refuse an `is rw`
+// candidate. nullptr when neither holds.
+Expr* Interpreter::liveInvocantExpr(const Value& inv) {
+    Expr* ie = tctx().rwInvocantExpr;
+    if (!ie || argIsNeverContainer(ie)) return ie;
+    if (ie->kind == NK::MethodCall) {
+        auto* imc = static_cast<MethodCall*>(ie);
+        return !imc->meta && !imc->methodExpr && !imc->hyper && !methodMayYieldContainer(imc->method) ? ie : nullptr;
+    }
+    if ((ie->kind == NK::VarExpr || ie->kind == NK::NameTerm) && tctx().cur) {
+        const std::string nm = ie->kind == NK::VarExpr ? std::string(static_cast<VarExpr*>(ie)->name)
+                                                       : std::string(static_cast<NameTerm*>(ie)->name);
+        if (const Value* held = tctx().cur->find(nm))
+            if (whichOf(*held->deref()) == whichOf(inv)) return ie;
+    }
+    return nullptr;
+}
+
+// A DateTime meeting a plain NUMBER is its Instant, as in Rakudo: `$dt + 60`
+// is Instant:70, `$dt * 2` a Num, `$dt == 10` asks the Instant. The native arm
+// of evalBinary numified it to 0 (and `+` moved it by seconds); only a
+// Duration moves one. And an object of a class DERIVING DateTime
+// (DateTime::Timezones' own) takes Rakudo's operators as they are written,
+// through its OWN methods: a move is `$a.new($a.Instant ± $b).in-timezone(
+// $a.timezone)`, so its class builds the answer, and a difference or a
+// comparison goes by the Instants — `$dt - $day` was a Num. nullopt when the
+// operands are none of these, or the operator is not a numeric one.
+std::optional<Value> Interpreter::dateTimeArith(const std::string& op, const Value& l, const Value& r) {
+    static const std::unordered_set<std::string> kNumeric = {
+        "+", "-", "*", "/", "%", "**", "==", "!=", "<", ">", "<=", ">=", "<=>"};
+    auto dtObj = [](const Value& v) {
+        return v.t == VT::Object && v.obj() && v.obj()->cls && v.obj()->boxed().hashKind == "DateTime";
+    };
+    auto isDT = [&](const Value& v) { return (v.t == VT::Hash && v.hashKind == "DateTime") || dtObj(v); };
+    auto real = [](const Value& v) { return v.t == VT::Int || v.t == VT::Num || v.t == VT::Rat; };
+    auto number = [&](const Value& v) { return real(v) && v.hashKind != "Duration" && v.hashKind != "Instant"; };
+    if (!kNumeric.count(op)) return std::nullopt;
+    if ((isDT(l) && number(r)) || (isDT(r) && number(l))) {
+        const Value a = isDT(l) ? methodCall(l, "Instant", ValueList{}) : l;
+        const Value c = isDT(r) ? methodCall(r, "Instant", ValueList{}) : r;
+        Value res = applyBinOp(op, a, c);
+        tagTemporal(op, a, c, res);   // (as evalBinary's Instant algebra tags it)
+        return res;
+    }
+    const bool lo = dtObj(l), ro = dtObj(r);
+    if (!lo && !ro) return std::nullopt;
+    // the Instant as a bare number, as the native arm reads it, so that what
+    // is computed is tagged only once, at the end
+    auto inst = [&](const Value& v) { Value i = methodCall(v, "Instant", ValueList{}); i.hashKind = ""; return i; };
+    auto move = [&](const Value& dt, const Value& by, const std::string& how) {
+        Value b = by; b.hashKind = "";
+        Value at = applyArith(how, inst(dt), b);
+        at.hashKind = "Instant";
+        // …built by the object's CLASS, not by the DateTime it boxes
+        Value moved = methodCall(Value::typeObj(dt.obj()->cls->name), "new", ValueList{at});
+        return methodCall(moved, "in-timezone", ValueList{methodCall(dt, "timezone", ValueList{})});
+    };
+    if ((op == "+" || op == "-") && lo && real(r) && r.hashKind == "Duration") return move(l, r, op);
+    if (op == "+" && ro && real(l) && l.hashKind == "Duration") return move(r, l, "+");
+    if (!isDT(l) || !isDT(r)) return std::nullopt;
+    if (op == "-") {
+        Value diff = applyArith("-", inst(l), inst(r));
+        if (diff.t == VT::Num && std::isfinite(diff.n)) diff = methodCall(diff, "Rat", ValueList{});
+        diff.hashKind = "Duration";
+        return identify(diff);
+    }
+    if (op == "+" || op == "*" || op == "/" || op == "%" || op == "**") return std::nullopt;
+    return applyBinOp(op, inst(l), inst(r));
+}
+
+// A DateTime that a subclassed DateTime's own methods answer is one of the
+// subclass (DateTime::Timezones' `.later(:1day)` is one of its DateTimes):
+// Rakudo clones the invocant for these five, attributes and all, and makes a
+// bare one of the class for `.later` and `.earlier`. `r` as it is otherwise.
+Value Interpreter::rewrapDerivedDateTime(const Value& inv, const std::string& m, Value r) {
+    if (r.t != VT::Hash || r.hashKind != "DateTime" || inv.obj()->boxed().hashKind != "DateTime") return r;
+    const bool clones = m == "in-timezone" || m == "utc" || m == "local" || m == "truncated-to" || m == "clone";
+    if (!clones && m != "later" && m != "earlier") return r;
+    auto od = makePayload<ObjectData>();
+    if (clones) *od = *inv.obj();
+    else od->cls = inv.obj()->cls;
+    od->hasBoxed = true;
+    od->boxed() = r;
+    return Value::object(od);
+}
+
+// `DateTime.^find_method('in-timezone').wrap(…)`. A BUILT-IN method has no
+// Callable for the wrap to go on — its dispatch is C++, and the method object
+// `^find_method` answers is made on the spot — so the wrap went on that object
+// and nothing ever called it. The wrapped method is one made for the purpose
+// and parked in builtinExt_, where dispatch looks for a built-in type's methods
+// ahead of its own (augment's table), so every DateTime sees the wrap, as in
+// Rakudo. Its body is the built-in, reached past that table with skipOwn: a
+// callsame in the wrapper lands on the core method, not back in the wrapper.
+
+Value Interpreter::wrapBuiltinMethod(const std::string& type, const std::string& name, const Value& wrapper) {
+    Value& slot = builtinExt_[type][name];
+    if (slot.t != VT::Code || !slot.code()) {
+        Value code; code.t = VT::Code; code.setCode(makePayload<Callable>());
+        code.code()->ciM().name = name; code.code()->ciM().isMethod = true; code.code()->ciM().pkg = type;
+        code.code()->ciM().builtin = [name](Interpreter& I, ValueList& a) -> Value {
+            if (a.empty()) return Value::any();
+            Value inv = a[0]; ValueList rest(a.begin() + 1, a.end());
+            return I.methodCall(inv, name, rest, nullptr, /*skipOwn=*/true);
+        };
+        slot = code;
+    }
+    slot.code()->coldM().wrappers.push_back(wrapper);
+    noteSymbolMutation("routine .wrap of a built-in method");
+    Value h = Value::makeHash(); h.hashKind = "WrapHandle";
+    (*h.hash())["routine"] = slot;     // what .unwrap / .restore take it off again
+    (*h.hash())["wrapper"] = wrapper;
+    return h;
 }
 
 // A raw/rw SLURPY's elements, re-made as the arguments' containers: a `$x`
@@ -1628,6 +1774,96 @@ Interpreter::grepArrayView(Expr* e) {
     for (size_t i = 0; i < view->first->size(); i++)
         if (matcherAccepts(*this, (*view->first)[i], pv)) view->second.push_back(i);
     return view;
+}
+
+// …and `@a.first`, `@a.head`, `@a.tail` (or over `@a.grep(…)`): Rakudo hands
+// back the element's own container, which the interpreter binds (endsArrayView).
+// `.first(:k)`, `:p` and `:kv` answer something new. A test of the AST alone,
+// kept in the runtime: the parser's sigilless declarator asks it, and so does a
+// `for` in a binary that carries no parser.
+bool endsElementCall(const Expr* rv) {
+    if (!rv || rv->kind != NK::MethodCall) return false;
+    auto* mc = static_cast<const MethodCall*>(rv);
+    if (mc->meta || mc->hyper || mc->methodExpr || !mc->inv) return false;
+    if (mc->method == "first") {
+        for (auto& x : mc->args)
+            if (x && x->kind == NK::Pair && static_cast<const PairExpr*>(x.get())->colonForm &&
+                static_cast<const PairExpr*>(x.get())->key != "end")
+                return false;
+    }
+    else if ((mc->method != "head" && mc->method != "tail") || !mc->args.empty()) return false;
+    const Expr* src = mc->inv.get();
+    if (src->kind == NK::MethodCall && static_cast<const MethodCall*>(src)->method == "grep")
+        src = static_cast<const MethodCall*>(src)->inv.get();
+    return src && src->kind == NK::VarExpr && !static_cast<const VarExpr*>(src)->name.empty() &&
+           static_cast<const VarExpr*>(src)->name[0] == '@';
+}
+
+// `.head`, `.tail` and `.first` over a real Array hand back the elements'
+// CONTAINERS, as Rakudo's do: the positions they name, for a `for` that aliases
+// them and a binding that does (`my \x = @a.first`). The array is an
+// `@`-variable or grep's view of one (`@a.grep(* > 1).first`); `head`/`tail`
+// take a count safe to evaluate again, `first` a matcher (called per element,
+// as grep's is) and `:end`. Any other adverb answers something new; no element
+// at all leaves it to the copying path, as does everything else.
+std::shared_ptr<std::pair<PRef<ValueList>, std::vector<size_t>>>
+Interpreter::endsArrayView(Expr* e) {
+    using View = std::pair<PRef<ValueList>, std::vector<size_t>>;
+    if (!e || e->kind != NK::MethodCall) return nullptr;
+    auto* mc = static_cast<MethodCall*>(e);
+    const std::string& m = mc->method;
+    if ((m != "head" && m != "tail" && m != "first") || mc->hyper || mc->meta || mc->methodExpr || !mc->inv)
+        return nullptr;
+    std::shared_ptr<View> src;
+    if (mc->inv->kind == NK::VarExpr) {
+        auto* sv = static_cast<VarExpr*>(mc->inv.get());
+        if (sv->name.size() < 2 || sv->name[0] != '@' || sv->declare) return nullptr;
+        Value* av = tctx().cur->find(sv->name);
+        if (!av || av->t != VT::Array || !av->arr() || av->isList || av->ext() || av->shape()) return nullptr;
+        src = std::make_shared<View>();
+        src->first = av->arrS();
+        for (size_t i = 0; i < src->first->size(); i++) src->second.push_back(i);
+    }
+    else src = grepArrayView(mc->inv.get());
+    if (!src) return nullptr;
+    const std::vector<size_t>& pos = src->second;
+    auto view = std::make_shared<View>();
+    view->first = src->first;
+    if (m != "first") {
+        size_t n = 1;
+        if (!mc->args.empty()) {
+            if (mc->args.size() != 1 || !pureSubscript(mc->args[0].get())) return nullptr;
+            Value nv = eval(mc->args[0].get());
+            if (nv.t != VT::Int || nv.big() || nv.i < 0) return nullptr;
+            n = std::min((size_t)nv.i, pos.size());
+        }
+        else if (pos.empty()) return nullptr;
+        else n = 1;
+        if (m == "head") view->second.assign(pos.begin(), pos.begin() + n);
+        else view->second.assign(pos.end() - n, pos.end());
+        return view;
+    }
+    Value pred = Value::any();
+    bool fromEnd = false;
+    for (auto& ae : mc->args) {
+        // (a NAMED argument is told by its spelling: evaluated, `:k` is a Pair
+        // that would be taken for the matcher)
+        if (ae && ae->kind == NK::Pair && static_cast<PairExpr*>(ae.get())->colonForm) {
+            auto* pe = static_cast<PairExpr*>(ae.get());
+            if (pe->key != "end" || pe->keyExpr) return nullptr;   // :k, :p, :kv answer something new
+            Value fa = eval(ae.get());
+            fromEnd = !fa.pairVal() || fa.pairVal()->truthy();
+        }
+        else pred = eval(ae.get());
+    }
+    for (size_t k = 0; k < pos.size(); k++) {
+        size_t i = pos[fromEnd ? pos.size() - 1 - k : k];
+        if (pred.t == VT::Any || matcherAccepts(*this, (*view->first)[i], pred)) {
+            view->second.push_back(i);
+            return view;
+        }
+    }
+    return nullptr;
 }
 
 // `for $c, $m, $y, $k { … }` — every item is a CONTAINER, so the topic aliases it

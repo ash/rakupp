@@ -952,6 +952,28 @@ std::unique_lock<std::recursive_mutex> Interpreter::lockLoader() {
     return lk;
 }
 
+// The file `require "spec"` names, found as Rakudo's
+// CompUnit::Repository::FileSystem.load finds it: an absolute path as it
+// stands, a relative one under each directory on the search path in turn.
+// "" when no such file exists.
+std::string Interpreter::requireFilePath(const std::string& spec) {
+    auto isFile = [](const std::string& p) {
+        struct stat st{};
+        return ::stat(p.c_str(), &st) == 0 && S_ISREG(st.st_mode);
+    };
+    const bool absolute = (!spec.empty() && (spec[0] == '/' || spec[0] == '\\')) ||
+                          (spec.size() > 2 && ascii::isalpha((unsigned char)spec[0]) && spec[1] == ':' &&
+                           (spec[2] == '/' || spec[2] == '\\'));
+    if (absolute) return isFile(spec) ? spec : std::string();
+    for (auto& entry : libPaths_) {
+        std::string pre;
+        if (repoSpecStore(entry, pre)) continue;
+        std::string p = repoSpecDir(entry) + "/" + spec;
+        if (isFile(p)) return p;
+    }
+    return "";
+}
+
 void Interpreter::loadModule(const std::string& name, const std::vector<std::string>& importArgs, bool doImport, bool quiet, const std::string& verReq, bool requireForm, bool mergeGlobals) {
     auto loaderLock = lockLoader();
     const std::string importer = stashUnitHere();
@@ -1028,6 +1050,10 @@ void Interpreter::loadModuleImpl(const std::string& name, const std::vector<std:
     // …and the `:auth<…>` it was written with, before a nested `use` resets it
     const std::string useAuth = std::move(pendingUseAuth_);
     pendingUseAuth_.clear();
+    // …and the file a `require "path"` named (requireFilePath)
+    std::optional<PinnedFile> pinFile;
+    if (pinnedFile_ && pinnedFile_->name == name) pinFile = std::move(pinnedFile_);
+    pinnedFile_.reset();
     StageLoadTimer stageTimer(name, !loadedModules_.count(name)); // --stagestats: a first load, timed
     // DATA-PLAN P6. Before anything is looked for on disk: this engine may be
     // able to answer the `use` itself, in which case nothing loads at all.
@@ -1749,6 +1775,20 @@ void Interpreter::loadModuleImpl(const std::string& name, const std::vector<std:
                 exec(st.get());
             }
             runInitsOnce(prog->stmts.size()); // a module that is nothing but `use`s and declarations
+            // A file loaded by its PATH is no precompiled module in Rakudo but a
+            // mainline compiled from source, and its `sub MAIN` runs at the end
+            // of it on the program's @*ARGS (Actions.nqp's RUN-MAIN rule). zef's
+            // legacy builder relies on it: it `require`s Build.pm6 by path, and
+            // Timezones::ZoneInfo's is nothing but a `sub MAIN` that writes its
+            // resources and exits.
+            if (pinFile)
+                if (Value* m = moduleEnv->local("&MAIN"); m && m->t == VT::Code) {
+                    Value mainSub = *m;
+                    ValueList margs;
+                    int rc = mainProtocol(mainSub, margs);
+                    if (rc >= 0) throw ExitEx{rc};   // the usage path's exit status
+                    sinkReturnedValue(callCallable(mainSub, margs));
+                }
         }
         catch (RakuError& e) {
             loadingModuleDepth_--; moduleDoImport_ = savedDoImport;
@@ -1931,6 +1971,26 @@ void Interpreter::loadModuleImpl(const std::string& name, const std::vector<std:
         if (doImport && !requireForm) checkImportTags(name, importArgs);   // (a `require` list names symbols)
     };
 
+    // `require "path"`: the file it names, whatever else answers to its name.
+    // Its %?RESOURCES and $?DISTRIBUTION are those of the tree it sits in, as
+    // for a module found under -I.
+    if (pinFile) {
+        std::ifstream in(pinFile->path, std::ios::binary);
+        if (in) {
+            if (traceLoad) std::cerr << "[Load] " << name << " <- file " << pinFile->path << "\n";
+            std::ostringstream ss; ss << in.rdbuf();
+            const size_t sl = pinFile->path.find_last_of("/\\");
+            std::string distRoot = sl == std::string::npos ? "." : sl == 0 ? "/" : pinFile->path.substr(0, sl);
+            if (distRoot.size() > 4 && distRoot.compare(distRoot.size() - 4, 4, "/lib") == 0)
+                distRoot = distRoot.substr(0, distRoot.size() - 4);
+            resourceStack_.push_back(buildSourceResourceMap(distRoot));
+            distStack_.push_back(buildDistribution(distRoot));
+            struct RG { ValueList& s; ~RG() { s.pop_back(); } } rg{resourceStack_};
+            struct DG { ValueList& s; ~DG() { s.pop_back(); } } dg{distStack_};
+            loadSource(ss.str(), pinFile->path);
+            return;
+        }
+    }
 
     // A module compiled INTO this binary needs no file at all — take it before
     // the search path is even consulted, so a `--exe` binary runs with its
@@ -4857,6 +4917,33 @@ static bool protoHidesOuterCandidates(Env* scope, Callable* disp, const Value& p
 // methods (ClassDecl::methods) and never sees a term, so this is its only way
 // in. A plain method of the name keeps it; a repeat of the same declaration is
 // a no-op.
+// `class DateTime is DateTime`: the parent is what the name meant BEFORE this
+// declaration, as Rakudo looks it up first — `unit module Timezones; class
+// DateTime is DateTime` (DateTime::Timezones) is Timezones::DateTime, a
+// subclass of the core one. Only a name with nothing outside it is the class
+// itself, and then neither the lexical name nor the package sibling (which
+// the declaration is about to be) is asked for the outer one.
+static bool parentIsOuterType(std::unordered_map<std::string, std::shared_ptr<ClassInfo>>& classes,
+                              const ClassDecl* cd, const std::string& parentName,
+                              const std::string& clsName, const std::shared_ptr<ClassInfo>& ci) {
+    if (cd->isRole || clsName == parentName) return false;
+    auto it = classes.find(parentName);
+    return it != classes.end() ? it->second != ci : isKnownTypeName(parentName);
+}
+// …and one OUTSIDE a package that takes a core type's own name — `class
+// DateTime is DateTime`, `class Int is CORE::Int` at the top level — would be a
+// second type of one name, which this engine's types (known by their names)
+// cannot be yet: refused, where it crashed or claimed to inherit from itself.
+// Rakudo accepts it; inside a package it works here too.
+static void refuseCoreNamesake(Interpreter& I, std::unordered_map<std::string, std::shared_ptr<ClassInfo>>& classes,
+                               const std::string& clsName, const std::string& parentName) {
+    if (clsName != parentName || classes.count(parentName) || !isKnownTypeName(parentName)) return;
+    I.throwTypedV("X::NYI", {{"feature", Value::str("A class named like the core " + parentName + " it inherits from, outside a package")}},
+                  "A class named like the core " + parentName + " it inherits from, outside a package, not yet "
+                  "implemented. Sorry. Declare it inside one (`unit module M; class " + parentName + " is " +
+                  parentName + "`), or give it a name of its own.");
+}
+
 static void methodTermJoinsClass(std::unordered_map<std::string, std::shared_ptr<ClassInfo>>& classes,
                                  const std::string& pkgPrefix, const std::string& name, const Value& code) {
     std::string pk = pkgPrefix;
@@ -5282,6 +5369,8 @@ static void methodTermJoinsClass(std::unordered_map<std::string, std::shared_ptr
                     }
                     std::set<std::string> before;
                     for (auto& kv : classes_) before.insert(kv.first);
+                    // that very file, as `require "path"` loads it (MAIN and all)
+                    if (std::string f = requireFilePath(path); !f.empty()) pinnedFile_ = PinnedFile{stem, f};
                     libPaths_.insert(libPaths_.begin(), dir);
                     try { loadModule(stem, {}, /*doImport=*/true, /*quiet=*/true, "", /*requireForm=*/true); }
                     catch (...) { libPaths_.erase(libPaths_.begin()); throw; }
@@ -6479,15 +6568,19 @@ static void methodTermJoinsClass(std::unordered_map<std::string, std::shared_ptr
                 bool paramSelf = false;
                 for (auto& ra : cd->roleArgs)
                     if (ra.first == parentName && !ra.second.empty()) { paramSelf = true; break; }
-                if (parentName == cd->name && !cd->name.empty() && parentName == cd->parent && !paramSelf)
+                const bool selfNamed = parentName == cd->name && !cd->name.empty() &&
+                                       parentName == cd->parent && !paramSelf;
+                const bool outerType = selfNamed && parentIsOuterType(classes_, cd, parentName, clsName, ci);
+                if (!cd->isRole) refuseCoreNamesake(*this, classes_, clsName, parentName);
+                if (selfNamed && !outerType)
                     throwTyped(cd->isRole ? "X::InvalidType" : "X::Inheritance::SelfInherit",
                         {{"name", cd->name}},
                         cd->isRole ? "Role '" + cd->name + "' cannot inherit from / compose itself"
                                    : "'" + cd->name + "' cannot inherit from itself.");   // Rakudo's wording
-                auto it = classes_.find(lexicalTypeName(*this, parentName));
-                if (it == classes_.end() && !tctx().pkgPrefix.empty())
+                auto it = classes_.find(outerType ? parentName : lexicalTypeName(*this, parentName));
+                if (it == classes_.end() && !tctx().pkgPrefix.empty() && !outerType)
                     it = classes_.find(tctx().pkgPrefix + parentName); // sibling nested type
-                if (it == classes_.end()) it = classes_.find(resolveClassAlias(parentName));
+                if (it == classes_.end() && !outerType) it = classes_.find(resolveClassAlias(parentName));
                 // `does X` where X is a class or a concrete core type: only
                 // roles compose (built-in role names like Positional stay fine)
                 if (cd->parentIsDoes) {
@@ -6551,8 +6644,8 @@ static void methodTermJoinsClass(std::unordered_map<std::string, std::shared_ptr
                     }
                 }
                 else if (rakuAstParent) ci->parent = *rakuAstParent;
-                else if (isKnownTypeName(cd->parent)) {
-                    ci->nativeParent = cd->parent; // is Str / is Cool / …
+                else if (isKnownTypeName(parentName)) {   // (`is CORE::DateTime` too)
+                    ci->nativeParent = parentName; // is Str / is Cool / …
                     // …`is Array[Str]` keeps the element type (S05-grammar/inheritance.t)
                     for (auto& ra : cd->roleArgs)
                         if (ra.first == cd->parent && ra.second.size() == 1 && ra.second[0])

@@ -786,6 +786,26 @@ check %built<exit> == 0 && %built<err>.contains('installed Gate::Built'),
 my %built-gone = installer('--uninstall', 'Gate::Built');
 check %built-gone<exit> == 0, '…and uninstalls cleanly before the M6 choreography';
 
+# The Timezones::ZoneInfo shape: a Build.pm6 that is no class at all, only a
+# `sub MAIN` that writes a resource and exits. zef `require`s the file by its
+# path, which runs its MAIN; `use Build` ran the mainline alone and then
+# died on the undeclared `Build`.
+my $script = path-dist($ws.add('Script-Build'), 'Script::Build');
+$script.add('Build.pm6').spurt(q:to/END/);
+    sub MAIN {
+        $*PROGRAM.parent.add('resources').mkdir;
+        $*PROGRAM.parent.add('resources/stamp').spurt('made by MAIN');
+        exit 0;
+    }
+    END
+$script.add('t').mkdir;
+$script.add('t/01-stamp.rakutest').spurt(
+    Q[print "1..1\n"; print 'resources/stamp'.IO.e ?? "ok 1\n" !! "not ok 1\n";]);
+my %sb = installer-p('Script-Build', :cwd($ws.Str));
+check %sb<exit> == 0 && %sb<err>.contains('building Script::Build: Build.pm6')
+      && !%sb<err>.contains('BUILD FAILED'),
+      'build hook: a Build.pm6 that is only a `sub MAIN` runs it, as zef does';
+
 # ---- issue #49: the plan is a topological order, not discovery reversed ----
 # `rakupp install File::Directory::Tree OpenSSL` names both, and the second
 # one's Build.rakumod imports the first. Breadth-first discovery queued the

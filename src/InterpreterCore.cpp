@@ -20,6 +20,7 @@ Value nilResetForAttrSlot(const Value& v, const Value& self, const std::string& 
 bool liftMatchVarQuiet();   // InterpreterRegex.cpp: a regex block sees its cursor as `$/`…
 void restoreMatchVarQuiet(bool quiet, bool hadSlash);   // …under a quiet match (.grep) too
 bool operatorNameDeclared(Interpreter& I, const std::string& name);   // InterpreterOperators.cpp
+bool endsElementCall(const Expr* rv);   // InterpreterCalls.cpp: `@a.first`, `.head`, `.tail`
 bool bridgedNumericInfix(Interpreter& I, const std::string& op, const Value& l, const Value& r, Value& out);   // …too
 bool objectOperandInfix(Interpreter& I, const std::string& op, const Value& l, const Value& r, Value& out);    // …too
 // The native body a compiled binary attached to this routine (AotModules.h):
@@ -3009,7 +3010,8 @@ Value Interpreter::execForStmt(Stmt* s, bool sink) {
         std::vector<size_t> pick;
         bool picked = false;
         if (!rw && !derefArr)
-            if (auto gv = grepArrayView(fs->list.get()); gv || (gv = sliceArrayView(fs->list.get()))) {
+            if (auto gv = grepArrayView(fs->list.get());
+                gv || (gv = sliceArrayView(fs->list.get())) || (gv = endsArrayView(fs->list.get()))) {
                 derefArr = gv->first; pick = std::move(gv->second); picked = true;
             }
         if (derefArr) { lv.setArr(derefArr); rw = true; }
@@ -3717,6 +3719,10 @@ Value Interpreter::execForStmt(Stmt* s, bool sink) {
             }
             return forResult();
         }
+        // `for @a.first(…) { $_ = … }`: ONE element, still the array's own
+        // container — the one-element view endsArrayView names, below
+        if (aliasVars && listv.t != VT::Array && endsElementCall(fs->list.get()))
+            listv = Value::array(ValueList{listv});
         if (listv.t == VT::Array && listv.arr() && !liveLazy) {
             auto arr = listv.arrS(); // share, don't copy the elements
             // `$_` is rw-aliased to the elements when the source is a mutable
@@ -3741,7 +3747,8 @@ Value Interpreter::execForStmt(Stmt* s, bool sink) {
                 // write back the wrong ones.
                 else if (auto d = valuesArrayAlias(fs->list.get())) { arr = d; rw = true; }
                 else if (auto d = reverseArrayAlias(fs->list.get())) { arr = d; rw = true; reversed = true; }
-                else if (auto gv = grepArrayView(fs->list.get()); gv || (gv = sliceArrayView(fs->list.get()))) {
+                else if (auto gv = grepArrayView(fs->list.get());
+                gv || (gv = sliceArrayView(fs->list.get())) || (gv = endsArrayView(fs->list.get()))) {
                     arr = gv->first; rw = true; pick = std::move(gv->second); picked = true;
                 }
             }
@@ -4839,7 +4846,7 @@ void Interpreter::bindParams(const std::vector<Param>& params, ValueList& args,
             // `method x(Int $a:)` — the invocant is type-checked too
             if (!p.type.empty() && !p.typeCapture && p.type.rfind("::", 0) != 0 && !p.coerce)
                 if (Value* sp = env->find("self"))
-                    if (!typeMatchesInScope(*sp, p.type, env.get()))
+                    if (!typeMatchesInScope(*sp, p.type, p.typeIsSetting ? nullptr : env.get()))
                         throwTypedV("X::TypeCheck::Binding::Parameter",
                             {{"got", *sp}, {"expected", Value::typeObj(p.type)}, {"symbol", Value::str(p.name)}},
                             "Type check failed in binding to parameter '" + paramShownName(p) +
@@ -6673,7 +6680,7 @@ int Interpreter::scoreCandidate(const Value& cand, const ValueList& args,
                 }
                 else {
                     const std::string& t = p->aliasTarget ? *p->aliasTarget
-                                                          : *(p->aliasTarget = &typeAliasTarget(p->type));
+                                                          : *(p->aliasTarget = p->typeIsSetting ? &p->type : &typeAliasTarget(p->type));
                     if (!typeMatchesArg(pos[i], t)) return -1;
                     nominal = 8 + (t == pos[i].typeName() ? 2 : 0);
                 }
@@ -6854,7 +6861,7 @@ int Interpreter::scoreCandidate(const Value& cand, const ValueList& args,
         }
         else if (!typeMatchesArg(pos[i],
                  p->aliasTarget ? *p->aliasTarget
-                                : *(p->aliasTarget = &typeAliasTarget(p->type))) &&
+                                : *(p->aliasTarget = p->typeIsSetting ? &p->type : &typeAliasTarget(p->type))) &&
                  // …the name as the candidate's declaring scope reads it, once the
                  // program has bound a type under another name at all
                  !(g_lexTypeAlias.load(std::memory_order_relaxed) &&
@@ -6928,7 +6935,7 @@ int Interpreter::scoreCandidate(const Value& cand, const ValueList& args,
             // json-eqv declares `(List:D, List:D)` above `(array:D, $b)`, and
             // every shaped uint64 xref table went down the wrong candidate.
             if ((p->aliasTarget ? *p->aliasTarget
-                                : *(p->aliasTarget = &typeAliasTarget(p->type))) == pos[i].typeName() ||
+                                : *(p->aliasTarget = p->typeIsSetting ? &p->type : &typeAliasTarget(p->type))) == pos[i].typeName() ||
                 (p->type == "array" && pos[i].t == VT::Array && !pos[i].isList &&
                  isNativeScalarName(pos[i].ofType())))
                 score += 2;                            // exact type beats a supertype
@@ -7853,7 +7860,8 @@ Value Interpreter::callPlainSub(const Value& codeVal, Callable& c, ValueList& ar
         ~DynRestore() { if (t.dynStack.size() > base) { t.dynStack.resize(base); t.cur = s; t.curStateEnv = st; } }
     } dynRestore{tcx, tcx.dynStack.size() - 1, saved, savedState};
     const int callLine = curLine_;
-    tcx.callFrames.push_back({callLine, &codeVal, saved.get()});
+    // (its own scope too, by which a `samewith` in a block it hands out finds it)
+    tcx.callFrames.push_back({callLine, &codeVal, saved.get(), nullptr, env.get()});
     struct CFGuard { ExecContext& t; Interpreter* self; int line;
         ~CFGuard() { if (!t.callFrames.empty()) t.callFrames.pop_back(); self->curLine_ = line; }
     } cfG{tcx, this, callLine};
@@ -9907,11 +9915,15 @@ static std::string nativeCategory(const std::string& arrayTypeName) {
 // The right side of a bind that can only be a VALUE: a literal, an operator's
 // result, and `once`/`do` around one. (argIsNeverContainer's shapes, which a
 // ternary or a short-circuit operator passes only when both sides are values.)
-static bool bindsBareValue(const Expr* e) {
+static bool bindsBareValue(Interpreter& I, const Expr* e) {
     if (!e) return false;
     if (e->kind == NK::Unary) {
         auto* u = static_cast<const Unary*>(e);
         if (opEq(u->op, "once")) return true;
+        // `my \d = BEGIN DateTime.new: now` is what the expression is
+        if ((opEq(u->op, "BEGIN") || opEq(u->op, "CHECK") || opEq(u->op, "INIT")) && u->operand &&
+            u->operand->kind != NK::BlockExpr)
+            return bindsBareValue(I, u->operand.get());
         if (opEq(u->op, "do") && u->operand) {
             const Expr* x = u->operand.get();
             if (x->kind == NK::BlockExpr) {
@@ -9919,11 +9931,24 @@ static bool bindsBareValue(const Expr* e) {
                 if (be->isSub || be->body.empty() || be->body.back()->kind != NK::ExprStmt) return false;
                 x = static_cast<const ExprStmt*>(be->body.back().get())->e.get();
             }
-            return bindsBareValue(x);
+            return bindsBareValue(I, x);
         }
         return false;
     }
     if (e->kind == NK::Index) return false;   // a subscript names an element container
+    // …and a CONSTRUCTOR answers a fresh object, no container (`my \d =
+    // DateTime.new(0)`). Not any method: `@a.first`, `.head` and `.tail`
+    // hand back the element's own container in Rakudo — and not the
+    // constructors of the containers themselves (`my $p := Proxy.new(…)`).
+    if (e->kind == NK::MethodCall) {
+        auto* mc = static_cast<const MethodCall*>(e);
+        const Expr* ty = mc->inv.get();
+        const bool container = ty && ty->kind == NK::NameTerm &&
+            (opEq(static_cast<const NameTerm*>(ty)->name, "Proxy") ||
+             opEq(static_cast<const NameTerm*>(ty)->name, "Scalar"));
+        return !container && !mc->meta && !mc->methodExpr && !mc->hyper && opEq(mc->method, "new") &&
+               !I.methodMayYieldContainer(mc->method);
+    }
     return argIsNeverContainer(e);
 }
 
@@ -10542,7 +10567,7 @@ Value Interpreter::invokeMethod(const Value& codeVal, const Value& self, ValueLi
                         // it — Red's `(Red::Model:D:)` column accessor over the
                         // `(Mu:D:)` placeholder a specialised model also carries
                         if (!ip.type.empty() && ip.type != "Mu" && ip.type != "Any" && !ip.typeCapture) {
-                            if (!typeMatchesInScope(selfCopy, ip.type, cand.code()->closure.get())) { s = -1; break; }
+                            if (!typeMatchesInScope(selfCopy, ip.type, ip.typeIsSetting ? nullptr : cand.code()->closure.get())) { s = -1; break; }
                             invocantSlot += 2;
                         }
                         break;
@@ -13688,7 +13713,7 @@ Value Interpreter::evalAssign(Assign* a, bool sink) {
     // concrete object"), so a name term that produced a type object counts.
     // (…and so is `my \x = 42`: a sigilless declarator's `=` binds too)
     const bool bareBind = (isBind || sigillessDeclBind(a)) && a->target->kind == NK::VarExpr &&
-                          bindsBareValue(a->value.get());
+                          bindsBareValue(*this, a->value.get());
     // A sigilless name bound to ANOTHER one that holds a bare value
     // (`my \x = 5; my \y = x`) holds that value, immutable — but one holding a
     // container shares it (a cell, or a slot's Proxy), and an Array or Hash is
@@ -16071,6 +16096,23 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
                     }
                 }
             }
+        }
+        // …and so do `my \x = @a.first`, `$x := @a.tail`: ONE of the array's own
+        // elements (endsArrayView), whose container Rakudo's methods hand back
+        if (bindsSlot && slotTarget && a->value->kind == NK::MethodCall) {
+            auto* mc = static_cast<MethodCall*>(a->value.get());
+            if (mc->method == "first" || mc->args.empty())
+                if (auto view = endsArrayView(mc); view && view->second.size() == 1) {
+                    Expr* arrE = mc->inv.get();
+                    if (arrE->kind == NK::MethodCall) arrE = static_cast<MethodCall*>(arrE)->inv.get();   // (grep's)
+                    Value* av = arrE->kind == NK::VarExpr ? tctx().cur->find(static_cast<VarExpr*>(arrE)->name) : nullptr;
+                    const size_t at = view->second[0];
+                    Value& el = (*view->first)[at];
+                    Value proxy = el.t == VT::Hash && el.hashKind == "Proxy" && el.hash()
+                                ? el : makeArraySlotProxy(view->first, at, av ? nativeElemTypeOf(*av) : std::string());
+                    *lvalue(a->target.get()) = proxy;
+                    return sink ? Value::any() : deproxy(proxy);
+                }
         }
         // `my $v := $p.value` binds the Pair's VALUE CONTAINER, not a copy of
         // what it holds — the same alias `$p.value = …` already writes through.
@@ -22711,6 +22753,9 @@ Value Interpreter::evalBinary(Binary* b) {
         // operand really is one.
         if (whateverArrivedAsValue(b, l, r)) { Interpreter::valueSmartmatch_ = true; return applyBinOp(op, l, r); }
         if (RAKUPP_UNLIKELY(uninitOperand(l) || uninitOperand(r))) uninitBinaryOperands(b, op, l, r);
+        // a DateTime against a number, or one of a class DERIVING DateTime (dateTimeArith)
+        if (l.t == VT::Object || r.t == VT::Object || l.hashKind == "DateTime" || r.hashKind == "DateTime")
+            if (auto v = dateTimeArith(op, l, r)) return *v;
         // DateTime/Date arithmetic & comparison work on the absolute instant (posix),
         // not the hash's numeric coercion (which would be 0).
         {
@@ -24138,8 +24183,9 @@ static Value slipOf(const Value& v) {
         }
         return out;
     }
-    // a SCALAR slips too: `|1` is a one-element Slip, not a bare Int (Rakudo)
-    if (v.t != VT::Hash && v.t != VT::Code) {
+    // a SCALAR slips too: `|1` is a one-element Slip, not a bare Int (Rakudo),
+    // and so does an engine object kept in a hash (`|DateTime.new(0)`)
+    if (v.t != VT::Code && (v.t != VT::Hash || opaqueHashKind(v.hashKind))) {
         Value out = Value::array({v}); out.isList = true; out.s = "Slip";
         return out;
     }
@@ -24922,7 +24968,25 @@ Value Interpreter::evalUnary(Unary* u) {
             if (name.size() > el && name.compare(name.size() - el, el, ext) == 0 &&
                 u->operand->kind != NK::SymbolicRef) {
                 std::string mod = name.substr(0, name.size() - el);
+                // `require "/abs/Build.pm6"`, `require "./Build.pm6"`: a path
+                // that spells no module name goes by its last segment
+                const bool pathOnly = mod.find("./") != std::string::npos || mod.find('\\') != std::string::npos ||
+                                      mod.find(':') != std::string::npos || (!mod.empty() && mod[0] == '/');
+                if (pathOnly) mod = mod.substr(mod.find_last_of("/\\") + 1);
                 for (size_t k; (k = mod.find('/')) != std::string::npos; ) mod.replace(k, 1, "::");
+                // …and the FILE it names is what loads, its `sub MAIN` with it.
+                // A path no search could turn into anything else is an error
+                // when the file is not there, as in Rakudo — it loaded nothing,
+                // silently, and zef's `require '/dist/Build.pm6'` then reported
+                // the missing class instead.
+                const std::string file = requireFilePath(name);
+                if (!file.empty()) pinnedFile_ = PinnedFile{mod, file};
+                else if (pathOnly) {
+                    std::string where = "Could not find " + name + " in:";
+                    for (auto& b : libPaths_) where += "\n    " + b;
+                    for (auto& r : rakuRepoPrefixes()) where += "\n    " + r;
+                    throwTyped("X::NotFoundInRepository", {{"file", name}}, where);   // (Rakudo's type)
+                }
                 std::unordered_set<std::string> before;
                 for (auto& kv : classes_) before.insert(kv.first);
                 try { loadModule(mod, {}, /*doImport=*/true, /*quiet=*/true, "", /*requireForm=*/true); }
@@ -26346,7 +26410,8 @@ Value Interpreter::evalCall(Call* c) {
         // postfix lands in @a: apply it to the kept elements and write each back
         // into its slot (S32-list/grep.t)
         if (c->args.size() == 1)   // …and so does a slice (`@a[^2]».++`)
-            if (auto kept = grepArrayView(c->args[0].get()); kept || (kept = sliceArrayView(c->args[0].get()))) {
+            if (auto kept = grepArrayView(c->args[0].get());
+                kept || (kept = sliceArrayView(c->args[0].get())) || (kept = endsArrayView(c->args[0].get()))) {
                 Value tmp = Value::array();
                 for (size_t k : kept->second) tmp.arr()->push_back((*kept->first)[k]);
                 Value r = hyperPostfixApply(c->name.substr(15, c->name.size() - 16), tmp);
@@ -29175,6 +29240,13 @@ struct RatLitParts {
                     return eval(&inner);
                 }
             }
+            // `CORE::DateTime` — the SETTING's type, whatever a scope has bound to
+            // the bare name since: DateTime::Timezones declares its own
+            // `DateTime` and reaches the core one as `CORE::DateTime.new(…)`.
+            // Not looked up again by its short name, which is the shadow.
+            if (n.size() > 6 && n.compare(0, 6, "CORE::") == 0 && !classes_.count(n) &&
+                isKnownTypeName(n.substr(6)))
+                return Value::typeObj(n.substr(6));
             // `OUR::A40` — a package in the CURRENT package's stash
             if (n.size() > 5 && n.compare(0, 5, "OUR::") == 0 && !classes_.count(n)) {
                 NameTerm inner(tctx().pkgPrefix + n.substr(5)); inner.line = e->line;
@@ -30879,8 +30951,12 @@ Value Interpreter::evalVarExpr(Expr* e) {
     if (ve->name == "$*INIT-INSTANT") return initInstantVal();
     if (ve->name == "&?BLOCK" && tctx().curBlockVal) return *tctx().curBlockVal;
     if (ve->name == "&?BLOCK") return inlineBlockValue();   // `with 5 { … }`: no Block of its own
-    if (ve->name == "&?ROUTINE" && tctx().curRoutineVal) return *tctx().curRoutineVal;
-    if (ve->name == "&?ROUTINE" && g_rxRoutine) return *g_rxRoutine;   // a regex's code block
+    if (ve->name == "&?ROUTINE") {
+        // a named regex's code block runs out of its body and sees the regex
+        if (g_rxRoutine && tctx().curRoutineVal == g_rxRoutine) return *g_rxRoutine;
+        if (const Value* r = lexicalRoutineVal()) return *r;   // the LEXICAL routine
+        if (g_rxRoutine) return *g_rxRoutine;
+    }
     if (ve->name == "$*TMPDIR") { Value p = Value::str(tmpDirPath()); p.hashKind = "IO"; return p; }
     if (ve->name == "$*HOME") return dynVar("$*HOME");
     }
@@ -31887,7 +31963,10 @@ Value Interpreter::evalMethodCallExpr(Expr* e) {
                 forceLazy(inv);
                 return deep(inv);
             }
-            Value cres = callCallable(mv, ca);
+            // (a sub takes the invocant's container: `$d.&up` with `sub up($s is rw)`)
+            Value cres = mv.t == VT::Code
+                ? callInvocantFirst(mv, inv, ValueList(ca.begin() + 1, ca.end()), mc->inv.get(), &mc->args)
+                : callCallable(mv, ca);
             // `.=` still mutates through an INDIRECT call: `$auth .= &url-decode`
             // is `$auth = url-decode($auth)` (HTTP::Tiny decodes the userinfo
             // this way), and the plain-method path below never sees it.
@@ -32437,11 +32516,7 @@ Value Interpreter::evalMethodCallExpr(Expr* e) {
     // foo($x, ...). Used a lot for "method-ish" helpers, e.g. `@a.sort: { .&naturally }`.
     if (mc->method.size() > 1 && mc->method[0] == '&' && !mc->meta) {
         Value* f = tctx().cur->find(mc->method);
-        if (f && f->t == VT::Code) {
-            ValueList ca; ca.reserve(args.size() + 1);
-            ca.push_back(inv); for (auto& a : args) ca.push_back(a);
-            return callCallable(*f, ca);
-        }
+        if (f && f->t == VT::Code) return callInvocantFirst(*f, inv, args, mc->inv.get(), &mc->args);
     }
     // Autovivification: `%h{k}.push(...)` on an undefined element creates an
     // Array in place (Raku semantics), so the mutation persists in the container.
