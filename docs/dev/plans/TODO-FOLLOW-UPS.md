@@ -426,26 +426,21 @@ moves to [TODO.md](TODO.md).
   src/InterpreterRegex.cpp). Add a t/js case; the gate needs RAKUPP_JS=node.
   `--exe` declines these operators and bundles, so only JS copies.
 
-- [ ] **`--exe`: `next` and `return` written as an operand** (found 2026-10-27
-  while fixing issue #195, 48b76d56, in the interpreter):
+- [ ] **`--exe`: a loop body's LEAVE does not run on `next`** (found
+  2026-10-27 while fixing issue #195, aa0f3618; the statement form too, and on
+  4083b26b):
 
   ```raku
-  sub f($i) { $i %% 2 ?? $i !! Nil }
-  sub h($i) { my $x = f($i) // return 0; $x }   # "prefix operator 'return' — not natively compilable"
-  for ^100_000 -> $i { my $x = f($i) // next }  # rtThrowNext(): ~3 µs a skip
+  my @o;
+  for ^3 -> $i { LEAVE { @o.push: "L$i" }; next if $i == 1; @o.push: "B$i" }
+  say @o;   # interpreted and Rakudo [B0 L0 L1 B2 L2], --exe [B0 L0 B2 L2]
   ```
 
-  Compiled, `next without $x` costs 0.1 µs a skip, and interpreted the
-  operand form now costs 0.6: the native backend is the slower one here.
-  A `return` as an operand sends the whole program to `--aot`, which is
-  why the issue's `--exe` row matched its interpreted one; in a module it
-  keeps the routine interpreted (the AOT report's "`return` used inside an
-  expression", delegateStmt's ctlOps). A `next`, `last` or `redo` as an
-  operand compiles to rtThrowNext/rtThrowLast/rtThrowRedo, an exception
-  the native loop body catches (src/Codegen.cpp, the Unary arm). Lift a
-  statement of the shapes ctlOnStmtPath accepts — `T = A // CTL`, `A or
-  CTL`, a ternary branch — into a test of A's value followed by the native
-  `continue`, `break` or `return`, then the store. Gate in t/exe/run.raku.
+  The iteration a `next` leaves runs no LEAVE, whether the `next` is a
+  statement, a modifier or an operand. Look at how loopBody (src/Codegen.cpp)
+  emits a body that holds a LEAVE: a C++ `continue` must still leave the
+  scope the phaser's guard lives in. Done when the line above answers as
+  interpreted, under `-O` too, and `last` and `redo` are checked the same way.
 
 ## Performance
 
@@ -519,22 +514,6 @@ moves to [TODO.md](TODO.md).
   the first four run within 2x of `my $x = f($i) // next`.
 
 ## Gates
-
-- [ ] **t/aot/run.raku is red, 13 of 16, from stale expectations** (found
-  2026-10-20 gating 07456d29; all three date from 48223469, 2026-10-16, and
-  went unnoticed because the gate is not part of t/run.raku):
-  - bundle-fallback and subscripts: line ~228 detects bundling with
-    `'bundling the whole program'`, but src/main.cpp ~1900 now says "…
-    bundling the program with the interpreter instead, its routines compiled
-    natively where they can be". Key the check on something stable (a
-    marker, or RAKUPP_AOT_REPORT), not prose.
-  - dynamic-vars: five subs in t/aot/cases/dynamic-vars/lib marked `#aot:
-    native` are now interpreted ("a dynamic variable declared inside a
-    routine", Codegen.cpp ~1456). Re-annotate them, or implement TODO.md's
-    native `my $*X` if it exists by now.
-
-  Baseline on a clean worktree build: the main checkout's binary and tree
-  drift apart and fail 0/16.
 
 - [ ] **t/jit/run.raku: 5 of its 21 tier-up cases enter no kernel** (found
   2026-10-22 gating the FLOAT-HEAVY-ISSUES work; on v5.5.0 too, on macOS
