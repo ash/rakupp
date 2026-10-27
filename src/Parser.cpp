@@ -55,6 +55,7 @@ static bool rxUsesSym(const std::string& pat) {
 }
 
 bool isKnownTypeName(const std::string& n); // InterpreterModules.cpp
+bool isNativeTypeName(const std::string& n); // …and so is this
 bool endsElementCall(const Expr* rv);        // InterpreterCalls.cpp
 
 bool isPragmaName(const std::string& n);  // Interpreter.cpp — `use` names with no file behind them
@@ -235,6 +236,22 @@ void Parser::rejectNegativeIndex(size_t from) const {
     throw ParseError("Unsupported use of " + old + ". In Raku please use: " + repl,
                      num.line, "X::Obsolete", {{"old", old}, {"replacement", repl}});
 }
+// Rakudo's X::Syntax::BlockGobbled, in a group with the X::Syntax::Missing for
+// the block that then is not there. `fn` is the routine that took it, "" for
+// an expression; a name that looks like a type says it may be one.
+static ParseError blockGobbledError(const std::string& fn, int line) {
+    const bool typeLike = fn.find("::") != std::string::npos ||
+        std::adjacent_find(fn.begin(), fn.end(), [](char a, char b) {
+            return ascii::isupper((unsigned char)a) && ascii::islower((unsigned char)b); }) != fn.end();
+    const std::string sm = (fn.empty() ? std::string("Expression") : "Function '" + fn + "'") +
+        " needs parens to avoid gobbling block" +
+        (typeLike ? " (or perhaps it's a class that's not declared or available in this scope?)" : "");
+    const std::string pw = "block (apparently claimed by " + (fn.empty() ? std::string("expression") : "'" + fn + "'") + ")";
+    return ParseError(sm + "\nMissing " + pw, line, "X::Comp::Group",
+                      {{"sorrow", "X::Syntax::BlockGobbled"}, {"sorrow-msg", sm},
+                       {"sorrow-what", fn.empty() ? std::string("expression") : fn},
+                       {"panic", "X::Syntax::Missing"}, {"panic-msg", "Missing " + pw}, {"panic-what", pw}});
+}
 bool Parser::matchOp(const std::string& s) { if (isOp(s)) { advance(); return true; } return false; }
 bool Parser::matchKind(Tok k) { if (cur().kind == k) { advance(); return true; } return false; }
 void Parser::expectKind(Tok k, const char* what) {
@@ -287,19 +304,9 @@ void Parser::expectKind(Tok k, const char* what) {
                     else if (toks_[j].kind == Tok::LBrace && --d == 0) break;
                     if (j == 0) break;
                 }
-                if (d == 0 && j > 0) {
-                    std::string fn;
-                    if (toks_[j - 1].kind == Tok::Ident && toks_[j].spaceBefore) fn = toks_[j - 1].text;
-                    std::string sm = fn.empty() ? std::string("Expression needs parens to avoid gobbling block")
-                        : "Function '" + fn + "' needs parens to avoid gobbling block (or perhaps it's a class "
-                          "that's not declared or available in this scope?)";
-                    std::string pw = "block (apparently claimed by " + (fn.empty() ? std::string("expression") : "'" + fn + "'") + ")";
-                    throw ParseError(sm + "\nMissing " + pw, cur().line, "X::Comp::Group",
-                                     {{"sorrow", "X::Syntax::BlockGobbled"}, {"sorrow-msg", sm},
-                                      {"sorrow-what", fn.empty() ? std::string("expression") : fn},
-                                      {"panic", "X::Syntax::Missing"}, {"panic-msg", "Missing " + pw},
-                                      {"panic-what", pw}});
-                }
+                if (d == 0 && j > 0)
+                    throw blockGobbledError(toks_[j - 1].kind == Tok::Ident && toks_[j].spaceBefore
+                                                ? toks_[j - 1].text : std::string(), cur().line);
             }
             ParseError e("Missing block", cur().line, "X::Syntax::Missing", {{"what", "block"}});
             e.atEof = cur().kind == Tok::End;   // the REPL still asks for more
@@ -1009,9 +1016,10 @@ void Parser::scanOpsIn(const std::string& src, const std::string& srcPath) {
     // to nothing. The name has to be known while this file is parsed, the same
     // reason the operators just below are read off the source; a declaration is
     // `sub NAME` with NAME word-infix-shaped, optionally behind multi/proto/only.
-    Lexer::scanDeclaredSubNames(src, [&](const std::string& n, size_t, size_t) {
+    Lexer::scanDeclaredSubNames(src, [&](const std::string& n, size_t at, size_t) {
         if (isWordInfixName(n)) wordInfixSubs_.insert(n);
-        if (!n.empty() && ascii::isupper((unsigned char)n[0])) capSubNames_.insert(n); // `Foo { … }` (#198)
+        // `Foo { … }` (#198) — a `sub`, not the `class Generic` the scan reports too
+        if (!n.empty() && ascii::isupper((unsigned char)n[0]) && src.compare(at, 3, "sub") == 0) capSubNames_.insert(n);
     });
     // …and the ones that collide with a QUOTE form (`sub tr`, `sub q`). Those are
     // decided in the lexer, which ran before this file's `use` was reached, so the
@@ -1419,28 +1427,16 @@ bool Parser::startsListopArg(const Token& t, const std::string& lhsName) const {
             // `foo [1,2]` (spaced) is an array-literal argument; TIGHT `foo[10]`
             // indexes the call's RESULT (Rakudo semantics: (foo())[10])
             return t.spaceBefore;
-        case Tok::LBrace: {
-            if (!stmtCond_) return true;
-            // In a statement condition (`when foo { }`, `if foo { }`) a brace is
-            // normally the control block — EXCEPT when the balanced group is
-            // followed by a comma, which marks a block argument to a listop:
-            // `for map { … }, ^5 { }`. Scan the token stream to check.
-            size_t i = &t - &toks_[0]; // index of the LBrace in the stream
-            int d = 0;
-            for (size_t k = i; k < toks_.size(); k++) {
-                if (toks_[k].kind == Tok::LBrace) d++;
-                else if (toks_[k].kind == Tok::RBrace) {
-                    if (--d == 0) return k + 1 < toks_.size() && toks_[k + 1].kind == Tok::Comma;
-                }
-                else if (toks_[k].kind == Tok::End) break;
-            }
-            return false;
-        }
+        case Tok::LBrace:
+            // …in a statement condition too (`if foo { 1 } { … }`): Rakudo's
+            // xblock lets the listop take it, and parseStmtCond then wants the
+            // statement's own block after it
+            return true;
         case Tok::Op:
             // a pointy block is a listop argument (`get -> { content … }` in a Cro
-            // route block) — but NOT in a statement condition, where `->` binds the
-            // statement's own block (`for @a -> $x { }`)
-            if (t.text == "->" || t.text == "<->") return !stmtCond_;
+            // route block), in a statement condition as well (`for foo -> $x { }`
+            // is Rakudo's "needs parens to avoid gobbling block")
+            if (t.text == "->" || t.text == "<->") return true;
             // A word list is an argument only when it is SPACED off the name:
             // `is < foo bar >, exp` passes the list, while TIGHT `config<name>`
             // subscripts the call's result — `config()<name>`, which is how
@@ -1653,6 +1649,21 @@ void markFatalExempt(Expr* e) {
 }
 
 ExprPtr Parser::parseExpression() { return parseExpr(0); }
+// A statement's condition (`if`, `for`, `given`, `whenever`, …), Rakudo's xblock:
+// a listop in it takes a block after it as its argument, as anywhere (`if foo
+// { 1 } { … }`), so the statement's own block must come next; when it does not,
+// the program is refused (`if bar { say "t" }`, `for lines { .say }`).
+ExprPtr Parser::parseStmtCond(int bp) {
+    const bool sv = stmtCond_;
+    std::string outer = std::move(condBorg_);
+    stmtCond_ = true; condBorg_.clear();
+    ExprPtr e = parseExpr(bp);
+    stmtCond_ = sv;
+    std::swap(outer, condBorg_);
+    if (!outer.empty() && !isKind(Tok::LBrace) && !isOp("->") && !isOp("<->"))
+        throw blockGobbledError(outer, toks_[pos_ - 1].line);
+    return e;
+}
 // The contents of an already-opened `(` up to its `)`, where a `;` separates
 // SEGMENTS: `[Z](1,2,3;4,5,6)` is a reduce over a list of lists, exactly as the
 // same spelling means in a subscript or a `:shape`. A lone segment is the
@@ -9226,7 +9237,7 @@ ExprPtr Parser::parsePrimary() {
                                      "X::Comp::WheneverOutOfScope", {});
                 advance();
                 auto call = std::make_unique<Call>(); call->name = "whenever";
-                call->args.push_back(parseExpr(BP_COMMA + 1)); // the supply/promise expression
+                call->args.push_back(parseStmtCond(BP_COMMA + 1)); // the supply/promise expression
                 auto be = std::make_unique<BlockExpr>();
                 if (isOp("->") || isOp("<->")) { // whenever $s -> $v { } / <-> $v { }
                     bool doubly = isOp("<->");
@@ -10016,17 +10027,11 @@ ExprPtr Parser::parsePrimary() {
             bool listopOk = startsListopArg(cur(), name);
             // `now` and `time` are TERMS, never listops: `now +300` is now + 300
             if (listopOk && (name == "now" || name == "time") && cur().kind != Tok::LParen) listopOk = false;
-            // Higher-order list builtins accept a pointy-block first arg without parens:
-            // `map -> $v {…}, @list` (a bare `{…}` already works via startsListopArg). Gated
-            // to these names so a general `bareword ->` isn't misread as a listop call.
-            if (!listopOk && (cur().text == "->" || cur().text == "<->")) {
-                static const std::set<std::string> blockListops = {
-                    "map", "grep", "first", "sort", "reduce", "produce",
-                    "classify", "categorize", "grep-index", "first-index",
-                    "deepmap", "duckmap", "nodemap",
-                };
-                if (blockListops.count(name)) listopOk = true;
-            }
+            // …and so, before a block or a pointy, are `rand`, `i` and a TYPE: the block is
+            // the statement's (`if rand { … }`, `for buf8 -> \bt { }`), as in Rakudo
+            if (listopOk && (isKind(Tok::LBrace) || isOp("->") || isOp("<->")) && (name == "rand" || name == "i" ||
+                isKnownTypeName(name) || declTypeNames_.count(name) || declClassDecls_.count(name) ||
+                (isNativeTypeName(name) && !declaredSubNames_.count(name)))) listopOk = false;   // `for uint64 -> \T`
             // callsame/nextsame are nullary redispatchers — they reuse the current
             // args and take none of their own, so `"[" ~ callsame ~ "]"` must not read
             // the trailing `~ "]"` (prefix ~) as an argument. (callwith/nextwith/
@@ -10129,6 +10134,10 @@ ExprPtr Parser::parsePrimary() {
             if (listopOk) {
                 auto c = std::make_unique<Call>();
                 c->name = name;
+                // a condition's listop that took a block, named once its arguments end, so the
+                // innermost one is (Rakudo's $*BORG<name>): `if bar { foo { 1 } }` blames foo
+                struct BorgNote { std::string& into; const std::string& n; bool on; ~BorgNote() { if (on && into.empty()) into = n; } }
+                    borgNote{condBorg_, name, stmtCond_ && (isKind(Tok::LBrace) || isOp("->") || isOp("<->"))};
                 // parse the WHOLE argument expression including the list-infix tier,
                 // so `flat @a Z @b` is flat((@a Z @b)); a bare top-level comma list
                 // spreads back into individual arguments below.
@@ -15453,8 +15462,7 @@ StmtPtr Parser::parseClass(bool isRole, bool isGrammar, bool isPackage, bool isU
 StmtPtr Parser::parseIf(bool isUnless) {
     auto s = std::make_unique<IfStmt>();
     s->isUnless = isUnless;
-    ExprPtr cond;
-    { bool sv = stmtCond_; stmtCond_ = true; cond = parseExpression(); stmtCond_ = sv; }
+    ExprPtr cond = parseStmtCond();
     markFatalExempt(cond.get());
     // The binder after `->` is the FULL pointy-signature grammar, the same one a
     // block's signature uses — a $/@/% variable, a SIGILLESS `\name`
@@ -15491,8 +15499,7 @@ StmtPtr Parser::parseIf(bool isUnless) {
                          cur().line, "X::Syntax::UnlessElse", {{"keyword", cur().text}});
     while (isIdent("elsif")) {
         advance();
-        ExprPtr c;
-        { bool sv = stmtCond_; stmtCond_ = true; c = parseExpression(); stmtCond_ = sv; }
+        ExprPtr c = parseStmtCond();
         markFatalExempt(c.get());
         std::string bv;
         std::vector<Param> bps;
@@ -15531,7 +15538,7 @@ StmtPtr Parser::parseIf(bool isUnless) {
 StmtPtr Parser::parseWhile(bool isUntil) {
     auto s = std::make_unique<WhileStmt>();
     s->isUntil = isUntil;
-    { bool sv = stmtCond_; stmtCond_ = true; s->cond = parseExpression(); stmtCond_ = sv; }
+    s->cond = parseStmtCond();
     if (matchOp("->")) {
         // The binder is the full pointy-signature grammar, as on a block: a plain
         // name, a sigilless `\r` (DBIish's StatementHandle is written that way), or
@@ -15601,7 +15608,7 @@ StmtPtr Parser::parseFor() {
         }
     }
     auto s = std::make_unique<ForStmt>();
-    { bool sv = stmtCond_; stmtCond_ = true; s->list = parseExpression(); stmtCond_ = sv; }
+    s->list = parseStmtCond();
     // `for (1..3)->$n`: an arrow glued to the term is Perl's method arrow
     if (isOp("->") && !cur().spaceBefore && pos_ > 0 && termEndsHere(toks_[pos_ - 1]))
         throw ParseError("Unsupported use of -> as postfix. In Raku please use: "
@@ -17116,7 +17123,7 @@ StmtPtr Parser::parseStatementImpl() {
             advance();
             auto g = std::make_unique<GivenStmt>();
             g->defGuard = isWith ? 1 : isWithout ? 2 : 0;
-            { bool sv = stmtCond_; stmtCond_ = true; g->topic = parseExpression(); stmtCond_ = sv; }
+            g->topic = parseStmtCond();
             if (isOp("->") || isOp("<->")) { // `given X -> $y is copy { }` / `-> ($a, $b)`
                 advance();
                 auto ps = parsePointyParams();
@@ -17169,7 +17176,7 @@ StmtPtr Parser::parseStatementImpl() {
         if (kw == "when") {
             advance();
             auto w = std::make_unique<WhenStmt>();
-            { bool sv = stmtCond_; stmtCond_ = true; w->cond = parseExpression(); stmtCond_ = sv; }
+            w->cond = parseStmtCond();
             noteGobbleSite(w->cond.get());
             w->body = parseBlock();
             return w;
@@ -17186,7 +17193,7 @@ StmtPtr Parser::parseStatementImpl() {
             auto r = std::make_unique<RepeatStmt>();
             if (isIdent("while") || isIdent("until")) {
                 r->isUntil = (cur().text == "until"); advance();
-                r->cond = parseExpression();
+                r->cond = parseStmtCond();
                 if (matchOp("->")) { if (isKind(Tok::Var)) r->var = advance().text; } // pointy var
                 const size_t bodyAt = pos_;
                 r->body = parseBlock();
