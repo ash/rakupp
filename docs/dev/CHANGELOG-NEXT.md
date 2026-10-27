@@ -16,7 +16,7 @@ e24f05f1 (NUM-UNBOX-PLAN P0); 8644846a; 74806a6d; 93f9a4af and c7a12943;
 85d56001; 960e8aed; 7fcca8a8; 273863ac; 90bc6e23; 84add3b1; 08a17d21;
 12af490d (RACE-DETECTOR-PLAN P0-P4); 42f79e98, b9108e1d, 0b9950b1, 500c29e2,
 1b182b8e, 828e52d5, 4d1c7cc3, 80ea9030, d972abe7, 166334a9 and 29b10450;
-5d31d4a2 and aff5032b (issue #202).*
+5d31d4a2 and aff5032b (issue #202); cb5b360a.*
 
 ---
 
@@ -526,8 +526,37 @@ does not.
   (`M::<$x>:delete` was a parse error).
   t/regression/export-tags-and-package-stashes.raku agrees with Rakudo
   2026.09.
+- **A file required by its path is that file, and its `sub MAIN` runs**
+  (cb5b360a). `require "/abs/Build.pm6"` loaded nothing and said nothing:
+  the path was looked up as a module name. `require "path"` and `require
+  Stub:file(path)` now load the file named (an absolute path as it stands, a
+  relative one under each search-path directory) and run its `sub MAIN` on
+  @*ARGS after its mainline, once; a `use` of it still does not, and a
+  missing absolute path is X::NotFoundInRepository. `rakupp install` runs a
+  `Build.*` hook with zef's own command, which requires it by path, so a hook
+  that is only a `sub MAIN` script runs (Timezones::ZoneInfo's died with
+  "Undeclared name 'Build'").
+- **`:4m, :5s` is two pairs** (cb5b360a): after the digits of a `:4m` pair
+  the lexer opened an `m,…,` match (`rx,` too), "Malformed radix number".
+- **`samewith` works in a routine that is not a multi** (cb5b360a), calling
+  the routine it is written in again with the new arguments, as Rakudo
+  does; it died with X::NoDispatcher.
+  Timezones::ZoneInfo 0.5.0 now builds, passes its suite and installs. The
+  three t/regression files (require-path-loads-file-runs-main,
+  colonpair-digits-regex-key, samewith-only-routine) agree with Rakudo
+  2026.09.
 
 ### Left open
+
+- `rakupp install DateTime::Timezones` installs its dependency now
+  (cb5b360a), but not the dist itself, which extends the core DateTime in
+  place: `class DateTime is DateTime is export` (a subclass that shadows the
+  core class) is refused as inheriting from itself, `CORE::DateTime` names no
+  type a method can be called on, `.wrap` on a core method
+  (`DateTime.^find_method('in-timezone').wrap(…)`) is silently ignored, and a
+  `^add_fallback` handler cannot replace an `is rw` invocant. Separately,
+  `&?ROUTINE` in a block another routine runs names that routine, not the one
+  it is written in.
 
 - A store into an array element can still land in a buffer a sibling worker's
   growth has just moved, in a program that races the two (90bc6e23): an
