@@ -51,6 +51,7 @@
 #endif
 
 #include <atomic>
+#include <cctype>
 #include <chrono>
 #include <condition_variable>
 #include <cstdint>
@@ -645,8 +646,23 @@ std::vector<std::string> encodeJupyter(const std::vector<std::string>& idents,
 // Loaded at session start: how a cell's value is rendered. Same fallback
 // chain the MCP server uses — .gist, then .raku, then an honest placeholder —
 // because a value whose gist dies must not take the cell's result with it.
+// The other two serve the cell magics that need the engine's own I/O:
+// `%% bash` prints its process's output as the cell's, while it runs, and
+// says how the process ended ('' when it succeeded); `%% run` reads its file
+// the way a cell would, from the session's $*CWD.
 const char* kPrelude = R"RKJUP(
 sub rk-jup-gist($v) { (try $v.gist) // ((try $v.raku) // '(unprintable value)') }
+sub rk-jup-bash(Str $script) {
+    my $p = Proc::Async.new('bash', '-c', $script);
+    $p.stdout.tap({ print $_ });
+    $p.stderr.tap({ $*ERR.print($_) });
+    my $r = await $p.start;
+    $r.signal              ?? "bash was killed by signal {$r.signal}"
+      !! $r.exitcode == -1 ?? 'bash could not be started: is it installed, and on PATH?'
+      !! $r.exitcode       ?? "bash exited with status {$r.exitcode}"
+      !! ''
+}
+sub rk-jup-slurp(Str $file) { $file.IO.slurp }
 )RKJUP";
 
 using OutputSink = void (*)(void* ud, const char* text, size_t len, int isErr);
@@ -684,20 +700,15 @@ public:
 
     // The REPL's rendering of a value, through the prelude's gist chain.
     std::string gist(RkValue v) {
-        RkValue rooted = rk_root(c_, v);
-        RkValue g = rk_call(c_, "rk-jup-gist", &rooted, 1);
         std::string out;
-        if (const char* e = rk_error(c_)) {
-            out = e;
-            rk_clear_error(c_);
-        }
-        else {
-            size_t len = 0;
-            const char* s = rk_str_get(c_, g, &len);
-            out.assign(s ? s : "", len);
-        }
-        rk_unroot(c_, rooted);
+        call("rk-jup-gist", v, out);
         return out;
+    }
+
+    // One of the prelude's subs, called with a string: false, with the
+    // error in `out`, when it died.
+    bool callStr(const char* sub, const std::string& arg, std::string& out) {
+        return call(sub, rk_str(c_, arg.data(), arg.size()), out);
     }
 
     // What language_info reports: the Raku the engine implements, not the
@@ -712,9 +723,210 @@ public:
     }
 
 private:
+    bool call(const char* sub, RkValue arg, std::string& out) {
+        RkValue rooted = rk_root(c_, arg);
+        RkValue r = rk_call(c_, sub, &rooted, 1);
+        bool ok = true;
+        if (const char* e = rk_error(c_)) {
+            out = e;
+            rk_clear_error(c_);
+            ok = false;
+        }
+        else {
+            size_t len = 0;
+            const char* s = rk_str_get(c_, r, &len);
+            out.assign(s ? s : "", len);
+        }
+        rk_unroot(c_, rooted);
+        return ok;
+    }
+
     RkInterp rk_ = nullptr;
     RkCtx c_ = nullptr;
 };
+
+// ---------------------------------------------------------------------------
+// Cell magics: a first line of `#%` or `%%` that says what the cell is.
+//
+// The spelling is Jupyter::Kernel's (github.com/bduggan/raku-jupyter-kernel),
+// so a notebook written for that kernel runs here unchanged:
+//
+//   #% html           the cell's value is HTML — or markdown (md), latex, js
+//   #% latex(ENV)     … LaTeX, wrapped in \begin{ENV} … \end{ENV}
+//   #% > html         what the cell PRINTS is HTML; its value stays text
+//   #% latex > html   both: the value's type, then the printed output's
+//   #% javascript     the cell is not Raku: it is JavaScript for the frontend
+//   %% bash           the cell is a bash script, and its output the cell's
+//   %% run FILE       FILE's code, then the cell's own, as one cell
+//   %% always [prepend|append|show|clear] CODE
+//                     CODE before (or after) every Raku cell from now on
+//
+// `#%` begins a comment in Raku, so a `#%` line that is not a magic here
+// stays in the cell and the cell runs. `%%` cannot begin a statement, so a
+// `%%` line that is not one is an error naming the ones there are — rather
+// than a parse error about an infix operator the user never wrote.
+// ---------------------------------------------------------------------------
+
+struct MimeFilter {
+    std::string mime = "text/plain";
+    std::string enclosure;   // latex(ENV)
+    bool on() const { return mime != "text/plain"; }
+    std::string apply(const std::string& s) const {
+        if (enclosure.empty()) return s;
+        return "\\begin{" + enclosure + "}\n" + s + "\n\\end{" + enclosure + "}\n";
+    }
+};
+
+struct Magic {
+    enum class K { None, Filter, Javascript, Bash, Run, Always, Unknown };
+    K kind = K::None;
+    MimeFilter out, stdoutF;   // Filter: the value's type, the printed output's
+    std::string arg;           // Run: the file. Always: the subcommand
+    std::string body;          // the cell without its magic line; Always: CODE
+    std::string error;         // Unknown: what the cell answers
+};
+
+std::string trim(const std::string& s) {
+    size_t a = s.find_first_not_of(" \t\r\n");
+    if (a == std::string::npos) return "";
+    size_t b = s.find_last_not_of(" \t\r\n");
+    return s.substr(a, b - a + 1);
+}
+
+void skipBlanks(const std::string& s, size_t& p) {
+    while (p < s.size() && (s[p] == ' ' || s[p] == '\t')) p++;
+}
+
+// The word at p, letters only, and p moved past it.
+std::string wordAt(const std::string& s, size_t& p) {
+    size_t q = p;
+    while (q < s.size() && std::isalpha((unsigned char)s[q])) q++;
+    std::string w = s.substr(p, q - p);
+    p = q;
+    return w;
+}
+
+// One side of a filter: html, markdown or md, latex with an optional (ENV),
+// javascript or js.
+bool parseMime(const std::string& s, size_t& p, MimeFilter& f) {
+    size_t q = p;
+    std::string w = wordAt(s, q);
+    if (w == "html") f.mime = "text/html";
+    else if (w == "markdown" || w == "md") f.mime = "text/markdown";
+    else if (w == "javascript" || w == "js") f.mime = "application/javascript";
+    else if (w == "latex") {
+        f.mime = "text/latex";
+        if (q < s.size() && s[q] == '(') {
+            size_t close = s.find(')', q);
+            if (close == std::string::npos || close == q + 1) return false;
+            f.enclosure = s.substr(q + 1, close - q - 1);
+            for (char ch : f.enclosure)
+                if (!std::isalnum((unsigned char)ch) && ch != '_' && ch != '*') return false;
+            q = close + 1;
+        }
+    }
+    else return false;
+    p = q;
+    return true;
+}
+
+Magic parseMagic(const std::string& code) {
+    Magic m;
+    m.body = code;
+    bool hashed = code.compare(0, 2, "#%") == 0;
+    if (!hashed && code.compare(0, 2, "%%") != 0) return m;
+    size_t nl = code.find('\n');
+    std::string line = code.substr(2, nl == std::string::npos ? std::string::npos : nl - 2);
+    if (!line.empty() && line.back() == '\r') line.pop_back();
+    std::string rest = nl == std::string::npos ? std::string() : code.substr(nl + 1);
+    auto is = [&](Magic::K k) {
+        m.kind = k;
+        m.body = rest;
+        return m;
+    };
+
+    size_t p = 0;
+    skipBlanks(line, p);
+    size_t q = p;
+    std::string word = wordAt(line, q);
+    bool wordEnds = q == line.size() || line[q] == ' ' || line[q] == '\t';
+    if ((word == "javascript" || word == "bash") && trim(line.substr(q)).empty())
+        return is(word == "bash" ? Magic::K::Bash : Magic::K::Javascript);
+    if (word == "run" && wordEnds) {
+        m.arg = trim(line.substr(q));
+        return is(Magic::K::Run);
+    }
+    if (word == "always" && wordEnds) {
+        skipBlanks(line, q);
+        size_t s = q;
+        std::string sub = wordAt(line, s);
+        if (sub == "prepend" || sub == "append" || sub == "show" || sub == "clear") q = s;
+        else sub.clear();
+        std::string what = trim(line.substr(q) + "\n" + rest);
+        // Bare `%% always` asks what is registered; `%% always CODE` is a
+        // prepend, as it is in Jupyter::Kernel.
+        m.arg = !sub.empty() ? sub : what.empty() ? "show" : "prepend";
+        m.kind = Magic::K::Always;
+        m.body = what;
+        return m;
+    }
+
+    MimeFilter out, printed;
+    size_t f = p;
+    bool any = false, ok = true;
+    if (f < line.size() && line[f] != '>') {
+        ok = parseMime(line, f, out);
+        any = ok;
+        skipBlanks(line, f);
+    }
+    if (ok && f < line.size() && line[f] == '>') {
+        f++;
+        skipBlanks(line, f);
+        ok = parseMime(line, f, printed);
+        any = ok;
+        skipBlanks(line, f);
+    }
+    if (ok && any && f == line.size()) {
+        m.out = out;
+        m.stdoutF = printed;
+        return is(Magic::K::Filter);
+    }
+
+    if (hashed) return m;   // a Raku comment that happens to begin with #%
+    m.kind = Magic::K::Unknown;
+    m.error = "'%%" + line + "' is not a cell magic this kernel knows. "
+              "For the cell's value: html, markdown (or md), latex or latex(ENV), js, "
+              "and `> TYPE` for what it prints; for the whole cell: javascript, bash, "
+              "run FILE, always.";
+    return m;
+}
+
+// A rich output as the frontend wants it: the MIME type asked for, and a
+// text/plain stand-in, so a client that cannot render the type shows that
+// something is there rather than nothing.
+Json mimeBundle(const std::string& mime, const std::string& text) {
+    Json d = Json::object();
+    d.set(mime, Json::str(text));
+    if (mime != "text/plain") d.set("text/plain", Json::str("[" + mime + "]"));
+    return d;
+}
+
+// The type of a value no magic typed. Jupyter::Kernel makes one guess, and
+// it is kept so that kernel's notebooks look the same here: a value that
+// begins with `<svg` is an image and one that begins with `<img` is HTML,
+// since markup for a picture is what a sub returning it meant. Only the
+// first four characters are read (case aside); everything else is text.
+std::string guessedMime(const std::string& g) {
+    auto starts = [&g](const char* tag) {
+        if (g.size() < 4) return false;
+        for (size_t i = 0; i < 4; i++)
+            if (std::tolower((unsigned char)g[i]) != tag[i]) return false;
+        return true;
+    };
+    if (starts("<svg")) return "image/svg+xml";
+    if (starts("<img")) return "text/html";
+    return "text/plain";
+}
 
 // ---------------------------------------------------------------------------
 // The kernel.
@@ -760,11 +972,48 @@ private:
         sock.send(to.from, fr);
     }
 
+    void publishDisplay(Json data) {
+        Json content = Json::object();
+        content.set("data", std::move(data));
+        content.set("metadata", Json::object());
+        content.set("transient", Json::object());
+        publish("display_data", content);
+    }
+
     // ---- output from the engine, forwarded as it is produced ----
+    // Unless a `> TYPE` magic holds the cell's stdout back: what the cell
+    // prints is then ONE piece of HTML (or LaTeX, …), published when the cell
+    // ends, because a table printed a row at a time renders only whole.
     static void onOutput(void* ud, const char* text, size_t len, int isErr) {
         auto* self = (Kernel*)ud;
         if (!len) return;
+        if (!isErr) {
+            std::lock_guard<std::mutex> lk(self->heldMx_);
+            if (self->held_.on()) {
+                self->heldText_.append(text, len);
+                return;
+            }
+        }
         self->publishStream(isErr ? "stderr" : "stdout", std::string(text, len));
+    }
+
+    void holdStdout(const MimeFilter& f) {
+        std::lock_guard<std::mutex> lk(heldMx_);
+        held_ = f;
+        heldText_.clear();
+    }
+
+    // The held stdout so far, as one display_data; `done` also stops holding.
+    void flushHeld(bool done) {
+        std::string text;
+        MimeFilter f;
+        {
+            std::lock_guard<std::mutex> lk(heldMx_);
+            text.swap(heldText_);
+            f = held_;
+            if (done) held_ = MimeFilter{};
+        }
+        if (!text.empty()) publishDisplay(mimeBundle(f.mime, f.apply(text)));
     }
 
     // ---- jupyter-display(...) : the host function a cell calls for rich output ----
@@ -783,16 +1032,9 @@ private:
         std::string mime = "text/plain";
         if (rk_argc(c) > 1) mime = asText(rk_arg(c, 1));
         else if (RkValue m = rk_named(c, "mime")) mime = asText(m);
-        Json d = Json::object();
-        d.set(mime, Json::str(data));
-        // text/plain is what a frontend falls back to; give it one so the
-        // output is never blank in a client that cannot render the MIME.
-        if (mime != "text/plain") d.set("text/plain", Json::str("[" + mime + "]"));
-        Json content = Json::object();
-        content.set("data", std::move(d));
-        content.set("metadata", Json::object());
-        content.set("transient", Json::object());
-        self->publish("display_data", content);
+        // What the cell printed before this goes out before it, held or not.
+        self->flushHeld(false);
+        self->publishDisplay(mimeBundle(mime, data));
         return rk_bool(c, 1);
     }
 
@@ -853,35 +1095,28 @@ private:
             publish("execute_input", ei);
         }
 
+        Magic mg = parseMagic(code);
+        switch (mg.kind) {
+            case Magic::K::Unknown: return failCell(zm, req, mg.error);
+            case Magic::K::Javascript:
+                if (!silent) publishDisplay(mimeBundle("application/javascript", mg.body));
+                return okCell(zm, req);
+            case Magic::K::Bash: return runBash(zm, req, mg.body);
+            case Magic::K::Always: return runAlways(zm, req, mg, silent);
+            default: break;   // Raku: plain, filtered, or after a file's
+        }
+        std::string src = mg.body, err;
+        if (mg.kind == Magic::K::Run && !expandRun(mg, src, err)) return failCell(zm, req, err);
+        if (!withAlways(src, err)) return failCell(zm, req, err);
+
+        if (mg.stdoutF.on()) holdStdout(mg.stdoutF);
         busy_.store(true);
         RkValue v = nullptr;
-        int rc = rk_eval(sess_.rk(), code.c_str(), &v);
+        int rc = rk_eval(sess_.rk(), src.c_str(), &v);
         busy_.store(false);
+        flushHeld(true);
 
-        if (rc != RK_OK) {
-            std::string msg = sess_.lastError();
-            std::vector<std::string> tb = splitLines(msg);
-            Json tbj = Json::array();
-            for (auto& l : tb) tbj.arr.push_back(Json::str(l));
-            // ename/evalue: the engine hands back one message, not a class and
-            // a payload, so the first line is the value and the rest is the
-            // traceback the frontend renders under it. Inventing a Raku
-            // exception class name here would be a lie the engine never told.
-            Json err = Json::object();
-            err.set("ename", Json::str("Error"));
-            err.set("evalue", Json::str(tb.empty() ? msg : tb[0]));
-            err.obj.emplace_back("traceback", tbj);
-            publish("error", err);
-
-            Json rep = Json::object();
-            rep.set("status", Json::str("error"));
-            rep.set("execution_count", Json::integer(execCount_));
-            rep.set("ename", Json::str("Error"));
-            rep.set("evalue", Json::str(tb.empty() ? msg : tb[0]));
-            rep.obj.emplace_back("traceback", tbj);
-            reply(shell_, zm, req, "execute_reply", rep);
-            return;
-        }
+        if (rc != RK_OK) return failCell(zm, req, sess_.lastError());
 
         // The REPL's rule, deliberately: a cell shows the value of its last
         // statement whether or not it also printed. `say 42` therefore ends
@@ -890,22 +1125,137 @@ private:
         if (!silent && v) {
             std::string g = sess_.gist(v);
             if (!g.empty() && g != "Nil") {
-                Json data = Json::object();
-                data.set("text/plain", Json::str(g));
+                // A typed magic, `> TYPE` included, means the value's type
+                // is decided; only an untyped cell's is guessed.
+                MimeFilter out = mg.out;
+                if (mg.kind != Magic::K::Filter) out.mime = guessedMime(g);
                 Json c = Json::object();
                 c.set("execution_count", Json::integer(execCount_));
-                c.set("data", std::move(data));
+                c.set("data", mimeBundle(out.mime, out.apply(g)));
                 c.set("metadata", Json::object());
                 publish("execute_result", c);
             }
         }
+        okCell(zm, req);
+    }
 
+    void okCell(const ZMsg& zm, const JMsg& req) {
         Json rep = Json::object();
         rep.set("status", Json::str("ok"));
         rep.set("execution_count", Json::integer(execCount_));
         rep.set("user_expressions", Json::object());
         rep.set("payload", Json::array());
         reply(shell_, zm, req, "execute_reply", rep);
+    }
+
+    void failCell(const ZMsg& zm, const JMsg& req, const std::string& msg) {
+        std::vector<std::string> tb = splitLines(msg);
+        Json tbj = Json::array();
+        for (auto& l : tb) tbj.arr.push_back(Json::str(l));
+        // ename/evalue: the engine hands back one message, not a class and
+        // a payload, so the first line is the value and the rest is the
+        // traceback the frontend renders under it. Inventing a Raku
+        // exception class name here would be a lie the engine never told.
+        Json err = Json::object();
+        err.set("ename", Json::str("Error"));
+        err.set("evalue", Json::str(tb.empty() ? msg : tb[0]));
+        err.obj.emplace_back("traceback", tbj);
+        publish("error", err);
+
+        Json rep = Json::object();
+        rep.set("status", Json::str("error"));
+        rep.set("execution_count", Json::integer(execCount_));
+        rep.set("ename", Json::str("Error"));
+        rep.set("evalue", Json::str(tb.empty() ? msg : tb[0]));
+        rep.obj.emplace_back("traceback", tbj);
+        reply(shell_, zm, req, "execute_reply", rep);
+    }
+
+    // ---- the magics that are not a Raku cell with a type on its output ----
+
+    // A failing script fails the cell, so a notebook's "run all" stops
+    // there, as it would on a Raku cell that died.
+    void runBash(const ZMsg& zm, const JMsg& req, const std::string& script) {
+        std::string how;
+        busy_.store(true);
+        bool ran = sess_.callStr("rk-jup-bash", script, how);
+        busy_.store(false);
+        if (!ran || !how.empty()) return failCell(zm, req, "%% bash: " + how);
+        okCell(zm, req);
+    }
+
+    // `%% run FILE`: the file's code, then the cell's, evaluated as one —
+    // so what the file declares is the notebook's, which EVALFILE's would
+    // not be.
+    bool expandRun(const Magic& mg, std::string& src, std::string& err) {
+        if (mg.arg.empty()) {
+            err = "%% run: which file? `%% run FILE`";
+            return false;
+        }
+        std::string text;
+        if (!sess_.callStr("rk-jup-slurp", mg.arg, text)) {
+            err = "%% run: " + text;
+            return false;
+        }
+        src = mg.body.empty() ? text : text + "\n" + mg.body;
+        return true;
+    }
+
+    void runAlways(const ZMsg& zm, const JMsg& req, const Magic& mg, bool silent) {
+        std::string say;
+        if (mg.arg == "clear") {
+            alwaysPrepend_.clear();
+            alwaysAppend_.clear();
+            say = "Always actions cleared\n";
+        }
+        else if (mg.arg == "show") {
+            auto list = [](const std::vector<std::string>& v) {
+                std::string s;
+                for (auto& e : v) s += (s.empty() ? "" : "; ") + e;
+                return s;
+            };
+            say = "prepend = " + list(alwaysPrepend_) + "\nappend = " + list(alwaysAppend_) + "\n";
+        }
+        else {
+            if (mg.body.empty())
+                return failCell(zm, req, "%% always " + mg.arg + ": no code to " + mg.arg);
+            // The one magic that means something before every cell is a
+            // file's code; the others describe a whole cell, and this is not
+            // one.
+            Magic inner = parseMagic(mg.body);
+            if (inner.kind == Magic::K::Unknown) return failCell(zm, req, inner.error);
+            if (inner.kind != Magic::K::None && inner.kind != Magic::K::Run)
+                return failCell(zm, req, "%% always " + mg.arg +
+                                             ": takes Raku code, or `%% run FILE`, not another magic");
+            (mg.arg == "append" ? alwaysAppend_ : alwaysPrepend_).push_back(mg.body);
+        }
+        if (!silent && !say.empty()) publishStream("stdout", say);
+        okCell(zm, req);
+    }
+
+    // Every Raku cell, magic or not, gets the `%% always` code around it; a
+    // `%% run FILE` there reads the file afresh each time, as it would if it
+    // headed the cell.
+    bool withAlways(std::string& src, std::string& err) {
+        auto expand = [&](const std::string& entry, std::string& out) {
+            Magic m = parseMagic(entry);
+            if (m.kind != Magic::K::Run) {
+                out = entry;
+                return true;
+            }
+            return expandRun(m, out, err);
+        };
+        std::string pre, post, piece;
+        for (auto& e : alwaysPrepend_) {
+            if (!expand(e, piece)) return false;
+            pre += piece + ";\n";
+        }
+        for (auto& e : alwaysAppend_) {
+            if (!expand(e, piece)) return false;
+            post += ";\n" + piece;
+        }
+        src = pre + src + post;
+        return true;
     }
 
     void handleShell(const ZMsg& zm, const JMsg& req) {
@@ -1029,6 +1379,12 @@ private:
     std::atomic<bool> busy_{false};
     std::mutex parentMx_;
     Json parent_ = Json::object();
+    // A `> TYPE` magic's stdout, held until the cell ends. Output can arrive
+    // from any thread the cell started, hence the lock.
+    std::mutex heldMx_;
+    MimeFilter held_;
+    std::string heldText_;
+    std::vector<std::string> alwaysPrepend_, alwaysAppend_;   // `%% always`
 };
 
 int Kernel::run(const Options& opt) {
@@ -1197,6 +1553,28 @@ int installKernelspec(const InstallOptions& opt) {
     js += "  \"metadata\": {\"debugger\": false}\n}\n";
 
     fs::path file = dir / "kernel.json";
+    // `raku` is also the name Jupyter::Kernel installs under, so the kernel
+    // this replaces may well be someone else's. Replacing it is what the
+    // command means — but never in silence, and with the way to keep both.
+    // A kernelspec that already launches this very binary is a reinstall.
+    if (std::ifstream prev{file, std::ios::binary}) {
+        std::stringstream ss;
+        ss << prev.rdbuf();
+        Json old;
+        std::string launched;
+        if (parse(ss.str(), old))
+            if (const Json* argv = old.find("argv"))
+                if (argv->t == Json::T::Arr && !argv->arr.empty() && argv->arr[0].t == Json::T::Str)
+                    launched = argv->arr[0].s;
+        if (launched != opt.selfExe) {
+            std::cerr << "rakupp --jupyter-install: replacing the '" << opt.name << "' kernel at "
+                      << file.string();
+            if (!launched.empty()) std::cerr << ", which launched " << launched;
+            std::cerr << "\n  (to keep both, install this one under another name instead: "
+                         "rakupp --jupyter-install --name="
+                      << (opt.name == "rakupp" ? "rakupp-2" : "rakupp") << ")\n";
+        }
+    }
     std::ofstream out(file, std::ios::binary | std::ios::trunc);
     if (!out) {
         std::cerr << "rakupp --jupyter-install: cannot write " << file.string() << "\n";

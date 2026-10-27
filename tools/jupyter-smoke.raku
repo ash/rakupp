@@ -14,9 +14,12 @@
 # prints AND has a value (stream + execute_result, the REPL's rule); the
 # SESSION carried between cells (the whole point of a kernel); exact rational
 # arithmetic, because that is the engine's own claim; a die crossing as an
-# error message WITHOUT killing the kernel; jupyter-display's rich output; a
-# forged signature being ignored; the heartbeat echo; and shutdown_request
-# actually shutting the kernel down.
+# error message WITHOUT killing the kernel; jupyter-display's rich output; the
+# cell magics, in Jupyter::Kernel's spelling (a typed value, typed printed
+# output held into one display, javascript, bash, run, always, an unknown %%
+# and a #% comment) and the <svg / <img guess for an untyped value; a forged
+# signature being ignored; the heartbeat echo; and shutdown_request actually
+# shutting the kernel down.
 #
 # Run:  build/rakupp tools/jupyter-smoke.raku [build-dir]   (default: build)
 
@@ -247,7 +250,7 @@ sub jdecode(@frames) {
 }
 
 sub execute-content(Str $code) {
-    my $esc = $code.subst('\\', '\\\\', :g).subst('"', '\\"', :g);
+    my $esc = $code.subst('\\', '\\\\', :g).subst('"', '\\"', :g).subst("\n", '\\n', :g);
     '{"code":"' ~ $esc ~ '","silent":false,"store_history":true,' ~
     '"user_expressions":{},"allow_stdin":false,"stop_on_error":true}';
 }
@@ -406,6 +409,108 @@ my %c8 = run-cell(Q{jupyter-display('# heading', :mime<text/markdown>)});
 check %c8<io>.grep({ $_<type> eq 'display_data' && $_<content>.contains('"text/markdown"') }),
     'jupyter-display takes the MIME type as a named argument too',
     %c8<io>.grep({ $_<type> eq 'display_data' }).map({ $_<content> }).join("\n");
+
+# ---- cell magics ------------------------------------------------------------
+# Jupyter::Kernel's spelling, so its notebooks run here: a first line of `#%`
+# or `%%` says what the cell's value, its printed output, or the whole cell is.
+
+sub results(%c) { %c<io>.grep({ $_<type> eq 'execute_result' }).map({ $_<content> }).join("\n") }
+sub displays(%c) { %c<io>.grep({ $_<type> eq 'display_data' }).map({ $_<content> }) }
+sub streams(%c, $name) {
+    %c<io>.grep({ $_<type> eq 'stream' && $_<content>.contains('"name":"' ~ $name ~ '"') })
+          .map({ $_<content> }).join("\n")
+}
+
+my %m1 = run-cell("#% html\nsay 'plain'; '<b>bold</b>'");
+check results(%m1).contains('"text/html":"<b>bold</b>"') && results(%m1).contains('"text/plain":"[text/html]"'),
+    '#% html: the value is published as text/html, with a text/plain stand-in', results(%m1);
+check streams(%m1, 'stdout').contains('plain'), '#% html: what the cell prints is still a stream',
+    streams(%m1, 'stdout');
+
+my %m2 = run-cell(Q{%% latex(equation)} ~ "\n" ~ Q{'\frac{1}{2}'});
+check results(%m2).contains(Q{"text/latex":"\\begin{equation}\n\\frac{1}{2}\n\\end{equation}\n"}),
+    '%% latex(ENV): the value is LaTeX, wrapped in the environment', results(%m2);
+
+my %m3 = run-cell("#% md > html\nsay '<i>a</i>'; say '<i>b</i>'; '# head'");
+check results(%m3).contains('"text/markdown":"# head"'), '#% md > html: the value is markdown', results(%m3);
+check displays(%m3).grep({ .contains(Q{"text/html":"<i>a</i>\n<i>b</i>\n"}) }) == 1,
+    '#% … > html: what the cell prints is ONE text/html display', displays(%m3).join("\n");
+check !streams(%m3, 'stdout'), '#% … > html: and none of it crosses as a stream', streams(%m3, 'stdout');
+
+my %m4 = run-cell("#% > html\nsay '<p>1</p>'; jupyter-display('mid', 'text/markdown'); say '<p>2</p>'; 7");
+my @d4 = displays(%m4);
+check @d4.elems == 3 && @d4[0].contains('<p>1</p>') && @d4[1].contains('"text/markdown":"mid"')
+                     && @d4[2].contains('<p>2</p>'),
+    '#% > html: held output and jupyter-display keep the order the cell made them in', @d4.join("\n");
+check results(%m4).contains('"text/plain":"7"'), '#% > TYPE leaves the value as text', results(%m4);
+
+my %m5 = run-cell("#% javascript\nelement.append('foo')");
+check %m5<reply><content>.contains('"status":"ok"') && !results(%m5),
+    '#% javascript: the cell is not evaluated as Raku', %m5<reply><content>;
+check displays(%m5).grep({ .contains(Q{"application/javascript":"element.append('foo')"}) }),
+    '#% javascript: the cell goes to the frontend as application/javascript', displays(%m5).join("\n");
+
+my %m6 = run-cell("%% bash\necho one; echo two >&2; echo \{1..3\}");
+check %m6<reply><content>.contains('"status":"ok"'), '%% bash: a script that succeeds is an ok cell',
+    %m6<reply><content>;
+check streams(%m6, 'stdout').contains('one') && streams(%m6, 'stdout').contains('1 2 3'),
+    '%% bash: the script runs in bash, its stdout the cell\'s', streams(%m6, 'stdout');
+check streams(%m6, 'stderr').contains('two'), '%% bash: its stderr the cell\'s stderr', streams(%m6, 'stderr');
+
+my %m7 = run-cell("%% bash\nexit 3");
+check %m7<reply><content>.contains('"status":"error"')
+      && %m7<io>.grep({ $_<type> eq 'error' && $_<content>.contains('exited with status 3') }),
+    '%% bash: a script that fails fails the cell', %m7<reply><content>;
+
+my $runfile = $*TMPDIR.add("rakupp-jupyter-smoke-run-{$*PID}.raku");
+$runfile.spurt: "my \$from-file = 'ff';\nsub from-file \{ 6 \}\n";
+my %m8 = run-cell("%% run $runfile\nfrom-file() * 7");
+check results(%m8).contains('"text/plain":"42"'), '%% run FILE: the file\'s code, then the cell\'s',
+    results(%m8) || %m8<io>.map({ $_<content> }).join("\n");
+my %m9 = run-cell('$from-file');
+check results(%m9).contains('"text/plain":"ff"'), '%% run FILE: what the file declared stays in the session',
+    results(%m9);
+$runfile.unlink;
+my %m10 = run-cell("%% run $runfile");
+check %m10<reply><content>.contains('"status":"error"'), '%% run: a missing file is an error',
+    %m10<reply><content>;
+
+run-cell(Q{%% always prepend print 'pre;'});
+my %m11 = run-cell('40 + 2');
+check streams(%m11, 'stdout').contains('pre;') && results(%m11).contains('"text/plain":"42"'),
+    '%% always prepend: the code runs before every cell', streams(%m11, 'stdout');
+my %m12 = run-cell('%% always show');
+check streams(%m12, 'stdout').contains(Q{prepend = print 'pre;'}), '%% always show lists it',
+    streams(%m12, 'stdout');
+run-cell('%% always clear');
+my %m13 = run-cell('6 * 7');
+check !streams(%m13, 'stdout') && results(%m13).contains('"text/plain":"42"'),
+    '%% always clear: and then it does not', streams(%m13, 'stdout');
+
+my %m14 = run-cell("%% capture\n1");
+check %m14<io>.grep({ $_<type> eq 'error' && $_<content>.contains('is not a cell magic') }),
+    'an unknown %% magic is an error naming the ones there are',
+    %m14<io>.map({ $_<content> }).join("\n");
+my %m15 = run-cell("#% no magic, a comment\n6 * 7");
+check results(%m15).contains('"text/plain":"42"'), 'a #% line that is no magic is a comment, and the cell runs',
+    results(%m15);
+
+# Jupyter::Kernel's one guess, for a value no magic typed.
+my %g1 = run-cell(Q{'<svg width="4" height="4"></svg>'});
+check results(%g1).contains('"image/svg+xml":"<svg') && results(%g1).contains('"text/plain":"[image/svg+xml]"'),
+    'a value that begins with <svg is an image', results(%g1);
+my %g2 = run-cell(Q{'<IMG src="x.png">'});
+check results(%g2).contains('"text/html":"<IMG'), 'a value that begins with <img is HTML, whatever its case',
+    results(%g2);
+my %g3 = run-cell(Q{' <svg></svg>'});
+check results(%g3).contains('"text/plain":" <svg') && !results(%g3).contains('image/svg'),
+    'only the very start is read: a space first and it is text', results(%g3);
+my %g4 = run-cell(Q{'<b>bold</b>'});
+check results(%g4).contains('"text/plain":"<b>bold</b>"') && !results(%g4).contains('text/html'),
+    'other markup is text, as it always was', results(%g4);
+my %g5 = run-cell("#% > html\n'<svg></svg>'");
+check results(%g5).contains('"text/plain":"<svg></svg>"') && !results(%g5).contains('image/svg'),
+    'a typed magic, > TYPE included, is never second-guessed', results(%g5);
 
 # ---- frames longer than 255 bytes ------------------------------------------
 # The short/long frame split is at 256 bytes, and both directions have to cross

@@ -573,7 +573,8 @@ jobs:
       # written in Raku -- the ZMTP handshake on all five sockets, HMAC-SHA256
       # signing (pinned to the RFC 4231 vectors on the client side, so the two
       # implementations have to agree), a cell's stream and result, the
-      # session across cells, a dying cell, jupyter-display, a forged
+      # session across cells, a dying cell, jupyter-display, the cell magics
+      # (`%% bash` needs bash, which every POSIX runner has), a forged
       # signature being dropped, the heartbeat, and shutdown. Same tight
       # per-step limit and same reason: this gate blocks on socket reads from
       # a kernel that could wedge.

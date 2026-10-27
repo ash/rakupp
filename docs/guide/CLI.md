@@ -744,7 +744,9 @@ every call ([SANDBOX.md](SANDBOX.md)). The whole story is
 the connection file the frontend passes as `{connection_file}`, and
 `--jupyter-install` writes the kernelspec that makes `jupyter lab` and
 `jupyter console --kernel raku` able to launch it (`--name=NAME` for a second
-build, `--prefix=DIR` for another location). `-M` preloads modules into the
+build, `--prefix=DIR` for another location). `raku` is Jupyter::Kernel's
+name too, so the default install replaces that kernel and warns that it did;
+`--name=rakupp` keeps both. `-M` preloads modules into the
 notebook's session. No ZeroMQ is needed: the binary speaks the wire protocol
 itself. The whole story is [JUPYTER.md](integrations/JUPYTER.md).
 
