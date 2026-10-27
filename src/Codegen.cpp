@@ -1880,6 +1880,7 @@ struct Codegen {
         return init;
     }
     std::string declVar(const std::string& rakuName, const std::string& init) {
+        if (declRecord_) declRecord_->insert(rakuName);   // (emitSeq: what a LEAVE may not read early)
         if (rakuName.size() > 1 && rakuName[1] == '*') return dynDecl(rakuName) + " = " + init;
         // A sigilless name (`my \x`, `sub f(\x)`) is read back as a bare term,
         // which resolves through the RUNTIME scope — where a C++ local is not.
@@ -3354,6 +3355,9 @@ struct Codegen {
     // ---- statements ----
     std::vector<Block*> topLevelEnds; // top-level END phasers, run at program end
     int leaveCtr_ = 0;                // unique names for LEAVE scope guards
+    // While emitSeq emits a block's statements: every name declVar declares,
+    // which a LEAVE guard armed at the block's start must not read
+    std::set<std::string>* declRecord_ = nullptr;
     std::set<std::string> topVars_;   // top-level `my` vars hoisted to C++ globals
 
     // A grammar rule or a named regex runs in the regex ENGINE, which resolves
@@ -3418,6 +3422,79 @@ struct Codegen {
         line(ind, "}");
     }
 
+    // A LEAVE as a C++ scope guard: its body (`inner`, already emitted) runs
+    // when the scope is left, however it is left. On an ordinary exit a
+    // death in it propagates, as Rakudo's does (`LEAVE { die "x" }` dies);
+    // while an exception is already on its way out it is dropped, because a
+    // second one would end the process.
+    std::string leaveGuard(const std::string& inner, int ind) {
+        const std::string g = "__leave" + std::to_string(leaveCtr_++), pad(ind * 4, ' ');
+        return pad + "struct " + g + "_t { std::function<void()> f; int n; ~" + g +
+               "_t() noexcept(false) { if (std::uncaught_exceptions() > n) { try { f(); } catch (...) {} } else f(); } } " +
+               g + "{[&]{\n" + inner + pad + "}, std::uncaught_exceptions()};\n";
+    }
+    // …and its body: a lambda the guard calls in place, so, as in a `do {…}`,
+    // a loop control in it takes the exception form (no `continue` reaches
+    // out of a lambda) and a `return` is one from a block (emitReturn)
+    std::string leaveInner(Block* b, int ind) {
+        struct Iife { int& n; explicit Iife(int& x) : n(x) { n++; } ~Iife() { n--; } } __iife{iife_};
+        LoopJumpBarrier __bar{this};
+        return capture([&] { block(b, ind + 1); });
+    }
+    void emitLeaveGuard(Block* b, int ind) { out << leaveGuard(leaveInner(b, ind), ind); }
+    // Does C++ `text` name the identifier `id` (not merely contain it)?
+    static bool mentionsIdent(const std::string& text, const std::string& id) {
+        auto word = [](char c) { return std::isalnum((unsigned char)c) || c == '_'; };
+        for (size_t p = text.find(id); p != std::string::npos; p = text.find(id, p + 1))
+            if ((p == 0 || !word(text[p - 1])) && (p + id.size() >= text.size() || !word(text[p + id.size()])))
+                return true;
+        return false;
+    }
+    // A block's LEAVE phasers as scope guards (`leaves`, `leaveAt[i]` the
+    // statement each is written before). Armed at the block's start when none
+    // reads a variable the block declares: then every exit runs them, as in
+    // Rakudo — one taken before the LEAVE is reached, and after a CATCH has
+    // handled the exception, since the guards sit outside its `try`.
+    // Otherwise each is armed where it is written, after what it reads. In a
+    // block with a CATCH that is inside the `try`, which would run it ahead of
+    // the handler, and after the `try` its locals are gone (that C++ did not
+    // compile): such a block is refused, and the program bundles.
+    // The statements and phaser bodies are emitted first and placed after,
+    // which is what lets the names declVar declared decide.
+    void emitLeaveGuards(const std::vector<Stmt*>& regular, const std::vector<Block*>& leaves,
+                         const std::vector<size_t>& leaveAt, Block* catchBlk, int ind) {
+        std::set<std::string> declared;
+        std::vector<std::string> body(regular.size()), inner(leaves.size());
+        {
+            struct Rec { Codegen* g; std::set<std::string>* s; ~Rec() { g->declRecord_ = s; } } rec{this, declRecord_};
+            declRecord_ = &declared;
+            const int bi = catchBlk ? ind + 1 : ind;
+            for (size_t k = 0; k < regular.size(); k++) body[k] = capture([&] { stmt(regular[k], bi); });
+        }
+        for (size_t i = 0; i < leaves.size(); i++) inner[i] = leaveInner(leaves[i], ind);
+        bool early = true;
+        for (auto& t : inner)
+            for (auto& n : declared)
+                if (mentionsIdent(t, mangleVar(n))) { early = false; break; }
+        auto emitBody = [&] {
+            if (catchBlk) line(ind, "try {");
+            for (auto& b : body) out << b;
+            if (catchBlk) { line(ind, "} catch (const RakuError& __e) {"); emitCatchHandler(catchBlk, ind + 1); line(ind, "}"); }
+        };
+        if (early) {
+            for (auto& t : inner) out << leaveGuard(t, ind);
+            emitBody();
+        } else if (catchBlk) {
+            unsupported("a LEAVE reading its block's variables beside a CATCH");
+        } else {
+            size_t gi = 0;
+            for (size_t k = 0; k <= body.size(); k++) {
+                while (gi < leaves.size() && leaveAt[gi] == k) out << leaveGuard(inner[gi++], ind);
+                if (k < body.size()) out << body[k];
+            }
+        }
+    }
+
     // Emit a statement sequence, honouring phasers: entry phasers first, the
     // body, then exit phasers (reverse); top-level END phasers are deferred.
     // The MATCHER side of a smartmatch — the right of `~~`, the condition of a
@@ -3472,6 +3549,7 @@ struct Codegen {
     // top-level END deferred) and an embedded CATCH block (wraps the body).
     void emitSeq(const std::vector<StmtPtr>& stmts, int ind, bool topLevel = false) {
         std::vector<Block*> pre, post;
+        std::vector<size_t> postAt;   // where each exit phaser is written: before regular[postAt[i]]
         std::vector<Stmt*> regular;
         Block* catchBlk = nullptr;
         for (auto& s : stmts) {
@@ -3495,7 +3573,7 @@ struct Codegen {
                 // a nested END is refused, and let --exe bundle and stay CORRECT.
                 if (ph == "INIT" && !topLevel) unsupported("a nested INIT phaser");
                 if (ph == "BEGIN" || ph == "CHECK" || ph == "INIT" || ph == "ENTER" || ph == "FIRST") { pre.push_back(b); continue; }
-                if (ph == "LEAVE" || ph == "KEEP" || ph == "UNDO") { post.push_back(b); continue; }
+                if (ph == "LEAVE" || ph == "KEEP" || ph == "UNDO") { post.push_back(b); postAt.push_back(regular.size()); continue; }
                 if (ph == "END") { if (!topLevel) unsupported("a nested END phaser"); topLevelEnds.push_back(b); continue; }
                 if (!ph.empty()) unsupported("a " + ph + " phaser");
             }
@@ -3503,6 +3581,14 @@ struct Codegen {
         }
         for (Block* b : pre) emitPhaserBody(b, ind);
         hoistLexicalSubs(stmts, ind, topLevel);
+        // Exit phasers that are all LEAVEs are scope guards, so a block left by
+        // `next`, `last`, `redo`, `return` or an exception runs them too
+        // (emitLeaveGuards). With a KEEP or UNDO among them — which run in one
+        // reverse order with them — and in the mainline, whose LEAVE is the
+        // unit's, they still run after the last statement, and only then.
+        bool onlyLeave = !post.empty() && !topLevel;
+        for (Block* b : post) if (b->phaser != "LEAVE") onlyLeave = false;
+        if (onlyLeave) { emitLeaveGuards(regular, post, postAt, catchBlk, ind); return; }
         // A CATCH guards its enclosing block (the mainline is the UNIT block).
         if (catchBlk) {
             line(ind, "try {");
@@ -4203,13 +4289,7 @@ struct Codegen {
                 auto* b = static_cast<Block*>(s);
                 // LEAVE {…} maps exactly to a C++ scope guard (runs on any exit,
                 // exceptions included)
-                if (b->phaser == "LEAVE") {
-                    std::string g = "__leave" + std::to_string(leaveCtr_++);
-                    line(ind, "struct " + g + "_t { std::function<void()> f; ~" + g + "_t(){ try { f(); } catch (...) {} } } " + g + "{[&]{");
-                    block(b, ind + 1);
-                    line(ind, "}};");
-                    return;
-                }
+                if (b->phaser == "LEAVE") { emitLeaveGuard(b, ind); return; }
                 if (b->isCatch || !b->phaser.empty()) unsupported("phaser / CATCH block");
                 line(ind, "{"); block(b, ind + 1); line(ind, "}");
                 return;

@@ -80,8 +80,9 @@ $i = 0; @o = (); repeat { $i++; my $x = f($i) // next; @o.push: $x } while $i < 
 check 'repeat', @o, [2, 4];
 @o = (); for ^5 -> $i { if True { if True { my $x = f($i) // next; @o.push: $x } } }
 check 'two blocks between', @o, [0, 2, 4];
-# (no LEAVE here: compiled, a loop body's LEAVE does not run on a `next` of
-# any form, the statement one included — TODO-FOLLOW-UPS.md)
+my $lv; @o = ();
+for ^3 -> $i { LEAVE { @o.push: "L$i:" ~ ($lv // 'Any') }; $lv = f($i) // next; @o.push: "B$lv" }
+check 'LEAVE', @o, ['B0', 'L0:0', 'L1:0', 'B2', 'L2:2'];
 @o = (); for ^4 -> $i { CATCH { default { @o.push: 'caught' } }; my $x = f($i) // next; @o.push: $x }
 check 'CATCH does not see it', @o, [0, 2];
 check 'gather', (gather for ^6 -> $i { my $x = f($i) // next; take $x }).list, (0, 2, 4);
