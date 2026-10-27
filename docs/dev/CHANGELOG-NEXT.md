@@ -18,7 +18,7 @@ e24f05f1 (NUM-UNBOX-PLAN P0); 8644846a; 74806a6d; 93f9a4af and c7a12943;
 1b182b8e, 828e52d5, 4d1c7cc3, 80ea9030, d972abe7, 166334a9 and 29b10450;
 5d31d4a2 and aff5032b (issue #202); 5d0e7ce9 and 170802d4 (issue #203);
 cb7933f3 (issue #204); cb5b360a, d5184116 and 50aebf54; 67a2fe76 (issue
-#198) and 4af53b07; 3ddcd58b (issue #207).*
+#198) and 4af53b07; 3ddcd58b (issue #207); 2b9494ae (issue #206).*
 
 ---
 
@@ -660,6 +660,23 @@ does not.
   3 against a build of 170bb19a, 0.022 → 0.048 s (`-> $h`: 0.021).
   t/regression/issue-207-hash-param-takes-associative.raku agrees with
   Rakudo 2026.09.
+- **A block's `}` ends a statement only at the end of its line, in a file
+  too** (2b9494ae; issue #206). `given $x { when 'a' { 'A' } when 'b' { 'B' }
+  }` on one line ran here where Rakudo refuses to compile it, so a module
+  that passed its whole suite here failed to load there. An EVAL already
+  refused it; a file skipped the check, and a class, role, grammar or module
+  body had none at all (`class A { method a { 1 } method b { 2 } }`). Each
+  is now refused at compile time as X::Syntax::Confused, in words of our own
+  rather than Rakudo's "Strange text after block (missing semicolon or
+  comma?)": `Missing ';' before 'when': a block's '}' ends a statement only
+  at the end of a line`, with a `^` under the excerpt where the next
+  statement starts. An infix after a package declaration still parses
+  (Roast's `class {} − class {}`). Six of this repository's files were
+  written so, and Rakudo refused each: showcase/python/python.raku, two
+  t/regression files and three t/cnp and t/jit cases have their `;` now. A
+  `-c` scan of 3,736 files (Roast, the modules installed for both engines,
+  Rakudo's core setting, this repository) finds no other file refused.
+  t/regression/issue-206-text-after-block.raku agrees with Rakudo 2026.09.
 
 ### Left open
 
@@ -669,6 +686,12 @@ does not.
   `given`, a named `:&c`, `Int %h` and `%h is copy` over a Map still bind
   what Rakudo refuses or copies, and a `for` bound through bindParams slows
   the loop after it. TODO-FOLLOW-UPS.md has each (3ddcd58b).
+- Two terms in a row are still refused only in an EVAL (`say 1 1` in a file
+  prints 1); a package declaration that starts a statement takes no infix
+  after it (`class A {} === A` is refused, Rakudo says True); and a parse
+  error in `-e` code or under `-c` shows no excerpt, so no `^`.
+  TODO-FOLLOW-UPS.md has the last two, TODO.md's decisions the first
+  (2b9494ae).
 
 - `CATCH { when X::Y {} }` with X::Y undeclared is refused only in an EVAL
   (as on daf9c03c), and an enum's type object counts its pairs: `.say for
