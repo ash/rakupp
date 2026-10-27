@@ -289,6 +289,11 @@ private:
     // having been seen, so a bare `if(1) {…}` keeps the reading, and the
     // diagnostic, it always had. See kNeedsEndKeyword in Parser.cpp.
     std::set<std::string> kwNamedSubs_;
+    // Capitalized names this unit declares a routine of, anywhere in it, or a
+    // module it uses does (scanOpsIn). Before a `{` such a name is that
+    // routine's listop call — `Foo { … }` passes the block, as Rakudo reads it —
+    // where any other capitalized name is a type with a block after it (#198).
+    std::set<std::string> capSubNames_;
     bool ctxOperandBare_ = false; // parsing `%(…)` as the operand of `@%(…)`: no postfixes
     // The end_keyword question in one place: is the identifier `n` a keyword
     // this unit declares a routine for, written TIGHT against the paren that

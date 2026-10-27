@@ -1011,6 +1011,7 @@ void Parser::scanOpsIn(const std::string& src, const std::string& srcPath) {
     // `sub NAME` with NAME word-infix-shaped, optionally behind multi/proto/only.
     Lexer::scanDeclaredSubNames(src, [&](const std::string& n, size_t, size_t) {
         if (isWordInfixName(n)) wordInfixSubs_.insert(n);
+        if (!n.empty() && ascii::isupper((unsigned char)n[0])) capSubNames_.insert(n); // `Foo { … }` (#198)
     });
     // …and the ones that collide with a QUOTE form (`sub tr`, `sub q`). Those are
     // decided in the lexer, which ran before this file's `use` was reached, so the
@@ -9962,10 +9963,14 @@ ExprPtr Parser::parsePrimary() {
             // and Raku's answer is a runtime error naming `try` — which it can only
             // give if the block arrives as an ARGUMENT rather than as a stray block
             // after a bare name (roast S29-context/eval.t, "block EVAL is gone").
+            // So is a name a routine has and no type (capSubNames_, or an EVAL's
+            // declareKnownSub): `Foo { … }` is `Foo({ … })`, as in Rakudo (#198).
+            // In a statement condition the listop path leaves the brace alone.
             static const std::set<std::string> capsSubs = {
                 "WHAT", "WHO", "HOW", "VAR", "WHICH", "WHY", "DEFINITE", "EVAL"};
             if (isKind(Tok::LBrace) && !name.empty() && ascii::isupper((unsigned char)name[0]) &&
-                !capsSubs.count(name))
+                !capsSubs.count(name) && (isKnownTypeName(name) || declTypeNames_.count(name) ||
+                declClassDecls_.count(name) || !(capSubNames_.count(name) || declaredSubNames_.count(name))))
                 return std::make_unique<NameTerm>(name);
             // A capitalized bareword (a type) followed by whitespace then `.method` is
             // a postfix method call on the type — `Thing .new` is `Thing.new`, NOT a
@@ -10468,6 +10473,7 @@ ExprPtr Parser::parseEmbeddedExpr(const std::string& src, bool ownScope) {
     p.userDeclarators_ = userDeclarators_;
     p.wordInfixSubs_ = wordInfixSubs_;   // `"{ div 3 }"` sees this unit's `sub div`
     p.kwNamedSubs_ = kwNamedSubs_;       // …and its `sub if`, so `"{ if() }"` calls it
+    p.capSubNames_ = capSubNames_;       // …and its `sub Foo`, so `"{ Foo { 1 } }"` passes the block
     p.inEmbedded_ = true;                // (`"$!name"` in a method reaches the attribute)
     p.routineDepth_ = routineDepth_;     // `"{&?ROUTINE.name}"` inside a sub names that sub
     Program prog = p.parseProgram();
@@ -17731,6 +17737,7 @@ Program Parser::parseProgram() {
         const std::string nm = scope ? (n.kind == Tok::Var && n.text.size() > 1 && n.text[0] == '&' ? n.text.substr(1) : "")
                                      : (n.kind == Tok::Ident ? n.text : "");
         if (!nm.empty() && nm != "sub" && kNeedsEndKeyword.count(nm)) kwNamedSubs_.insert(nm);
+        if (!nm.empty() && ascii::isupper((unsigned char)nm[0])) capSubNames_.insert(nm); // `Foo { … }` (#198)
     }
     try {
         while (!isKind(Tok::End)) {
