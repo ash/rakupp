@@ -26,6 +26,7 @@ struct ParseError : std::runtime_error {
     // excerpt and the `at FILE:LINE` under the header read it; without it they
     // quoted the loading script's line of the same number.
     std::string file;
+    int col = 0;   // the 1-based BYTE column on `line` the excerpt puts a `^` under; 0 = none
     ParseError(const std::string& msg, int line) : std::runtime_error(msg), line(line) {}
     ParseError(const std::string& msg, int line, bool atEof)
         : std::runtime_error(msg), line(line), atEof(atEof) {}
@@ -542,6 +543,7 @@ private:
     // `--> CArray[Str]` — a NativeCall return type keeps its element parameter
     std::string nativeRetParam(size_t identPos) const;
     size_t lastBlockClose_ = (size_t)-1;
+    size_t lastPkgClose_ = (size_t)-1;   // …and the last that closed a package body (`class {}` is a term)
     // the innermost enclosing ROLE (what ::?ROLE names), past any class or
     // grammar declared inside it — "" outside every role
     std::string enclosingRoleName() const {
@@ -562,6 +564,7 @@ private:
     StmtPtr parseStatement();
     StmtPtr parseStatementInner();
     void enforceStmtSep(); // same-line statement juxtaposition is "two terms in a row"
+    void checkTextAfterBlock(); // `} when …` on one line: the `;` is missing (#206)
     void refuseTraitAfterInit(bool anyLine); // `has $.x = 0 is rw`: the trait belongs before the `=`
 public:
     bool strictSep_ = false; // set by EVAL: strict statement separation in snippets

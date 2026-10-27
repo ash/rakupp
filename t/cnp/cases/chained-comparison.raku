@@ -12,7 +12,7 @@ say "$h $calls";
 my $w = "a"; my $s = 0; my $q = 0;
 while $q < 150 { $s++ if "a" le $w lt "b"; $q++ }
 say $s;
-class B { has $.v; method Bridge { $!v.Num } method Real { $!v } method Numeric { $!v } }
+class B { has $.v; method Bridge { $!v.Num }; method Real { $!v }; method Numeric { $!v } }
 my $b = B.new(v => 5); my $bb = 0; my $r = 0;
 while $r < 150 { $bb++ if 1 < $b < 10; $r++ }
 say $bb;

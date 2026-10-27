@@ -342,8 +342,8 @@ sub caplist($caps) {
     return () unless $caps.defined;
     $caps ~~ Positional ?? $caps.list !! ($caps,)
 }
-sub nlist($caps) { my @o; for caplist($caps) -> $c { @o.push($c.made) } @o }
-sub nstrs($caps) { my @o; for caplist($caps) -> $c { my $s = (~$c).trim; @o.push($s) if $s ne '' } @o }
+sub nlist($caps) { my @o; for caplist($caps) -> $c { @o.push($c.made) }; @o }
+sub nstrs($caps) { my @o; for caplist($caps) -> $c { my $s = (~$c).trim; @o.push($s) if $s ne '' }; @o }
 sub fold-l($terms, $ops) {
     my @t = nlist($terms); my @o = nstrs($ops);
     my $acc = @t[0];
@@ -497,7 +497,7 @@ class Actions {
         }
         if $<arglist> {
             for @($<arglist>.made) -> $a {
-                given $a<k> { when 'pos' { @args.push($a<v>) } when 'kw' { @kw.push($a) } when 'star' { @star.push($a<v>) } }
+                given $a<k> { when 'pos' { @args.push($a<v>) }; when 'kw' { @kw.push($a) }; when 'star' { @star.push($a<v>) } }
             }
         }
         make %( k => 'call', args => @args, kwargs => @kw, star => @star );
@@ -623,7 +623,7 @@ sub exec-stmt($n, $env) {
             while truthy(pyeval($n<test>, $env)) {
                 {
                     exec-stmts($n<body>, $env);
-                    CATCH { when BreakX { $broke = True } when ContX { } }
+                    CATCH { when BreakX { $broke = True }; when ContX { } }
                 }
                 last if $broke;
             }
@@ -636,7 +636,7 @@ sub exec-stmt($n, $env) {
                 assign-to($n<target>, $it, $env);
                 {
                     exec-stmts($n<body>, $env);
-                    CATCH { when BreakX { $broke = True } when ContX { } }
+                    CATCH { when BreakX { $broke = True }; when ContX { } }
                 }
                 last if $broke;
             }
@@ -688,7 +688,7 @@ sub do-del($target, $env) {
     if $target<t> eq 'subscript' {
         my $obj = pyeval($target<obj>, $env);
         my $key = pyeval($target<sx><v>, $env);
-        given $obj { when PyDict { $obj.del($key) } when PyList { $obj.items.splice(norm-idx($key, $obj.items.elems), 1) } }
+        given $obj { when PyDict { $obj.del($key) }; when PyList { $obj.items.splice(norm-idx($key, $obj.items.elems), 1) } }
     }
 }
 
@@ -1014,9 +1014,9 @@ sub decode-escapes(Str $s) {
         if @c[$i] eq '\\' && $i + 1 < $n {
             my $e = @c[$i + 1]; $i += 2;
             given $e {
-                when 'n' { $o ~= "\n" } when 't' { $o ~= "\t" } when 'r' { $o ~= "\r" }
-                when '0' { $o ~= "\0" } when '\\' { $o ~= "\\" }
-                when '"' { $o ~= '"' } when "'" { $o ~= "'" }
+                when 'n' { $o ~= "\n" }; when 't' { $o ~= "\t" }; when 'r' { $o ~= "\r" }
+                when '0' { $o ~= "\0" }; when '\\' { $o ~= "\\" }
+                when '"' { $o ~= '"' }; when "'" { $o ~= "'" }
                 default  { $o ~= '\\' ~ $e }
             }
         }
@@ -1211,10 +1211,10 @@ sub eval-dictcomp($n, $env) {
 sub set-from(PyDict $d) { PySet.new(d => $d) }
 sub type-name($v) {
     given $v {
-        when PyNone { 'NoneType' } when Bool { 'bool' } when Int { 'int' }
-        when Rat|Num { 'float' } when Str { 'str' } when PyList { 'list' }
-        when PyTuple { 'tuple' } when PyDict { 'dict' } when PySet { 'set' }
-        when PyRange { 'range' } when PyFunc | NativeFn { 'function' }
+        when PyNone { 'NoneType' }; when Bool { 'bool' }; when Int { 'int' }
+        when Rat|Num { 'float' }; when Str { 'str' }; when PyList { 'list' }
+        when PyTuple { 'tuple' }; when PyDict { 'dict' }; when PySet { 'set' }
+        when PyRange { 'range' }; when PyFunc | NativeFn { 'function' }
         default { 'object' }
     }
 }
@@ -1344,14 +1344,14 @@ sub install-builtins($g) {
     });
     reg('len', -> @a, %kw {
         given @a[0] {
-            when Str { $_.chars } when PyList { $_.items.elems } when PyTuple { $_.items.elems }
-            when PyDict { $_.keys.elems } when PySet { $_.d.keys.elems } when PyRange { $_.len }
+            when Str { $_.chars }; when PyList { $_.items.elems }; when PyTuple { $_.items.elems }
+            when PyDict { $_.keys.elems }; when PySet { $_.d.keys.elems }; when PyRange { $_.len }
             default { py-raise("TypeError", "object has no len()") }
         }
     });
     reg('range', -> @a, %kw {
         my ($start, $stop, $step) = 0, 0, 1;
-        given @a.elems { when 1 { $stop = pnum(@a[0]).Int } when 2 { $start = pnum(@a[0]).Int; $stop = pnum(@a[1]).Int } default { $start = pnum(@a[0]).Int; $stop = pnum(@a[1]).Int; $step = pnum(@a[2]).Int } }
+        given @a.elems { when 1 { $stop = pnum(@a[0]).Int }; when 2 { $start = pnum(@a[0]).Int; $stop = pnum(@a[1]).Int }; default { $start = pnum(@a[0]).Int; $stop = pnum(@a[1]).Int; $step = pnum(@a[2]).Int } }
         PyRange.new(start => $start, stop => $stop, step => $step);
     });
     reg('list',  -> @a, %kw { PyList.new(items => (@a ?? py-iter(@a[0]) !! []).Array) });

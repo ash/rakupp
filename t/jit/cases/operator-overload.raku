@@ -12,7 +12,7 @@
 # lanes agree with the interpreter, which they did not before the refusal
 # existed — the first loop answered 10 instead of £10, and the second never
 # terminated once `+` was overloaded but `<` was still the built-in.
-class Money { has $.c; method Bool() { $!c != 0 } method Str() { "£$!c" } }
+class Money { has $.c; method Bool() { $!c != 0 }; method Str() { "£$!c" } }
 multi sub infix:<+>(Money $a, Money $b) { Money.new(c => $a.c + $b.c) }
 multi sub infix:<+>(Money $a, Int $b)   { Money.new(c => $a.c + $b) }
 multi sub infix:«<»(Money $a, Int $b)   { $a.c < $b }
