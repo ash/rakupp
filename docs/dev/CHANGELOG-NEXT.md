@@ -18,7 +18,7 @@ e24f05f1 (NUM-UNBOX-PLAN P0); 8644846a; 74806a6d; 93f9a4af and c7a12943;
 1b182b8e, 828e52d5, 4d1c7cc3, 80ea9030, d972abe7, 166334a9 and 29b10450;
 5d31d4a2 and aff5032b (issue #202); 5d0e7ce9 and 170802d4 (issue #203);
 cb7933f3 (issue #204); cb5b360a, d5184116 and 50aebf54; 67a2fe76 (issue
-#198) and 4af53b07.*
+#198) and 4af53b07; 3ddcd58b (issue #207).*
 
 ---
 
@@ -640,8 +640,35 @@ does not.
   67a2fe76 had counted among its subs, harmlessly until now
   (Statistics::Distributions's `when $_ ~~ Generic { }`).
   t/regression/xblock-listop-in-condition.raku agrees with Rakudo 2026.09.
+- **A `%` parameter takes an Associative and nothing else** (3ddcd58b; issue
+  #207). `sub g(:%env) { say %env<LC_ALL> }; g(:env(LC_ALL => 'C', LANG =>
+  'C'))` printed C where Rakudo dies at the call: a List of Pairs is no
+  hash, and Rakudo builds none from one, so a test file written that way
+  passed here and died partway there. A named `%` parameter made a Hash of
+  whatever came (an Int, Nil, a Range, a Match, an object that is no
+  Associative), a positional one refused only a definite scalar, a default
+  was never checked, and `for`, `given` and `with … -> %h` bound by name
+  only, which left a List in `%h`. Each now refuses, `is copy` too, with
+  Rakudo's message: the type alone, the "You have to pass an explicitly
+  typed hash" hint for a List, an Array, a Range or code, word-wrapped where
+  Rakudo wraps it. What does bind is itself: a Pair stays a Pair (`for
+  %h.pairs -> %p`, as in Rakudo), and neither an Associative object passed
+  by name nor an Associative type object (Pair, Bag, a class that does
+  Associative) is made a Hash any more. A loop with a `%` parameter now
+  binds each element through bindParams, as a typed or `is copy` one does:
+  `for @h -> %h { $s += %h<a> }` over 200,000 hashes, interpreted, best of
+  3 against a build of 170bb19a, 0.022 → 0.048 s (`-> $h`: 0.021).
+  t/regression/issue-207-hash-param-takes-associative.raku agrees with
+  Rakudo 2026.09.
 
 ### Left open
+
+- `--exe` checks no parameter's sigil, `%` included: a compiled `sub
+  p(%h)` given `(a => 1, b => 2)` holds the List, as it did before
+  3ddcd58b, and an `@` or `&` parameter takes an Int. `-> @a` in a `for` or a
+  `given`, a named `:&c`, `Int %h` and `%h is copy` over a Map still bind
+  what Rakudo refuses or copies, and a `for` bound through bindParams slows
+  the loop after it. TODO-FOLLOW-UPS.md has each (3ddcd58b).
 
 - `CATCH { when X::Y {} }` with X::Y undeclared is refused only in an EVAL
   (as on daf9c03c), and an enum's type object counts its pairs: `.say for
