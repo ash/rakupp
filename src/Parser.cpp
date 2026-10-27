@@ -5188,8 +5188,13 @@ void Parser::skipTraits(bool onVarDecl, ExprPtr* defaultOut) {
                 !lowerTypes.count(cur().text) && !sigilless_.count(cur().text))
                 userTraitName = cur().text;
             if (wasIs && cur().text == "dynamic") lastIsDynamic_ = true; // my $x is dynamic
-            if (wasIs && cur().text == "export") lastIsExport_ = true;   // our %x is export
+            const bool wasExport = wasIs && cur().text == "export";
+            if (wasExport) lastIsExport_ = true;   // our %x is export
             advance(); // trait name / type
+            if (wasExport && isKind(Tok::LParen) && !cur().spaceBefore) {   // `is export(:tag)`
+                lastExportTags_ = readExportTags();
+                continue;
+            }
             // a QUALIFIED type trait: `has %.Converter is DBDish::TypeConverter`
             // — keep consuming `::name` segments into the captured name, or the
             // container type is just its first segment (DBIish's 06-types)
@@ -5395,11 +5400,11 @@ ExprPtr Parser::parseDeclarator(const std::string& scope) {
         // …traits included: `my constant \COLORS is export(:colors) = %( … )`
         // (Color::Names). Left in the token stream, the trait made the `=` look
         // like an assignment TO it — "Target is not assignable".
-        lastIsExport_ = false;
+        lastIsExport_ = false; lastExportTags_.clear();
         skipTraits(scope != "has", &ve->dm().declDefault);
         // …and `is export` on the constant is a fact the interpreter needs: a
         // `unit class` body publishes nothing on its own (Color::Names::X11)
-        if (lastIsExport_) { ve->dm().declExport = true; lastIsExport_ = false; }
+        takeExportTrait(ve.get());
         return ve;
     }
     // `my multi sub NAME(…) {…}` / `my proto sub NAME(|) {*}` in expression
@@ -5454,9 +5459,9 @@ ExprPtr Parser::parseDeclarator(const std::string& scope) {
         sigilless_.insert(nm);
         auto ve = std::make_unique<VarExpr>(nm);
         ve->declare = true; ve->dm().declScope = scope;
-        lastIsExport_ = false;
+        lastIsExport_ = false; lastExportTags_.clear();
         skipTraits(scope != "has", &ve->dm().declDefault);
-        if (lastIsExport_) { ve->dm().declExport = true; lastIsExport_ = false; }
+        takeExportTrait(ve.get());
         return ve;
     }
     if (isKind(Tok::Ident)) {
@@ -5586,9 +5591,9 @@ ExprPtr Parser::parseDeclarator(const std::string& scope) {
         // `my constant \COLORS is export(:colors) = %( … )`. Without this the
         // trait stayed in the token stream and the `=` looked like an assignment
         // to `is export(:colors)`, which is "Target is not assignable".
-        lastIsExport_ = false;
+        lastIsExport_ = false; lastExportTags_.clear();
         skipTraits(scope != "has", &ve->dm().declDefault);
-        if (lastIsExport_) { ve->dm().declExport = true; lastIsExport_ = false; }
+        takeExportTrait(ve.get());
         return ve;
     }
     // `my :($sigil, $type) := do given …` — a SIGNATURE literal standing where a
@@ -5767,7 +5772,7 @@ ExprPtr Parser::parseDeclarator(const std::string& scope) {
                 lastIsDynamic_ = false;
                 skipTraits(scope != "has", &ve->dm().declDefault);
                 if (lastIsDynamic_) { ve->dm().declDynamic = true; lastIsDynamic_ = false; }
-                lastContainerIs_.clear(); lastContainerOf_.clear(); lastIsExport_ = false;
+                lastContainerIs_.clear(); lastContainerOf_.clear(); lastIsExport_ = false; lastExportTags_.clear();
                 lastWillPhaser_.clear(); lastWillBlock_.reset(); earlierWills_.clear();
             }
             // A type written BEFORE the parenthesis applies to every variable in
@@ -5839,7 +5844,7 @@ ExprPtr Parser::parseDeclarator(const std::string& scope) {
             }
             if (traitsEnd == traitsAt) skipTraits(scope != "has");
             else pos_ = traitsEnd;
-            lastContainerIs_.clear(); lastContainerOf_.clear(); lastIsExport_ = false;
+            lastContainerIs_.clear(); lastContainerOf_.clear(); lastIsExport_ = false; lastExportTags_.clear();
             lastWillPhaser_.clear(); lastWillBlock_.reset(); earlierWills_.clear();
         }
         // a signature literal is BOUND: `my :($a, $b) := …` — never assigned,
@@ -6040,7 +6045,7 @@ ExprPtr Parser::parseDeclarator(const std::string& scope) {
         // before it — `my %h{Str}; %h<nope>.WHAT` is Mu there, Any here.
         if (!keyType.empty())
             ve->dm().declType = (ve->d().declType.empty() ? (langRev_ >= 2 ? "Mu" : "Any") : ve->d().declType) + "," + keyType;
-        lastContainerIs_.clear(); lastContainerOf_.clear(); lastIsDynamic_ = false; lastIsExport_ = false;
+        lastContainerIs_.clear(); lastContainerOf_.clear(); lastIsDynamic_ = false; lastIsExport_ = false; lastExportTags_.clear();
         lastWillPhaser_.clear(); lastWillBlock_.reset(); earlierWills_.clear(); lastOfType_.clear(); lastDoesRoles_.clear();
         lastUserTraits_.clear();
         {
@@ -6090,7 +6095,7 @@ ExprPtr Parser::parseDeclarator(const std::string& scope) {
                              "X::Comp::Trait::Scope",
                              {{"type", "is"}, {"subtype", "export"}, {"declaring", "variable"},
                               {"scope", scope}, {"supported", "our"}});
-        if (lastIsExport_) { ve->dm().declExport = true; lastIsExport_ = false; }
+        takeExportTrait(ve.get());
         if (!lastContainerOf_.empty()) { ve->dm().containerOf = lastContainerOf_; lastContainerOf_.clear(); }
         if (lastWillBlock_) {
             // desugar `my $x will leave {…}` into `LEAVE {…}($x)` right after
@@ -6142,12 +6147,12 @@ ExprPtr Parser::parseDeclarator(const std::string& scope) {
         sigilless_.insert(cname);
         auto ve = std::make_unique<VarExpr>(cname);
         ve->declare = true; ve->dm().declScope = scope;
-        lastIsExport_ = false;
+        lastIsExport_ = false; lastExportTags_.clear();
         skipTraits();
         // `constant \COLORS is export(:colors) = …` — the trait was skipped and
         // its flag left set for the NEXT declaration to pick up; a constant in
         // a `unit class` body is published nowhere else (Color::Names::X11)
-        if (lastIsExport_) { ve->dm().declExport = true; lastIsExport_ = false; }
+        takeExportTrait(ve.get());
         // `constant foo;` — a constant must be initialized
         if (isKind(Tok::Semicolon) || isKind(Tok::End))
             throw ParseError("Missing initializer on constant declaration",
@@ -6278,25 +6283,6 @@ static std::string pseudoAngleSymbol(const std::string& pkg, const std::string& 
 static ExprPtr angleWordNumeric(const std::string& w); // defined below
 bool complexWordPart(const std::string& t, int im, const std::string& word); // Lexer.cpp
 
-// `Foo::<$x>:exists` / `:!exists` asks the package's table for `qual`, not the
-// autovivifying read (O31: the adverb went to the enclosing call). Null: none.
-ExprPtr Parser::pkgExistsAdverb(const std::string& qual) {
-    const bool neg = isOp(":") && !cur().spaceBefore && peek().kind == Tok::Op && peek().text == "!" &&
-                     peek(2).kind == Tok::Ident && peek(2).text == "exists";
-    if (!(isOp(":") && !cur().spaceBefore && (neg || (peek().kind == Tok::Ident && peek().text == "exists"))))
-        return nullptr;
-    advance(); if (neg) advance(); advance();   // ':' '!' exists
-    auto c = std::make_unique<Call>();
-    c->name = "__sym-exists";
-    c->args.push_back(std::make_unique<StrLit>(qual));
-    c->args.push_back(std::make_unique<IntLit>(0));
-    c->args.push_back(std::make_unique<StrLit>("PKG"));
-    if (!neg) return c;
-    auto no = std::make_unique<Unary>();
-    no->op = "!";
-    no->operand = std::move(c);
-    return no;
-}
 
 // A colon-pair written directly after a call's closing paren is one of that
 // call's ARGUMENTS: `blob-from-carray($au):12size` passes `size => 12`
@@ -9760,6 +9746,7 @@ ExprPtr Parser::parsePrimary() {
                 bool sigilled = !key.empty() &&
                     (key[0] == '$' || key[0] == '@' || key[0] == '%' || key[0] == '&');
                 std::string qual = sigilled ? key.substr(0, 1) + pkg + "::" + key.substr(1) : pkg + "::" + key;
+                if (ExprPtr st = pkgStashSubscript(pkg, words)) return st;   // `Foo::<$x>:p`, `Foo::<$x $y>`
                 if (ExprPtr ex = pkgExistsAdverb(qual)) return ex;   // `Foo::<$x>:exists`
                 auto ve = std::make_unique<VarExpr>(qual);
                 ve->pkgSymbol = true; // assignment autovivifies the slot
@@ -13892,9 +13879,11 @@ StmtPtr Parser::parseSubset() {
         }
         if (isIdent("is")) {
             advance();
-            if (isIdent("export")) sd->isExport = true;
+            const bool exp = isIdent("export");
+            if (exp) sd->isExport = true;
             if (isKind(Tok::Ident)) advance();
-            if (isKind(Tok::LParen) && !cur().spaceBefore) {
+            if (exp) sd->exportTags = readExportTags();
+            else if (isKind(Tok::LParen) && !cur().spaceBefore) {
                 int d = 0;
                 do { if (isKind(Tok::LParen)) d++; else if (isKind(Tok::RParen)) d--; advance(); }
                 while (d > 0 && !isKind(Tok::End));
@@ -13922,10 +13911,12 @@ StmtPtr Parser::parseEnum() {
     while (isIdent("is")) {
         advance();
         if (isKind(Tok::Ident) || isKind(Tok::Var)) {
-            if (cur().text == "export") ed->isExport = true;
+            const bool exp = cur().text == "export";
+            if (exp) ed->isExport = true;
             advance();
             // trait argument: `is export(:sort-list)` (Text::Utils)
-            if (isKind(Tok::LParen) && !cur().spaceBefore) {
+            if (exp) ed->exportTags = readExportTags();
+            else if (isKind(Tok::LParen) && !cur().spaceBefore) {
                 int d = 0;
                 do { if (isKind(Tok::LParen)) d++; else if (isKind(Tok::RParen)) d--; advance(); }
                 while (d > 0 && !isKind(Tok::End));
@@ -13953,9 +13944,11 @@ StmtPtr Parser::parseEnum() {
             continue;
         }
         if (isKind(Tok::Ident) || isKind(Tok::Var)) {
-            if (cur().text == "export") ed->isExport = true;
+            const bool exp = cur().text == "export";
+            if (exp) ed->isExport = true;
             advance();
-            if (isKind(Tok::LParen) && !cur().spaceBefore) {
+            if (exp) ed->exportTags = readExportTags();
+            else if (isKind(Tok::LParen) && !cur().spaceBefore) {
                 int d = 0;
                 do { if (isKind(Tok::LParen)) d++; else if (isKind(Tok::RParen)) d--; advance(); }
                 while (d > 0 && !isKind(Tok::End));
@@ -14353,19 +14346,15 @@ StmtPtr Parser::parseClass(bool isRole, bool isGrammar, bool isPackage, bool isU
         if (!isDoes && isIdent("export")) { // trait, not a parent class
             advance();
             cd->isExport = true;
-            // `is export(:TAG)` — consume the tag list too. Leaving it in the
-            // stream desynced the parse by one statement: JSON::Class::Types'
+            // `is export(:TAG)` — the tag list is consumed with it. Leaving it in
+            // the stream desynced the parse by one statement: JSON::Class::Types'
             // `class NOT-SET is Nil is export(:NOT-SET) {…}` silently ate the
             // statement after the class, and the miss surfaced as "Confused"
-            // several lines later. Tags gate selective import, which rakupp
-            // does not implement — parse-only, like the sub-trait handler.
+            // several lines later. The tags gate a selective import.
             if (isKind(Tok::LParen)) {
-                int d = 0;
-                do {
-                    if (isKind(Tok::LParen)) d++;
-                    else if (isKind(Tok::RParen)) d--;
-                    advance();
-                } while (d > 0 && !isKind(Tok::End));
+                if (!cur().spaceBefore) cd->exportTags = readExportTags();
+                else { int d = 0; do { if (isKind(Tok::LParen)) d++; else if (isKind(Tok::RParen)) d--; advance(); }
+                       while (d > 0 && !isKind(Tok::End)); }
             }
             continue;
         }

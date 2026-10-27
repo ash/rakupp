@@ -326,7 +326,7 @@ template <class IO> void visit(IO& io, VarExpr& n)  {
     F(io, n.name); F(io, n.declare); F(io, d.declScope);
     F(io, d.declType); F(io, d.declCoerce);
     ioExpr(io, d.declDefault);
-    F(io, d.declDynamic); F(io, d.declExport); F(io, n.pkgSymbol);
+    F(io, d.declDynamic); F(io, d.declExport); ioVec(io, d.exportTags); F(io, n.pkgSymbol);
     F(io, d.containerIs); F(io, d.containerOf);
     ioExpr(io, d.declShape); F(io, d.namedBind);
     F(io, n.processScoped);
@@ -343,7 +343,7 @@ template <class IO> void visit(IO& io, VarExpr& n)  {
     F(io, n.lexResolved); F(io, d.readType);
     if constexpr (IO::reading) {
         if (!d.declScope.empty() || !d.declType.empty() || !d.declCoerce.empty() || d.declDefault ||
-            d.declDynamic || d.declExport || !d.containerIs.empty() || !d.containerOf.empty() ||
+            d.declDynamic || d.declExport || !d.exportTags.empty() || !d.containerIs.empty() || !d.containerOf.empty() ||
             d.declShape || d.namedBind || !d.pseudoPkg.empty() || d.declTypeExpr || !d.readType.empty())
             n.dm() = std::move(scratch);
     }
@@ -470,7 +470,7 @@ template <class IO> void visit(IO& io, ClassDecl& n) {
     F(io, n.isModuleDecl);
     F(io, n.classRw);
     F(io, n.howName);
-    F(io, n.isExport);
+    F(io, n.isExport); ioVec(io, n.exportTags);
     if constexpr (IO::reading) {
         size_t k = io.count(); n.userTraits.clear(); n.userTraits.resize(k);
         for (auto& ut : n.userTraits) { F(io, ut.first); ioExpr(io, ut.second); }
@@ -481,7 +481,7 @@ template <class IO> void visit(IO& io, ClassDecl& n) {
 }
 template <class IO> void visit(IO& io, Block& n)    { ioStmtVec(io, n.stmts); F(io, n.isCatch);
                                                       F(io, n.phaser); F(io, n.stmtForm); }
-template <class IO> void visit(IO& io, EnumDecl& n) { F(io, n.name); ioExpr(io, n.values); F(io, n.isExport); F(io, n.pod); F(io, n.podTrail); }
+template <class IO> void visit(IO& io, EnumDecl& n) { F(io, n.name); ioExpr(io, n.values); F(io, n.isExport); ioVec(io, n.exportTags); F(io, n.pod); F(io, n.podTrail); }
 template <class IO> void visit(IO& io, IfStmt& n)   {
     F(io, n.thenVar);
     if constexpr (IO::reading) {
@@ -521,7 +521,7 @@ template <class IO> void visit(IO& io, UseStmt& n)  { F(io, n.module); F(io, n.a
                                                       F(io, n.authReq);
                                                       ioExpr(io, n.ifCond); } // :if(EXPR) — same lesson
 template <class IO> void visit(IO&, EmptyStmt&)     {}
-template <class IO> void visit(IO& io, SubsetDecl& n) { F(io, n.name); F(io, n.baseType); F(io, n.defConstraint); F(io, n.coerceBase); ioExpr(io, n.where); F(io, n.isMy); F(io, n.isExport); }
+template <class IO> void visit(IO& io, SubsetDecl& n) { F(io, n.name); F(io, n.baseType); F(io, n.defConstraint); F(io, n.coerceBase); ioExpr(io, n.where); F(io, n.isMy); F(io, n.isExport); ioVec(io, n.exportTags); }
 template <class IO> void visit(IO& io, GivenStmt& n){ ioExpr(io, n.topic); F(io, n.var); F(io, n.modifier);
                                                       ioBlock(io, n.body); F(io, n.defGuard); F(io, n.hasElse);
                                                       ioBlock(io, n.elseBody); F(io, n.elseVar);

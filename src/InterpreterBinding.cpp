@@ -8143,14 +8143,15 @@ Value attrTypeValue(const ClassAttr& a) {
     return Value::typeObj(a.type.empty() ? "Mu" : a.type);
 }
 
-// `our &infix:<qq> is export = &c` is in its package's EXPORT::DEFAULT and
-// EXPORT::ALL as the routine it was given, as an exported `sub` is
-// (`M::EXPORT::DEFAULT::{'&infix:<qq>'}`). Only a `&` one: an exported `our $x`
-// is imported as the module's own container, which a copy here would shadow.
-void Interpreter::publishOurExport(const std::string& name, const Value& v) {
-    if (!global_ || tctx().pkgPrefix.empty() || name.size() < 2 || name[0] != '&') return;
-    for (const char* tg : {"DEFAULT", "ALL"})
-        global_->define(name.substr(0, 1) + tctx().pkgPrefix + "EXPORT::" + tg + "::" + name.substr(1), v);
+// `our &infix:<qq> is export = &c` is in its package's EXPORT tags as the
+// routine it was given, as an exported `sub` is
+// (`M::EXPORT::DEFAULT::{'&infix:<qq>'}`). Only a `&` one here: an exported
+// `our $x` goes in as its container, once the package body has run
+// (recordPackageExports).
+void Interpreter::publishOurExport(const std::string& name, const Value& v, const std::vector<std::string>& tags) {
+    const std::string& pfx = tctx().pkgPrefix;
+    if (!global_ || pfx.size() < 3 || name.size() < 2 || name[0] != '&') return;
+    exportSymbol(pfx.substr(0, pfx.size() - 2), name, v, tags);
 }
 
 // `(HB.new, HB.new)>>.HA::m` — the qualified call, per element.

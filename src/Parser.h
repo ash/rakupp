@@ -380,6 +380,7 @@ private:
     char varsPragma_ = 0;         // `use variables :D` / `:U` / `:_` in force (block-scoped)
     std::string lastOfType_;      // `of Type` met among a variable's traits
     bool lastIsExport_ = false;   // `is export` on a variable declaration, same way
+    std::vector<std::string> lastExportTags_; // …and its `(:a :b)` tags
     std::string lastContainerOf_; // its key-type parameter: `is Bag[Int]`
     int sigOwnerLine_ = 0;        // decl line of the routine whose signature is being parsed:
                                   // its leading `#|` belongs to the routine, not to a parameter
@@ -678,6 +679,7 @@ private:
     // adverbs written after a call's `)`: `f($x):12size` passes `size => 12`
     void takeTrailingAdverbs(std::vector<ExprPtr>& args);                     // :name / :!name / :name(x) / :$var
     ExprPtr pkgExistsAdverb(const std::string& qual);                          // `Foo::<$x>:exists` (null: no adverb)
+    ExprPtr pkgStashSubscript(const std::string& pkg, const std::vector<std::string>& words); // `Foo::<$x>:p` (ParserPackages.cpp)
     std::vector<ExprPtr> parseCallArgs(ExprPtr* invocant = nullptr); // after '('; *invocant set for `f($obj: args)`
     ExprPtr parseInterpString(const std::string& raw);
     size_t infixDotAt_ = (size_t)-1; // the dotty infix `EXPR . method` being applied (see parseExpr)
@@ -693,6 +695,8 @@ private:
     // `:foo«a b»`, `:foo['a','b']`, `:foo('a','b')`. All of them name the SAME
     // symbol, so the answer is canonical — Rakudo's angle spelling.
     std::string readExtendedNameSuffix();
+    std::vector<std::string> readExportTags();   // `is export(:a :b)`'s tags, at the `(`
+    void takeExportTrait(VarExpr* ve);           // lastIsExport_ and its tags onto a declaration
 };
 
 } // namespace rakupp

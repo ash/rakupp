@@ -2181,7 +2181,7 @@ bool Interpreter::ourShareable(const VarExpr* ve) {
     const std::string& n = ve->name;
     return n.size() >= 2 && (n[0] == '$' || n[0] == '@' || n[0] == '%') &&
            (nameLetterAt(n, 1) || (n[1] == '_' && n.size() > 2)) && n.find("::") == std::string::npos &&
-           !ve->viaPseudoPkg && !vd.declExport && !vd.namedBind && vd.declStubType.empty();
+           !ve->viaPseudoPkg && !vd.namedBind && vd.declStubType.empty();
 }
 // …and with nothing for the declaring scope to record about the name: no type,
 // default, trait or shape. Those run the declaration's own path, which keeps
@@ -2797,6 +2797,19 @@ Value Interpreter::makePairCellProxy(PRef<Value> cell) {
 // sees the variable now, and `Circle::{'$pi'} = 3` assigns to it.
 Value Interpreter::stashEntryOf(const Value& slot) {
     return slot.isCell() ? makeSharedCellProxy(slot.cellS()) : slot;
+}
+
+// `Foo::<$x>:delete` takes the symbol out of the package, not just out of this
+// copy of its table: `.WHO` builds the table from the long names, `$Foo::x`
+// among them, and would have put it straight back. (The package's own code
+// keeps its lexical `$x`, as in Rakudo.)
+void Interpreter::stashDeleteSymbol(const std::string& pkg, const std::string& key) {
+    if (!global_ || pkg.empty() || key.empty()) return;
+    const std::string gn = std::strchr("$@%&", key[0]) ? key.substr(0, 1) + pkg + "::" + key.substr(1)
+                                                       : pkg + "::" + key;
+    if (!global_->localRaw(gn)) return;
+    noteSymbolMutation("stash delete");
+    global_->undefine(gn);
 }
 
 Value Interpreter::makeArraySlotProxy(PRef<ValueList> arr, size_t idx, const std::string& nativeT) {

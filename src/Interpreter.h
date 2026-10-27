@@ -2795,6 +2795,7 @@ public:
     Value makeArraySlotProxy(PRef<ValueList> arr, size_t idx, const std::string& nativeT = "");
     Value makePairCellProxy(PRef<Value> cell);   // a Pair's value container, as a Proxy
     Value stashEntryOf(const Value& slot);       // a package global as its Stash holds it (a cell as its Proxy)
+    void stashDeleteSymbol(const std::string& pkg, const std::string& key);   // `Foo::<$x>:delete`'s global
     // `$s.substr-rw(from, len)` as a Proxy over the variable `vname` in `owner`:
     // reading reads the text there now, assigning splices into the variable
     // (len -1: to the end). substrRwProxyOf builds one for a `substr-rw` call
@@ -3428,7 +3429,22 @@ public:
     Value minMaxPairsOf(const std::vector<std::pair<Value, Value>>& kvs, const Value& fn, bool wantMax);
     bool checkElemTypeOrShrink(const std::string& want, Value& v, const std::string& symbol, Value* growBase, size_t growSize, Value* passed = nullptr);
     Value* newGlobalSymbolSlot(const std::string& nm);                    // `GLOBAL::<Probe> = 43`
-    void publishOurExport(const std::string& name, const Value& v);       // `our &f is export = …` in EXPORT::DEFAULT
+    void publishOurExport(const std::string& name, const Value& v, const std::vector<std::string>& tags); // `our &f is export = …` in its EXPORT tags
+    // EXPORT_SYMBOL, as Rakudo's: `sym` in `pkg::EXPORT::TAG` for each of its
+    // tags (DEFAULT when none) and ALL, the tag packages made as needed
+    void exportSymbol(const std::string& pkg, const std::string& sym, const Value& v,
+                      const std::vector<std::string>& tags);
+    // …for what a package body declared `is export`, and what the packages
+    // declared inside it exported, once the body has run
+    void recordPackageExports(const std::string& pkg, const std::vector<StmtPtr>& body, Env* env);
+    void exportRoutine(const std::string& sname, const Value& code, const std::vector<std::string>& tags);
+    // `import P :tags`: what P exported besides its routines, by those tags
+    void importPackageExports(const std::string& pkg, const std::set<std::string>& tags,
+                              const std::set<std::string>& wantNames, bool askedAll);
+    struct PkgExport { std::string sym; std::vector<std::string> tags; Value v; };
+    std::map<std::string, std::vector<PkgExport>> pkgExports_;   // what exportSymbol put in each package's EXPORT
+    std::unordered_set<std::string> exportSymbolNames_;           // …by global name (not a hand-built tag's)
+    std::vector<PkgExport>* loadExports_ = nullptr;   // everything the module being loaded exports, once each
     Value hyperQualifiedCall(const std::string& method, ClassInfo* qual, const Value& inv, ValueList& args);
     void refuseUnknownQualifier(const std::string& qual, const std::string& method, const Value& inv);
     bool userShadowsCoreRole(const std::string& type);                    // `role Numeric { }` hides the core one

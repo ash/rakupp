@@ -13812,7 +13812,7 @@ Value Interpreter::evalAssign(Assign* a, bool sink) {
                         }
                 if (ourOwner) global_->define(qual, makeEnvSlotProxy(ourOwner, ve->name));
                 else global_->define(qual, *p);
-                if (ve->d().declExport) publishOurExport(ve->name, *p);   // `M::EXPORT::DEFAULT::<&f>`
+                if (ve->d().declExport) publishOurExport(ve->name, *p, ve->d().exportTags);   // `M::EXPORT::DEFAULT::<&f>`
                 // `our %x is export` — the importer sees the BARE name too. In a
                 // `unit class` the declaration lives in the CLASS body, so the
                 // module-load republish never saw it (Date::Names keeps its
@@ -13851,7 +13851,8 @@ Value Interpreter::evalAssign(Assign* a, bool sink) {
                  !ve->name.empty()) {
             if (Value* p = tctx().cur->find(ve->name)) {
                 if (curPkgEnv_) curPkgEnv_->define(ve->name, *p);
-                global_->define(ve->name, *p);
+                // (a module's importer takes it by tag: the load's publish)
+                if (loadingModuleDepth_ == 0) global_->define(ve->name, *p);
             }
         }
     }
@@ -28254,7 +28255,12 @@ Value Interpreter::evalIndex(Index* idx) {
             }
         }
         if (wantDelete) for (auto& h : hits) if (h.exists) {
-            if (idx->isHash) { raceKeys(base.hash(), RaceAcc::Write); base.hash()->erase(h.skey.empty() ? h.keyV.toStr() : h.skey); }
+            if (idx->isHash) {
+                raceKeys(base.hash(), RaceAcc::Write);
+                const std::string k = h.skey.empty() ? h.keyV.toStr() : h.skey;
+                base.hash()->erase(k);
+                if (base.hashKind == "Stash" && !base.s.empty()) stashDeleteSymbol(base.s.str(), k);
+            }
             else { long long ai = h.keyV.toInt();
                    if (base.arr() && ai >= 0 && ai < (long long)base.arr()->size()) { raceElem(base.arr(), (size_t)ai, RaceAcc::Write); (*base.arr())[ai] = Value::any(); } }
         }
@@ -30944,9 +30950,11 @@ Value Interpreter::evalVarExpr(Expr* e) {
         // in the module scope it was COPIED out at publish time, so every
         // later write by the module landed in a slot no importer could see:
         // Time::gmtime's `:FIELDS` variables read back undefined however
-        // many times gmtime() had filled them in. Declare it where both
-        // sides look — the global the importer's bare name resolves to.
-        if (vd.declScope == "our" && vd.declExport && sigil != '&' &&
+        // many times gmtime() had filled them in. A name that can share the
+        // package's cell does (ourCell, below), and its importer is bound to
+        // that cell by tag (the load's publish); any other is declared where
+        // both sides look — the global the importer's bare name resolves to.
+        if (vd.declScope == "our" && vd.declExport && sigil != '&' && !ourShareable(ve) &&
             global_ && curPkgEnv_ && curPkgEnv_.get() != global_.get() &&
             !vd.declShape && !vd.declDefault && vd.containerIs.empty()) {
             // …and the qualified name is a view onto it: with no initialiser
