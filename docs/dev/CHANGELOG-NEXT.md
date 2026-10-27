@@ -17,7 +17,8 @@ e24f05f1 (NUM-UNBOX-PLAN P0); 8644846a; 74806a6d; 93f9a4af and c7a12943;
 12af490d (RACE-DETECTOR-PLAN P0-P4); 42f79e98, b9108e1d, 0b9950b1, 500c29e2,
 1b182b8e, 828e52d5, 4d1c7cc3, 80ea9030, d972abe7, 166334a9 and 29b10450;
 5d31d4a2 and aff5032b (issue #202); 5d0e7ce9 and 170802d4 (issue #203);
-cb7933f3 (issue #204); cb5b360a, d5184116 and 50aebf54.*
+cb7933f3 (issue #204); cb5b360a, d5184116 and 50aebf54; 67a2fe76 (issue
+#198).*
 
 ---
 
@@ -610,8 +611,24 @@ does not.
   core-qualified-parameter-type, routine-is-lexical,
   array-ends-are-containers) agree with Rakudo 2026.09.
 
+- **A capitalized sub takes a block as its argument** (67a2fe76; issue
+  #198). `sub Foo(&bar) { bar }; Foo { say "bar" }` died "Calling Foo()
+  will never work with declared signature (&bar)" where `foo { … }` worked:
+  every capitalized name before a `{` was read as a type with a block after
+  it, so Foo was called with nothing and the block ran on its own. A name
+  the unit declares a routine of, above or below the call, or a `use`d
+  module does, and no type has, is now the listop Rakudo reads, in an
+  interpolated `"{ … }"` and an EVAL too. `when Int { }` and `if $x ~~ Pt
+  { }` keep the type. t/regression/issue-198-titlecase-sub-block-arg.raku
+  agrees with Rakudo 2026.09.
+
 ### Left open
 
+- A routine's name before a block in a statement condition is not Rakudo's
+  xblock rule (67a2fe76; lowercase names before it too): `if foo { 1 } {
+  say "yes" }` hands foo nothing, `if bar { … }` runs where Rakudo asks for
+  parens, and `whenever tick { … }` hands tick the block. TODO-FOLLOW-UPS.md
+  has it.
 - Two types of one name are still one here (50aebf54): a top-level class of
   a core class's own name that inherits it is refused as X::NYI (Rakudo
   accepts it; in a package it works), a top-level class of a core name that
