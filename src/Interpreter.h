@@ -4682,6 +4682,11 @@ public:
     // `$repo.need` of an explicit store loads THIS dist's source (see loadModuleImpl)
     struct PinnedInstall { std::string name, repo, distId, srcId; };
     std::optional<PinnedInstall> pinnedInstall_;
+    // `require "path"` and `require Stub:file(path)` load THAT file, not what
+    // the search path makes of its name, and run its `sub MAIN` (loadModuleImpl)
+    struct PinnedFile { std::string name, path; };
+    std::optional<PinnedFile> pinnedFile_;
+    std::string requireFilePath(const std::string& spec); // the file a `require "spec"` names, or ""
     Value buildInstalledDistribution(const std::string& repo, const std::string& distId); // CURI dist/<id> meta → $?DISTRIBUTION
     Value buildEmbeddedResourceMap(const std::string& distKey); // resources compiled INTO this binary → resource Hash
     Value buildEmbeddedDistribution(const std::string& distKey); // embedded META6 → $?DISTRIBUTION

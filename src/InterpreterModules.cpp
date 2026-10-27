@@ -952,6 +952,28 @@ std::unique_lock<std::recursive_mutex> Interpreter::lockLoader() {
     return lk;
 }
 
+// The file `require "spec"` names, found as Rakudo's
+// CompUnit::Repository::FileSystem.load finds it: an absolute path as it
+// stands, a relative one under each directory on the search path in turn.
+// "" when no such file exists.
+std::string Interpreter::requireFilePath(const std::string& spec) {
+    auto isFile = [](const std::string& p) {
+        struct stat st{};
+        return ::stat(p.c_str(), &st) == 0 && S_ISREG(st.st_mode);
+    };
+    const bool absolute = (!spec.empty() && (spec[0] == '/' || spec[0] == '\\')) ||
+                          (spec.size() > 2 && ascii::isalpha((unsigned char)spec[0]) && spec[1] == ':' &&
+                           (spec[2] == '/' || spec[2] == '\\'));
+    if (absolute) return isFile(spec) ? spec : std::string();
+    for (auto& entry : libPaths_) {
+        std::string pre;
+        if (repoSpecStore(entry, pre)) continue;
+        std::string p = repoSpecDir(entry) + "/" + spec;
+        if (isFile(p)) return p;
+    }
+    return "";
+}
+
 void Interpreter::loadModule(const std::string& name, const std::vector<std::string>& importArgs, bool doImport, bool quiet, const std::string& verReq, bool requireForm, bool mergeGlobals) {
     auto loaderLock = lockLoader();
     const std::string importer = stashUnitHere();
@@ -1028,6 +1050,10 @@ void Interpreter::loadModuleImpl(const std::string& name, const std::vector<std:
     // …and the `:auth<…>` it was written with, before a nested `use` resets it
     const std::string useAuth = std::move(pendingUseAuth_);
     pendingUseAuth_.clear();
+    // …and the file a `require "path"` named (requireFilePath)
+    std::optional<PinnedFile> pinFile;
+    if (pinnedFile_ && pinnedFile_->name == name) pinFile = std::move(pinnedFile_);
+    pinnedFile_.reset();
     StageLoadTimer stageTimer(name, !loadedModules_.count(name)); // --stagestats: a first load, timed
     // DATA-PLAN P6. Before anything is looked for on disk: this engine may be
     // able to answer the `use` itself, in which case nothing loads at all.
@@ -1749,6 +1775,20 @@ void Interpreter::loadModuleImpl(const std::string& name, const std::vector<std:
                 exec(st.get());
             }
             runInitsOnce(prog->stmts.size()); // a module that is nothing but `use`s and declarations
+            // A file loaded by its PATH is no precompiled module in Rakudo but a
+            // mainline compiled from source, and its `sub MAIN` runs at the end
+            // of it on the program's @*ARGS (Actions.nqp's RUN-MAIN rule). zef's
+            // legacy builder relies on it: it `require`s Build.pm6 by path, and
+            // Timezones::ZoneInfo's is nothing but a `sub MAIN` that writes its
+            // resources and exits.
+            if (pinFile)
+                if (Value* m = moduleEnv->local("&MAIN"); m && m->t == VT::Code) {
+                    Value mainSub = *m;
+                    ValueList margs;
+                    int rc = mainProtocol(mainSub, margs);
+                    if (rc >= 0) throw ExitEx{rc};   // the usage path's exit status
+                    sinkReturnedValue(callCallable(mainSub, margs));
+                }
         }
         catch (RakuError& e) {
             loadingModuleDepth_--; moduleDoImport_ = savedDoImport;
@@ -1931,6 +1971,26 @@ void Interpreter::loadModuleImpl(const std::string& name, const std::vector<std:
         if (doImport && !requireForm) checkImportTags(name, importArgs);   // (a `require` list names symbols)
     };
 
+    // `require "path"`: the file it names, whatever else answers to its name.
+    // Its %?RESOURCES and $?DISTRIBUTION are those of the tree it sits in, as
+    // for a module found under -I.
+    if (pinFile) {
+        std::ifstream in(pinFile->path, std::ios::binary);
+        if (in) {
+            if (traceLoad) std::cerr << "[Load] " << name << " <- file " << pinFile->path << "\n";
+            std::ostringstream ss; ss << in.rdbuf();
+            const size_t sl = pinFile->path.find_last_of("/\\");
+            std::string distRoot = sl == std::string::npos ? "." : sl == 0 ? "/" : pinFile->path.substr(0, sl);
+            if (distRoot.size() > 4 && distRoot.compare(distRoot.size() - 4, 4, "/lib") == 0)
+                distRoot = distRoot.substr(0, distRoot.size() - 4);
+            resourceStack_.push_back(buildSourceResourceMap(distRoot));
+            distStack_.push_back(buildDistribution(distRoot));
+            struct RG { ValueList& s; ~RG() { s.pop_back(); } } rg{resourceStack_};
+            struct DG { ValueList& s; ~DG() { s.pop_back(); } } dg{distStack_};
+            loadSource(ss.str(), pinFile->path);
+            return;
+        }
+    }
 
     // A module compiled INTO this binary needs no file at all — take it before
     // the search path is even consulted, so a `--exe` binary runs with its
@@ -5282,6 +5342,8 @@ static void methodTermJoinsClass(std::unordered_map<std::string, std::shared_ptr
                     }
                     std::set<std::string> before;
                     for (auto& kv : classes_) before.insert(kv.first);
+                    // that very file, as `require "path"` loads it (MAIN and all)
+                    if (std::string f = requireFilePath(path); !f.empty()) pinnedFile_ = PinnedFile{stem, f};
                     libPaths_.insert(libPaths_.begin(), dir);
                     try { loadModule(stem, {}, /*doImport=*/true, /*quiet=*/true, "", /*requireForm=*/true); }
                     catch (...) { libPaths_.erase(libPaths_.begin()); throw; }

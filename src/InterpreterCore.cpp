@@ -7853,7 +7853,8 @@ Value Interpreter::callPlainSub(const Value& codeVal, Callable& c, ValueList& ar
         ~DynRestore() { if (t.dynStack.size() > base) { t.dynStack.resize(base); t.cur = s; t.curStateEnv = st; } }
     } dynRestore{tcx, tcx.dynStack.size() - 1, saved, savedState};
     const int callLine = curLine_;
-    tcx.callFrames.push_back({callLine, &codeVal, saved.get()});
+    // (its own scope too, by which a `samewith` in a block it hands out finds it)
+    tcx.callFrames.push_back({callLine, &codeVal, saved.get(), nullptr, env.get()});
     struct CFGuard { ExecContext& t; Interpreter* self; int line;
         ~CFGuard() { if (!t.callFrames.empty()) t.callFrames.pop_back(); self->curLine_ = line; }
     } cfG{tcx, this, callLine};
@@ -24922,7 +24923,25 @@ Value Interpreter::evalUnary(Unary* u) {
             if (name.size() > el && name.compare(name.size() - el, el, ext) == 0 &&
                 u->operand->kind != NK::SymbolicRef) {
                 std::string mod = name.substr(0, name.size() - el);
+                // `require "/abs/Build.pm6"`, `require "./Build.pm6"`: a path
+                // that spells no module name goes by its last segment
+                const bool pathOnly = mod.find("./") != std::string::npos || mod.find('\\') != std::string::npos ||
+                                      mod.find(':') != std::string::npos || (!mod.empty() && mod[0] == '/');
+                if (pathOnly) mod = mod.substr(mod.find_last_of("/\\") + 1);
                 for (size_t k; (k = mod.find('/')) != std::string::npos; ) mod.replace(k, 1, "::");
+                // …and the FILE it names is what loads, its `sub MAIN` with it.
+                // A path no search could turn into anything else is an error
+                // when the file is not there, as in Rakudo — it loaded nothing,
+                // silently, and zef's `require '/dist/Build.pm6'` then reported
+                // the missing class instead.
+                const std::string file = requireFilePath(name);
+                if (!file.empty()) pinnedFile_ = PinnedFile{mod, file};
+                else if (pathOnly) {
+                    std::string where = "Could not find " + name + " in:";
+                    for (auto& b : libPaths_) where += "\n    " + b;
+                    for (auto& r : rakuRepoPrefixes()) where += "\n    " + r;
+                    throwTyped("X::NotFoundInRepository", {{"file", name}}, where);   // (Rakudo's type)
+                }
                 std::unordered_set<std::string> before;
                 for (auto& kv : classes_) before.insert(kv.first);
                 try { loadModule(mod, {}, /*doImport=*/true, /*quiet=*/true, "", /*requireForm=*/true); }
