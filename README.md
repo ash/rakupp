@@ -344,6 +344,10 @@ notebook cells through this engine. One interpreter serves the whole notebook,
 so a sub defined in cell 3 is callable in cell 9; a cell's output streams as it
 is produced; a cell that dies leaves the session intact; and
 `jupyter-display($html, 'text/html')` hands the frontend something to render.
+Jupyter::Kernel's cell magics work as they do there: `#% html`, `#% latex`,
+`#% markdown` and `#% js` type a cell's value, `#% > html` types its printed
+output, and `%% bash`, `%% run FILE`, `%% always` and `#% javascript` work
+on the whole cell.
 
 Nothing needs installing on the Raku side — **no ZeroMQ, no Python module, no
 shared library**. The binary speaks ZMTP and signs its own messages, because
