@@ -16,7 +16,7 @@ e24f05f1 (NUM-UNBOX-PLAN P0); 8644846a; 74806a6d; 93f9a4af and c7a12943;
 85d56001; 960e8aed; 7fcca8a8; 273863ac; 90bc6e23; 84add3b1; 08a17d21;
 12af490d (RACE-DETECTOR-PLAN P0-P4); 42f79e98, b9108e1d, 0b9950b1, 500c29e2,
 1b182b8e, 828e52d5, 4d1c7cc3, 80ea9030, d972abe7, 166334a9 and 29b10450;
-5d31d4a2 (issue #202).*
+5d31d4a2 and aff5032b (issue #202).*
 
 ---
 
@@ -371,6 +371,20 @@ plain before 500c29e2 and native from it, unless they say otherwise.
   `Circle::{'$pi'} = 3` assigns to `$Circle::pi`. Compiled, `Circle::.keys`
   was (): the native bareword lookup made a type object named `Circle::`
   where the interpreter answers the package's stash.
+- **A module's importer takes its variables, constants and enums by tag**
+  (aff5032b; issue #202). Only a routine's `is export(:tag)` was read: a
+  plain `use` brought in `our $tv is export(:vt)` and `constant TK is
+  export(:ct)`, `use M :vt` brought in M's DEFAULT variables, constants and
+  enum members too, and `need M` its constants and enum members. A constant
+  or enum a `unit module` declared without exporting it reached the
+  importer all the same (`use NC; say ha`). Every declaration keeps its
+  tags now (AST cache v51), a load imports what the module exported by
+  tag, and `require M <C $x>` by name. An exported `our` variable is its
+  package's one cell, which the importer is bound to. `import G` brings in
+  G's exported variables and constants, and a `sub EXPORT` handing over a
+  Stash's variable binds its container (roast's gh2979.t). The orbits and
+  fourier showcases used four constants their libraries never exported;
+  those are `is export` now, and both showcases run under Rakudo too.
 
 ### Fixed: crashes
 
@@ -497,6 +511,21 @@ does not.
   recorded for it (AST cache v50).
   t/regression/issue-202-stash-our-variable-lookup.raku agrees with Rakudo
   2026.09.
+- **EXPORT holds every exported symbol, under each of its tags** (aff5032b;
+  issue #202). `Mod::EXPORT::DEFAULT` and `::ALL` listed only routines, a
+  tagged routine sat under DEFAULT, and no tag package of its own existed.
+  A symbol is in each tag it names (DEFAULT when none) and ALL now, the tag
+  packages are listed in `Mod::EXPORT`, and a variable's entry is its
+  container. A package declared in the program, a class, and every package
+  around an exporting one have an EXPORT, as Rakudo installs a symbol in
+  the EXPORT of each package it is declared within.
+- **A package's Stash lists its subsets and modules, and `Foo::<$x>` takes
+  every adverb** (aff5032b; issue #202). `Foo::<$x>:p` was the value and a
+  Pair `p => True`; `:k`, `:v`, `:kv`, `:!p`, a slice and `:delete` work as
+  on `Foo::{…}`, and `:delete` removes the symbol from the package
+  (`M::<$x>:delete` was a parse error).
+  t/regression/export-tags-and-package-stashes.raku agrees with Rakudo
+  2026.09.
 
 ### Left open
 
@@ -539,10 +568,12 @@ does not.
   not in scope fails the `--exe` build with a C++ error (`v_si` undeclared):
   a routine (`sub show { say $i }` beside `loop (my int $i = 0; …)`), or a
   top-level CATCH. The same before these changes (8c570a98).
-- Found with issue #202, the same on b85a84ec: `Mod::EXPORT::DEFAULT` and
-  `::ALL` list only the exported routines, where Rakudo lists the exported
-  variables, constants and types too, and a tagged routine sits under
-  DEFAULT rather than its tag. An exported subset is missing from its
-  module's Stash, a package declared in the program (`module M { sub f is
-  export {…} }`) lists no EXPORT, and `Circle::<$pi>:p` reads the `:p` as a
-  separate Pair.
+- Found with issue #202, the same on b85a84ec: a class or subset a module
+  declares is reachable from its importer by its short name, exported or
+  not and whatever tags were asked for (`use NC; say Hid.^name` answers
+  NC::Hid where Rakudo refuses the name). `Mod::EXPORT.^name` is
+  `Mod::EXPORT` where Rakudo's is `EXPORT`, and `UNIT::EXPORT` is empty. A
+  module that fills `EXPORT::DEFAULT::{…}` in a BEGIN without declaring the
+  package writes a global EXPORT::DEFAULT, where Rakudo resolves the name
+  inside the module's package. Two packages of one file exporting the same
+  name are not X::Export::NameClash.
