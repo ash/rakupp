@@ -1562,6 +1562,11 @@ const std::string& Interpreter::typeAliasTarget(const std::string& name) {
     auto hit = typeAliasCache_.find(name);
     if (hit != typeAliasCache_.end()) return hit->second;
     std::string target = name;
+    // `CORE::DateTime $self` is the setting's type, never what the scope has
+    // made of the short name since (DateTime::Timezones' own DateTime)
+    if (name.size() > 6 && name.compare(0, 6, "CORE::") == 0 && !classes_.count(name) &&
+        isKnownTypeName(name.substr(6)))
+        return typeAliasCache_.emplace(name, name.substr(6)).first->second;
     // Only a name nothing else claims: a real class, a subset or a built-in
     // resolves itself, and asking the scope about those would cost a lookup on
     // every dispatch for no answer.
@@ -1573,6 +1578,10 @@ const std::string& Interpreter::typeAliasTarget(const std::string& name) {
 }
 
 bool Interpreter::typeMatchesResolved(const Value& v, const std::string& type) {
+    // `CORE::Int`: the setting's Int (see typeAliasTarget)
+    if (type.size() > 6 && type.compare(0, 6, "CORE::") == 0 && !classes_.count(type) &&
+        isKnownTypeName(type.substr(6)))
+        return typeMatchesResolved(v, type.substr(6));
     // a USER role named like a core one (`role Numeric { }`) SHADOWS it
     if (v.t != VT::Object && v.t != VT::Type && userShadowsCoreRole(type)) return false;
     // Distribution::Path, ::Hash and a repository's own dists report their own

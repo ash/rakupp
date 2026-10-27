@@ -2724,6 +2724,17 @@ public:
     // Does this candidate bind a CONTAINER argument to an `is rw` parameter?
     // Between two otherwise tied candidates that one is the narrower.
     bool rwCandidateBinds(const Value& cand, const std::vector<ExprPtr>* rwArgs);
+    // A SUB called with a method call's invocant as its first argument (`$d.&f`,
+    // the method a `.^add_fallback` computes): the invocant's expression leads
+    // the call's own as its rwArgs, so an `is rw` parameter takes the caller's
+    // container and a multi picks its `is rw` candidate only for one
+    Value callInvocantFirst(const Value& code, const Value& inv, const ValueList& args,
+                            Expr* invExpr, const std::vector<ExprPtr>* argExprs);
+    Expr* liveInvocantExpr(const Value& inv);   // …tctx()'s, when it is this invocant's
+    // a class DERIVING DateTime: its operators and the DateTimes its methods
+    // answer go by Rakudo's definitions (InterpreterCalls.cpp)
+    std::optional<Value> derivedDateTimeArith(const std::string& op, const Value& l, const Value& r);
+    Value rewrapDerivedDateTime(const Value& inv, const std::string& m, Value r);
     // Could a method call by this NAME hand back a CONTAINER? Only if some type
     // declares an `is rw` public attribute of that name, or a routine of that
     // name returns `is rw`/`is raw`, or the engine itself answers a container
@@ -2767,6 +2778,7 @@ public:
     }
     // A method `augment`-ed onto a BUILT-IN type, if there is one for this invocant.
     Value* builtinExtMethod(const Value& inv, const std::string& m);
+    Value wrapBuiltinMethod(const std::string& type, const std::string& name, const Value& wrapper); // `.wrap` of a core method
     // What an object contributes when assigned to a `%` container: its own
     // `.list`/`.iterator` (declared or `handles`-delegated), if it has one.
     bool objListItems(const Value& v, ValueList& out);

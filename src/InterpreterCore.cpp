@@ -9908,11 +9908,15 @@ static std::string nativeCategory(const std::string& arrayTypeName) {
 // The right side of a bind that can only be a VALUE: a literal, an operator's
 // result, and `once`/`do` around one. (argIsNeverContainer's shapes, which a
 // ternary or a short-circuit operator passes only when both sides are values.)
-static bool bindsBareValue(const Expr* e) {
+static bool bindsBareValue(Interpreter& I, const Expr* e) {
     if (!e) return false;
     if (e->kind == NK::Unary) {
         auto* u = static_cast<const Unary*>(e);
         if (opEq(u->op, "once")) return true;
+        // `my \d = BEGIN DateTime.new: now` is what the expression is
+        if ((opEq(u->op, "BEGIN") || opEq(u->op, "CHECK") || opEq(u->op, "INIT")) && u->operand &&
+            u->operand->kind != NK::BlockExpr)
+            return bindsBareValue(I, u->operand.get());
         if (opEq(u->op, "do") && u->operand) {
             const Expr* x = u->operand.get();
             if (x->kind == NK::BlockExpr) {
@@ -9920,11 +9924,24 @@ static bool bindsBareValue(const Expr* e) {
                 if (be->isSub || be->body.empty() || be->body.back()->kind != NK::ExprStmt) return false;
                 x = static_cast<const ExprStmt*>(be->body.back().get())->e.get();
             }
-            return bindsBareValue(x);
+            return bindsBareValue(I, x);
         }
         return false;
     }
     if (e->kind == NK::Index) return false;   // a subscript names an element container
+    // …and a CONSTRUCTOR answers a fresh object, no container (`my \d =
+    // DateTime.new(0)`). Not any method: `@a.first`, `.head` and `.tail`
+    // hand back the element's own container in Rakudo — and not the
+    // constructors of the containers themselves (`my $p := Proxy.new(…)`).
+    if (e->kind == NK::MethodCall) {
+        auto* mc = static_cast<const MethodCall*>(e);
+        const Expr* ty = mc->inv.get();
+        const bool container = ty && ty->kind == NK::NameTerm &&
+            (opEq(static_cast<const NameTerm*>(ty)->name, "Proxy") ||
+             opEq(static_cast<const NameTerm*>(ty)->name, "Scalar"));
+        return !container && !mc->meta && !mc->methodExpr && !mc->hyper && opEq(mc->method, "new") &&
+               !I.methodMayYieldContainer(mc->method);
+    }
     return argIsNeverContainer(e);
 }
 
@@ -13689,7 +13706,7 @@ Value Interpreter::evalAssign(Assign* a, bool sink) {
     // concrete object"), so a name term that produced a type object counts.
     // (…and so is `my \x = 42`: a sigilless declarator's `=` binds too)
     const bool bareBind = (isBind || sigillessDeclBind(a)) && a->target->kind == NK::VarExpr &&
-                          bindsBareValue(a->value.get());
+                          bindsBareValue(*this, a->value.get());
     // A sigilless name bound to ANOTHER one that holds a bare value
     // (`my \x = 5; my \y = x`) holds that value, immutable — but one holding a
     // container shares it (a cell, or a slot's Proxy), and an Array or Hash is
@@ -22712,6 +22729,9 @@ Value Interpreter::evalBinary(Binary* b) {
         // operand really is one.
         if (whateverArrivedAsValue(b, l, r)) { Interpreter::valueSmartmatch_ = true; return applyBinOp(op, l, r); }
         if (RAKUPP_UNLIKELY(uninitOperand(l) || uninitOperand(r))) uninitBinaryOperands(b, op, l, r);
+        // an object of a class DERIVING DateTime goes by its own methods (InterpreterCalls.cpp)
+        if (l.t == VT::Object || r.t == VT::Object)
+            if (auto v = derivedDateTimeArith(op, l, r)) return *v;
         // DateTime/Date arithmetic & comparison work on the absolute instant (posix),
         // not the hash's numeric coercion (which would be 0).
         {
@@ -29194,6 +29214,13 @@ struct RatLitParts {
                     return eval(&inner);
                 }
             }
+            // `CORE::DateTime` — the SETTING's type, whatever a scope has bound to
+            // the bare name since: DateTime::Timezones declares its own
+            // `DateTime` and reaches the core one as `CORE::DateTime.new(…)`.
+            // Not looked up again by its short name, which is the shadow.
+            if (n.size() > 6 && n.compare(0, 6, "CORE::") == 0 && !classes_.count(n) &&
+                isKnownTypeName(n.substr(6)))
+                return Value::typeObj(n.substr(6));
             // `OUR::A40` — a package in the CURRENT package's stash
             if (n.size() > 5 && n.compare(0, 5, "OUR::") == 0 && !classes_.count(n)) {
                 NameTerm inner(tctx().pkgPrefix + n.substr(5)); inner.line = e->line;
@@ -31906,7 +31933,10 @@ Value Interpreter::evalMethodCallExpr(Expr* e) {
                 forceLazy(inv);
                 return deep(inv);
             }
-            Value cres = callCallable(mv, ca);
+            // (a sub takes the invocant's container: `$d.&up` with `sub up($s is rw)`)
+            Value cres = mv.t == VT::Code
+                ? callInvocantFirst(mv, inv, ValueList(ca.begin() + 1, ca.end()), mc->inv.get(), &mc->args)
+                : callCallable(mv, ca);
             // `.=` still mutates through an INDIRECT call: `$auth .= &url-decode`
             // is `$auth = url-decode($auth)` (HTTP::Tiny decodes the userinfo
             // this way), and the plain-method path below never sees it.
@@ -32456,11 +32486,7 @@ Value Interpreter::evalMethodCallExpr(Expr* e) {
     // foo($x, ...). Used a lot for "method-ish" helpers, e.g. `@a.sort: { .&naturally }`.
     if (mc->method.size() > 1 && mc->method[0] == '&' && !mc->meta) {
         Value* f = tctx().cur->find(mc->method);
-        if (f && f->t == VT::Code) {
-            ValueList ca; ca.reserve(args.size() + 1);
-            ca.push_back(inv); for (auto& a : args) ca.push_back(a);
-            return callCallable(*f, ca);
-        }
+        if (f && f->t == VT::Code) return callInvocantFirst(*f, inv, args, mc->inv.get(), &mc->args);
     }
     // Autovivification: `%h{k}.push(...)` on an undefined element creates an
     // Array in place (Raku semantics), so the mutation persists in the container.

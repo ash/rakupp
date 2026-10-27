@@ -6829,6 +6829,13 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
                         };
                         return code;
                     }
+                    // …and any other method of that built-in is ITS method object,
+                    // as the MRO finds it: DateTime::Timezones' DateTime wraps the
+                    // core `in-timezone` it inherits with
+                    // `DateTime.^find_method('in-timezone').wrap(…)`
+                    if (!nativeBase.empty() && nativeBase != "Grammar" && !ci->isRole && !mn.empty() &&
+                        isCoreTypeName(nativeBase))
+                        return methodCall(Value::typeObj(nativeBase), "^find_method", ValueList{Value::str(mn)});
                 }
                 return Value::nil();
             }
@@ -8972,6 +8979,15 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
         // the Callable is shared (shared_ptr), every reference — including calls
         // through the routine's name — sees the wrap. Returns a handle for .unwrap.
         if (m == "wrap" && !args.empty()) {
+            // a CORE type's method object (`DateTime.^find_method(…)`) stands for
+            // a method dispatch reaches in C++: the wrap goes where it looks
+            {
+                const auto& ci0 = inv.code()->ci();
+                const std::string owner = ci0.pkg;
+                if (ci0.builtin && ci0.isMethod && !owner.empty() && !classes_.count(owner) &&
+                    isCoreTypeName(owner) && !inv.code()->ci().name.empty())
+                    return wrapBuiltinMethod(owner, inv.code()->ci().name, args[0]);
+            }
             inv.code()->coldM().wrappers.push_back(args[0]);
             noteSymbolMutation("routine .wrap");
             Value h = Value::makeHash(); h.hashKind = "WrapHandle";

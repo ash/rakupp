@@ -8305,7 +8305,8 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
     // builtinExt_ (keyed by type name). Consult it — walking the native ancestry,
     // so augmenting Cool/Any reaches Int/Str too — for native values and type
     // objects, ahead of the built-in method table.
-    if (Value* f = builtinExtMethod(inv, m)) {
+    // (not for skipOwn, the built-in's own: a wrapped one reaches it so, wrapBuiltinMethod)
+    if (Value* f = m.skipOwn ? nullptr : builtinExtMethod(inv, m)) {
         // An augment ADDS candidates; it does not hide the built-in ones. A multi
         // whose candidates all reject the args falls through to the built-in
         // method instead of dying — `augment class DateTime { multi method
@@ -8915,6 +8916,7 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
                 return Value::typeObj("Mu");
             Value code; code.t = VT::Code; code.setCode(makePayload<Callable>());
             code.code()->ciM().name = mn; code.code()->ciM().isMethod = true;
+            code.code()->ciM().pkg = inv.t == VT::Type ? (tn.empty() ? std::string(inv.s) : tn) : inv.typeName(); // (wrapBuiltinMethod)
             code.code()->ciM().builtin = [mn](Interpreter& I, ValueList& a) -> Value {
                 if (a.empty()) return Value::any();
                 Value in2 = a[0]; ValueList rest(a.begin() + 1, a.end());
@@ -9990,6 +9992,7 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
                 od->boxed() = r;
                 return Value::object(od);
             }
+            if (r.t == VT::Hash && r.hashKind == "DateTime") return rewrapDerivedDateTime(inv, m, r);   // …and a subclassed DateTime's
             return r;
         }
     }
@@ -10276,10 +10279,8 @@ Value Interpreter::methodCallUnresolved(const Value& inv, const MName& m, ValueL
                 if (!callCallable(fb.first, ca).truthy()) continue;
                 ValueList ka{inv, Value::str(m)};
                 Value meth = callCallable(fb.second, ka);
-                ValueList margs; margs.reserve(args.size() + 1);
-                margs.push_back(inv);
-                for (auto& a : args) margs.push_back(a);
-                return callCallable(meth, margs);
+                // container and all: DateTime::Timezones' `is rw` olson-id upgrades a `$dt`
+                return callInvocantFirst(meth, inv, args, liveInvocantExpr(inv), rwArgs);
             }
         }
     }

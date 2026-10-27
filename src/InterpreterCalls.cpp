@@ -150,6 +150,12 @@ bool Interpreter::rwCandidateRejects(const Value& cand, size_t nargs,
                           !static_cast<MethodCall*>(ae)->methodExpr &&
                           !static_cast<MethodCall*>(ae)->hyper &&
                           !methodMayYieldContainer(static_cast<MethodCall*>(ae)->method));
+        // …and so is a SIGILLESS name bound to a bare value (`my \d =
+        // DateTime.new(…)`), where one bound to a variable is that variable's
+        // container (`my \x = $y`) and stays eligible
+        if (p.isRw && !neverCont && ae && ae->kind == NK::NameTerm && tctx().cur)
+            if (const Value* bv = tctx().cur->find(static_cast<const NameTerm*>(ae)->name))
+                neverCont = bv->readonly && bv->immutableBind;
         if (p.isRw && neverCont) return true;
         // a NATIVE `is rw` parameter binds only a native container: `int $rw is rw`
         // does not take an Int variable (it could not write back through it)
@@ -160,6 +166,141 @@ bool Interpreter::rwCandidateRejects(const Value& cand, size_t nargs,
         pi++;
     }
     return false;
+}
+
+// Rakudo hands a method call's invocant over as it is, container and all, and a
+// sub called in its place takes it as its first argument: `sub up($s is rw)`
+// called as `$d.&up` assigns `$d`, and DateTime::Timezones' fallbacks upgrade a
+// `$dt` to a time-zone-aware DateTime that way. The expressions are only LENT
+// (the AST owns them): taken back before the vector goes.
+Value Interpreter::callInvocantFirst(const Value& code, const Value& inv, const ValueList& args,
+                                     Expr* invExpr, const std::vector<ExprPtr>* argExprs) {
+    ValueList ca; ca.reserve(args.size() + 1);
+    ca.push_back(inv);
+    for (auto& a : args) ca.push_back(a);
+    // (a METHOD takes its invocant's expression from tctx(), not from rwArgs)
+    if (!invExpr || code.t != VT::Code || !code.code() || code.code()->ci().isMethod)
+        return callCallable(code, std::move(ca));
+    struct Borrow {
+        std::vector<ExprPtr> v;
+        ~Borrow() { for (auto& p : v) (void)p.release(); }
+    } b;
+    b.v.emplace_back(invExpr);
+    if (argExprs) for (auto& e : *argExprs) b.v.emplace_back(e.get());
+    return callCallable(code, std::move(ca), &b.v);
+}
+
+// …and the tctx() invocant expression a method call left, when it is THIS
+// invocant's: a built-in that dispatches a method of its own leaves the outer
+// call's in place. A variable must still hold this very value; anything else
+// is lent only when it can be no container, which can only refuse an `is rw`
+// candidate. nullptr when neither holds.
+Expr* Interpreter::liveInvocantExpr(const Value& inv) {
+    Expr* ie = tctx().rwInvocantExpr;
+    if (!ie || argIsNeverContainer(ie)) return ie;
+    if (ie->kind == NK::MethodCall) {
+        auto* imc = static_cast<MethodCall*>(ie);
+        return !imc->meta && !imc->methodExpr && !imc->hyper && !methodMayYieldContainer(imc->method) ? ie : nullptr;
+    }
+    if ((ie->kind == NK::VarExpr || ie->kind == NK::NameTerm) && tctx().cur) {
+        const std::string nm = ie->kind == NK::VarExpr ? std::string(static_cast<VarExpr*>(ie)->name)
+                                                       : std::string(static_cast<NameTerm*>(ie)->name);
+        if (const Value* held = tctx().cur->find(nm))
+            if (whichOf(*held->deref()) == whichOf(inv)) return ie;
+    }
+    return nullptr;
+}
+
+// An object of a class DERIVING DateTime (DateTime::Timezones' own) takes
+// Rakudo's operators as they are written, through its OWN methods: a move is
+// `$a.new($a.Instant ± $b).in-timezone($a.timezone)`, so its class builds the
+// answer, and a difference or a comparison goes by the Instants. The native
+// arm of evalBinary numified it: `$dt - $day` was a Num. nullopt when neither
+// operand is one, or the operator is none of these.
+std::optional<Value> Interpreter::derivedDateTimeArith(const std::string& op, const Value& l, const Value& r) {
+    auto dtObj = [](const Value& v) {
+        return v.t == VT::Object && v.obj() && v.obj()->cls && v.obj()->boxed().hashKind == "DateTime";
+    };
+    const bool lo = dtObj(l), ro = dtObj(r);
+    if (!lo && !ro) return std::nullopt;
+    auto isDT = [&](const Value& v) { return v.hashKind == "DateTime" || dtObj(v); };
+    auto real = [](const Value& v) { return v.t == VT::Int || v.t == VT::Num || v.t == VT::Rat; };
+    // the Instant as a bare number, as the native arm reads it, so that what
+    // is computed is tagged only once, at the end
+    auto inst = [&](const Value& v) { Value i = methodCall(v, "Instant", ValueList{}); i.hashKind = ""; return i; };
+    const bool addSub = op == "+" || op == "-";
+    // a Duration moves one (Rakudo has no DateTime + Real) …
+    auto move = [&](const Value& dt, const Value& by, const std::string& how) {
+        Value b = by; b.hashKind = "";
+        Value at = applyArith(how, inst(dt), b);
+        at.hashKind = "Instant";
+        // …built by the object's CLASS, not by the DateTime it boxes
+        Value moved = methodCall(Value::typeObj(dt.obj()->cls->name), "new", ValueList{at});
+        return methodCall(moved, "in-timezone", ValueList{methodCall(dt, "timezone", ValueList{})});
+    };
+    if (addSub && lo && real(r) && r.hashKind == "Duration") return move(l, r, op);
+    if (op == "+" && ro && real(l) && l.hashKind == "Duration") return move(r, l, "+");
+    // …and a plain Real meets the Instant: `$dt + 60` is Instant:70 in Rakudo
+    if (addSub && ((lo && real(r) && r.hashKind.empty()) || (ro && real(l) && l.hashKind.empty() && op == "+"))) {
+        Value at = lo ? applyArith(op, inst(l), r) : applyArith("+", l, inst(r));
+        at.hashKind = "Instant";
+        return identify(at);
+    }
+    if (!isDT(l) || !isDT(r)) return std::nullopt;
+    if (op == "-") {
+        Value diff = applyArith("-", inst(l), inst(r));
+        if (diff.t == VT::Num && std::isfinite(diff.n)) diff = methodCall(diff, "Rat", ValueList{});
+        diff.hashKind = "Duration";
+        return identify(diff);
+    }
+    if (op == "<" || op == ">" || op == "<=" || op == ">=" || op == "==" || op == "!=" || op == "<=>" || op == "cmp")
+        return applyBinOp(op, inst(l), inst(r));
+    return std::nullopt;
+}
+
+// A DateTime that a subclassed DateTime's own methods answer is one of the
+// subclass (DateTime::Timezones' `.later(:1day)` is one of its DateTimes):
+// Rakudo clones the invocant for these five, attributes and all, and makes a
+// bare one of the class for `.later` and `.earlier`. `r` as it is otherwise.
+Value Interpreter::rewrapDerivedDateTime(const Value& inv, const std::string& m, Value r) {
+    if (r.t != VT::Hash || r.hashKind != "DateTime" || inv.obj()->boxed().hashKind != "DateTime") return r;
+    const bool clones = m == "in-timezone" || m == "utc" || m == "local" || m == "truncated-to" || m == "clone";
+    if (!clones && m != "later" && m != "earlier") return r;
+    auto od = makePayload<ObjectData>();
+    if (clones) *od = *inv.obj();
+    else od->cls = inv.obj()->cls;
+    od->hasBoxed = true;
+    od->boxed() = r;
+    return Value::object(od);
+}
+
+// `DateTime.^find_method('in-timezone').wrap(…)`. A BUILT-IN method has no
+// Callable for the wrap to go on — its dispatch is C++, and the method object
+// `^find_method` answers is made on the spot — so the wrap went on that object
+// and nothing ever called it. The wrapped method is one made for the purpose
+// and parked in builtinExt_, where dispatch looks for a built-in type's methods
+// ahead of its own (augment's table), so every DateTime sees the wrap, as in
+// Rakudo. Its body is the built-in, reached past that table with skipOwn: a
+// callsame in the wrapper lands on the core method, not back in the wrapper.
+
+Value Interpreter::wrapBuiltinMethod(const std::string& type, const std::string& name, const Value& wrapper) {
+    Value& slot = builtinExt_[type][name];
+    if (slot.t != VT::Code || !slot.code()) {
+        Value code; code.t = VT::Code; code.setCode(makePayload<Callable>());
+        code.code()->ciM().name = name; code.code()->ciM().isMethod = true; code.code()->ciM().pkg = type;
+        code.code()->ciM().builtin = [name](Interpreter& I, ValueList& a) -> Value {
+            if (a.empty()) return Value::any();
+            Value inv = a[0]; ValueList rest(a.begin() + 1, a.end());
+            return I.methodCall(inv, name, rest, nullptr, /*skipOwn=*/true);
+        };
+        slot = code;
+    }
+    slot.code()->coldM().wrappers.push_back(wrapper);
+    noteSymbolMutation("routine .wrap of a built-in method");
+    Value h = Value::makeHash(); h.hashKind = "WrapHandle";
+    (*h.hash())["routine"] = slot;     // what .unwrap / .restore take it off again
+    (*h.hash())["wrapper"] = wrapper;
+    return h;
 }
 
 // A raw/rw SLURPY's elements, re-made as the arguments' containers: a `$x`

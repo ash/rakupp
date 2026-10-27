@@ -4917,6 +4917,20 @@ static bool protoHidesOuterCandidates(Env* scope, Callable* disp, const Value& p
 // methods (ClassDecl::methods) and never sees a term, so this is its only way
 // in. A plain method of the name keeps it; a repeat of the same declaration is
 // a no-op.
+// `class DateTime is DateTime`: the parent is what the name meant BEFORE this
+// declaration, as Rakudo looks it up first — `unit module Timezones; class
+// DateTime is DateTime` (DateTime::Timezones) is Timezones::DateTime, a
+// subclass of the core one. Only a name with nothing outside it is the class
+// itself, and then neither the lexical name nor the package sibling (which
+// the declaration is about to be) is asked for the outer one.
+static bool parentIsOuterType(std::unordered_map<std::string, std::shared_ptr<ClassInfo>>& classes,
+                              const ClassDecl* cd, const std::string& parentName,
+                              const std::string& clsName, const std::shared_ptr<ClassInfo>& ci) {
+    if (cd->isRole || clsName == parentName) return false;
+    auto it = classes.find(parentName);
+    return it != classes.end() ? it->second != ci : isKnownTypeName(parentName);
+}
+
 static void methodTermJoinsClass(std::unordered_map<std::string, std::shared_ptr<ClassInfo>>& classes,
                                  const std::string& pkgPrefix, const std::string& name, const Value& code) {
     std::string pk = pkgPrefix;
@@ -6541,15 +6555,18 @@ static void methodTermJoinsClass(std::unordered_map<std::string, std::shared_ptr
                 bool paramSelf = false;
                 for (auto& ra : cd->roleArgs)
                     if (ra.first == parentName && !ra.second.empty()) { paramSelf = true; break; }
-                if (parentName == cd->name && !cd->name.empty() && parentName == cd->parent && !paramSelf)
+                const bool selfNamed = parentName == cd->name && !cd->name.empty() &&
+                                       parentName == cd->parent && !paramSelf;
+                const bool outerType = selfNamed && parentIsOuterType(classes_, cd, parentName, clsName, ci);
+                if (selfNamed && !outerType)
                     throwTyped(cd->isRole ? "X::InvalidType" : "X::Inheritance::SelfInherit",
                         {{"name", cd->name}},
                         cd->isRole ? "Role '" + cd->name + "' cannot inherit from / compose itself"
                                    : "'" + cd->name + "' cannot inherit from itself.");   // Rakudo's wording
-                auto it = classes_.find(lexicalTypeName(*this, parentName));
-                if (it == classes_.end() && !tctx().pkgPrefix.empty())
+                auto it = classes_.find(outerType ? parentName : lexicalTypeName(*this, parentName));
+                if (it == classes_.end() && !tctx().pkgPrefix.empty() && !outerType)
                     it = classes_.find(tctx().pkgPrefix + parentName); // sibling nested type
-                if (it == classes_.end()) it = classes_.find(resolveClassAlias(parentName));
+                if (it == classes_.end() && !outerType) it = classes_.find(resolveClassAlias(parentName));
                 // `does X` where X is a class or a concrete core type: only
                 // roles compose (built-in role names like Positional stay fine)
                 if (cd->parentIsDoes) {
@@ -6613,8 +6630,8 @@ static void methodTermJoinsClass(std::unordered_map<std::string, std::shared_ptr
                     }
                 }
                 else if (rakuAstParent) ci->parent = *rakuAstParent;
-                else if (isKnownTypeName(cd->parent)) {
-                    ci->nativeParent = cd->parent; // is Str / is Cool / …
+                else if (isKnownTypeName(parentName)) {   // (`is CORE::DateTime` too)
+                    ci->nativeParent = parentName; // is Str / is Cool / …
                     // …`is Array[Str]` keeps the element type (S05-grammar/inheritance.t)
                     for (auto& ra : cd->roleArgs)
                         if (ra.first == cd->parent && ra.second.size() == 1 && ra.second[0])
