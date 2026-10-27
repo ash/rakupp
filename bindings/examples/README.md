@@ -35,6 +35,10 @@ cmake -B build -DCMAKE_BUILD_TYPE=Release -DRAKUPP_BUILD_SHARED=ON
 cmake --build build -j
 ```
 
+If `build/` is a static build you keep for everyday work, build the library
+in a directory of its own instead and read that directory for `build` below
+([section 1 of the bindings guide](../README.md#1-build-the-library)).
+
 Then, still from the repo root, with `<example>` being `calc` or `shopping`
 (`.so` instead of `.dylib` on Linux):
 

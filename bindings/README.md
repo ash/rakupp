@@ -40,7 +40,19 @@ Sheets and `=RAKU.EVAL(...)` in Excel, with the engine compiled to WebAssembly
 
 ## 1. Build the library
 
-All six bindings load the same `librakupp`. From the repo root:
+All six bindings load the same `librakupp`. There are three ways to get it,
+and the first needs no compiler.
+
+**From a release archive.** Every
+[release](https://github.com/ash/rakupp/releases) archive except OpenBSD's
+carries the library: `lib/librakupp.dylib` on macOS, `lib/librakupp.so` on
+Linux, `bin/librakupp.dll` on Windows. The macOS Homebrew formula installs
+that archive, so `brew install rakupp` brings the library too. With the
+archive's `bin/` on PATH the bindings find the library on their own;
+otherwise set `RAKUPP_HOME` to the unpacked `rakupp/` directory (macOS,
+Linux) or `RAKUPP_LIB` to the file.
+
+**From a fresh checkout.** From the repo root:
 
 ```bash
 cmake -B build -DCMAKE_BUILD_TYPE=Release -DRAKUPP_BUILD_SHARED=ON
@@ -48,9 +60,28 @@ cmake --build build -j
 ```
 
 That produces `build/rakupp` (the CLI) and `build/librakupp.dylib` on macOS —
-`librakupp.so` on Linux, `librakupp.dll` on Windows. **A build directory
-configured without `-DRAKUPP_BUILD_SHARED=ON` is static-only and no binding
-can use it**; that is the single most common first failure.
+`librakupp.so` on Linux, `librakupp.dll` on Windows. The commands in these
+guides assume that layout.
+
+**Beside a build you already have.** If you build rakupp for everyday work,
+keep that `build/` static: the shared library compiles every runtime source a
+second time (position-independent, hidden visibility), roughly doubling each
+rebuild. Build the library alone, in a directory of its own:
+
+```bash
+cmake -B build-shared -DCMAKE_BUILD_TYPE=Release -DRAKUPP_BUILD_SHARED=ON
+cmake --build build-shared -j --target rakupp_shared
+```
+
+`--target rakupp_shared` builds the library and nothing else; after a pull,
+run the second line again to bring it up to date. The `rakupp` on your PATH
+is still the static one, so the loaders find no library beside it. Name the
+file instead, `RAKUPP_LIB=$PWD/build-shared/librakupp.dylib`, and read
+`build-shared` for `build` in the commands below.
+
+**A build directory configured without `-DRAKUPP_BUILD_SHARED=ON` is
+static-only and no binding can use it**; that is the single most common first
+failure.
 
 ## 2. Run the examples
 
@@ -285,10 +316,14 @@ binding here.
 ## Troubleshooting
 
 **`librakupp not found` / `cannot open shared object file`.** The library is
-not built, or not findable. Build it with `-DRAKUPP_BUILD_SHARED=ON`, then
-point at it: every binding accepts `RAKUPP_LIB` (the file) or `RAKUPP_HOME`
-(an install prefix with `lib/`), and finds it automatically when `rakupp` is
-on PATH. C++ and Go link instead of searching, so they take a linker flag.
+not built, or not findable. Get one as in
+[section 1](#1-build-the-library), then point at it: every binding accepts
+`RAKUPP_LIB` (the file) or `RAKUPP_HOME` (an install prefix with `lib/`), and
+finds it automatically when the `rakupp` on PATH has the library beside it. A
+static development build on PATH does not, which is why the error lists its
+directory among the paths it tried; name the library you built elsewhere
+with `RAKUPP_LIB`. C++ and Go link instead of searching, so they take a
+linker flag.
 
 **`RAKUPP_LIB names …, which could not be loaded`.** A library you name is
 used as given — the searching hosts never fall back to a different one, so

@@ -660,8 +660,11 @@ cmake --build build -j
 ```
 
 A build directory configured without `-DRAKUPP_BUILD_SHARED=ON` is
-static-only, and this package cannot use it. Then install the package from the
-checkout with `pip install -e bindings/python`.
+static-only, and this package cannot use it. A release archive carries the
+library already, and a static `build/` you keep for everyday work can stay as
+it is: [section 1 of the bindings guide](../README.md#1-build-the-library)
+builds the library alone, in a directory of its own. Then install the package
+from the checkout with `pip install -e bindings/python`.
 
 Without a bundled library, the package usually finds one by itself: if
 `rakupp` is on PATH, it takes `librakupp` from beside it (an installed
@@ -753,8 +756,9 @@ diagnosis). With a wheel installed, it points inside the package's own
 on the linker path; the message lists every path it tried. If it continues
 `A rakupp binary WAS found (…) but its build carries no shared library`, the
 build directory on PATH is configured without `-DRAKUPP_BUILD_SHARED=ON`.
-Reconfigure it with that option and build again, set `RAKUPP_LIB` to a build
-that has the library, or `pip install rakulang` for the bundled one.
+The message goes on with the two commands that build the library in a
+directory of its own, leaving that build as it is; set `RAKUPP_LIB` to the
+result, or `pip install rakulang` for the bundled one.
 
 **`RAKUPP_LIB names …, which could not be loaded`.** A named library is
 authoritative; the loader does not fall back to another. The quoted `dlopen`

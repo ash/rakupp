@@ -89,7 +89,8 @@ sub spawn(@args, :$cwd = $ROOT.absolute, :%env) {
 sub lf(Str() $s) { $s.subst("\r\n", "\n", :g) }
 
 unless $lib.e {
-    say "skip - $lib is not built; configure with -DRAKUPP_BUILD_SHARED=ON";
+    say "skip - $lib is not built; configure with -DRAKUPP_BUILD_SHARED=ON, or pass a directory "
+      ~ "that has the library (bindings/README.md, section 1, builds one beside a static build/)";
     say "bindings-smoke: ok (nothing to check)";
     exit 0;
 }

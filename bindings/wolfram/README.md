@@ -34,7 +34,11 @@ with every exported symbol renamed `Raku*` → `Rakupp*` (`RakuppEval`,
   ```
 
   A build directory configured without `-DRAKUPP_BUILD_SHARED=ON` is
-  static-only and this package cannot use it.
+  static-only and this package cannot use it. A release archive carries the
+  library already, and a static `build/` you keep for everyday work can stay
+  as it is:
+  [section 1 of the bindings guide](../README.md#1-build-the-library) builds
+  the library alone, in a directory of its own.
 
 ## Hello, before the package
 
@@ -294,8 +298,9 @@ run `wolframscript` once interactively first.
 
 - **`librakupp not found`** — the loader lists every path it tried. Set
   `RAKUPP_LIB` to the library file. If a `rakupp` binary was found but no
-  library beside it, that build directory is static-only: rebuild with
-  `-DRAKUPP_BUILD_SHARED=ON`.
+  library beside it, that build directory is static-only, and the error goes
+  on with the two commands that build the library in a directory of its own
+  (also in [section 1 of the bindings guide](../README.md#1-build-the-library)).
 - **`RakuLang needs the Wolfram foreign function interface`** — the kernel
   is older than 13.3. There is no pure-WL fallback; an older kernel would
   need a compiled LibraryLink shim, which this binding deliberately is not.

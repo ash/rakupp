@@ -113,14 +113,23 @@ def load(path=None):
         exe = None if path else shutil.which("rakupp")
         hint = (
             "\nA rakupp binary WAS found (%s) but its build carries no shared "
-            "library — a plain build directory is static-only. Rebuild it with "
-            "-DRAKUPP_BUILD_SHARED=ON, or point RAKUPP_LIB at a build that has "
-            "one." % exe
+            "library — a plain build directory is static-only." % exe
         ) if exe else ""
+        # the commands, in a directory of their own so a static development
+        # build/ stays as it is (bindings/README.md, section 1)
+        build = (
+            "\nTo build the library from a rakupp source tree, leaving that "
+            "build as it is:\n"
+            "  cmake -B build-shared -DCMAKE_BUILD_TYPE=Release -DRAKUPP_BUILD_SHARED=ON\n"
+            "  cmake --build build-shared -j --target rakupp_shared\n"
+            "then set RAKUPP_LIB to the full path of the %s it builds."
+            % _library_name()
+        )
         raise OSError(
-            "librakupp not found. Set RAKUPP_LIB to the library file, or "
-            "RAKUPP_HOME to an install prefix containing lib/%s.%s%s"
-            % (_library_name(), hint,
+            "librakupp not found. Set RAKUPP_LIB to the library file (a release "
+            "archive carries one), or RAKUPP_HOME to an install prefix "
+            "containing lib/%s.%s%s%s"
+            % (_library_name(), hint, build,
                ("\nTried:\n  " + "\n  ".join(tried)) if tried else "")
         )
 

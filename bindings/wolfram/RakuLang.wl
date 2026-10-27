@@ -135,6 +135,13 @@ libraryFileName[] := Switch[$OperatingSystem,
   "Windows", "librakupp.dll",
   _, "librakupp.so"];
 
+(* The not-found error carries the commands, in a directory of their own so a
+ * static development build/ stays as it is (bindings/README.md, section 1). *)
+buildHint[] := "To build the library from a rakupp source tree, leaving that build as it is:\n" <>
+  "  cmake -B build-shared -DCMAKE_BUILD_TYPE=Release -DRAKUPP_BUILD_SHARED=ON\n" <>
+  "  cmake --build build-shared -j --target rakupp_shared\n" <>
+  "then set RAKUPP_LIB to the full path of the " <> libraryFileName[] <> " it builds.";
+
 explicitCandidate[given_] := Which[
   StringQ[given], {given, "the path passed to RakuLoad"},
   StringQ[Environment["RAKUPP_LIB"]], {Environment["RAKUPP_LIB"], "RAKUPP_LIB"},
@@ -181,8 +188,8 @@ initInterp[given_] := Module[{exp, ff = $Failed, used, tried = {}, out},
       If[ff === $Failed, AppendTo[tried, cand], used = cand; Break[]],
       {cand, searchCandidates[]}];
     If[ff === $Failed,
-      rakuFail["librakupp not found. Set RAKUPP_LIB to the library file, or RAKUPP_HOME to an install prefix containing lib/" <> libraryFileName[] <>
-        ". A build directory configured without -DRAKUPP_BUILD_SHARED=ON is static-only and has no library." <>
+      rakuFail["librakupp not found. Set RAKUPP_LIB to the library file (a release archive carries one), or RAKUPP_HOME to an install prefix containing lib/" <> libraryFileName[] <>
+        ".\nA build directory configured without -DRAKUPP_BUILD_SHARED=ON is static-only and has no library. " <> buildHint[] <>
         If[tried === {}, "", "\nTried:\n  " <> StringRiffle[tried, "\n  "]]]]];
   $ff = ff; $libPath = used;
   $rk = $ff["rk_new"][OpaqueRawPointer[0]];

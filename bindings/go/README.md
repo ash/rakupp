@@ -17,7 +17,11 @@ Raku shim that ships inside the library itself.
   ```
 
   A build directory configured without `-DRAKUPP_BUILD_SHARED=ON` is
-  static-only and this package cannot use it.
+  static-only and this package cannot use it. A release archive carries the
+  library already, and a static `build/` you keep for everyday work can stay
+  as it is:
+  [section 1 of the bindings guide](../README.md#1-build-the-library) builds
+  the library alone, in a directory of its own.
 
 ## 2. Install
 
@@ -187,8 +191,10 @@ in CI on every push.
 ## When things go wrong
 
 - **`ld: library not found for -lrakupp`** — `CGO_LDFLAGS` does not point at
-  a directory holding the library, or that build directory is static-only:
-  rebuild with `-DRAKUPP_BUILD_SHARED=ON`.
+  a directory holding the library, or that build directory is static-only.
+  Point it at one that has the library: a release archive's `lib/`, or a
+  directory built as in
+  [section 1 of the bindings guide](../README.md#1-build-the-library).
 - **`incompatible architecture`** — your Go toolchain and the library
   disagree (`go env GOARCH`; `darwin/amd64` on an M-series machine is the
   wrong one). Either install a matching Go, or build the library for Go's

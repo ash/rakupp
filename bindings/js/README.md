@@ -20,7 +20,11 @@ Install Bun from [bun.sh](https://bun.sh) — `curl -fsSL https://bun.sh/install
   ```
 
   A build directory configured without `-DRAKUPP_BUILD_SHARED=ON` is
-  static-only and this package cannot use it.
+  static-only and this package cannot use it. A release archive carries the
+  library already, and a static `build/` you keep for everyday work can stay
+  as it is:
+  [section 1 of the bindings guide](../README.md#1-build-the-library) builds
+  the library alone, in a directory of its own.
 
 ## 2. Install
 
@@ -184,8 +188,9 @@ in CI on every push.
 
 - **`librakupp not found`** — the error lists every path tried. Set
   `RAKUPP_LIB` to the library file. If a `rakupp` binary was found but no
-  library beside it, that build directory is static-only: rebuild with
-  `-DRAKUPP_BUILD_SHARED=ON`.
+  library beside it, that build directory is static-only, and the error goes
+  on with the two commands that build the library in a directory of its own
+  (also in [section 1 of the bindings guide](../README.md#1-build-the-library)).
 - **`incompatible architecture`** — your Bun and the library disagree
   (`file $(which bun)`). Either install a matching Bun, or build the library
   for Bun's architecture:

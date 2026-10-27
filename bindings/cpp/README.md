@@ -22,7 +22,11 @@ Include `grammar.hpp` when you want both; it pulls in `raku.hpp`.
   ```
 
   A build directory configured without `-DRAKUPP_BUILD_SHARED=ON` is
-  static-only and cannot be linked against here.
+  static-only and cannot be linked against here. A release archive carries the
+  library already, and a static `build/` you keep for everyday work can stay
+  as it is:
+  [section 1 of the bindings guide](../README.md#1-build-the-library) builds
+  the library alone, in a directory of its own.
 
 ## 2. Install
 
@@ -191,8 +195,9 @@ in CI on every push.
 ## When things go wrong
 
 - **`ld: library not found for -lrakupp`** — the `-L` path has no library, or
-  that build directory is static-only: rebuild with
-  `-DRAKUPP_BUILD_SHARED=ON`.
+  that build directory is static-only. Point it at one that has the library:
+  a release archive's `lib/`, or a directory built as in
+  [section 1 of the bindings guide](../README.md#1-build-the-library).
 - **`ignoring file …, found architecture 'x86_64', required 'arm64'`** — the
   compiler and the library disagree. Build the library for your compiler's
   architecture, or add `-arch` to match the library.

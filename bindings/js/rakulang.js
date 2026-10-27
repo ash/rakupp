@@ -45,6 +45,15 @@ function libraryName() {
   return "librakupp.so";
 }
 
+// The not-found error carries the commands, in a directory of their own so a
+// static development build/ stays as it is (bindings/README.md, section 1).
+function buildHint() {
+  return "To build the library from a rakupp source tree, leaving that build as it is:\n" +
+    "  cmake -B build-shared -DCMAKE_BUILD_TYPE=Release -DRAKUPP_BUILD_SHARED=ON\n" +
+    "  cmake --build build-shared -j --target rakupp_shared\n" +
+    `then set RAKUPP_LIB to the full path of the ${libraryName()} it builds.`;
+}
+
 // Libraries the CALLER named. These are authoritative: if one is named and
 // does not load, that is an error, never a reason to quietly use some other
 // library — the wrong-architecture case otherwise looks like a mysteriously
@@ -87,7 +96,12 @@ class Session {
         catch (e) { tried.push(`${cand}: ${e.message}`); }
       }
     if (!lib)
-      throw new RakuError("librakupp not found. Set RAKUPP_LIB, or have rakupp on PATH.\nTried:\n  " + tried.join("\n  "));
+      throw new RakuError(
+        "librakupp not found. Set RAKUPP_LIB to the library file (a release archive carries one), " +
+        `or RAKUPP_HOME to an install prefix containing lib/${libraryName()}.\n` +
+        "A build directory configured without -DRAKUPP_BUILD_SHARED=ON is static-only and has no library. " +
+        buildHint() +
+        (tried.length ? "\nTried:\n  " + tried.join("\n  ") : ""));
     this.f = lib.symbols;
     this.rk = this.f.rk_new(null);
     if (!this.rk) throw new RakuError("rk_new refused: an interpreter is already live in this process");

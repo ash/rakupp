@@ -21,7 +21,11 @@ path cannot outlive the match it walks.
   ```
 
   A build directory configured without `-DRAKUPP_BUILD_SHARED=ON` is
-  static-only and this crate cannot use it.
+  static-only and this crate cannot use it. A release archive carries the
+  library already, and a static `build/` you keep for everyday work can stay
+  as it is:
+  [section 1 of the bindings guide](../README.md#1-build-the-library) builds
+  the library alone, in a directory of its own.
 
 ## 2. Install
 
@@ -184,8 +188,9 @@ in CI on every push.
 ## When things go wrong
 
 - **`ld: library 'rakupp' not found` while building** — `RAKUPP_LIB_DIR` is
-  unset or wrong, or that build directory is static-only: rebuild with
-  `-DRAKUPP_BUILD_SHARED=ON`.
+  unset or wrong, or that build directory is static-only. Point it at one
+  that has the library: a release archive's `lib/`, or a directory built as
+  in [section 1 of the bindings guide](../README.md#1-build-the-library).
 - **`incompatible architecture`** — your Rust toolchain and the library
   disagree (`rustc -vV | grep host`). Either install the matching toolchain,
   or build the library for Rust's architecture:
