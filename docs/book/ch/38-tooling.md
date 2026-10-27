@@ -510,6 +510,13 @@ the kernel adds to the language — is an `rk_register` host function that
 publishes `display_data`. A notebook cell, an agent's tool call and a `.raku`
 file therefore agree by construction.
 
+Cell magics keep that rule. A first line such as `#% html` or `%% bash`, in
+Jupyter::Kernel's spelling, is read by the kernel before `rk_eval` sees the
+cell. A typed value is the same `.gist` published under another MIME type.
+The two magics that need I/O, `bash` and `run`, call subs the kernel's
+prelude defines, so they reach processes and files through the engine's own
+`Proc::Async` and `slurp`, never through a door of their own.
+
 ### The transport is the interesting part
 
 Jupyter's protocol rides on ZeroMQ, and this project links no third-party

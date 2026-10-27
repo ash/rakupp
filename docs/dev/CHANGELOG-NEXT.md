@@ -16,7 +16,8 @@ e24f05f1 (NUM-UNBOX-PLAN P0); 8644846a; 74806a6d; 93f9a4af and c7a12943;
 85d56001; 960e8aed; 7fcca8a8; 273863ac; 90bc6e23; 84add3b1; 08a17d21;
 12af490d (RACE-DETECTOR-PLAN P0-P4); 42f79e98, b9108e1d, 0b9950b1, 500c29e2,
 1b182b8e, 828e52d5, 4d1c7cc3, 80ea9030, d972abe7, 166334a9 and 29b10450;
-5d31d4a2 and aff5032b (issue #202); cb5b360a, d5184116 and 50aebf54.*
+5d31d4a2 and aff5032b (issue #202); 5d0e7ce9 and 170802d4 (issue #203);
+cb7933f3 (issue #204); cb5b360a, d5184116 and 50aebf54.*
 
 ---
 
@@ -182,6 +183,32 @@ plain before 500c29e2 and native from it, unless they say otherwise.
   the detector's own mistake
   (docs/dev/findings/RACE-SWEEP-2026-10-25.md). guide/CLI.md, "Finding data
   races", and faq/threads.md have the user's side.
+- **The Jupyter kernel reads Jupyter::Kernel's cell magics** (5d0e7ce9;
+  issue #203), so that kernel's notebooks run unchanged. `#% html`,
+  `#% markdown` (`md`), `#% latex`, `#% latex(ENV)` and `#% js` publish the
+  cell's value under that MIME type. `#% > TYPE` holds what the cell prints
+  and publishes it as one display when the cell ends, in order with any
+  `jupyter-display` call. `#% javascript` sends the cell to the frontend
+  unevaluated. `%% bash` runs it in bash with its output streaming, and a
+  non-zero exit fails the cell. `%% run FILE` evaluates FILE's code, then
+  the cell's, as one cell. `%% always prepend|append|show|clear` wraps every
+  Raku cell. A `#%` line that is not a magic stays a comment, and an unknown
+  `%%` line is an error that lists the magics. tools/jupyter-smoke.raku has
+  22 new checks, 17 of which fail on the previous binary.
+  guide/integrations/JUPYTER.md, "Cell magics", has the user's side.
+- **A cell value that begins with `<svg` renders as an image, and one that
+  begins with `<img` as HTML** (170802d4; issue #203). This is
+  Jupyter::Kernel's one guess about a value no magic typed. Only the first
+  four characters are read, case aside, so any other value is text as
+  before, and a cell with a type magic is never guessed. Five gate checks.
+- **`--jupyter-install` warns when it replaces another kernel** (cb7933f3;
+  issue #204). `raku` is Jupyter::Kernel's kernelspec name too, so the
+  default install takes the Rakudo kernel's place, and it used to do so
+  silently. The warning goes to stderr, under `-q` too, names the program
+  the old kernel.json launched, and offers `--name=rakupp` to keep both; a
+  reinstall over the same binary stays quiet. JUPYTER.md, "It replaces
+  another Raku kernel", also gives
+  `raku-jupyter-kernel --generate-config --force` to hand the name back.
 
 ### Fixed: silent wrong answers
 
