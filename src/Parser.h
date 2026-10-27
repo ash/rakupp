@@ -289,6 +289,11 @@ private:
     // having been seen, so a bare `if(1) {…}` keeps the reading, and the
     // diagnostic, it always had. See kNeedsEndKeyword in Parser.cpp.
     std::set<std::string> kwNamedSubs_;
+    // Capitalized names this unit declares a routine of, anywhere in it, or a
+    // module it uses does (scanOpsIn). Before a `{` such a name is that
+    // routine's listop call — `Foo { … }` passes the block, as Rakudo reads it —
+    // where any other capitalized name is a type with a block after it (#198).
+    std::set<std::string> capSubNames_;
     bool ctxOperandBare_ = false; // parsing `%(…)` as the operand of `@%(…)`: no postfixes
     // The end_keyword question in one place: is the identifier `n` a keyword
     // this unit declares a routine for, written TIGHT against the paren that
@@ -332,7 +337,8 @@ private:
     std::set<std::string> termSubs_;  // names declared as `sub term:<name>`: `name:adv(…)` passes the adverb
     std::set<std::string> declaredSubNames_; // plain `sub name` declarations seen so far (a listop, for `?? f !!`)
     std::set<std::string> sigillessRO_; // …of those, the `my \x = …` ones: a value, not a container (assigning dies)
-    bool stmtCond_ = false; // parsing a block-statement condition: `{` is the control block, not a listop arg
+    bool stmtCond_ = false; // parsing a block-statement condition (parseStmtCond)
+    std::string condBorg_;  // …and the listop in it that took a block, Rakudo's $*BORG<name>
     std::string lastContainerIs_; // `is Set`-style container trait captured by skipTraits
     bool lastIsDynamic_ = false;  // `is dynamic` captured by skipTraits, same way
     // `my $x will leave {…}` — the phaser name + block captured by skipTraits;
@@ -658,6 +664,7 @@ private:
 
     // expressions
     ExprPtr parseExpression();
+    ExprPtr parseStmtCond(int bp = 0);
     ExprPtr parseParenSemiList(); // contents of an open `(` to its `)`, `;` = segments
     bool ismsPerl5_ = false;      // `use isms <Perl5>` seen: the P5 brainos are allowed
     std::set<const Expr*> parenned_; // nodes handed back from inside `( … )`          // full expr incl. commas/and/or

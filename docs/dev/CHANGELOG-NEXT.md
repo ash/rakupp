@@ -17,7 +17,8 @@ e24f05f1 (NUM-UNBOX-PLAN P0); 8644846a; 74806a6d; 93f9a4af and c7a12943;
 12af490d (RACE-DETECTOR-PLAN P0-P4); 42f79e98, b9108e1d, 0b9950b1, 500c29e2,
 1b182b8e, 828e52d5, 4d1c7cc3, 80ea9030, d972abe7, 166334a9 and 29b10450;
 5d31d4a2 and aff5032b (issue #202); 5d0e7ce9 and 170802d4 (issue #203);
-cb7933f3 (issue #204); cb5b360a, d5184116 and 50aebf54.*
+cb7933f3 (issue #204); cb5b360a, d5184116 and 50aebf54; 67a2fe76 (issue
+#198) and 4af53b07.*
 
 ---
 
@@ -610,8 +611,42 @@ does not.
   core-qualified-parameter-type, routine-is-lexical,
   array-ends-are-containers) agree with Rakudo 2026.09.
 
+- **A capitalized sub takes a block as its argument** (67a2fe76; issue
+  #198). `sub Foo(&bar) { bar }; Foo { say "bar" }` died "Calling Foo()
+  will never work with declared signature (&bar)" where `foo { … }` worked:
+  every capitalized name before a `{` was read as a type with a block after
+  it, so Foo was called with nothing and the block ran on its own. A name
+  the unit declares a routine of, above or below the call, or a `use`d
+  module does, and no type has, is now the listop Rakudo reads, in an
+  interpolated `"{ … }"` and an EVAL too. `when Int { }` and `if $x ~~ Pt
+  { }` keep the type. t/regression/issue-198-titlecase-sub-block-arg.raku
+  agrees with Rakudo 2026.09.
+- **A listop before a block in a statement condition takes it, as Rakudo's
+  xblock does** (4af53b07). In `if`, `unless`, `elsif`, `with`, `without`,
+  `while`, `until`, `repeat while`, `for`, `given` and `when` the first
+  block after a condition's listop was always the statement's: `if foo { 1
+  } { say "yes" }` called foo with nothing, and `if bar { say "t" }`, `for
+  lines { .say }` and `for foo -> $x { }` ran where Rakudo refuses them.
+  `whenever` read its supply as a plain expression, so `whenever tick { … }`
+  handed tick the block and died at run time. The listop now takes the
+  block or pointy, the statement's own comes after it, and with none the
+  program is refused at compile time by Rakudo's group:
+  X::Syntax::BlockGobbled ("Function 'bar' needs parens to avoid gobbling
+  block", with "or perhaps it's a class" only for a type-like name), naming
+  the innermost listop, and X::Syntax::Missing. A term, a type (a native
+  one too) and a statement prefix keep the block for the statement (`if
+  now`, `if rand`, `if i`, `for buf8 -> \bt`, `for uint64 -> \T`, `for
+  gather { … } { }`), and so does a class a `use`d module exports, which
+  67a2fe76 had counted among its subs, harmlessly until now
+  (Statistics::Distributions's `when $_ ~~ Generic { }`).
+  t/regression/xblock-listop-in-condition.raku agrees with Rakudo 2026.09.
+
 ### Left open
 
+- `CATCH { when X::Y {} }` with X::Y undeclared is refused only in an EVAL
+  (as on daf9c03c), and an enum's type object counts its pairs: `.say for
+  Col` says each one, and `Col.elems` and a member's `.elems` are 2 where
+  Rakudo says 1. TODO-FOLLOW-UPS.md has both (4af53b07).
 - Two types of one name are still one here (50aebf54): a top-level class of
   a core class's own name that inherits it is refused as X::NYI (Rakudo
   accepts it; in a package it works), a top-level class of a core name that
