@@ -1,0 +1,12 @@
+field a=1
+missing
+hello
+empty
+set
+undefined
+v1,v3
+a,b
+EVEN 4
+odd 3
+block saw none
+block saw undef

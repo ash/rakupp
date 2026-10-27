@@ -760,6 +760,23 @@ section('--target=js (JavaScript backend)');
     diag("got: $got") if $got ne $want;
     try unlink $bin;
 }
+# `next`, `last` and `return` written as an operand compile to their statement
+# forms' jumps (#195): the file is all such shapes, so it must stay native —
+# one refusal and the whole program bundles, which t/exe/run.raku only counts.
+{
+    my $bin = $*TMPDIR.add("rakupp-suite-ctl-$*PID").Str;
+    my $p = run($*EXECUTABLE, '--exe', $ROOT.add('t/regression/next-return-in-expression-native.raku').Str,
+                '-o', $bin, :out, :err);
+    $p.out.slurp(:close);
+    my $msg = $p.err.slurp(:close);
+    ok($p.exitcode == 0 && $msg.contains('(native)'), "--exe builds the operand-control regression natively");
+    diag($msg.lines.grep(*.contains('note:')).join("\n")) unless $msg.contains('(native)');
+    $p = run($bin, :out);
+    my $got = $p.out.slurp(:close);
+    ok($got.lines.tail eq 'PASS', "…and its binary passes");
+    diag($got) unless $got.lines.tail eq 'PASS';
+    try unlink $bin;
+}
 # Terms that a compiled binary once got WRONG WITHOUT SAYING SO: `now` and
 # `time` fell through to the "unknown bareword is a type object" default (so
 # `now.Num` was 0 — every timing in a compiled program read zero), and a
