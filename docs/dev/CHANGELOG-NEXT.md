@@ -18,7 +18,8 @@ e24f05f1 (NUM-UNBOX-PLAN P0); 8644846a; 74806a6d; 93f9a4af and c7a12943;
 1b182b8e, 828e52d5, 4d1c7cc3, 80ea9030, d972abe7, 166334a9 and 29b10450;
 5d31d4a2 and aff5032b (issue #202); 5d0e7ce9 and 170802d4 (issue #203);
 cb7933f3 (issue #204); cb5b360a, d5184116 and 50aebf54; 67a2fe76 (issue
-#198) and 4af53b07; 3ddcd58b (issue #207); 2b9494ae (issue #206).*
+#198) and 4af53b07; 3ddcd58b (issue #207); 2b9494ae (issue #206);
+62e16b9e; fb9009bc (issue #56); 3c80bc24.*
 
 ---
 
@@ -210,6 +211,26 @@ plain before 500c29e2 and native from it, unless they say otherwise.
   reinstall over the same binary stays quiet. JUPYTER.md, "It replaces
   another Raku kernel", also gives
   `raku-jupyter-kernel --generate-config --force` to hand the name back.
+- **The Wolfram binding prints what Raku prints, in a notebook too, and
+  `RakuEval` follows the REPL's rule** (fb9009bc; issue #56).
+  `RakuEval["say 3 ** 2"]` wrote 9 to the kernel's stdout, which a notebook
+  never shows, and returned True. Raku's output is now captured with
+  `rk_set_output` and a `ForeignCallback` and printed by the kernel when
+  the call returns, in the order written: print cells in a notebook,
+  stderr in red, and the same UTF-8 text on stdout and stderr in a script.
+  Code that wrote to stdout returns Null, as `Print` does; `RakuCall` keeps
+  its value. An eval that prints nothing measured 49 µs against 44 µs, and
+  printing costs about 14 µs a write (20,000 `say`s: 0.28 s against
+  0.02 s). bindings/wolfram/tests/output.wls is a new Wolfram leg of
+  tools/bindings-smoke.raku, which the old package fails.
+- **The bindings' guides give three ways to get librakupp, and the loaders'
+  not-found errors print the commands** (62e16b9e). A release archive
+  carries the library (every one but OpenBSD's), a fresh checkout builds it
+  as before, and beside a static development `build/` it is built alone:
+  `cmake --build build-shared -j --target rakupp_shared` in a
+  `-DRAKUPP_BUILD_SHARED=ON` directory of its own, named with `RAKUPP_LIB`.
+  The Python, JS and Wolfram errors print those commands;
+  bindings/README.md, section 1, has the rest.
 
 ### Fixed: silent wrong answers
 
@@ -516,6 +537,13 @@ does not.
 
 ### Behaves like Rakudo
 
+- **A Jupyter cell that printed to stdout shows no value** (3c80bc24), the
+  rule the rakupp prompt has followed since issue #66 and Rakudo's REPL
+  follows: `say 42` shows 42, not 42 and then True. The bytes decide, so
+  `print ""` still shows its value and stderr does not count. A typed
+  value (`#% html` and the like) is shown regardless, because the magic
+  asked for it, and a printing `%% always` entry is the cell printing.
+  tools/jupyter-smoke.raku, 62 checks, pins each case.
 - **An undeclared routine in the main program is a compile-time report with
   its line** (c7a12943): `say length("Riga")` printed a run-time "Undefined
   routine 'length'" at line 0, and now prints Rakudo's ===SORRY!===
