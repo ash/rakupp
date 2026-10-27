@@ -4646,6 +4646,54 @@ void Interpreter::bindParams(const std::vector<Param>& params, ValueList& args,
             return !(v.s == "Positional" || v.s == "Array" || v.s == "List" || typeMatchesArg(v, "Positional"));
         return false;
     };
+    // What a `%` parameter refuses, named or positional, argument or default:
+    // anything that is not Associative. A List of Pairs is no hash, and Rakudo
+    // builds none from one: `sub g(:%env) {}; g(:env(A => 1, B => 2))` fails
+    // to bind there, where coercing it here let a test pass that dies under
+    // Rakudo (#207). A Capture is no Associative there either, whatever `~~`
+    // answers here; a Junction is left to autothread.
+    auto notAssociativeArg = [&](const Value& v) {
+        if (v.t == VT::Hash && v.hashKind.empty()) return false;   // a plain Hash
+        if (v.hashKind == "Capture" && (v.t == VT::Hash || v.t == VT::Array)) return true;
+        return !isJunction(v) && !typeOrSubsetMatches(v, "Associative");
+    };
+    // …in Rakudo's words: the type alone, no value, and the hint about typed
+    // hashes when what came has an `.of` of Mu (a List, an Array, a Range, code
+    // that declares no return type), word-wrapped as X::TypeCheck.explain does
+    auto refuseNotAssociative = [&](const Param& p, const Value& v) {
+        const std::string tn = v.typeName();
+        bool ofMu;
+        if (v.t == VT::Type) {
+            static const std::set<std::string> kOfMu = {"List", "Array", "Slip", "Range", "Code", "Block",
+                                                        "Routine", "Sub", "Method", "Regex", "WhateverCode"};
+            ofMu = kOfMu.count(v.s.str()) > 0;
+        }
+        else ofMu = ((tn == "List" || tn == "Array" || tn == "Slip") && (v.ofType().empty() || v.ofType() == "Mu")) ||
+                    v.t == VT::Range || v.t == VT::Regex ||
+                    (v.t == VT::Code && v.code() && v.code()->cold().retType.empty());
+        std::string why = "expected Associative but got " + tn;
+        if (ofMu) why += ". You have to pass an explicitly typed hash, not one that just might happen "
+                         "to contain elements of the correct type.";
+        throwTypedV("X::TypeCheck::Binding::Parameter",
+            {{"got", v}, {"expected", Value::typeObj("Associative")}, {"symbol", Value::str(p.name)}},
+            "Type check failed in binding to parameter '" + paramShownName(p) + "'; " +
+            methodCall(Value::str(why), "naive-word-wrapper", {}).toStr());
+    };
+    // Bind an argument to a `%` parameter. A Hash is shared with the caller
+    // (`is copy` takes a fresh one). An object or a type object that does
+    // Associative binds as itself: coercing one to a plain Hash threw away
+    // every method the type exists for (DBDish::Pg passes its TypeConverter
+    // through `%Converter` parameters and calls `.convert` on the far side).
+    // So does a Pair, as in Rakudo (`for %h.pairs -> %p` holds each Pair).
+    // The rest, a Map or a QuantHash, coerces as it always has. A positional
+    // bound by a call that passes too many (laxOverflow) coerces whatever came.
+    auto bindAssocArg = [&](const Param& p, Value& v, bool positional) {
+        if (notAssociativeArg(v) && !(positional && laxOverflow())) refuseNotAssociative(p, v);
+        if (v.t == VT::Type || (v.t == VT::Pair && !p.isCopy) ||
+            (v.t == VT::Object && v.obj() && v.obj()->cls && typeOrSubsetMatches(v, "Associative"))) { /* raw */ }
+        else if (!(v.t == VT::Hash && v.hash() && !p.isCopy)) v = coerceHash(v);
+        v.itemized = false;   // `%h` holds the hash, never an item of one
+    };
     // Fast path: every parameter is a plain mandatory positional scalar and no
     // named arguments were passed — the overwhelmingly common signature. Bind
     // positionally, skipping the named-map / explicit-named-set / substr /
@@ -4769,6 +4817,8 @@ void Interpreter::bindParams(const std::vector<Param>& params, ValueList& args,
             env->define(self->name, self->sigil == '&' ? Value::nil() : Value::typeObj("Mu"));
         Value v; try { v = eval(e); } catch (...) { tctx().cur = saved; throw; }
         tctx().cur = saved;
+        // a default binds as an argument would: `%h = (a => 1, b => 2)` is a List
+        if (self && self->sigil == '%' && notAssociativeArg(v)) refuseNotAssociative(*self, v);
         if (self && self->sigil == '$' && !self->isRaw && !self->invocant) itemizeScalar(v);
         // an `is copy` parameter copies its DEFAULT as it copies an argument:
         // `:@items is copy = @defaults` must not hand the body @defaults itself,
@@ -5197,10 +5247,7 @@ void Interpreter::bindParams(const std::vector<Param>& params, ValueList& args,
                         if (!p.isCopy && bv.t == VT::Array && bv.s == "Seq") bv.s.clear();
                     }
                 }
-                else if (p.sigil == '%') {
-                    if (!(bv.t == VT::Hash && bv.hash() && !p.isCopy)) bv = coerceHash(bv);
-                    bv.itemized = false;   // (the positional arm's rule)
-                }
+                else if (p.sigil == '%') bindAssocArg(p, bv, false);
                 // coercion type on a NAMED param (`IO:D() :$cwd`) — the positional
                 // arm has always done this; without it `:cwd("/tmp")` stayed a Str
                 // and every downstream `IO:D()` candidate refused it (TAP's
@@ -5251,6 +5298,8 @@ void Interpreter::bindParams(const std::vector<Param>& params, ValueList& args,
                 // the Pair, not an arity complaint from inside
                 if (p.sigil == '$' && !p.type.empty() && !p.coerce && !p.typeCapture)
                     typeCheckBind(p, v, blockParams, whereVerified, env.get());
+                // …and so is a `%h (:$a)`'s Associative: a List of Pairs is none
+                else if (p.sigil == '%' && notAssociativeArg(v) && !laxOverflow()) refuseNotAssociative(p, v);
                 destructure(p, v);
                 // a *named* destructuring param (`@a [$x, *@y]`) also binds the whole
                 // arg — and BINDS it, so the List-vs-Array rule of the arms below
@@ -5377,25 +5426,7 @@ void Interpreter::bindParams(const std::vector<Param>& params, ValueList& args,
                     {{"got", v}, {"expected", Value::typeObj("Callable")}, {"symbol", Value::str(p.name)}},
                     "Type check failed in binding to parameter '" + paramShownName(p) + "'; expected Callable but got " +
                     v.typeName() + " (" + typeCheckRepr(v) + ")");
-            else if (p.sigil == '%') {
-                if (v.t == VT::Type && (v.s == "Associative" || v.s == "Hash" || v.s == "Map")) { /* raw, as above */ }
-                // An object that DOES Associative binds as itself — coercing it to
-                // a plain Hash threw away every method the type exists for
-                // (DBDish::Pg passes its TypeConverter through `%Converter`
-                // parameters and calls `.convert` on the far side).
-                else if (v.t == VT::Object && v.obj() && v.obj()->cls &&
-                         typeOrSubsetMatches(v, "Associative")) { /* raw */ }
-                // a definite scalar is no Associative: `sub f(%h) {}; f(3)` fails to bind
-                else if (!p.isCopy && !laxOverflow() &&
-                         (v.t == VT::Int || v.t == VT::Num || v.t == VT::Rat || v.t == VT::Bool || v.t == VT::Code ||
-                          (v.t == VT::Str && v.hashKind.empty())))
-                    throwTypedV("X::TypeCheck::Binding::Parameter",
-                        {{"got", v}, {"expected", Value::typeObj("Associative")}, {"symbol", Value::str(p.name)}},
-                        "Type check failed in binding to parameter '" + paramShownName(p) + "'; expected Associative but got " +
-                        v.typeName() + " (" + typeCheckRepr(v) + ")");
-                else if (!(v.t == VT::Hash && v.hash() && !p.isCopy)) v = coerceHash(v);
-                if (v.t == VT::Hash) v.itemized = false;   // `%h` holds the hash, never an item of one
-            }
+            else if (p.sigil == '%') bindAssocArg(p, v, true);
             // coercion type `Int() \x` / `Str(Cool) $s`: coerce the bound value via
             // its .Type method — which FAILS where the method does (Int on <1/0>)
             if (!p.coerce && !p.type.empty()) v = coerceViaSubset(v, p.type);
