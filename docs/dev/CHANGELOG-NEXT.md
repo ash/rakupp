@@ -16,7 +16,7 @@ e24f05f1 (NUM-UNBOX-PLAN P0); 8644846a; 74806a6d; 93f9a4af and c7a12943;
 85d56001; 960e8aed; 7fcca8a8; 273863ac; 90bc6e23; 84add3b1; 08a17d21;
 12af490d (RACE-DETECTOR-PLAN P0-P4); 42f79e98, b9108e1d, 0b9950b1, 500c29e2,
 1b182b8e, 828e52d5, 4d1c7cc3, 80ea9030, d972abe7, 166334a9 and 29b10450;
-5d31d4a2 and aff5032b (issue #202); cb5b360a.*
+5d31d4a2 and aff5032b (issue #202); cb5b360a and d5184116.*
 
 ---
 
@@ -545,18 +545,36 @@ does not.
   three t/regression files (require-path-loads-file-runs-main,
   colonpair-digits-regex-key, samewith-only-routine) agree with Rakudo
   2026.09.
+- **A module may extend the core DateTime in place, and `rakupp install
+  DateTime::Timezones` installs** (d5184116). `CORE::DateTime` is the
+  setting's DateTime, as a term and as a parameter type, whatever the scope
+  has made of the short name; `class DateTime is DateTime` in a module is a
+  subclass of the core one (only `class A is A`, with nothing outside, is
+  refused); `.wrap` of a core method's object
+  (`DateTime.^find_method('in-timezone').wrap(…)`) wraps it for every
+  DateTime, where it was accepted and ignored, and `callsame` reaches the
+  core method; a sub called with a method call's invocant first (a
+  `.^add_fallback` method, `$d.&up`) takes the invocant's container, so an
+  `is rw` parameter assigns the caller's variable and a multi picks its
+  `is rw` candidate only for one (`3.&m`, `my \d = DateTime.new(…)` take the
+  other). A class deriving DateTime keeps its class through `±` a Duration
+  (`$dt - $day` was a Num), and through `.later`, `.in-timezone`, `.clone`
+  and kin; a difference is a Duration, `$dt + 60` an Instant, and
+  `DateTime but R` keeps its role. DateTime::Timezones 0.4.2 installs with
+  its suite green, and a program using it prints what Rakudo prints from the
+  same store. t/regression/core-class-extended-in-place.raku agrees with
+  Rakudo 2026.09.
 
 ### Left open
 
-- `rakupp install DateTime::Timezones` installs its dependency now
-  (cb5b360a), but not the dist itself, which extends the core DateTime in
-  place: `class DateTime is DateTime is export` (a subclass that shadows the
-  core class) is refused as inheriting from itself, `CORE::DateTime` names no
-  type a method can be called on, `.wrap` on a core method
-  (`DateTime.^find_method('in-timezone').wrap(…)`) is silently ignored, and a
-  `^add_fallback` handler cannot replace an `is rw` invocant. Separately,
-  `&?ROUTINE` in a block another routine runs names that routine, not the one
-  it is written in.
+- Found beside DateTime::Timezones (d5184116), the same on v5.5.0: `my @a =
+  DateTime.new(0)` is 8 Pairs (a Date's fields too, and a Promise one Pair)
+  where Rakudo has one element; a plain `DateTime + 60` is a DateTime where
+  Rakudo's is an Instant; a sub's `CORE::Int $x` binds any value (dispatch
+  does check it); `@a.first`, `.head` and `.tail` answer a value where
+  Rakudo hands back the element's container; a top-level `class DateTime is
+  CORE::DateTime`, of the core class's own name, is not one; and
+  `&?ROUTINE` in a block another routine runs names that routine.
 
 - A store into an array element can still land in a buffer a sibling worker's
   growth has just moved, in a program that races the two (90bc6e23): an
