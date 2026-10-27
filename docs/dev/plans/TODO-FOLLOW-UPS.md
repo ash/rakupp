@@ -45,25 +45,19 @@ moves to [TODO.md](TODO.md).
   ~20533), which reads the `rule` kind into "sr" flags only for a value it
   counts as wired.
 
-- [ ] **A routine's name before a block in a statement condition is not
-  Rakudo's xblock rule** (found 2026-10-27 while fixing issue #198,
-  67a2fe76; the lowercase lines on daf9c03c too). Rakudo lets the listop
-  take the block, wants the statement's own block after it, and refuses the
-  program when none follows:
+- [ ] **An undeclared type-like name before a statement's block is refused
+  only in an EVAL** (found 2026-10-27 while making statement conditions
+  Rakudo's xblock, 4af53b07; on daf9c03c too):
 
   ```raku
-  sub foo(&b) { b() }; if foo { 1 } { say "yes" }   # dies "Calling foo() will never work", Rakudo yes
-  sub bar { 5 };       if bar { say "t" }           # t, Rakudo ===SORRY!=== needs parens to avoid gobbling block
-  sub tick { Supply.from-list(1, 2) }
-  react { whenever tick { .say } }                  # dies "Too many positionals", Rakudo the same ===SORRY!===
+  CATCH { when X::Y {} }          # runs, Rakudo ===SORRY!=== Function 'X::Y' needs parens to avoid gobbling block (…)
+  EVAL 'CATCH { when X::Y {} }';  # that group, as in Rakudo (S32-exceptions/misc.t)
   ```
 
-  `if`, `for`, `given`, `when` and `while` set stmtCond_, so the first block
-  is always the statement's (startsListopArg's Tok::LBrace arm); `whenever`
-  parses its supply with no stmtCond_ (parsePrimary's `whenever` arm), so a
-  listop there always takes it. A capitalized routine name (`Foo`) does the
-  same in each since #198. Done when the three lines above answer as in
-  Rakudo 2026.09, with the comma form `for map { … }, ^5 { }` still a call.
+  noteGobbleSite (src/Parser.cpp) records the name, and only the EVAL path
+  in src/InterpreterModules.cpp asks bareNameResolves of `gobbleSites_`
+  after its parseProgram; a program's and a module's parse never do. Done
+  when the first line is refused at compile time, as in Rakudo 2026.09.
 
 ## Operators and types
 
@@ -167,6 +161,21 @@ moves to [TODO.md](TODO.md).
   v5.5.0's.
 
 ## Control flow and containers
+
+- [ ] **An enum's type object is a list of its pairs** (found 2026-10-27
+  while making statement conditions Rakudo's xblock, 4af53b07; on daf9c03c
+  too). A type object is one item, and `Int` is, but an enum's is not:
+
+  ```raku
+  enum Col <red green>;
+  .say for Col;                     # red => 0, green => 1; Rakudo (Col)
+  for Col -> $c { say $c.^name }    # Pair Pair; Rakudo Col
+  say Col.elems; my @a = Col; say @a.elems;   # 2 2; Rakudo 1 1
+  say red.elems;                    # 2; Rakudo 1 (though `for red { }` runs once)
+  ```
+
+  Look for where an enum type, and a member's `.elems`, answer as the
+  enum's pairs. Done when the four lines answer as in Rakudo 2026.09.
 
 - [ ] **A `fail` in a block written at the mainline returns from the routine
   that runs it** (found 2026-10-22 while making `fail` lexotic, 3e97932e; on
