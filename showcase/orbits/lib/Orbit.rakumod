@@ -22,8 +22,8 @@
 
 unit module Orbit;
 
-constant DEG = pi / 180;
-constant AU = 149_597_870.7;             # km
+constant DEG is export = pi / 180;
+constant AU is export = 149_597_870.7;             # km
 constant DAY = 86_400;                   # s
 constant GM-SUN = 1.32712440018e11;      # km^3/s^2
 constant GM-EARTH = 398_600.4418;        # km^3/s^2
@@ -79,7 +79,7 @@ sub radius($a, $e, $E) is export { $a * (1 - $e * cos($E)) }
 # Standish's table: for each planet, the six elements at J2000 and their rates
 # per Julian century. Columns are
 #   a (au)  e  I (deg)  L (deg)  longitude of perihelion  longitude of node
-constant PLANETS = <Mercury Venus Earth Mars Jupiter Saturn Uranus Neptune>;
+constant PLANETS is export = <Mercury Venus Earth Mars Jupiter Saturn Uranus Neptune>;
 
 my %ELEMENTS =
     Mercury => [[ 0.38709927,  0.20563593,  7.00497902,  252.25032350,  77.45779628,  48.33076593],

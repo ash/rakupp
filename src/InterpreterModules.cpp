@@ -626,41 +626,176 @@ void Interpreter::runRoleClassStatements(ClassInfo* cls, const std::string& clsN
     }
 }
 
-// Does a unit export anything — a routine, variable, constant, type, enum or
-// subset declared `is export`, or an `EXPORT::` package of its own, at its top
-// level or in a package body? In Rakudo the trait is what makes the module's
-// EXPORT package, so a module that exports nothing has none: `Circle::.keys`
-// is ($pi), not ($pi EXPORT) (#202).
-static bool unitDeclaresExport(const std::vector<StmtPtr>& stmts) {
-    auto exportedVar = [](const Expr* x) {
-        return x && x->kind == NK::VarExpr && static_cast<const VarExpr*>(x)->d().declExport;
+// Rakudo's EXPORT_SYMBOL, for one package: `sym` goes in `pkg::EXPORT::TAG`
+// for each tag it names (DEFAULT when none) and ALL. Every package a symbol
+// is declared within gets it (recordPackageExports passes it outward), and a
+// package that exports nothing has no EXPORT at all (#202).
+void Interpreter::exportSymbol(const std::string& pkg, const std::string& sym, const Value& v,
+                               const std::vector<std::string>& tags) {
+    if (!global_ || pkg.empty() || sym.empty()) return;
+    std::vector<std::string> all = tags;
+    if (all.empty()) all.push_back("DEFAULT");
+    if (std::find(all.begin(), all.end(), "ALL") == all.end()) all.push_back("ALL");
+    noteSymbolMutation("EXPORT symbol");
+    // the packages themselves NAME something, so `::('M::EXPORT::ALL')` and
+    // `M::EXPORT::.keys` find them
+    auto pkgSym = [&](const std::string& n) { if (!global_->localRaw(n)) global_->define(n, Value::typeObj(n)); };
+    const std::string ex = pkg + "::EXPORT";
+    pkgSym(ex);
+    const bool sigilled = std::strchr("$@%&", sym[0]) != nullptr;
+    for (auto& tg : all) {
+        pkgSym(ex + "::" + tg);
+        // sigil first, as `our` publishes: `&M::EXPORT::ALL::f`
+        std::string gn = sigilled ? sym.substr(0, 1) + ex + "::" + tg + "::" + sym.substr(1)
+                                  : ex + "::" + tg + "::" + sym;
+        global_->define(gn, v);
+        exportSymbolNames_.insert(std::move(gn));
+    }
+    // (the compunit's own list, which its importer reads: Rakudo's UNIT::EXPORT)
+    if (loadExports_) {
+        bool have = false;
+        for (auto& r : *loadExports_) if (r.sym == sym) { have = true; break; }
+        if (!have) loadExports_->push_back({sym, all, v});
+    }
+    auto& recs = pkgExports_[pkg];
+    for (auto& r : recs)
+        if (r.sym == sym) { r.tags = std::move(all); r.v = v; return; }
+    recs.push_back({sym, std::move(all), v});
+}
+
+void Interpreter::recordPackageExports(const std::string& pkg, const std::vector<StmtPtr>& body, Env* env) {
+    if (!global_ || pkg.empty()) return;
+    const std::string pfx = pkg + "::";
+    auto recorded = [&](const std::string& sym) {
+        auto it = pkgExports_.find(pkg);
+        if (it != pkgExports_.end())
+            for (auto& r : it->second) if (r.sym == sym) return true;
+        return false;
     };
-    for (auto& st : stmts) {
+    // A variable's entry is its container — the package's cell, or the view
+    // its long name holds — so `M::EXPORT::DEFAULT::<$v> =:= $M::v`; any
+    // other symbol's is its value, by its long name or in the body's scope.
+    auto entryOf = [&](const std::string& sym, Value& out) -> bool {
+        if (std::strchr("$@%", sym[0])) {
+            const std::string pub = ourPublishedName(sym, pfx);
+            if (PRef<Value> c = varCell(global_.get(), pub)) { out = Value::cellHolder(c); return true; }
+            if (Value* raw = global_->localRaw(pub)) { out = *raw; return true; }
+            if (env) {
+                if (PRef<Value> c = varCell(env, sym)) { out = Value::cellHolder(c); return true; }
+                if (Value* raw = env->localRaw(sym)) { out = *raw; return true; }
+            }
+            return false;
+        }
+        if (env)
+            if (Value* l = env->local(sym)) { out = *l; return true; }
+        const std::string q = sym[0] == '&' ? "&" + pfx + sym.substr(1) : pfx + sym;
+        if (Value* g = global_->local(q)) { out = *g; return true; }
+        return false;
+    };
+    for (auto& st : body) {
         if (!st) continue;
+        Value v;
         switch (st->kind) {
-            case NK::SubDecl:    if (static_cast<const SubDecl*>(st.get())->isExport) return true; break;
-            case NK::EnumDecl:   if (static_cast<const EnumDecl*>(st.get())->isExport) return true; break;
-            case NK::SubsetDecl: if (static_cast<const SubsetDecl*>(st.get())->isExport) return true; break;
-            case NK::ClassDecl: {
-                auto* cd = static_cast<const ClassDecl*>(st.get());
-                if (cd->isExport || unitDeclaresExport(cd->body)) return true;
-                if (!cd->isMy && (cd->name == "EXPORT" || cd->name.rfind("EXPORT::", 0) == 0)) return true;
+            case NK::SubDecl: {   // (normally exported where it was declared)
+                auto* sd = static_cast<const SubDecl*>(st.get());
+                const std::string sym = "&" + sd->name;
+                if (sd->isExport && !sd->isMethod && !sd->name.empty() && !recorded(sym) && entryOf(sym, v))
+                    exportSymbol(pkg, sym, v, sd->exportTags);
                 break;
             }
-            case NK::ExprStmt: {
+            case NK::ExprStmt: {   // `our $v is export`, `constant K is export(:k)`
                 const Expr* e = static_cast<const ExprStmt*>(st.get())->e.get();
                 if (e && e->kind == NK::Assign) e = static_cast<const Assign*>(e)->target.get();
-                if (e && e->kind == NK::ListExpr) {
-                    for (auto& it : static_cast<const ListExpr*>(e)->items)
-                        if (exportedVar(it.get())) return true;
+                auto one = [&](const Expr* x) {
+                    if (!x || x->kind != NK::VarExpr) return;
+                    auto* ve = static_cast<const VarExpr*>(x);
+                    if (ve->declare && ve->d().declExport && !ve->name.empty() && entryOf(ve->name, v))
+                        exportSymbol(pkg, ve->name, v, ve->d().exportTags);
+                };
+                if (e && e->kind == NK::ListExpr)
+                    for (auto& it : static_cast<const ListExpr*>(e)->items) one(it.get());
+                else one(e);
+                break;
+            }
+            case NK::ClassDecl: {
+                auto* cd = static_cast<const ClassDecl*>(st.get());
+                if (cd->name.empty() || cd->nameExpr || cd->isAugment) break;
+                const std::string fq = classes_.count(pfx + cd->name) || pkgKind_.count(pfx + cd->name) ||
+                                       !classes_.count(cd->name) ? pfx + cd->name : cd->name;
+                // an exported type goes in under its short name
+                if (cd->isExport && !cd->isPackage) {
+                    size_t c = cd->name.rfind("::");
+                    exportSymbol(pkg, c == std::string::npos ? cd->name : cd->name.substr(c + 2),
+                                 Value::typeObj(fq), cd->exportTags);
                 }
-                else if (exportedVar(e)) return true;
+                // …and what a package inside this one exported is this one's too
+                auto it = pkgExports_.find(fq);
+                if (it != pkgExports_.end()) {
+                    const std::vector<PkgExport> inner = it->second;
+                    for (auto& r : inner) exportSymbol(pkg, r.sym, r.v, r.tags);
+                }
+                break;
+            }
+            case NK::EnumDecl: {   // the type, and each of its members
+                auto* ed = static_cast<const EnumDecl*>(st.get());
+                if (!ed->isExport || ed->name.empty() || !entryOf(ed->name, v)) break;
+                exportSymbol(pkg, ed->name, v, ed->exportTags);
+                if (v.t == VT::Array && v.arr()) {
+                    const ValueList members = *v.arr();
+                    for (auto& m : members) {
+                        Value mv;
+                        if (m.t != VT::Pair) continue;
+                        const std::string key = m.s;
+                        if (Value* g = global_->local(pfx + ed->name + "::" + key)) mv = *g;
+                        else if (!entryOf(key, mv)) continue;
+                        exportSymbol(pkg, key, mv, ed->exportTags);
+                    }
+                }
+                break;
+            }
+            case NK::SubsetDecl: {
+                auto* sd = static_cast<const SubsetDecl*>(st.get());
+                if (sd->isExport && !sd->name.empty() && !sd->isMy)
+                    exportSymbol(pkg, sd->name, Value::typeObj(subsets_.count(pfx + sd->name) ? pfx + sd->name : sd->name),
+                                 sd->exportTags);
                 break;
             }
             default: break;
         }
     }
-    return false;
+}
+
+// An exported routine, where it is declared: in its package's EXPORT tags, or
+// outside any package in the compunit's (`&EXPORT::ALL::f`).
+void Interpreter::exportRoutine(const std::string& sname, const Value& code, const std::vector<std::string>& tags) {
+    const std::string& pfx = tctx().pkgPrefix;
+    if (pfx.size() > 2) { exportSymbol(pfx.substr(0, pfx.size() - 2), "&" + sname, code, tags); return; }
+    if (!pfx.empty() || !global_) return;
+    std::set<std::string> all(tags.begin(), tags.end());
+    if (all.empty()) all.insert("DEFAULT");
+    all.insert("ALL");
+    for (auto& tg : all) global_->define("&EXPORT::" + tg + "::" + sname, code);
+}
+
+// `import G` of what G exported besides its routines — a variable, constant,
+// enum and its members, a subset — by the tags asked for, from the record its
+// body left: `module G { our $gee is export = 42 }; import G;` binds `$gee` to
+// G's container (import.t). An ALL that stands in for `:&name` brings in that
+// name only.
+void Interpreter::importPackageExports(const std::string& pkg, const std::set<std::string>& tags,
+                                       const std::set<std::string>& wantNames, bool askedAll) {
+    auto pe = pkgExports_.find(pkg);
+    if (pe == pkgExports_.end()) return;
+    const std::vector<PkgExport> recs = pe->second;
+    for (auto& r : recs) {
+        if (r.sym.empty() || r.sym[0] == '&' || tctx().cur->local(r.sym)) continue;
+        const std::string bare = std::strchr("$@%", r.sym[0]) ? r.sym.substr(1) : r.sym;
+        for (auto& tg : r.tags)
+            if (tags.count(tg) && (tg != "ALL" || askedAll || wantNames.count("&" + bare))) {
+                tctx().cur->define(r.sym, r.v);
+                break;
+            }
+    }
 }
 
 // Every tag a module's `is export(:a :b)` traits name, read from its SOURCE —
@@ -999,7 +1134,9 @@ void Interpreter::loadModuleImpl(const std::string& name, const std::vector<std:
                 if (res.t == VT::Hash && res.hash())
                     for (auto& kv : *res.hash())
                         if (!importWouldShadowRoutine(kv.first, kv.second)) {
-                            tctx().cur->define(kv.first, kv.second);
+                            // (a package variable's container: see the first-load site)
+                            if (PRef<Value> c = cellOfProxy(&kv.second)) tctx().cur->define(kv.first, Value::cellHolder(c));
+                            else tctx().cur->define(kv.first, kv.second);
                             if (kv.second.t == VT::Type && kv.second.s.str() != kv.first)
                                 g_lexTypeAlias.store(true, std::memory_order_relaxed);   // (see the first-load site)
                         }
@@ -1224,16 +1361,63 @@ void Interpreter::loadModuleImpl(const std::string& name, const std::vector<std:
         // …and so is the RakuAST pragma: a module that wants the names has to
         // ask for them itself, and must not leak them back to its importer.
         bool savedRakuAst = rakuAstPragma_;
+        // what this module exports, symbol by symbol, as its body declares it
+        std::vector<PkgExport> unitExports;
+        struct LoadExportsScope {
+            std::vector<PkgExport>*& p; std::vector<PkgExport>* saved;
+            ~LoadExportsScope() { p = saved; }
+        } loadExportsScope{loadExports_, loadExports_};
+        loadExports_ = &unitExports;
         auto publish = [&] {
-            // The EXPORT packages themselves must NAME something, or
-            // `::('Mod::EXPORT::ALL')` finds no symbol to ask .WHO of —
-            // when there are any: a module that exports nothing has no EXPORT
-            if (!name.empty() && unitDeclaresExport(prog->stmts))
-                for (const char* which : {"::EXPORT", "::EXPORT::DEFAULT", "::EXPORT::ALL"})
-                    global_->define(name + which, Value::typeObj(name + which));
+            // A `unit module M;` file's EXPORT: what the rest of the file declared
+            // `is export`, as a braced package's body records its own. A module
+            // that exports nothing has none (#202). A file with no package of
+            // its own keeps its exports under the module's name.
+            bool unitPkg = false;
+            for (auto& st : prog->stmts)
+                if (st && st->kind == NK::ClassDecl) {
+                    auto* cd = static_cast<const ClassDecl*>(st.get());
+                    if (cd->isPackage && !cd->bracedBody && cd->body.empty() && !cd->name.empty() && !cd->nameExpr) {
+                        recordPackageExports(cd->name, prog->stmts, moduleEnv.get());
+                        unitPkg = true;
+                    }
+                    break;
+                }
+            if (!unitPkg && !name.empty()) recordPackageExports(name, prog->stmts, moduleEnv.get());
+            // What the module exported (loadExports_) is imported by its tags,
+            // below; and a constant or enum it declares and does NOT export
+            // stays its own — published here, `use NC; say ha` read a member of
+            // an enum NC never exported, and `need M` brought in M's constants.
+            std::unordered_set<std::string> exportedSyms, ownTerms, ownEnums;
+            if (loadExports_) for (auto& r : *loadExports_) exportedSyms.insert(r.sym);
+            std::function<void(const std::vector<StmtPtr>&)> ownDecls = [&](const std::vector<StmtPtr>& body) {
+                for (auto& st : body) {
+                    if (!st) continue;
+                    if (st->kind == NK::ClassDecl) ownDecls(static_cast<const ClassDecl*>(st.get())->body);
+                    else if (st->kind == NK::EnumDecl) {
+                        auto* ed = static_cast<const EnumDecl*>(st.get());
+                        if (!ed->name.empty()) { ownEnums.insert(ed->name); ownTerms.insert(ed->name); }
+                    }
+                    else if (st->kind == NK::ExprStmt) {
+                        const Expr* e = static_cast<const ExprStmt*>(st.get())->e.get();
+                        if (e && e->kind == NK::Assign) e = static_cast<const Assign*>(e)->target.get();
+                        if (e && e->kind == NK::VarExpr) {
+                            auto* ve = static_cast<const VarExpr*>(e);
+                            if (ve->declare && ve->d().declScope == "constant" && !ve->name.empty() &&
+                                !std::strchr("$@%&", ve->name[0]))
+                                ownTerms.insert(ve->name);
+                        }
+                    }
+                }
+            };
+            ownDecls(prog->stmts);
             for (auto& kv : moduleEnv->vars) {
                 const std::string& k = kv.first;
                 if (k == "&EXPORT") continue; // per-module export protocol sub — never republished
+                if (!k.empty() && k[0] != '&' &&
+                    (exportedSyms.count(k) || ownTerms.count(k) ||
+                     (!kv.second.enumType.empty() && ownEnums.count(kv.second.enumType.str()))))
+                    continue;
                 // …nor a compile-time `?` variable: `$?DISTRIBUTION`, `%?RESOURCES` are
                 // LEXICAL to the module (its routines close over them), and the
                 // program's own `$?DISTRIBUTION` stays undefined (cur-current-distribution.t)
@@ -1274,15 +1458,23 @@ void Interpreter::loadModuleImpl(const std::string& name, const std::vector<std:
                     // (DBIish's mysql JSON test does exactly this.) Naming them as
                     // globals is enough — a symbolic ref resolves through the same
                     // lookup a variable does.
+                    // Under its own tags (DEFAULT when it names none) and ALL, as
+                    // where it was declared — which is this package already for a
+                    // `unit module` of the same name, and the only record for a
+                    // module file with no package.
                     if (exported.count(bare) && !name.empty()) {
-                        for (const char* which : {"::EXPORT::DEFAULT::", "::EXPORT::ALL::"}) {
-                            // `::("Mod::EXPORT::DEFAULT::&sub")` reads the sigil-first
-                            // spelling; `Mod::EXPORT::ALL.WHO<&sub>` reads the other
-                            // (WHO builds a package's stash from the qualified globals
-                            // under its prefix). NativeLibs' own suite uses both.
-                            global_->define("&" + name + which + bare, kv.second);
-                            global_->define(name + which + "&" + bare, kv.second);
-                        }
+                        auto tit = exportTagsByName.find(bare);
+                        std::vector<std::string> tags;
+                        if (tit != exportTagsByName.end()) tags = tit->second;
+                        exportSymbol(name, k, kv.second, tags);
+                        // `::("Mod::EXPORT::DEFAULT::&sub")` reads the sigil-first
+                        // spelling exportSymbol writes; `Mod::EXPORT::ALL.WHO<&sub>`
+                        // the other too (WHO builds a package's stash from the
+                        // qualified globals under its prefix). NativeLibs' own
+                        // suite uses both.
+                        if (tags.empty()) tags.push_back("DEFAULT");
+                        tags.push_back("ALL");
+                        for (auto& tg : tags) global_->define(name + "::EXPORT::" + tg + "::" + k, kv.second);
                     }
                 }
                 // a SELECTIVE `is export(:tag)` sub stays out of the importer's
@@ -1372,6 +1564,30 @@ void Interpreter::loadModuleImpl(const std::string& name, const std::vector<std:
                     if (g->t == VT::Hash && g->hashKind == "Proxy") continue;
                 global_->define(k, kv.second);
             }
+            // What it exported that is not a routine — a variable, constant,
+            // type, enum and its members, subset — comes in by its tags, as a
+            // routine does: a plain `use` takes DEFAULT, `use M :t` takes t,
+            // `:ALL` everything, MANDATORY always, and `need` nothing. Each is
+            // recorded for a later `use` of the module as well.
+            if (loadExports_ && !name.empty())
+                for (auto& r : *loadExports_) {
+                    if (r.sym.empty() || r.sym[0] == '&') continue;
+                    moduleSelectiveExports_[name].push_back({r.sym, r.v, r.tags});
+                    if (!doImport) continue;
+                    const std::string bare = std::strchr("$@%", r.sym[0]) ? r.sym.substr(1) : r.sym;
+                    bool want = wantAll || requestedNames.count(bare) != 0;
+                    // (`require M <C $x>` names SYMBOLS, not tags)
+                    if (requireForm && !importArgs.empty()) want = want || requestedTags.count(bare) != 0;
+                    else
+                        for (auto& tg : r.tags)
+                            if (tg == "MANDATORY" || (tg == "DEFAULT" ? !selectiveOnly : requestedTags.count(tg) != 0))
+                                want = true;
+                    if (!want) continue;
+                    // (never a copy over the live view an `our` publishes)
+                    if (Value* g = global_->local(r.sym))
+                        if (g->t == VT::Hash && g->hashKind == "Proxy") continue;
+                    global_->define(r.sym, r.v);
+                }
             // A module may fill its EXPORT::TAG packages by hand instead of (or
             // beside) `is export`:
             //     my package EXPORT::DEFAULT { }
@@ -1388,6 +1604,10 @@ void Interpreter::loadModuleImpl(const std::string& name, const std::vector<std:
                 if (pkg.size() <= tagPfx.size() || pkg.compare(0, tagPfx.size(), tagPfx) != 0) return;
                 std::string tag = pkg.substr(tagPfx.size());
                 if (tag.find("::") != std::string::npos || key.empty()) return;
+                // (what `is export` put there is imported by its own road)
+                if (exportSymbolNames_.count(std::strchr("$@%&", key[0]) ? key.substr(0, 1) + pkg + "::" + key.substr(1)
+                                                                         : pkg + "::" + key))
+                    return;
                 std::string bare = std::strchr("$@%&", key[0]) ? key.substr(1) : key;
                 if (key[0] == '&' && (exported.count(bare) || exportTagsByName.count(bare))) return;
                 handBuilt.emplace(std::make_pair(tag, key), v);
@@ -1605,7 +1825,12 @@ void Interpreter::loadModuleImpl(const std::string& name, const std::vector<std:
                             if (kv.second.t == VT::Any && !kv.first.empty() && kv.first[0] == '&')
                                 continue;
                             if (importWouldShadowRoutine(kv.first, kv.second)) continue;
-                            tctx().cur->define(kv.first, kv.second);
+                            // A package variable a Stash hands over is its CONTAINER
+                            // (stashEntryOf's Proxy onto the cell): the name is bound
+                            // to that cell, so `$foo.VAR` is a Scalar and a write is
+                            // the module's (roast's gh2979.t re-exports one this way)
+                            if (PRef<Value> c = cellOfProxy(&kv.second)) tctx().cur->define(kv.first, Value::cellHolder(c));
+                            else tctx().cur->define(kv.first, kv.second);
                             // …under another name it is a lexical alias (see lexicalAliasAccepts)
                             if (kv.second.t == VT::Type && kv.second.s.str() != kv.first)
                                 g_lexTypeAlias.store(true, std::memory_order_relaxed);
@@ -4965,9 +5190,8 @@ static void methodTermJoinsClass(std::unordered_map<std::string, std::shared_ptr
                     // import reads EXPORT::TAG. An unexported routine, `our` or
                     // not, stays behind its qualified name (import.t).
                     std::vector<std::string> exportPfx;   // `&Foo::EXPORT::DEFAULT::` …
-                    std::set<std::string> wantNames;
+                    std::set<std::string> wantNames, tags;
                     {
-                        std::set<std::string> tags;
                         for (auto& a : u->importArgs) {
                             if (a.empty()) continue;
                             if (std::strchr("&$@%", a[0])) wantNames.insert("&" + a.substr(1));
@@ -4977,6 +5201,8 @@ static void methodTermJoinsClass(std::unordered_map<std::string, std::shared_ptr
                         if (!wantNames.empty()) tags.insert("ALL");
                         for (auto& tg : tags) exportPfx.push_back("&" + pfx + "EXPORT::" + tg + "::");
                     }
+                    const bool askedAll = std::count(u->importArgs.begin(), u->importArgs.end(), std::string("ALL")) != 0;
+                    importPackageExports(u->module, tags, wantNames, askedAll);   // …and what else it exported
                     for (Env* e = tctx().cur.get(); e; e = e->parent.get())
                         for (auto& kv : e->vars) {
                             if (kv.first.size() <= pfx.size() + 1 || kv.first[0] != '&') continue;
@@ -4989,8 +5215,7 @@ static void methodTermJoinsClass(std::unordered_map<std::string, std::shared_ptr
                             if (bare.empty() || bare.find("::") != std::string::npos) continue;
                             // an ALL entry that stands in for `:&name` brings in that name only
                             if (!wantNames.empty() && !wantNames.count(bare) &&
-                                kv.first.find("::EXPORT::ALL::") != std::string::npos &&
-                                !std::count(u->importArgs.begin(), u->importArgs.end(), std::string("ALL")))
+                                kv.first.find("::EXPORT::ALL::") != std::string::npos && !askedAll)
                                 continue;
                             Value* have = tctx().cur->find(bare);
                             if (!have) { tctx().cur->define(bare, kv.second); continue; }
@@ -5426,13 +5651,7 @@ static void methodTermJoinsClass(std::unordered_map<std::string, std::shared_ptr
                         global_->define("&" + tctx().pkgPrefix + sname, dispVal);
                     // …and an exported one is in its package's EXPORT tags, as a
                     // plain exported sub is below (what `import` consults)
-                    if (sd->isExport && !sd->isMethod && global_ && !tctx().pkgPrefix.empty()) {
-                        std::set<std::string> tags(sd->exportTags.begin(), sd->exportTags.end());
-                        if (tags.empty()) tags.insert("DEFAULT");
-                        tags.insert("ALL");
-                        for (auto& tg : tags)
-                            global_->define("&" + tctx().pkgPrefix + "EXPORT::" + tg + "::" + sname, dispVal);
-                    }
+                    if (sd->isExport && !sd->isMethod && global_) exportRoutine(sname, dispVal, sd->exportTags);
                     return dispVal;
                 }
                 // a named METHOD declared inside another method's body belongs
@@ -5500,14 +5719,8 @@ static void methodTermJoinsClass(std::unordered_map<std::string, std::shared_ptr
                     global_->define("&" + tctx().pkgPrefix + sname, code);
                 // an exported routine is also in its package's EXPORT::TAG
                 // packages — every tag it names (DEFAULT when it names none)
-                // and always ALL: `&EXPORT::ALL::f`, `Foo::EXPORT::DEFAULT::f()`
-                if (sd->isExport && !sd->isMethod && global_) {
-                    std::set<std::string> tags(sd->exportTags.begin(), sd->exportTags.end());
-                    if (tags.empty()) tags.insert("DEFAULT");
-                    tags.insert("ALL");
-                    for (auto& tg : tags)
-                        global_->define("&" + tctx().pkgPrefix + "EXPORT::" + tg + "::" + sname, code);
-                }
+                // and always ALL: `Foo::EXPORT::DEFAULT::f()`
+                if (sd->isExport && !sd->isMethod && global_) exportRoutine(sname, code, sd->exportTags);
             }
             // (not while HOISTING: the call happens where the statement stands,
             // inside whatever CATCH the block has, and exactly once)
@@ -5617,11 +5830,12 @@ static void methodTermJoinsClass(std::unordered_map<std::string, std::shared_ptr
                     if (!ed->name.empty())
                         global_->define(tctx().pkgPrefix + ed->name + "::" + key, ev);
                 }
-                // `enum EType is export (…)` INSIDE a `unit class`: the body
-                // scope dies with the load, so exported members must land in
-                // global for the importer (Date::Event's test files use the
-                // bare key names)
-                if (ed->isExport && global_) {
+                // `enum EType is export (…)` outside any module load: the
+                // members are global, as they always were. A module's
+                // importer takes them by tag from what the module exported
+                // (recordPackageExports, then the load's publish) — Date::Event's
+                // test files use the bare key names of an enum in a `unit class`.
+                if (ed->isExport && global_ && loadingModuleDepth_ == 0) {
                     global_->define(key, ev);
                     if (!ed->name.empty()) global_->define(ed->name + "::" + key, ev);
                 }
@@ -5632,7 +5846,7 @@ static void methodTermJoinsClass(std::unordered_map<std::string, std::shared_ptr
             if (!ed->name.empty()) {
                 tctx().cur->define(ed->name, pairs);
                 if (!tctx().pkgPrefix.empty()) global_->define(tctx().pkgPrefix + ed->name, pairs);
-                if (ed->isExport && global_) global_->define(ed->name, pairs);
+                if (ed->isExport && global_ && loadingModuleDepth_ == 0) global_->define(ed->name, pairs);
             }
             // an enum declaration is valued as the Map of its members, named or
             // not: `my %e = enum :: <foo bar>` is `{foo => 0, bar => 1}`, and so
@@ -6119,6 +6333,9 @@ static void methodTermJoinsClass(std::unordered_map<std::string, std::shared_ptr
                     };
                     surface(cd->body);
                 }
+                // its EXPORT: what it and the packages inside it declared `is export`
+                if (!cd->name.empty() && !cd->isMy && tctx().pkgPrefix.size() > 2)
+                    recordPackageExports(tctx().pkgPrefix.substr(0, tctx().pkgPrefix.size() - 2), cd->body, pkgEnv.get());
                 tctx().pkgPrefix = savedPrefix;
                 // the declaration's VALUE is the package: `my $p = my package P {}`
                 if (!cd->name.empty()) return Value::typeObj(savedPrefix + cd->name);
@@ -7855,6 +8072,8 @@ static void methodTermJoinsClass(std::unordered_map<std::string, std::shared_ptr
                             auto it = bodyEnv->vars.find("&" + sd->name);
                             if (it != bodyEnv->vars.end()) curPkgEnv_->define(it->first, it->second);
                         }
+                // a class is a package: its EXPORT holds what its body exported
+                if (!cd->isRole && !clsName.empty()) recordPackageExports(clsName, cd->body, bodyEnv.get());
                 tctx().cur = saved;
                 tctx().pkgPrefix = savedPrefix;
                 // Inside a parameterization's run, `my class Box { class In … }`:

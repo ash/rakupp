@@ -10881,6 +10881,17 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
             if (kv.first.rfind(pkg + "::", 0) == 0 &&
                 kv.first.find("::", pkg.size() + 2) == std::string::npos)
                 (*stash)[kv.first.substr(pkg.size() + 2)] = Value::typeObj(kv.first);
+        // …and its subsets and modules, which have tables of their own
+        // (`AllKinds::.keys` has its `subset Pos`, `UM::.keys` its `module Sub1`)
+        auto child = [&](const std::string& fq) {
+            return fq.size() > pkg.size() + 2 && fq.compare(0, pkg.size(), pkg) == 0 &&
+                   fq.compare(pkg.size(), 2, "::") == 0 && fq.find("::", pkg.size() + 2) == std::string::npos;
+        };
+        for (auto& kv : subsets_)
+            if (child(kv.first)) (*stash)[kv.first.substr(pkg.size() + 2)] = Value::typeObj(kv.first);
+        for (auto& kv : pkgKind_)
+            if (child(kv.first) && !stash->count(kv.first.substr(pkg.size() + 2)))
+                (*stash)[kv.first.substr(pkg.size() + 2)] = Value::typeObj(kv.first);
         // …as the ASKING unit sees the package: of the types units declared
         // under it, the ones that reached this unit through what it uses
         // (`Example2::.keys` after `use Example2::F` is not every Example2::*

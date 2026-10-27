@@ -232,6 +232,7 @@ struct VarDeclInfo {
     ExprPtr declDefault;         // `is default(EXPR)` — the container's reset/initial value
     bool declDynamic = false;    // `my $x is dynamic` — visible to callees, and .dynamic says so
     bool declExport = false;     // `our %x is export` — importers see the BARE name
+    std::vector<std::string> exportTags; // …`is export(:a :b)`: its tags (none = DEFAULT)
     char declSmiley = 0;         // `my Int:D $x` / `:U` / `:_` (explicit or `use variables`); 0 = none
     bool declSmileyImplicit = false;
     const struct Expr* declWhereExpr = nullptr; // …the constraint itself (owned by declWhereOwn)
@@ -1159,6 +1160,7 @@ struct ClassDecl : Stmt {
     std::vector<std::string> hidesNames; // `hides Parent` — an unknown one is X::InvalidType
     bool isHidden = false;       // `is hidden`
     bool isExport = false;       // `is export` — `import` of its package binds the short name
+    std::vector<std::string> exportTags; // …`is export(:a :b)`: its tags (none = DEFAULT)
     std::vector<std::string> trustsNames; // `trusts Foo` — an unknown one is X::Undeclared
     std::vector<AttrDecl> attrs;
     std::vector<std::unique_ptr<SubDecl>> methods;
@@ -1281,6 +1283,7 @@ struct EnumDecl : Stmt {
     std::string name;   // may be empty (anonymous enum)
     ExprPtr values;     // expression evaluating to words / pairs
     bool isExport = false; // `is export` — importers of a braced module see the value names
+    std::vector<std::string> exportTags; // …`is export(:a :b)`: its tags (none = DEFAULT)
     std::string pod, podTrail; // declarator pod (.WHY)
     std::string ofType;  // `my Str enum …` / `enum E of Str …` — every value must be one
     EnumDecl(): Stmt(NK::EnumDecl) {}
@@ -1421,6 +1424,7 @@ struct SubsetDecl : Stmt {
     bool isMy = false;     // `my subset F` — lexical: not registered under the package-qualified name
     bool isAnon = false;   // `anon subset F` — its name redeclares nothing
     bool isExport = false; // `is export` — its module has an EXPORT package
+    std::vector<std::string> exportTags; // …`is export(:a :b)`: its tags (none = DEFAULT)
     SubsetDecl(): Stmt(NK::SubsetDecl) {}
 };
 

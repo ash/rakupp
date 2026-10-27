@@ -39,7 +39,7 @@ sub wave-value(Str $shape, $t, :$duty = 0.25) is export {
     }
 }
 
-constant WAVEFORMS = <square sawtooth triangle pulse rectified>;
+constant WAVEFORMS is export = <square sawtooth triangle pulse rectified>;
 
 #| The Fourier coefficients of those waveforms, in closed form -- the
 #| integrals done on paper once, so the engine never has to do them again.
