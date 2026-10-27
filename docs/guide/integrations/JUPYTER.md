@@ -151,8 +151,8 @@ say) runs here unchanged.
 
 ```raku
 #% html
-my @rows = (1..3).map({ "<tr><td>$_</td><td>{ $_ ** 2 }</td></tr>" });
-"<table>@rows[]</table>"
+my @rows = (1..3).map({ "<tr><td>{$_}</td><td>{ $_ ** 2 }</td></tr>" });
+"<table>{@rows.join}</table>"
 ```
 
 The cell runs as any cell does, and its value goes to the frontend as HTML
