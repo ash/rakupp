@@ -3380,6 +3380,13 @@ Value Interpreter::rtNameTerm(const std::string& n) {
     // empty-Slip SINGLETON unless a class of that name exists. Resolved as a
     // builtin it was a fresh empty list, which `(1, Empty, 2)` kept as an element.
     if (n == "Empty" && !classes_.count(n)) return emptySlipSingleton();
+    // `Foo::` is the package's stash, as the NameTerm eval answers it. A type
+    // object named "Foo::" answered nothing, so a compiled `Circle::.keys`
+    // was () (#202).
+    if (n.size() > 2 && n.compare(n.size() - 2, 2, "::") == 0) {
+        ValueList none;
+        return methodCall(Value::typeObj(n.substr(0, n.size() - 2)), "WHO", none);
+    }
     if (tctx().cur) {
         if (Value* p = tctx().cur->find(n)) // bound slot: fetch, as the eval path does
             return (p->t == VT::Hash && p->hashKind == "Proxy" && p->hash()) ? deproxy(*p) : *p;

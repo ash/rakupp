@@ -1420,6 +1420,7 @@ struct SubsetDecl : Stmt {
     std::string pod, podTrail; // declarator pod (.WHY)
     bool isMy = false;     // `my subset F` — lexical: not registered under the package-qualified name
     bool isAnon = false;   // `anon subset F` — its name redeclares nothing
+    bool isExport = false; // `is export` — its module has an EXPORT package
     SubsetDecl(): Stmt(NK::SubsetDecl) {}
 };
 

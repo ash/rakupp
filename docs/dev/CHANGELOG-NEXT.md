@@ -15,7 +15,8 @@ e24f05f1 (NUM-UNBOX-PLAN P0); 8644846a; 74806a6d; 93f9a4af and c7a12943;
 (FORTRAN-LESSONS 1b); 5e5d80ec; 4405241a (FORTRAN-LESSONS 2); 769ed705;
 85d56001; 960e8aed; 7fcca8a8; 273863ac; 90bc6e23; 84add3b1; 08a17d21;
 12af490d (RACE-DETECTOR-PLAN P0-P4); 42f79e98, b9108e1d, 0b9950b1, 500c29e2,
-1b182b8e, 828e52d5, 4d1c7cc3, 80ea9030, d972abe7, 166334a9 and 29b10450.*
+1b182b8e, 828e52d5, 4d1c7cc3, 80ea9030, d972abe7, 166334a9 and 29b10450;
+5d31d4a2 (issue #202).*
 
 ---
 
@@ -361,6 +362,16 @@ plain before 500c29e2 and native from it, unless they say otherwise.
   routine declared below its call counts, which also fixes `say repeat(5);
   sub repeat($x) {…}`, a parse error before.
 
+- **A package's `our` variable reads through its Stash** (5d31d4a2; issue
+  #202). `Circle::{'$pi'}` answered (Any) where `$Circle::pi` and
+  `Circle::<$pi>` answered 3.14, and so did a computed key, `.AT-KEY`,
+  `.pairs`, `.values` and a Stash held in a variable: `.WHO` copied the
+  variable's cell holder, which reads as nothing, into the Stash. The Stash
+  holds the variable's container now, as Rakudo's does, so
+  `Circle::{'$pi'} = 3` assigns to `$Circle::pi`. Compiled, `Circle::.keys`
+  was (): the native bareword lookup made a type object named `Circle::`
+  where the interpreter answers the package's stash.
+
 ### Fixed: crashes
 
 - **A worker thread's teardown no longer races the cycle collector**
@@ -478,6 +489,15 @@ does not.
   declares one lazy. t/regression/live-finite-sources-not-lazy.raku agrees
   with Rakudo 2026.09.
 
+- **A module that exports nothing has no EXPORT package** (5d31d4a2; issue
+  #202). Every loaded module named `Mod::EXPORT`, so `Circle::.keys` was
+  ($pi EXPORT) where Rakudo says ($pi). Only a unit that declares something
+  `is export` (a routine, variable, constant, type, enum or subset) or an
+  `EXPORT::` package of its own has one now; a subset's `is export` is
+  recorded for it (AST cache v50).
+  t/regression/issue-202-stash-our-variable-lookup.raku agrees with Rakudo
+  2026.09.
+
 ### Left open
 
 - A store into an array element can still land in a buffer a sibling worker's
@@ -519,3 +539,10 @@ does not.
   not in scope fails the `--exe` build with a C++ error (`v_si` undeclared):
   a routine (`sub show { say $i }` beside `loop (my int $i = 0; …)`), or a
   top-level CATCH. The same before these changes (8c570a98).
+- Found with issue #202, the same on b85a84ec: `Mod::EXPORT::DEFAULT` and
+  `::ALL` list only the exported routines, where Rakudo lists the exported
+  variables, constants and types too, and a tagged routine sits under
+  DEFAULT rather than its tag. An exported subset is missing from its
+  module's Stash, a package declared in the program (`module M { sub f is
+  export {…} }`) lists no EXPORT, and `Circle::<$pi>:p` reads the `:p` as a
+  separate Pair.

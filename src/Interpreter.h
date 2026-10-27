@@ -2794,6 +2794,7 @@ public:
     Value makeEnvSlotProxy(std::shared_ptr<Env> owner, const std::string& src);
     Value makeArraySlotProxy(PRef<ValueList> arr, size_t idx, const std::string& nativeT = "");
     Value makePairCellProxy(PRef<Value> cell);   // a Pair's value container, as a Proxy
+    Value stashEntryOf(const Value& slot);       // a package global as its Stash holds it (a cell as its Proxy)
     // `$s.substr-rw(from, len)` as a Proxy over the variable `vname` in `owner`:
     // reading reads the text there now, assigning splices into the variable
     // (len -1: to the end). substrRwProxyOf builds one for a `substr-rw` call

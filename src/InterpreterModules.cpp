@@ -626,6 +626,43 @@ void Interpreter::runRoleClassStatements(ClassInfo* cls, const std::string& clsN
     }
 }
 
+// Does a unit export anything — a routine, variable, constant, type, enum or
+// subset declared `is export`, or an `EXPORT::` package of its own, at its top
+// level or in a package body? In Rakudo the trait is what makes the module's
+// EXPORT package, so a module that exports nothing has none: `Circle::.keys`
+// is ($pi), not ($pi EXPORT) (#202).
+static bool unitDeclaresExport(const std::vector<StmtPtr>& stmts) {
+    auto exportedVar = [](const Expr* x) {
+        return x && x->kind == NK::VarExpr && static_cast<const VarExpr*>(x)->d().declExport;
+    };
+    for (auto& st : stmts) {
+        if (!st) continue;
+        switch (st->kind) {
+            case NK::SubDecl:    if (static_cast<const SubDecl*>(st.get())->isExport) return true; break;
+            case NK::EnumDecl:   if (static_cast<const EnumDecl*>(st.get())->isExport) return true; break;
+            case NK::SubsetDecl: if (static_cast<const SubsetDecl*>(st.get())->isExport) return true; break;
+            case NK::ClassDecl: {
+                auto* cd = static_cast<const ClassDecl*>(st.get());
+                if (cd->isExport || unitDeclaresExport(cd->body)) return true;
+                if (!cd->isMy && (cd->name == "EXPORT" || cd->name.rfind("EXPORT::", 0) == 0)) return true;
+                break;
+            }
+            case NK::ExprStmt: {
+                const Expr* e = static_cast<const ExprStmt*>(st.get())->e.get();
+                if (e && e->kind == NK::Assign) e = static_cast<const Assign*>(e)->target.get();
+                if (e && e->kind == NK::ListExpr) {
+                    for (auto& it : static_cast<const ListExpr*>(e)->items)
+                        if (exportedVar(it.get())) return true;
+                }
+                else if (exportedVar(e)) return true;
+                break;
+            }
+            default: break;
+        }
+    }
+    return false;
+}
+
 // Every tag a module's `is export(:a :b)` traits name, read from its SOURCE —
 // the one record covering every kind of declaration (a sub keeps its tags in
 // the AST; a variable, constant, class or enum does not). Null when the module
@@ -1189,8 +1226,9 @@ void Interpreter::loadModuleImpl(const std::string& name, const std::vector<std:
         bool savedRakuAst = rakuAstPragma_;
         auto publish = [&] {
             // The EXPORT packages themselves must NAME something, or
-            // `::('Mod::EXPORT::ALL')` finds no symbol to ask .WHO of.
-            if (!name.empty())
+            // `::('Mod::EXPORT::ALL')` finds no symbol to ask .WHO of —
+            // when there are any: a module that exports nothing has no EXPORT
+            if (!name.empty() && unitDeclaresExport(prog->stmts))
                 for (const char* which : {"::EXPORT", "::EXPORT::DEFAULT", "::EXPORT::ALL"})
                     global_->define(name + which, Value::typeObj(name + which));
             for (auto& kv : moduleEnv->vars) {
