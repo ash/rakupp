@@ -27,7 +27,7 @@ BeginPackage["RakuLang`"];
 
 RakuLoad::usage = "RakuLoad[] loads librakupp and starts the interpreter (done on first use anyway); RakuLoad[path] names the library file to use, which is then used as given. Returns the library path.";
 RakuShutdown::usage = "RakuShutdown[] frees the interpreter. Every RakuGrammar and RakuMatch from it is dead afterwards; a fresh one may then be started.";
-RakuEval::usage = "RakuEval[src] evaluates Raku source in the interpreter's mainline scope and returns the last statement's value. State persists across calls, exactly like the REPL.";
+RakuEval::usage = "RakuEval[src] evaluates Raku source in the interpreter's mainline scope and returns the last statement's value. State persists across calls, exactly like the REPL, and so does the REPL's rule for output: what Raku prints is printed here, and code that printed to stdout returns Null rather than its value.";
 RakuCall::usage = "RakuCall[name, args...] calls a Raku routine by name with Wolfram arguments, returning a Wolfram value. A die inside it returns a Failure[\"RakuError\", ...].";
 RakuCan::usage = "RakuCan[name] answers whether a routine of this name is visible in the mainline scope.";
 RakuVersion::usage = "RakuVersion[] returns the engine's version string.";
@@ -56,6 +56,8 @@ $ff = <||>;        (* name -> ForeignFunction *)
 $rk = None;        (* RkInterp *)
 $ctx = None;       (* RkCtx *)
 $libPath = None;
+$outCb = None;     (* the rk_set_output callback; outlives RakuShutdown *)
+$outBag = {};      (* captured writes, {{...}, {isErr, ByteArray}} nested *)
 
 (* ---- the C declarations ----------------------------------------------------
  * Mirrors include/rakupp/rakupp.h + rakupp_ext.h one-to-one, so it can be
@@ -75,6 +77,9 @@ $signatures = <|
   "rk_eval"         -> ({"OpaqueRawPointer", cbytes, "RawPointer"::["OpaqueRawPointer"]} -> "CInt"),
   "rk_last_error"   -> ({"OpaqueRawPointer"} -> cbytes),
   "rk_grammar_shim" -> ({} -> cbytes),
+  (* the RkOutputFn goes in as an OpaqueRawPointer: that is how a
+     ForeignCallback is passed; a function type is not accepted here *)
+  "rk_set_output"   -> ({"OpaqueRawPointer", "OpaqueRawPointer", "OpaqueRawPointer"} -> "Void"),
 
   (* rakupp_ext.h — constructing *)
   "rk_any"    -> ({"OpaqueRawPointer"} -> "OpaqueRawPointer"),
@@ -120,7 +125,7 @@ rakuFail[msg_String] :=
     <|"MessageTemplate" -> msg, "MessageParameters" -> <||>|>], "RakuLang"];
 
 SetAttributes[public, HoldFirst];
-public[body_] := Catch[body, "RakuLang"];
+public[body_] := With[{r = Catch[body, "RakuLang"]}, flushOutput[]; r];
 
 (* ---- finding and loading the library --------------------------------------
  * The same contract as every binding: a library you NAME is used as given —
@@ -197,6 +202,7 @@ initInterp[given_] := Module[{exp, ff = $Failed, used, tried = {}, out},
     $rk = None;
     rakuFail["rk_new refused: an interpreter is already live in this process"]];
   $ctx = $ff["rk_ctx"][$rk];
+  installCapture[];
   (* the grammar shim ships inside the library, already NUL-terminated — its
      pointer goes straight back in as rk_eval's source *)
   out = RawMemoryAllocate["OpaqueRawPointer", 1];
@@ -205,6 +211,52 @@ initInterp[given_] := Module[{exp, ff = $Failed, used, tried = {}, out},
 ];
 
 ensure[] := If[$rk === None, initInterp[None]];
+
+(* ---- what Raku prints -----------------------------------------------------
+ * Captured with rk_set_output instead of left on the kernel's stdout, which a
+ * notebook never shows (issue #56). Each write is kept as bytes, because one
+ * may end inside a UTF-8 character, and flushOutput hands the lot to the
+ * kernel as each public call returns, in the order written: in a notebook as
+ * print cells, in a script as the same text on $Output and stderr.
+ *
+ * A Raku thread other than the one inside the call may write too: the kernel
+ * runs a foreign thread's callback itself, between evaluations, so what a
+ * `start` block prints after the call returned is held and shown by the next
+ * call.
+ *)
+
+installCapture[] := (
+  If[$outCb === None,
+    $outCb = CreateForeignCallback[
+      Function[{ud, text, len, isErr},
+        If[len > 0, $outBag = {$outBag, {isErr, RawMemoryImport[text, {"ByteArray", len}]}}]],
+      {"OpaqueRawPointer", "RawPointer"::["UnsignedInteger8"], "UnsignedInteger64", "CInt"} -> "Void"]];
+  $ff["rk_set_output"][$rk, $outCb, OpaqueRawPointer[0]]);
+
+(* True when any of what it emits went to stdout: RakuEval's REPL rule *)
+flushOutput[] := If[$outBag === {}, False,
+  Module[{writes = Partition[Flatten[$outBag], 2]},
+    $outBag = {};
+    Scan[emitRun, SplitBy[writes, First]];
+    MemberQ[writes, {0, _}]]];
+
+(* one run of consecutive writes to one stream; bytes that are not UTF-8
+   arrive one character per byte rather than not at all *)
+emitRun[run_] := Module[{bytes = Join @@ run[[All, 2]], text, isOut = run[[1, 1]] === 0},
+  text = Quiet@Check[ByteArrayToString[bytes], FromCharacterCode[Normal[bytes]]];
+  If[$FrontEnd =!= Null,
+    (* a notebook: a print cell per run, stderr in red *)
+    Print[If[isOut, #, Style[#, Darker[Red]]] &[StringDelete[text, "\n" ~~ EndOfString]]],
+    (* a script: the text as written, stdout in order with Print *)
+    utf8Write[If[isOut, $Output, Streams["stderr"]], text]]];
+
+(* wolframscript opens its streams ASCII, which would print a check mark as
+   \[Checkmark]; the text Raku wrote goes out as UTF-8, and the streams are
+   put back as they were *)
+utf8Write[streams_List, text_String] := Module[{old = Options[#, CharacterEncoding] & /@ streams},
+  Quiet[SetOptions[#, CharacterEncoding -> "UTF-8"] & /@ streams];
+  WriteString[#, text] & /@ streams;
+  Quiet[MapThread[SetOptions, {streams, old}]];];
 
 (* ---- strings across the boundary ------------------------------------------ *)
 
@@ -298,15 +350,21 @@ RakuLoad[path_String] := public[
   initInterp[path]; $libPath];
 
 RakuShutdown[] := (
-  If[$rk =!= None, $ff["rk_free"][$rk]];
+  If[$rk =!= None, $ff["rk_free"][$rk]];   (* rk_free restores the streams *)
+  flushOutput[];
   $rk = None; $ctx = None; $ff = <||>; $libPath = None;);
 
-RakuEval[src_String] := public[Module[{out, status},
+(* The REPL's rule (src/Repl.cpp, issue #66): the value is the answer only
+   when the code wrote nothing to stdout, so `say 3 ** 2` shows 9, not 9 and
+   True, and returns Null as Print does. stderr does not count. *)
+RakuEval[src_String] := public[Module[{out, status, v},
   ensure[];
+  flushOutput[];   (* what a `start` block printed earlier is not this eval's *)
   out = RawMemoryAllocate["OpaqueRawPointer", 1];
   status = $ff["rk_eval"][$rk, cstr[src], out];
   If[status =!= 0, rakuFail[lastError[]]];
-  toWL[RawMemoryRead[out]]]];
+  v = toWL[RawMemoryRead[out]];
+  If[flushOutput[], Null, v]]];
 
 RakuCall[name_String, args___] := public[(
   ensure[];

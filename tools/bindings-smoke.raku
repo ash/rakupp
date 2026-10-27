@@ -405,6 +405,30 @@ unless $record {
     }
 }
 
+# ---- Wolfram: what Raku prints (issue #56) -----------------------------------
+# A notebook never shows the kernel's stdout, so the binding captures Raku's
+# output and prints it through the kernel, and RakuEval follows the REPL's
+# rule. Wolfram-only, like the Python tests above: the transcript is beside
+# the script, and stderr must carry exactly what Raku sent there.
+unless $record {
+    with @hosts.first(*.<name> eq 'wolfram') -> %h {
+        if %h<here> {
+            my $dir = $ROOT.add('bindings/wolfram/tests');
+            my ($rc, $o, $e) = spawn ['wolframscript', '-file', 'bindings/wolfram/tests/output.wls'],
+                                     env => %( RAKUPP_LIB => $lib.absolute );
+            if $rc != 0 && arch-skip($e) {
+                say "skip - Wolfram output: toolchain architecture cannot load $lib";
+            }
+            else {
+                check $rc == 0 && lf($o) eq $dir.add('output.expected.txt').slurp
+                               && lf($e) eq "to stderr\n",
+                      "Wolfram: Raku's output is printed in order, and RakuEval follows the REPL's rule",
+                      "exit code $rc\nstdout:\n{$o.indent(2)}\nstderr:\n{$e.indent(2)}";
+            }
+        }
+    }
+}
+
 if $record {
     say "bindings-smoke: recorded";
     exit 0;

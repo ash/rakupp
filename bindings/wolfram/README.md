@@ -204,6 +204,26 @@ Arguments convert automatically — `Null`, `True`/`False`, `Integer` (any
 width), `Real`, `Rational`, `String`, `List`, `Association`. Anything else is
 a `Failure`.
 
+What Raku prints is printed by the kernel. In a notebook, `say` and `print`
+appear as printed output under the cell; the kernel's stdout, where they would
+otherwise go, is never shown in a notebook. In a script they are the same
+UTF-8 text on stdout, in order with the script's own `Print`. `note` and
+`warn` go to stderr in a script and print in red in a notebook.
+
+`RakuEval` follows the REPL's rule for its value: code that printed to stdout
+returns `Null`, as `Print` does, because the printing was the answer:
+
+```wl
+RakuEval["say 3 ** 2"]             (* prints 9, returns Null *)
+RakuEval["3 ** 2"]                 (* 9 *)
+RakuEval["note 'done'; 3 ** 2"]    (* stderr does not count: 9 *)
+```
+
+`RakuCall` always returns the routine's value, and prints what the routine
+printed. Output is shown when the call returns, not while it runs, and what
+a `start` block prints after its call has returned is shown at the start of
+the next call.
+
 The interpreter starts on first use. `RakuLoad[path]` names the library file
 instead of searching; `RakuShutdown[]` frees the interpreter so a fresh one
 may be started.
@@ -290,9 +310,12 @@ build/rakupp tools/bindings-smoke.raku
 
 Runs both examples in all six languages (skipping toolchains that are not
 installed) and checks the output against
-[../examples/expected/](../examples/expected). The Wolfram leg needs an
-*activated* `wolframscript` — a fresh Engine stops at its sign-in prompt, so
-run `wolframscript` once interactively first.
+[../examples/expected/](../examples/expected). The Wolfram leg also runs
+[tests/output.wls](tests/output.wls), which checks what Raku prints and
+`RakuEval`'s value against its transcript,
+[tests/output.expected.txt](tests/output.expected.txt). The Wolfram leg needs
+an *activated* `wolframscript` — a fresh Engine stops at its sign-in prompt,
+so run `wolframscript` once interactively first.
 
 ## When things go wrong
 
@@ -330,3 +353,10 @@ replaces a serialize–socket–deserialize round trip to an external process,
 plus the process management. If a profile ever shows the per-call cost
 dominating a real workload, the shim is the known next step, not a reason to
 grow this layer.
+
+Printing has a cost of its own (2026-10-27, Wolfram Engine 15.0). What Raku
+prints reaches the kernel through one `ForeignCallback` per write, so 20,000
+`say`s in one `RakuEval` take 0.28 s, where before the capture they went
+straight to stdout in 0.02 s: about 14 µs a write. An eval that prints nothing
+measured 49 µs against 44 µs before (2,000 iterations of `RakuEval["1"]`, three
+interleaved runs).

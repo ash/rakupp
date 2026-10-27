@@ -1,0 +1,17 @@
+9
+say -> Null
+value -> 9
+print-nothing -> 7
+note -> 8
+1
+23
+in-order -> Null
+✓🦋
+unicode -> Null
+before
+die -> True
+chatty 21
+call -> 42
+started -> 10
+late
+next -> 11
