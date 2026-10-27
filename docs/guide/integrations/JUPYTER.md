@@ -130,6 +130,16 @@ The MIME type defaults to `text/plain`, and can also be passed as
 `:mime<text/html>`. It exists only inside the kernel — a `.raku` file run from
 the command line has no frontend to display anything to.
 
+One kind of value types itself. If a cell's value begins with `<svg`, it
+renders as an SVG image, and if it begins with `<img`, it renders as HTML.
+That takes no magic and no `jupyter-display`. It is Jupyter::Kernel's rule,
+kept so that its notebooks (a plotting module that returns SVG, say) look
+the same here. Only the first four characters are read, in either case.
+Any other value, markup or not, is text. A cell with a type
+[magic](#cell-magics), even `#% > html`, keeps the type its magic gave it.
+A client that cannot render the image shows the `[image/svg+xml]` stand-in,
+not the SVG source.
+
 ### Cell magics
 
 A cell whose first line begins with `#%` or `%%` can say what its value, its

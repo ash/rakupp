@@ -17,8 +17,9 @@
 # error message WITHOUT killing the kernel; jupyter-display's rich output; the
 # cell magics, in Jupyter::Kernel's spelling (a typed value, typed printed
 # output held into one display, javascript, bash, run, always, an unknown %%
-# and a #% comment); a forged signature being ignored; the heartbeat echo; and
-# shutdown_request actually shutting the kernel down.
+# and a #% comment) and the <svg / <img guess for an untyped value; a forged
+# signature being ignored; the heartbeat echo; and shutdown_request actually
+# shutting the kernel down.
 #
 # Run:  build/rakupp tools/jupyter-smoke.raku [build-dir]   (default: build)
 
@@ -493,6 +494,23 @@ check %m14<io>.grep({ $_<type> eq 'error' && $_<content>.contains('is not a cell
 my %m15 = run-cell("#% no magic, a comment\n6 * 7");
 check results(%m15).contains('"text/plain":"42"'), 'a #% line that is no magic is a comment, and the cell runs',
     results(%m15);
+
+# Jupyter::Kernel's one guess, for a value no magic typed.
+my %g1 = run-cell(Q{'<svg width="4" height="4"></svg>'});
+check results(%g1).contains('"image/svg+xml":"<svg') && results(%g1).contains('"text/plain":"[image/svg+xml]"'),
+    'a value that begins with <svg is an image', results(%g1);
+my %g2 = run-cell(Q{'<IMG src="x.png">'});
+check results(%g2).contains('"text/html":"<IMG'), 'a value that begins with <img is HTML, whatever its case',
+    results(%g2);
+my %g3 = run-cell(Q{' <svg></svg>'});
+check results(%g3).contains('"text/plain":" <svg') && !results(%g3).contains('image/svg'),
+    'only the very start is read: a space first and it is text', results(%g3);
+my %g4 = run-cell(Q{'<b>bold</b>'});
+check results(%g4).contains('"text/plain":"<b>bold</b>"') && !results(%g4).contains('text/html'),
+    'other markup is text, as it always was', results(%g4);
+my %g5 = run-cell("#% > html\n'<svg></svg>'");
+check results(%g5).contains('"text/plain":"<svg></svg>"') && !results(%g5).contains('image/svg'),
+    'a typed magic, > TYPE included, is never second-guessed', results(%g5);
 
 # ---- frames longer than 255 bytes ------------------------------------------
 # The short/long frame split is at 256 bytes, and both directions have to cross

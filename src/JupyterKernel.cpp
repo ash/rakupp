@@ -911,6 +911,23 @@ Json mimeBundle(const std::string& mime, const std::string& text) {
     return d;
 }
 
+// The type of a value no magic typed. Jupyter::Kernel makes one guess, and
+// it is kept so that kernel's notebooks look the same here: a value that
+// begins with `<svg` is an image and one that begins with `<img` is HTML,
+// since markup for a picture is what a sub returning it meant. Only the
+// first four characters are read (case aside); everything else is text.
+std::string guessedMime(const std::string& g) {
+    auto starts = [&g](const char* tag) {
+        if (g.size() < 4) return false;
+        for (size_t i = 0; i < 4; i++)
+            if (std::tolower((unsigned char)g[i]) != tag[i]) return false;
+        return true;
+    };
+    if (starts("<svg")) return "image/svg+xml";
+    if (starts("<img")) return "text/html";
+    return "text/plain";
+}
+
 // ---------------------------------------------------------------------------
 // The kernel.
 // ---------------------------------------------------------------------------
@@ -1108,9 +1125,13 @@ private:
         if (!silent && v) {
             std::string g = sess_.gist(v);
             if (!g.empty() && g != "Nil") {
+                // A typed magic, `> TYPE` included, means the value's type
+                // is decided; only an untyped cell's is guessed.
+                MimeFilter out = mg.out;
+                if (mg.kind != Magic::K::Filter) out.mime = guessedMime(g);
                 Json c = Json::object();
                 c.set("execution_count", Json::integer(execCount_));
-                c.set("data", mimeBundle(mg.out.mime, mg.out.apply(g)));
+                c.set("data", mimeBundle(out.mime, out.apply(g)));
                 c.set("metadata", Json::object());
                 publish("execute_result", c);
             }
