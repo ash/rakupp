@@ -1532,6 +1532,28 @@ int installKernelspec(const InstallOptions& opt) {
     js += "  \"metadata\": {\"debugger\": false}\n}\n";
 
     fs::path file = dir / "kernel.json";
+    // `raku` is also the name Jupyter::Kernel installs under, so the kernel
+    // this replaces may well be someone else's. Replacing it is what the
+    // command means — but never in silence, and with the way to keep both.
+    // A kernelspec that already launches this very binary is a reinstall.
+    if (std::ifstream prev{file, std::ios::binary}) {
+        std::stringstream ss;
+        ss << prev.rdbuf();
+        Json old;
+        std::string launched;
+        if (parse(ss.str(), old))
+            if (const Json* argv = old.find("argv"))
+                if (argv->t == Json::T::Arr && !argv->arr.empty() && argv->arr[0].t == Json::T::Str)
+                    launched = argv->arr[0].s;
+        if (launched != opt.selfExe) {
+            std::cerr << "rakupp --jupyter-install: replacing the '" << opt.name << "' kernel at "
+                      << file.string();
+            if (!launched.empty()) std::cerr << ", which launched " << launched;
+            std::cerr << "\n  (to keep both, install this one under another name instead: "
+                         "rakupp --jupyter-install --name="
+                      << (opt.name == "rakupp" ? "rakupp-2" : "rakupp") << ")\n";
+        }
+    }
     std::ofstream out(file, std::ios::binary | std::ios::trunc);
     if (!out) {
         std::cerr << "rakupp --jupyter-install: cannot write " << file.string() << "\n";

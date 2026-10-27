@@ -53,6 +53,41 @@ by hand — this is all one is:
 `-M Module` preloads modules into the notebook's session, exactly as it does
 for `--mcp` and for a program.
 
+### It replaces another Raku kernel
+
+`raku` is also the name [Jupyter::Kernel](https://github.com/bduggan/raku-jupyter-kernel)
+— the kernel for Rakudo — installs under, and Jupyter keeps one kernel per
+name. So on a machine that has it, `rakupp --jupyter-install` **replaces**
+it: every notebook that asks for the `raku` kernel runs on Raku++ from then
+on. The installer says so when it happens, and names the program it replaced:
+
+```
+rakupp --jupyter-install: replacing the 'raku' kernel at …/kernels/raku/kernel.json, which launched raku-jupyter-kernel
+  (to keep both, install this one under another name instead: rakupp --jupyter-install --name=rakupp)
+```
+
+Only `kernel.json` is rewritten. Jupyter::Kernel's other files in that
+directory stay, its logo among them, so the launcher shows that logo next to
+"Raku++".
+
+To keep both kernels, give this one its own name:
+
+```sh
+rakupp --jupyter-install --name=rakupp
+jupyter console --kernel rakupp    # Raku++; --kernel raku is still Rakudo
+```
+
+JupyterLab then offers "Raku" and "Raku++" side by side. A notebook records
+the kernel it was saved with, so a notebook saved under `raku` opens on
+whichever kernel holds that name.
+
+To give the name back after a replacement, have Jupyter::Kernel write its
+kernelspec again (`--force`, because the file is there):
+
+```sh
+raku-jupyter-kernel --generate-config --force
+```
+
 ## What a cell does
 
 ```raku

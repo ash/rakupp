@@ -347,7 +347,8 @@ is produced; a cell that dies leaves the session intact; and
 Jupyter::Kernel's cell magics work as they do there: `#% html`, `#% latex`,
 `#% markdown` and `#% js` type a cell's value, `#% > html` types its printed
 output, and `%% bash`, `%% run FILE`, `%% always` and `#% javascript` work
-on the whole cell.
+on the whole cell. The `raku` kernel name is the one Jupyter::Kernel uses, so
+`--jupyter-install` replaces that kernel; `--name=rakupp` keeps both.
 
 Nothing needs installing on the Raku side — **no ZeroMQ, no Python module, no
 shared library**. The binary speaks ZMTP and signs its own messages, because
