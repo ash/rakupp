@@ -45,6 +45,26 @@ moves to [TODO.md](TODO.md).
   ~20533), which reads the `rule` kind into "sr" flags only for a value it
   counts as wired.
 
+- [ ] **A routine's name before a block in a statement condition is not
+  Rakudo's xblock rule** (found 2026-10-27 while fixing issue #198,
+  67a2fe76; the lowercase lines on daf9c03c too). Rakudo lets the listop
+  take the block, wants the statement's own block after it, and refuses the
+  program when none follows:
+
+  ```raku
+  sub foo(&b) { b() }; if foo { 1 } { say "yes" }   # dies "Calling foo() will never work", Rakudo yes
+  sub bar { 5 };       if bar { say "t" }           # t, Rakudo ===SORRY!=== needs parens to avoid gobbling block
+  sub tick { Supply.from-list(1, 2) }
+  react { whenever tick { .say } }                  # dies "Too many positionals", Rakudo the same ===SORRY!===
+  ```
+
+  `if`, `for`, `given`, `when` and `while` set stmtCond_, so the first block
+  is always the statement's (startsListopArg's Tok::LBrace arm); `whenever`
+  parses its supply with no stmtCond_ (parsePrimary's `whenever` arm), so a
+  listop there always takes it. A capitalized routine name (`Foo`) does the
+  same in each since #198. Done when the three lines above answer as in
+  Rakudo 2026.09, with the comma form `for map { … }, ^5 { }` still a call.
+
 ## Operators and types
 
 - [ ] **Built-in prefix and postfix operators fail when called by name**
