@@ -301,6 +301,21 @@ moves to [TODO.md](TODO.md).
   apart. t/regression/exe-regex-literal-values.raku skips that line for the
   interpreter; drop the skip with the fix.
 
+- [ ] **A LEAVE runs on `exit` in both engines; Rakudo runs none** (found
+  2026-10-27 while fixing the compiled LEAVE, fc262224):
+
+  ```raku
+  for ^2 -> $i { LEAVE { say "leave$i" }; exit 0 if $i == 0 }   # here leave0, Rakudo nothing
+  ```
+
+  Rakudo's `exit` runs the END phasers and ends without unwinding, so no
+  block's LEAVE runs. The interpreter's block executors run theirs for any
+  exception, ExitEx included (execPlainBlock's `catch (...)`, leaveByError,
+  src/InterpreterCore.cpp), and compiled code now matches it: its LEAVE
+  guards are destroyed as ExitEx unwinds. Change both at once, since
+  t/exe/run.raku holds them to each other. Done when the line above prints
+  nothing in either, and END still runs.
+
 ## Processes and diagnostics
 
 - [ ] **`run` and `shell` silently accept named arguments they do not take**
@@ -426,21 +441,14 @@ moves to [TODO.md](TODO.md).
   src/InterpreterRegex.cpp). Add a t/js case; the gate needs RAKUPP_JS=node.
   `--exe` declines these operators and bundles, so only JS copies.
 
-- [ ] **`--exe`: a loop body's LEAVE does not run on `next`** (found
-  2026-10-27 while fixing issue #195, aa0f3618; the statement form too, and on
-  4083b26b):
-
-  ```raku
-  my @o;
-  for ^3 -> $i { LEAVE { @o.push: "L$i" }; next if $i == 1; @o.push: "B$i" }
-  say @o;   # interpreted and Rakudo [B0 L0 L1 B2 L2], --exe [B0 L0 B2 L2]
-  ```
-
-  The iteration a `next` leaves runs no LEAVE, whether the `next` is a
-  statement, a modifier or an operand. Look at how loopBody (src/Codegen.cpp)
-  emits a body that holds a LEAVE: a C++ `continue` must still leave the
-  scope the phaser's guard lives in. Done when the line above answers as
-  interpreted, under `-O` too, and `last` and `redo` are checked the same way.
+- [ ] **Split src/Codegen.cpp** (2026-10-27, fc262224): at 10,048 lines it
+  is past the default file ceiling, and tools/source-helpers/budget.txt gives
+  it a named one of 10,100 so that a fix could land without the split. The
+  build waits on its slowest file. The statement emitters (stmtNative and
+  what it calls: loopBody, emitSeq, the ctl and LEAVE helpers) and the
+  expression emitter (ex and its arms) are the natural halves; the scripts in
+  tools/source-helpers/ split Interpreter.cpp and Builtins.cpp the same way.
+  Done when each half is under 10,000 and the named ceiling is gone.
 
 ## Performance
 
