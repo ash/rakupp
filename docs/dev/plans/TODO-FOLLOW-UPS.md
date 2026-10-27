@@ -426,6 +426,27 @@ moves to [TODO.md](TODO.md).
   src/InterpreterRegex.cpp). Add a t/js case; the gate needs RAKUPP_JS=node.
   `--exe` declines these operators and bundles, so only JS copies.
 
+- [ ] **`--exe`: `next` and `return` written as an operand** (found 2026-10-27
+  while fixing issue #195, 48b76d56, in the interpreter):
+
+  ```raku
+  sub f($i) { $i %% 2 ?? $i !! Nil }
+  sub h($i) { my $x = f($i) // return 0; $x }   # "prefix operator 'return' — not natively compilable"
+  for ^100_000 -> $i { my $x = f($i) // next }  # rtThrowNext(): ~3 µs a skip
+  ```
+
+  Compiled, `next without $x` costs 0.1 µs a skip, and interpreted the
+  operand form now costs 0.6: the native backend is the slower one here.
+  A `return` as an operand sends the whole program to `--aot`, which is
+  why the issue's `--exe` row matched its interpreted one; in a module it
+  keeps the routine interpreted (the AOT report's "`return` used inside an
+  expression", delegateStmt's ctlOps). A `next`, `last` or `redo` as an
+  operand compiles to rtThrowNext/rtThrowLast/rtThrowRedo, an exception
+  the native loop body catches (src/Codegen.cpp, the Unary arm). Lift a
+  statement of the shapes ctlOnStmtPath accepts — `T = A // CTL`, `A or
+  CTL`, a ternary branch — into a test of A's value followed by the native
+  `continue`, `break` or `return`, then the store. Gate in t/exe/run.raku.
+
 ## Performance
 
 - [ ] **A composed curry like `* cmp * == More` is about 2.2x Rakudo per
@@ -471,6 +492,31 @@ moves to [TODO.md](TODO.md).
   the first does, and the bound loop is nearer the plain one; then `-> @a`
   can take the same path (see "Some parameters still bind what their sigil
   or type refuses").
+
+- [ ] **A control word as an operand still throws in five shapes** (found
+  2026-10-27 while fixing issue #195, 48b76d56, which took `// next`, `or
+  next` and `// return` to the cooperative flag):
+
+  ```raku
+  sub f($i) { $i %% 2 ?? $i !! Nil }
+  for ^10_000 -> $i { my $x = try { f($i) } // next }    # 69.6 µs a skip
+  for ^10_000 -> $i { my $x = do { f($i) } // next }     # 69.6
+  my $s = 0; for ^10_000 -> $i { $s += f($i) // next }   # 34.5
+  for ^10_000 -> $i { my ($a, $b) = f($i) // next }      # 56.9
+  my @a; for ^10_000 -> $i { push @a, f($i) // next }    # 43.2
+  ```
+
+  `my $x = f($i) // next` is 0.6 on the same box. Each throws a C++
+  exception because ctlOnStmtPath (src/InterpreterCore.cpp) cannot prove
+  that nothing uses the Any the flag form hands back. A block run inside
+  the statement (`try`, `do`) replaces `curStmtExpr` with its own statements
+  and no frame guard puts it back: restore it where such a block returns, or
+  in exec's ExprStmt arm, measured against perf-guard's asg and loopsum. A
+  compound or list assignment stores through paths that do not guard their
+  store (coopStoreShape takes only a plain `=` into one variable or
+  element): guard the op= path as evalAssignInner's general path is guarded.
+  A call argument cannot take the flag, since the call would run. Done when
+  the first four run within 2x of `my $x = f($i) // next`.
 
 ## Gates
 
