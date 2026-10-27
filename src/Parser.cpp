@@ -15584,7 +15584,8 @@ static bool pointyParamNeedsBinding(const Param& p) {
     return p.subSig || p.isCopy || p.coerce || !p.type.empty() ||
            p.defConstraint != 0 || p.whereExpr || p.hadWhere ||
            p.defaultVal || p.optional ||   // a short last chunk binds these
-           p.slurpy;                       // `-> *@x` takes one value per iteration
+           p.slurpy ||                     // `-> *@x` takes one value per iteration
+           p.sigil == '%';                 // `-> %h` takes an Associative only (#207)
 }
 
 StmtPtr Parser::parseFor() {
@@ -17128,8 +17129,9 @@ StmtPtr Parser::parseStatementImpl() {
                 advance();
                 auto ps = parsePointyParams();
                 bool anySub = false;
-                // a COERCION too (`with $s -> Int() $n`): the name alone would drop it
-                for (auto& p : ps) anySub = anySub || (bool)p.subSig || p.coerce;
+                // a COERCION too (`with $s -> Int() $n`): the name alone would drop it,
+                // and a `%h`, which takes an Associative only (#207)
+                for (auto& p : ps) anySub = anySub || (bool)p.subSig || p.coerce || p.sigil == '%';
                 if (anySub) g->params = std::move(ps); // destructuring binder — bindParams
                 else if (!ps.empty() && !ps[0].name.empty()) g->var = ps[0].name; // "$_" too: marks an explicit binder
             }
@@ -17165,7 +17167,7 @@ StmtPtr Parser::parseStatementImpl() {
                     advance();
                     auto ps = parsePointyParams();
                     bool anySub = false;
-                    for (auto& p : ps) anySub = anySub || (bool)p.subSig || p.coerce;
+                    for (auto& p : ps) anySub = anySub || (bool)p.subSig || p.coerce || p.sigil == '%';
                     if (anySub) g->elseParams = std::move(ps);
                     else if (!ps.empty() && !ps[0].name.empty()) g->elseVar = ps[0].name;
                 }

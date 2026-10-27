@@ -59,6 +59,22 @@ moves to [TODO.md](TODO.md).
   after its parseProgram; a program's and a module's parse never do. Done
   when the first line is refused at compile time, as in Rakudo 2026.09.
 
+- [ ] **`Empty` before a pointy block is read as a listop taking it** (found
+  2026-10-27 while fixing issue #207, 3ddcd58b; on 170bb19a too, where 4af53b07
+  had a condition's listop start taking its block):
+
+  ```raku
+  for Empty -> $x { }; say 'ok'   # ===SORRY!=== Function 'Empty' needs parens to avoid gobbling block, Rakudo ok
+  for 1, Empty -> \v { say v }    # the same, Rakudo 1
+  for 1, Empty { .say }           # 1 in both
+  ```
+
+  `Empty` is a term, as `now`, `e`, `pi` and `rand` are, and those keep the
+  pointy for the statement already. The exemptions are the `rand`/`i`/type
+  test 4af53b07 added to parsePrimary (src/Parser.cpp, "…and so, before a
+  block or a pointy"). Done when the first two lines answer as in Rakudo
+  2026.09.
+
 ## Operators and types
 
 - [ ] **Built-in prefix and postfix operators fail when called by name**
@@ -159,6 +175,43 @@ moves to [TODO.md](TODO.md).
   bound lexically; size the change before writing it. Done when all four
   answer as Rakudo does, the refusal is gone, and the Roast list is
   v5.5.0's.
+
+- [ ] **Some parameters still bind what their sigil or type refuses** (found
+  2026-10-27 while fixing issue #207, 3ddcd58b, which made a `%` parameter take
+  an Associative only; on 170bb19a too):
+
+  ```raku
+  for (1,) -> @a { say @a.^name }               # Int, Rakudo: expected Positional but got Int (1)
+  given 5 -> @a { say @a.^name }                # Int, the same
+  sub r(:&c) { &c.^name }; say r(:c(1))         # Int, Rakudo: expected Callable but got Int (1)
+  sub t(Int %h) { %h.^name }; say t(%(a => 1))  # Hash, Rakudo: expected Associative[Int] but got Hash. You have to pass an explicitly typed hash, …
+  sub c(%h is copy) { %h.^name }; say c(Map.new((a => 1)))   # Map, Rakudo Hash (and a Bag copies to {:a(2)})
+  sub f(%h is rw) { }                           # accepted, Rakudo ===SORRY!=== Can only use 'is rw' on a scalar ('$' sigil) parameter
+  my %h := (a => 1); say %h.^name               # Hash, Rakudo Pair (a `%` parameter keeps it since 3ddcd58b)
+  ```
+
+  The first two are the name-only loop binder: pointyParamNeedsBinding and
+  the given/with `anySub` test in src/Parser.cpp send `%` to bindParams
+  since 3ddcd58b and not `@`, because `for @rows -> @r` is common and full
+  binding costs it (see the Performance item). The named arm of bindParams
+  has no copy of the positional arm's Callable test; `Int %h` wants the
+  Associative[T] check that `Int @a` has (bindParams' "explicitly typed
+  array" test); `is copy` copies through coerceHash, which keeps a Map's or
+  a QuantHash's kind; the `:=` arms for a VarExpr target are in evalAssign.
+  Done when each line answers as in Rakudo 2026.09.
+
+- [ ] **A binding failure leaves out parts of Rakudo's message** (found
+  2026-10-27 while fixing issue #207, 3ddcd58b; on 170bb19a too):
+
+  ```raku
+  sub f(Int $x) { }; f(Failure.new("boom"))   # Rakudo opens "Earlier failure:\n boom\n\nFinal error:\n "
+  sub g(:@l) { }; g(l => {a => 1})            # Rakudo goes on ". You have to pass an explicitly typed array, …"
+  ```
+
+  Rakudo's X::TypeCheck.priors and .explain (its Exception.rakumod). The
+  hint is word-wrapped with the rest of the explanation; refuseNotAssociative
+  in bindParams does both for `%` and is the model. Done when the two
+  messages are Rakudo 2026.09's.
 
 ## Control flow and containers
 
@@ -298,6 +351,27 @@ moves to [TODO.md](TODO.md).
   reverse order, an `exit` inside an END sets the status, a die inside one
   is reported and leaves it. Gate in t/exe/test-status.raku.
 
+- [ ] **`--exe`: a natively compiled routine checks no sigil** (found
+  2026-10-27 while fixing issue #207, 3ddcd58b, which made the interpreter's
+  `%` parameter take an Associative only; base 170bb19a compiles the same):
+
+  ```raku
+  sub u(@a) { @a.^name }; sub h(%h) { %h.^name }
+  my $x = 1; say (try u($x)) // $!.^name; say (try h($x)) // $!.^name   # interpreted: the binding failure twice, --exe: Int Int
+  sub p(%h) { %h.^name }; say (try p((a => 1, b => 2))) // $!.^name   # interpreted: the failure, --exe: List
+  sub d(:%h = (a => 1, b => 2)) { %h.^name }; say (try d()) // $!.^name   # the same
+  ```
+
+  bindAs (src/Codegen.cpp) makes an `@` or `%` parameter `unitemized(…)`
+  of whatever came, with or without `-O`, and t/exe/run.raku compares the
+  two binaries with each other, so both agree on it. A runtime check the
+  generated code calls (as rtBindTyped is for a typed parameter), with the
+  interpreter's rules (notPositionalArg, notAssociativeArg and the `&`
+  test in bindParams), or a refusal so the routine bundles. Done when
+  t/regression/issue-207-hash-param-takes-associative.raku and
+  at-param-binding-nonpositional.raku pass compiled, `-O` too, and the
+  t/exe gate is as green as before.
+
 - [ ] **`--target=js`: `$_` in `with`/`given` and on the right of
   `andthen`/`orelse`/`notandthen` is a copy** (found 2026-10-20 while fixing
   issue #185 in the interpreter):
@@ -337,6 +411,29 @@ moves to [TODO.md](TODO.md).
   Measure on top of f9f0cac1 (the `tctx()` change) with interleaved pairs
   and instructions retired, plus BinaryHeap 2.0.3's benchmark/ scripts.
   BinaryHeap's comparator has exactly this shape.
+
+- [ ] **A `for` that binds through bindParams runs at half speed, and so
+  does the loop after it** (found 2026-10-27 while fixing issue #207,
+  3ddcd58b, which sends `-> %h` that way; on 170bb19a too):
+
+  ```raku
+  my @h = (%(a => $_) for ^200_000); my @o = (%(a => $_) for ^200_000); my $s = 0;
+  for @h -> $h { $s += $h<a> }          # 0.025 s
+  for @o -> $h is copy { $s += $h<a> }  # 0.056 s: bound through bindParams
+  for @h -> $h { $s += $h<a> }          # 0.047 s, a different array and a plain loop
+  for @o -> $h { $s += $h<a> }          # 0.025 s
+  ```
+
+  Interpreted, best of 3 on 170bb19a, each loop timed with `now`. Every
+  loop whose signature pointyParamNeedsBinding sends to real binding pays
+  it (a type over anything but an integer Range, `is copy`, a default, a
+  sub-signature, a slurpy, `%h`): execForStmt's `fs->params` arm makes a
+  slab Env and a row ValueList per iteration and calls bindParams. Then
+  whichever loop runs next is slow too, so something of those 200,000
+  iterations lingers; profile that third loop first. Done when it runs as
+  the first does, and the bound loop is nearer the plain one; then `-> @a`
+  can take the same path (see "Some parameters still bind what their sigil
+  or type refuses").
 
 ## Gates
 
