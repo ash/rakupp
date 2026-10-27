@@ -988,6 +988,7 @@ private:
         auto* self = (Kernel*)ud;
         if (!len) return;
         if (!isErr) {
+            self->stdoutBytes_.fetch_add(len, std::memory_order_relaxed);
             std::lock_guard<std::mutex> lk(self->heldMx_);
             if (self->held_.on()) {
                 self->heldText_.append(text, len);
@@ -1111,18 +1112,23 @@ private:
 
         if (mg.stdoutF.on()) holdStdout(mg.stdoutF);
         busy_.store(true);
+        unsigned long long before = stdoutBytes_.load(std::memory_order_relaxed);
         RkValue v = nullptr;
         int rc = rk_eval(sess_.rk(), src.c_str(), &v);
+        bool printed = stdoutBytes_.load(std::memory_order_relaxed) != before;
         busy_.store(false);
         flushHeld(true);
 
         if (rc != RK_OK) return failCell(zm, req, sess_.lastError());
 
-        // The REPL's rule, deliberately: a cell shows the value of its last
-        // statement whether or not it also printed. `say 42` therefore ends
-        // in True, exactly as it does at the rakupp prompt — a notebook that
-        // hid it would be teaching a different language.
-        if (!silent && v) {
+        // The REPL's rule (Repl.cpp, issue #66): a cell that printed to
+        // stdout does not also show its value, so `say 42` shows 42 and not
+        // a True after it. The printing was the answer, and the value a
+        // by-product. stderr does not count, nor does `print ""`, which
+        // wrote nothing. A typed value is the exception: `#% html` asked for
+        // the value to be rendered, so it is, printing or not.
+        bool typedValue = mg.kind == Magic::K::Filter && mg.out.on();
+        if (!silent && v && (typedValue || !printed)) {
             std::string g = sess_.gist(v);
             if (!g.empty() && g != "Nil") {
                 // A typed magic, `> TYPE` included, means the value's type
@@ -1383,6 +1389,9 @@ private:
     // from any thread the cell started, hence the lock.
     std::mutex heldMx_;
     MimeFilter held_;
+    // Every byte the session has written to stdout, held or not: a cell that
+    // moved it printed something, and then its value is not shown.
+    std::atomic<unsigned long long> stdoutBytes_{0};
     std::string heldText_;
     std::vector<std::string> alwaysPrepend_, alwaysAppend_;   // `%% always`
 };

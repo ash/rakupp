@@ -11,15 +11,15 @@
 # kernel drops, and this gate would go red.
 #
 # What is pinned, in order: the RFC 4231 vectors; kernel_info; a cell that
-# prints AND has a value (stream + execute_result, the REPL's rule); the
-# SESSION carried between cells (the whole point of a kernel); exact rational
-# arithmetic, because that is the engine's own claim; a die crossing as an
-# error message WITHOUT killing the kernel; jupyter-display's rich output; the
-# cell magics, in Jupyter::Kernel's spelling (a typed value, typed printed
-# output held into one display, javascript, bash, run, always, an unknown %%
-# and a #% comment) and the <svg / <img guess for an untyped value; a forged
-# signature being ignored; the heartbeat echo; and shutdown_request actually
-# shutting the kernel down.
+# prints (a stream and no execute_result: the REPL's rule) and one that does
+# not; the SESSION carried between cells (the whole point of a kernel); exact
+# rational arithmetic, because that is the engine's own claim; a die crossing
+# as an error message WITHOUT killing the kernel; jupyter-display's rich
+# output; the cell magics, in Jupyter::Kernel's spelling (a typed value, typed
+# printed output held into one display, javascript, bash, run, always, an
+# unknown %% and a #% comment) and the <svg / <img guess for an untyped value;
+# a forged signature being ignored; the heartbeat echo; and shutdown_request
+# actually shutting the kernel down.
 #
 # Run:  build/rakupp tools/jupyter-smoke.raku [build-dir]   (default: build)
 
@@ -346,7 +346,9 @@ check %ki<content>.contains('"name":"raku"') && %ki<content>.contains('"file_ext
     'language_info describes Raku', %ki<content>;
 check %ki<content>.contains('"protocol_version":"5.3"'), 'it speaks protocol 5.3', %ki<content>;
 
-# ---- a cell that prints AND has a value -------------------------------------
+# ---- a cell that prints: the REPL's rule ------------------------------------
+# A cell that printed to stdout does not also show its value (Repl.cpp, issue
+# #66): the printing was the answer.
 
 my %c1 = run-cell('say "hi"; 6 * 7');
 check %c1<reply><content>.contains('"status":"ok"'), 'execute_reply says ok', %c1<reply><content>;
@@ -363,12 +365,23 @@ check of(@io1, 'execute_input').grep({ $_<content>.contains('6 * 7') }),
 check of(@io1, 'stream').grep({ $_<content>.contains('"name":"stdout"') && $_<content>.contains('hi') }),
     'what the cell printed arrives as a stdout stream',
     of(@io1, 'stream').map({ $_<content> }).join("\n");
-check of(@io1, 'execute_result').grep({ $_<content>.contains('"text/plain":"42"') }),
-    "the cell's value comes back as execute_result",
+check !of(@io1, 'execute_result'),
+    "a cell that printed does not also show its value",
     of(@io1, 'execute_result').map({ $_<content> }).join("\n");
 check @io1[*-1]<content>.contains('"execution_state":"idle"'),
     'the busy lamp goes out last', @io1[*-1]<content>;
 check @io1.grep({ !$_<signed> }).elems == 0, 'every iopub message is signed too';
+
+# The bytes decide, not the call: `print ""` wrote nothing, and stderr is not
+# the cell's answer.
+my %c2 = run-cell('print ""; 6 * 7');
+check of(%c2<io>.list, 'execute_result').grep({ $_<content>.contains('"text/plain":"42"') }),
+    "a cell that printed nothing shows its value as execute_result",
+    %c2<io>.map({ $_<type> }).join(', ');
+my %c2e = run-cell('note "to stderr"; 6 * 7');
+check of(%c2e<io>.list, 'execute_result').grep({ $_<content>.contains('"text/plain":"42"') }),
+    "printing to stderr does not hide the value",
+    %c2e<io>.map({ $_<type> }).join(', ');
 
 # ---- the session: what a kernel is for --------------------------------------
 
@@ -423,7 +436,7 @@ sub streams(%c, $name) {
 
 my %m1 = run-cell("#% html\nsay 'plain'; '<b>bold</b>'");
 check results(%m1).contains('"text/html":"<b>bold</b>"') && results(%m1).contains('"text/plain":"[text/html]"'),
-    '#% html: the value is published as text/html, with a text/plain stand-in', results(%m1);
+    '#% html: the value is published as text/html, with a text/plain stand-in, printing or not', results(%m1);
 check streams(%m1, 'stdout').contains('plain'), '#% html: what the cell prints is still a stream',
     streams(%m1, 'stdout');
 
@@ -442,7 +455,9 @@ my @d4 = displays(%m4);
 check @d4.elems == 3 && @d4[0].contains('<p>1</p>') && @d4[1].contains('"text/markdown":"mid"')
                      && @d4[2].contains('<p>2</p>'),
     '#% > html: held output and jupyter-display keep the order the cell made them in', @d4.join("\n");
-check results(%m4).contains('"text/plain":"7"'), '#% > TYPE leaves the value as text', results(%m4);
+check !results(%m4), '#% > html: held output is printing too, so the value is not shown', results(%m4);
+my %m4v = run-cell("#% > html\n7");
+check results(%m4v).contains('"text/plain":"7"'), '#% > TYPE leaves the value as text', results(%m4v);
 
 my %m5 = run-cell("#% javascript\nelement.append('foo')");
 check %m5<reply><content>.contains('"status":"ok"') && !results(%m5),
@@ -477,8 +492,10 @@ check %m10<reply><content>.contains('"status":"error"'), '%% run: a missing file
 
 run-cell(Q{%% always prepend print 'pre;'});
 my %m11 = run-cell('40 + 2');
-check streams(%m11, 'stdout').contains('pre;') && results(%m11).contains('"text/plain":"42"'),
+check streams(%m11, 'stdout').contains('pre;'),
     '%% always prepend: the code runs before every cell', streams(%m11, 'stdout');
+check !results(%m11), '%% always prepend: an entry that prints is the cell printing, so no value',
+    results(%m11);
 my %m12 = run-cell('%% always show');
 check streams(%m12, 'stdout').contains(Q{prepend = print 'pre;'}), '%% always show lists it',
     streams(%m12, 'stdout');

@@ -95,10 +95,13 @@ my @primes = (1..100).grep(*.is-prime);   #  [2 3 5 7 11 …]
 ```
 
 A cell is evaluated the way the REPL evaluates a line, and the **value of its
-last statement is the cell's result** — whether or not the cell also printed.
-`say 42` therefore shows `42` from the printing and then `True`, which is what
-`say` returns, and what the `rakupp` prompt shows too. A notebook that hid it
-would be teaching a different language.
+last statement is the cell's result**, unless the cell printed to stdout. Then
+the printing was the answer, and the value is not shown: `say 42` shows `42`,
+not `42` and then the `True` that `say` returns. That is the `rakupp` prompt's
+rule, and Rakudo's. It counts bytes, not calls: `print ""` wrote nothing, so
+its cell still shows its value, and output to stderr (`note`, `warn`) does not
+count either. A cell with a [typed value](#cell-magics) (`#% html` and the
+like) shows its value printing or not, because it asked for it.
 
 Everything the cell prints arrives **while it runs**, not at the end: output
 crosses on the iopub channel as the engine produces it, so a loop that prints
@@ -185,12 +188,14 @@ How each one behaves, where it is not obvious:
 - **A typed value** goes out as the cell's result, `.gist` as always, under
   the type asked for, with a `[text/html]` stand-in for a client that cannot
   render it (`jupyter-display` does the same). A cell that prints *and* has
-  an HTML value shows the printing as text, then the HTML.
+  an HTML value shows the printing as text, then the HTML: the type asked
+  for the value, so it is shown although the cell printed.
 - **Typed printed output** (`> html`) is held until the cell ends and goes
   out as one display, because HTML printed a row at a time only renders
   whole. A `jupyter-display` call in the middle of the cell sends what was
   printed before it first, so the order stays the cell's. stderr is never
-  held.
+  held. It is still printing, so the cell's value, which stays untyped, is
+  not shown.
 - **`#% javascript` and `#% js` differ.** `javascript` alone sends the cell
   itself to the frontend and runs no Raku; `js` sends the Raku value. Whether
   JavaScript runs at all is the frontend's decision. Notebook and JupyterLab
@@ -207,9 +212,11 @@ How each one behaves, where it is not obvious:
 - **`%% always`** code wraps every cell that is Raku: plain cells, typed
   cells and `run` cells, not `javascript`, `bash` or `always` cells
   (Jupyter::Kernel wraps only the cells that have no magic). Entries
-  are joined with `;\n`, so an appended entry becomes the cell's value. An
-  entry may be `%% run FILE`, which reads the file again for each cell. A
-  cell that only says `%% always` shows the list.
+  are joined with `;\n`, so an appended entry becomes the cell's value. They
+  run as part of the cell, so an entry that prints is the cell printing, and
+  then the cell's value is not shown. An entry may be `%% run FILE`, which
+  reads the file again for each cell. A cell that only says `%% always`
+  shows the list.
 
 ## What it does not do
 
@@ -259,8 +266,8 @@ and a `.raku` file all get the same answers.
 `tools/jupyter-smoke.raku` is a **Jupyter client written in Raku**: it opens
 the five sockets itself, performs the ZMTP handshake, implements HMAC-SHA256
 from scratch (pinned against the RFC 4231 vectors), and drives the kernel the
-way a frontend does — kernel_info, a cell that prints and has a value, the
-session carried between cells, a dying cell, `jupyter-display`, every cell
+way a frontend does — kernel_info, a cell that prints and so shows no value,
+the session carried between cells, a dying cell, `jupyter-display`, every cell
 magic above, a forged signature that must be ignored, the heartbeat, and
 shutdown.
 
