@@ -19,7 +19,7 @@ e24f05f1 (NUM-UNBOX-PLAN P0); 8644846a; 74806a6d; 93f9a4af and c7a12943;
 5d31d4a2 and aff5032b (issue #202); 5d0e7ce9 and 170802d4 (issue #203);
 cb7933f3 (issue #204); cb5b360a, d5184116 and 50aebf54; 67a2fe76 (issue
 #198) and 4af53b07; 3ddcd58b (issue #207); 2b9494ae (issue #206); 48b76d56,
-a348489b and aa0f3618 (issue #195).*
+a348489b, aa0f3618 and fc262224 (issue #195).*
 
 ---
 
@@ -446,6 +446,14 @@ plain before 500c29e2 and native from it, unless they say otherwise.
   included, so "no", "or", "and", "xor", "if", "my" and `q/or/` went: the
   routine returned Nil and the string became a statement of its own. So did
   `return not 1`. The statement form was right.
+- **`--exe` runs a LEAVE however its block is left** (fc262224; found fixing
+  issue #195), as interpreted and in Rakudo. A block's LEAVE ran after its
+  last statement only, so a `next`, `last`, `redo`, `return` or exception
+  that left early skipped it: `for ^3 -> $i { LEAVE { … }; next if $i ==
+  1; … }` ran two of three. It is a scope guard now, and a death in it
+  propagates, so a routine's `LEAVE { die "x" }` dies as interpreted. A
+  LEAVE that reads its block's variables beside a CATCH bundles the
+  program; its C++ did not compile before.
 
 ### Fixed: crashes
 
