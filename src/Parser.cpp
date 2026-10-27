@@ -14317,6 +14317,7 @@ StmtPtr Parser::parseClass(bool isRole, bool isGrammar, bool isPackage, bool isU
         struct PopPkg2 { std::vector<std::pair<std::string, bool>>& s; ~PopPkg2() { s.pop_back(); } } popPkg2{pkgStack_};
         while (!isKind(Tok::RBrace) && !isKind(Tok::End)) {
             if (matchKind(Tok::Semicolon)) continue;
+            checkTextAfterBlock();   // `module M { sub a { 1 } sub b { 2 } }` on one line
             if (isIdent("has") &&
                 (peek().kind == Tok::Var || peek().kind == Tok::LParen ||
                  (peek().kind == Tok::Ident && peek(2).kind == Tok::Var)))
@@ -14338,6 +14339,7 @@ StmtPtr Parser::parseClass(bool isRole, bool isGrammar, bool isPackage, bool isU
             }
             cd->body.push_back(std::move(st));
         }
+        lastBlockClose_ = lastPkgClose_ = pos_;   // `module M { } say 1` is one line too many
         expectKind(Tok::RBrace, "}");
         return cd;
     }
@@ -14522,6 +14524,7 @@ StmtPtr Parser::parseClass(bool isRole, bool isGrammar, bool isPackage, bool isU
     };
     while (!isKind(Tok::End) && (!braced || !isKind(Tok::RBrace))) {
         if (matchKind(Tok::Semicolon)) continue;
+        checkTextAfterBlock();   // `method a { 1 } method b { 2 }` on one line
         // a ROLE body is a generic scope: nothing in it can be `our`-scoped,
         // and a package-like declaration defaults to `our`
         if (cd->isRole && isKind(Tok::Ident)) {
@@ -15240,6 +15243,7 @@ StmtPtr Parser::parseClass(bool isRole, bool isGrammar, bool isPackage, bool isU
                     const size_t ruleTok = pos_;
                     std::string kind = advance().text;
                     std::string nm = isKind(Tok::Ident) ? advance().text : "";
+                    if (isKind(Tok::RegexLit)) lastRegexDeclBody_ = pos_;   // it ends the member as a `}` does
                     std::string pat = isKind(Tok::RegexLit) ? advance().text : "";
                     if (kind == "regex" && !wasProtoMulti)
                         checkNullRegex(pat, cur().line);
@@ -15432,7 +15436,7 @@ StmtPtr Parser::parseClass(bool isRole, bool isGrammar, bool isPackage, bool isU
     for (auto& lb : classBodyLeave) cd->body.push_back(std::move(lb));
     // this `}` closes a block as parseBlock's does: `my $x = class { … }⏎for …`
     // ends the statement at the newline — `for` is not a statement modifier
-    if (braced) { lastBlockClose_ = pos_; expectKind(Tok::RBrace, "}"); }
+    if (braced) { lastBlockClose_ = lastPkgClose_ = pos_; expectKind(Tok::RBrace, "}"); }
     typeStack_.pop_back();
     typeIsRole_.pop_back();
     // `self!nope()` in a class that declares no private `nope` is a COMPILE
@@ -17807,6 +17811,8 @@ Program Parser::parseProgram() {
 // a block's closing brace — `$obj.doit ()` is "two terms in a row" (Confused).
 // Enforced only in EVAL'd snippets (strictSep_): whole test files keep the
 // tolerant statement-split behavior so one bad line cannot kill their TAP.
+// The one exception is text after a block's `}` on its line, which whole files
+// refuse too (#206).
 // `runaway multi-line "" quote starting at line 1 maybe?` — when the token
 // that ended the statement closes a quote that spanned lines; "" otherwise.
 std::string Parser::runawayQuoteHint(const Token& pv) {
@@ -17851,8 +17857,71 @@ void Parser::refuseTraitAfterInit(bool anyLine) {
     throw ParseError(msg, cur().line, "X::Syntax::Confused", {{"reason", msg}});
 }
 
+// After a statement that a block's `}` ended — or a `token`/`regex`/`rule`
+// body, one RegexLit that closes its declaration exactly as a `}` does — the
+// line must end or a `;` come next: `when Real { 1 } when Str { 2 }` is
+// refused. Whole files too, not only EVAL (#206): a module written so ran
+// here and did not compile under Rakudo. Rakudo calls it "Strange text after
+// block (missing semicolon or comma?)", which names neither the text nor the
+// rule; this says what is missing before what, and why, and points at it.
+void Parser::checkTextAfterBlock() {
+    if (isKind(Tok::End) || isKind(Tok::RBrace) || isKind(Tok::Semicolon) || pos_ == 0) return;
+    const Token& pv = toks_[pos_ - 1];
+    if (!((pv.kind == Tok::RBrace && pos_ - 1 == lastBlockClose_) || pos_ - 1 == lastRegexDeclBody_)) return;
+    const Token& ct = cur();
+    if (ct.line != pv.line) return;
+    // A package declaration is a term, so an infix may follow it: Roast's
+    // `class {} − class {}`. The statement parser ends the declaration at its
+    // `}` and reads `− class {}` as a statement of its own, which is wrong
+    // but is no missing `;`.
+    if (pos_ - 1 == lastPkgClose_ && ct.kind == Tok::Op) return;
+    // any vertical whitespace ends the line — VT, FF, CR, NEL, LS and PS as
+    // much as LF
+    if (src_) {
+        size_t a = pv.off, b = ct.off - ct.text.size();
+        for (size_t i = a; a <= b && b <= src_->size() && i < b; i++) {
+            unsigned char c = (unsigned char)(*src_)[i];
+            if (c == '\n' || c == 0x0B || c == 0x0C || c == '\r') return;
+            if (c == 0xC2 && i + 1 < b && (unsigned char)(*src_)[i + 1] == 0x85) return;
+            if (c == 0xE2 && i + 2 < b && (unsigned char)(*src_)[i + 1] == 0x80 &&
+                ((unsigned char)(*src_)[i + 2] == 0xA8 || (unsigned char)(*src_)[i + 2] == 0xA9)) return;
+        }
+    }
+    // what follows, and the column it starts at: a name is its own text; for
+    // anything else, the source up to where the token ends, when the offsets
+    // index it (a fudged Roast file's do not, past its first directive)
+    const bool srcOk = src_ && pv.off > 0 && pv.off <= src_->size() && (*src_)[pv.off - 1] == '}';
+    size_t at = pv.off;
+    int col = srcOk ? pv.col : 0;
+    if (srcOk)
+        while (at < src_->size() && ((*src_)[at] == ' ' || (*src_)[at] == '\t')) { at++; col++; }
+    std::string next;
+    if (ct.kind == Tok::Ident || ct.kind == Tok::Var) {
+        next = ct.text;
+        // past an embedded comment, back from where the name ends (not for a
+        // `regex` keyword, whose token is stamped where its body ends)
+        if (!srcOk || src_->compare(at, next.size(), next) != 0)
+            col = ct.col - (int)next.size() >= pv.col ? ct.col - (int)next.size() : 0;
+    } else if (srcOk) {
+        size_t e = ct.off > at && ct.off <= src_->size() ? ct.off : at;
+        if (e - at > 20) {
+            e = at + 20;
+            while (e > at && ((unsigned char)(*src_)[e] & 0xC0) == 0x80) e--;   // not mid-character
+            next = src_->substr(at, e - at) + "\xE2\x80\xA6";   // …
+        } else next = src_->substr(at, e - at);
+        // `} .say`: the method, not just its dot
+        if (ct.kind == Tok::Op && peek().kind == Tok::Ident && !peek().spaceBefore && peek().line == ct.line)
+            next += peek().text;
+    }
+    const std::string msg = (next.empty() ? std::string("Missing ';' before the next statement")
+                                          : "Missing ';' before '" + next + "'") +
+                            ": a block's '}' ends a statement only at the end of a line";
+    ParseError pe(msg, ct.line, "X::Syntax::Confused", {{"reason", msg}});
+    pe.col = col;
+    throw pe;
+}
+
 void Parser::enforceStmtSep() {
-    if (!strictSep_) return;
     if (isKind(Tok::End) || isKind(Tok::RBrace) || pos_ == 0) return;
     const Token& pv = toks_[pos_ - 1];
     // …and when what SPLIT them is a tight `->`, name it: that is Perl 5's
@@ -17861,42 +17930,16 @@ void Parser::enforceStmtSep() {
                             !pv.spaceBefore && !cur().spaceBefore && termEndsHere(toks_[pos_ - 2]);
     const bool arrowHere  = isKind(Tok::Op) && cur().text == "->" && !cur().spaceBefore &&
                             termEndsHere(pv) && peek().kind == Tok::Ident && !peek().spaceBefore;
-    if (arrowAfter || arrowHere)
+    if (strictSep_ && (arrowAfter || arrowHere))
         throw ParseError("Unsupported use of -> as postfix. In Raku please use: "
                          "either . to call a method, or whitespace to delimit a pointy block.",
                          cur().line, "X::Obsolete",
                          {{"old", "-> as postfix"},
                           {"replacement", "either . to call a method, or whitespace "
                                           "to delimit a pointy block"}});
-    // `when Real { 1 } when Str { 2 }` — a statement's closing brace ends the
-    // line or meets a `;`: anything else after it is Rakudo's strange text
-    // (any vertical whitespace counts as the line's end — VT, FF, CR, NEL,
-    // LS and PS as much as LF)
-    auto vertBetween = [&]() {
-        if (!src_) return false;
-        const Token& ct = cur();
-        size_t a = pv.off, b = ct.off - ct.text.size();
-        if (a > b || b > src_->size()) return false;
-        for (size_t i = a; i < b; i++) {
-            unsigned char c = (unsigned char)(*src_)[i];
-            if (c == '\n' || c == 0x0B || c == 0x0C || c == '\r') return true;
-            if (c == 0xC2 && i + 1 < b && (unsigned char)(*src_)[i + 1] == 0x85) return true;
-            if (c == 0xE2 && i + 2 < b && (unsigned char)(*src_)[i + 1] == 0x80 &&
-                ((unsigned char)(*src_)[i + 2] == 0xA8 || (unsigned char)(*src_)[i + 2] == 0xA9)) return true;
-        }
-        return false;
-    };
-    if (pv.kind == Tok::RBrace && pos_ - 1 == lastBlockClose_ && cur().line == pv.line &&
-        !isKind(Tok::Semicolon) && !vertBetween())
-        throw ParseError("Strange text after block (missing semicolon or comma?)", cur().line,
-                         "X::Syntax::Confused", {{"reason", "Strange text after block (missing semicolon or comma?)"}});
-    // a `token`/`regex`/`rule` body is one RegexLit token, and it closes its
-    // declaration exactly as a block's `}` does: `my token c { a }` then a
-    // new line is two statements, not two terms
+    checkTextAfterBlock();
+    if (!strictSep_) return;
     const bool closesBlock = pv.kind == Tok::RBrace || pos_ - 1 == lastRegexDeclBody_;
-    if (pos_ - 1 == lastRegexDeclBody_ && cur().line == pv.line && !isKind(Tok::Semicolon) && !vertBetween())
-        throw ParseError("Strange text after block (missing semicolon or comma?)", cur().line,
-                         "X::Syntax::Confused", {{"reason", "Strange text after block (missing semicolon or comma?)"}});
     if (!closesBlock && pv.kind != Tok::Semicolon && cur().line == pv.line) {
         // A `[` here was read as a bracketed INFIX whose brackets do not spell an
         // operator — `@a [0]` — and naming that is more use than "two terms in a

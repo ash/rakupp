@@ -75,6 +75,26 @@ moves to [TODO.md](TODO.md).
   block or a pointy"). Done when the first two lines answer as in Rakudo
   2026.09.
 
+- [ ] **A package declaration that starts a statement does not take an
+  infix after it** (found 2026-10-27 while fixing issue #206, 2b9494ae; on
+  4083b26b too):
+
+  ```raku
+  say quietly { class A {} === A }   # ===SORRY!=== unexpected operator in term position, Rakudo True
+  say quietly { class D {} ~~ D }    # ===SORRY!=== Expected a term, but found either infix ~~ …, Rakudo True
+  say quietly { class {} ~ "x" }     # x in both, but here as `class {}; ~"x"`
+  ```
+
+  A package declaration is a term in Rakudo. The statement parser's
+  `class`/`role`/`grammar`/`module` branch (parseStatementInner,
+  src/Parser.cpp, "…and the built-in package declarators") wraps the
+  declaration as a term only before a tight `.` or before `but`/`does`, and
+  otherwise ends the statement at its `}`, so the infix starts a statement
+  of its own. checkTextAfterBlock lets an operator after a package's `}`
+  through (lastPkgClose_) because of it: Roast's S03-operators/u2212-minus.t
+  has `class {} − class {}`. Done when the three lines answer as in Rakudo
+  2026.09 and that exemption is gone.
+
 ## Operators and types
 
 - [ ] **Built-in prefix and postfix operators fail when called by name**
@@ -313,6 +333,23 @@ moves to [TODO.md](TODO.md).
   and `locate()` walks only 200 lines forward from it. Give interpolated
   variable nodes the line of their string; do not widen the window. Cover
   `"$nope"`, `"a {$nope} b"`, `qq/$nope/` and a multi-line statement.
+
+- [ ] **A parse error shows its line and column only when a file is run**
+  (found 2026-10-27 while fixing issue #206, 2b9494ae):
+
+  ```bash
+  build/rakupp -e 'if 1 { } say 2'       # the header and "at -e:1", no excerpt
+  printf 'if 1 { } say 2\n' > /tmp/s.raku; build/rakupp -c /tmp/s.raku   # the header alone
+  build/rakupp /tmp/s.raku               # the header, the line, a ^ under `say`, "at /tmp/s.raku:1"
+  ```
+
+  The excerpt is printed by rakuppRunOn's ParseError handler
+  (src/Runtime.cpp), which reads `-e` code through seedSrcLines only after
+  the parse has succeeded; the `-c` handler in src/main.cpp prints the
+  header line and nothing else. ParseError::col, which puts the `^` under
+  the excerpt, is set only by checkTextAfterBlock; Parser::error knows the
+  token it stopped at (`got`) and could set it for every parse error. Done
+  when `-e` and `-c` show the excerpt, and most parse errors a column.
 
 ## Backends
 

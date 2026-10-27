@@ -21,7 +21,7 @@ my @fail;
 sub check($got, $want, $what) { @fail.push("$what: got {$got.raku} want {$want.raku}") unless $got eqv $want }
 
 # capture subscript under a contextualizer
-grammar Segs { token TOP { <seg>+ }  token seg { '/' <chars> }  token chars { \w+ } }
+grammar Segs { token TOP { <seg>+ };  token seg { '/' <chars> };  token chars { \w+ } }
 class SegActs {
     method TOP($/) {
         my $r = '';

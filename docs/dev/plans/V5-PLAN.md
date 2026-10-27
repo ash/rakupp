@@ -142,10 +142,15 @@ Also in the scan, and not yet reduced to a snippet:
 - ~~**Issue #90:** nested exported `CStruct` classes coerce wrongly.~~ **Done**
   2026-10-07: `coerceToType` looked the short imported name up
   verbatim; t/regression/exported-nested-class-coercion.raku.
-- **rakupp accepts code Rakudo refuses.** `class A { method a { 1 } method b {
+- ~~**rakupp accepts code Rakudo refuses.** `class A { method a { 1 } method b {
   2 } }` on one line runs here; Rakudo says "Strange text after block". Being
   stricter is exactly how the regressions above happened, so this goes through
-  the compile scan like every other new check.
+  the compile scan like every other new check.~~ **Done** 2026-10-27
+  (2b9494ae, issue #206): text after a block's `}` on its line is refused in
+  a file and in a package body, in words of our own;
+  t/regression/issue-206-text-after-block.raku. The battery was not on the
+  machine; a `-c` scan of 3,736 local files (Roast, both engines' installed
+  modules, Rakudo's core setting, this repository) stood in for it.
 - **The known wrong answers carried over from the candidate list**, recorded in
   July and August in [BUGS.md](../findings/BUGS.md) and
   [TRIAGE.md](../findings/TRIAGE.md), to re-verify before planning:

@@ -383,6 +383,17 @@ int rakuppRunOn(Interpreter& interp, const std::string& src, std::vector<std::st
         std::string sl = !e.file.empty() ? interp.srcLineOf(e.file, e.line)
                        : interp.srcLineOf(interp.srcFileAbs_.empty() ? fileName : interp.srcFileAbs_, e.line);
         if (!sl.empty()) std::cerr << "      " << e.line << " | " << sl << "\n";
+        // …with a `^` under the column the error names, when it names one: a
+        // tab stays a tab, so the mark lines up however the terminal sets them
+        if (!sl.empty() && e.col > 0 && (size_t)e.col <= sl.size() + 1) {
+            std::string pad;
+            for (size_t i = 0; i + 1 < (size_t)e.col; i++) {
+                const unsigned char c = (unsigned char)sl[i];
+                if (c == '\t') pad += '\t';
+                else if ((c & 0xC0) != 0x80) pad += ' ';   // one per character, not per byte
+            }
+            std::cerr << "      " << std::string(std::to_string(e.line).size(), ' ') << " | " << pad << "^\n";
+        }
         // …and where, as FILE:LINE — the spelling editors and Rakudo's own
         // "at FILE:LINE" both jump to (integration/error-reporting.t)
         std::string at = !e.file.empty() ? btDisplayPath(e.file, interp.srcFileAbs_, fileName) : fileName;

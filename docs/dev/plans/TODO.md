@@ -336,8 +336,6 @@ The same items grouped by theme, with a complexity estimate for each:
     `for $l` and `for @$l` read them first, as Rakudo does.
   - An INIT default that reads an earlier parameter (`$y = INIT { $x }`)
     still runs per call.
-  - `sub k { 1 } sub v { 2 }` on one line parses; Rakudo says "Strange text
-    after block".
   - `Int:D()` given a Str type object dies at bind; Rakudo is not consistent
     there (it dies, or returns an undefined value).
   Also a `my class` used earlier in its OWN block is no longer reported as a
@@ -877,10 +875,12 @@ with its tag, after the release run is green.
 - The binding version scheme (section 4).
 - Telling the 321 author that their code breaks on Raku++ after v4.0.1
   (section 5).
-- Whether whole files get EVAL's strict statement separation: Rakudo
-  refuses `sub k { 1 } sub v { 2 }` or `if 1 { } say 2` on one line
-  ("Strange text after block"); Raku++ refuses it only in an EVAL
-  (`enforceStmtSep`), so files that rely on the leniency would stop compiling.
+- Whether whole files get the rest of EVAL's strict statement separation.
+  Text after a block's `}` on its line is refused in a file too since
+  2b9494ae (issue #206); two terms in a row are not: `say 1 1` prints 1,
+  `%h<a> say 2` prints 2 and `say @a [0]` prints `[]` in a file, where Rakudo
+  refuses each and an EVAL here does too (`enforceStmtSep`). Files that rely
+  on the leniency would stop compiling.
 - `temp` against LEAVE: since 2026-10-11 a `temp` is restored BEFORE the
   block's LEAVE phasers run (runLeavePhasers' drainTempRestores), following
   Rakudo 2026.09; Rakudo 2026.08 and Raku++ before then restored it after, so

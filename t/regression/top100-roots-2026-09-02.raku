@@ -100,10 +100,10 @@ try { EVAL q[role Rl2 { method x is only-classes { } }]; }
 ok($! && $!.message eq 'refused', "a trait handler's own die reaches the caller");
 
 # --- Font::AFM: `next` as an operand throws instead of going cooperative -----
-sub walk(Hash $g) { my @seen; for <a b c> { my Str $s = $g{$_} // next; @seen.push($s) } @seen }
+sub walk(Hash $g) { my @seen; for <a b c> { my Str $s = $g{$_} // next; @seen.push($s) }; @seen }
 ok(walk({a => 'x', c => 'z'}) eqv ['x', 'z'], 'my Str $s = %h{$_} // next skips the miss');
 # …and `$.method` on a type object is still a method call
-class Metrics { method data { {b => 42} } method b { $.data<b> } }
+class Metrics { method data { {b => 42} }; method b { $.data<b> } }
 ok(Metrics.b == 42, '$.name with a type object as self calls the method');
 
 # --- PDF::Grammar / Intl::LanguageTag: newlines, quote words, closers --------
@@ -114,7 +114,7 @@ ok(so "\r\n" ~~ /^<[\n]>$/, '<[\\n]> does');
 my @t = { a => :name<#> },
         { b => "/#6E" };
 ok(@t.elems == 2 && @t[1]<b> eq '/#6E', 'a colonpair angle value may hold a hash sign');
-class Selfy { has %!t = ms => 1; method AT-KEY(\k) { %!t{k} } method x { self<ms> } }
+class Selfy { has %!t = ms => 1; method AT-KEY(\k) { %!t{k} }; method x { self<ms> } }
 ok(Selfy.new.x == 1, 'self<ms> is a subscript, not the start of an m:s regex');
 
 # --- Template::Mustache: comments inside code assertions, empty Slips -------
