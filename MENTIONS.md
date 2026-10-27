@@ -39,6 +39,7 @@ say something worth quoting.
 | 10 October 2026 | [compiler-explorer#9257](https://github.com/compiler-explorer/compiler-explorer/issues/9257) on GitHub | Ang3lERR404 | a request to add Raku++ v5.3.0 to Compiler Explorer as an alternate Raku compiler |
 | 12 October 2026 | [Raku Weekly 2026.41](https://rakuweekly.blog/2026/10/12/2026-41-riscy-business/) | Elizabeth Mattijsen | the RISC-V and module-install posts, Webraku; a corner on the 2colours article |
 | 14 October 2026 | [on Hacker News](https://news.ycombinator.com/item?id=50091511) | F3nd0, Elizabeth Mattijsen | Raku++ named in passing as a vibe-coded project; the reply that it is not, and the definitions of the term |
+| 26 October 2026 | [Raku Weekly 2026.42/43](https://rakuweekly.blog/2026/10/26/2026-42-43-appropriate-raku/) | Elizabeth Mattijsen | the Learn Raku app for iOS and Android, and the two posts that came with it |
 
 ## Raku Weekly News
 
@@ -118,6 +119,20 @@ After that it has been steady, roughly a mention per release or per post:
   [Andrew's comment](https://dev.to/andrewshitov/comment/3gij4) under it and
   the discussion on r/rakulang and Mastodon. Math::Wavelet and Webraku are in
   the new-module list, JSON::Native among the updated ones.
+- [**2026.42/43 APPropriate Raku**](https://rakuweekly.blog/2026/10/26/2026-42-43-appropriate-raku/)
+  (26 October 2026) — the issue opens on the Raku Course as a *Learn Raku*
+  app for [iOS](https://apps.apple.com/app/id6788222934) and
+  [Android](https://play.google.com/store/apps/details?id=online.deepsoft.learnraku),
+  which the title plays on: the course on a phone, a pad or a notebook,
+  entirely offline, with every example still runnable and editable. It links
+  the [/r/rakulang comments](https://www.reddit.com/r/rakulang/comments/1xcn12d/comment/19rngjbx3w7gg/)
+  and the two posts that came with it,
+  [learn.raku.online](https://andrewshitov.com/2026/10/23/raku-as-a-foreign-language/)
+  and [the course update](https://andrewshitov.com/2026/10/24/raku-course-update/).
+  The issue does not name the engine; the app's playground is Raku++. Its
+  closing words call it a fully functional Raku on mobile devices. F3nd0's
+  Hacker News comment is in the comments-about-Raku list, and JSON::Native
+  among the updated modules.
 
 ## perlancar, August 2026
 
@@ -200,6 +215,9 @@ AI to write code, as Merriam-Webster, Cambridge and Collins have it, Raku++
 is vibe-coded; where it also means not understanding the generated code well,
 as Wiktionary adds, it is not. The comment ends by asking which definition is
 the more correct one.
+
+Raku Weekly 2026.42/43 listed the first comment among its comments about
+Raku, as *An ambitious vibe-coded project*.
 
 ## Adding an entry
 
