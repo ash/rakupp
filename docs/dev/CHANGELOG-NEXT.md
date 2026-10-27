@@ -16,7 +16,7 @@ e24f05f1 (NUM-UNBOX-PLAN P0); 8644846a; 74806a6d; 93f9a4af and c7a12943;
 85d56001; 960e8aed; 7fcca8a8; 273863ac; 90bc6e23; 84add3b1; 08a17d21;
 12af490d (RACE-DETECTOR-PLAN P0-P4); 42f79e98, b9108e1d, 0b9950b1, 500c29e2,
 1b182b8e, 828e52d5, 4d1c7cc3, 80ea9030, d972abe7, 166334a9 and 29b10450;
-5d31d4a2 and aff5032b (issue #202); cb5b360a and d5184116.*
+5d31d4a2 and aff5032b (issue #202); cb5b360a, d5184116 and 50aebf54.*
 
 ---
 
@@ -564,17 +564,35 @@ does not.
   its suite green, and a program using it prints what Rakudo prints from the
   same store. t/regression/core-class-extended-in-place.raku agrees with
   Rakudo 2026.09.
+- **What was found beside it** (50aebf54), each the same on v5.5.0 before.
+  An engine object kept in a hash (a DateTime, Date, Promise, Channel, Lock,
+  …) is ONE element: `my @a = DateTime.new(0)` held eight Pairs, a Lock
+  none, and `.elems` was 8; a Set, Bag or Mix in a `$` parameter or loop
+  variable is one item. A DateTime against a plain number is its Instant:
+  `$d + 60` is Instant:70 (it moved the date), `$d * 2` 20 (it was 0), `$d
+  == 10` True; a Duration still moves it. `sub f(CORE::Int $x)` checks its
+  argument, at compile time too, and its `.signature` is `:(Int $x)`
+  (Param.typeIsSetting, AST cache v52). `&?ROUTINE` is the routine a block is
+  written in, after it returns and from a `start` block as well (it named
+  whichever routine ran the block), and `samewith` calls that one. `my \x =
+  @a.first`, `$x := @a.tail`, `for @a.head(2) { $_ = 7 }` and
+  `@a.grep(…).first` reach the elements' own containers. A top-level `class
+  DateTime is CORE::DateTime`, the core class's own name outside a package,
+  is refused as X::NYI where it crashed. The five t/regression files
+  (engine-objects-list-as-one, datetime-number-is-instant,
+  core-qualified-parameter-type, routine-is-lexical,
+  array-ends-are-containers) agree with Rakudo 2026.09.
 
 ### Left open
 
-- Found beside DateTime::Timezones (d5184116), the same on v5.5.0: `my @a =
-  DateTime.new(0)` is 8 Pairs (a Date's fields too, and a Promise one Pair)
-  where Rakudo has one element; a plain `DateTime + 60` is a DateTime where
-  Rakudo's is an Instant; a sub's `CORE::Int $x` binds any value (dispatch
-  does check it); `@a.first`, `.head` and `.tail` answer a value where
-  Rakudo hands back the element's container; a top-level `class DateTime is
-  CORE::DateTime`, of the core class's own name, is not one; and
-  `&?ROUTINE` in a block another routine runs names that routine.
+- Two types of one name are still one here (50aebf54): a top-level class of
+  a core class's own name that inherits it is refused as X::NYI (Rakudo
+  accepts it; in a package it works), a top-level class of a core name that
+  does not inherit replaces the core type, and two `my class A` in two
+  blocks are one class. Types are known by their names throughout.
+- `%h.values.head` hands back a value, where Rakudo's is the hash entry's
+  container (an Array's `.first`/`.head`/`.tail` do now); a Block's `.gist`
+  is `sub { ... }` where Rakudo writes `-> { #`(Block|…) ... }`.
 
 - A store into an array element can still land in a buffer a sibling worker's
   growth has just moved, in a program that races the two (90bc6e23): an
