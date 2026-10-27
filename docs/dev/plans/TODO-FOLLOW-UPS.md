@@ -1,6 +1,6 @@
 # Follow-ups
 
-*Collected 2026-10-20; added to 2026-10-23.*
+*Collected 2026-10-20; added to 2026-10-27.*
 
 Findings that sessions on 2026-10-19 and 2026-10-20 proposed as follow-up
 work and nobody started: gaps found in passing while doing something else.
@@ -117,6 +117,34 @@ moves to [TODO.md](TODO.md).
   return: `--> num` takes a Num or a NumStr, `--> int` an Int, `--> str` a
   Str. Then drop the native exclusion in retCheckOf and leanReturn's
   LeanNative arm.
+
+- [ ] **Two types cannot share a short name** (found 2026-10-27 while making
+  DateTime::Timezones install, 50aebf54; on v5.5.0 too). Types are known by
+  their names throughout, so a second type of a name is the first one:
+
+  ```raku
+  my $x = do { my class A { method m { 1 } }; A };
+  my $y = do { my class A { method m { 2 } }; A };
+  say $x.m, $y.m, " ", $x === $y;                 # 22 True, Rakudo 12 False
+  class DateTime is DateTime { method hi { "hi" } }
+  say DateTime.new(0).hi;                         # X::NYI, Rakudo hi
+  class Int is Int { }; say 5 ~~ Int;             # X::NYI, Rakudo False
+  class DateTime { has $.x }; say DateTime.now;   # the core .now, Rakudo: No such method 'now'
+  ```
+
+  The two in the middle are refused on purpose (refuseCoreNamesake,
+  src/InterpreterModules.cpp): the class would replace the core type it
+  inherits from, and before 50aebf54 `is CORE::DateTime` crashed there. In a
+  package the same declaration works, because the class's name is qualified
+  (`unit module Timezones; class DateTime is DateTime` is
+  Timezones::DateTime; parentIsOuterType). What assumes a type's registry key
+  and its `.^name` are one string: `classes_` (keyed by name),
+  `Value::typeObj(name)`, `ObjectData::cls->name`, the type checks by name
+  (typeMatchesResolved, typeAliasTarget) and the AST cache. A design is an
+  internal key per declaration, a separate display name, and the short name
+  bound lexically; size the change before writing it. Done when all four
+  answer as Rakudo does, the refusal is gone, and the Roast list is
+  v5.5.0's.
 
 ## Control flow and containers
 
