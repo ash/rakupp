@@ -7909,10 +7909,12 @@ Value Interpreter::callPlainSub(const Value& codeVal, Callable& c, ValueList& ar
     Env* const savedRoutineEnv = tcx.curRoutineEnv;
     tcx.curRoutineFrame = tcx.frameTop; env->routineFrame = true; env->routineFrameId = tcx.frameTop;
     tcx.curRoutineEnv = env.get();
+    // (…and the caller's statement, which the callee's own replaced: a
+    // `f($i) or next` after the call is still that statement's — ctlOnStmtPath)
     struct FrameGuard {
-        ExecContext& t; uint64_t ft, rf; Env* re;
-        ~FrameGuard() { t.frameTop = ft - 1; t.curRoutineFrame = rf; t.curRoutineEnv = re; }
-    } fguard{tcx, savedFrameTop, savedRoutineFrame, savedRoutineEnv};
+        ExecContext& t; uint64_t ft, rf; Env* re; const Expr* se;
+        ~FrameGuard() { t.frameTop = ft - 1; t.curRoutineFrame = rf; t.curRoutineEnv = re; t.curStmtExpr = se; }
+    } fguard{tcx, savedFrameTop, savedRoutineFrame, savedRoutineEnv, tcx.curStmtExpr};
     Value last = Value::nil();
     env->declStmts = c.ci().body;
     env->callEnv = true;
@@ -9216,10 +9218,12 @@ Value Interpreter::callCallableRaw(const Value& codeVal, ValueList args, const s
     tcx.forceRoutineFrame = false;
     Env* const savedRoutineEnv = tcx.curRoutineEnv;
     if (isRoutine) { tcx.curRoutineFrame = tcx.frameTop; env->routineFrame = true; env->routineFrameId = tcx.frameTop; tcx.curRoutineEnv = env.get(); } // $/ scopes here
+    // (…and the caller's statement, which the callee's own replaced: a
+    // `f($i) or next` after the call is still that statement's — ctlOnStmtPath)
     struct FrameGuard {
-        ExecContext& t; uint64_t ft, rf; Env* re;
-        ~FrameGuard() { t.frameTop = ft - 1; t.curRoutineFrame = rf; t.curRoutineEnv = re; }
-    } fguard{tcx, savedFrameTop, savedRoutineFrame, savedRoutineEnv};
+        ExecContext& t; uint64_t ft, rf; Env* re; const Expr* se;
+        ~FrameGuard() { t.frameTop = ft - 1; t.curRoutineFrame = rf; t.curRoutineEnv = re; t.curStmtExpr = se; }
+    } fguard{tcx, savedFrameTop, savedRoutineFrame, savedRoutineEnv, tcx.curStmtExpr};
     Value last = Value::nil();   // a body with no value is Nil — see execBlock's seed
     env->declStmts = c.ci().body;   // what it declares (see Env::declStmts; a pooled Env is reused, so always)
     env->callEnv = true;       // …and it is an activation: a backtrace walk for its blocks stops here
@@ -11000,10 +11004,12 @@ Value Interpreter::invokeMethod(const Value& codeVal, const Value& self, ValueLi
     tcx.cur->routineFrameId = tcx.curRoutineFrame;
     Env* const savedRoutineEnv = tcx.curRoutineEnv;
     tcx.curRoutineEnv = tcx.cur.get();
+    // (…and the caller's statement, which the callee's own replaced: a
+    // `f($i) or next` after the call is still that statement's — ctlOnStmtPath)
     struct FrameGuard {
-        ExecContext& t; uint64_t ft, rf; Env* re;
-        ~FrameGuard() { t.frameTop = ft - 1; t.curRoutineFrame = rf; t.curRoutineEnv = re; }
-    } fguard{tcx, savedFrameTop, savedRoutineFrame, savedRoutineEnv};
+        ExecContext& t; uint64_t ft, rf; Env* re; const Expr* se;
+        ~FrameGuard() { t.frameTop = ft - 1; t.curRoutineFrame = rf; t.curRoutineEnv = re; t.curStmtExpr = se; }
+    } fguard{tcx, savedFrameTop, savedRoutineFrame, savedRoutineEnv, tcx.curStmtExpr};
     Value last = Value::nil();   // as in callCallableRaw
     // A method body is a routine scope like a sub's: a `my` buried in a
     // ternary/nqp branch — or under a statement modifier (`my $x = … if …`)
@@ -13076,6 +13082,60 @@ static inline bool bareRatValue(const Value& v) {
            !x.rFrom && !x.rTo && !x.rExFrom && !x.rExTo && !x.rNum && !x.fatRat && !x.holdsCells;
 }
 
+// The operators that hand back their right side's value untouched once they
+// evaluate it — the steps ctlOnStmtPath may take down an expression.
+static bool shortCircuitWord(const std::string& op) {
+    static const std::unordered_set<std::string> words = {
+        "or", "and", "||", "&&", "//", "andthen", "orelse", "notandthen", "xor", "^^"};
+    return words.count(op) != 0;
+}
+
+// Is there a next/last/redo/return on `e`'s own path — `f() // next`,
+// `$c ?? $v !! return 0` — that ctlOnStmtPath could let go cooperative?
+static bool ctlOnRhsPath(const Expr* e, int depth = 0) {
+    for (; e && depth < 64; depth++) {
+        switch (e->kind) {
+            case NK::Unary: {
+                const std::string& op = static_cast<const Unary*>(e)->op;
+                return opEq(op, "next") || opEq(op, "last") || opEq(op, "redo") ||
+                       opEq(op, "return") || opEq(op, "return-rw");
+            }
+            case NK::Binary: {
+                auto* b = static_cast<const Binary*>(e);
+                if (!shortCircuitWord(b->op)) return false;
+                e = b->rhs.get();
+                break;
+            }
+            case NK::Ternary: {
+                auto* t = static_cast<const Ternary*>(e);
+                if (ctlOnRhsPath(t->then.get(), depth + 1)) return true;
+                e = t->els.get();
+                break;
+            }
+            default: return false;
+        }
+    }
+    return false;
+}
+
+// An assignment whose store evalAssignInner's general path guards
+// (ExecContext::coopAssign), so a control word on its right side's path goes
+// cooperative instead of throwing (#195): a plain `=` into a `$`, `@` or `%`
+// variable — a `my` declaration or none — or into an element. Nothing that
+// evalAssign does after the store (a bind's readonly marks, an `our` or
+// `is export` publish) applies to these, so a skipped store leaves nothing
+// half done.
+static bool coopStoreShape(const Assign* a) {
+    if (!a->target || !a->value || !opEq(a->op, "=") || a->containerSigil || a->userOp) return false;
+    if (a->target->kind == NK::VarExpr) {
+        auto* tv = static_cast<const VarExpr*>(a->target.get());
+        if (tv->name.size() < 2 || !std::strchr("$@%", tv->name[0])) return false;
+        if (tv->declare && (tv->d().declScope != "my" || tv->d().declExport)) return false;
+    }
+    else if (a->target->kind != NK::Index) return false;
+    return ctlOnRhsPath(a->value.get());
+}
+
 Value Interpreter::evalAssign(Assign* a, bool sink) {
     // `my $m = ($c, 2)` / `$l := (…)` / `my \l = (…)` keep the List, which holds
     // its items' containers (keepListContainers)
@@ -13122,8 +13182,11 @@ Value Interpreter::evalAssign(Assign* a, bool sink) {
         if (sv != 0) {
             if (sv < 0) {
                 signed char cls = 0;
-                if (a->target && a->target->kind == NK::VarExpr && !a->userOp && opEq(a->op, "=") &&
-                    plainDeclLane(static_cast<VarExpr*>(a->target.get()), a->value.get()))
+                // `my $x = f() // next`: no lane — the full path guards the
+                // store, so the `next` need not throw (coopStoreShape)
+                if (coopStoreShape(a)) {}
+                else if (a->target && a->target->kind == NK::VarExpr && !a->userOp && opEq(a->op, "=") &&
+                         plainDeclLane(static_cast<VarExpr*>(a->target.get()), a->value.get()))
                     cls = 6;
                 else if (a->target && a->target->kind == NK::VarExpr && !a->userOp && opEq(a->op, "=") &&
                          nativeDeclShape(static_cast<VarExpr*>(a->target.get()), a->value.get()))
@@ -16212,7 +16275,25 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
             ~BindRawG() { t->bindRawTails = saved; }
         } brg{&tctx(), tctx().bindRawTails};
         tctx().bindRawTails = bindTails.empty() ? nullptr : &bindTails;
-        Value rhs = evalValueOf(a->value.get()); // `$rx = /pat/` stores a Regex object
+        // `my $x = f($i) // next`: the store is guarded while the right side
+        // runs, so its `next` sets the loop's flag instead of throwing, and
+        // with the flag up nothing is stored — the store the exception
+        // skipped (#195; ctlOnStmtPath)
+        // (one initialization either way: a Value assigned after it was made
+        // cost every assignment here a move and a destructor)
+        signed char cs = a->coopStore;
+        if (cs < 0) a->coopStore = cs = coopStoreShape(a) ? 1 : 0;
+        auto guardedRhs = [&]() -> Value {
+            ExecContext& tc = tctx();
+            struct CoopStoreG {
+                ExecContext& t; const Expr* sa; uint64_t sf;
+                ~CoopStoreG() { t.coopAssign = sa; t.coopAssignFrame = sf; }
+            } csg{tc, tc.coopAssign, tc.coopAssignFrame};
+            tc.coopAssign = a; tc.coopAssignFrame = tc.frameTop;
+            return evalValueOf(a->value.get());
+        };
+        Value rhs = cs == 1 ? guardedRhs() : evalValueOf(a->value.get()); // `$rx = /pat/` stores a Regex object
+        if (cs == 1 && (tctx().loopCtl || tctx().returning)) return Value::any();
         // coercion-type container `my Int(Str) $x = '42'`: coerce the value to the target
         if (opEq(a->op, "=") && a->target->kind == NK::VarExpr) {
             const std::string& ct = static_cast<VarExpr*>(a->target.get())->d().declCoerce;
@@ -24225,6 +24306,54 @@ static Value slipOf(const Value& v) {
 // …the same answer for the native backend's `|` on a Hash (rtSlipShallow)
 Value rtSlipOf(const Value& v) { return slipOf(v); }
 
+// May `next`, `last`, `redo` or `return` written as an OPERAND take the
+// cooperative form — set a flag, hand back Any, let the statement loop see it
+// after the statement? Only when nothing between it and the end of the
+// statement does further work with that Any. The walk goes down from the
+// statement's own expression and may pass:
+//   - the RIGHT side of a short-circuit operator (`f($i) or next`): the
+//     operator hands back what its right side gave. Never the left side —
+//     `(return 5) or say 'x'` would go on to the `say`.
+//   - either branch of a ternary
+//   - the right side of an assignment whose store is guarded right now
+//     (ExecContext::coopAssign): `my $x = f($i) // next` stores nothing once
+//     the flag is up. Without the guard the store would take the Any: the
+//     typed `my Str $s = %h{$_} // next` (Font::AFM's glyph walk) died of it.
+// Anything else — a call argument (`g(1, return 'r')`: the call would run with
+// the flag set), an operand of `+` — throws, and the loop or routine catches
+// the exception as it does from a nested block. That costs 30–60 µs a jump on
+// macOS, against ~1 µs for the flag (#195).
+static bool ctlOnPath(const ExecContext& tc, const Expr* e, const Expr* u, int depth) {
+    for (; e && depth < 64; depth++) {
+        if (e == u) return true;
+        switch (e->kind) {
+            case NK::Binary: {
+                auto* b = static_cast<const Binary*>(e);
+                if (!shortCircuitWord(b->op)) return false;
+                e = b->rhs.get();
+                break;
+            }
+            case NK::Ternary: {
+                auto* t = static_cast<const Ternary*>(e);
+                if (ctlOnPath(tc, t->then.get(), u, depth + 1)) return true;
+                e = t->els.get();
+                break;
+            }
+            case NK::Assign: {
+                auto* a = static_cast<const Assign*>(e);
+                if (tc.coopAssign != a || tc.coopAssignFrame != tc.frameTop) return false;
+                e = a->value.get();
+                break;
+            }
+            default: return false;
+        }
+    }
+    return false;
+}
+static bool ctlOnStmtPath(const ExecContext& tc, const Expr* u) {
+    return ctlOnPath(tc, tc.curStmtExpr, u, 0);
+}
+
 // Where evalUnary answers an operator (Unary::evalPath). The arms at the top of
 // evalUnary each test `u->op` against their own spelling, so every operator
 // that has none of them — `++`, `--` and the plain prefixes — used to pay ~40
@@ -24277,44 +24406,10 @@ Value Interpreter::evalUnary(Unary* u) {
             }
         }
         Value v = u->operand ? eval(u->operand.get()) : Value::nil(); // bare `return` is Nil (NA-13)
-        // The cooperative form — set a flag, hand back Any, let the statement
-        // loop see it — is only right when nothing between this `return` and the
-        // statement does further work with that Any: the statement itself, or a
-        // short-circuit operator / ternary branch on the way to it (`… or return
-        // X`). As a CALL ARGUMENT (`g(1, return 'r')`, or paths' `nqp::if(…,
-        // return '')` inside an nqp::stmts) the call ran with the flag set and
-        // the callee's frame reset it, so the routine carried on to its end.
-        // Anything else unwinds, exactly as a return from a nested block does.
-        auto onStmtPath = [&]() -> bool {
-            const Expr* e = tctx().curStmtExpr;
-            for (int depth = 0; e && depth < 64; depth++) {
-                if (e == u) return true;
-                if (e->kind == NK::Binary) {
-                    auto* b = static_cast<const Binary*>(e);
-                    static const std::set<std::string> shortCircuit = {
-                        "or", "and", "||", "&&", "//", "andthen", "orelse", "notandthen", "xor", "^^"};
-                    if (!shortCircuit.count(b->op)) return false;
-                    e = b->rhs.get() == u || b->lhs.get() != u ? b->rhs.get() : b->lhs.get();
-                    if (e == u) return true;
-                    // the operand may itself be a chain: only the RHS can hold us
-                    e = b->rhs.get();
-                    continue;
-                }
-                if (e->kind == NK::Ternary) {
-                    auto* t = static_cast<const Ternary*>(e);
-                    if (t->then.get() == u || t->els.get() == u) return true;
-                    // descend into whichever branch is a candidate (both are
-                    // tried by kind; a `return` sits at most a few levels down)
-                    const Expr* nxt = nullptr;
-                    for (const Expr* br : {t->then.get(), t->els.get()})
-                        if (br && (br->kind == NK::Binary || br->kind == NK::Ternary)) { nxt = br; break; }
-                    e = nxt;
-                    continue;
-                }
-                return false;
-            }
-            return false;
-        };
+        // cooperative only where nothing after it uses the Any it hands back
+        // (ctlOnStmtPath); a CALL ARGUMENT (`g(1, return 'r')`, or paths'
+        // `nqp::if(…, return '')` inside an nqp::stmts) ran the call with the
+        // flag set, the callee's frame reset it, and the routine carried on
         const uint64_t lf = lexicalRoutineFrame();
         checkReturnInDynamicScope(lf);
         if (lf && lf < tctx().curRoutineFrame)
@@ -24322,21 +24417,18 @@ Value Interpreter::evalUnary(Unary* u) {
         if (!lf && tctx().curRoutineFrame != 0)   // …or in none at all (lexotic — see ReturnStmt)
             throwTypedV("X::ControlFlow::Return", {{"out-of-dynamic-scope", Value::boolean(false)}},
                         "Attempt to return outside of any Routine");
-        if (tctx().curRoutineFrame != 0 && tctx().frameTop == tctx().curRoutineFrame && onStmtPath()) {
+        if (tctx().curRoutineFrame != 0 && tctx().frameTop == tctx().curRoutineFrame && ctlOnStmtPath(tctx(), u)) {
             tctx().returning = true; tctx().returnV = std::move(v); // cooperative return
             return Value::any();
         }
         throw ReturnEx{v};
     }
     if (opEq(u->op, "last") || opEq(u->op, "next") || opEq(u->op, "redo")) {
-        // The cooperative form — set a flag, return, let the loop see it after
-        // the STATEMENT — is only right when the control word IS the statement.
-        // As an operand (`my Str $s = %h{$_} // next`, Font::AFM's glyph walk)
-        // the value it returns would finish the statement first: the typed
-        // assignment saw Any and died. So an operand throws, and the loop
-        // catches the exception exactly as it does from a nested block.
-        if (tctx().frameTop == tctx().curLoopFrame &&
-            u == tctx().curStmtExpr) {
+        // cooperative — a flag the loop sees after the STATEMENT — only where
+        // nothing after it uses the Any it hands back (ctlOnStmtPath); as any
+        // other operand it throws, and the loop catches the exception exactly
+        // as it does from a nested block
+        if (tctx().frameTop == tctx().curLoopFrame && ctlOnStmtPath(tctx(), u)) {
             tctx().loopCtl = opEq(u->op, "next") ? 1 : opEq(u->op, "last") ? 2 : 3; // cooperative
             tctx().loopCtlLabel = nullptr;
             return Value::any();

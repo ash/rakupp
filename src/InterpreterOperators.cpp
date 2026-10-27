@@ -1318,7 +1318,7 @@ static void swapExecContext(ExecContext& a, ExecContext& b) {
     swap(a.tapStack, b.tapStack); swap(a.makeTargets, b.makeTargets); swap(a.controlHandlers, b.controlHandlers); swap(a.pkgPrefix, b.pkgPrefix);
     swap(a.returning, b.returning); swap(a.returnV, b.returnV); swap(a.frameTop, b.frameTop); swap(a.redispatchFloor, b.redispatchFloor);
     swap(a.curRoutineFrame, b.curRoutineFrame); swap(a.curRoutineEnv, b.curRoutineEnv); swap(a.builtinFallback, b.builtinFallback); swap(a.loopCtl, b.loopCtl);
-    swap(a.curStmtExpr, b.curStmtExpr); swap(a.valContained, b.valContained); swap(a.metaForwarding, b.metaForwarding); swap(a.curLoopFrame, b.curLoopFrame);
+    swap(a.curStmtExpr, b.curStmtExpr); swap(a.coopAssign, b.coopAssign); swap(a.coopAssignFrame, b.coopAssignFrame); swap(a.valContained, b.valContained); swap(a.metaForwarding, b.metaForwarding); swap(a.curLoopFrame, b.curLoopFrame);
     swap(a.givenCtl, b.givenCtl); swap(a.givenV, b.givenV); swap(a.curGivenFrame, b.curGivenFrame); swap(a.curBlockVal, b.curBlockVal);
     swap(a.curRoutineVal, b.curRoutineVal); swap(a.callFrames, b.callFrames); swap(a.leaveResult, b.leaveResult); swap(a.leaveReturned, b.leaveReturned);
     swap(a.leaveReturnV, b.leaveReturnV); swap(a.leaveError, b.leaveError); swap(a.arityCallName, b.arityCallName); swap(a.wantLvalue, b.wantLvalue);
@@ -1339,7 +1339,7 @@ static void swapExecContext(ExecContext& a, ExecContext& b) {
     // a free list of unused frames — and either side may use it)
 }
 #if defined(__APPLE__) && defined(__aarch64__) && defined(_LIBCPP_VERSION) && !defined(RAKUPP_IN_AUDIT) && !defined(RAKUPP_STR_CENSUS)
-static_assert(sizeof(ExecContext) == 1496,
+static_assert(sizeof(ExecContext) == 1512,
               "ExecContext changed: list the new member in swapExecContext (Interpreter.cpp), "
               "then update this size");
 #endif

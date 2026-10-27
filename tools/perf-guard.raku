@@ -188,6 +188,19 @@ my %kernels =
                       }
                   }
                   say $n;',
+    # exprnext (2026-10-27, issue #195) — the same control words written as an
+    #   OPERAND: `my $x = f($i) // next`, `f($i) or next`, and `// return 0` in
+    #   a sub. Each threw a C++ exception, 30-65 us a jump on macOS, while the
+    #   statement form above took the flag. Written at the mainline, like
+    #   mainnext. Half the iterations skip: ~78 ms, and 6.5 s with the throw
+    #   (4083b26b).
+    exprnext  => 'sub f($i) { $i %% 2 ?? $i !! Nil }
+                  sub h($i) { my $x = f($i) // return 0; $x }
+                  my $a = 0; my $c = 0;
+                  for ^80_000 -> $i { my $x = f($i) // next; $a += $x }
+                  for ^80_000 -> $i { f($i) or next; $c++ }
+                  for ^80_000 -> $i { $a += h($i) }
+                  say $a, " ", $c;',
     # junction/junctionwide were added 2026-09-19 (JUNCTION-PLAN.md phase 1),
     # after the collapse loops turned out to visit every eigenstate even once the
     # verdict was settled — an `any` of 2000 with the match at the front cost the
@@ -244,7 +257,7 @@ class C@I@ { has $.a = @I@; method m($z) { $!a + $z div 2 } }
 # The kernel list, in one place: the run loop and the gate loop must agree, and
 # they used to carry two hardcoded copies of it.
 my @KERNELS = <fib asg loopsum hash strscan strpass subcall rats regexloop
-                method attrread privmeth multimeth multiwhere objnew mainnext mainwhen
+                method attrread privmeth multimeth multiwhere objnew mainnext mainwhen exprnext
                 junction junctionwide intcat prepend sharedappend substrloop loadtime>;
 
 # …and it must stay in step with %kernels. A kernel added to the hash but not to
