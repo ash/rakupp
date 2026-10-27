@@ -46,6 +46,13 @@ my $out = $p.out.slurp(:close); $p.err.slurp(:close);
 ok $out eq 'Shadow::DateTime,DateTime,Any,Mu|hi from Shadow::DateTime|42|1970|DateTime',
    "class DateTime is DateTime in a module (got '$out')";
 ok (try EVAL 'class A is A { }; 1') === Nil, '…while `class A is A` still refuses';
+# …and one OUTSIDE a package of the core class's own name works (Rakudo) or is
+# refused as not yet implemented (here) — it crashed, `is CORE::DateTime`
+my $q = run $*EXECUTABLE, '-e', 'class DateTime is CORE::DateTime { method hi { "hi" } }; print DateTime.new(0).hi',
+            :out, :err;
+my $qo = $q.out.slurp(:close); my $qe = $q.err.slurp(:close);
+ok $q.signal == 0 && ($qo eq 'hi' || ($q.exitcode != 0 && $qe.contains('X::NYI'))),
+   "a top-level core namesake works or is refused, never crashes (exit {$q.exitcode}, signal {$q.signal})";
 
 # ---- .wrap of a core method ----
 my $h = DateTime.^find_method('in-timezone').wrap(method (|c) { 'wrapped:' ~ callsame });

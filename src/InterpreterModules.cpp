@@ -4930,6 +4930,19 @@ static bool parentIsOuterType(std::unordered_map<std::string, std::shared_ptr<Cl
     auto it = classes.find(parentName);
     return it != classes.end() ? it->second != ci : isKnownTypeName(parentName);
 }
+// …and one OUTSIDE a package that takes a core type's own name — `class
+// DateTime is DateTime`, `class Int is CORE::Int` at the top level — would be a
+// second type of one name, which this engine's types (known by their names)
+// cannot be yet: refused, where it crashed or claimed to inherit from itself.
+// Rakudo accepts it; inside a package it works here too.
+static void refuseCoreNamesake(Interpreter& I, std::unordered_map<std::string, std::shared_ptr<ClassInfo>>& classes,
+                               const std::string& clsName, const std::string& parentName) {
+    if (clsName != parentName || classes.count(parentName) || !isKnownTypeName(parentName)) return;
+    I.throwTypedV("X::NYI", {{"feature", Value::str("A class named like the core " + parentName + " it inherits from, outside a package")}},
+                  "A class named like the core " + parentName + " it inherits from, outside a package, not yet "
+                  "implemented. Sorry. Declare it inside one (`unit module M; class " + parentName + " is " +
+                  parentName + "`), or give it a name of its own.");
+}
 
 static void methodTermJoinsClass(std::unordered_map<std::string, std::shared_ptr<ClassInfo>>& classes,
                                  const std::string& pkgPrefix, const std::string& name, const Value& code) {
@@ -6558,6 +6571,7 @@ static void methodTermJoinsClass(std::unordered_map<std::string, std::shared_ptr
                 const bool selfNamed = parentName == cd->name && !cd->name.empty() &&
                                        parentName == cd->parent && !paramSelf;
                 const bool outerType = selfNamed && parentIsOuterType(classes_, cd, parentName, clsName, ci);
+                if (!cd->isRole) refuseCoreNamesake(*this, classes_, clsName, parentName);
                 if (selfNamed && !outerType)
                     throwTyped(cd->isRole ? "X::InvalidType" : "X::Inheritance::SelfInherit",
                         {{"name", cd->name}},

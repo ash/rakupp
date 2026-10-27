@@ -684,7 +684,8 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
             for (auto& kv : *inv.hash()) t = rtAdd(t, kv.second);
             return t;
         }
-        if (m == "elems") return Value::integer((long long)inv.hash()->size());
+        // (an engine object kept in a hash is ONE thing: `DateTime.new(0).elems` is 1)
+        if (m == "elems") return Value::integer(opaqueHashKind(inv.hashKind) ? 1 : (long long)inv.hash()->size());
     }
 
     // numeric -> Complex coercion

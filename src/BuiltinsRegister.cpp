@@ -646,20 +646,9 @@ void Interpreter::registerBuiltins() {
         // just calls the enclosing routine again with the new arguments
         // (control.pm6: `$caller(|c)`) — Timezones::ZoneInfo's `sub
         // timezone-data` resolves a link with `samewith $_`. ENCLOSING is
-        // lexical, as Rakudo walks ctxouter: in a block another routine runs,
-        // the running routine is that other one, not the one to call again.
-        const Value* r = nullptr;
-        for (Env* e = I.tctx().cur.get(); e && !r; e = e->parent.get()) {
-            if (!e->routineFrame) continue;
-            for (auto it = I.tctx().callFrames.rbegin(); it != I.tctx().callFrames.rend(); ++it)
-                if (it->calleeEnv == e) {
-                    if (it->code && it->code->t == VT::Code && it->code->code() && !it->code->code()->ci().isBlock)
-                        r = it->code;
-                    break;
-                }
-        }
-        if (!r) r = I.tctx().curRoutineVal;
-        if (r && r->t == VT::Code && r->code()) {
+        // lexical, as Rakudo walks ctxouter (lexicalRoutineVal): in a block
+        // another routine runs, the running routine is that other one.
+        if (const Value* r = I.lexicalRoutineVal(); r && r->t == VT::Code && r->code()) {
             Value routine = *r;
             return I.callCallable(routine, a, nullptr, /*ownFrame=*/false, /*arityCheck=*/true);
         }

@@ -294,6 +294,8 @@ struct Types {
         if (t.empty()) return "Any";
         if (depth > 16) return "";
         if (t == "UInt") { constrained = true; return "Int"; }
+        // `CORE::Int` is the setting's Int, never a type of the unit's own name
+        if (t.size() > 6 && t.compare(0, 6, "CORE::") == 0) return coreLattice().count(t.substr(6)) ? t.substr(6) : "";
         auto ut = unit.find(t);
         if (ut != unit.end()) {
             const UnitType& u = ut->second;
@@ -1229,12 +1231,12 @@ struct Checker {
             const std::string base = p.sigil == '@' ? "Positional" : "Associative";
             if (p.type.empty()) return base;
             bool elemConstrained = false;
-            std::string elem = nativeKind(p.type) ? p.type : T.nominal(p.type, elemConstrained);
+            std::string elem = nativeKind(p.type) ? p.type : T.nominal(p.typeIsSetting ? "CORE::" + p.type : p.type, elemConstrained);
             if (elem.empty() || elemConstrained) return "";
             return base + "[" + elem + "]";
         }
         if (p.sigil == '&') return p.type.empty() ? "Callable" : "";
-        return T.nominal(p.type, constrained);
+        return T.nominal(p.typeIsSetting ? "CORE::" + p.type : p.type, constrained);
     }
 
     // Rakudo's dispatch_info for one candidate; false for a parameter beyond this pass.
@@ -1402,7 +1404,7 @@ struct Checker {
             if (!p.type.empty() && !p.coerce && (p.sigil == '$' || p.sigil == '\\')) {
                 auto ut = T.unit.find(p.type);
                 if (p.type == "UInt" || (ut != T.unit.end() && ut->second.kind == 's')) {
-                    std::string base = T.nominal(p.type, constrained);
+                    std::string base = T.nominal(p.typeIsSetting ? "CORE::" + p.type : p.type, constrained);
                     if (!base.empty()) {
                         auto q = signatureParamCopy(p);
                         q->type = base;

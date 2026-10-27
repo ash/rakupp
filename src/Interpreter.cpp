@@ -3853,7 +3853,10 @@ static void deproxyElems(Value& a) {
 
 Value rtArrayVal(const Value& v) {
     // an ITEMIZED hash (`$%h`, `$(%h)`) is one element, not a spread of pairs
-    if (v.t == VT::Hash && v.hash() && v.itemized) { Value a = Value::array(); a.arr()->push_back(v); return a; }
+    // (…and so is an engine object kept in a hash: `my @a = DateTime.new(0)`)
+    if (v.t == VT::Hash && v.hash() && (v.itemized || opaqueHashKind(v.hashKind))) {
+        Value a = Value::array(); a.arr()->push_back(v); return a;
+    }
     // `my @a = %h` / `my @a = set(1)` is an ARRAY of the pairs — hashToPairs
     // builds the List form its other callers want, so untag it here (LA-04).
     if (v.t == VT::Hash && v.hash()) { Value a = hashToPairs(v); a.isList = false; return a; }
@@ -4045,7 +4048,10 @@ Value coerceArray(const Value& v, bool nativeTarget) {
     // `my Bool @results` and then counts on `?@results` seeing one element
     // (Rakudo: Array[Bool].new(Bool)). `()` still empties. (issue #37)
     if (v.t == VT::Nil) { Value a = Value::array(); a.arr()->push_back(Value::typeObj("Any")); return a; }
-    if (v.t == VT::Hash && v.hash() && v.itemized) { Value a = Value::array(); a.arr()->push_back(v); return a; }
+    // (…and so is an engine object kept in a hash: `my @a = DateTime.new(0)`)
+    if (v.t == VT::Hash && v.hash() && (v.itemized || opaqueHashKind(v.hashKind))) {
+        Value a = Value::array(); a.arr()->push_back(v); return a;
+    }
     // `my @a = %h` / `my @a = set(1)` is an ARRAY of the pairs — hashToPairs
     // builds the List form its other callers want, so untag it here (LA-04).
     if (v.t == VT::Hash && v.hash()) { Value a = hashToPairs(v); a.isList = false; return a; }

@@ -179,7 +179,14 @@ struct ClosureTemplate {
     bool rakuAst;
     IStr declFile;
     std::string pkgPrefix;
+    bool routineMagic;   // the block mentions `&?ROUTINE` or `samewith` (recordLexicalRoutine)
 };
+// …which a scan of the block answers, nested blocks included
+bool mentionsRoutineMagic(const BlockExpr* be) {
+    NameScan ns;
+    for (auto& st : be->body) ns.stmt(st.get());
+    return ns.refs.count("&?ROUTINE") || ns.refs.count("samewith") || ns.refs.count("&samewith");
+}
 struct ClosureTmplFreeInit {
     ClosureTmplFreeInit() {
         g_closureTmplFree.store([](void* p) { delete static_cast<ClosureTemplate*>(p); }, std::memory_order_release);
@@ -200,10 +207,14 @@ Value Interpreter::makeClosure(BlockExpr* be) {
     const bool cacheable = !be->isMethodTerm;
     const IStr file = declFileNowI();
     auto* tmpl = cacheable ? static_cast<ClosureTemplate*>(be->closureTmpl.load(std::memory_order_acquire)) : nullptr;
+    bool routineMagic;
     if (tmpl && tmpl->langRev == langRev_ && tmpl->rakuAst == rakuAstPragma_ && tmpl->declFile == file &&
-        tmpl->pkgPrefix == tctx().pkgPrefix)
+        tmpl->pkgPrefix == tctx().pkgPrefix) {
         code.code()->info = tmpl->code;
+        routineMagic = tmpl->routineMagic;
+    }
     else {
+        routineMagic = mentionsRoutineMagic(be);
         code.code()->ciM().params = &be->params;
         code.code()->ciM().body = &be->body;
         code.code()->ciM().langRev = langRev_;
@@ -270,11 +281,15 @@ Value Interpreter::makeClosure(BlockExpr* be) {
             code.code()->ciM().hadSig = true;
         }
         if (cacheable && !tmpl) {
-            auto* nt = new ClosureTemplate{code.code()->info, langRev_, rakuAstPragma_, file, tctx().pkgPrefix};
+            auto* nt = new ClosureTemplate{code.code()->info, langRev_, rakuAstPragma_, file, tctx().pkgPrefix,
+                                           routineMagic};
             void* expect = nullptr;
             if (!be->closureTmpl.compare_exchange_strong(expect, nt, std::memory_order_acq_rel)) delete nt;
         }
     }
+    // a block that asks which routine it is in may run after that routine has
+    // returned, or on another thread: the routine's scope keeps the answer
+    if (routineMagic) recordLexicalRoutine();
     // An anonymous `sub (…) {…}` or `-> … {…}` carries parameter traits just as a
     // declared sub does, and reaches none of the declaration paths: the trait on
     // `sub (Str :$foo is option(*.flip)) {}` — a converter handed to Getopt::Long

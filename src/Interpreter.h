@@ -488,6 +488,10 @@ struct EnvExtras {
     // `given @a` / `with @a`: `$_` IS the Array, not a Scalar holding it, so
     // assigning the topic list-assigns @a (`with @a { .=uc }`, inplace.t)
     bool topicBindsArray = false;
+    // A ROUTINE scope's own routine, when a block made in it mentions
+    // `&?ROUTINE` or `samewith` and may run after it returns or on another
+    // thread (recordLexicalRoutine / lexicalRoutineVal)
+    Value lexRoutine;
     // rw-param write-through: paramName → (caller's argument expr, caller env).
     // An assignment to the param writes through the caller's lvalue IMMEDIATELY
     // (so the caller sees it mid-call); rwSynced records the last value pushed
@@ -2731,9 +2735,9 @@ public:
     Value callInvocantFirst(const Value& code, const Value& inv, const ValueList& args,
                             Expr* invExpr, const std::vector<ExprPtr>* argExprs);
     Expr* liveInvocantExpr(const Value& inv);   // …tctx()'s, when it is this invocant's
-    // a class DERIVING DateTime: its operators and the DateTimes its methods
-    // answer go by Rakudo's definitions (InterpreterCalls.cpp)
-    std::optional<Value> derivedDateTimeArith(const std::string& op, const Value& l, const Value& r);
+    // a DateTime against a number, and a class DERIVING DateTime: operators and
+    // the DateTimes its methods answer go by Rakudo's definitions (InterpreterCalls.cpp)
+    std::optional<Value> dateTimeArith(const std::string& op, const Value& l, const Value& r);
     Value rewrapDerivedDateTime(const Value& inv, const std::string& m, Value r);
     // Could a method call by this NAME hand back a CONTAINER? Only if some type
     // declares an `is rw` public attribute of that name, or a routine of that
@@ -2854,6 +2858,7 @@ public:
     // `@a.grep(PRED)`: @a's storage and the positions grep keeps (its containers)
     std::shared_ptr<std::pair<PRef<ValueList>, std::vector<size_t>>> grepArrayView(Expr* e);
     std::shared_ptr<std::pair<PRef<ValueList>, std::vector<size_t>>> sliceArrayView(Expr* e);   // `for @a[^2]`
+    std::shared_ptr<std::pair<PRef<ValueList>, std::vector<size_t>>> endsArrayView(Expr* e);    // `@a.head(2)`, `.first`
     // The array behind `for @a.values` / `for @a.list` — the array twin of
     // valuesAliasSource; likewise.
     PRef<ValueList> valuesArrayAlias(Expr* listExpr);
@@ -3242,6 +3247,8 @@ public:
     bool subsetMatches(const std::string& name, const Value& v, int depth = 0);
     bool typeOrSubsetMatches(const Value& v, const std::string& type); // typeMatchesArg + subsets
     uint64_t lexicalRoutineFrame(); // the frame a `return` written here belongs to
+    const Value* lexicalRoutineVal();   // …and that routine itself: `&?ROUTINE`, what `samewith` calls
+    void recordLexicalRoutine();        // (a block that asks for it, as it is made)
     // Nested BEGIN/CHECK/INIT phasers run before the code around them, in a
     // STATIC environment of the scopes that enclose them (the lexicals exist,
     // unset, as they do at Rakudo's compile time). The first run of each such

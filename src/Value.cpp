@@ -2196,4 +2196,21 @@ static int valueCmpImpl(const Value& a, const Value& b) {
     return x < y ? -1 : x > y ? 1 : 0;
 }
 
+// An engine OBJECT kept in a hash Value — a DateTime, a Lock, a Promise, a Pod
+// block: neither Iterable nor Associative in Rakudo, so it lists as itself and
+// is one element. The kinds that ARE a collection (Map, Stash, Set, Bag, Mix,
+// Capture, IO::Path::Parts, the iterators, Proxy and Scalar) are not here.
+bool opaqueHashKind(const IStr& k) {
+    if (k.empty()) return false;
+    static const std::unordered_set<std::string> kOpaque = {
+        "Pod", "DateTime", "Date", "Promise", "Vow", "Channel", "Lock", "LockCondition", "Semaphore",
+        "Supplier", "Supply", "Tap", "Cancellation", "Scheduler", "Thread", "Proc", "Proc::Async", "ProcIn",
+        "Socket", "AsyncSocket", "FileHandle", "IO", "IO::Special", "CatHandle", "Failure", "Distribution",
+        "VM", "Kernel", "Distro", "Compiler", "Encoding", "Encoder", "Decoder", "Collation", "CompUnit",
+        "CompUnit::Handle", "DependencySpec", "WrapHandle", "Format", "StrDistance", "Parameter", "Signature",
+        "Attribute", "Label", "CallFrame", "BacktraceFrame", "ObjAt", "Variable", "Archetypes", "REPL",
+        "HyperConfiguration", "Pointer"};
+    return kOpaque.count(k.str()) != 0;
+}
+
 } // namespace rakupp

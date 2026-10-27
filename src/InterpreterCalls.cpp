@@ -211,25 +211,37 @@ Expr* Interpreter::liveInvocantExpr(const Value& inv) {
     return nullptr;
 }
 
-// An object of a class DERIVING DateTime (DateTime::Timezones' own) takes
-// Rakudo's operators as they are written, through its OWN methods: a move is
-// `$a.new($a.Instant ± $b).in-timezone($a.timezone)`, so its class builds the
-// answer, and a difference or a comparison goes by the Instants. The native
-// arm of evalBinary numified it: `$dt - $day` was a Num. nullopt when neither
-// operand is one, or the operator is none of these.
-std::optional<Value> Interpreter::derivedDateTimeArith(const std::string& op, const Value& l, const Value& r) {
+// A DateTime meeting a plain NUMBER is its Instant, as in Rakudo: `$dt + 60`
+// is Instant:70, `$dt * 2` a Num, `$dt == 10` asks the Instant. The native arm
+// of evalBinary numified it to 0 (and `+` moved it by seconds); only a
+// Duration moves one. And an object of a class DERIVING DateTime
+// (DateTime::Timezones' own) takes Rakudo's operators as they are written,
+// through its OWN methods: a move is `$a.new($a.Instant ± $b).in-timezone(
+// $a.timezone)`, so its class builds the answer, and a difference or a
+// comparison goes by the Instants — `$dt - $day` was a Num. nullopt when the
+// operands are none of these, or the operator is not a numeric one.
+std::optional<Value> Interpreter::dateTimeArith(const std::string& op, const Value& l, const Value& r) {
+    static const std::unordered_set<std::string> kNumeric = {
+        "+", "-", "*", "/", "%", "**", "==", "!=", "<", ">", "<=", ">=", "<=>"};
     auto dtObj = [](const Value& v) {
         return v.t == VT::Object && v.obj() && v.obj()->cls && v.obj()->boxed().hashKind == "DateTime";
     };
+    auto isDT = [&](const Value& v) { return (v.t == VT::Hash && v.hashKind == "DateTime") || dtObj(v); };
+    auto real = [](const Value& v) { return v.t == VT::Int || v.t == VT::Num || v.t == VT::Rat; };
+    auto number = [&](const Value& v) { return real(v) && v.hashKind != "Duration" && v.hashKind != "Instant"; };
+    if (!kNumeric.count(op)) return std::nullopt;
+    if ((isDT(l) && number(r)) || (isDT(r) && number(l))) {
+        const Value a = isDT(l) ? methodCall(l, "Instant", ValueList{}) : l;
+        const Value c = isDT(r) ? methodCall(r, "Instant", ValueList{}) : r;
+        Value res = applyBinOp(op, a, c);
+        tagTemporal(op, a, c, res);   // (as evalBinary's Instant algebra tags it)
+        return res;
+    }
     const bool lo = dtObj(l), ro = dtObj(r);
     if (!lo && !ro) return std::nullopt;
-    auto isDT = [&](const Value& v) { return v.hashKind == "DateTime" || dtObj(v); };
-    auto real = [](const Value& v) { return v.t == VT::Int || v.t == VT::Num || v.t == VT::Rat; };
     // the Instant as a bare number, as the native arm reads it, so that what
     // is computed is tagged only once, at the end
     auto inst = [&](const Value& v) { Value i = methodCall(v, "Instant", ValueList{}); i.hashKind = ""; return i; };
-    const bool addSub = op == "+" || op == "-";
-    // a Duration moves one (Rakudo has no DateTime + Real) …
     auto move = [&](const Value& dt, const Value& by, const std::string& how) {
         Value b = by; b.hashKind = "";
         Value at = applyArith(how, inst(dt), b);
@@ -238,14 +250,8 @@ std::optional<Value> Interpreter::derivedDateTimeArith(const std::string& op, co
         Value moved = methodCall(Value::typeObj(dt.obj()->cls->name), "new", ValueList{at});
         return methodCall(moved, "in-timezone", ValueList{methodCall(dt, "timezone", ValueList{})});
     };
-    if (addSub && lo && real(r) && r.hashKind == "Duration") return move(l, r, op);
+    if ((op == "+" || op == "-") && lo && real(r) && r.hashKind == "Duration") return move(l, r, op);
     if (op == "+" && ro && real(l) && l.hashKind == "Duration") return move(r, l, "+");
-    // …and a plain Real meets the Instant: `$dt + 60` is Instant:70 in Rakudo
-    if (addSub && ((lo && real(r) && r.hashKind.empty()) || (ro && real(l) && l.hashKind.empty() && op == "+"))) {
-        Value at = lo ? applyArith(op, inst(l), r) : applyArith("+", l, inst(r));
-        at.hashKind = "Instant";
-        return identify(at);
-    }
     if (!isDT(l) || !isDT(r)) return std::nullopt;
     if (op == "-") {
         Value diff = applyArith("-", inst(l), inst(r));
@@ -253,9 +259,8 @@ std::optional<Value> Interpreter::derivedDateTimeArith(const std::string& op, co
         diff.hashKind = "Duration";
         return identify(diff);
     }
-    if (op == "<" || op == ">" || op == "<=" || op == ">=" || op == "==" || op == "!=" || op == "<=>" || op == "cmp")
-        return applyBinOp(op, inst(l), inst(r));
-    return std::nullopt;
+    if (op == "+" || op == "*" || op == "/" || op == "%" || op == "**") return std::nullopt;
+    return applyBinOp(op, inst(l), inst(r));
 }
 
 // A DateTime that a subclassed DateTime's own methods answer is one of the
@@ -1769,6 +1774,96 @@ Interpreter::grepArrayView(Expr* e) {
     for (size_t i = 0; i < view->first->size(); i++)
         if (matcherAccepts(*this, (*view->first)[i], pv)) view->second.push_back(i);
     return view;
+}
+
+// …and `@a.first`, `@a.head`, `@a.tail` (or over `@a.grep(…)`): Rakudo hands
+// back the element's own container, which the interpreter binds (endsArrayView).
+// `.first(:k)`, `:p` and `:kv` answer something new. A test of the AST alone,
+// kept in the runtime: the parser's sigilless declarator asks it, and so does a
+// `for` in a binary that carries no parser.
+bool endsElementCall(const Expr* rv) {
+    if (!rv || rv->kind != NK::MethodCall) return false;
+    auto* mc = static_cast<const MethodCall*>(rv);
+    if (mc->meta || mc->hyper || mc->methodExpr || !mc->inv) return false;
+    if (mc->method == "first") {
+        for (auto& x : mc->args)
+            if (x && x->kind == NK::Pair && static_cast<const PairExpr*>(x.get())->colonForm &&
+                static_cast<const PairExpr*>(x.get())->key != "end")
+                return false;
+    }
+    else if ((mc->method != "head" && mc->method != "tail") || !mc->args.empty()) return false;
+    const Expr* src = mc->inv.get();
+    if (src->kind == NK::MethodCall && static_cast<const MethodCall*>(src)->method == "grep")
+        src = static_cast<const MethodCall*>(src)->inv.get();
+    return src && src->kind == NK::VarExpr && !static_cast<const VarExpr*>(src)->name.empty() &&
+           static_cast<const VarExpr*>(src)->name[0] == '@';
+}
+
+// `.head`, `.tail` and `.first` over a real Array hand back the elements'
+// CONTAINERS, as Rakudo's do: the positions they name, for a `for` that aliases
+// them and a binding that does (`my \x = @a.first`). The array is an
+// `@`-variable or grep's view of one (`@a.grep(* > 1).first`); `head`/`tail`
+// take a count safe to evaluate again, `first` a matcher (called per element,
+// as grep's is) and `:end`. Any other adverb answers something new; no element
+// at all leaves it to the copying path, as does everything else.
+std::shared_ptr<std::pair<PRef<ValueList>, std::vector<size_t>>>
+Interpreter::endsArrayView(Expr* e) {
+    using View = std::pair<PRef<ValueList>, std::vector<size_t>>;
+    if (!e || e->kind != NK::MethodCall) return nullptr;
+    auto* mc = static_cast<MethodCall*>(e);
+    const std::string& m = mc->method;
+    if ((m != "head" && m != "tail" && m != "first") || mc->hyper || mc->meta || mc->methodExpr || !mc->inv)
+        return nullptr;
+    std::shared_ptr<View> src;
+    if (mc->inv->kind == NK::VarExpr) {
+        auto* sv = static_cast<VarExpr*>(mc->inv.get());
+        if (sv->name.size() < 2 || sv->name[0] != '@' || sv->declare) return nullptr;
+        Value* av = tctx().cur->find(sv->name);
+        if (!av || av->t != VT::Array || !av->arr() || av->isList || av->ext() || av->shape()) return nullptr;
+        src = std::make_shared<View>();
+        src->first = av->arrS();
+        for (size_t i = 0; i < src->first->size(); i++) src->second.push_back(i);
+    }
+    else src = grepArrayView(mc->inv.get());
+    if (!src) return nullptr;
+    const std::vector<size_t>& pos = src->second;
+    auto view = std::make_shared<View>();
+    view->first = src->first;
+    if (m != "first") {
+        size_t n = 1;
+        if (!mc->args.empty()) {
+            if (mc->args.size() != 1 || !pureSubscript(mc->args[0].get())) return nullptr;
+            Value nv = eval(mc->args[0].get());
+            if (nv.t != VT::Int || nv.big() || nv.i < 0) return nullptr;
+            n = std::min((size_t)nv.i, pos.size());
+        }
+        else if (pos.empty()) return nullptr;
+        else n = 1;
+        if (m == "head") view->second.assign(pos.begin(), pos.begin() + n);
+        else view->second.assign(pos.end() - n, pos.end());
+        return view;
+    }
+    Value pred = Value::any();
+    bool fromEnd = false;
+    for (auto& ae : mc->args) {
+        // (a NAMED argument is told by its spelling: evaluated, `:k` is a Pair
+        // that would be taken for the matcher)
+        if (ae && ae->kind == NK::Pair && static_cast<PairExpr*>(ae.get())->colonForm) {
+            auto* pe = static_cast<PairExpr*>(ae.get());
+            if (pe->key != "end" || pe->keyExpr) return nullptr;   // :k, :p, :kv answer something new
+            Value fa = eval(ae.get());
+            fromEnd = !fa.pairVal() || fa.pairVal()->truthy();
+        }
+        else pred = eval(ae.get());
+    }
+    for (size_t k = 0; k < pos.size(); k++) {
+        size_t i = pos[fromEnd ? pos.size() - 1 - k : k];
+        if (pred.t == VT::Any || matcherAccepts(*this, (*view->first)[i], pred)) {
+            view->second.push_back(i);
+            return view;
+        }
+    }
+    return nullptr;
 }
 
 // `for $c, $m, $y, $k { … }` — every item is a CONTAINER, so the topic aliases it
