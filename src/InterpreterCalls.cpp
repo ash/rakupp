@@ -2790,6 +2790,15 @@ Value Interpreter::makePairCellProxy(PRef<Value> cell) {
     return proxy;
 }
 
+// A package global as the package's Stash holds it. An `our` variable's slot
+// is its package's one cell (ourCell), and a cell HOLDER copied into a hash
+// is inert: `Circle::{'$pi'}` read (Any) where `$Circle::pi` read 3.14
+// (#202). The Stash holds the container instead, as Rakudo's does — a read
+// sees the variable now, and `Circle::{'$pi'} = 3` assigns to it.
+Value Interpreter::stashEntryOf(const Value& slot) {
+    return slot.isCell() ? makeSharedCellProxy(slot.cellS()) : slot;
+}
+
 Value Interpreter::makeArraySlotProxy(PRef<ValueList> arr, size_t idx, const std::string& nativeT) {
     // Built once. STORE carries a two-parameter signature so codeArity sends it
     // the proxy alongside the value (proxyStore's `sub ($, $v)` spelling); a

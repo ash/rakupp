@@ -10872,7 +10872,7 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
                 std::string p, k;
                 if (splitPkgSymbol(kv.first, p, k) && p == pkg &&
                     k.find("::") == std::string::npos)
-                    (*stash)[k] = kv.second;
+                    (*stash)[k] = stashEntryOf(kv.second);
             }
         }
         // …and the packages nested INSIDE this one (`class A { class B {} }` —

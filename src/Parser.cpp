@@ -13892,6 +13892,7 @@ StmtPtr Parser::parseSubset() {
         }
         if (isIdent("is")) {
             advance();
+            if (isIdent("export")) sd->isExport = true;
             if (isKind(Tok::Ident)) advance();
             if (isKind(Tok::LParen) && !cur().spaceBefore) {
                 int d = 0;
