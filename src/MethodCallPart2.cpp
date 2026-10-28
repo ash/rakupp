@@ -7240,8 +7240,10 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
                     }
                     // a PUBLIC attribute's auto-generated accessor is a method too
                     // (Rakudo lists it; Data::Dump renders `method public () …`)
+                    // once the base compose made it: a metaclass `compose` before its
+                    // `callsame` sees declared methods only (AttrX::Lazy relies on it)
                     for (auto& at : c->attrs) {
-                        if (!at.pub || c->methods.count(at.name)) continue;
+                        if (!at.pub || c->awaitingCompose || c->methods.count(at.name)) continue;
                         if (local && !seen.insert(at.name).second) continue;
                         if (names) { out.arr()->push_back(Value::str(at.name)); continue; }
                         Value stub; stub.t = VT::Code; stub.setCode(makePayload<Callable>());
