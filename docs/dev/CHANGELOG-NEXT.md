@@ -23,7 +23,8 @@ cb7933f3 (issue #204); cb5b360a, d5184116 and 50aebf54; 67a2fe76 (issue
 fc262224 (issue #195); 0f19ab0e (issue #208); f483f0e6 (issue #192);
 b05e989b (issue #193); 17e33a45 (issue #184); 5f87f445; 0e44c5a6 (issue
 #211); 8c871a25; 079427c0 (issue #175); 357cb4bb (issue #187); 6eddeeb5
-(issue #188); c50eb3b8 (issue #146); 09018c67 (issue #77).*
+(issue #188); c50eb3b8 (issue #146); 09018c67 (issue #77); 099a2055 (issue
+#205).*
 
 ---
 
@@ -864,6 +865,11 @@ does not.
   "A method 'bar' already exists"; AttrX::Lazy 0.0.3 now passes its three
   test files and installs. t/regression/how-compose-sees-declared-methods.raku
   agrees with Rakudo 2026.09.
+- **A LEAVE that dies while a method unwinds leaves its caller's scope in
+  place** (099a2055; issue #205). The caller's CATCH ran in the method's scope
+  and died with X::Undeclared naming the CATCH's own variable; it handles
+  the LEAVE's error now, as a sub's caller already did.
+  t/regression/method-leave-dies-unwinding.raku agrees with Rakudo 2026.09.
 
 ### Left open
 
@@ -888,6 +894,8 @@ does not.
 - `$in.VAR.^name` of a typed `$` parameter says Scalar where Rakudo names
   the type, and `loop(…)` calling a `&loop` parameter is refused as a
   malformed loop (c50eb3b8). TODO-FOLLOW-UPS.md has both.
+- A `let` in a routine whose LEAVE dies while it unwinds is not undone,
+  where Rakudo restores it (099a2055). TODO-FOLLOW-UPS.md has it.
 
 - `--exe` checks no parameter's sigil, `%` included: a compiled `sub
   p(%h)` given `(a => 1, b => 2)` holds the List, as it did before
