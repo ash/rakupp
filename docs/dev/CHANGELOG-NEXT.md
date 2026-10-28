@@ -21,7 +21,8 @@ cb7933f3 (issue #204); cb5b360a, d5184116 and 50aebf54; 67a2fe76 (issue
 #198) and 4af53b07; 3ddcd58b (issue #207); 2b9494ae (issue #206);
 62e16b9e; fb9009bc (issue #56); 3c80bc24; 48b76d56, a348489b, aa0f3618 and
 fc262224 (issue #195); 0f19ab0e (issue #208); f483f0e6 (issue #192);
-b05e989b (issue #193); 17e33a45 (issue #184); 5f87f445.*
+b05e989b (issue #193); 17e33a45 (issue #184); 5f87f445; 0e44c5a6 (issue
+#211).*
 
 ---
 
@@ -524,6 +525,12 @@ plain before 500c29e2 and native from it, unless they say otherwise.
   answer as Rakudo's. An untyped variable's aliases cost what they did
   (within 3%); a typed one's are checked: 300k `f($a)` into an `is rw`
   parameter 94 → 130 ms, `:=` and store 70 → 115 ms.
+- **A module keeps its own `is` trait after `use NativeLibs`** (0e44c5a6;
+  issue #211). A module that declared `multi trait_mod:<is>(Routine,
+  :$zapped!)` and then imported NativeLibs lost `is zapped` without a word:
+  the `&trait_mod:<is>` NativeLibs' EXPORT sub hands back was bound over the
+  module's own group. A multi an EXPORT sub returns joins a same-named group
+  the importing scope declared now, as an exported `multi` already did.
 
 ### Fixed: crashes
 
@@ -808,6 +815,16 @@ does not.
   `-c` scan of 3,736 files (Roast, the modules installed for both engines,
   Rakudo's core setting, this repository) finds no other file refused.
   t/regression/issue-206-text-after-block.raku agrees with Rakudo 2026.09.
+- **NativeLibs loads quietly beside Cro** (0e44c5a6; issue #211). A Cro
+  app using DBIish printed "Module NativeLibs EXPORT failed: No such method
+  'dispatcher' for invocant of type 'Any'" once per `use NativeLibs`:
+  its EXPORT looks for the `is native` candidate among
+  `&trait_mod:<is>.candidates`, which listed only Cro::HTTP::Router's `is
+  query`/`is auth` multis once they were in scope. A user `trait_mod:<is>`
+  group lists the engine's own trait candidates ahead of its own now, as a
+  Rakudo multi joins CORE's group, each with that group as its
+  .dispatcher. t/regression/issue-211-trait-is-candidates.raku agrees with
+  Rakudo 2026.09.
 
 ### Left open
 
@@ -819,6 +836,13 @@ does not.
   2`, `($a, 2)[0] = 'l'`, a Pair's value, an `is rw` routine's tail — and a
   `where` clause is not checked through an alias (5f87f445).
   TODO-FOLLOW-UPS.md has each.
+- Issue #211's other two reports are open: DBIish's in-memory SQLite
+  failing in the app's `init-db`, and Cro's "Parameter type
+  SessionStore::Session not allowed on a request unpack parameter", neither
+  reproduced without the reporter's code. A module still sees what the
+  program imported before it (Cro's traits inside NativeLibs), and a
+  signature smartmatch ignores the return type (`:(Int --> Nil) ~~ :(Int)`
+  is True, Rakudo False). TODO-FOLLOW-UPS.md has each (0e44c5a6).
 
 - `--exe` checks no parameter's sigil, `%` included: a compiled `sub
   p(%h)` given `(a => 1, b => 2)` holds the List, as it did before
