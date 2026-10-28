@@ -8609,7 +8609,10 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
             return Value::boolean((n.size() > 1 && n[1] == '*') || n == "$/" || n == "$!");
         }
         if (m == "default") { auto it = inv.hash()->find("default"); return it != inv.hash()->end() ? it->second : Value::any(); }
-        if (m == "of")      { auto it = inv.hash()->find("default"); return (it != inv.hash()->end() && it->second.t == VT::Type) ? it->second : Value::typeObj("Mu"); }
+        if (m == "of") {   // (an element's Scalar knows its type apart from its default)
+            if (auto oi = inv.hash()->find("of"); oi != inv.hash()->end()) return oi->second;
+            auto it = inv.hash()->find("default"); return (it != inv.hash()->end() && it->second.t == VT::Type) ? it->second : Value::typeObj("Mu");
+        }
         auto vi = inv.hash()->find("value");
         if (vi != inv.hash()->end()) return methodCall(vi->second, m, std::move(args), rwArgs);
     }

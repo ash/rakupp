@@ -1329,7 +1329,7 @@ static void swapExecContext(ExecContext& a, ExecContext& b) {
     swap(a.lastLvalueAttrType, b.lastLvalueAttrType); swap(a.lastLvalueAttrWhere, b.lastLvalueAttrWhere); swap(a.lastLvalueAttrDefault, b.lastLvalueAttrDefault); swap(a.lastLvalueAttrCls, b.lastLvalueAttrCls); swap(a.lastLvalueAttr, b.lastLvalueAttr); swap(a.lastLvalueElemType, b.lastLvalueElemType); swap(a.lastLvalueGrowBase, b.lastLvalueGrowBase); swap(a.lastLvalueGrowSize, b.lastLvalueGrowSize); swap(a.lastLvalueElemIdx, b.lastLvalueElemIdx); swap(a.viewMirrorArr, b.viewMirrorArr); swap(a.viewMirrorIdx, b.viewMirrorIdx);
     swap(a.dynMethodNode, b.dynMethodNode); swap(a.dynMethodName, b.dynMethodName); swap(a.curGather, b.curGather); swap(a.lazyChainNode, b.lazyChainNode);
     swap(a.ctorCatchSkip, b.ctorCatchSkip); swap(a.ctorCatchDepth, b.ctorCatchDepth);
-    swap(a.topicWriteback, b.topicWriteback); swap(a.pendingRwSlots, b.pendingRwSlots);
+    swap(a.topicWriteback, b.topicWriteback); swap(a.topicWritebackGuard, b.topicWritebackGuard); swap(a.pendingRwSlots, b.pendingRwSlots);
     swap(a.pendingArgWriter, b.pendingArgWriter); swap(a.noAutothread, b.noAutothread);
     swap(a.forceRoutineFrame, b.forceRoutineFrame); swap(a.loopPhaserCtl, b.loopPhaserCtl);
     swap(a.loopCtlLabel, b.loopCtlLabel); swap(a.labelLoops, b.labelLoops);
@@ -1339,7 +1339,7 @@ static void swapExecContext(ExecContext& a, ExecContext& b) {
     // a free list of unused frames — and either side may use it)
 }
 #if defined(__APPLE__) && defined(__aarch64__) && defined(_LIBCPP_VERSION) && !defined(RAKUPP_IN_AUDIT) && !defined(RAKUPP_STR_CENSUS)
-static_assert(sizeof(ExecContext) == 1512,
+static_assert(sizeof(ExecContext) == 1528,
               "ExecContext changed: list the new member in swapExecContext (Interpreter.cpp), "
               "then update this size");
 #endif

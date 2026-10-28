@@ -816,8 +816,27 @@ void Interpreter::rwWriteThrough(Expr* target) {
     // it needs the container model, big-area #2, and stays open.)
     // (an element of a native array takes what its alias holds as `+=` would:
     // an `int` parameter's tags already judged it, a `str` one's is judged here)
-    if (std::string t = nativeElemTypeAt(peelIncDec(it->second.first)); !t.empty())
-        try { nativeElemStore(t, v, 'o'); } catch (...) { tctx().cur = savedCur; throw; }
+    // …and an element of a TYPED one answers to its element type, as its own
+    // Scalar would (#184): `sub f($x is rw) { $x = "s" }; f(@ints[0])` dies in
+    // the assignment. The parameter then holds what the element does, so the
+    // return-time copy-out has nothing to put back; a Nil the callee stored
+    // reads as the element's default, which is what reached it.
+    std::string natT;
+    Value g = elemGuardAt(peelIncDec(it->second.first), &natT);
+    if (!natT.empty())
+        try { nativeElemStore(natT, v, 'o'); } catch (...) { tctx().cur = savedCur; throw; }
+    else if (g.t == VT::Array) {
+        Value* src = e->local(name);
+        try { v = elemAliasStore(g, std::move(v)); }
+        catch (...) {
+            Value held;
+            try { if (Value* lv = lvalue(peelIncDec(it->second.first))) held = *lv; } catch (...) {}
+            tctx().cur = savedCur;
+            if (src) { ParStripe ws(*this, src); raceW(src) = held; }
+            throw;
+        }
+        if (src) { ParStripe ws(*this, src); raceW(src) = v; }
+    }
     try {
         Expr* tgt = peelIncDec(it->second.first);
         if (!assignMultiDimSlice(tgt, v))
@@ -2939,6 +2958,18 @@ static const ProxyKey& kSlotArr() { static const ProxyKey k("\x01arr"); return k
 // Hash::Ordered's DELETE-KEY names an element, splices it away and returns the
 // name, which otherwise answered the NEXT element's value.
 static const ProxyKey& kSlotLast() { static const ProxyKey k("\x01lst"); return k; }
+// …and an element of a TYPED (or `is default`) container carries the guard a
+// store through it answers to (elemAliasGuard). An array slot's rides in
+// kSlotArr's element default, which that Array has no other use for, so the
+// proxy keeps its four entries; a hash slot's, a closure pair, has a key.
+static const ProxyKey& kSlotGuard() { static const ProxyKey k("\x01" "grd"); return k; }
+static const Value* slotProxyRef(const Value& proxy);
+const Value* Interpreter::proxyElemGuard(const Value& proxy) const {
+    if (proxy.t != VT::Hash || proxy.hashKind != proxyKind() || !proxy.hash()) return nullptr;
+    if (const Value* r = slotProxyRef(proxy)) return r->elemDefault().get();
+    const Value* g = proxy.hash()->findPre(kSlotGuard().s, kSlotGuard().h);
+    return g && g->t == VT::Array ? g : nullptr;
+}
 
 // kSlotArr's `i`: the index in the low 32 bits, the length at bind time in the
 // high 32. An array of 2**32 elements is 320 GB of Values, so neither overflows;
@@ -3048,7 +3079,7 @@ void Interpreter::stashDeleteSymbol(const std::string& pkg, const std::string& k
     global_->undefine(gn);
 }
 
-Value Interpreter::makeArraySlotProxy(PRef<ValueList> arr, size_t idx, const std::string& nativeT) {
+Value Interpreter::makeArraySlotProxy(PRef<ValueList> arr, size_t idx, const std::string& nativeT, const Value* guard) {
     // Built once. STORE carries a two-parameter signature so codeArity sends it
     // the proxy alongside the value (proxyStore's `sub ($, $v)` spelling); a
     // builtin never binds its params, so they cost nothing else.
@@ -3077,6 +3108,7 @@ Value Interpreter::makeArraySlotProxy(PRef<ValueList> arr, size_t idx, const std
     Value av; av.t = VT::Array; av.setArr(std::move(arr));   // shares the storage
     av.i = slotPack(idx, n);
     if (!nativeT.empty()) av.ofTypeM() = nativeT;   // a native array's element: see slotProxyWriteRef
+    else if (guard && guard->t == VT::Array) av.elemDefaultM() = std::make_shared<Value>(*guard);   // (kSlotGuard)
     h.addFresh(kSlotArr().s, kSlotArr().h, std::move(av));
     h.addFresh(kSlotLast().s, kSlotLast().h, std::move(last));
     h.addFresh(proxyKeyFetch().s, proxyKeyFetch().h, kFetch);
@@ -3168,6 +3200,7 @@ static Value slotProxyWriteRef(Interpreter& I, const Value& proxy, const Value& 
     const size_t idx = slotIdx(ref);
     Value nv = in;
     if (!ref.ofType().empty()) I.nativeElemStore(ref.ofType(), nv, 'o', (long long)idx);
+    else if (const Value* g = ref.elemDefault().get()) nv = I.elemAliasStore(*g, std::move(nv));   // (kSlotGuard)
     Interpreter::ParStripe ps(I, arr);
     if (Value* last = proxy.hash()->findPre(kSlotLast().s, kSlotLast().h)) *last = nv;
     if (slotProxyDetached(ref, arr)) return nv;  // written to the detached element
@@ -3180,20 +3213,23 @@ Value Interpreter::slotProxyWrite(const Value& proxy, const Value& nv) {
     return ref ? slotProxyWriteRef(*this, proxy, *ref, nv) : nv;
 }
 
-Value Interpreter::makeHashSlotProxy(PRef<ValueMap> h, const std::string& key) {
+Value Interpreter::makeHashSlotProxy(PRef<ValueMap> h, const std::string& key, const Value* guard) {
     Value proxy = Value::makeHash(); proxy.hashKind = proxyKind();
+    Value g = guard && guard->t == VT::Array ? *guard : Value::any();   // (as the array slot's kSlotGuard)
     slotProxyPair(proxy,
         [h, key](Interpreter& I, ValueList&) -> Value {
             ParStripe ps(I, h.get());
             auto it = h->find(key);
             return it != h->end() ? it->second : Value::any();
         },
-        [h, key](Interpreter& I, ValueList& sa) -> Value {
+        [h, key, g](Interpreter& I, ValueList& sa) -> Value {
             Value nv = sa.empty() ? Value::any() : sa[0];
+            if (g.t == VT::Array) nv = I.elemAliasStore(g, std::move(nv));
             ParStripe ps(I, h.get());
             (*h)[key] = nv;
             return nv;
         });
+    if (g.t == VT::Array) (*proxy.hash())[kSlotGuard().s] = g;
     return proxy;
 }
 

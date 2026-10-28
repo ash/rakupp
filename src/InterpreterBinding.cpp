@@ -1562,6 +1562,260 @@ void Interpreter::checkElemType(const std::string& want, const Value& v, const s
                     (isDefined(v) ? " (" + typeCheckRepr(v) + ")" : " " + v.gist()));
 }
 
+// A store through an ALIAS of an element answers to the container the element
+// lives in, as the element's own Scalar does in Rakudo: the constraint rides in
+// the container there, never in the name an alias gives it (#184). So `my $e
+// := @a[1]`, `-> $x is rw { … }(@a[1])` and `for @a { $_ = … }` each carry
+// this record of it — [the element type, the container's name for a refusal,
+// what Nil resets the element to, the container's own `ofType` (`.VAR.of`
+// asks it, elemScalarRecord), the `:D`/`:U` smiley, and whether the element
+// type is a plain name, which a conforming store needs nothing more than the
+// type check for] — or Any when the container constrains nothing, or is
+// native (its elements convert as nativeElemStore says).
+Value nilElemDefault(const Value& v, const Value& container);   // InterpreterCore.cpp
+Value Interpreter::elemAliasGuard(const Value& container, bool isHash, const std::string& symbol) {
+    if (container.t != (isHash ? VT::Hash : VT::Array) || (!isHash && !nativeElemTypeOf(container).empty()))
+        return Value::any();
+    std::string want = elemTypeOf(container);
+    const char sm = elemSmileyOf(symbol);
+    if (want.empty() && !sm && !container.elemDefault()) return Value::any();
+    const bool plain = !want.empty() && want.find_first_of("([") == std::string::npos;
+    Value g = Value::array();
+    ValueList& l = *g.arr();
+    l.reserve(6);   // (one allocation: an initializer list grows the vector to six)
+    l.push_back(Value::str(std::move(want)));
+    l.push_back(Value::str(symbol));
+    l.push_back(nilElemDefault(Value::nil(), container));
+    l.push_back(Value::str(container.ofType()));
+    l.push_back(Value::str(sm ? std::string(1, sm) : std::string()));
+    l.push_back(Value::boolean(plain));
+    return g;
+}
+// …and one store through such an alias, as `@a[i] = v` makes it: Nil (or the
+// undefined hole a callee's `$x = Nil` leaves) resets the element, a coercion
+// type converts, and what the element type or its smiley refuses dies naming
+// the container. Answers what the element holds after.
+Value Interpreter::elemAliasStore(const Value& guard, Value v) {
+    if (guard.t != VT::Array || !guard.arr() || guard.arr()->size() < 6) return v;
+    const ValueList& g = *guard.arr();
+    const std::string& want = g[0].s.str();
+    const std::string& smiley = g[4].s.str();
+    if (v.t == VT::Nil || v.t == VT::Any) v = g[2];
+    else if (want.empty() || (g[5].b && typeOrSubsetMatches(v, want))) {}   // (the common store: it fits)
+    else {
+        coerceElemValue(*this, want, v, 'o');
+        checkElemType(want, v, g[1].s.str());
+    }
+    if (smiley.empty()) return v;
+    const bool def = isDefined(v);
+    if (def == (smiley == "D")) return v;
+    const std::string w = (want.empty() ? std::string("Any") : want) + ":" + smiley;
+    throwTypedV("X::TypeCheck::Assignment",
+                {{"got", v}, {"expected", Value::typeObj(w)}, {"symbol", g[1]}},
+                "Type check failed for an element of " + g[1].s.str() + "; expected " + w + " but got " +
+                    v.typeName() + (def ? " (" + typeCheckRepr(v) + ")" : " (" + v.typeName() + ")") +
+                    (def ? "" : " (perhaps Nil was assigned to a :D which had no default?)"));
+}
+// …the record of the element an ARGUMENT names (`f(@a[1])`, which an `is rw`
+// or sigilless parameter writes through), found by the variable's name; Any
+// for any other argument. One lookup answers nativeElemTypeAt's question too:
+// a native array's element type goes to `nativeT`, with Any.
+Value Interpreter::elemGuardAt(const Expr* e, std::string* nativeT) {
+    if (!e || e->kind != NK::Index || !tctx().cur) return Value::any();
+    auto* ix = static_cast<const Index*>(e);
+    if (ix->multiDim || !ix->adverb.empty() || !ix->base || ix->base->kind != NK::VarExpr) return Value::any();
+    const std::string& n = static_cast<const VarExpr*>(ix->base.get())->name;
+    if (n.size() < 2 || n[0] != (ix->isHash ? '%' : '@')) return Value::any();
+    const Value* cv = tctx().cur->find(n);
+    if (!cv || (cv->deref()->ofType().empty() && !cv->deref()->elemDefault())) return Value::any();
+    if (nativeT && !ix->isHash) if (*nativeT = nativeElemTypeOf(*cv->deref()); !nativeT->empty()) return Value::any();
+    return elemAliasGuard(*cv->deref(), ix->isHash, n);
+}
+// …and of the array a `for` walks through a VIEW of it (`@a[0, 1]`,
+// `@a.grep(…)`, `@a.reverse`, `|@a`), found as nativeLoopElemType finds a
+// native one — or of the hash whose `.values` it walks
+Value Interpreter::elemLoopGuard(const Expr* e) {
+    bool values = false;
+    for (int hop = 0; e && hop < 4; hop++) {
+        if (e->kind == NK::VarExpr) {
+            const std::string& n = static_cast<const VarExpr*>(e)->name;
+            const bool hash = values && n.size() > 1 && n[0] == '%';
+            const Value* cv = n.size() > 1 && (n[0] == '@' || hash) && tctx().cur ? tctx().cur->find(n) : nullptr;
+            return cv ? elemAliasGuard(*cv->deref(), hash, n) : Value::any();
+        }
+        if (e->kind == NK::Index) {   // (a slice of the variable itself, not of an element of it)
+            auto* ix = static_cast<const Index*>(e);
+            if (ix->isHash || ix->multiDim || !ix->base || ix->base->kind != NK::VarExpr) return Value::any();
+            e = ix->base.get();
+        }
+        else if (e->kind == NK::Unary && static_cast<const Unary*>(e)->op == "|") e = static_cast<const Unary*>(e)->operand.get();
+        else if (e->kind != NK::MethodCall) return Value::any();
+        else {
+            auto* mc = static_cast<const MethodCall*>(e);
+            if (mc->method != "grep" && mc->method != "reverse" && mc->method != "values" && mc->method != "list")
+                return Value::any();
+            values = mc->method == "values";
+            e = mc->inv.get();
+        }
+    }
+    return Value::any();
+}
+
+// `$x := @a.AT-POS(1)` / `$x := %h.AT-KEY("k")` on a plain Array or Hash —
+// the method spelling of `$x := @a[1]` — binds the same element container, where
+// it bound a copy (#184); `out` is what the bind answers. False leaves the plain
+// bind to it: another shape, an index that could not run twice (the plain bind
+// evaluates the call again), or a key not there yet, which `:=` does not vivify.
+bool Interpreter::bindElemMethodAlias(Assign* a, Value& out) {
+    auto* mc = static_cast<MethodCall*>(a->value.get());
+    const bool pos = mc->method == "AT-POS";
+    const NK ak = mc->args.size() == 1 ? mc->args[0]->kind : NK::Block;
+    if (!(pos || mc->method == "AT-KEY") || !(ak == NK::IntLit || ak == NK::StrLit || ak == NK::VarExpr) ||
+        mc->meta || mc->hyper || mc->methodExpr || mc->inv->kind != NK::VarExpr)
+        return false;
+    const std::string& vn = static_cast<VarExpr*>(mc->inv.get())->name;
+    Value* base = nullptr;
+    if (vn.size() > 1 && vn[0] == (pos ? '@' : '%'))
+        try { base = lvalue(mc->inv.get(), /*asInvocant=*/true); } catch (RakuError&) { base = nullptr; }
+    if (!base) return false;
+    Value proxy;
+    if (pos) {
+        if (base->t != VT::Array || !base->arr() || base->isList || base->shape() || !nativeElemTypeOf(*base).empty())
+            return false;
+        Value kv = eval(mc->args[0].get());
+        if (kv.t != VT::Int || kv.i < 0) return false;
+        auto arr = base->arrS();
+        const size_t at = (size_t)kv.i;
+        Value fill = containerFill(*base);
+        while (arr->size() <= at) arr->push_back(fill);   // (as `$x := @a[5]` grows it)
+        const Value guard = elemAliasGuard(*base, false, vn);
+        proxy = (*arr)[at].t == VT::Hash && (*arr)[at].hashKind == "Proxy" && (*arr)[at].hash()
+              ? (*arr)[at] : makeArraySlotProxy(arr, at, "", &guard);
+    }
+    else {
+        if (base->t != VT::Hash || !base->hash() || !base->hashKind.empty() || !objHashKeyType(*base).empty())
+            return false;
+        const std::string key = hashSubKey(eval(mc->args[0].get()), base);
+        auto h = base->hashS();
+        if (!h->count(key)) return false;
+        const Value guard = elemAliasGuard(*base, true, vn);
+        proxy = makeHashSlotProxy(h, key, &guard);
+    }
+    *lvalue(a->target.get()) = proxy;
+    out = deproxy(proxy);
+    return true;
+}
+
+// Copy `is rw` parameter final values back to the caller's argument lvalues.
+void Interpreter::copyOutRw(const std::vector<Param>* params, std::shared_ptr<Env>& env,
+                            const std::vector<ExprPtr>* rwArgs) {
+    if (!params || !rwArgs) return;
+    // The callee may have started a worker that still writes its parameters
+    // through (rwWriteThrough): `sub poke($x is rw) { start { $x = … } }`
+    // returns at once. So, as there, the parameter is copied out under its
+    // stripe, stored under the caller slot's, and rwSynced is read under the
+    // frame's — each lock alone, never two at once.
+    Env* const fe = env.get();
+    auto paramValue = [&](Value* pv) { ParStripe rs(*this, pv); return *pv; };
+    auto storeInto = [&](Value* lv, const Value& v) { ParStripe ws(*this, lv); raceW(lv) = v; };
+    auto syncedUnchanged = [&](const std::string& n, const Value& cur) {
+        Value syv;
+        {   ParStripe ss(*this, fe);
+            auto sy = fe->xr().rwSynced.find(n);
+            if (sy == fe->xr().rwSynced.end()) return false;
+            syv = sy->second;
+        }
+        return valueEqv(cur, syv);
+    };
+    auto hasSynced = [&](const std::string& n) { ParStripe ss(*this, fe); return fe->xr().rwSynced.count(n) > 0; };
+    auto noneSynced = [&]() { ParStripe ss(*this, fe); return fe->xr().rwSynced.empty(); };
+    // `is rw` params write back explicitly; a sigilless capture param (`\a`) binds
+    // the caller's container, so an assignment through it must write back too.
+    // Assignments already went through IMMEDIATELY via rwWriteThrough; this is the
+    // backstop for mutations that bypass it (s///, .=, ++ on odd paths). A param
+    // whose value matches rwSynced (the bound/last-pushed value) is SKIPPED —
+    // copying it back late would re-apply a stale value over the callee's own
+    // edits, and lvalue() on an untouched arg can autovivify a missing path.
+    bool any = false;
+    for (auto& p : *params) if (p.isRw || p.isRaw || p.sigil == '\\') any = true;
+    if (!any && noneSynced()) return;
+    size_t pi = 0;
+    FlatRw flat(*this, rwArgs, nullptr);   // past a `|` slip, a parameter's link names its expression
+    for (auto& p : *params) {
+        if (p.named) {
+            // backstop for a named `is rw` / `is raw` linked in linkNamedRw
+            // (a cell-bound one shares the caller's container and needs none)
+            if ((p.isRw || p.isRaw) && !p.name.empty() && !env->xr().rwCelled.count(p.name)) {
+                auto li = env->xr().rwLinks.find(p.name);
+                Value* pv = env->local(p.name);
+                if (li != env->xr().rwLinks.end() && pv) {
+                    Value cur = paramValue(pv);
+                    if (!syncedUnchanged(p.name, cur))
+                        try { if (Value* lv = lvalue(li->second.first)) storeInto(lv, cur); } catch (...) {}
+                }
+            }
+            continue;
+        }
+        if (p.invocant) {
+            // backstop for the `is rw` invocant linked in setupRwLinks — the
+            // link already wrote through on assignment, this catches a mutation
+            // that bypassed it. Same unchanged-guard as the parameters below.
+            if (p.isRw && !p.name.empty()) {
+                auto li = env->xr().rwLinks.find(p.name);
+                Value* pv = env->local(p.name);
+                if (li != env->xr().rwLinks.end() && pv) {
+                    Value cur = paramValue(pv);
+                    if (!syncedUnchanged(p.name, cur)) {
+                        auto savedCur = tctx().cur;
+                        tctx().cur = li->second.second;   // the caller's scope
+                        try { if (Value* lv = lvalue(li->second.first)) storeInto(lv, cur); } catch (...) {}
+                        tctx().cur = savedCur;
+                    }
+                }
+            }
+            continue;  // an explicit `C:U:` invocant consumes no arg slot
+        }
+        // `*@v is raw` binds the caller's containers: `@v[0]++` is `$a++`.
+        // Written back element by element, when every remaining argument is a
+        // plain scalar variable — then element k is exactly argument k.
+        if (p.slurpy && (p.isRaw || p.isRw) && p.sigil == '@' && !p.name.empty()) {
+            Value* pv = env->local(p.name);
+            if (pv && pv->holdsContainers()) break;   // its elements ARE the containers
+            size_t n = rwArgs->size() > pi ? rwArgs->size() - pi : 0;
+            bool plain = n > 0 && pv && pv->t == VT::Array && pv->arr() && pv->arr()->size() == n;
+            for (size_t k = 0; plain && k < n; k++) {
+                const Expr* ae = (*rwArgs)[pi + k].get();
+                if (!ae || ae->kind != NK::VarExpr ||
+                    static_cast<const VarExpr*>(ae)->name.empty() ||
+                    static_cast<const VarExpr*>(ae)->name[0] != '$') plain = false;
+            }
+            if (plain)
+                for (size_t k = 0; k < n; k++)
+                    try {
+                        if (Value* lv = lvalue(const_cast<Expr*>((*rwArgs)[pi + k].get())))
+                            raceW(lv) = (*pv->arr())[k];
+                    } catch (...) {}
+            break;
+        }
+        if (p.slurpy) break;
+        // rwSynced-only entries are the Buf-bound params (see setupRwLinks):
+        // they copy back when mutated, same unchanged-guard as `is rw`
+        Expr* ae = flat.at(pi) ? FlatRw::linked(env, p.name) : pi < rwArgs->size() ? (*rwArgs)[pi].get() : nullptr;
+        if ((p.isRw || p.isRaw || p.sigil == '\\' || hasSynced(p.name)) && ae && !env->xr().rwCelled.count(p.name)) {
+            Value* pv = env->local(p.name);
+            if (pv) {
+                Value cur = paramValue(pv);
+                if (!syncedUnchanged(p.name, cur))
+                    try { std::string t;   // (a typed element's refusal stores nothing: rwWriteThrough's twin)
+                          if (Value g = elemGuardAt(peelIncDec(ae), &t); !t.empty()) nativeElemStore(t, cur, 'o');
+                          else if (g.t == VT::Array) cur = elemAliasStore(g, std::move(cur));
+                          if (Value* lv = lvalue(peelIncDec(ae))) storeInto(lv, cur); } catch (...) {}
+            }
+        }
+        pi++;
+    }
+}
+
 // Nominal conformance with SUBSET names resolved — for TYPE OBJECTS only; a
 // defined value takes the ordinary path untouched (a negative Int still fails
 // UInt on its sign). An undefined `subset Port of UInt` attribute reads back

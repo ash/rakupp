@@ -476,6 +476,15 @@ per-`Env` side tables:
 - **Type constraints** on a scalar (`my Int $x = 3`) are enforced at assignment
   for the core nominal types, throwing `X::TypeCheck::Assignment` on a mismatch
   (`src/InterpreterCore.cpp`).
+- **An alias of a typed container's element** (`my $e := @a[1]`, `my \e =
+  %h<k>`, an `is rw` or sigilless parameter given `@a[1]`, a `for` loop's `$_`,
+  `given`'s topic, `.map`'s `$_`) has no name the constraint tables know, so
+  it carries the container's **guard** instead (`elemAliasGuard`,
+  `src/InterpreterBinding.cpp`): the element type, its smiley, what Nil resets
+  the element to, the container's name for a refusal and what `.VAR.of`
+  answers. A `:=` alias holds it on its Proxy (`proxyElemGuard`); the
+  copy-in/copy-out aliases apply it where they write back (`elemAliasStore`),
+  as `natBack` does for a native array's element (issue #184).
 - **Native integers** (`my int $x`, `my uint8 $b`) carry a bit-width in
   `natBits` (`src/Value.h`) and **wrap on every assignment** — `wrapNative`
   masks the value to the declared width (`src/InterpreterCore.cpp`).

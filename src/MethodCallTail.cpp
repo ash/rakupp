@@ -600,6 +600,15 @@ static std::optional<Value> borrowedNumericFold(const ValueList& a, char how) {
     return std::nullopt;
 }
 
+// `$_` aliases the element `slot` for the block's call (the one-shot
+// tctx().topicWriteback), and a typed array's element refuses what its type
+// does (`guard`, elemAliasGuard: #184). The call has no name for the array, so
+// the refusal names none.
+static inline void aliasTopic(ExecContext& t, Value* slot, const Value& guard) {
+    t.topicWriteback = slot;
+    if (guard.t == VT::Array) t.topicWritebackGuard = {slot, &guard};
+}
+
 std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& m,
                                                  ValueList& args,
                                                  const std::vector<ExprPtr>* rwArgs) {
@@ -4575,6 +4584,7 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
                 // (e.g. `%h.kv.map(-> $k, $v {…})` or `{ $^a … $^b }`).
                 size_t ar = codeArity(args[0]);
                 bool aliasable = ar == 1 && inv.t == VT::Array && inv.arr() && items.size() == inv.arr()->size();
+                const Value wbGuard = aliasable ? elemAliasGuard(inv, false, "") : Value::any();   // (aliasTopic)
                 // Does the block carry loop phasers (FIRST/NEXT/LAST)? One scan;
                 // if so, hand callCallableRaw per-iteration control so they fire
                 // with loop semantics in the block's own env (Base64's encoder
@@ -4613,7 +4623,7 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
                             "Too few positionals passed; expected " + std::to_string(required) +
                                 " arguments but got " + std::to_string(ca.size())};
                     if (aliasable && !(inv.elemDefault() && (*inv.arr())[i].t == VT::Any))
-                        tctx().topicWriteback = &(*inv.arr())[i]; // $_ mutations alias the element (a hole stays one)
+                        aliasTopic(tctx(), &(*inv.arr())[i], wbGuard); // $_ mutations alias the element (a hole stays one)
                     if (loopPh)
                         tctx().loopPhaserCtl = (i == 0 ? 1 : 0) | (i + ar >= items.size() ? 2 : 0) | 4;
                     Value r;
@@ -4686,6 +4696,7 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
                 throw RakuError{Value::typeObj("X::Match::Bool"),
                     "Cannot use Bool as Matcher with '.grep'.  Did you mean to use $_ inside a block?"};
             bool aliasable = inv.t == VT::Array && inv.arr() && items.size() == inv.arr()->size();
+            const Value wbGuard = aliasable ? elemAliasGuard(inv, false, "") : Value::any();   // (aliasTopic)
             auto emit = [&](size_t idx, const Value& v) {
                 if (adv == "k") out.arr()->push_back(Value::integer((long long)idx));
                 else if (adv == "kv") { out.arr()->push_back(Value::integer((long long)idx)); out.arr()->push_back(v); }
@@ -4701,7 +4712,7 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
                     ValueList ca;
                     for (size_t k = 0; k < ar && gi + k < items.size(); k++) ca.push_back(items[gi + k]);
                     if (aliasable && ar == 1 && !(inv.elemDefault() && (*inv.arr())[gi].t == VT::Any))
-                        tctx().topicWriteback = &(*inv.arr())[gi]; // $_ mutations alias the element (a hole stays one)
+                        aliasTopic(tctx(), &(*inv.arr())[gi], wbGuard); // $_ mutations alias the element (a hole stays one)
                     try { match = predAnswerTruthy(*this, callCallable(mt, ca), v); }
                     catch (LastEx&) { tctx().topicWriteback = nullptr; break; }   // `last` in the block ends the grep
                     catch (NextEx&) { tctx().topicWriteback = nullptr; continue; } // `next` skips the element
