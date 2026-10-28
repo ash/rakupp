@@ -586,6 +586,38 @@ moves to [TODO.md](TODO.md).
   past the restore. 099a2055 made a method put its caller's scope back on that
   path; nothing restores the `let`s. Done when this prints 1, for a method
   as well.
+- [ ] **A write past a Buf's end grows a buffer only one holder sees**
+  (found 2026-10-28 while fixing issue #186, 18ef8f73; the same before it):
+
+  ```raku
+  my $d = Buf.new(1); my $e = $d;
+  $e.write-uint8(3, 9);
+  say $d.elems;    # 1, Rakudo 4
+  ```
+
+  18ef8f73 writes within a Buf in place (CowStr::mutInPlace), but growing one —
+  bufBitOp's `wbytes`, the element store in evalAssignInner and
+  rtElemStoreN's bufElemStore — detaches it first (`mut()`), so every other
+  holder keeps the old bytes. A routine that grows a Buf it was passed
+  reaches an interpreted caller by copy-back (setupRwLinks' rwSynced, and
+  rtAotParamBack for a native body) but not a compiled one, which is why
+  t/aot/cases/buf-args leaves that case out. Growing the shared body in
+  place moves its bytes, so a pointer handed to C (nativecast,
+  NativeHelpers::Blob's pointer-to) needs thought first. Done when this
+  prints 4, and a compiled caller sees what `sub widen(Buf $b) {
+  $b.write-uint8($b.elems, 9) }` added.
+- [ ] **`$b[1]++` on a Buf element dies** (found 2026-10-28 while fixing
+  issue #186, 18ef8f73; the same on 50122f46):
+
+  ```raku
+  my $b = Buf.new(1, 2);
+  $b[1]++;          # Index out of range. Is: 1, should be in 0..0
+  say $b.list;      # Rakudo (1 3)
+  ```
+
+  `$b[0] += 10` and `$b[1] = 7` are right; only the step is not, in a
+  variable and in a parameter alike. Done when it prints Rakudo's (1 3),
+  compiled too.
 
 ## Processes and diagnostics
 
@@ -840,6 +872,23 @@ moves to [TODO.md](TODO.md).
   element): guard the op= path as evalAssignInner's general path is guarded.
   A call argument cannot take the flag, since the call would run. Done when
   the first four run within 2x of `my $x = f($i) // next`.
+- [ ] **Passing a Buf or a Blob to a routine costs its size** (issue #177;
+  the cause found 2026-10-28 while fixing issue #186, 18ef8f73):
+
+  ```raku
+  sub f(Blob:D $x) { 1 }
+  sub g(Blob:D $x is copy) { 1 }
+  my $b = Blob.new(buf8.allocate(16 * 1048576, 65));
+  # f($b): 1.09 ms a call; g($b): 0.000 ms
+  ```
+
+  setupRwLinks (src/InterpreterCore.cpp) snapshots a plain `$` parameter
+  bound to a Buf or a Blob into rwSynced, and copyOutRw compares the
+  parameter with that snapshot when the call returns (syncedUnchanged →
+  valueEqv), byte by byte; `is copy` skips both. A Blob is immutable and
+  needs no copy-back at all, and a Buf's could first ask whether its body is
+  still the same one (CowStr::sameRep). Done when f($b) costs what g($b)
+  does and t/regression/buf-write-in-place.raku still passes.
 
 ## Gates
 
