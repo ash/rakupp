@@ -94,6 +94,33 @@ moves to [TODO.md](TODO.md).
   through (lastPkgClose_) because of it: Roast's S03-operators/u2212-minus.t
   has `class {} − class {}`. Done when the three lines answer as in Rakudo
   2026.09 and that exemption is gone.
+- [ ] **A module sees what the program imported before it** (found
+  2026-10-28 while fixing issue #211, 0e44c5a6; on v5.5.0 too):
+
+  ```raku
+  # A.rakumod
+  module A {
+      multi trait_mod:<is>(Parameter:D $p, :$zork! --> Nil) is export { }
+      sub a-helper() is export { 1 }
+  }
+  # B.rakumod
+  unit module B;
+  sub b-count() is export { &trait_mod:<is>.candidates.elems }
+  sub b-sees-a() is export { (try a-helper()) // 'no' }
+  # main.raku, run with -I.
+  use A; use B;
+  say b-count();     # 10, the engine's 9 and A's
+  say b-sees-a();    # 1; Rakudo refuses B: "Undeclared routine: a-helper"
+  ```
+
+  It is TODO.md's "Module code can name the program's lexicals" for
+  imports: a module's unit scope chains to `global_`, and a `use` in the
+  program's mainline defines its imports there. Issue #211 was this
+  reaching NativeLibs: Cro::HTTP::Router's `is` multis, imported by the
+  app, were the `&trait_mod:<is>` NativeLibs' EXPORT searched, and the
+  search found nothing until 0e44c5a6 made a user group list the engine's
+  candidates too. Done when B is refused as in Rakudo and b-count is 9;
+  size it with the TODO.md item, which is the same chain.
 
 ## Operators and types
 
@@ -289,6 +316,22 @@ moves to [TODO.md](TODO.md).
   matcher methods have. `.push` keeps it whole already, and its `.raku`
   alone is wrong: a one-element Array holding a junction gets a trailing
   comma. Done when the lines above are Rakudo 2026.09's.
+- [ ] **A signature drops `--> Nil`** (found 2026-10-28 while writing
+  issue #211's regression test, 0e44c5a6; on v5.5.0 too):
+
+  ```raku
+  sub f(Int $x --> Nil) { }
+  say &f.signature.returns.^name;    # Mu, Rakudo Nil (`--> Int` is Int in both)
+  say &f.signature ~~ :(Int);        # True, Rakudo False
+  say :(Int --> Nil) ~~ :(Int);      # True, Rakudo False
+  ```
+
+  `&f.returns` is Nil, so the routine keeps it; its Signature object does
+  not (`returns` in its hash), and sigAcceptsSig (src/Builtins.cpp), which
+  compares the two sides' `\x01ret`, takes `--> Nil` for no return type.
+  Cro's trait multis are declared `--> Nil`, so a search among
+  `&trait_mod:<is>.candidates` by a signature without one matches here what
+  it misses in Rakudo. Done when the three lines are Rakudo 2026.09's.
 
 ## Control flow and containers
 
@@ -519,6 +562,46 @@ moves to [TODO.md](TODO.md).
   the excerpt, is set only by checkTextAfterBlock; Parser::error knows the
   token it stopped at (`got`) and could set it for every parse error. Done
   when `-e` and `-c` show the excerpt, and most parse errors a column.
+- [ ] **`is hidden-from-backtrace` hides nothing** (found 2026-10-28 while
+  reading issue #211's backtrace; on v5.5.0 too):
+
+  ```raku
+  class C {
+      method !inner() is hidden-from-backtrace { die "boom" }
+      method go { self!inner }
+  }
+  sub s() is hidden-from-backtrace { C.new.go }
+  s();
+  # here:   in method C::inner (with its excerpt), in method C::go, in sub s, in block <unit>
+  # Rakudo: in method go, in block <unit>
+  ```
+
+  The trait is accepted (src/Interpreter.cpp lists it among the known
+  routine traits) and then dropped; the backtrace builder needs it on the
+  frame's routine. DBIish raises every error through two hidden methods,
+  so a DBIish failure here starts with `error-dispatch` and `set-err`
+  (#211's report does). The class in the frame's name is ours on purpose
+  (BACKTRACE-PLAN.md). Done when the frames above are Rakudo 2026.09's,
+  bar that name, and `--ll-exception` still shows them.
+- [ ] **Issue #211's other two reports** (open 2026-10-28; 0e44c5a6 fixed
+  its NativeLibs warning). A Cro app using DBIish:
+  - In "developer mode", with `:database<:memory:>`, `$dbh.execute` in the
+    app's `init-db` dies in DBDish::SQLite's StatementHandle.execute, where
+    `sqlite3_step` failed; a file database gets past it. DBIish treats
+    `:memory:` as a file name it leaves alone, and nothing else in its
+    driver differs. The report omits the SQLite message (the line before
+    `(X::DBDish::DBError)`), which names the failure.
+  - With a file database, Cro::HTTP::Router dies "Parameter type
+    SessionStore::Session not allowed on a request unpack parameter" from
+    the app's `auth-routes`. Cro skips that check for a first parameter
+    that `is auth` or whose type does Cro::HTTP::Auth, and both pass here,
+    a session class in a module of its own and routes `include`d into an
+    outer `route` among them.
+
+  Needs the reporter's `lib/DB.rakumod` (to line 13), its SQLite message,
+  and how `SessionStore::Session` is declared; or DBIish installed here to
+  try `:memory:` under Cro. Done when each runs as under Rakudo, or turns
+  out not to be rakupp's.
 
 ## Backends
 
