@@ -21,7 +21,7 @@ cb7933f3 (issue #204); cb5b360a, d5184116 and 50aebf54; 67a2fe76 (issue
 #198) and 4af53b07; 3ddcd58b (issue #207); 2b9494ae (issue #206);
 62e16b9e; fb9009bc (issue #56); 3c80bc24; 48b76d56, a348489b, aa0f3618 and
 fc262224 (issue #195); 0f19ab0e (issue #208); f483f0e6 (issue #192);
-b05e989b (issue #193); 17e33a45 (issue #184).*
+b05e989b (issue #193); 17e33a45 (issue #184); 5f87f445.*
 
 ---
 
@@ -512,6 +512,18 @@ plain before 500c29e2 and native from it, unless they say otherwise.
   name (`@a`; it was `element`). An untyped container's aliases cost what
   they did; a typed one's are checked now: 300k `:=` binds and stores 135 →
   192 ms, a `for` writing 1M elements 169 → 199 ms.
+- **An alias of a typed scalar keeps its variable's type** (5f87f445), as in
+  Rakudo, which names the variable: `my Int $a; my $b := $a; $b = 'x'`
+  stored the Str, as did a store through `my \s = $a`, an `is rw`, `is raw`,
+  sigilless or named `is rw` parameter given `$a`, `-> $x is rw`, `for $a`,
+  `for $a <-> $v`, `for $a, $c` and `given`/`with $a`; Nil through one stored
+  Nil, and `$b.VAR.of` was (Mu). The alias of a typed variable is a Proxy
+  over its cell carrying the variable's type, smiley, coercion and default
+  now, made once per variable and kept in its scope; `.VAR` through it, and
+  the variable's own `.VAR.of` under `is default`, a smiley or a coercion,
+  answer as Rakudo's. An untyped variable's aliases cost what they did
+  (within 3%); a typed one's are checked: 300k `f($a)` into an `is rw`
+  parameter 94 → 130 ms, `:=` and store 70 → 115 ms.
 
 ### Fixed: crashes
 
@@ -799,12 +811,14 @@ does not.
 
 ### Left open
 
-- A scalar alias still drops its variable's type (`my Int $a; my $b := $a;
-  $b = 'x'`, or `f($a)` for an `is rw` parameter, both stored); a `for`
-  loop's, `given`'s or `.map`'s alias of a typed element refuses at its
-  write-back, after the rest of the body; `.hyper.map`, `for @a.kv -> $k,
-  $v is rw` and `.first` still store anything; and `my Int:D @d; @d[0] =
-  Nil` is still taken. TODO-FOLLOW-UPS.md has each (17e33a45).
+- A `for` loop's, `given`'s or `.map`'s alias of a typed array element
+  refuses at its write-back, after the rest of the body; `.hyper.map`, `for
+  @a.kv -> $k, $v is rw` and `.first` still store anything; and `my Int:D
+  @d; @d[0] = Nil` is still taken (17e33a45). A typed scalar's container
+  handed out by an expression still takes anything — `($a, my $z) = 'la',
+  2`, `($a, 2)[0] = 'l'`, a Pair's value, an `is rw` routine's tail — and a
+  `where` clause is not checked through an alias (5f87f445).
+  TODO-FOLLOW-UPS.md has each.
 
 - `--exe` checks no parameter's sigil, `%` included: a compiled `sub
   p(%h)` given `(a => 1, b => 2)` holds the List, as it did before
