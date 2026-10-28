@@ -270,6 +270,26 @@ moves to [TODO.md](TODO.md).
   with no `new` of its own dies; the third line is how a test probe written
   as `"$t.new(...)"` printed empty strings here instead of dying.
 
+- [ ] **A built-in method whose parameter takes a Junction whole threads it
+  instead** (found 2026-10-28 while fixing issue #192, f483f0e6; on f30323e3 too):
+
+  ```raku
+  say 1.polymod(2 & 3);                              # all((1 0), (1 0)), Rakudo (all(1, 1) 0)
+  my @b; @b.append(1|2); say @b.raku;                # [1, 2], Rakudo [any(1, 2)]
+  my @c; @c.unshift(1&2); say @c.raku;               # [2, 1], Rakudo [all(1, 2)]
+  say Set.new(1|2).raku;                             # any(Set.new(1), Set.new(2)), Rakudo Set.new(any(1, 2))
+  say [1, 2].splice(0, 1, 5|6).raku;                 # any([1], [5]), Rakudo [1]
+  my @a; @a.push(1|2); say @a.raku;                  # [any(1, 2),], Rakudo [any(1, 2)]
+  ```
+
+  Rakudo's candidates take these as slurpies or `Mu`, so the junction is a
+  value there. methodCall (src/Builtins.cpp) threads every junction argument
+  that methodTakesJunction does not exempt, and that asks only about methods
+  a program declares; the built-ins need a list of their own, as the
+  matcher methods have. `.push` keeps it whole already, and its `.raku`
+  alone is wrong: a one-element Array holding a junction gets a trailing
+  comma. Done when the lines above are Rakudo 2026.09's.
+
 ## Control flow and containers
 
 - [ ] **An enum's type object is a list of its pairs** (found 2026-10-27
@@ -486,6 +506,15 @@ moves to [TODO.md](TODO.md).
   expression emitter (ex and its arms) are the natural halves; the scripts in
   tools/source-helpers/ split Interpreter.cpp and Builtins.cpp the same way.
   Done when each half is under 10,000 and the named ceiling is gone.
+
+- [ ] **Split src/Builtins.cpp again** (2026-10-28, f483f0e6, issue #192): the named
+  ceiling of 10,512 that 5df4494a recorded had one line left on f30323e3,
+  and the junction-order fix took the file to 10,532, so
+  tools/source-helpers/budget.txt gives it 10,600 rather than split it
+  inside a fix. methodCall and methodCallInner's first segment are most of
+  it; tools/source-helpers/builtins.plan is the plan that cut the
+  MethodCallPart1b/1c segments out of it, and can cut another. Done when it
+  is under 10,000 and the named ceiling is gone.
 
 ## Performance
 

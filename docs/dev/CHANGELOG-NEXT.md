@@ -20,7 +20,7 @@ e24f05f1 (NUM-UNBOX-PLAN P0); 8644846a; 74806a6d; 93f9a4af and c7a12943;
 cb7933f3 (issue #204); cb5b360a, d5184116 and 50aebf54; 67a2fe76 (issue
 #198) and 4af53b07; 3ddcd58b (issue #207); 2b9494ae (issue #206);
 62e16b9e; fb9009bc (issue #56); 3c80bc24; 48b76d56, a348489b, aa0f3618 and
-fc262224 (issue #195); 0f19ab0e (issue #208).*
+fc262224 (issue #195); 0f19ab0e (issue #208); f483f0e6 (issue #192).*
 
 ---
 
@@ -487,6 +487,15 @@ plain before 500c29e2 and native from it, unless they say otherwise.
   in `Date.new`, `DateTime.new`, `.Date`, `.DateTime` and `Date()`; the
   exception's `.format` for a DateTime is Rakudo's text, not "an ISO 8601
   timestamp" alone.
+- **A junction invocant threads before a junction argument** (f483f0e6;
+  issue #192), as in Rakudo. `so @paths.all.starts-with('/etc/' |
+  '/var/lib/')` was False where every path starts with one of the two
+  prefixes: the argument threaded first, so the answer was an any of alls,
+  any(all(True, False), all(False, True)). The invocant threads first now,
+  whatever the two junctions' kinds, and the arguments inside each call.
+  Among the arguments an all/none junction threads before an any/one, as a
+  sub's already did: `'abc'.substr(0|1, 1&2)` was any(all(a, ab), all(b,
+  bc)), and is all(any(a, b), any(ab, bc)).
 
 ### Fixed: crashes
 

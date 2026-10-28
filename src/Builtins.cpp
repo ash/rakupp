@@ -6243,6 +6243,32 @@ const std::vector<const char*>* coreTypeRoles(const std::string& tn, bool transi
     return transitive ? &cr->second.all : &cr->second.direct;
 }
 
+// Does a method on this JUNCTION invocant AUTOTHREAD, answering a junction of
+// each eigenstate's results? Not a METAMODEL call, which answers for the
+// Junction ITSELF (`(1 & 2).^name` is "Junction", not a junction of "Int"), nor
+// a method the Junction answers itself; `.defined` threads its own way.
+static bool junctionInvocantThreads(const Value& inv, const std::string& m) {
+    if (!isJunction(inv) || !inv.arr() || (m.size() && m[0] == '^')) return false;
+    // (`$j.printf` / `$j.sprintf` AUTOTHREAD like the other methods: the format
+    // is a Cool, and a Junction is not one — each eigenstate is a format)
+    static const std::set<std::string> junctionOwn = {
+        "Bool", "so", "not", "gist", "raku", "perl", "WHAT", "WHO", "HOW",
+        "return", "return-rw", // control flow acts on the junction, not each state
+        "WHICH", "WHY", "item", "new", "defined-or", "THREAD",
+        "DEFINITE",             // a Junction IS a defined object — but `.defined` is not that
+                                // question: it autothreads and collapses (methodCallInner)
+        "say", "note"};         // .say/.note gist the junction ("all(1, 2)"); .print autothreads
+    // A SLICE-derived junction (`%h{any ^2}` / `@a[any(0,1)]`; s carries the
+    // provenance) takes the resizing mutators on its backing array instead of
+    // autothreading them: each thread would die on an Any eigenstate, where
+    // Rakudo's slice junction threads over CONTAINERS that autovivify —
+    // machinery rakupp does not have. Mutating the temporary keeps it the
+    // soft no-op it always was, not a file-killing death.
+    static const std::set<std::string> sliceResizers = {
+        "push", "append", "pop", "unshift", "prepend", "shift", "splice"};
+    return m != "defined" && !junctionOwn.count(m) && !(inv.s == "slice" && sliceResizers.count(m));
+}
+
 Value Interpreter::methodCall(const Value& inv, const std::string& m, ValueList args, const std::vector<ExprPtr>* rwArgs,
                               bool skipOwn) {
     // A PLAIN class's default constructor (plainNewClass): straight to the
@@ -6717,6 +6743,12 @@ Value Interpreter::methodCall(const Value& inv, const std::string& m, ValueList 
     //
     // MATCHER positions are exempt: a junction handed to grep/first/match is a
     // smartmatch target, not a value to thread over.
+    //
+    // Which junction threads FIRST is Rakudo's order: a junction INVOCANT,
+    // whatever its kind, so `@a.all.starts-with('x' | 'y')` is an all of anys,
+    // not an any of alls (issue #192); then an all/none argument before an
+    // any/one, as for a sub: `'abc'.substr(0|1, 1&2)` is all(any(…), any(…)).
+    size_t first = args.size();
     for (size_t ai = 0; ai < args.size(); ai++) {
         if (!isJunction(args[ai])) continue;            // the common path stops here
         // Exactly the list the eval arm carried before this moved here — no
@@ -6730,9 +6762,18 @@ Value Interpreter::methodCall(const Value& inv, const std::string& m, ValueList 
         if (inv.t == VT::Hash && inv.hashKind == "FileHandle" &&
             (opEq(m, "say") || opEq(m, "print") || opEq(m, "note") || opEq(m, "put"))) break;
         if (methodTakesJunction(inv, m, ai)) continue;  // the signature asked for it whole
-        Value jr = Value::array(); jr.enumName = args[ai].enumName; jr.isList = true;
-        for (auto& e : *args[ai].arr()) {
-            ValueList a2 = args; a2[ai] = e;
+        if (first == args.size()) first = ai;
+        if (args[ai].enumName == "all" || args[ai].enumName == "none") { first = ai; break; }
+    }
+    if (first < args.size()) {
+        if (junctionInvocantThreads(inv, m)) {
+            Value out = Value::array(); out.enumName = inv.enumName;
+            for (auto& el : *inv.arr()) out.arr()->push_back(methodCall(el, m, args, rwArgs));
+            return out;
+        }
+        Value jr = Value::array(); jr.enumName = args[first].enumName; jr.isList = true;
+        for (auto& e : *args[first].arr()) {
+            ValueList a2 = args; a2[first] = e;
             jr.arr()->push_back(methodCall(inv, m, a2));
         }
         return jr;
@@ -8250,21 +8291,9 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
         for (auto& e : *inv.arr()) collect(e);
         return methodCall(flat, m, args, rwArgs);
     }
-    // (`$j.printf` / `$j.sprintf` AUTOTHREAD like the other methods below: the
-    // format is a Cool, and a Junction is not one — each eigenstate is a format)
-    // any other method on a junction AUTOTHREADS: call it on each eigenstate,
-    // return a junction of the results (`($a & $b).finish`, `$j.defined`, …)
-    // (a METAMODEL call `.^name`/`.^WHAT`/… answers for the Junction ITSELF and is
-    //  excluded here — `(1 & 2).^name` is "Junction", not a junction of "Int")
-    if (!inv.enumName.empty() && inv.t == VT::Array && inv.arr() && !(m.size() && m[0] == '^') &&
-        (inv.enumName == "any" || inv.enumName == "all" || inv.enumName == "one" || inv.enumName == "none")) {
-        static const std::set<std::string> junctionOwn = {
-            "Bool", "so", "not", "gist", "raku", "perl", "WHAT", "WHO", "HOW",
-            "return", "return-rw", // control flow acts on the junction, not each state
-            "WHICH", "WHY", "item", "new", "defined-or", "THREAD",
-            "DEFINITE",             // a Junction IS a defined object — but `.defined` is not that
-                                    // question: it autothreads and collapses (see below)
-            "say", "note"};         // .say/.note gist the junction ("all(1, 2)"); .print autothreads
+    // any other method on a junction AUTOTHREADS (junctionInvocantThreads): call
+    // it on each eigenstate, return a junction of the results (`($a & $b).finish`, …)
+    if (isJunction(inv) && inv.arr() && !(m.size() && m[0] == '^')) {
         // `.defined` autothreads over the eigenstates and COLLAPSES to a plain Bool —
         // `(none 3, Str).defined` is False. It is not an alias for `.Bool`:
         // `(any 0, "").defined` is True while `.Bool` is False.
@@ -8285,15 +8314,7 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
             }
             return out;
         }
-        // A SLICE-derived junction (`%h{any ^2}` / `@a[any(0,1)]`; s carries the
-        // provenance) takes the resizing mutators on its backing array instead of
-        // autothreading them: each thread would die on an Any eigenstate, where
-        // Rakudo's slice junction threads over CONTAINERS that autovivify —
-        // machinery rakupp does not have. Mutating the temporary keeps it the
-        // soft no-op it always was, not a file-killing death.
-        static const std::set<std::string> sliceResizers = {
-            "push", "append", "pop", "unshift", "prepend", "shift", "splice"};
-        if (!junctionOwn.count(m) && !(inv.s == "slice" && sliceResizers.count(m))) {
+        if (junctionInvocantThreads(inv, m)) {
             Value out = Value::array(); out.enumName = inv.enumName;
             out.setArr(makePayload<ValueList>());
             for (auto& el : *inv.arr()) out.arr()->push_back(methodCall(el, m, args, rwArgs));
