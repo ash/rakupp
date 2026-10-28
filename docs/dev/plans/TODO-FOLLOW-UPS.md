@@ -572,6 +572,20 @@ moves to [TODO.md](TODO.md).
   a parameter as bare through VarExpr::bareParam, which the parser sets;
   `.VAR` still sees the Scalar the binder makes. Done when the three lines
   are Rakudo 2026.09's.
+- [ ] **A `let` is not undone when a LEAVE dies during the unwinding**
+  (found 2026-10-28 while fixing issue #205, 099a2055):
+
+  ```raku
+  our $x = 1;
+  sub f { let $x = 5; LEAVE die "from LEAVE"; die "first" }
+  try f(); say $x;    # 5, Rakudo 1
+  ```
+
+  callCallableRaw's and invokeMethod's handlers run the LEAVEs
+  (runLeavePhasers) before runLetRestoresOf, and a LEAVE that dies throws
+  past the restore. 099a2055 made a method put its caller's scope back on that
+  path; nothing restores the `let`s. Done when this prints 1, for a method
+  as well.
 
 ## Processes and diagnostics
 
