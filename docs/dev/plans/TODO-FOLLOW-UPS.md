@@ -1,6 +1,6 @@
 # Follow-ups
 
-*Collected 2026-10-20; added to 2026-10-27.*
+*Collected 2026-10-20; added to 2026-10-28.*
 
 Findings that sessions on 2026-10-19 and 2026-10-20 proposed as follow-up
 work and nobody started: gaps found in passing while doing something else.
@@ -232,6 +232,43 @@ moves to [TODO.md](TODO.md).
   hint is word-wrapped with the rest of the explanation; refuseNotAssociative
   in bindParams does both for `%` and is the model. Done when the two
   messages are Rakudo 2026.09's.
+
+- [ ] **Date and DateTime strings: what is left of the semantics sheet's
+  DT-08 and DT-19** (found 2026-10-28 while fixing issue #208, 0f19ab0e, which made
+  every malformed string X::Temporal::InvalidFormat):
+
+  ```raku
+  say Date.new("٢٠١٠-٠١-٠٢");                       # InvalidFormat, Rakudo 2010-01-02
+  try Date.new(2015, 13, 1); say $!.comment;        # No such method 'comment', Rakudo (Any)
+  try DateTime.new("2012-12-22T07:02:00+00:99");
+  say $!.what, "|", $!.range, "|", $!.got.^name;    # minute|0..59|Str, Rakudo minutes of timezone|0..^60|Rat
+  try DateTime.new("2012-13-22T07:02:00Z"); say $!.got.^name;   # Str, Rakudo Int
+  ```
+
+  isoTemporalShape (src/MethodCallPart2.cpp) takes ASCII digits only, and
+  the reading after it is sscanf's; Rakudo's `\d` is any decimal digit, which
+  `.Int` reads. The three exceptions are thrown in the same `m == "new"` arm.
+  The JS runtime has a check of its own (src/js-rt/40-objects.js, the
+  `pos.length === 1` line, mirrored in src/JsRuntimeSrc.cpp): by reading, its
+  DateTime pattern is not anchored at the end, so trailing text passes, and
+  it wants a time, so `DateTime.new('2023-03-04')` is refused where Rakudo
+  gives midnight. Unchecked: there is no node on the Mac this was found on.
+  Done when the lines above and both probe lines of DT-08 and DT-19 in
+  docs/dev/findings/semantics/Date-Time.md answer as in Rakudo 2026.09,
+  less the two Rakudo bugs the sheet says not to copy.
+
+- [ ] **`Str.new` with a positional answers a string** (found 2026-10-28
+  while fixing issue #208, 0f19ab0e; on ad5482f4 too):
+
+  ```raku
+  say Str.new(1).raku;      # "1", Rakudo: Default constructor for 'Str' only takes named arguments
+  say "Date".new(1).raku;   # "", the same
+  my $t = "Date"; say "[$t.new(1)]";   # [], the same
+  ```
+
+  Rakudo's Mu.new takes named arguments only, so a positional to a class
+  with no `new` of its own dies; the third line is how a test probe written
+  as `"$t.new(...)"` printed empty strings here instead of dying.
 
 ## Control flow and containers
 

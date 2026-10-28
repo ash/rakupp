@@ -20,7 +20,7 @@ e24f05f1 (NUM-UNBOX-PLAN P0); 8644846a; 74806a6d; 93f9a4af and c7a12943;
 cb7933f3 (issue #204); cb5b360a, d5184116 and 50aebf54; 67a2fe76 (issue
 #198) and 4af53b07; 3ddcd58b (issue #207); 2b9494ae (issue #206);
 62e16b9e; fb9009bc (issue #56); 3c80bc24; 48b76d56, a348489b, aa0f3618 and
-fc262224 (issue #195).*
+fc262224 (issue #195); 0f19ab0e (issue #208).*
 
 ---
 
@@ -475,6 +475,18 @@ plain before 500c29e2 and native from it, unless they say otherwise.
   propagates, so a routine's `LEAVE { die "x" }` dies as interpreted. A
   LEAVE that reads its block's variables beside a CATCH bundles the
   program; its C++ did not compile before.
+- **A string that is not an ISO 8601 date or timestamp is
+  X::Temporal::InvalidFormat** (0f19ab0e; issue #208), as in Rakudo.
+  `DateTime.new('')` was 0000-01-01T00:00:00Z, so a missing timestamp read
+  from a file (`%h<at> // ''`) gave an age of about 2026 years. The string
+  constructor refused only a string with no `-` after its first character
+  and read the rest with sscanf: `2020-01-01 `, `2020-1-1`, `999-01-01`,
+  `2020-01-01T10:00`, `2020-01-01 10:00:00`, a bare `T`, `UTC`, `.5,5` and a
+  13-digit fraction were dates, and `Date.new` took a whole timestamp and
+  kept its day. A string has Rakudo's grammar's shape now before it is read,
+  in `Date.new`, `DateTime.new`, `.Date`, `.DateTime` and `Date()`; the
+  exception's `.format` for a DateTime is Rakudo's text, not "an ISO 8601
+  timestamp" alone.
 
 ### Fixed: crashes
 
