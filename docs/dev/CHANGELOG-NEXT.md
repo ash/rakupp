@@ -23,7 +23,7 @@ cb7933f3 (issue #204); cb5b360a, d5184116 and 50aebf54; 67a2fe76 (issue
 fc262224 (issue #195); 0f19ab0e (issue #208); f483f0e6 (issue #192);
 b05e989b (issue #193); 17e33a45 (issue #184); 5f87f445; 0e44c5a6 (issue
 #211); 8c871a25; 079427c0 (issue #175); 357cb4bb (issue #187); 6eddeeb5
-(issue #188).*
+(issue #188); c50eb3b8 (issue #146).*
 
 ---
 
@@ -540,6 +540,14 @@ plain before 500c29e2 and native from it, unless they say otherwise.
   Inside a double-quoted atom the angles around a variable were read as
   the `<$var>` assertion, so `/ "<$tag>" (.*?) "</$tag>" /` found nothing.
   t/regression/regex-quoted-angle-var.raku agrees with Rakudo 2026.09.
+- **`for` over a value in no container walks its `.list`** (c50eb3b8; issue
+  #146): a typed `Channel $in` parameter, a call answering a Channel or a
+  Supply, a Match, an object of a class with its own `list`. Each ran once,
+  with the value itself, so `sub drain(Channel $in) { for $in -> $v { … }
+  }` saw the Channel and not its values. A `$` variable is still one item,
+  and so is a typed parameter holding something Iterable. The module cache
+  is format v53 (VarExpr.bareParam). t/regression/for-over-listing-value.raku
+  agrees with Rakudo 2026.09.
 
 ### Fixed: crashes
 
@@ -869,6 +877,9 @@ does not.
 - In a metaclass `compose` before its `callsame`, `.^can` and
   `.^find_method` still find a public attribute's accessor, where Rakudo
   finds none yet (8c871a25). TODO-FOLLOW-UPS.md has it.
+- `$in.VAR.^name` of a typed `$` parameter says Scalar where Rakudo names
+  the type, and `loop(…)` calling a `&loop` parameter is refused as a
+  malformed loop (c50eb3b8). TODO-FOLLOW-UPS.md has both.
 
 - `--exe` checks no parameter's sigil, `%` included: a compiled `sub
   p(%h)` given `(a => 1, b => 2)` holds the List, as it did before
