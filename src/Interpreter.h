@@ -110,6 +110,9 @@ bool isNativeTypeName(const std::string& n);
 enum class NatKind : unsigned char { None, Int, UInt, Num, Str };
 NatKind nativeKindOf(const std::string& type);
 Value makeCollation();   // a fresh `Collation` (every level on)
+// `&trait_mod:<is>` when no user multi of that name is in scope: the engine's
+// own traits as an inspectable group (see its definition)
+const Value& builtinTraitIsGroup();
 // Installation-repository prefixes, in resolution order.
 const std::vector<std::string>& rakuRepoPrefixes();
 // the stores a search path names (`inst#…` entries), then the default repositories
@@ -2621,6 +2624,9 @@ public:
     // An import must not drop a bare type-object PLACEHOLDER over a routine of
     // the same name that is already in scope (see the definition).
     bool importWouldShadowRoutine(const std::string& key, const Value& val);
+    // …and a multi an EXPORT sub hands over joins the scope's own group of that
+    // name instead of replacing it; true when it did (see the definition)
+    bool importJoinsLocalMulti(const std::string& key, const Value& val);
     struct GrammarHooks codeAssertHooks();
     static bool patHasCodeAssert(const std::string& pat);
     // The pattern a `<{ … }>` block's value stands for, compiled once per
