@@ -31,10 +31,13 @@
 
 #include "IntOps.h"
 
+#include <atomic>
 #include <cstdint>
 #include <deque>
 #include <functional>
 #include <map>
+#include <memory>
+#include <mutex>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -148,19 +151,47 @@ private:
     static constexpr int32_t EMPTY = -1;
     static constexpr int32_t TOMB  = -2;
 
-    // Insertion order; holes stay (dead flag). The entries live in `own_`
-    // until something ALIASES one of them — a Pair that a plain Hash hands out
-    // holds the hash's own container, as Rakudo's do — and from then on in
-    // `gen_`, a generation the aliases co-own (aliasOf). Moving the list keeps
-    // every element where it was, so taking the generation moves nothing. A
-    // clear or an assignment then starts an empty generation and lets the old
-    // one go when its last alias does: a Pair taken before `%h = ()` keeps its
-    // container, and nothing piles up for a hash that is refilled in a loop.
+    // Insertion order; holes stay (dead flag). The entries live in `own_`, and
+    // every access goes there. Once something ALIASES one of them — a Pair that
+    // a plain Hash hands out holds the hash's own container, as Rakudo's do —
+    // `gen_` is a generation the aliases co-own (aliasOf). It stays EMPTY while
+    // the hash holds its entries: a clear, an assignment or the hash's own end
+    // hands them over to it (retireEntries) and lets it go when its last alias
+    // does, so a Pair taken before `%h = ()` keeps its container, and nothing
+    // piles up for a hash that is refilled in a loop.
+    //
+    // Taking the generation therefore moves nothing and leaves `own_` as every
+    // reader sees it. It used to move the entries into the generation there and
+    // then, which made handing out a Pair a WRITE to the hash: two threads
+    // reading one shared hash with `.pairs` both moved it, the second moving an
+    // emptied list — the hash read as `{}`, or its Pairs pointed into a list
+    // already freed — and a thread iterating a hash (`run` reading %*ENV) while
+    // another took its first Pair read the list mid-move (issue #193).
     ChunkList<Entry> own_;
     std::shared_ptr<ChunkList<Entry>> gen_;
-    ChunkList<Entry>& E() { return gen_ ? *gen_ : own_; }
-    const ChunkList<Entry>& E() const { return gen_ ? *gen_ : own_; }
-    void retireEntries() { if (gen_) gen_.reset(); own_.clear(); }
+    // gen_ is made once, under genMutex(), and published here: a thread that
+    // sees the flag set sees gen_ (aliasOf, entriesAliased)
+    std::atomic<bool> genPub_{false};
+    ChunkList<Entry>& E() { return own_; }
+    const ChunkList<Entry>& E() const { return own_; }
+    void retireEntries() {
+        if (gen_) {   // the entries leave with the generation, which keeps them while a Pair does
+            *gen_ = std::move(own_);
+            gen_.reset();
+            genPub_.store(false, std::memory_order_relaxed);
+        }
+        own_.clear();
+    }
+    static std::mutex& genMutex() { static std::mutex m; return m; }
+#if defined(__GNUC__) || defined(__clang__)
+    __attribute__((noinline))
+#endif
+    void makeGeneration() {
+        std::lock_guard<std::mutex> lk(genMutex());
+        if (genPub_.load(std::memory_order_relaxed)) return;   // another thread made it while we waited
+        gen_ = std::make_shared<ChunkList<Entry>>();
+        genPub_.store(true, std::memory_order_release);
+    }
     std::vector<int32_t> index_;   // power-of-two probe table of entry numbers
     size_t live_ = 0;              // entries not dead
     size_t used_ = 0;              // index slots not EMPTY (live + tombstones)
@@ -294,8 +325,31 @@ public:
             if (!oe[i].dead) (*this)[oe[i].kv.first] = oe[i].kv.second;
         return *this;
     }
-    ValueHash(ValueHash&&) = default;
-    ValueHash& operator=(ValueHash&&) = default;
+    // A hash that ends while a Pair still holds one of its entries hands the
+    // entries to the generation, as a clear does (retireEntries)
+    ~ValueHash() { if (gen_) *gen_ = std::move(own_); }
+    ValueHash(ValueHash&& o) noexcept
+        : own_(std::move(o.own_)), gen_(std::move(o.gen_)),
+          genPub_(o.genPub_.load(std::memory_order_relaxed)), index_(std::move(o.index_)),
+          live_(o.live_), used_(o.used_), objKeys_(std::move(o.objKeys_)) {
+        o.genPub_.store(false, std::memory_order_relaxed);
+        o.index_.clear();
+        o.live_ = o.used_ = 0;
+    }
+    ValueHash& operator=(ValueHash&& o) noexcept {
+        if (this == &o) return *this;
+        retireEntries();   // this hash's own entries go to its aliases, if any hold them
+        own_ = std::move(o.own_);
+        gen_ = std::move(o.gen_);
+        genPub_.store(o.genPub_.load(std::memory_order_relaxed), std::memory_order_relaxed);
+        o.genPub_.store(false, std::memory_order_relaxed);
+        index_ = std::move(o.index_);
+        o.index_.clear();
+        live_ = o.live_; used_ = o.used_;
+        o.live_ = o.used_ = 0;
+        objKeys_ = std::move(o.objKeys_);
+        return *this;
+    }
     // Bridge from the deliberate sorted locals: sorted order becomes
     // insertion order, so downstream iteration keeps what the caller built.
     ValueHash(const std::map<std::string, Value>& m) {
@@ -352,10 +406,12 @@ public:
     void clear() { retireEntries(); index_.clear(); live_ = used_ = 0; }
 
     // A shared_ptr to `v`, the Value of one of THIS hash's entries, that keeps
-    // the entry alive whatever later happens to the hash (see gen_). The first
-    // call moves the entries into their own generation; nothing is relocated.
+    // the entry alive whatever later happens to the hash (see gen_). Threads
+    // that only READ the hash call this — `.pairs` on a hash several `start`
+    // blocks share — so the first makes the generation under the lock and the
+    // rest find it published.
     PRef<Value> aliasOf(Value& v) {
-        if (!gen_) { gen_ = std::make_shared<ChunkList<Entry>>(std::move(own_)); own_.clear(); }
+        if (!genPub_.load(std::memory_order_acquire)) makeGeneration();
         return makeValueAlias(gen_, &v);
     }
 
@@ -370,7 +426,7 @@ public:
         for (size_t i = 0; i < es.size(); i++) if (!f(es[i].kv.second)) return;
         for (const auto& kv : objKeys_) if (!f(kv.second)) return;
     }
-    bool entriesAliased() const { return gen_ && gen_.use_count() > 1; }
+    bool entriesAliased() const { return genPub_.load(std::memory_order_acquire) && gen_.use_count() > 1; }
     bool holdsNothing() const { return E().size() == 0 && objKeys_.empty(); }
 
     iterator find(const std::string& key) {

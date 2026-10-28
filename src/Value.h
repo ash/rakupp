@@ -601,8 +601,14 @@ struct CodeInfo : RefCounted {
     // 1 = a plain sub: every step of a call that its shape rules out can be
     // left out (Interpreter::callPlainSub); 2 = one whose parameters or return
     // type name a core type the lean binder takes too (Param::leanType,
-    // leanRet); 0 = not; -1 = not yet decided.
-    mutable DecidedOnce<signed char> plainShape{-1};
+    // leanRet); 0 = not; -1 = not yet decided. PublishedOnce, because the
+    // flag is all a thread taking callPlainSub reads before it uses padLayout
+    // and the parameters' padSlot — the payload another thread's first call
+    // built (padReady publishes it to the thread that decides this one). As
+    // a relaxed flag, a thread could see 1 and the layout half-built:
+    // ThreadSanitizer named it from eight `start` blocks making a sub's first
+    // calls at once (issue #193).
+    mutable PublishedOnce<signed char> plainShape{-1};
     mutable DecidedOnce<signed char> leanRet{0};   // (a LeanType, for plainShape 2)
     mutable KernelSlot intKernel;
     // 1 = the body mentions `@_` (bodyUsesAtUnderscore): a method with no
