@@ -21,7 +21,7 @@ cb7933f3 (issue #204); cb5b360a, d5184116 and 50aebf54; 67a2fe76 (issue
 #198) and 4af53b07; 3ddcd58b (issue #207); 2b9494ae (issue #206);
 62e16b9e; fb9009bc (issue #56); 3c80bc24; 48b76d56, a348489b, aa0f3618 and
 fc262224 (issue #195); 0f19ab0e (issue #208); f483f0e6 (issue #192);
-b05e989b (issue #193).*
+b05e989b (issue #193); 17e33a45 (issue #184).*
 
 ---
 
@@ -497,6 +497,21 @@ plain before 500c29e2 and native from it, unless they say otherwise.
   Among the arguments an all/none junction threads before an any/one, as a
   sub's already did: `'abc'.substr(0|1, 1&2)` was any(all(a, ab), all(b,
   bc)), and is all(any(a, b), any(ab, bc)).
+- **An alias of a typed container's element keeps the container's type**
+  (17e33a45; issue #184), as in Rakudo. `my Int @a = 1, 2, 3; my $e :=
+  @a[1]; $e = 'foo'` stored the Str, and `$e.VAR.of` died "No such method
+  'of'". A type here lives with the variable's name, which an alias does not
+  share; each alias of an element now carries the container's guard, so a
+  store through it refuses what the element type refuses, converts for a
+  coercion type, and resets the element on Nil (which it stored as Nil):
+  `:=` and `\x` binds, `is rw` and sigilless parameters, `for` over the
+  array, its views and `%h.values`, `given`, and `.map`'s and `.grep`'s `$_`,
+  for arrays, hashes and attributes' elements. `$x := @a.AT-POS(1)` and
+  `%h.AT-KEY("k")` alias the element, where they bound a copy, and
+  `@a[0].VAR` answers the element type, its default and the container's
+  name (`@a`; it was `element`). An untyped container's aliases cost what
+  they did; a typed one's are checked now: 300k `:=` binds and stores 135 →
+  192 ms, a `for` writing 1M elements 169 → 199 ms.
 
 ### Fixed: crashes
 
@@ -783,6 +798,13 @@ does not.
   t/regression/issue-206-text-after-block.raku agrees with Rakudo 2026.09.
 
 ### Left open
+
+- A scalar alias still drops its variable's type (`my Int $a; my $b := $a;
+  $b = 'x'`, or `f($a)` for an `is rw` parameter, both stored); a `for`
+  loop's, `given`'s or `.map`'s alias of a typed element refuses at its
+  write-back, after the rest of the body; `.hyper.map`, `for @a.kv -> $k,
+  $v is rw` and `.first` still store anything; and `my Int:D @d; @d[0] =
+  Nil` is still taken. TODO-FOLLOW-UPS.md has each (17e33a45).
 
 - `--exe` checks no parameter's sigil, `%` included: a compiled `sub
   p(%h)` given `(a => 1, b => 2)` holds the List, as it did before
