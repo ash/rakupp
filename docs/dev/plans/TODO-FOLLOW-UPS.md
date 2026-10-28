@@ -121,6 +121,20 @@ moves to [TODO.md](TODO.md).
   search found nothing until 0e44c5a6 made a user group list the engine's
   candidates too. Done when B is refused as in Rakudo and b-count is 9;
   size it with the TODO.md item, which is the same chain.
+- [ ] **`loop(…)` calling a `&loop` parameter is parsed as a loop** (found
+  2026-10-28 while writing c50eb3b8's test, for issue #146):
+
+  ```raku
+  sub count(&loop) { my $n = 0; loop({ $n++ }); loop({ $n++ }); $n }
+  say count(-> &b { b() });
+  # Raku++: Malformed loop spec (expected 3 parts separated by semicolon, got 1)
+  # Rakudo 2026.09: 2
+  ```
+
+  Rakudo reads a keyword followed straight by `(`, with no space, as a call
+  of that name, and calls the `&loop` in scope. Here the statement parser
+  takes `loop` as the loop keyword whatever follows it. Done when the
+  program prints 2; check `if(…)`, `while(…)` and `for(…)` beside it.
 
 ## Operators and types
 
@@ -564,6 +578,70 @@ moves to [TODO.md](TODO.md).
   guards are destroyed as ExitEx unwinds. Change both at once, since
   t/exe/run.raku holds them to each other. Done when the line above prints
   nothing in either, and END still runs.
+- [ ] **A typed `$` parameter's `.VAR` is a Scalar** (found 2026-10-28
+  while fixing issue #146, c50eb3b8; the same before it):
+
+  ```raku
+  sub t(Channel $in) { say $in.VAR.^name }   # Scalar, Rakudo Channel
+  t(Channel.new);
+  sub s(Str $s) { say $s.VAR.^name }         # Scalar, Rakudo Str
+  s('x');
+  sub l(List $l) { say $l.VAR.^name }        # Scalar in both
+  l((1, 2));
+  ```
+
+  Rakudo binds a typed read-only `$` parameter to its value with no Scalar
+  around it; its binder itemizes an Iterable, and an untyped or Any
+  parameter is handed its argument's container. c50eb3b8 made `for` read such
+  a parameter as bare through VarExpr::bareParam, which the parser sets;
+  `.VAR` still sees the Scalar the binder makes. Done when the three lines
+  are Rakudo 2026.09's.
+- [ ] **A `let` is not undone when a LEAVE dies during the unwinding**
+  (found 2026-10-28 while fixing issue #205, 099a2055):
+
+  ```raku
+  our $x = 1;
+  sub f { let $x = 5; LEAVE die "from LEAVE"; die "first" }
+  try f(); say $x;    # 5, Rakudo 1
+  ```
+
+  callCallableRaw's and invokeMethod's handlers run the LEAVEs
+  (runLeavePhasers) before runLetRestoresOf, and a LEAVE that dies throws
+  past the restore. 099a2055 made a method put its caller's scope back on that
+  path; nothing restores the `let`s. Done when this prints 1, for a method
+  as well.
+- [ ] **A write past a Buf's end grows a buffer only one holder sees**
+  (found 2026-10-28 while fixing issue #186, 18ef8f73; the same before it):
+
+  ```raku
+  my $d = Buf.new(1); my $e = $d;
+  $e.write-uint8(3, 9);
+  say $d.elems;    # 1, Rakudo 4
+  ```
+
+  18ef8f73 writes within a Buf in place (CowStr::mutInPlace), but growing one —
+  bufBitOp's `wbytes`, the element store in evalAssignInner and
+  rtElemStoreN's bufElemStore — detaches it first (`mut()`), so every other
+  holder keeps the old bytes. A routine that grows a Buf it was passed
+  reaches an interpreted caller by copy-back (setupRwLinks' rwSynced, and
+  rtAotParamBack for a native body) but not a compiled one, which is why
+  t/aot/cases/buf-args leaves that case out. Growing the shared body in
+  place moves its bytes, so a pointer handed to C (nativecast,
+  NativeHelpers::Blob's pointer-to) needs thought first. Done when this
+  prints 4, and a compiled caller sees what `sub widen(Buf $b) {
+  $b.write-uint8($b.elems, 9) }` added.
+- [ ] **`$b[1]++` on a Buf element dies** (found 2026-10-28 while fixing
+  issue #186, 18ef8f73; the same on 50122f46):
+
+  ```raku
+  my $b = Buf.new(1, 2);
+  $b[1]++;          # Index out of range. Is: 1, should be in 0..0
+  say $b.list;      # Rakudo (1 3)
+  ```
+
+  `$b[0] += 10` and `$b[1] = 7` are right; only the step is not, in a
+  variable and in a parameter alike. Done when it prints Rakudo's (1 3),
+  compiled too.
 
 ## Processes and diagnostics
 
@@ -748,11 +826,13 @@ moves to [TODO.md](TODO.md).
   MethodCallPart1b/1c segments out of it, and can cut another. Done when it
   is under 10,000 and the named ceiling is gone.
 
-- [ ] **Split src/InterpreterCore.cpp** (2026-10-28, 642a320a): the named
-  ceiling of 32,900 that 34d064ca recorded had one line left on 50122f46,
-  and the `try`/trailing-CATCH fix took the file to 32,923, so
-  tools/source-helpers/budget.txt gives it 33,000 rather than split it
-  inside a fix. tools/source-helpers/interpreter.plan is the plan that
+- [ ] **Split src/InterpreterCore.cpp** (2026-10-28, c50eb3b8 and
+  642a320a): the named ceiling of 32,900 that 34d064ca recorded had one
+  line left on 50122f46. Two fixes on parallel branches each passed it —
+  the `for` over an uncontained value to 32,909, the `try`/trailing-CATCH
+  one to 32,923 — and each gave it 33,000 in tools/source-helpers/budget.txt
+  rather than split it inside a fix; together they take it to 32,951.
+  tools/source-helpers/interpreter.plan is the plan that
   split Interpreter.cpp, and split.raku can cut along another one. Done
   when it is under its 34d064ca ceiling again.
 
@@ -826,6 +906,23 @@ moves to [TODO.md](TODO.md).
   element): guard the op= path as evalAssignInner's general path is guarded.
   A call argument cannot take the flag, since the call would run. Done when
   the first four run within 2x of `my $x = f($i) // next`.
+- [ ] **Passing a Buf or a Blob to a routine costs its size** (issue #177;
+  the cause found 2026-10-28 while fixing issue #186, 18ef8f73):
+
+  ```raku
+  sub f(Blob:D $x) { 1 }
+  sub g(Blob:D $x is copy) { 1 }
+  my $b = Blob.new(buf8.allocate(16 * 1048576, 65));
+  # f($b): 1.09 ms a call; g($b): 0.000 ms
+  ```
+
+  setupRwLinks (src/InterpreterCore.cpp) snapshots a plain `$` parameter
+  bound to a Buf or a Blob into rwSynced, and copyOutRw compares the
+  parameter with that snapshot when the call returns (syncedUnchanged →
+  valueEqv), byte by byte; `is copy` skips both. A Blob is immutable and
+  needs no copy-back at all, and a Buf's could first ask whether its body is
+  still the same one (CowStr::sameRep). Done when f($b) costs what g($b)
+  does and t/regression/buf-write-in-place.raku still passes.
 
 ## Gates
 

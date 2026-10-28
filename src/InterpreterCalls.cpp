@@ -1254,6 +1254,32 @@ Value Interpreter::iterationSourceOf(Value v) {
     return it.t == VT::Array || it.t == VT::Range ? it : v;
 }
 
+// A `for` over a value held in NO container iterates what the value's `.list`
+// gives, as Rakudo's Any.iterator is `self.list.iterator`: a Channel's or a
+// Supply's values, a Match's positional captures, the answer of a class's own
+// `list`. `for mk-channel() { … }` ran once, with the Channel itself, and so
+// did `for $in` over a `Channel $in` parameter (issue #146). An Array, a Range,
+// a Hash and an Iterator are walked as they are, before this is asked.
+// A value a `$` variable held keeps `itemized` wherever it goes, but none of
+// these is Iterable, so Rakudo's container does not survive a routine's
+// return, the binding of a typed parameter or a `:=`: `bare` says the loop's
+// list is one of those, and then the flag is no container. Anywhere else it
+// is (`for $($c)`, `for %h<c>` run once).
+bool Interpreter::forListsValue(const Value& v, bool bare) {
+    if (v.itemized && !bare) return false;
+    if (v.t == VT::Hash) return v.hashKind == "Channel" || v.hashKind == "Supply";
+    if (v.t == VT::Match) return true;
+    return v.t == VT::Object && v.obj() && v.obj()->cls && !v.obj()->hasBoxed &&
+           v.obj()->cls->findMethod("list") && !v.obj()->cls->findMethod("pull-one");
+}
+Value Interpreter::forListOf(const Value& v) {
+    Value l = methodCall(v, "list", ValueList{});
+    // (a Channel's list is lazy — each value is received as it is read —
+    // so it is walked as it is, as `for @$c` walks it)
+    if ((l.t == VT::Array && l.arr()) || l.t == VT::Range) { l.itemized = false; return l; }
+    Value a = Value::array(); a.isList = true; a.arr()->push_back(l); return a;
+}
+
 // The values an object contributes when it is assigned to a `%` container —
 // see g_objListItems. `.list` wins over `.iterator` (that is the order Rakudo
 // reaches them in), and an attribute's `handles` counts as supplying either:

@@ -302,6 +302,10 @@ struct VarExpr : Expr {
     // if it was declared with one, is d().readType): what a compiled store into
     // it checks and resets to (Codegen::scalarStore)
     bool lexResolved = false;
+    // …and resolved to a typed, read-only `$` PARAMETER (`Channel $in`):
+    // Rakudo binds that to the value itself, in no Scalar, so `for $in`
+    // iterates what a Channel, a Supply or a Match lists (issue #146)
+    bool bareParam = false;
     bool pkgSymbol = false;      // `Foo::<bar>` — a package symbol-table slot; assigning autovivifies it
     // Written as a pseudo-package lookup (`MY::<$x>`, `LEXICAL::<$y>`): a MISS is
     // an answer, not a compile error. Rakudo hands back Nil before 6.e and a

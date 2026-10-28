@@ -11354,6 +11354,7 @@ void Parser::noteScalarDecls(const Expr* e) {
     scalarDeclTypes_.back()[ve->name] = ve->d().declType;
     nativeIntDecl_.back()[ve->name] = nativeScalarKind(ve->d().declType);
     scalarDeclType_.back()[ve->name] = ve->d().declType;
+    bareParamDecl_.back().erase(ve->name);
 }
 
 // A `$name` use and the declaration of it in this block or any around it,
@@ -11374,6 +11375,8 @@ void Parser::resolveScalarDecl(VarExpr& e) {
         if (it != fr->end()) {
             e.lexResolved = true;
             if (!it->second.empty()) e.dm().readType = it->second;
+            const size_t at = (size_t)(scalarDeclType_.rend() - fr) - 1;
+            e.bareParam = at < bareParamDecl_.size() && bareParamDecl_[at].count(e.name);
             break;
         }
     }
@@ -11528,6 +11531,8 @@ std::unique_ptr<Block> Parser::parseBlock() {
     scalarDeclType_.emplace_back();
     for (auto& pt : pendingParamType_) scalarDeclType_.back()[pt.first] = pt.second;
     pendingParamType_.clear();
+    bareParamDecl_.emplace_back(pendingParamBare_.begin(), pendingParamBare_.end());
+    pendingParamBare_.clear();
     dynUsed_.emplace_back();
     lexUsed_.emplace_back(); lexDecl_.emplace_back();
     for (auto& pn : pendingParamNames_) lexDecl_.back().insert(pn);
@@ -11557,6 +11562,7 @@ std::unique_ptr<Block> Parser::parseBlock() {
     scalarDeclTypes_.pop_back();
     if (nativeIntDecl_.size() > 1) nativeIntDecl_.pop_back();
     if (scalarDeclType_.size() > 1) scalarDeclType_.pop_back();
+    if (bareParamDecl_.size() > 1) bareParamDecl_.pop_back();
     if (dynUsed_.size() > 1) dynUsed_.pop_back();
     if (lexUsed_.size() > 1) { lexUsed_.pop_back(); lexDecl_.pop_back(); }
     varsPragma_ = savedVarsPragma;
@@ -12971,12 +12977,17 @@ std::vector<Param> Parser::parseSignature(Tok closeTok) {
     pendingParamNames_.clear();
     pendingParamNative_.clear();
     pendingParamType_.clear();
+    pendingParamBare_.clear();
     std::function<void(const std::vector<Param>&)> addNames = [&](const std::vector<Param>& ps) {
         for (auto& p : ps) {
             if (!p.name.empty()) pendingParamNames_.push_back(p.name);
             if (p.name.size() > 1 && p.name[0] == '$') {
                 pendingParamNative_.emplace_back(p.name, nativeScalarKind(p.type));
                 pendingParamType_.emplace_back(p.name, p.type);
+                // (an untyped one, Any or Mu, is passed its argument's Scalar)
+                if (!p.type.empty() && p.type != "Any" && p.type != "Mu" && !p.typeCapture &&
+                    !p.isRw && !p.isCopy && !p.isRaw && !p.slurpy)
+                    pendingParamBare_.push_back(p.name);
             }
             if (p.subSig) addNames(*p.subSig);
         }

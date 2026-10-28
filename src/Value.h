@@ -254,6 +254,12 @@ public:
         b->nfc.store(-1, std::memory_order_relaxed);
         return b->text.empty() ? nullptr : &b->text[0];
     }
+    // …and the same storage as a string, for a write that keeps its length
+    // (Interpreter::bufBitOp's `write-uint16` and the rest)
+    std::string& textInPlace() {
+        mutInPlace();
+        return p_ ? const_cast<StrBody*>(p_.get())->text : s_;
+    }
 
     // Write access. A SHARED body is detached from first, so a mutation never
     // reaches another Value holding the same text; the copy stays inline until

@@ -9930,6 +9930,11 @@ std::string emitAotPass(SubDecl* d, const std::string& fn, const AotNames& names
             const std::string k = g.gensym("__pk"), c = g.gensym("__pc");
             g.line(2, "static const std::string " + k + " = " + cesc(n) + "; static std::atomic<uint64_t> " + c + "{0};");
             g.line(2, g.declVar(n, "rtAotParamAt(__env, " + k + ", " + c + ")") + "; (void)" + mangleVar(n) + ";");
+            // a `$` parameter the caller gets back when it changes (a Buf):
+            // the body works on the copy above, so it goes back to the frame
+            // on the way out, however the body is left (rtAotParamBack)
+            if (n[0] == '$' && n.size() > 1 && n != "$_" && n != "$/" && n != "$!")
+                g.line(2, "AotParamBack " + g.gensym("__pb") + "{__env, " + k + ", " + mangleVar(n) + "};");
             if (n == "$/" || n == "$!") g.boundSpecials.insert(n);
             if (n[0] == '&') g.codeVars.insert(n.substr(1));
         }

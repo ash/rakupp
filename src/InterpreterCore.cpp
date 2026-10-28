@@ -1414,9 +1414,12 @@ Value Interpreter::execBlockFull(Block* b, std::shared_ptr<Env> scope, bool sink
     // block's outgoing value being defined (Nil, a Failure, the undefined
     // result of an `if`/`for` are not) and no cooperative `next`/`last` in
     // flight (Rakudo, probed: `say` last → KEEP, `for` last → UNDO, `Nil` → UNDO).
+    // Nor is a `return` passing through: it leaves the ROUTINE successfully,
+    // and every block it unwinds on the way (`if`, `for`, a bare block) runs
+    // its UNDO (#77: Red commits a transaction its KEEP should not see)
     {
         const Value& outV = tcx.returning ? tcx.returnV : last;
-        const bool ok = !tcx.loopCtl && isDefined(outV) &&
+        const bool ok = !tcx.loopCtl && !tcx.returning && isDefined(outV) &&
                         !(outV.t == VT::Hash && outV.hashKind == "Failure");
         // …but a POST checks every NORMAL exit, whatever the value (a sunk
         // block's last statement has none to offer) — and reads that value as
@@ -1430,8 +1433,9 @@ Value Interpreter::execBlockFull(Block* b, std::shared_ptr<Env> scope, bool sink
             drainTempRestores(tcx.cur.get(), tempMark);
         }
         // `let` undoes itself when the block is left UNSUCCESSFULLY — an
-        // undefined (or Failure) value is that, even on a normal exit
-        if (!ok && !tcx.loopCtl && !tcx.returning && !sharesScope && tcx.cur && tcx.cur->ex &&
+        // undefined (or Failure) value is that, even on a normal exit, and so
+        // is a `return` passing through
+        if (!ok && !tcx.loopCtl && !sharesScope && tcx.cur && tcx.cur->ex &&
             !tcx.cur->ex->letRestores.empty()) {
             for (auto it = tcx.cur->ex->letRestores.rbegin(); it != tcx.cur->ex->letRestores.rend(); ++it) (*it)();
             tcx.cur->ex->letRestores.clear();
@@ -3175,12 +3179,18 @@ Value Interpreter::execForStmt(Stmt* s, bool sink) {
             // so its container-ness rides in on the value's own flag
             // (`given @a { … for $_ }` iterates, `given $x { … }` does not)
             // (…but a Slip is never one item, held in a scalar or not)
-            bool oneItem = !viaIterator && !(lv.t == VT::Array && lv.arr() && lv.s == "Slip") &&
-                (lv.itemized ||
-                (fs->list->kind == NK::VarExpr && !static_cast<VarExpr*>(fs->list.get())->name.empty() &&
-                 static_cast<VarExpr*>(fs->list.get())->name[0] == '$' &&
-                 static_cast<VarExpr*>(fs->list.get())->name != "$_" &&
-                 !valueBoundVar(static_cast<VarExpr*>(fs->list.get())->name)));   // `$x := <value>` is no container
+            // A value in no container that is not Iterable is walked as what
+            // its `.list` gives — a Channel, a Supply, a Match: forListsValue —
+            // and a typed parameter holds one bare (VarExpr::bareParam)
+            const auto* sv = fs->list->kind == NK::VarExpr ? static_cast<const VarExpr*>(fs->list.get()) : nullptr;
+            const bool dollar = sv && sv->name.size() > 1 && sv->name[0] == '$' && sv->name != "$_";
+            const bool valueBound = dollar && valueBoundVar(sv->name);   // `$x := <value>` is no container
+            const bool lists = !viaIterator && !(dollar && !valueBound && !sv->bareParam) &&
+                forListsValue(lv, valueBound || (dollar && sv->bareParam) ||
+                                  fs->list->kind == NK::Call || fs->list->kind == NK::MethodCall);
+            bool oneItem = !viaIterator && !(lv.t == VT::Array && lv.arr() && lv.s == "Slip") && !lists &&
+                (lv.itemized || (dollar && !valueBound));
+            if (lists) { lv = forListOf(lv); drainIfFiniteLazy(lv); }
             // an ENDLESS lazy source iterates LIVE, growing just-in-time —
             // a snapshot would freeze `.say for (1 xx *)` at the cached
             // prefix (issue #30); finite lazies were drained above.
@@ -3317,12 +3327,18 @@ Value Interpreter::execForStmt(Stmt* s, bool sink) {
         }
         return false;
     };
-    bool scalarItem = !viaIterator && !(listv.t == VT::Array && listv.s == "Slip" && listv.arr()) &&
-        (listv.itemized ||
-        (fs->list->kind == NK::VarExpr && !static_cast<VarExpr*>(fs->list.get())->name.empty()
-         && static_cast<VarExpr*>(fs->list.get())->name[0] == '$'
-         && static_cast<VarExpr*>(fs->list.get())->name != "$_"
-         && !isConstantVar(static_cast<VarExpr*>(fs->list.get())->name)));
+    // A value in no container that is not Iterable is walked as what its
+    // `.list` gives — a Channel, a Supply, a Match: forListsValue — and a
+    // typed parameter holds one bare (VarExpr::bareParam).
+    const auto* sv = fs->list->kind == NK::VarExpr ? static_cast<const VarExpr*>(fs->list.get()) : nullptr;
+    const bool dollar = sv && sv->name.size() > 1 && sv->name[0] == '$' && sv->name != "$_";
+    const bool constantVar = dollar && isConstantVar(sv->name);
+    const bool lists = !viaIterator && !(dollar && !constantVar && !sv->bareParam) &&
+        forListsValue(listv, constantVar || (dollar && sv->bareParam) ||
+                             fs->list->kind == NK::Call || fs->list->kind == NK::MethodCall);
+    bool scalarItem = !viaIterator && !(listv.t == VT::Array && listv.s == "Slip" && listv.arr()) && !lists &&
+        (listv.itemized || (dollar && !constantVar));
+    if (lists) { listv = forListOf(listv); drainIfFiniteLazy(listv); }
     // Each element of an ARRAY lives in its own scalar container, so
     // iterating one hands the body an ITEMIZED value: over `my @t =
     // (1,2),(3,4)`, Rakudo's `for @t { say $_.raku }` says `$(1, 2)`.
@@ -9524,15 +9540,19 @@ resumeBody:
             }
         }
     } catch (ReturnEx& r) {
+        // an OUTER routine's `return` (or one in a block called as a Code) is
+        // unwinding this one: UNDO (`sub wrap(&b) { UNDO …; b() }; wrap { return 42 }`, #77)
+        const bool ours = isRoutine && !(r.target && r.target != savedFrameTop && r.target < savedFrameTop);
         if (c.ci().body) {
             struct LR { ExecContext& t; const Value* p; ~LR() { t.leaveResult = p; } } lr{tcx, tcx.leaveResult};
             tcx.leaveResult = &r.v;
-            // KEEP on a DEFINED result, UNDO on an undefined one (or a Failure)
-            runLeavePhasers(*c.ci().body, isDefined(r.v) && !(r.v.t == VT::Hash && r.v.hashKind == "Failure"), 0, 1);
+            // KEEP on a DEFINED result, UNDO on an undefined one (or a Failure); POSTs run either way
+            runLeavePhasers(*c.ci().body, ours && isDefined(r.v) && !(r.v.t == VT::Hash && r.v.hashKind == "Failure"), 0, 1);
         }
         // `let` restores on an unsuccessful exit, and `fail`/an undefined
-        // return is one (`sub f { let $x = 10; fail 'foo' }` leaves $x as it was)
-        if (isRoutine && (!isDefined(r.v) || (r.v.t == VT::Hash && r.v.hashKind == "Failure")))
+        // return is one (`sub f { let $x = 10; fail 'foo' }` leaves $x as it was),
+        // as is a return passing through on its way out
+        if (isRoutine && (!ours || !isDefined(r.v) || (r.v.t == VT::Hash && r.v.hashKind == "Failure")))
             runLetRestoresOf(tcx.cur);
         restore();
         // `return` returns from the innermost enclosing ROUTINE, not from a bare
@@ -10959,6 +10979,12 @@ Value Interpreter::invokeMethod(const Value& codeVal, const Value& self, ValueLi
     }
     auto saved = tcx.cur;
     tcx.cur = env;
+    // Every exit below puts the caller's scope back by hand, but a LEAVE that
+    // dies while the method unwinds throws past that line: the caller's CATCH
+    // then ran in the method's scope and could not see its own lexicals
+    // (X::Undeclared, issue #205). The sub path has DynRestore for this.
+    struct CurGuard { ExecContext& t; const std::shared_ptr<Env>& s;
+        ~CurGuard() { if (t.cur != s) t.cur = s; } } curG{tcx, saved};
     // state declarations in this method's body must write to ITS stateEnv (the
     // one spliced into env->parent above), not the caller's; RAII restores on
     // every exit path
@@ -11092,14 +11118,14 @@ Value Interpreter::invokeMethod(const Value& codeVal, const Value& self, ValueLi
     auto leaveOk = [](const Value& v) {
         return isDefined(v) && !(v.t == VT::Hash && v.hashKind == "Failure");
     };
-    auto runLeaves = [&](bool ok, const Value* result = nullptr) {
+    auto runLeaves = [&](bool ok, const Value* result = nullptr, int postOk = -1) {
         if (phasersDone || !c.ci().body) return;
         const bool temps = tcx.cur && tcx.cur->ex && tcx.cur->ex->tempRestores.size() > tempMark0;
         if (!hasPhasers && !temps) return;
         phasersDone = true;
         struct LR { ExecContext& t; const Value* p; ~LR() { t.leaveResult = p; } } lr{tcx, tcx.leaveResult};
         tcx.leaveResult = result;   // POST's $_
-        runLeavePhasers(*c.ci().body, ok, tempMark0);
+        runLeavePhasers(*c.ci().body, ok, tempMark0, postOk);
     };
     size_t resumeAt = 0, runningStmt = 0;   // `.resume` in the CATCH: see callCallable
     CatchReg catchReg{tcx, catchBlk, c.ci().body, tcx.cur};
@@ -11188,7 +11214,11 @@ resumeMethodBody:
             }
             if (trailingCatch && !explicitTailReturn) last = Value::nil();
         }
-    } catch (ReturnEx& r) { if (r.target && r.target < savedFrameTop) { runLeaves(true, &r.v); tcx.cur = saved; throw; }
+    } catch (ReturnEx& r) { // an outer routine's `return` passing through unwinds this
+                            // method: UNDO, the `let`s undone, POST still checked (#77)
+                            if (r.target && r.target < savedFrameTop) {
+                                runLeaves(false, &r.v, 1); runLetRestoresOf(tcx.cur); tcx.cur = saved; throw;
+                            }
                             runLeaves(leaveOk(r.v), &r.v); tcx.cur = saved; copyOutRw(c.ci().params, env, rwArgs);
                             if (selfBack) if (Value* sp = env->find("self")) *selfBack = *sp;
                             return checkRetType(c, std::move(r.v)); }
@@ -27498,12 +27528,15 @@ Value Interpreter::evalIndex(Index* idx) {
     // NativeCall CArray / Pointer element read (`$carray[$i]`): byte-backed
     // (CArray.new/allocate stores packed bytes) or a live native pointer.
     if (!idx->isHash && idx->index && !idx->multiDim) {
-        // a Range/list subscript slices: `$carray[^$n]` is the first $n elements
-        // (how a native out-buffer gets read back into a Buf)
-        if ((base.t == VT::Str && base.hashKind == "CArray") ||
-            (base.t == VT::Hash && (base.hashKind == "CArray" || base.hashKind == "Pointer") &&
-             base.hash()->count("addr"))) {
+        long long liveAddr; std::string of;
+        const bool local = base.t == VT::Str && base.hashKind == "CArray";
+        if (local || (base.t == VT::Hash && (base.hashKind == "CArray" || base.hashKind == "Pointer") &&
+                      ncLiveAddrOf(base, liveAddr, of))) {
+            // the subscript is evaluated once, whatever it turns out to be:
+            // `$c[$i++]` read the element after and left $i at 2 (issue #187)
             Value kv = subscriptKey(idx->index.get());
+            // a Range/list subscript slices: `$carray[^$n]` is the first $n elements
+            // (how a native out-buffer gets read back into a Buf)
             if (kv.t == VT::Range || (kv.t == VT::Array && kv.arr())) {
                 bool live = base.t == VT::Hash;
                 std::string et = live ? (base.hash()->count("of") ? (*base.hash())["of"].toStr() : "int64")
@@ -27520,13 +27553,8 @@ Value Interpreter::evalIndex(Index* idx) {
                 }
                 return out;
             }
-        }
-        if (base.t == VT::Str && base.hashKind == "CArray")
-            return ncLocalAt(base, subscriptKey(idx->index.get()).toInt());
-        long long liveAddr; std::string of;
-        if (base.t == VT::Hash && (base.hashKind == "CArray" || base.hashKind == "Pointer") &&
-            ncLiveAddrOf(base, liveAddr, of)) {
-            long long i = subscriptKey(idx->index.get()).toInt();
+            if (local) return ncLocalAt(base, kv.toInt());
+            long long i = kv.toInt();
             Value el = ncReadElem(liveAddr, of, i);
             if (base.hashKind == "CArray") el = ncClassElem(std::move(el), nullptr, of, i);
             if (ncIsPointerElem(of) && el.t == VT::Int) return ncMakeLiveCArray(of, (void*)(intptr_t)el.toInt());

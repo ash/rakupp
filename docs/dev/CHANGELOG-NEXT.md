@@ -22,7 +22,9 @@ cb7933f3 (issue #204); cb5b360a, d5184116 and 50aebf54; 67a2fe76 (issue
 62e16b9e; fb9009bc (issue #56); 3c80bc24; 48b76d56, a348489b, aa0f3618 and
 fc262224 (issue #195); 0f19ab0e (issue #208); f483f0e6 (issue #192);
 b05e989b (issue #193); 17e33a45 (issue #184); 5f87f445; 0e44c5a6 (issue
-#211); 8c871a25; 642a320a.*
+#211); 8c871a25; 079427c0 (issue #175); 357cb4bb (issue #187); 6eddeeb5
+(issue #188); c50eb3b8 (issue #146); 09018c67 (issue #77); 099a2055 (issue
+#205); 18ef8f73 (issues #186 and #178); 642a320a.*
 
 ---
 
@@ -189,6 +191,11 @@ plain before 500c29e2 and native from it, unless they say otherwise.
   and `-O`: `// next` 0.2 / 0.1, `or next` 0.1 / 0.1, `// return` 0.2 / 0.1
   (`next without` 0.2 / 0.1). Before, that script bundled, and `// next`
   compiled on its own cost ~3. A `redo` keeps the exception.
+- **`read-uint64` and the other `read-*` methods of a Buf copy nothing**
+  (18ef8f73; issue #178). Each call copied the whole buffer when another Value
+  shared it: on an 8 KB, 800 KB and 8 MB Buf a call cost 0.38, 11.35 and
+  116.33 µs, and costs 0.31, 0.29 and 0.27 µs now (Rakudo 2026.09: 0.29,
+  0.66, 0.22; the issue's script, interpreted).
 
 ### New
 
@@ -531,6 +538,39 @@ plain before 500c29e2 and native from it, unless they say otherwise.
   the `&trait_mod:<is>` NativeLibs' EXPORT sub hands back was bound over the
   module's own group. A multi an EXPORT sub returns joins a same-named group
   the importing scope declared now, as an exported `multi` already did.
+- **A CArray subscript is evaluated once** (357cb4bb; issue #187): `$c[$i++]`
+  read the element after the one asked for and left `$i` at 2, interpreted
+  and compiled. t/regression/carray-index-once.raku agrees with Rakudo
+  2026.09.
+- **`"<$k>"` in a regex matches the text `<abc>`** (6eddeeb5; issue #188).
+  Inside a double-quoted atom the angles around a variable were read as
+  the `<$var>` assertion, so `/ "<$tag>" (.*?) "</$tag>" /` found nothing.
+  t/regression/regex-quoted-angle-var.raku agrees with Rakudo 2026.09.
+- **`for` over a value in no container walks its `.list`** (c50eb3b8; issue
+  #146): a typed `Channel $in` parameter, a call answering a Channel or a
+  Supply, a Match, an object of a class with its own `list`. Each ran once,
+  with the value itself, so `sub drain(Channel $in) { for $in -> $v { … }
+  }` saw the Channel and not its values. A `$` variable is still one item,
+  and so is a typed parameter holding something Iterable. The module cache
+  is format v53 (VarExpr.bareParam). t/regression/for-over-listing-value.raku
+  agrees with Rakudo 2026.09.
+- **A `return` passing through a block or routine runs its UNDO** (09018c67;
+  issue #77, FCO's item 6). `sub wrap(&b) { KEEP …; UNDO …; b() }; wrap {
+  return 42 }` ran wrap's KEEP. Rakudo runs KEEP only in the routine the
+  return leaves, and UNDO in every `if`, `for`, bare or pointy block, sub
+  and method it unwinds, undoing their `let`s and still checking their
+  POSTs; so does Raku++ now. Red's transactions committed where they should
+  have rolled back. t/regression/return-through-block-undo.raku agrees with
+  Rakudo 2026.09.
+- **A Buf is written in place** (18ef8f73; issue #186). In a binary built with
+  `--exe`, a natively compiled module routine's `$b.write-uint16(…)` and
+  `$b[2] = 3` on a Buf it was passed left the caller's Buf as it was, and in
+  any compiled code `$b[1] = 5` turned the Buf into an Array (`[(Any) 5]`).
+  Interpreted, `my $c = $b; $c.write-uint16(…)` left `$b` as it was. A write
+  within a Buf lands in the storage every holder of it shares now,
+  interpreted and compiled. t/regression/buf-write-in-place.raku agrees
+  with Rakudo 2026.09, and t/aot/cases/buf-args prints Rakudo's output in
+  all three of its modes.
 
 ### Fixed: crashes
 
@@ -574,6 +614,11 @@ plain before 500c29e2 and native from it, unless they say otherwise.
   slot layout another thread's first call is still building.
   t/race/shared-hash-pairs.raku: 36 runs in 50 failed at 5.2.1, none in 200
   now; t/stress/shared-hash-pairs.raku runs ThreadSanitizer-clean.
+- **`%h{"k$i"} = $i` in a loop no longer crashes a GCC 15 build** (079427c0;
+  issue #175). The loop kernel compiler read an interpolated string part's
+  type before computing it, an order C++ leaves open: GCC 15.3 at `-O3`
+  took it the wrong way round, and the kernel read an Int as a string
+  (SIGSEGV, every run). The Clang builds never crashed.
 
 ### Fixed: what FatRoast found
 
@@ -834,6 +879,11 @@ does not.
   "A method 'bar' already exists"; AttrX::Lazy 0.0.3 now passes its three
   test files and installs. t/regression/how-compose-sees-declared-methods.raku
   agrees with Rakudo 2026.09.
+- **A LEAVE that dies while a method unwinds leaves its caller's scope in
+  place** (099a2055; issue #205). The caller's CATCH ran in the method's scope
+  and died with X::Undeclared naming the CATCH's own variable; it handles
+  the LEAVE's error now, as a sub's caller already did.
+  t/regression/method-leave-dies-unwinding.raku agrees with Rakudo 2026.09.
 - **`rakupp install https://github.com/antononcube/Raku-Woxi` installs**
   (642a320a). A `try` or `quietly` hands its block's value on in its
   container, as `do` does, so `try { $result = await $proc; CATCH { … } }`
@@ -867,6 +917,15 @@ does not.
 - In a metaclass `compose` before its `callsame`, `.^can` and
   `.^find_method` still find a public attribute's accessor, where Rakudo
   finds none yet (8c871a25). TODO-FOLLOW-UPS.md has it.
+- `$in.VAR.^name` of a typed `$` parameter says Scalar where Rakudo names
+  the type, and `loop(…)` calling a `&loop` parameter is refused as a
+  malformed loop (c50eb3b8). TODO-FOLLOW-UPS.md has both.
+- A `let` in a routine whose LEAVE dies while it unwinds is not undone,
+  where Rakudo restores it (099a2055). TODO-FOLLOW-UPS.md has it.
+- A write past a Buf's end grows a buffer of its own, which a second holder
+  and a compiled caller do not see; `$b[1]++` on a Buf element dies with
+  X::OutOfRange; and issue #177's cost per call is the copy-back's snapshot
+  of a Blob parameter (18ef8f73). TODO-FOLLOW-UPS.md has each.
 - A phaser written last (LEAVE, KEEP, ENTER, FIRST…) still leaves the
   statement before it as the block's or routine's value: `sub f { 42; LEAVE
   { } }` answers 42, Rakudo Nil (642a320a). TODO-FOLLOW-UPS.md has it.

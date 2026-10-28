@@ -267,6 +267,17 @@ Value* rtAotOuter(Env* frame, const char* name) {
     return p;
 }
 
+// …and the way back, as a native body leaves. A Buf the caller passed is bound
+// for copy-back (setupRwLinks puts the parameter in rwSynced, and copyOutRw
+// writes it to the caller's variable when it changed), but the body worked on
+// its COPY of the parameter, so `$b.write-uint16(…)` or `$b[2] = 3` in a
+// natively compiled routine reached nobody (issue #186). Only a parameter
+// bound that way is put back; the rest of the frame stays as it was bound.
+void rtAotParamBack(Env* frame, const std::string& name, const Value& v) {
+    if (!frame || !frame->ex || frame->ex->rwSynced.empty() || !frame->ex->rwSynced.count(name)) return;
+    if (Value* p = frame->local(name)) { const bool ro = p->readonly; *p = v; p->readonly = ro; }
+}
+
 // `my $*X` in a module routine: declared in the routine's own frame.
 Value& rtAotDeclDyn(Env* frame, const char* name) {
     return frame->define(name, Value::any());

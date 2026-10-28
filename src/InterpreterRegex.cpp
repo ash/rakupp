@@ -971,8 +971,10 @@ std::string Interpreter::interpRegexPattern(const std::string& in) {
                 // POSITION decides the reading (issue #15): `<$p>` compiles the
                 // string AS A REGEX, a bare `$p` matches it LITERALLY. The
                 // assertion form is `<` immediately before and `>` right after
-                // the variable — anything else keeps the literal meaning.
-                bool inAngle = !out.empty() && out.back() == '<' && j < pat.size() && pat[j] == '>';
+                // the variable — anything else keeps the literal meaning. In a
+                // double-quoted span the angles are text: `"<$k>"` matches
+                // `<abc>` (issue #188)
+                bool inAngle = !inDq && !out.empty() && out.back() == '<' && j < pat.size() && pat[j] == '>';
                 if (v && inAngle) {
                     out.pop_back();                 // drop the '<'
                     // A CALL, not a paste: the value matches in its own capture
@@ -1016,7 +1018,7 @@ std::string Interpreter::interpRegexPattern(const std::string& in) {
                 // a zero-width no-op, i.e. ALWAYS. Sparrow6's whole check engine
                 // sits on this spelling (`$data.comb(/<mymatch=$pattern>/,:match)`),
                 // so every `regexp:` check-file line passed against any output.
-                if (v && j < pat.size() && pat[j] == '>' && !out.empty() && out.back() == '=') {
+                if (v && !inDq && j < pat.size() && pat[j] == '>' && !out.empty() && out.back() == '=') {
                     size_t b = out.size() - 1;      // the '='
                     size_t e = b;                   // scan the alias identifier leftwards
                     while (e > 0 && (ascii::isalnum((unsigned char)out[e - 1]) || out[e - 1] == '_' || out[e - 1] == '-')) e--;
