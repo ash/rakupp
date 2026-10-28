@@ -20,7 +20,8 @@ e24f05f1 (NUM-UNBOX-PLAN P0); 8644846a; 74806a6d; 93f9a4af and c7a12943;
 cb7933f3 (issue #204); cb5b360a, d5184116 and 50aebf54; 67a2fe76 (issue
 #198) and 4af53b07; 3ddcd58b (issue #207); 2b9494ae (issue #206);
 62e16b9e; fb9009bc (issue #56); 3c80bc24; 48b76d56, a348489b, aa0f3618 and
-fc262224 (issue #195); 0f19ab0e (issue #208); f483f0e6 (issue #192).*
+fc262224 (issue #195); 0f19ab0e (issue #208); f483f0e6 (issue #192);
+b05e989b (issue #193).*
 
 ---
 
@@ -526,6 +527,19 @@ plain before 500c29e2 and native from it, unless they say otherwise.
   (12af490d). The sub forms changed the array in place without the stripe
   the methods take: 3 runs in 6 crashed. t/stress/ub-array-push.raku has a
   sub-form phase, which crashed every run before.
+- **Threads reading one shared hash no longer corrupt it** (b05e989b; issue
+  #193). A plain Hash's Pairs hold its own containers, and the first Pair a
+  hash handed out moved its entries into the generation the Pairs co-own, so
+  `.pairs` was a write: eight `start` blocks taking it on one shared hash read
+  it as `{}`, read its values as Nil, or died (SIGSEGV), and `run` copying
+  %*ENV while another thread did `%*ENV.grep(…)` read it mid-move. That is
+  `iz4 status`'s shape, which died about one run in a hundred naming a sub's
+  own parameter. The entries stay where they are now until the hash lets them
+  go, and the generation is made once, under a lock. A sub's lean call lane
+  is published release/acquire too, so a thread no longer takes it with the
+  slot layout another thread's first call is still building.
+  t/race/shared-hash-pairs.raku: 36 runs in 50 failed at 5.2.1, none in 200
+  now; t/stress/shared-hash-pairs.raku runs ThreadSanitizer-clean.
 
 ### Fixed: what FatRoast found
 
