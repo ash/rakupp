@@ -10955,6 +10955,12 @@ Value Interpreter::invokeMethod(const Value& codeVal, const Value& self, ValueLi
     }
     auto saved = tcx.cur;
     tcx.cur = env;
+    // Every exit below puts the caller's scope back by hand, but a LEAVE that
+    // dies while the method unwinds throws past that line: the caller's CATCH
+    // then ran in the method's scope and could not see its own lexicals
+    // (X::Undeclared, issue #205). The sub path has DynRestore for this.
+    struct CurGuard { ExecContext& t; const std::shared_ptr<Env>& s;
+        ~CurGuard() { if (t.cur != s) t.cur = s; } } curG{tcx, saved};
     // state declarations in this method's body must write to ITS stateEnv (the
     // one spliced into env->parent above), not the caller's; RAII restores on
     // every exit path
