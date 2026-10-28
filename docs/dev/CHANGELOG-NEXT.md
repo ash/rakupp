@@ -24,7 +24,7 @@ fc262224 (issue #195); 0f19ab0e (issue #208); f483f0e6 (issue #192);
 b05e989b (issue #193); 17e33a45 (issue #184); 5f87f445; 0e44c5a6 (issue
 #211); 8c871a25; 079427c0 (issue #175); 357cb4bb (issue #187); 6eddeeb5
 (issue #188); c50eb3b8 (issue #146); 09018c67 (issue #77); 099a2055 (issue
-#205); 18ef8f73 (issues #186 and #178).*
+#205); 18ef8f73 (issues #186 and #178); 642a320a.*
 
 ---
 
@@ -884,6 +884,18 @@ does not.
   and died with X::Undeclared naming the CATCH's own variable; it handles
   the LEAVE's error now, as a sub's caller already did.
   t/regression/method-leave-dies-unwinding.raku agrees with Rakudo 2026.09.
+- **`rakupp install https://github.com/antononcube/Raku-Woxi` installs**
+  (642a320a). A `try` or `quietly` hands its block's value on in its
+  container, as `do` does, so `try { $result = await $proc; CATCH { … } }`
+  no longer sinks a failed Proc after the try. And a CATCH or CONTROL
+  written last is a block's last statement, as it already was a
+  routine's: what precedes it runs in sink context inside the block, into
+  that CATCH, and the block answers Nil. `try { await $killed; CATCH {
+  default { } } }` threw the killed child's X::Proc::Unsuccessful from
+  outside the try, and `(1, 2).map({ $_ * 2; CATCH { … } })` answered
+  (2 4) where Rakudo answers (Nil Nil). Woxi 0.0.1 now passes its 14 tests
+  and installs. t/regression/try-block-sink-and-trailing-catch.raku agrees
+  with Rakudo 2026.09.
 
 ### Left open
 
@@ -914,6 +926,9 @@ does not.
   and a compiled caller do not see; `$b[1]++` on a Buf element dies with
   X::OutOfRange; and issue #177's cost per call is the copy-back's snapshot
   of a Blob parameter (18ef8f73). TODO-FOLLOW-UPS.md has each.
+- A phaser written last (LEAVE, KEEP, ENTER, FIRST…) still leaves the
+  statement before it as the block's or routine's value: `sub f { 42; LEAVE
+  { } }` answers 42, Rakudo Nil (642a320a). TODO-FOLLOW-UPS.md has it.
 
 - `--exe` checks no parameter's sigil, `%` included: a compiled `sub
   p(%h)` given `(a => 1, b => 2)` holds the List, as it did before
