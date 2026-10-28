@@ -292,10 +292,85 @@ moves to [TODO.md](TODO.md).
 
 ## Control flow and containers
 
+- [ ] **A scalar alias drops its variable's type** (found 2026-10-28 while
+  fixing issue #184, 17e33a45; on v5.5.0 too). The same cause as #184, for a
+  `$` variable rather than an element: the type lives with the NAME
+  (varDefault, varDefaultType, varSmiley, varWhere in the declaring Env), and
+  an alias shares the cell but not the name:
+
+  ```raku
+  my Int $a = 1; my $b := $a;
+  $b = 'x'; say $a                  # x, Rakudo: Type check failed in assignment to $a
+  sub f($x is rw) { $x = 'y' }
+  f($a); say $a                     # y, the same refusal in Rakudo
+  ```
+
+  `for $a { $_ = 'z' }` and `given $a { $_ = 'z' }` likewise. The element
+  fix's shape should carry over: build the variable's guard where the alias
+  is made (the `:=` arm that shares the cell, setupRwLinks, the scalar `for`
+  arm) and check it where the alias stores. Rakudo's message names `$a`.
+- [ ] **A refusal through a copy-in/copy-out alias comes at the write-back**
+  (found 2026-10-28 while fixing issue #184, 17e33a45). A `for` loop's `$_`,
+  `given`'s topic and `.map`'s `$_` hold a copy of the element, written back
+  after the body; the element type is checked there, so the rest of the body
+  runs first and a `try` inside it does not see the refusal:
+
+  ```raku
+  my Int @a = 1, 2;
+  for @a { $_ = 'w'; say 'after' }                  # prints after, then dies; Rakudo dies first
+  for @a { try { $_ = 'w'; CATCH { default { say 'caught' } } } }   # dies; Rakudo: caught caught
+  ```
+
+  A native array's element is judged at the assignment because the topic
+  carries its tags (nativeElemTag); a typed element could carry its guard
+  the same way, on the loop variable's Env (varDefault plus a table naming
+  the container, so the message is "for an element of @a").
+- [ ] **Three aliases of a typed array's elements still take anything**
+  (found 2026-10-28 while fixing issue #184, 17e33a45):
+
+  ```raku
+  my Int @a = 1, 2, 3;
+  @a.hyper.map({ $_ = 'x' }).eager;             # stores; Rakudo dies (+X::HyperRace::Died)
+  for @a.kv -> $k, $v is rw { $v = 'x' }        # stores; Rakudo dies
+  @a.first({ $_ = 'x'; True });                 # stores nothing, no error; Rakudo dies
+  ```
+
+  The hyper `.map` sets tctx().topicWriteback in runParallel's worker
+  (MethodCallTail.cpp) without the guard the eager `.map` sets beside it
+  (tctx().topicWritebackGuard). And `.map`/`.grep`'s refusal names "the
+  container", not `@a`: the method sees the array's value, not the
+  expression that named it.
+- [ ] **An untyped array's element alias answers as a value** (found
+  2026-10-28 while fixing issue #184, 17e33a45; on v5.5.0 too):
+
+  ```raku
+  my @p = 1, 2; my $e := @p[0];
+  $e = Nil; say @p.raku             # [Nil, 2], Rakudo [Any, 2]
+  say $e.VAR.of                     # Nil (the Proxy deproxies), Rakudo (Mu)
+  ```
+
+  A typed element's alias carries a guard (kSlotGuard) that resets a Nil and
+  builds `.VAR`'s Scalar; an untyped one carries none, to keep the slot
+  proxy at four entries (BinaryHeap builds one per sift step). Nil could
+  reset to Any in slotProxyWriteRef with no entry; `.VAR` needs the
+  container's name, which only the bind site has.
+- [ ] **A `:D` element type is half-kept** (found 2026-10-28 while fixing
+  issue #184, 17e33a45; on v5.5.0 too):
+
+  ```raku
+  my Int:D @d = 1;
+  @d[0] = Nil; say @d.raku          # Array[Int].new(Int); Rakudo dies, perhaps Nil was assigned to a :D…
+  say @d.of;                        # (Int), Rakudo (Int:D)
+  ```
+
+  The smiley lives in the declaring Env's varSmiley, not in the array's
+  ofType, so `.of`, `.raku` and the Nil arm of element assignment
+  (InterpreterCore.cpp, "Storing Nil into an ELEMENT") do not see it. An
+  alias of the element does now (elemAliasGuard reads elemSmileyOf).
 - [ ] **`.map` over a shared Array writes its elements back** (found
   2026-10-28 while fixing issue #193, b05e989b, on its program). After a
   block's call, callCallableRaw copies the block's `$_` back into the element
-  `.map` aliased (tctx().topicWriteback, InterpreterCore.cpp:9565) unless
+  `.map` aliased (tctx().topicWriteback, topicWriteBack in InterpreterCore.cpp) unless
   Value::sameRep finds nothing changed. For an element the block never
   touched it still finds a difference, presumably a flag the binder sets on
   the topic (which one is not pinned down: lldb cannot read the frame in an
