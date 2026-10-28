@@ -24,7 +24,7 @@ fc262224 (issue #195); 0f19ab0e (issue #208); f483f0e6 (issue #192);
 b05e989b (issue #193); 17e33a45 (issue #184); 5f87f445; 0e44c5a6 (issue
 #211); 8c871a25; 079427c0 (issue #175); 357cb4bb (issue #187); 6eddeeb5
 (issue #188); c50eb3b8 (issue #146); 09018c67 (issue #77); 099a2055 (issue
-#205); 18ef8f73 (issues #186 and #178); 642a320a.*
+#205); 18ef8f73 (issues #186 and #178); 642a320a; 62a3d9a5 (issue #212).*
 
 ---
 
@@ -896,6 +896,13 @@ does not.
   (2 4) where Rakudo answers (Nil Nil). Woxi 0.0.1 now passes its 14 tests
   and installs. t/regression/try-block-sink-and-trailing-catch.raku agrees
   with Rakudo 2026.09.
+- **`<42>.parse-base(16)` is 66, and a number matches on its Str**
+  (62a3d9a5; issue #212). An allomorph (IntStr, RatStr, NumStr) had no
+  `.parse-base`, and `.match` with a literal needle answered a Str only, so
+  `42.match("4")` died, and so did a MAIN argument that looked like a
+  number. Cool.match is `self.Str.match` now, as in Rakudo, and a needle
+  that is no Regex is matched as its Str.
+  t/regression/allomorph-str-methods.raku agrees with Rakudo 2026.09.
 
 ### Left open
 
@@ -929,6 +936,8 @@ does not.
 - A phaser written last (LEAVE, KEEP, ENTER, FIRST…) still leaves the
   statement before it as the block's or routine's value: `sub f { 42; LEAVE
   { } }` answers 42, Rakudo Nil (642a320a). TODO-FOLLOW-UPS.md has it.
+- A Complex still has no `.Version`, `.uniparse` or `.parse-names`, which
+  Rakudo's Cool gives it (62a3d9a5).
 
 - `--exe` checks no parameter's sigil, `%` included: a compiled `sub
   p(%h)` given `(a => 1, b => 2)` holds the List, as it did before
