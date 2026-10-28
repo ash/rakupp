@@ -658,8 +658,13 @@ KNode* Compiler::expr(IKernel& k, const Callable* c, Expr* e, bool cond, KT& t) 
                 KNode* acc = nullptr;
                 for (auto& p : is->parts) {
                     if (!p) return refuse("an interpolated string");
+                    // expr() sets pt, so it must run before asStr() reads it: as
+                    // two arguments of one call their order is unspecified, and
+                    // GCC 15 -O3 read pt first (an Int part went in unconverted
+                    // and SIGSEGV'd, issue #175)
                     KT pt;
-                    KNode* pn = asStr(k, expr(k, c, p.get(), false, pt), pt);
+                    KNode* pv = expr(k, c, p.get(), false, pt);
+                    KNode* pn = asStr(k, pv, pt);
                     if (!pn) return refuse("an interpolated part that is neither an Int nor a Str");
                     if (!acc) { acc = pn; continue; }
                     KNode* cat = k.node(KOp::SCat); cat->a = acc; cat->b = pn; cat->slot = L->nstr++;
