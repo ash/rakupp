@@ -27474,12 +27474,15 @@ Value Interpreter::evalIndex(Index* idx) {
     // NativeCall CArray / Pointer element read (`$carray[$i]`): byte-backed
     // (CArray.new/allocate stores packed bytes) or a live native pointer.
     if (!idx->isHash && idx->index && !idx->multiDim) {
-        // a Range/list subscript slices: `$carray[^$n]` is the first $n elements
-        // (how a native out-buffer gets read back into a Buf)
-        if ((base.t == VT::Str && base.hashKind == "CArray") ||
-            (base.t == VT::Hash && (base.hashKind == "CArray" || base.hashKind == "Pointer") &&
-             base.hash()->count("addr"))) {
+        long long liveAddr; std::string of;
+        const bool local = base.t == VT::Str && base.hashKind == "CArray";
+        if (local || (base.t == VT::Hash && (base.hashKind == "CArray" || base.hashKind == "Pointer") &&
+                      ncLiveAddrOf(base, liveAddr, of))) {
+            // the subscript is evaluated once, whatever it turns out to be:
+            // `$c[$i++]` read the element after and left $i at 2 (issue #187)
             Value kv = subscriptKey(idx->index.get());
+            // a Range/list subscript slices: `$carray[^$n]` is the first $n elements
+            // (how a native out-buffer gets read back into a Buf)
             if (kv.t == VT::Range || (kv.t == VT::Array && kv.arr())) {
                 bool live = base.t == VT::Hash;
                 std::string et = live ? (base.hash()->count("of") ? (*base.hash())["of"].toStr() : "int64")
@@ -27496,13 +27499,8 @@ Value Interpreter::evalIndex(Index* idx) {
                 }
                 return out;
             }
-        }
-        if (base.t == VT::Str && base.hashKind == "CArray")
-            return ncLocalAt(base, subscriptKey(idx->index.get()).toInt());
-        long long liveAddr; std::string of;
-        if (base.t == VT::Hash && (base.hashKind == "CArray" || base.hashKind == "Pointer") &&
-            ncLiveAddrOf(base, liveAddr, of)) {
-            long long i = subscriptKey(idx->index.get()).toInt();
+            if (local) return ncLocalAt(base, kv.toInt());
+            long long i = kv.toInt();
             Value el = ncReadElem(liveAddr, of, i);
             if (base.hashKind == "CArray") el = ncClassElem(std::move(el), nullptr, of, i);
             if (ncIsPointerElem(of) && el.t == VT::Int) return ncMakeLiveCArray(of, (void*)(intptr_t)el.toInt());
