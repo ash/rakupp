@@ -1391,9 +1391,12 @@ Value Interpreter::execBlockFull(Block* b, std::shared_ptr<Env> scope, bool sink
     // block's outgoing value being defined (Nil, a Failure, the undefined
     // result of an `if`/`for` are not) and no cooperative `next`/`last` in
     // flight (Rakudo, probed: `say` last → KEEP, `for` last → UNDO, `Nil` → UNDO).
+    // Nor is a `return` passing through: it leaves the ROUTINE successfully,
+    // and every block it unwinds on the way (`if`, `for`, a bare block) runs
+    // its UNDO (#77: Red commits a transaction its KEEP should not see)
     {
         const Value& outV = tcx.returning ? tcx.returnV : last;
-        const bool ok = !tcx.loopCtl && isDefined(outV) &&
+        const bool ok = !tcx.loopCtl && !tcx.returning && isDefined(outV) &&
                         !(outV.t == VT::Hash && outV.hashKind == "Failure");
         // …but a POST checks every NORMAL exit, whatever the value (a sunk
         // block's last statement has none to offer) — and reads that value as
@@ -1407,8 +1410,9 @@ Value Interpreter::execBlockFull(Block* b, std::shared_ptr<Env> scope, bool sink
             drainTempRestores(tcx.cur.get(), tempMark);
         }
         // `let` undoes itself when the block is left UNSUCCESSFULLY — an
-        // undefined (or Failure) value is that, even on a normal exit
-        if (!ok && !tcx.loopCtl && !tcx.returning && !sharesScope && tcx.cur && tcx.cur->ex &&
+        // undefined (or Failure) value is that, even on a normal exit, and so
+        // is a `return` passing through
+        if (!ok && !tcx.loopCtl && !sharesScope && tcx.cur && tcx.cur->ex &&
             !tcx.cur->ex->letRestores.empty()) {
             for (auto it = tcx.cur->ex->letRestores.rbegin(); it != tcx.cur->ex->letRestores.rend(); ++it) (*it)();
             tcx.cur->ex->letRestores.clear();
@@ -9512,15 +9516,19 @@ resumeBody:
             }
         }
     } catch (ReturnEx& r) {
+        // an OUTER routine's `return` (or one in a block called as a Code) is
+        // unwinding this one: UNDO (`sub wrap(&b) { UNDO …; b() }; wrap { return 42 }`, #77)
+        const bool ours = isRoutine && !(r.target && r.target != savedFrameTop && r.target < savedFrameTop);
         if (c.ci().body) {
             struct LR { ExecContext& t; const Value* p; ~LR() { t.leaveResult = p; } } lr{tcx, tcx.leaveResult};
             tcx.leaveResult = &r.v;
-            // KEEP on a DEFINED result, UNDO on an undefined one (or a Failure)
-            runLeavePhasers(*c.ci().body, isDefined(r.v) && !(r.v.t == VT::Hash && r.v.hashKind == "Failure"), 0, 1);
+            // KEEP on a DEFINED result, UNDO on an undefined one (or a Failure); POSTs run either way
+            runLeavePhasers(*c.ci().body, ours && isDefined(r.v) && !(r.v.t == VT::Hash && r.v.hashKind == "Failure"), 0, 1);
         }
         // `let` restores on an unsuccessful exit, and `fail`/an undefined
-        // return is one (`sub f { let $x = 10; fail 'foo' }` leaves $x as it was)
-        if (isRoutine && (!isDefined(r.v) || (r.v.t == VT::Hash && r.v.hashKind == "Failure")))
+        // return is one (`sub f { let $x = 10; fail 'foo' }` leaves $x as it was),
+        // as is a return passing through on its way out
+        if (isRoutine && (!ours || !isDefined(r.v) || (r.v.t == VT::Hash && r.v.hashKind == "Failure")))
             runLetRestoresOf(tcx.cur);
         restore();
         // `return` returns from the innermost enclosing ROUTINE, not from a bare
@@ -11080,14 +11088,14 @@ Value Interpreter::invokeMethod(const Value& codeVal, const Value& self, ValueLi
     auto leaveOk = [](const Value& v) {
         return isDefined(v) && !(v.t == VT::Hash && v.hashKind == "Failure");
     };
-    auto runLeaves = [&](bool ok, const Value* result = nullptr) {
+    auto runLeaves = [&](bool ok, const Value* result = nullptr, int postOk = -1) {
         if (phasersDone || !c.ci().body) return;
         const bool temps = tcx.cur && tcx.cur->ex && tcx.cur->ex->tempRestores.size() > tempMark0;
         if (!hasPhasers && !temps) return;
         phasersDone = true;
         struct LR { ExecContext& t; const Value* p; ~LR() { t.leaveResult = p; } } lr{tcx, tcx.leaveResult};
         tcx.leaveResult = result;   // POST's $_
-        runLeavePhasers(*c.ci().body, ok, tempMark0);
+        runLeavePhasers(*c.ci().body, ok, tempMark0, postOk);
     };
     size_t resumeAt = 0, runningStmt = 0;   // `.resume` in the CATCH: see callCallable
     CatchReg catchReg{tcx, catchBlk, c.ci().body, tcx.cur};
@@ -11176,7 +11184,11 @@ resumeMethodBody:
             }
             if (trailingCatch && !explicitTailReturn) last = Value::nil();
         }
-    } catch (ReturnEx& r) { if (r.target && r.target < savedFrameTop) { runLeaves(true, &r.v); tcx.cur = saved; throw; }
+    } catch (ReturnEx& r) { // an outer routine's `return` passing through unwinds this
+                            // method: UNDO, the `let`s undone, POST still checked (#77)
+                            if (r.target && r.target < savedFrameTop) {
+                                runLeaves(false, &r.v, 1); runLetRestoresOf(tcx.cur); tcx.cur = saved; throw;
+                            }
                             runLeaves(leaveOk(r.v), &r.v); tcx.cur = saved; copyOutRw(c.ci().params, env, rwArgs);
                             if (selfBack) if (Value* sp = env->find("self")) *selfBack = *sp;
                             return checkRetType(c, std::move(r.v)); }
