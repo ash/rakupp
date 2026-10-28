@@ -480,6 +480,7 @@ static void nativeCompoundStore(Value& slot, const Value& before, int bits, bool
 // `@a[0];` are quiet where `failing-proc();` and `($p)<>` throw. Verified
 // shape by shape against Rakudo — the ones that keep the container are a
 // variable read, an assignment, a subscript, and whatever those reach through.
+static bool isBlockPhaser(const Stmt* s);
 static bool exprYieldsContainer(const Expr* e) {
     if (!e) return false;
     switch (e->kind) {
@@ -501,18 +502,33 @@ static bool exprYieldsContainer(const Expr* e) {
             auto* t = static_cast<const Ternary*>(e);
             return exprYieldsContainer(t->then.get()) || exprYieldsContainer(t->els.get());
         }
-        case NK::Unary: {   // `do { … }` is a Unary wrapped around the block
+        // `do { … }` is a Unary wrapped around the block, and so are `try` and
+        // `quietly`, which hand the block's value on as it came: Woxi's
+        // `try { $result = await $proc-promise; CATCH { … } }` keeps a failed
+        // Proc to read its exitcode. `once` decontainerizes, as in Rakudo.
+        case NK::Unary: {
             auto* u = static_cast<const Unary*>(e);
-            return opEq(u->op, "do") && exprYieldsContainer(u->operand.get());
+            return (opEq(u->op, "do") || opEq(u->op, "try") || opEq(u->op, "quietly")) &&
+                   exprYieldsContainer(u->operand.get());
         }
         // `do { $p }` / a bare block statement: the tail statement's value is
         // the block's, container and all — a Block does not decontainerize.
+        // A phaser or named sub written after the tail does not count (a CATCH
+        // written last makes the block's value Nil, which sinks to nothing).
         case NK::BlockExpr: {
             auto* be = static_cast<const BlockExpr*>(e);
-            if (be->isSub || be->body.empty()) return false;
-            const Stmt* last = be->body.back().get();
-            return last->kind == NK::ExprStmt &&
-                   exprYieldsContainer(static_cast<const ExprStmt*>(last)->e.get());
+            if (be->isSub) return false;
+            for (size_t k = be->body.size(); k-- > 0; ) {
+                const Stmt* s = be->body[k].get();
+                if (s->kind == NK::Block && static_cast<const Block*>(s)->isCatch) continue;
+                if (isBlockPhaser(s)) continue;
+                if (s->kind == NK::SubDecl && !static_cast<const SubDecl*>(s)->name.empty() &&
+                    !static_cast<const SubDecl*>(s)->isMethod &&
+                    !static_cast<const SubDecl*>(s)->immediateCall) continue;
+                return s->kind == NK::ExprStmt &&
+                       exprYieldsContainer(static_cast<const ExprStmt*>(s)->e.get());
+            }
+            return false;
         }
         default: return false;
     }
@@ -841,9 +857,9 @@ static bool trailingCatchBlock(const std::vector<StmtPtr>& body) {
     return b->isCatch || b->phaser == "CONTROL";
 }
 
-static bool isBlockPhaser(Stmt* s) {
+static bool isBlockPhaser(const Stmt* s) {
     if (s->kind != NK::Block) return false;
-    auto* b = static_cast<Block*>(s);
+    auto* b = static_cast<const Block*>(s);
     const std::string& p = b->phaser;
     // A HOISTED INIT already ran, before the mainline — skip it here. One the
     // program-init walk did not reach keeps running in place, as it always did.
@@ -1169,6 +1185,12 @@ Value Interpreter::execBlockFull(Block* b, std::shared_ptr<Env> scope, bool sink
             !static_cast<SubDecl*>(s)->isMethod && !static_cast<SubDecl*>(s)->immediateCall) continue;
         lastIdx = i; break;
     }
+    // …except that a CATCH/CONTROL written LAST is the block's last statement,
+    // as it is a routine's: what precedes it is sunk, into that very CATCH, and
+    // the block answers Nil. Woxi's `try { await $killed; CATCH { default { } } }`
+    // threw the killed Proc's X::Proc::Unsuccessful from outside the try instead.
+    const bool trailingCatch = (entryWork & 1) && trailingCatchBlock(b->stmts);
+    if (trailingCatch) lastIdx = b->stmts.size();
     // a CATCH {} anywhere in the block handles exceptions from the whole
     // block; a CONTROL {} registers as the dynamic handler `warn` runs
     // (they share isCatch — the phaser tells them apart, and a CONTROL
@@ -1387,6 +1409,7 @@ Value Interpreter::execBlockFull(Block* b, std::shared_ptr<Env> scope, bool sink
         throw;
     }
     if (leaving) raiseHanded(*leaving);   // (the exit is done: see `exiting`)
+    if (trailingCatch && !tcx.returning && !tcx.loopCtl && !tcx.givenCtl) last = Value::nil();
     // KEEP runs on a SUCCESSFUL exit, UNDO otherwise — and success is the
     // block's outgoing value being defined (Nil, a Failure, the undefined
     // result of an `if`/`for` are not) and no cooperative `next`/`last` in
@@ -9406,8 +9429,9 @@ resumeBody:
             }
             // …except that a CATCH/CONTROL written LAST is the routine's last
             // statement in Rakudo: what precedes it is sunk — a Failure there
-            // throws, into that very CATCH — and the routine answers Nil
-            const bool trailingCatch = isRoutine && (bodyWork & 32) && trailingCatchBlock(*c.ci().body);
+            // throws, into that very CATCH — and the routine answers Nil. A
+            // block's too: `(1,2).map({ $_ * 2; CATCH { … } })` is (Nil Nil).
+            const bool trailingCatch = (bodyWork & 32) && trailingCatchBlock(*c.ci().body);
             if (trailingCatch) lastReal = nst;
             bool explicitTailReturn = false;   // the tail-return fast path below took it
             for (size_t i = resumeAt; i < nst; i++) {
