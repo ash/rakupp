@@ -25,7 +25,7 @@ b05e989b (issue #193); 17e33a45 (issue #184); 5f87f445; 0e44c5a6 (issue
 #211); 8c871a25; 079427c0 (issue #175); 357cb4bb (issue #187); 6eddeeb5
 (issue #188); c50eb3b8 (issue #146); 09018c67 (issue #77); 099a2055 (issue
 #205); 18ef8f73 (issues #186 and #178); 642a320a; 62a3d9a5 (issue #212);
-17a71667 (issue #213).*
+17a71667 (issue #213); 46c4ef60 (issue #194).*
 
 ---
 
@@ -909,6 +909,12 @@ does not.
   chown(2) is a Failure carrying X::IO::Chown with Rakudo's message; the
   sub answers the paths it changed. The sandbox counts both as writes.
   t/regression/io-path-chown.raku agrees with Rakudo 2026.09.
+- **A module's own `sub q` stays its own** (46c4ef60; issue #194). A module's
+  non-exported `sub q`, `sub s` or `sub tr` made `q{…}`, `s///` or `tr///`
+  a call in every file that used it, and so did one a module further down.
+  Only a sub the import can bring in shadows a quote word now: one marked
+  `is export`, or any of them when the module has an EXPORT sub.
+  t/regression/module-quote-word-sub-scope.raku agrees with Rakudo 2026.09.
 
 ### Left open
 
