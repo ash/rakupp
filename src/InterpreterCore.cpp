@@ -3152,12 +3152,18 @@ Value Interpreter::execForStmt(Stmt* s, bool sink) {
             // so its container-ness rides in on the value's own flag
             // (`given @a { … for $_ }` iterates, `given $x { … }` does not)
             // (…but a Slip is never one item, held in a scalar or not)
-            bool oneItem = !viaIterator && !(lv.t == VT::Array && lv.arr() && lv.s == "Slip") &&
-                (lv.itemized ||
-                (fs->list->kind == NK::VarExpr && !static_cast<VarExpr*>(fs->list.get())->name.empty() &&
-                 static_cast<VarExpr*>(fs->list.get())->name[0] == '$' &&
-                 static_cast<VarExpr*>(fs->list.get())->name != "$_" &&
-                 !valueBoundVar(static_cast<VarExpr*>(fs->list.get())->name)));   // `$x := <value>` is no container
+            // A value in no container that is not Iterable is walked as what
+            // its `.list` gives — a Channel, a Supply, a Match: forListsValue —
+            // and a typed parameter holds one bare (VarExpr::bareParam)
+            const auto* sv = fs->list->kind == NK::VarExpr ? static_cast<const VarExpr*>(fs->list.get()) : nullptr;
+            const bool dollar = sv && sv->name.size() > 1 && sv->name[0] == '$' && sv->name != "$_";
+            const bool valueBound = dollar && valueBoundVar(sv->name);   // `$x := <value>` is no container
+            const bool lists = !viaIterator && !(dollar && !valueBound && !sv->bareParam) &&
+                forListsValue(lv, valueBound || (dollar && sv->bareParam) ||
+                                  fs->list->kind == NK::Call || fs->list->kind == NK::MethodCall);
+            bool oneItem = !viaIterator && !(lv.t == VT::Array && lv.arr() && lv.s == "Slip") && !lists &&
+                (lv.itemized || (dollar && !valueBound));
+            if (lists) { lv = forListOf(lv); drainIfFiniteLazy(lv); }
             // an ENDLESS lazy source iterates LIVE, growing just-in-time —
             // a snapshot would freeze `.say for (1 xx *)` at the cached
             // prefix (issue #30); finite lazies were drained above.
@@ -3294,12 +3300,18 @@ Value Interpreter::execForStmt(Stmt* s, bool sink) {
         }
         return false;
     };
-    bool scalarItem = !viaIterator && !(listv.t == VT::Array && listv.s == "Slip" && listv.arr()) &&
-        (listv.itemized ||
-        (fs->list->kind == NK::VarExpr && !static_cast<VarExpr*>(fs->list.get())->name.empty()
-         && static_cast<VarExpr*>(fs->list.get())->name[0] == '$'
-         && static_cast<VarExpr*>(fs->list.get())->name != "$_"
-         && !isConstantVar(static_cast<VarExpr*>(fs->list.get())->name)));
+    // A value in no container that is not Iterable is walked as what its
+    // `.list` gives — a Channel, a Supply, a Match: forListsValue — and a
+    // typed parameter holds one bare (VarExpr::bareParam).
+    const auto* sv = fs->list->kind == NK::VarExpr ? static_cast<const VarExpr*>(fs->list.get()) : nullptr;
+    const bool dollar = sv && sv->name.size() > 1 && sv->name[0] == '$' && sv->name != "$_";
+    const bool constantVar = dollar && isConstantVar(sv->name);
+    const bool lists = !viaIterator && !(dollar && !constantVar && !sv->bareParam) &&
+        forListsValue(listv, constantVar || (dollar && sv->bareParam) ||
+                             fs->list->kind == NK::Call || fs->list->kind == NK::MethodCall);
+    bool scalarItem = !viaIterator && !(listv.t == VT::Array && listv.s == "Slip" && listv.arr()) && !lists &&
+        (listv.itemized || (dollar && !constantVar));
+    if (lists) { listv = forListOf(listv); drainIfFiniteLazy(listv); }
     // Each element of an ARRAY lives in its own scalar container, so
     // iterating one hands the body an ITEMIZED value: over `my @t =
     // (1,2),(3,4)`, Rakudo's `for @t { say $_.raku }` says `$(1, 2)`.

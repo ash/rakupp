@@ -342,6 +342,7 @@ template <class IO> void visit(IO& io, VarExpr& n)  {
     F(io, n.nativeStrRead); F(io, n.nativeIntRead);
     F(io, n.nativeNumRead);
     F(io, n.lexResolved); F(io, d.readType);
+    F(io, n.bareParam);
     if constexpr (IO::reading) {
         if (!d.declScope.empty() || !d.declType.empty() || !d.declCoerce.empty() || d.declDefault ||
             d.declDynamic || d.declExport || !d.exportTags.empty() || !d.containerIs.empty() || !d.containerOf.empty() ||

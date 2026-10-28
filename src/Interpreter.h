@@ -3687,6 +3687,10 @@ public:
     // code blocks/assertions run for real, in the regex's closed-over scope
     // What a `for` walks: an object with its own `.iterator` decides for itself.
     Value iterationSourceOf(Value v);
+    // …and a value in no container whose `.list` is what it iterates (a
+    // Channel, a Supply, a Match, a class's own `list`); forListOf gives it
+    bool forListsValue(const Value& v, bool bare);
+    Value forListOf(const Value& v);
     std::thread::id mainThreadId() const { return mainThread_; } // `exit` ends the process from any thread
     // Resolve `$var` atoms inside a regex SOURCE (regex splice / literal text).
     std::string interpRegexPattern(const std::string& in);

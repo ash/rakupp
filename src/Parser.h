@@ -642,6 +642,10 @@ private:
     // VarExpr::lexResolved / readType
     std::vector<std::map<std::string, std::string>> scalarDeclType_ = {{}};
     std::vector<std::pair<std::string, std::string>> pendingParamType_;
+    // …and, frame for frame with it, the names a typed read-only `$`
+    // parameter declared: VarExpr::bareParam
+    std::vector<std::set<std::string>> bareParamDecl_ = {{}};
+    std::vector<std::string> pendingParamBare_;
     static bool isNativeIntTypeName(const std::string& t);
     static char nativeScalarKind(const std::string& t);   // 'i', 'n' or 0
     void resolveScalarDecl(VarExpr& e);
