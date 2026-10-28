@@ -332,6 +332,34 @@ moves to [TODO.md](TODO.md).
   Cro's trait multis are declared `--> Nil`, so a search among
   `&trait_mod:<is>.candidates` by a signature without one matches here what
   it misses in Rakudo. Done when the three lines are Rakudo 2026.09's.
+- [ ] **A metaclass `compose` finds the accessors early through `.^can`
+  and `.^find_method`** (found 2026-10-28 while fixing `rakupp install
+  AttrX::Lazy`, 8c871a25; on v5.5.0 too):
+
+  ```raku
+  my role H {
+      method compose(Mu \type) {
+          say so type.^can('bar');            # True, Rakudo False
+          say so type.^find_method('bar');    # True, Rakudo False
+          callsame;
+          say so type.^can('bar');            # True in both
+      }
+  }
+  multi trait_mod:<is>(Attribute:D $a, :$hook!) { $a.package.HOW does H }
+  class Foo { has $.bar is hook }
+  ```
+
+  Rakudo makes a public attribute's accessor in the base compose, so
+  before the hook's `callsame` no lookup finds it. 8c871a25 made
+  `.^methods`, `.^method_names` and `.^method_table` skip a class's
+  accessors while `ClassInfo::awaitingCompose` is set; `.^can`
+  (src/MethodCallPart2.cpp, the arm that adds an accessor stub after the
+  method tables) and `.^find_method`/`.^lookup` (the same file, and
+  Builtins.cpp for core types) do not. Red's model compose asks `.^can`
+  for a column accessor before its `nextsame` (the comment on
+  awaitingCompose in src/Value.h), so check a Red model's columns and
+  accessors still build before changing it. Done when the three lines
+  are Rakudo 2026.09's.
 
 ## Control flow and containers
 
