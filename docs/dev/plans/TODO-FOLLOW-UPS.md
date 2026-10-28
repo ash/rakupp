@@ -363,6 +363,30 @@ moves to [TODO.md](TODO.md).
 
 ## Control flow and containers
 
+- [ ] **A phaser written last does not make the block's value Nil**
+  (found 2026-10-28 while fixing `rakupp install
+  https://github.com/antononcube/Raku-Woxi`, 642a320a; on v5.5.0 too).
+  In Rakudo every phaser is a statement, so one written last is the
+  block's or routine's last statement, what precedes it is sunk, and the
+  value is Nil. 642a320a does this for a trailing CATCH or CONTROL in a
+  block as well as a routine; the others still skip to the statement
+  before them:
+
+  ```raku
+  sub f { 42; LEAVE { } }; say f().raku;        # 42; Rakudo Nil
+  say (1, 2).map({ $_ * 2; LEAVE { } });        # (2 4); Rakudo (Nil Nil)
+  my $x = do { 42; KEEP { } }; say $x.raku;     # 42; Rakudo Any
+  my $y = do { 42; ENTER { } }; say $y.raku;    # 42; Rakudo Any
+  ```
+
+  The three tail scans (execBlockFull's lastIdx, the sub path's and the
+  method path's lastReal in src/InterpreterCore.cpp) skip isBlockPhaser
+  blocks; trailingCatchBlock would answer for any phaser block instead.
+  `sub f { …; LEAVE … }` is common in modules, so check rakulib/ and the
+  embedded Raku sources for a routine that relies on the value before
+  the phaser. A trailing END (Nil already) and a named sub written last
+  (Rakudo answers the sub) are each their own case. Done when the four
+  lines are Rakudo 2026.09's.
 - [ ] **A typed scalar's container handed out by an expression takes
   anything** (found 2026-10-28 while making scalar aliases keep their type,
   5f87f445; on v5.5.0 too). An alias of a typed variable refuses what the
@@ -723,6 +747,14 @@ moves to [TODO.md](TODO.md).
   it; tools/source-helpers/builtins.plan is the plan that cut the
   MethodCallPart1b/1c segments out of it, and can cut another. Done when it
   is under 10,000 and the named ceiling is gone.
+
+- [ ] **Split src/InterpreterCore.cpp** (2026-10-28, 642a320a): the named
+  ceiling of 32,900 that 34d064ca recorded had one line left on 50122f46,
+  and the `try`/trailing-CATCH fix took the file to 32,923, so
+  tools/source-helpers/budget.txt gives it 33,000 rather than split it
+  inside a fix. tools/source-helpers/interpreter.plan is the plan that
+  split Interpreter.cpp, and split.raku can cut along another one. Done
+  when it is under its 34d064ca ceiling again.
 
 ## Performance
 
