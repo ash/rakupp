@@ -24,7 +24,7 @@ fc262224 (issue #195); 0f19ab0e (issue #208); f483f0e6 (issue #192);
 b05e989b (issue #193); 17e33a45 (issue #184); 5f87f445; 0e44c5a6 (issue
 #211); 8c871a25; 079427c0 (issue #175); 357cb4bb (issue #187); 6eddeeb5
 (issue #188); c50eb3b8 (issue #146); 09018c67 (issue #77); 099a2055 (issue
-#205).*
+#205); 18ef8f73 (issues #186 and #178).*
 
 ---
 
@@ -191,6 +191,11 @@ plain before 500c29e2 and native from it, unless they say otherwise.
   and `-O`: `// next` 0.2 / 0.1, `or next` 0.1 / 0.1, `// return` 0.2 / 0.1
   (`next without` 0.2 / 0.1). Before, that script bundled, and `// next`
   compiled on its own cost ~3. A `redo` keeps the exception.
+- **`read-uint64` and the other `read-*` methods of a Buf copy nothing**
+  (18ef8f73; issue #178). Each call copied the whole buffer when another Value
+  shared it: on an 8 KB, 800 KB and 8 MB Buf a call cost 0.38, 11.35 and
+  116.33 µs, and costs 0.31, 0.29 and 0.27 µs now (Rakudo 2026.09: 0.29,
+  0.66, 0.22; the issue's script, interpreted).
 
 ### New
 
@@ -557,6 +562,15 @@ plain before 500c29e2 and native from it, unless they say otherwise.
   POSTs; so does Raku++ now. Red's transactions committed where they should
   have rolled back. t/regression/return-through-block-undo.raku agrees with
   Rakudo 2026.09.
+- **A Buf is written in place** (18ef8f73; issue #186). In a binary built with
+  `--exe`, a natively compiled module routine's `$b.write-uint16(…)` and
+  `$b[2] = 3` on a Buf it was passed left the caller's Buf as it was, and in
+  any compiled code `$b[1] = 5` turned the Buf into an Array (`[(Any) 5]`).
+  Interpreted, `my $c = $b; $c.write-uint16(…)` left `$b` as it was. A write
+  within a Buf lands in the storage every holder of it shares now,
+  interpreted and compiled. t/regression/buf-write-in-place.raku agrees
+  with Rakudo 2026.09, and t/aot/cases/buf-args prints Rakudo's output in
+  all three of its modes.
 
 ### Fixed: crashes
 
@@ -896,6 +910,10 @@ does not.
   malformed loop (c50eb3b8). TODO-FOLLOW-UPS.md has both.
 - A `let` in a routine whose LEAVE dies while it unwinds is not undone,
   where Rakudo restores it (099a2055). TODO-FOLLOW-UPS.md has it.
+- A write past a Buf's end grows a buffer of its own, which a second holder
+  and a compiled caller do not see; `$b[1]++` on a Buf element dies with
+  X::OutOfRange; and issue #177's cost per call is the copy-back's snapshot
+  of a Blob parameter (18ef8f73). TODO-FOLLOW-UPS.md has each.
 
 - `--exe` checks no parameter's sigil, `%` included: a compiled `sub
   p(%h)` given `(a => 1, b => 2)` holds the List, as it did before
