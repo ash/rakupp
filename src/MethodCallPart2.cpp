@@ -1974,6 +1974,36 @@ std::optional<Value> Interpreter::nominalizeType(const Value& t) {
     return Value::typeObj(n);
 }
 
+// Is `s` a string Date.new(Str) (`dateTime` false) or DateTime.new(Str) takes?
+// Rakudo's grammar: yyyy-mm-dd, the year signed or not and four digits or more;
+// a DateTime may go on with Thh:mm:ss, a fraction of 1 to 12 digits after `.`
+// or `,`, and Z or an offset ±hh, ±hhmm or ±hh:mm (`t` and `z` too). No
+// whitespace, and ASCII digits only.
+static bool isoTemporalShape(const std::string& s, bool dateTime) {
+    size_t p = 0, n = s.size();
+    auto digits = [&] { size_t b = p; while (p < n && ascii::isdigit((unsigned char)s[p])) p++; return p - b; };
+    auto lit = [&](char c1, char c2) {
+        if (p < n && (s[p] == c1 || s[p] == c2)) { p++; return true; }
+        return false;
+    };
+    auto two = [&] {   // exactly two digits, whatever follows: the offset's +0130
+        if (p + 1 < n && ascii::isdigit((unsigned char)s[p]) && ascii::isdigit((unsigned char)s[p + 1])) { p += 2; return true; }
+        return false;
+    };
+    lit('+', '-');
+    if (digits() < 4 || !lit('-', '-') || digits() != 2 || !lit('-', '-') || digits() != 2) return false;
+    if (p == n) return true;
+    if (!dateTime || !lit('T', 't') || digits() != 2 || !lit(':', ':') || digits() != 2 ||
+        !lit(':', ':') || digits() != 2) return false;
+    if (lit('.', ',')) { size_t f = digits(); if (f < 1 || f > 12) return false; }
+    if (p == n) return true;
+    if (lit('Z', 'z')) return p == n;
+    if (!lit('+', '-') || !two()) return false;
+    if (p == n) return true;
+    lit(':', ':');
+    return two() && p == n;
+}
+
 std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName& m, ValueList& args,
                                      const std::vector<ExprPtr>* rwArgs) {
     // The Variable a variable's user trait is handed (`trait_mod:<is>(Variable:D
@@ -4911,23 +4941,20 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
                         y = get("year", y); mo = get("month", mo); d = get("day", d);
                         haveNamedField = true;
                     }
-                } else if ((a.t == VT::Str && a.s.find('-', 1) == std::string::npos &&
-                            !a.s.empty() && posN == 1) ||
-                           // …and one carrying a synthetic or any other non-ASCII
-                           // character: `20\x[308]16-07-05` is no ISO timestamp
-                           (a.t == VT::Str && posN == 1 &&
-                            std::any_of(a.s.str().begin(), a.s.str().end(),
-                                        [](char ch) { return (unsigned char)ch >= 0x80; }))) {
-                    // the SINGLE string positional that is NOT ISO-shaped (no
-                    // dashes): "2012/04" etc. — invalid temporal format
-                    // (multiple positionals are the y,m,d form, digits legal)
-                    throwTypedV("X::Temporal::InvalidFormat",
-                        {{"invalid-str", Value::str(a.s)}, {"target", Value::str(inv.s)},
-                         {"format", Value::str(inv.s == "Date" ? "yyyy-mm-dd" : "an ISO 8601 timestamp")}},
-                        "Invalid " + inv.s + " string '" + a.s +
-                        "'; use " + (inv.s == "Date" ? "yyyy-mm-dd" : "an ISO 8601 timestamp") + " instead");
-                } else if (a.t == VT::Str && a.s.find('-', 1) != std::string::npos) {
-                    // ISO 8601: YYYY-MM-DD[THH:MM:SS[.frac]][Z|±HH:MM|±HHMM]
+                } else if (a.t == VT::Str && (posN == 1 || a.s.find('-', 1) != std::string::npos)) {
+                    // ISO 8601: YYYY-MM-DD[THH:MM:SS[.frac]][Z|±HH:MM|±HHMM], and
+                    // a string of any other shape is refused before it is read
+                    // (#208): the reading below is sscanf's, which took "" and
+                    // "2020-01-01 " and "2020-01-01T10:00" for dates. A string
+                    // among several positionals with no dash is a y/m/d field.
+                    if (!isoTemporalShape(a.s, inv.s == "DateTime")) {
+                        const char* fmt = inv.s == "Date" ? "yyyy-mm-dd"
+                            : "an ISO 8601 timestamp (yyyy-mm-ddThh:mm:ssZ or yyyy-mm-ddThh:mm:ss+01:00)";
+                        throwTypedV("X::Temporal::InvalidFormat",
+                            {{"invalid-str", Value::str(a.s)}, {"target", Value::str(inv.s)},
+                             {"format", Value::str(fmt)}},
+                            "Invalid " + inv.s + " string '" + a.s + "'; use " + fmt + " instead");
+                    }
                     isoStr = true;
                     const std::string& is = a.s;
                     double fs = 0;
@@ -4976,23 +5003,8 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
                         if (zp != std::string::npos) {
                             if (is[zp] == 'Z' || is[zp] == 'z') tz = 0;
                             else {
-                                // the offset must be exactly ±HH or ±HH:MM (2-digit fields)
+                                // ±HH, ±HHMM or ±HH:MM: isoTemporalShape saw to that
                                 std::string off = is.substr(zp + 1);
-                                auto dig = [](char c) { return c >= '0' && c <= '9'; };
-                                bool ok = (off.size() == 2 && dig(off[0]) && dig(off[1])) ||              // ±HH
-                                          (off.size() == 4 && dig(off[0]) && dig(off[1]) && dig(off[2]) && dig(off[3])) || // ±HHMM
-                                          (off.size() == 5 && off[2] == ':' && dig(off[0]) && dig(off[1]) && dig(off[3]) && dig(off[4])); // ±HH:MM
-                                if (!ok)
-                                    // the same fault the non-ISO branch above
-                                    // reports, and it gets the same class and
-                                    // wording: X::DateTime::InvalidFormat is not
-                                    // a Raku type, and this was the only site
-                                    // that used it
-                                    throwTypedV("X::Temporal::InvalidFormat",
-                                        {{"invalid-str", Value::str(is)}, {"target", Value::str("DateTime")},
-                                         {"format", Value::str("an ISO 8601 timestamp")}},
-                                        "Invalid DateTime string '" + is +
-                                        "'; use an ISO 8601 timestamp instead");
                                 long long oh = (off[0] - '0') * 10 + (off[1] - '0');
                                 long long om = off.size() == 4 ? (off[2] - '0') * 10 + (off[3] - '0')
                                              : off.size() == 5 ? (off[3] - '0') * 10 + (off[4] - '0') : 0;
