@@ -121,6 +121,20 @@ moves to [TODO.md](TODO.md).
   search found nothing until 0e44c5a6 made a user group list the engine's
   candidates too. Done when B is refused as in Rakudo and b-count is 9;
   size it with the TODO.md item, which is the same chain.
+- [ ] **`loop(…)` calling a `&loop` parameter is parsed as a loop** (found
+  2026-10-28 while writing c50eb3b8's test, for issue #146):
+
+  ```raku
+  sub count(&loop) { my $n = 0; loop({ $n++ }); loop({ $n++ }); $n }
+  say count(-> &b { b() });
+  # Raku++: Malformed loop spec (expected 3 parts separated by semicolon, got 1)
+  # Rakudo 2026.09: 2
+  ```
+
+  Rakudo reads a keyword followed straight by `(`, with no space, as a call
+  of that name, and calls the `&loop` in scope. Here the statement parser
+  takes `loop` as the loop keyword whatever follows it. Done when the
+  program prints 2; check `if(…)`, `while(…)` and `for(…)` beside it.
 
 ## Operators and types
 
@@ -540,6 +554,24 @@ moves to [TODO.md](TODO.md).
   guards are destroyed as ExitEx unwinds. Change both at once, since
   t/exe/run.raku holds them to each other. Done when the line above prints
   nothing in either, and END still runs.
+- [ ] **A typed `$` parameter's `.VAR` is a Scalar** (found 2026-10-28
+  while fixing issue #146, c50eb3b8; the same before it):
+
+  ```raku
+  sub t(Channel $in) { say $in.VAR.^name }   # Scalar, Rakudo Channel
+  t(Channel.new);
+  sub s(Str $s) { say $s.VAR.^name }         # Scalar, Rakudo Str
+  s('x');
+  sub l(List $l) { say $l.VAR.^name }        # Scalar in both
+  l((1, 2));
+  ```
+
+  Rakudo binds a typed read-only `$` parameter to its value with no Scalar
+  around it; its binder itemizes an Iterable, and an untyped or Any
+  parameter is handed its argument's container. c50eb3b8 made `for` read such
+  a parameter as bare through VarExpr::bareParam, which the parser sets;
+  `.VAR` still sees the Scalar the binder makes. Done when the three lines
+  are Rakudo 2026.09's.
 
 ## Processes and diagnostics
 
