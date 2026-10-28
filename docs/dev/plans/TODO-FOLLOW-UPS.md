@@ -292,6 +292,22 @@ moves to [TODO.md](TODO.md).
 
 ## Control flow and containers
 
+- [ ] **`.map` over a shared Array writes its elements back** (found
+  2026-10-28 while fixing issue #193, b05e989b, on its program). After a
+  block's call, callCallableRaw copies the block's `$_` back into the element
+  `.map` aliased (tctx().topicWriteback, InterpreterCore.cpp:9565) unless
+  Value::sameRep finds nothing changed. For an element the block never
+  touched it still finds a difference, presumably a flag the binder sets on
+  the topic (which one is not pinned down: lldb cannot read the frame in an
+  optimised build), so the element is written on every call. One thread
+  stores what was there; eight `start` blocks mapping one shared Array, as
+  the issue's json-encode does with `$v.map({ json-encode($_) })`, write its
+  elements while the others copy it. Under ThreadSanitizer every report
+  t/regression/issue-193-shared-hash-reads.raku leaves (36) is this:
+  Value::operator= at that line against RVec's copy constructor. No wrong
+  answer showed in 300 runs of the repros, but a torn copy is possible. The
+  fix is to write back only what the block assigned: a flags-only difference
+  skipped, or a mark on the topic's store.
 - [ ] **An enum's type object is a list of its pairs** (found 2026-10-27
   while making statement conditions Rakudo's xblock, 4af53b07; on daf9c03c
   too). A type object is one item, and `Int` is, but an enum's is not:
