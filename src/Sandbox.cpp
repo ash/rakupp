@@ -78,7 +78,7 @@ const Row kPathMethods[] = {
     {"chdir", C::Read}, {"watch", C::Read},
     {"spurt", C::Write}, {"mkdir", C::Write}, {"rmdir", C::Write}, {"unlink", C::Write},
     {"symlink", C::Write}, {"link", C::Write}, {"copy", C::Write}, {"rename", C::Write},
-    {"move", C::Write}, {"chmod", C::Write},
+    {"move", C::Write}, {"chmod", C::Write}, {"chown", C::Write},
 };
 
 // …and the ones rakupp also answers on a plain Str (`"a.txt".copy("b.txt")`).
@@ -110,7 +110,7 @@ const Row kSubs[] = {
     {"rakupp-gzslurp", C::Read},
     {"spurt", C::Write}, {"mkdir", C::Write}, {"rmdir", C::Write}, {"unlink", C::Write},
     {"rename", C::Write}, {"move", C::Write}, {"copy", C::Write}, {"chmod", C::Write},
-    {"link", C::Write}, {"symlink", C::Write}, {"make-temp-file", C::Write},
+    {"chown", C::Write}, {"link", C::Write}, {"symlink", C::Write}, {"make-temp-file", C::Write},
     {"make-temp-dir", C::Write}, {"rakupp-gzspurt", C::Write},
     {"rakupp-repo-lock", C::Write}, {"rakupp-repo-unlock", C::Write},
     {"run", C::Run}, {"shell", C::Run}, {"QX", C::Run}, {"__qx__", C::Run},

@@ -7804,6 +7804,7 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
                     else if (n == "X::IO::Move")    msg = "Failed to move '" + a["from"] + "' to '" + a["to"] + "'" + oserr();
                     else if (n == "X::IO::Mkdir")   msg = "Failed to create directory '" + a["path"] + "' with mode '0o" + a["mode"] + "'" + oserr();
                     else if (n == "X::IO::Chmod")   msg = "Failed to set the mode of '" + a["path"] + "' to '0o" + a["mode"] + "'" + oserr();
+                    else if (n == "X::IO::Chown")   msg = "Failed to change owner of '" + a["path"] + "' to " + a["uid"] + "/" + a["gid"] + oserr();
                     else if (n == "X::IO::DoesNotExist") msg = "Failed to find '" + a["path"] + "' while trying to do '." + a["trying"] + "'";
                     else if (n == "X::IO::Directory") msg = "'" + a["path"] + "' is a directory, cannot do '." + a["trying"] + "' on a directory";
                     if (!haveMsg && !msg.empty()) args.push_back(Value::pair("message", Value::str(msg)));

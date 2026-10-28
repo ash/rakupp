@@ -31716,7 +31716,7 @@ Value Interpreter::evalVarExpr(Expr* e) {
         "DEFINITE", "DYNAMIC-FALLBACK", "NYI", "REPR", "WHERE", "atomic-add-fetch",
         "atomic-assign", "atomic-dec-fetch", "atomic-fetch", "atomic-fetch-add",
         "atomic-fetch-dec", "atomic-fetch-inc", "atomic-fetch-sub", "atomic-inc-fetch",
-        "atomic-sub-fetch", "cas", "chown", "fc", "goto", "last", "next", "redo", "repl",
+        "atomic-sub-fetch", "cas", "fc", "goto", "last", "next", "redo", "repl",
         "return", "return-rw", "subbuf-rw", "undefine", "proceed", "succeed", "leave",
         "emit", "done", "take", "take-rw", "callsame", "callwith", "nextsame", "nextwith"};
     // an EVAL-born `our sub` is in the package only: `&OUR::name`

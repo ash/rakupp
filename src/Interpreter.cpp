@@ -4696,6 +4696,7 @@ Interpreter::Interpreter() {
             reg(n, {"from", "to", "os-error", "message"});
         for (const char* n : {"X::IO::Mkdir", "X::IO::Chmod"})
             reg(n, {"path", "mode", "os-error", "message"});
+        reg("X::IO::Chown", {"path", "uid", "gid", "os-error", "message"});
         reg("X::IO::DoesNotExist", {"path", "trying", "message"});
         // `.open` (and every other file operation) on a directory answers this,
         // not the errno the syscall would have given: EISDIR is a description of

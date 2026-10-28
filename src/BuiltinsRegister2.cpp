@@ -101,6 +101,18 @@ void Interpreter::registerBuiltinsPart3() {
         if (x && ::access(to.c_str(), X_OK) != 0) return "did not pass :x test";
         return "";
     };
+    B["chown"] = [](Interpreter& I, ValueList& a) -> Value { // chown :uid, :gid, @paths → the paths changed
+        ValueList named, paths;
+        for (auto& v : a) {
+            if (v.t == VT::Pair && v.namedArg) named.push_back(v);
+            else if (v.t == VT::Array && v.arr() && !v.itemized) for (auto& e : *v.arr()) paths.push_back(e);
+            else paths.push_back(v);
+        }
+        Value out = Value::array(); out.isList = true;   // `@filenames.grep(*.IO.chown(…))`
+        for (auto& p : paths)
+            if (I.methodCall(I.methodCall(p, "IO", {}), "chown", named).truthy()) out.arr()->push_back(p);
+        return out;
+    };
     B["chdir"] = [](Interpreter& I, ValueList& a) -> Value {
         // `chdir()` matches no candidate of the multi — which is the error the
         // caller sees, and the type a `CATCH` for a bad call is written against

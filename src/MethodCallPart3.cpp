@@ -509,6 +509,37 @@ static bool statOrFailure(const std::string& path, const std::string& shown,
     return false;
 }
 
+// $path.IO.chown(:uid, :gid) — an id left out keeps the file's own, as in
+// Rakudo, and a refusal is an X::IO::Chown Failure (#213)
+static Value ioPathChown(Interpreter& I, const Value& inv, const ValueList& args) {
+    Value uid, gid;
+    for (auto& a : args)
+        if (a.t == VT::Pair && a.namedArg && a.pairVal()) {
+            if (a.s == "uid") uid = *a.pairVal();
+            else if (a.s == "gid") gid = *a.pairVal();
+        }
+    const std::string abs = I.methodCall(inv, "absolute", ValueList{}).toStr();
+    auto refused = [&](const std::string& why) {
+        const std::string to = (rtIsDefined(uid) ? uid.toStr() : "") + "/" + (rtIsDefined(gid) ? gid.toStr() : "");
+        return I.ioFailure("X::IO::Chown",
+                           {{"path", Value::str(abs)}, {"uid", uid}, {"gid", gid},
+                            {"os-error", Value::str(why)}},
+                           "Failed to change owner of '" + abs + "' to " + to + ": " + why);
+    };
+#if defined(_WIN32)
+    return refused("chown is not available on Windows");
+#else
+    const std::string path = I.ioFsPath(inv);
+    struct stat st;
+    if (::stat(path.c_str(), &st) != 0) return refused("Path does not exist");
+    if (!rtIsDefined(uid)) uid = Value::integer((long long)st.st_uid);
+    if (!rtIsDefined(gid)) gid = Value::integer((long long)st.st_gid);
+    if (::chown(path.c_str(), (uid_t)uid.toInt(), (gid_t)gid.toInt()) != 0)
+        return refused(std::strerror(errno));
+    return Value::boolean(true);
+#endif
+}
+
 // Cool.match is `self.Str.match`, and a needle that is no Regex is matched as
 // its Str: `<42>.match("4")`, `42.match("4")` and `"42".match(4)` are ｢4｣.
 // Only a regex needle reached a number or an allomorph before, so a MAIN
@@ -3246,6 +3277,7 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
         }
         return Value::boolean(true);   // the mode was set; the path was never news
     }
+    if (m == "chown" && inv.hashKind == "IO") return ioPathChown(*this, inv, args);
     // `IO::Handle.Supply` needs a handle to read: a type object has none
     if (m == "Supply" && inv.t == VT::Type && inv.s == "IO::Handle")
         throwTypedV("X::Multi::NoMatch", {},
