@@ -22,7 +22,7 @@ cb7933f3 (issue #204); cb5b360a, d5184116 and 50aebf54; 67a2fe76 (issue
 62e16b9e; fb9009bc (issue #56); 3c80bc24; 48b76d56, a348489b, aa0f3618 and
 fc262224 (issue #195); 0f19ab0e (issue #208); f483f0e6 (issue #192);
 b05e989b (issue #193); 17e33a45 (issue #184); 5f87f445; 0e44c5a6 (issue
-#211); 8c871a25.*
+#211); 8c871a25; 642a320a.*
 
 ---
 
@@ -834,6 +834,18 @@ does not.
   "A method 'bar' already exists"; AttrX::Lazy 0.0.3 now passes its three
   test files and installs. t/regression/how-compose-sees-declared-methods.raku
   agrees with Rakudo 2026.09.
+- **`rakupp install https://github.com/antononcube/Raku-Woxi` installs**
+  (642a320a). A `try` or `quietly` hands its block's value on in its
+  container, as `do` does, so `try { $result = await $proc; CATCH { … } }`
+  no longer sinks a failed Proc after the try. And a CATCH or CONTROL
+  written last is a block's last statement, as it already was a
+  routine's: what precedes it runs in sink context inside the block, into
+  that CATCH, and the block answers Nil. `try { await $killed; CATCH {
+  default { } } }` threw the killed child's X::Proc::Unsuccessful from
+  outside the try, and `(1, 2).map({ $_ * 2; CATCH { … } })` answered
+  (2 4) where Rakudo answers (Nil Nil). Woxi 0.0.1 now passes its 14 tests
+  and installs. t/regression/try-block-sink-and-trailing-catch.raku agrees
+  with Rakudo 2026.09.
 
 ### Left open
 
@@ -855,6 +867,9 @@ does not.
 - In a metaclass `compose` before its `callsame`, `.^can` and
   `.^find_method` still find a public attribute's accessor, where Rakudo
   finds none yet (8c871a25). TODO-FOLLOW-UPS.md has it.
+- A phaser written last (LEAVE, KEEP, ENTER, FIRST…) still leaves the
+  statement before it as the block's or routine's value: `sub f { 42; LEAVE
+  { } }` answers 42, Rakudo Nil (642a320a). TODO-FOLLOW-UPS.md has it.
 
 - `--exe` checks no parameter's sigil, `%` included: a compiled `sub
   p(%h)` given `(a => 1, b => 2)` holds the List, as it did before
