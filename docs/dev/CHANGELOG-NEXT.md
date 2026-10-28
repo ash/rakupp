@@ -21,7 +21,7 @@ cb7933f3 (issue #204); cb5b360a, d5184116 and 50aebf54; 67a2fe76 (issue
 #198) and 4af53b07; 3ddcd58b (issue #207); 2b9494ae (issue #206);
 62e16b9e; fb9009bc (issue #56); 3c80bc24; 48b76d56, a348489b, aa0f3618 and
 fc262224 (issue #195); 0f19ab0e (issue #208); f483f0e6 (issue #192);
-b05e989b (issue #193).*
+b05e989b (issue #193); 17e33a45 (issue #184); 5f87f445.*
 
 ---
 
@@ -497,6 +497,33 @@ plain before 500c29e2 and native from it, unless they say otherwise.
   Among the arguments an all/none junction threads before an any/one, as a
   sub's already did: `'abc'.substr(0|1, 1&2)` was any(all(a, ab), all(b,
   bc)), and is all(any(a, b), any(ab, bc)).
+- **An alias of a typed container's element keeps the container's type**
+  (17e33a45; issue #184), as in Rakudo. `my Int @a = 1, 2, 3; my $e :=
+  @a[1]; $e = 'foo'` stored the Str, and `$e.VAR.of` died "No such method
+  'of'". A type here lives with the variable's name, which an alias does not
+  share; each alias of an element now carries the container's guard, so a
+  store through it refuses what the element type refuses, converts for a
+  coercion type, and resets the element on Nil (which it stored as Nil):
+  `:=` and `\x` binds, `is rw` and sigilless parameters, `for` over the
+  array, its views and `%h.values`, `given`, and `.map`'s and `.grep`'s `$_`,
+  for arrays, hashes and attributes' elements. `$x := @a.AT-POS(1)` and
+  `%h.AT-KEY("k")` alias the element, where they bound a copy, and
+  `@a[0].VAR` answers the element type, its default and the container's
+  name (`@a`; it was `element`). An untyped container's aliases cost what
+  they did; a typed one's are checked now: 300k `:=` binds and stores 135 →
+  192 ms, a `for` writing 1M elements 169 → 199 ms.
+- **An alias of a typed scalar keeps its variable's type** (5f87f445), as in
+  Rakudo, which names the variable: `my Int $a; my $b := $a; $b = 'x'`
+  stored the Str, as did a store through `my \s = $a`, an `is rw`, `is raw`,
+  sigilless or named `is rw` parameter given `$a`, `-> $x is rw`, `for $a`,
+  `for $a <-> $v`, `for $a, $c` and `given`/`with $a`; Nil through one stored
+  Nil, and `$b.VAR.of` was (Mu). The alias of a typed variable is a Proxy
+  over its cell carrying the variable's type, smiley, coercion and default
+  now, made once per variable and kept in its scope; `.VAR` through it, and
+  the variable's own `.VAR.of` under `is default`, a smiley or a coercion,
+  answer as Rakudo's. An untyped variable's aliases cost what they did
+  (within 3%); a typed one's are checked: 300k `f($a)` into an `is rw`
+  parameter 94 → 130 ms, `:=` and store 70 → 115 ms.
 
 ### Fixed: crashes
 
@@ -783,6 +810,15 @@ does not.
   t/regression/issue-206-text-after-block.raku agrees with Rakudo 2026.09.
 
 ### Left open
+
+- A `for` loop's, `given`'s or `.map`'s alias of a typed array element
+  refuses at its write-back, after the rest of the body; `.hyper.map`, `for
+  @a.kv -> $k, $v is rw` and `.first` still store anything; and `my Int:D
+  @d; @d[0] = Nil` is still taken (17e33a45). A typed scalar's container
+  handed out by an expression still takes anything — `($a, my $z) = 'la',
+  2`, `($a, 2)[0] = 'l'`, a Pair's value, an `is rw` routine's tail — and a
+  `where` clause is not checked through an alias (5f87f445).
+  TODO-FOLLOW-UPS.md has each.
 
 - `--exe` checks no parameter's sigil, `%` included: a compiled `sub
   p(%h)` given `(a => 1, b => 2)` holds the List, as it did before

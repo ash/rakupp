@@ -544,6 +544,7 @@ struct EnvExtras {
     std::set<std::string> varDynamic;   // names declared `is dynamic` in this scope
     std::map<std::string, char> varSmiley; // `my Int:D $x` — 'D' / 'U': what assignments must satisfy
     std::map<std::string, const struct Expr*> varWhere; // `my $x where Int|Num` — checked on every assignment
+    std::map<std::string, Value> keptAliases;   // a typed variable's alias Proxy (scalarAliasOf), while it holds that cell
     std::set<std::string> varConstant;  // `$`-sigiled constants: a VALUE, not a container (`for $c` iterates)
     // the type whose body this scope is: a class body, or the scope a role's
     // methods were re-closed in for one parameterization (weak: the type's
@@ -1899,6 +1900,9 @@ struct ExecContext {
     // kernels ran 3-5% more cycles on the same instructions.)
     const Expr* coopAssign = nullptr;
     uint64_t coopAssignFrame = 0;
+    // …and topicWriteback's slot with the element type a write to it answers
+    // to (elemAliasGuard), honoured for that slot only. Last, as the two above.
+    std::pair<const Value*, const Value*> topicWritebackGuard{};
 };
 
 // Backs a lazy list (an infinite `… … *` sequence, or `.map` over one). The Value
@@ -2817,7 +2821,7 @@ public:
     // whole existing Proxy plumbing (deproxy on read, proxyStore on assign)
     // applies unchanged. take-rw hands these out; := uses the Env one.
     Value makeEnvSlotProxy(std::shared_ptr<Env> owner, const std::string& src);
-    Value makeArraySlotProxy(PRef<ValueList> arr, size_t idx, const std::string& nativeT = "");
+    Value makeArraySlotProxy(PRef<ValueList> arr, size_t idx, const std::string& nativeT = "", const Value* guard = nullptr);
     Value makePairCellProxy(PRef<Value> cell);   // a Pair's value container, as a Proxy
     Value stashEntryOf(const Value& slot);       // a package global as its Stash holds it (a cell as its Proxy)
     void stashDeleteSymbol(const std::string& pkg, const std::string& key);   // `Foo::<$x>:delete`'s global
@@ -2832,7 +2836,8 @@ public:
     ValueList* slotProxyTarget(const Value& proxy, size_t& idxOut); // compact array slot, or null
     Value slotProxyRead(const Value& proxy);
     Value slotProxyWrite(const Value& proxy, const Value& nv);
-    Value makeHashSlotProxy(PRef<ValueMap> h, const std::string& key);
+    Value makeHashSlotProxy(PRef<ValueMap> h, const std::string& key, const Value* guard = nullptr);
+    const Value* proxyElemGuard(const Value& proxy) const;   // the elemAliasGuard a slot alias carries, or null
     Value makeCellProxy(const Value& init);
     // A Proxy over the ELEMENT a subscript path names in `scope`: FETCH reads
     // the path without vivifying, STORE assigns through lvalue(path), which
@@ -2882,7 +2887,7 @@ public:
     void importedBuiltinSyms(Env* f, std::vector<std::pair<std::string, Value>>& out);
     bool immutableQuantSource(const Expr* listExpr);
     // The containers behind `for $a, $b, $c` — likewise.
-    bool scalarListAlias(Expr* listExpr, std::vector<Value*>& slots);
+    bool scalarListAlias(Expr* listExpr, std::vector<Value*>& slots, std::vector<Value>* guards = nullptr);
     // `allowObject`: also alias through a subscript on a Hash/Array-BACKED OBJECT
     // (PDF's `with self<ID> { } else { $_ = … }`). Only the LAZY write-back asks
     // for it — taking that lvalue eagerly would run the object's own store.
@@ -2943,6 +2948,9 @@ public:
     void noteKeptVarType(const struct Expr* item, Value& proxy);     // …a typed variable's, with its type
     Value keptTypedStore(const Value& proxy, Value v);               // …which a store through it checks
     bool keptTyped(const Value& proxy) const;                         // …does it carry one?
+    bool keptVarTags(Env* own, const std::string& nm, Value& proxy);  // …tag it with `nm`'s, if typed
+    Value scalarAliasOf(Env* own, const std::string& nm, const PRef<Value>& cell);   // an alias of `nm`: its cell, or a kept Proxy
+    Value keptScalarRecord(const Value& proxy, const Value& value);  // …and its `.VAR` (Nil: none)
     struct Expr* listLiteralItem(struct Index* ix); // `($a, 42)[k]`'s item k, or null
     PRef<Value> exprVarCell(const struct Expr* e, bool* boundToValue = nullptr, Env* scope = nullptr); // the cell of the variable `e` names (in `scope`)
     bool bindAttrAlias(struct Assign* a, bool sigilDeclBind); // `my $x := $!a` / `my \x = $!a` (InterpreterCalls.cpp)
@@ -3297,6 +3305,11 @@ public:
     void nativeElemTag(const std::string& t, Value& v);   // …an alias of one (`for @n { $_ = … }`) carries its tags
     std::string nativeElemTypeAt(const Expr* e);   // the native type of the array `@n[…]` names, or ""
     std::string nativeLoopElemType(const Value& src, const Expr* e);   // …of the array a `for` walks
+    Value elemAliasGuard(const Value& container, bool isHash, const std::string& symbol);   // what a store through an alias of an element answers to (#184)
+    Value elemAliasStore(const Value& guard, Value v);   // …one such store: reset, coerced, or refused
+    Value elemGuardAt(const Expr* e, std::string* nativeT = nullptr);   // …of the element `@a[i]` names, or Any
+    Value elemLoopGuard(const Expr* e);                  // …of the array behind a `for`'s view (`@a.grep(…)`)
+    bool bindElemMethodAlias(Assign* a, Value& out);     // `$x := @a.AT-POS(1)`: the element's container
     Value sliceElemStore(const Value& container, bool isHash, Value& v, const std::string& symbol);
     Value sliceStoreResult(const Value& container);
     void checkElemType(const std::string& want, const Value& v, const std::string& symbol);

@@ -816,8 +816,27 @@ void Interpreter::rwWriteThrough(Expr* target) {
     // it needs the container model, big-area #2, and stays open.)
     // (an element of a native array takes what its alias holds as `+=` would:
     // an `int` parameter's tags already judged it, a `str` one's is judged here)
-    if (std::string t = nativeElemTypeAt(peelIncDec(it->second.first)); !t.empty())
-        try { nativeElemStore(t, v, 'o'); } catch (...) { tctx().cur = savedCur; throw; }
+    // …and an element of a TYPED one answers to its element type, as its own
+    // Scalar would (#184): `sub f($x is rw) { $x = "s" }; f(@ints[0])` dies in
+    // the assignment. The parameter then holds what the element does, so the
+    // return-time copy-out has nothing to put back; a Nil the callee stored
+    // reads as the element's default, which is what reached it.
+    std::string natT;
+    Value g = elemGuardAt(peelIncDec(it->second.first), &natT);
+    if (!natT.empty())
+        try { nativeElemStore(natT, v, 'o'); } catch (...) { tctx().cur = savedCur; throw; }
+    else if (g.t == VT::Array) {
+        Value* src = e->local(name);
+        try { v = elemAliasStore(g, std::move(v)); }
+        catch (...) {
+            Value held;
+            try { if (Value* lv = lvalue(peelIncDec(it->second.first))) held = *lv; } catch (...) {}
+            tctx().cur = savedCur;
+            if (src) { ParStripe ws(*this, src); raceW(src) = held; }
+            throw;
+        }
+        if (src) { ParStripe ws(*this, src); raceW(src) = v; }
+    }
     try {
         Expr* tgt = peelIncDec(it->second.first);
         if (!assignMultiDimSlice(tgt, v))
@@ -1979,7 +1998,7 @@ bool Interpreter::topicWriteThroughObject(Expr* topic, const Value& v) {
     return true;
 }
 
-bool Interpreter::scalarListAlias(Expr* listExpr, std::vector<Value*>& slots) {
+bool Interpreter::scalarListAlias(Expr* listExpr, std::vector<Value*>& slots, std::vector<Value>* guards) {
     // `for $pair.value -> $v is rw { … }` — the loop aliases the pair's own
     // value container (a Pair built from a container shares it)
     if (listExpr && listExpr->kind == NK::MethodCall) {
@@ -1992,6 +2011,7 @@ bool Interpreter::scalarListAlias(Expr* listExpr, std::vector<Value*>& slots) {
                 Value* slot = p->pairVal();
                 if (slot->t == VT::Array || slot->t == VT::Hash) return false;   // iterates, not one item
                 slots.push_back(slot);
+                if (guards) guards->push_back(Value::any());
                 return true;
             }
         }
@@ -2021,6 +2041,7 @@ bool Interpreter::scalarListAlias(Expr* listExpr, std::vector<Value*>& slots) {
         }
         if (got.empty()) return false;
         slots.insert(slots.end(), got.begin(), got.end());
+        if (guards) guards->resize(slots.size(), elemAliasGuard(*hv, true, bv->name));   // (a typed hash's: #184)
         return true;
     }
     if (!listExpr || listExpr->kind != NK::ListExpr) return false;
@@ -2047,12 +2068,26 @@ bool Interpreter::scalarListAlias(Expr* listExpr, std::vector<Value*>& slots) {
         if (ve->name.size() < 2 || ve->name[0] != '$' || ve->declare) return false;
         if (!tctx().cur->find(ve->name)) return false;
     }
+    // (…and what a write-back to each answers to, for `guards`: a typed
+    // array's element type, a typed variable's own record — #184)
+    auto varGuard = [&](const std::string& nm) -> Value {
+        Env* own = nullptr;
+        Value* raw = tctx().cur->findRaw(nm, &own);
+        if (!raw || !own || !own->ex || keptTyped(*raw)) return Value::any();   // (its Proxy judges a store itself)
+        if (!own->ex->varDefault.count(nm) && !own->ex->varSmiley.count(nm) && !own->ex->varCoerce.count(nm))
+            return Value::any();
+        Value g = scalarAliasOf(own, nm, nullptr);
+        return g.isCell() ? Value::any() : g;
+    };
     for (auto& it : le->items) {
         if (Value* av = arrayOf(it.get())) {
-            for (auto& el : *av->arr()) slots.push_back(&el);
+            Value g = guards ? elemAliasGuard(*av, false, static_cast<VarExpr*>(
+                it->kind == NK::Unary ? static_cast<Unary*>(it.get())->operand.get() : it.get())->name) : Value::any();
+            for (auto& el : *av->arr()) { slots.push_back(&el); if (guards) guards->push_back(g); }
             continue;
         }
         slots.push_back(lvalue(it.get()));
+        if (guards) guards->push_back(varGuard(static_cast<VarExpr*>(it.get())->name));
     }
     return true;
 }
@@ -2727,38 +2762,129 @@ void Interpreter::keepListContainers(const ListExpr* l, Value& list) {
     }
     if (holds) list.markHoldsContainers();
 }
-// A kept item for a TYPED variable (`my Int $a; f(($a, 2))`) carries what a
-// store into the variable checks: its type, its name and the default a Nil
-// resets it to, found as enforceTypedAssign finds them. A write through the
-// List stored anything, and a Nil stayed Nil. (keptTypedStore applies them.)
-static const std::string kKeptType = "\x01keptType", kKeptName = "\x01keptName", kKeptDefault = "\x01keptDefault";
+// A kept item for a TYPED variable (`my Int $a; f(($a, 2))`), and an ALIAS of
+// one (`my $b := $a`, `sub f($x is rw)` handed `$a`, `for $a { }`: #184's twin
+// for scalars), carries what a store into the variable checks, found in the
+// scope that declared it as enforceTypedAssign finds it: one record under one
+// key, so the proxy keeps four entries — [its name, the value Nil resets it
+// to, its type, its `:D`/`:U` smiley, the type a coercion type converts to,
+// the one it converts from, and whether its type is one of the core nominals
+// a conforming value needs nothing past rtTypeMatch for]. keptTypedStore
+// applies it; a store through the
+// alias was stored as it came, and a Nil stayed Nil. (A `where` clause runs in
+// the declaring scope, which the record does not keep: not checked here.)
+static const ProxyKey& kKeptKey() { static const ProxyKey k("\x01" "kept"); return k; }
+bool Interpreter::keptVarTags(Env* own, const std::string& nm, Value& proxy) {
+    if (!own || !own->ex || !proxy.hash()) return false;
+    const auto& x = *own->ex;
+    auto di = x.varDefault.find(nm);
+    auto si = x.varSmiley.find(nm);
+    auto ci = x.varCoerce.find(nm);
+    std::string type, from, coerce = ci != x.varCoerce.end() ? ci->second : std::string();
+    Value dflt = Value::any();
+    if (di != x.varDefault.end()) {
+        auto dti = x.varDefaultType.find(nm);
+        const Value& ty = dti != x.varDefaultType.end() ? dti->second : di->second;
+        if (ty.t == VT::Type && !x.varDefaultUntyped.count(nm) && ty.s != "Any" && ty.s != "Mu") type = ty.s.str();
+        dflt = di->second;
+    }
+    if (!coerce.empty()) if (auto fi = x.varCoerce.find(nm + "\x01from"); fi != x.varCoerce.end()) from = fi->second;
+    const char sm = si != x.varSmiley.end() ? si->second : 0;
+    // (a native carries its own tags on the value, and an untyped variable with
+    // no `is default` resets to Any anyway: nothing to keep)
+    if (!type.empty() && !typeNameLead(type[0]) && isNativeTypeName(type)) return false;
+    if (type.empty() && !sm && coerce.empty() && (dflt.t == VT::Any || (dflt.t == VT::Type && dflt.s == "Any")))
+        return false;
+    static const std::set<std::string> kCore = {"Int", "Num", "Rat", "Complex", "Str", "Bool"};
+    const bool core = kCore.count(type) > 0;
+    Value g = Value::array();
+    ValueList& l = *g.arr();
+    l.reserve(7);
+    l.push_back(Value::str(nm));
+    l.push_back(std::move(dflt));
+    l.push_back(Value::str(std::move(type)));
+    l.push_back(Value::str(sm ? std::string(1, sm) : std::string()));
+    l.push_back(Value::str(std::move(coerce)));
+    l.push_back(Value::str(std::move(from)));
+    l.push_back(Value::boolean(core));
+    proxy.hash()->addFresh(kKeptKey().s, kKeptKey().h, std::move(g));
+    return true;
+}
 void Interpreter::noteKeptVarType(const Expr* it, Value& proxy) {
     if (it->kind == NK::Assign) it = static_cast<const Assign*>(it)->target.get();
     if (!it || it->kind != NK::VarExpr || !proxy.hash()) return;
     const std::string& nm = static_cast<const VarExpr*>(it)->name;
     Env* own = nullptr;
-    if (!tctx().cur->findRaw(nm, &own) || !own || !own->ex) return;
-    auto di = own->ex->varDefault.find(nm);
-    if (di == own->ex->varDefault.end()) return;
-    auto dti = own->ex->varDefaultType.find(nm);
-    const Value& ty = dti != own->ex->varDefaultType.end() ? dti->second : di->second;
-    if (ty.t != VT::Type || own->ex->varDefaultUntyped.count(nm) || ty.s == "Any" || ty.s == "Mu") return;
-    (*proxy.hash())[kKeptType] = Value::str(ty.s);
-    (*proxy.hash())[kKeptName] = Value::str(nm);
-    (*proxy.hash())[kKeptDefault] = di->second;
+    if (tctx().cur->findRaw(nm, &own)) keptVarTags(own, nm, proxy);
 }
-bool Interpreter::keptTyped(const Value& proxy) const {
-    return keptTagged(proxy) && proxy.hash()->find(kKeptType) != proxy.hash()->end();
+static const Value* keptRecord(const Value& proxy) {
+    if (!keptTagged(proxy)) return nullptr;
+    const Value* g = proxy.hash()->findPre(kKeptKey().s, kKeptKey().h);
+    return g && g->t == VT::Array && g->arr() && g->arr()->size() == 7 ? g : nullptr;
 }
+bool Interpreter::keptTyped(const Value& proxy) const { return keptRecord(proxy) != nullptr; }
 Value Interpreter::keptTypedStore(const Value& proxy, Value v) {
-    if (!keptTagged(proxy)) return v;
-    const ValueHash* h = &*proxy.hash();
-    auto ty = h->find(kKeptType);
-    if (ty == h->end()) return v;
-    if (v.t == VT::Nil) { auto d = h->find(kKeptDefault); return d != h->end() ? d->second : Value::any(); }
-    auto nm = h->find(kKeptName);
-    enforceTypedValue(nm != h->end() ? nm->second.s.str() : std::string("$x"), ty->second.s.str(), v, global_.get());
-    return v;
+    const Value* g = keptRecord(proxy);
+    if (!g) return v;
+    const ValueList& k = *g->arr();
+    const std::string& nm = k[0].s.str();
+    const std::string& type = k[2].s.str();
+    const std::string& sm = k[3].s.str();
+    const std::string& coerce = k[4].s.str();
+    // Nil — or the undefined hole a callee's `$x = Nil` leaves — resets it
+    if (v.t == VT::Nil || v.t == VT::Any) v = k[1];
+    else if (k[6].b && rtIsDefined(v) && rtTypeMatch(v, type)) {}   // (the common store: it fits)
+    else {
+        if (!coerce.empty() && v.typeName() != coerce) v = coerceVarValue(v, coerce, k[5].s.str(), nm);
+        if (!type.empty()) enforceTypedValue(nm, type, v, global_.get());
+    }
+    if (sm.empty() || isDefined(v) == (sm == "D")) return v;
+    const bool def = isDefined(v);
+    const std::string want = (type.empty() ? std::string("Any") : type) + ":" + sm;
+    throwTypedV("X::TypeCheck::Assignment",
+        {{"got", v}, {"expected", Value::typeObj(want)}, {"symbol", k[0]}},
+        "Type check failed in assignment to " + nm + "; expected " + want + " but got " + v.typeName() +
+            (def ? " (" + typeCheckRepr(v) + ")" : " (" + v.typeName() + ") (perhaps Nil was assigned to a :D which had no default?)"));
+}
+// The container an ALIAS of the variable `nm` (declared in `own`) holds: its
+// cell, or for a typed variable a shared-cell Proxy over that cell carrying
+// the record above, so a store through the alias answers to the variable's
+// type as a store through its name does. An untyped variable's alias is the
+// bare cell it always was.
+// The Proxy is made once per variable and cell, and kept in its scope while no
+// worker thread can be reading that (an `f($n)` of an `is rw` parameter in a
+// loop then costs one lookup), the cycle collector walking it as a variable.
+// A null `cell` asks for the record alone (`.VAR`, a write-back's check): any
+// Proxy of the variable's carries it, and one made for that is not kept.
+Value Interpreter::scalarAliasOf(Env* own, const std::string& nm, const PRef<Value>& cell) {
+    if (own && own->ex && (own->ex->varDefault.count(nm) || own->ex->varSmiley.count(nm) ||
+                           own->ex->varCoerce.count(nm))) {
+        auto& kept = own->ex->keptAliases;
+        if (auto it = kept.find(nm); it != kept.end() && (!cell || cellOfProxy(&it->second) == cell)) return it->second;
+        Value proxy = makeSharedCellProxy(cell ? cell : makePayload<Value>());
+        if (keptVarTags(own, nm, proxy)) {
+            if (cell && !(parallelMode_ && liveWorkers_.load(std::memory_order_acquire) > 0)) kept[nm] = proxy;
+            return proxy;
+        }
+    }
+    return Value::cellHolder(cell);
+}
+// …and `.VAR` of such an alias: the variable's own Scalar — its name, its
+// default and its type (with the smiley) — or Nil when `proxy` carries none
+Value Interpreter::keptScalarRecord(const Value& proxy, const Value& value) {
+    const Value* g = keptRecord(proxy);
+    if (!g) return Value::nil();
+    const ValueList& k = *g->arr();
+    // (a coercion type is named whole, `Int(Any)`, as Rakudo's `.of` names it)
+    Value of = Value::typeObj(!k[4].s.str().empty() ? k[4].s.str() + "(" + (k[5].s.str().empty() ? std::string("Any") : k[5].s.str()) + ")"
+                              : k[2].s.str().empty() ? std::string("Mu") : k[2].s.str());
+    if (!k[3].s.str().empty()) of.i = k[3].s.str() == "D" ? 1 : 2;
+    Value sc = Value::makeHash(); sc.hashKind = "Scalar";
+    (*sc.hash())["name"] = k[0];
+    (*sc.hash())["default"] = k[1];
+    (*sc.hash())["of"] = of;
+    (*sc.hash())["value"] = value;
+    return sc;
 }
 // …and is this element such a container (or a real cell)?
 bool Interpreter::isContainerElem(const Value& v) {
@@ -2939,6 +3065,18 @@ static const ProxyKey& kSlotArr() { static const ProxyKey k("\x01arr"); return k
 // Hash::Ordered's DELETE-KEY names an element, splices it away and returns the
 // name, which otherwise answered the NEXT element's value.
 static const ProxyKey& kSlotLast() { static const ProxyKey k("\x01lst"); return k; }
+// …and an element of a TYPED (or `is default`) container carries the guard a
+// store through it answers to (elemAliasGuard). An array slot's rides in
+// kSlotArr's element default, which that Array has no other use for, so the
+// proxy keeps its four entries; a hash slot's, a closure pair, has a key.
+static const ProxyKey& kSlotGuard() { static const ProxyKey k("\x01" "grd"); return k; }
+static const Value* slotProxyRef(const Value& proxy);
+const Value* Interpreter::proxyElemGuard(const Value& proxy) const {
+    if (proxy.t != VT::Hash || proxy.hashKind != proxyKind() || !proxy.hash()) return nullptr;
+    if (const Value* r = slotProxyRef(proxy)) return r->elemDefault().get();
+    const Value* g = proxy.hash()->findPre(kSlotGuard().s, kSlotGuard().h);
+    return g && g->t == VT::Array ? g : nullptr;
+}
 
 // kSlotArr's `i`: the index in the low 32 bits, the length at bind time in the
 // high 32. An array of 2**32 elements is 320 GB of Values, so neither overflows;
@@ -3048,7 +3186,7 @@ void Interpreter::stashDeleteSymbol(const std::string& pkg, const std::string& k
     global_->undefine(gn);
 }
 
-Value Interpreter::makeArraySlotProxy(PRef<ValueList> arr, size_t idx, const std::string& nativeT) {
+Value Interpreter::makeArraySlotProxy(PRef<ValueList> arr, size_t idx, const std::string& nativeT, const Value* guard) {
     // Built once. STORE carries a two-parameter signature so codeArity sends it
     // the proxy alongside the value (proxyStore's `sub ($, $v)` spelling); a
     // builtin never binds its params, so they cost nothing else.
@@ -3077,6 +3215,7 @@ Value Interpreter::makeArraySlotProxy(PRef<ValueList> arr, size_t idx, const std
     Value av; av.t = VT::Array; av.setArr(std::move(arr));   // shares the storage
     av.i = slotPack(idx, n);
     if (!nativeT.empty()) av.ofTypeM() = nativeT;   // a native array's element: see slotProxyWriteRef
+    else if (guard && guard->t == VT::Array) av.elemDefaultM() = std::make_shared<Value>(*guard);   // (kSlotGuard)
     h.addFresh(kSlotArr().s, kSlotArr().h, std::move(av));
     h.addFresh(kSlotLast().s, kSlotLast().h, std::move(last));
     h.addFresh(proxyKeyFetch().s, proxyKeyFetch().h, kFetch);
@@ -3168,6 +3307,7 @@ static Value slotProxyWriteRef(Interpreter& I, const Value& proxy, const Value& 
     const size_t idx = slotIdx(ref);
     Value nv = in;
     if (!ref.ofType().empty()) I.nativeElemStore(ref.ofType(), nv, 'o', (long long)idx);
+    else if (const Value* g = ref.elemDefault().get()) nv = I.elemAliasStore(*g, std::move(nv));   // (kSlotGuard)
     Interpreter::ParStripe ps(I, arr);
     if (Value* last = proxy.hash()->findPre(kSlotLast().s, kSlotLast().h)) *last = nv;
     if (slotProxyDetached(ref, arr)) return nv;  // written to the detached element
@@ -3180,20 +3320,23 @@ Value Interpreter::slotProxyWrite(const Value& proxy, const Value& nv) {
     return ref ? slotProxyWriteRef(*this, proxy, *ref, nv) : nv;
 }
 
-Value Interpreter::makeHashSlotProxy(PRef<ValueMap> h, const std::string& key) {
+Value Interpreter::makeHashSlotProxy(PRef<ValueMap> h, const std::string& key, const Value* guard) {
     Value proxy = Value::makeHash(); proxy.hashKind = proxyKind();
+    Value g = guard && guard->t == VT::Array ? *guard : Value::any();   // (as the array slot's kSlotGuard)
     slotProxyPair(proxy,
         [h, key](Interpreter& I, ValueList&) -> Value {
             ParStripe ps(I, h.get());
             auto it = h->find(key);
             return it != h->end() ? it->second : Value::any();
         },
-        [h, key](Interpreter& I, ValueList& sa) -> Value {
+        [h, key, g](Interpreter& I, ValueList& sa) -> Value {
             Value nv = sa.empty() ? Value::any() : sa[0];
+            if (g.t == VT::Array) nv = I.elemAliasStore(g, std::move(nv));
             ParStripe ps(I, h.get());
             (*h)[key] = nv;
             return nv;
         });
+    if (g.t == VT::Array) (*proxy.hash())[kSlotGuard().s] = g;
     return proxy;
 }
 
