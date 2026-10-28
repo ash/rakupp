@@ -509,6 +509,24 @@ static bool statOrFailure(const std::string& path, const std::string& shown,
     return false;
 }
 
+// Cool.match is `self.Str.match`, and a needle that is no Regex is matched as
+// its Str: `<42>.match("4")`, `42.match("4")` and `"42".match(4)` are ｢4｣.
+// Only a regex needle reached a number or an allomorph before, so a MAIN
+// argument that looked like a number died on `.match("…")` (#212). Answers
+// whether it applied, with the match in `out`.
+static bool coolMatch(Interpreter& I, const Value& inv, const ValueList& args, Value& out) {
+    auto coolNum = [](const Value& v) {
+        return v.isAllomorph() || v.t == VT::Int || v.t == VT::Rat || v.t == VT::Num ||
+               v.t == VT::Complex || v.t == VT::Bool;
+    };
+    const bool needleNum = !(args[0].t == VT::Pair && args[0].namedArg) && coolNum(args[0]);
+    if (!coolNum(inv) && !(needleNum && inv.t == VT::Str && inv.hashKind.empty())) return false;
+    ValueList a2 = args;
+    if (needleNum) a2[0] = Value::str(args[0].toStr());
+    out = I.methodCall(coolNum(inv) ? Value::str(inv.toStr()) : inv, "match", a2);
+    return true;
+}
+
 // `.comb`'s optional LIMIT counts the pieces it may yield. `*` and `Inf` mean
 // all of them; anything else is `.Int`-coerced toward zero, and zero or less
 // means none at all. A limit that cannot be a count — NaN, a non-numeric Str,
@@ -6063,6 +6081,10 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
             out.arr()->push_back(methodCall(inv, m, std::move(a2)));
         }
         return out;
+    }
+    if (m == "match" && rxIdx < 0 && !args.empty()) {
+        Value r;
+        if (coolMatch(*this, inv, args, r)) return r;
     }
     // `"abc".match("b")` — a Str needle is a LITERAL pattern, not a regex.
     // An ARRAY needle is its elements joined by a space (`.match([1,2,3])`).

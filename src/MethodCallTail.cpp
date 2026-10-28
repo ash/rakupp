@@ -644,8 +644,10 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
         ValueList fa = spreadFmtArgs();
         return Value::str(doSprintf(inv.toStr(), fa, langRev_));
     }
-    // Str.parse-base($radix) — "ff".parse-base(16) == 255; fractions give a Rat
-    if (m == "parse-base" && (inv.t == VT::Str || inv.t == VT::Match) && !args.empty()) {
+    // Str.parse-base($radix) — "ff".parse-base(16) == 255; fractions give a Rat.
+    // An allomorph is a Str too and parses its Str face: `<42>.parse-base(16)`
+    // is 66, as `@*ARGS` and `<…>` words hand it in (#212).
+    if (m == "parse-base" && (inv.t == VT::Str || inv.t == VT::Match || inv.isAllomorph()) && !args.empty()) {
         std::string s = inv.toStr(); long long base = a0().toInt();
         // The digits and the sign may be written in any script Unicode gives a
         // value to: U+2212 MINUS is a minus, and an Nd digit is its value
