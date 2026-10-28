@@ -23,7 +23,7 @@ cb7933f3 (issue #204); cb5b360a, d5184116 and 50aebf54; 67a2fe76 (issue
 fc262224 (issue #195); 0f19ab0e (issue #208); f483f0e6 (issue #192);
 b05e989b (issue #193); 17e33a45 (issue #184); 5f87f445; 0e44c5a6 (issue
 #211); 8c871a25; 079427c0 (issue #175); 357cb4bb (issue #187); 6eddeeb5
-(issue #188); c50eb3b8 (issue #146).*
+(issue #188); c50eb3b8 (issue #146); 09018c67 (issue #77).*
 
 ---
 
@@ -548,6 +548,14 @@ plain before 500c29e2 and native from it, unless they say otherwise.
   and so is a typed parameter holding something Iterable. The module cache
   is format v53 (VarExpr.bareParam). t/regression/for-over-listing-value.raku
   agrees with Rakudo 2026.09.
+- **A `return` passing through a block or routine runs its UNDO** (09018c67;
+  issue #77, FCO's item 6). `sub wrap(&b) { KEEP …; UNDO …; b() }; wrap {
+  return 42 }` ran wrap's KEEP. Rakudo runs KEEP only in the routine the
+  return leaves, and UNDO in every `if`, `for`, bare or pointy block, sub
+  and method it unwinds, undoing their `let`s and still checking their
+  POSTs; so does Raku++ now. Red's transactions committed where they should
+  have rolled back. t/regression/return-through-block-undo.raku agrees with
+  Rakudo 2026.09.
 
 ### Fixed: crashes
 
