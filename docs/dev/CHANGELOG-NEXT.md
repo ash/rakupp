@@ -22,7 +22,7 @@ cb7933f3 (issue #204); cb5b360a, d5184116 and 50aebf54; 67a2fe76 (issue
 62e16b9e; fb9009bc (issue #56); 3c80bc24; 48b76d56, a348489b, aa0f3618 and
 fc262224 (issue #195); 0f19ab0e (issue #208); f483f0e6 (issue #192);
 b05e989b (issue #193); 17e33a45 (issue #184); 5f87f445; 0e44c5a6 (issue
-#211).*
+#211); 8c871a25.*
 
 ---
 
@@ -825,6 +825,15 @@ does not.
   Rakudo multi joins CORE's group, each with that group as its
   .dispatcher. t/regression/issue-211-trait-is-candidates.raku agrees with
   Rakudo 2026.09.
+- **`rakupp install AttrX::Lazy` installs** (8c871a25). A metaclass
+  `compose` that asks `.^method_table`, `.^method_names` or `.^methods`
+  before its `callsame` sees the methods the class declared and no
+  attribute accessors, as in Rakudo, which makes those in the base compose.
+  AttrX::Lazy's `is lazy` checks the table there to tell a user's `method
+  bar` from a lazy `$.bar`, so its own suite died on its first class with
+  "A method 'bar' already exists"; AttrX::Lazy 0.0.3 now passes its three
+  test files and installs. t/regression/how-compose-sees-declared-methods.raku
+  agrees with Rakudo 2026.09.
 
 ### Left open
 
@@ -843,6 +852,9 @@ does not.
   program imported before it (Cro's traits inside NativeLibs), and a
   signature smartmatch ignores the return type (`:(Int --> Nil) ~~ :(Int)`
   is True, Rakudo False). TODO-FOLLOW-UPS.md has each (0e44c5a6).
+- In a metaclass `compose` before its `callsame`, `.^can` and
+  `.^find_method` still find a public attribute's accessor, where Rakudo
+  finds none yet (8c871a25). TODO-FOLLOW-UPS.md has it.
 
 - `--exe` checks no parameter's sigil, `%` included: a compiled `sub
   p(%h)` given `(a => 1, b => 2)` holds the List, as it did before
