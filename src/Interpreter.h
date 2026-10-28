@@ -544,6 +544,7 @@ struct EnvExtras {
     std::set<std::string> varDynamic;   // names declared `is dynamic` in this scope
     std::map<std::string, char> varSmiley; // `my Int:D $x` — 'D' / 'U': what assignments must satisfy
     std::map<std::string, const struct Expr*> varWhere; // `my $x where Int|Num` — checked on every assignment
+    std::map<std::string, Value> keptAliases;   // a typed variable's alias Proxy (scalarAliasOf), while it holds that cell
     std::set<std::string> varConstant;  // `$`-sigiled constants: a VALUE, not a container (`for $c` iterates)
     // the type whose body this scope is: a class body, or the scope a role's
     // methods were re-closed in for one parameterization (weak: the type's
@@ -2886,7 +2887,7 @@ public:
     void importedBuiltinSyms(Env* f, std::vector<std::pair<std::string, Value>>& out);
     bool immutableQuantSource(const Expr* listExpr);
     // The containers behind `for $a, $b, $c` — likewise.
-    bool scalarListAlias(Expr* listExpr, std::vector<Value*>& slots);
+    bool scalarListAlias(Expr* listExpr, std::vector<Value*>& slots, std::vector<Value>* guards = nullptr);
     // `allowObject`: also alias through a subscript on a Hash/Array-BACKED OBJECT
     // (PDF's `with self<ID> { } else { $_ = … }`). Only the LAZY write-back asks
     // for it — taking that lvalue eagerly would run the object's own store.
@@ -2947,6 +2948,9 @@ public:
     void noteKeptVarType(const struct Expr* item, Value& proxy);     // …a typed variable's, with its type
     Value keptTypedStore(const Value& proxy, Value v);               // …which a store through it checks
     bool keptTyped(const Value& proxy) const;                         // …does it carry one?
+    bool keptVarTags(Env* own, const std::string& nm, Value& proxy);  // …tag it with `nm`'s, if typed
+    Value scalarAliasOf(Env* own, const std::string& nm, const PRef<Value>& cell);   // an alias of `nm`: its cell, or a kept Proxy
+    Value keptScalarRecord(const Value& proxy, const Value& value);  // …and its `.VAR` (Nil: none)
     struct Expr* listLiteralItem(struct Index* ix); // `($a, 42)[k]`'s item k, or null
     PRef<Value> exprVarCell(const struct Expr* e, bool* boundToValue = nullptr, Env* scope = nullptr); // the cell of the variable `e` names (in `scope`)
     bool bindAttrAlias(struct Assign* a, bool sigilDeclBind); // `my $x := $!a` / `my \x = $!a` (InterpreterCalls.cpp)

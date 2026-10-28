@@ -485,6 +485,14 @@ per-`Env` side tables:
   answers. A `:=` alias holds it on its Proxy (`proxyElemGuard`); the
   copy-in/copy-out aliases apply it where they write back (`elemAliasStore`),
   as `natBack` does for a native array's element (issue #184).
+- **An alias of a typed scalar** (`my $b := $a`, an `is rw` or sigilless
+  parameter given `$a`, `for $a { }`, `given $a { }`) is, for the same
+  reason, not the bare cell an untyped variable's is but a shared-cell Proxy
+  over it carrying the variable's record — its name, its type, smiley and
+  coercion, and the value Nil resets it to (`scalarAliasOf`, the kept-item
+  record `keptTypedStore` applies, `src/InterpreterCalls.cpp`). The variable's
+  scope keeps that Proxy for reuse while the variable holds the same cell
+  (`EnvExtras::keptAliases`), and the cycle collector walks it as a variable.
 - **Native integers** (`my int $x`, `my uint8 $b`) carry a bit-width in
   `natBits` (`src/Value.h`) and **wrap on every assignment** — `wrapNative`
   masks the value to the declared width (`src/InterpreterCore.cpp`).

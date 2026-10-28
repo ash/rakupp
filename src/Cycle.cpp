@@ -242,6 +242,11 @@ void forEachEdge(void* key, PK k, F&& f, bool& pin, long& scan) {
                     valueEdge(kv.second, f);
                 }
                 values(e->pad);
+                // (a typed variable's alias Proxy holds its cell: scalarAliasOf's cache)
+                if (e->ex) for (const auto& kv : e->ex->keptAliases) {
+                    if (--scan < 0) { pin = true; return; }
+                    valueEdge(kv.second, f);
+                }
                 envEdge(e->parent.sp(), f);
             }
             break;

@@ -179,6 +179,42 @@ bool topicChanged(const Value& now, const Value& orig) {
     return !valueEqv(now, orig);
 }
 
+// May the variable `nm`, declared in `own`, carry a type an alias of it keeps
+// (scalarAliasOf): does its scope hold a type, smiley, coercion or default for
+// it? Only spares an untyped variable the asking; scalarAliasOf decides.
+static bool varMayBeTyped(const Env* own, const std::string& nm) {
+    return own && own->ex && (own->ex->varDefault.count(nm) || own->ex->varSmiley.count(nm) ||
+                              own->ex->varCoerce.count(nm));
+}
+
+static inline bool sameBoundValue(const Value& now, const Value& was);   // (below)
+// `for $a { … }`'s topic when `$a` is TYPED: its own container (scalarAliasOf),
+// and nothing to write back (`scalarSlot` cleared); else Any, `scalarSlot` the
+// value still. Out of line, as below: inside execFor, `for ^N` ran 5% slower.
+static RAKUPP_NOINLINE Value typedScalarTopic(Interpreter& I, const VarExpr* ve, Value*& scalarSlot) {
+    Env* own = nullptr;
+    Value* raw = I.tctx().cur->findRaw(ve->name, &own);
+    Value topic;
+    if (raw && I.keptTyped(*raw)) topic = *raw;
+    else if (raw && varMayBeTyped(own, ve->name) && !own->ex->rwLinks.count(ve->name) &&
+             (raw->isCell() || (!(raw->t == VT::Hash && raw->hashKind == "Proxy") && I.promotionSafe(own, raw)))) {
+        Value alias = I.scalarAliasOf(own, ve->name, raw->promoteToCell());
+        if (alias.isCell()) scalarSlot = raw->deref();   // (promotion moved the value into the cell)
+        else topic = std::move(alias);
+    }
+    if (topic.t == VT::Hash) scalarSlot = nullptr;
+    return topic;
+}
+// …and `for $a, $b { … }` writing a member's topic back: only what the body
+// changed (an alias's `$_` is its Proxy, written through already), as a typed
+// array's element or a typed variable takes it (`guard`, scalarListAlias)
+static RAKUPP_NOINLINE void listAliasWriteBack(Interpreter& I, Value& slot, Value now, const Value& guard) {
+    if (sameBoundValue(now, slot)) return;
+    if (guard.t == VT::Array) now = I.elemAliasStore(guard, std::move(now));
+    else if (guard.t == VT::Hash) now = I.keptTypedStore(guard, std::move(now));
+    I.storeThrough(slot, now);
+}
+
 struct TopicAlias {
     Value* slot = nullptr; Env* sc = nullptr; Value orig;
     Interpreter* I = nullptr; std::string natT;   // a native array's element: Interpreter::nativeElemTag
@@ -2492,6 +2528,14 @@ Value Interpreter::execGivenStmt(Stmt* s) {
         const std::string natT = topicSlot ? nativeElemTypeAt(g->topic.get()) : std::string();
         nativeElemTag(natT, topic);   // (`$_ = 1.5 given @n[0]` dies: nativeElemTag)
         const Value elemGuard = topicSlot && natT.empty() ? elemGuardAt(g->topic.get()) : Value::any();   // (#184)
+        // …and a TYPED variable's (scalarAliasOf's record, on a Proxy of its own)
+        Value varGuard;
+        if (topicSlot && natT.empty() && g->topic->kind == NK::VarExpr) {
+            const std::string& tn = static_cast<VarExpr*>(g->topic.get())->name;
+            Env* own = nullptr;
+            if (Value* traw = tctx().cur->findRaw(tn, &own); traw && keptTyped(*traw)) varGuard = *traw;
+            else if (varMayBeTyped(own, tn)) varGuard = scalarAliasOf(own, tn, nullptr);
+        }
         // …which a plain `$name` lacks only when it is bound to a VALUE: then
         // `$_ = 5 with $p` dies, as the block form does
         if (!topicSlot && !skip && g->topic && g->topic->kind == NK::VarExpr && topic.t != VT::Array &&
@@ -2528,7 +2572,8 @@ Value Interpreter::execGivenStmt(Stmt* s) {
         if (topicSlot && topicChanged(env->vars["$_"], topic)) {
             Value back = env->vars["$_"];
             try { if (!natT.empty()) nativeElemStore(natT, back, 'o');   // (a str's refusal)
-                  else if (elemGuard.t == VT::Array) back = elemAliasStore(elemGuard, std::move(back)); }
+                  else if (elemGuard.t == VT::Array) back = elemAliasStore(elemGuard, std::move(back));
+                  else if (keptTyped(varGuard)) back = keptTypedStore(varGuard, std::move(back)); }
             catch (...) { if (hadTopic) env->vars["$_"] = savedTopic; else env->vars.erase("$_"); throw; }
             *topicSlot = std::move(back);   // write the alias back
         }
@@ -2571,7 +2616,10 @@ Value Interpreter::execGivenStmt(Stmt* s) {
         if (tn.size() > 1 && tn[0] == '$' && tn != "$_" && topic.t != VT::Array && topic.t != VT::Hash) {
             bool boundToValue = false;
             if (auto cell = exprVarCell(g->topic.get(), &boundToValue)) {
-                scope->define("$_", Value::cellHolder(cell));
+                // (a TYPED variable's container, or an alias's, comes with its type: scalarAliasOf)
+                Env* own = nullptr;
+                Value* traw = tctx().cur->findRaw(tn, &own);
+                scope->define("$_", traw && keptTyped(*traw) ? *traw : scalarAliasOf(own, tn, cell));
                 tback.slot = nullptr;   // one container: nothing to write back
             }
             // …and a readonly parameter (`my $x := 42` too) has none to share:
@@ -3372,11 +3420,13 @@ Value Interpreter::execForStmt(Stmt* s, bool sink) {
         Env* own = nullptr;
         Value* raw = sn.size() > 1 && (nameLetterAt(sn, 1) || sn[1] == '_')
                    ? tctx().cur->findRaw(sn, &own) : nullptr;
+        // (a TYPED variable's container, or an alias's, comes with its type: scalarAliasOf)
+        const bool kept = raw && keptTyped(*raw) && cellOfProxy(raw);
         if (raw && !(own->ex && own->ex->rwLinks.count(sn)) &&
-            (raw->isCell() || (!(raw->t == VT::Hash && raw->hashKind == "Proxy") && promotionSafe(own, raw)))) {
+            (raw->isCell() || kept || (!(raw->t == VT::Hash && raw->hashKind == "Proxy") && promotionSafe(own, raw)))) {
             auto scope = makeSlabShared<Env>();
             scope->parent = tctx().cur;
-            scope->define(loopVars[0], Value::cellHolder(raw->promoteToCell()));
+            scope->define(loopVars[0], kept ? *raw : scalarAliasOf(own, sn, raw->promoteToCell()));
             runLoopBody(fs->body.get(), scope, fs->label, true, true, col);
             return forResult();
         }
@@ -3523,15 +3573,18 @@ Value Interpreter::execForStmt(Stmt* s, bool sink) {
         // `for $a, $b { $_ = … }` writes back into each container
         {
             std::vector<Value*> aliasSlots;
+            std::vector<Value> aliasGuards;   // (what each answers to: scalarListAlias, #184)
             if (aliasVars &&
-                scalarListAlias(fs->list.get(), aliasSlots)) {
+                scalarListAlias(fs->list.get(), aliasSlots, &aliasGuards)) {
                 for (size_t i = 0; i < aliasSlots.size(); i++) {
                     freshScope();
                     if (aliasSlots[i]) scope->define(var, *aliasSlots[i]);
                     bool cont = runLoopBody(fs->body.get(), scope, fs->label, i == 0,
                                             i + 1 == aliasSlots.size(), col);
                     auto it = scope->vars.find(var);
-                    if (aliasSlots[i] && it != scope->vars.end()) *aliasSlots[i] = *it->second.deref();
+                    if (aliasSlots[i] && it != scope->vars.end())
+                        listAliasWriteBack(*this, *aliasSlots[i], *it->second.deref(),
+                                           i < aliasGuards.size() ? aliasGuards[i] : Value::any());
                     if (!cont) break;
                 }
                 return forResult();
@@ -4096,6 +4149,9 @@ Value Interpreter::execForStmt(Stmt* s, bool sink) {
     if (scalarItem && loopVars.empty() && items.size() == 1 &&
         fs->list->kind == NK::VarExpr && !static_cast<VarExpr*>(fs->list.get())->declare)
         try { scalarSlot = lvalue(fs->list.get()); } catch (...) { scalarSlot = nullptr; }
+    // …and a TYPED variable's is its own container (typedScalarTopic)
+    const Value typedTopic = scalarSlot ? typedScalarTopic(*this, static_cast<VarExpr*>(fs->list.get()), scalarSlot)
+                                        : Value::any();
     // One scope for every iteration, as the single-variable path keeps: a
     // closure that captured the last one bumps its use_count, and gets it to
     // keep while this takes a fresh one.
@@ -4109,7 +4165,7 @@ Value Interpreter::execForStmt(Stmt* s, bool sink) {
         else scope->clearBindingsKeeping(loopVars.data(), loopVars.size());
         TopicAlias tback{scalarSlot, scope.get(), itemsR[i]};
         if (loopVars.empty()) {
-            scope->define("$_", asTopic(itemsR[i], "$_", 0));
+            scope->define("$_", typedTopic.t == VT::Hash ? typedTopic : asTopic(itemsR[i], "$_", 0));
         } else {
             // a short last chunk under plain `-> $x, $y` is too few
             // positionals (Rakudo runs the full chunks, then dies)
@@ -15880,11 +15936,14 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
                         tctx().rwMirror.clear();
                         tctx().rwMirrorSigil = 0;
                         PRef<Value> cell = srcRaw->promoteToCell();
+                        // (a TYPED source's alias answers to its type, a Proxy
+                        // over the cell carrying it: scalarAliasOf)
+                        Value alias = scalarAliasOf(owner.get(), sv->name, cell);
                         Value* blv = lvalue(a->target.get());
                         Value* traw = tv->name != "$_" && tv->name[1] != '!'
                             ? (tv->name[1] == '*' ? dynRawSlot(tv->name, blv) : tctx().cur->findRaw(tv->name)) : nullptr;
-                        if (traw && traw->deref() == blv) *traw = Value::cellHolder(cell);
-                        else *blv = makeSharedCellProxy(cell);
+                        if (traw && traw->deref() == blv) *traw = std::move(alias);
+                        else *blv = alias.isCell() ? makeSharedCellProxy(cell) : std::move(alias);
                         return sink ? Value::any() : eval(a->value.get());
                     }
                     Value* srcSlot = owner->local(sv->name);
@@ -15919,7 +15978,8 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
                         *srcSlot = makeSharedCellProxy(cell);
                     }
                     Value* blv = lvalue(a->target.get());
-                    *blv = cell ? makeSharedCellProxy(cell)
+                    // (…an alias of an alias of a typed variable shares its Proxy, type and all)
+                    *blv = cell ? (keptTyped(*srcSlot) ? *srcSlot : makeSharedCellProxy(cell))
                                 : (throughRw ? makeSharedCellProxy(makePayload<Value>(*srcSlot))
                                              : makeEnvSlotProxy(owner, sv->name));
                     return sink ? Value::any() : eval(a->value.get());
@@ -31647,23 +31707,7 @@ bool Interpreter::uninitMethodShape(const MethodCall* mc, const Value& inv) {
     return false;
 }
 
-// `.VAR` of an element of a typed container, or of an alias of one: its
-// Scalar, named for the container and answering the element's default and
-// type (the container's `.of`, with the smiley), from the record a store
-// through it answers to (elemAliasGuard)
-static Value elemScalarRecord(Interpreter& I, const Value& guard, const Value& value) {
-    const ValueList& g = *guard.arr();
-    Value probe = Value::array();
-    if (!g[3].s.str().empty()) probe.ofTypeM() = g[3].s.str();
-    Value of = I.methodCall(probe, "of", ValueList{});
-    if (!g[4].s.str().empty() && of.t == VT::Type) of.i = g[4].s.str() == "D" ? 1 : 2;
-    Value sc = Value::makeHash(); sc.hashKind = "Scalar";
-    (*sc.hash())["name"] = g[1];
-    (*sc.hash())["default"] = g[2];
-    (*sc.hash())["of"] = of;
-    (*sc.hash())["value"] = value;
-    return sc;
-}
+Value elemScalarRecord(Interpreter& I, const Value& guard, const Value& value);   // InterpreterBinding.cpp
 
 Value Interpreter::evalMethodCallExpr(Expr* e) {
     auto* mc = static_cast<MethodCall*>(e);
@@ -32481,6 +32525,8 @@ Value Interpreter::evalMethodCallExpr(Expr* e) {
             if (Value* raw = tctx().cur->find(ivar->name))
                 if (raw->t == VT::Hash && raw->hashKind == "Proxy" && raw->hash()) {
                     if (const Value* g = proxyElemGuard(*raw)) return elemScalarRecord(*this, *g, inv);
+                    // (…and one bound to a typed variable is that variable's: `$b := $a`)
+                    if (keptTyped(*raw)) return keptScalarRecord(*raw, inv);
                     return *raw;
                 }
             // …and a META-OBJECT a trait was handed (`trait_mod:<is>(Variable
@@ -32489,6 +32535,14 @@ Value Interpreter::evalMethodCallExpr(Expr* e) {
             if (inv.t == VT::Hash && (inv.hashKind == "Variable" || inv.hashKind == "Attribute" ||
                                       inv.hashKind == "Parameter"))
                 return inv;
+            // …a TYPED variable's: the record an alias of it carries (scalarAliasOf)
+            // knows its type apart from its default, with the smiley or coercion
+            {
+                Env* own = nullptr;
+                if (tctx().cur->findRaw(ivar->name, &own) && varMayBeTyped(own, ivar->name))
+                    if (Value k = scalarAliasOf(own, ivar->name, nullptr); !k.isCell())
+                        return keptScalarRecord(k, inv);
+            }
             Value sc = Value::makeHash(); sc.hashKind = "Scalar";
             (*sc.hash())["name"] = Value::str(ivar->name);
             // `$/` and `$!` reset to Nil (`$/.VAR.default`, advent2013-day20.t)
@@ -32512,6 +32566,7 @@ Value Interpreter::evalMethodCallExpr(Expr* e) {
             if (Value* raw = en->localRaw(nm)) {
                 // (`my \e = @a[1]`: a typed element's Scalar, as `$e` bound to it)
                 if (const Value* g = proxyElemGuard(*raw)) return elemScalarRecord(*this, *g, inv);
+                if (keptTyped(*raw)) return keptScalarRecord(*raw, inv);   // (…and a typed variable's)
                 // (a literal argument binds readonly: `f(5)` has no container)
                 contained = raw->isCell() || (!raw->readonly && en->xr().rwLinks.count(nm));
                 break;

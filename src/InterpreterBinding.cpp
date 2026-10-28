@@ -1616,6 +1616,24 @@ Value Interpreter::elemAliasStore(const Value& guard, Value v) {
                     v.typeName() + (def ? " (" + typeCheckRepr(v) + ")" : " (" + v.typeName() + ")") +
                     (def ? "" : " (perhaps Nil was assigned to a :D which had no default?)"));
 }
+// `.VAR` of an element of a typed container, or of an alias of one: its
+// Scalar, named for the container and answering the element's default and
+// type (the container's `.of`, with the smiley), from the record a store
+// through it answers to (elemAliasGuard)
+Value elemScalarRecord(Interpreter& I, const Value& guard, const Value& value) {
+    const ValueList& g = *guard.arr();
+    Value probe = Value::array();
+    if (!g[3].s.str().empty()) probe.ofTypeM() = g[3].s.str();
+    Value of = I.methodCall(probe, "of", ValueList{});
+    if (!g[4].s.str().empty() && of.t == VT::Type) of.i = g[4].s.str() == "D" ? 1 : 2;
+    Value sc = Value::makeHash(); sc.hashKind = "Scalar";
+    (*sc.hash())["name"] = g[1];
+    (*sc.hash())["default"] = g[2];
+    (*sc.hash())["of"] = of;
+    (*sc.hash())["value"] = value;
+    return sc;
+}
+
 // …the record of the element an ARGUMENT names (`f(@a[1])`, which an `is rw`
 // or sigilless parameter writes through), found by the variable's name; Any
 // for any other argument. One lookup answers nativeElemTypeAt's question too:
@@ -7923,7 +7941,16 @@ bool Interpreter::bindArgCell(const Param& p, Expr* ae, std::shared_ptr<Env>& en
         if (an.empty() || !(ascii::isalpha((unsigned char)an[0]) || an[0] == '_')) return false;
         Value* craw = tctx().cur->findRaw(an);
         Value* praw = env->localRaw(p.name);
-        if (!craw || !praw || !craw->isCell() || praw->isCell()) return false;
+        if (!craw || !praw || praw->isCell()) return false;
+        // (…a typed variable's container comes as its kept Proxy: scalarAliasOf)
+        if (keptTyped(*craw)) {
+            PRef<Value> c = cellOfProxy(craw);
+            if (!c || !sameBoundValue(*c, *praw)) return false;
+            *praw = *craw;
+            env->x().rwCelled.insert(p.name);
+            return true;
+        }
+        if (!craw->isCell()) return false;
         if (!sameBoundValue(*craw->deref(), *praw)) return false;
         *praw = Value::cellHolder(craw->promoteToCell());
         env->x().rwCelled.insert(p.name);
@@ -7939,11 +7966,15 @@ bool Interpreter::bindArgCell(const Param& p, Expr* ae, std::shared_ptr<Env>& en
     Value* praw = env->localRaw(p.name);
     if (!craw || !praw || !own || praw->isCell()) return false;
     if (own->ex && (own->ex->rwLinks.count(an) || own->ex->rwDirect.count(an))) return false;
-    if (!craw->isCell() && craw->t == VT::Hash && craw->hashKind == "Proxy") return false;
+    // A TYPED variable's container comes with its type (scalarAliasOf): a store
+    // through the parameter answers to it, as Rakudo's Scalar does (#184's
+    // twin); so does an alias's, which is already that Proxy.
+    PRef<Value> kc = keptTyped(*craw) ? cellOfProxy(craw) : nullptr;
+    if (!kc && !craw->isCell() && craw->t == VT::Hash && craw->hashKind == "Proxy") return false;
     // (a worker may be reading the caller's slot: an rw link instead, see promotionSafe)
-    if (!craw->isCell() && !promotionSafe(own, craw)) return false;
-    if (!sameBoundValue(*craw->deref(), *praw)) return false;
-    *praw = Value::cellHolder(craw->promoteToCell());
+    if (!kc && !craw->isCell() && !promotionSafe(own, craw)) return false;
+    if (!sameBoundValue(kc ? *kc : *craw->deref(), *praw)) return false;
+    *praw = kc ? *craw : scalarAliasOf(own, an, craw->promoteToCell());
     env->x().rwCelled.insert(p.name);
     {   // the original variable, through a chain of rw parameters
         std::string origin = an;
