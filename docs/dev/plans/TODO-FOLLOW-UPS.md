@@ -292,23 +292,29 @@ moves to [TODO.md](TODO.md).
 
 ## Control flow and containers
 
-- [ ] **A scalar alias drops its variable's type** (found 2026-10-28 while
-  fixing issue #184, 17e33a45; on v5.5.0 too). The same cause as #184, for a
-  `$` variable rather than an element: the type lives with the NAME
-  (varDefault, varDefaultType, varSmiley, varWhere in the declaring Env), and
-  an alias shares the cell but not the name:
+- [ ] **A typed scalar's container handed out by an expression takes
+  anything** (found 2026-10-28 while making scalar aliases keep their type,
+  5f87f445; on v5.5.0 too). An alias of a typed variable refuses what the
+  variable refuses now (scalarAliasOf), but these containers are not made by
+  an alias, and store as they come:
 
   ```raku
-  my Int $a = 1; my $b := $a;
-  $b = 'x'; say $a                  # x, Rakudo: Type check failed in assignment to $a
-  sub f($x is rw) { $x = 'y' }
-  f($a); say $a                     # y, the same refusal in Rakudo
+  my Int $a = 1;
+  ($a, my $z) = 'la', 2;              # stores; Rakudo: Type check failed in assignment to $a
+  ($a, 2)[0] = 'l';                   # stores; the same in Rakudo
+  my Int $p = 1; (k => $p).value = 'pv';    # stores; Rakudo refuses, naming $p
+  sub r() is rw { $a }; r() = 'rr';   # stores; Rakudo refuses, naming $a
+  my $wh where Int = 1; my $w := $wh; $w = 'q';   # stores; Rakudo: expected <anon>
+  class C { has Int $.x is rw = 1 }; my $o = C.new; my $ox := $o.x; $ox = 5;
+  say $o.x;                           # 1: the bind took a copy; Rakudo 5
   ```
 
-  `for $a { $_ = 'z' }` and `given $a { $_ = 'z' }` likewise. The element
-  fix's shape should carry over: build the variable's guard where the alias
-  is made (the `:=` arm that shares the cell, setupRwLinks, the scalar `for`
-  arm) and check it where the alias stores. Rakudo's message names `$a`.
+  The first is list assignment into a typed scalar, with no alias at all:
+  the destructuring store skips the `=` path's type checks. The next three
+  hand out the variable's cell (a list literal's kept item, a Pair's value,
+  an `is rw` routine's tail), so each could take scalarAliasOf's Proxy
+  instead of the bare cell, as `f(($a, 2))` already does. A `where` clause
+  runs in the declaring scope, which the alias's record does not keep.
 - [ ] **A refusal through a copy-in/copy-out alias comes at the write-back**
   (found 2026-10-28 while fixing issue #184, 17e33a45). A `for` loop's `$_`,
   `given`'s topic and `.map`'s `$_` hold a copy of the element, written back
