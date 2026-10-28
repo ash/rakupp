@@ -9033,8 +9033,12 @@ ExprPtr Parser::parsePrimary() {
                 // the op's (cooperative) result (zef: `next() R, DEBUG(...)`).
                 if (name != "return" && name != "return-rw" &&
                     isKind(Tok::LParen) && peek().kind == Tok::RParen) { advance(); advance(); }
+                // (a keyword only as a WORD: a literal's text is its contents, so
+                // `f($i) or return "no"` lost its "no" to the keyword `no` and
+                // returned Nil; and `not` is a prefix like any other term)
                 bool retTerm = startsTermToken(cur()) &&
-                               (!kBlockKeywords.count(cur().text) || kwCallHere(cur().text));
+                               (cur().kind != Tok::Ident || !kBlockKeywords.count(cur().text) ||
+                                cur().text == "not" || kwCallHere(cur().text));
                 // sub/method/do/start blocks are valid expression operands too, as is
                 // an anonymous type literal (`return role {…}`)
                 if (isIdent("sub") || isIdent("method") || isIdent("do") || isIdent("start")) retTerm = true;

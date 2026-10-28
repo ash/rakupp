@@ -301,6 +301,21 @@ moves to [TODO.md](TODO.md).
   apart. t/regression/exe-regex-literal-values.raku skips that line for the
   interpreter; drop the skip with the fix.
 
+- [ ] **A LEAVE runs on `exit` in both engines; Rakudo runs none** (found
+  2026-10-27 while fixing the compiled LEAVE, fc262224):
+
+  ```raku
+  for ^2 -> $i { LEAVE { say "leave$i" }; exit 0 if $i == 0 }   # here leave0, Rakudo nothing
+  ```
+
+  Rakudo's `exit` runs the END phasers and ends without unwinding, so no
+  block's LEAVE runs. The interpreter's block executors run theirs for any
+  exception, ExitEx included (execPlainBlock's `catch (...)`, leaveByError,
+  src/InterpreterCore.cpp), and compiled code now matches it: its LEAVE
+  guards are destroyed as ExitEx unwinds. Change both at once, since
+  t/exe/run.raku holds them to each other. Done when the line above prints
+  nothing in either, and END still runs.
+
 ## Processes and diagnostics
 
 - [ ] **`run` and `shell` silently accept named arguments they do not take**
@@ -426,6 +441,15 @@ moves to [TODO.md](TODO.md).
   src/InterpreterRegex.cpp). Add a t/js case; the gate needs RAKUPP_JS=node.
   `--exe` declines these operators and bundles, so only JS copies.
 
+- [ ] **Split src/Codegen.cpp** (2026-10-27, fc262224): at 10,048 lines it
+  is past the default file ceiling, and tools/source-helpers/budget.txt gives
+  it a named one of 10,100 so that a fix could land without the split. The
+  build waits on its slowest file. The statement emitters (stmtNative and
+  what it calls: loopBody, emitSeq, the ctl and LEAVE helpers) and the
+  expression emitter (ex and its arms) are the natural halves; the scripts in
+  tools/source-helpers/ split Interpreter.cpp and Builtins.cpp the same way.
+  Done when each half is under 10,000 and the named ceiling is gone.
+
 ## Performance
 
 - [ ] **A composed curry like `* cmp * == More` is about 2.2x Rakudo per
@@ -472,23 +496,32 @@ moves to [TODO.md](TODO.md).
   can take the same path (see "Some parameters still bind what their sigil
   or type refuses").
 
+- [ ] **A control word as an operand still throws in five shapes** (found
+  2026-10-27 while fixing issue #195, 48b76d56, which took `// next`, `or
+  next` and `// return` to the cooperative flag):
+
+  ```raku
+  sub f($i) { $i %% 2 ?? $i !! Nil }
+  for ^10_000 -> $i { my $x = try { f($i) } // next }    # 69.6 µs a skip
+  for ^10_000 -> $i { my $x = do { f($i) } // next }     # 69.6
+  my $s = 0; for ^10_000 -> $i { $s += f($i) // next }   # 34.5
+  for ^10_000 -> $i { my ($a, $b) = f($i) // next }      # 56.9
+  my @a; for ^10_000 -> $i { push @a, f($i) // next }    # 43.2
+  ```
+
+  `my $x = f($i) // next` is 0.6 on the same box. Each throws a C++
+  exception because ctlOnStmtPath (src/InterpreterCore.cpp) cannot prove
+  that nothing uses the Any the flag form hands back. A block run inside
+  the statement (`try`, `do`) replaces `curStmtExpr` with its own statements
+  and no frame guard puts it back: restore it where such a block returns, or
+  in exec's ExprStmt arm, measured against perf-guard's asg and loopsum. A
+  compound or list assignment stores through paths that do not guard their
+  store (coopStoreShape takes only a plain `=` into one variable or
+  element): guard the op= path as evalAssignInner's general path is guarded.
+  A call argument cannot take the flag, since the call would run. Done when
+  the first four run within 2x of `my $x = f($i) // next`.
+
 ## Gates
-
-- [ ] **t/aot/run.raku is red, 13 of 16, from stale expectations** (found
-  2026-10-20 gating 07456d29; all three date from 48223469, 2026-10-16, and
-  went unnoticed because the gate is not part of t/run.raku):
-  - bundle-fallback and subscripts: line ~228 detects bundling with
-    `'bundling the whole program'`, but src/main.cpp ~1900 now says "…
-    bundling the program with the interpreter instead, its routines compiled
-    natively where they can be". Key the check on something stable (a
-    marker, or RAKUPP_AOT_REPORT), not prose.
-  - dynamic-vars: five subs in t/aot/cases/dynamic-vars/lib marked `#aot:
-    native` are now interpreted ("a dynamic variable declared inside a
-    routine", Codegen.cpp ~1456). Re-annotate them, or implement TODO.md's
-    native `my $*X` if it exists by now.
-
-  Baseline on a clean worktree build: the main checkout's binary and tree
-  drift apart and fail 0/16.
 
 - [ ] **t/jit/run.raku: 5 of its 21 tier-up cases enter no kernel** (found
   2026-10-22 gating the FLOAT-HEAVY-ISSUES work; on v5.5.0 too, on macOS

@@ -1880,6 +1880,7 @@ struct Codegen {
         return init;
     }
     std::string declVar(const std::string& rakuName, const std::string& init) {
+        if (declRecord_) declRecord_->insert(rakuName);   // (emitSeq: what a LEAVE may not read early)
         if (rakuName.size() > 1 && rakuName[1] == '*') return dynDecl(rakuName) + " = " + init;
         // A sigilless name (`my \x`, `sub f(\x)`) is read back as a bare term,
         // which resolves through the RUNTIME scope — where a C++ local is not.
@@ -1989,7 +1990,7 @@ struct Codegen {
             for (size_t i = 0; i < d->body.size(); i++) {
                 Stmt* st = d->body[i].get();
                 if (i + 1 == d->body.size() && st->kind == NK::ExprStmt)
-                    line(0, "return " + exArg(static_cast<ExprStmt*>(st)->e.get()) + ";");
+                    line(0, "return " + tailValue(static_cast<ExprStmt*>(st)->e.get()) + ";");
                 else if (i + 1 == d->body.size() && (st->kind == NK::IfStmt || st->kind == NK::GivenStmt)) {
                     std::string rv = gensym("__rv");
                     line(0, "Value " + rv + " = " + tailSeed(st) + ";");   // the seed IS the answer for an empty branch
@@ -2186,7 +2187,7 @@ struct Codegen {
             for (size_t i = 0; i < be->body.size(); i++) {
                 Stmt* s = be->body[i].get();
                 if (i + 1 == be->body.size() && s->kind == NK::ExprStmt)
-                    line(0, "return " + exArg(static_cast<ExprStmt*>(s)->e.get()) + ";");
+                    line(0, "return " + tailValue(static_cast<ExprStmt*>(s)->e.get()) + ";");
                 else if (i + 1 == be->body.size() && (s->kind == NK::IfStmt || s->kind == NK::GivenStmt)) {
                     // a block-final if/elsif/else (or given) is the block's value,
                     // exactly as in sub bodies
@@ -2263,6 +2264,7 @@ struct Codegen {
 
     // ---- expressions: return a C++ expression string of type Value ----
     std::string ex(Expr* e) {
+        if (e == preEvalNode_) return preEvalCode_;   // already evaluated (emitCtlPath)
         switch (e->kind) {
             case NK::IntLit: {
                 auto* n = static_cast<IntLit*>(e);
@@ -2601,7 +2603,7 @@ struct Codegen {
                             for (size_t i = 0; i < be->body.size(); i++) {
                                 Stmt* s = be->body[i].get();
                                 if (i + 1 == be->body.size() && s->kind == NK::ExprStmt)
-                                    line(0, "return " + exArg(static_cast<ExprStmt*>(s)->e.get()) + ";");
+                                    line(0, "return " + tailValue(static_cast<ExprStmt*>(s)->e.get()) + ";");
                                 // A block-final if/given IS the block's value, the
                                 // same way it is in a sub body and in a block
                                 // closure. Run as a plain statement its branch
@@ -3353,6 +3355,9 @@ struct Codegen {
     // ---- statements ----
     std::vector<Block*> topLevelEnds; // top-level END phasers, run at program end
     int leaveCtr_ = 0;                // unique names for LEAVE scope guards
+    // While emitSeq emits a block's statements: every name declVar declares,
+    // which a LEAVE guard armed at the block's start must not read
+    std::set<std::string>* declRecord_ = nullptr;
     std::set<std::string> topVars_;   // top-level `my` vars hoisted to C++ globals
 
     // A grammar rule or a named regex runs in the regex ENGINE, which resolves
@@ -3417,6 +3422,79 @@ struct Codegen {
         line(ind, "}");
     }
 
+    // A LEAVE as a C++ scope guard: its body (`inner`, already emitted) runs
+    // when the scope is left, however it is left. On an ordinary exit a
+    // death in it propagates, as Rakudo's does (`LEAVE { die "x" }` dies);
+    // while an exception is already on its way out it is dropped, because a
+    // second one would end the process.
+    std::string leaveGuard(const std::string& inner, int ind) {
+        const std::string g = "__leave" + std::to_string(leaveCtr_++), pad(ind * 4, ' ');
+        return pad + "struct " + g + "_t { std::function<void()> f; int n; ~" + g +
+               "_t() noexcept(false) { if (std::uncaught_exceptions() > n) { try { f(); } catch (...) {} } else f(); } } " +
+               g + "{[&]{\n" + inner + pad + "}, std::uncaught_exceptions()};\n";
+    }
+    // …and its body: a lambda the guard calls in place, so, as in a `do {…}`,
+    // a loop control in it takes the exception form (no `continue` reaches
+    // out of a lambda) and a `return` is one from a block (emitReturn)
+    std::string leaveInner(Block* b, int ind) {
+        struct Iife { int& n; explicit Iife(int& x) : n(x) { n++; } ~Iife() { n--; } } __iife{iife_};
+        LoopJumpBarrier __bar{this};
+        return capture([&] { block(b, ind + 1); });
+    }
+    void emitLeaveGuard(Block* b, int ind) { out << leaveGuard(leaveInner(b, ind), ind); }
+    // Does C++ `text` name the identifier `id` (not merely contain it)?
+    static bool mentionsIdent(const std::string& text, const std::string& id) {
+        auto word = [](char c) { return std::isalnum((unsigned char)c) || c == '_'; };
+        for (size_t p = text.find(id); p != std::string::npos; p = text.find(id, p + 1))
+            if ((p == 0 || !word(text[p - 1])) && (p + id.size() >= text.size() || !word(text[p + id.size()])))
+                return true;
+        return false;
+    }
+    // A block's LEAVE phasers as scope guards (`leaves`, `leaveAt[i]` the
+    // statement each is written before). Armed at the block's start when none
+    // reads a variable the block declares: then every exit runs them, as in
+    // Rakudo — one taken before the LEAVE is reached, and after a CATCH has
+    // handled the exception, since the guards sit outside its `try`.
+    // Otherwise each is armed where it is written, after what it reads. In a
+    // block with a CATCH that is inside the `try`, which would run it ahead of
+    // the handler, and after the `try` its locals are gone (that C++ did not
+    // compile): such a block is refused, and the program bundles.
+    // The statements and phaser bodies are emitted first and placed after,
+    // which is what lets the names declVar declared decide.
+    void emitLeaveGuards(const std::vector<Stmt*>& regular, const std::vector<Block*>& leaves,
+                         const std::vector<size_t>& leaveAt, Block* catchBlk, int ind) {
+        std::set<std::string> declared;
+        std::vector<std::string> body(regular.size()), inner(leaves.size());
+        {
+            struct Rec { Codegen* g; std::set<std::string>* s; ~Rec() { g->declRecord_ = s; } } rec{this, declRecord_};
+            declRecord_ = &declared;
+            const int bi = catchBlk ? ind + 1 : ind;
+            for (size_t k = 0; k < regular.size(); k++) body[k] = capture([&] { stmt(regular[k], bi); });
+        }
+        for (size_t i = 0; i < leaves.size(); i++) inner[i] = leaveInner(leaves[i], ind);
+        bool early = true;
+        for (auto& t : inner)
+            for (auto& n : declared)
+                if (mentionsIdent(t, mangleVar(n))) { early = false; break; }
+        auto emitBody = [&] {
+            if (catchBlk) line(ind, "try {");
+            for (auto& b : body) out << b;
+            if (catchBlk) { line(ind, "} catch (const RakuError& __e) {"); emitCatchHandler(catchBlk, ind + 1); line(ind, "}"); }
+        };
+        if (early) {
+            for (auto& t : inner) out << leaveGuard(t, ind);
+            emitBody();
+        } else if (catchBlk) {
+            unsupported("a LEAVE reading its block's variables beside a CATCH");
+        } else {
+            size_t gi = 0;
+            for (size_t k = 0; k <= body.size(); k++) {
+                while (gi < leaves.size() && leaveAt[gi] == k) out << leaveGuard(inner[gi++], ind);
+                if (k < body.size()) out << body[k];
+            }
+        }
+    }
+
     // Emit a statement sequence, honouring phasers: entry phasers first, the
     // body, then exit phasers (reverse); top-level END phasers are deferred.
     // The MATCHER side of a smartmatch — the right of `~~`, the condition of a
@@ -3471,6 +3549,7 @@ struct Codegen {
     // top-level END deferred) and an embedded CATCH block (wraps the body).
     void emitSeq(const std::vector<StmtPtr>& stmts, int ind, bool topLevel = false) {
         std::vector<Block*> pre, post;
+        std::vector<size_t> postAt;   // where each exit phaser is written: before regular[postAt[i]]
         std::vector<Stmt*> regular;
         Block* catchBlk = nullptr;
         for (auto& s : stmts) {
@@ -3494,7 +3573,7 @@ struct Codegen {
                 // a nested END is refused, and let --exe bundle and stay CORRECT.
                 if (ph == "INIT" && !topLevel) unsupported("a nested INIT phaser");
                 if (ph == "BEGIN" || ph == "CHECK" || ph == "INIT" || ph == "ENTER" || ph == "FIRST") { pre.push_back(b); continue; }
-                if (ph == "LEAVE" || ph == "KEEP" || ph == "UNDO") { post.push_back(b); continue; }
+                if (ph == "LEAVE" || ph == "KEEP" || ph == "UNDO") { post.push_back(b); postAt.push_back(regular.size()); continue; }
                 if (ph == "END") { if (!topLevel) unsupported("a nested END phaser"); topLevelEnds.push_back(b); continue; }
                 if (!ph.empty()) unsupported("a " + ph + " phaser");
             }
@@ -3502,6 +3581,14 @@ struct Codegen {
         }
         for (Block* b : pre) emitPhaserBody(b, ind);
         hoistLexicalSubs(stmts, ind, topLevel);
+        // Exit phasers that are all LEAVEs are scope guards, so a block left by
+        // `next`, `last`, `redo`, `return` or an exception runs them too
+        // (emitLeaveGuards). With a KEEP or UNDO among them — which run in one
+        // reverse order with them — and in the mainline, whose LEAVE is the
+        // unit's, they still run after the last statement, and only then.
+        bool onlyLeave = !post.empty() && !topLevel;
+        for (Block* b : post) if (b->phaser != "LEAVE") onlyLeave = false;
+        if (onlyLeave) { emitLeaveGuards(regular, post, postAt, catchBlk, ind); return; }
         // A CATCH guards its enclosing block (the mainline is the UNIT block).
         if (catchBlk) {
             line(ind, "try {");
@@ -3588,6 +3675,12 @@ struct Codegen {
     std::set<std::string> boundSpecials; // $/ or $! bound as a parameter in the current body (locals win over RT.dynVar)
     std::set<std::string> envSubs;  // lexical subs registered in the runtime env (`sub f {…}` inside a block)
     int loopDepth_ = 0;             // native loops enclosing the emission point IN THIS function body
+    // A node the statement being emitted has already evaluated into a C++
+    // local, and that local's name: ex() answers it for the node, so the
+    // assignment `my $x = f($i) // next` stores what emitCtlPath computed
+    // instead of evaluating its right side a second time. Null otherwise.
+    const Expr* preEvalNode_ = nullptr;
+    std::string preEvalCode_;
     // The LABELLED native loops among them, innermost last: `next L` / `last L`
     // inside one is a goto to its continue or break point (loopBody), where the
     // exception form cost microseconds a jump — the unwinder walking every
@@ -3682,13 +3775,13 @@ struct Codegen {
     // …and the same for a routine's final statement, whose value is the result.
     std::string tailExpr(ExprStmt* es) {
         StmtLine lineScope{curStmtLine_, es}; // for a Test call's line (builtinCall)
-        if (!moduleMode_ || inClosure()) return exArg(es->e.get());
+        if (!moduleMode_ || inClosure()) return tailValue(es->e.get());
         auto savedHoisted = hoisted; auto savedRefs = aotRefs_; auto savedCells = cellsLive_;
         auto savedCodeVars = codeVars; auto savedEnvSubs = envSubs; auto savedSpecials = boundSpecials;
         const size_t savedPre = aotPreamble_.size();
         std::string r, why;
         std::string text = capture([&]() {
-            try { r = exArg(es->e.get()); } catch (const CodegenError& e) { if (e.routineWide) throw; why = e.msg.empty() ? "?" : e.msg; }
+            try { r = tailValue(es->e.get()); } catch (const CodegenError& e) { if (e.routineWide) throw; why = e.msg.empty() ? "?" : e.msg; }
         });
         if (why.empty()) { out << text; return r; }
         hoisted = std::move(savedHoisted); aotRefs_ = std::move(savedRefs); cellsLive_ = std::move(savedCells);
@@ -3782,6 +3875,145 @@ struct Codegen {
                   "}; return rtAotExec(RT, __ds, __dn, __dv, " + std::to_string(bind.size()) + ", ";
         c += (self_.empty() ? std::string("nullptr") : "&" + self_) + (sink ? ", true" : ", false") + "); }())";
         return c;
+    }
+
+    // A `return`: the statement, or one written as an operand that
+    // emitCtlPath lifted out. A bare one answers Nil, as the interpreter's and
+    // Rakudo's do.
+    void emitReturn(Expr* value, int ind) {
+        std::string v = value ? exArg(value) : std::string("Value::nil()");
+        // In a module routine, a `return` inside a BLOCK leaves the routine,
+        // through whatever called the block — interpreted frames included —
+        // so it is thrown at the routine's own frame, as the interpreter's is.
+        const bool inBlock = (!nestKinds_.empty() && nestKinds_.back() == 'b') || iife_ > 0;
+        if (moduleMode_ && inBlock)
+            line(ind, "throw ReturnEx{" + v + ", __fid};");
+        // …and so in a program's: a C++ `return` would leave only the
+        // block, and `(1, 2).map({ return 5 if $_ == 2; $_ })` went on
+        // with the routine. Outside any routine there is nothing to
+        // return from.
+        else if (inBlock) {
+            if (frameUse_.empty()) unsupported("a `return` inside a block outside any routine");
+            frameUse_.back() = 1;
+            line(ind, "rtReturnFrom(" + v + ", __fid, __flive);");
+        }
+        else line(ind, "return " + v + ";");
+    }
+
+    // `f($i) or next`, `$c ?? $v !! return 0`, `my $x = f($i) // next`: a
+    // `next`, `last` or `return` on the path the interpreter's ctlOnStmtPath
+    // walks — the right side of `&&`, `and`, `||`, `or` or `//`, a ternary
+    // branch — all the way up to the statement. As an operand a `next` threw
+    // (rtThrowNext: ~3 µs a skip, against 0.1 for `continue`) and a `return`
+    // was refused, which sent the whole program to --aot and kept a module's
+    // routine interpreted (#195). Lifted out (emitCtlPath), each is its
+    // statement form's own jump. A `redo` keeps the exception: it has no
+    // native statement form.
+    // (Natively a LEFT operand may be one too, unlike in the interpreter:
+    // `(return 5) or say 'x'` is the `return`, its right side never reached.)
+    static bool ctlShortCircuit(const std::string& op) {
+        return op == "&&" || op == "and" || op == "||" || op == "or" || op == "//";
+    }
+    static bool ctlWord(const Expr* e) {
+        if (!e || e->kind != NK::Unary) return false;
+        auto* u = static_cast<const Unary*>(e);
+        return u->op == "return" || ((u->op == "next" || u->op == "last") && !u->operand);
+    }
+    static bool ctlOnPath(const Expr* e, int depth = 0) {
+        for (; e && depth < 64; depth++) {
+            switch (e->kind) {
+                case NK::Unary: return ctlWord(e);
+                case NK::Binary: {
+                    auto* b = static_cast<const Binary*>(e);
+                    if (!ctlShortCircuit(b->op)) return false;
+                    if (ctlWord(b->lhs.get())) return true;
+                    e = b->rhs.get();
+                    break;
+                }
+                case NK::Ternary: {
+                    auto* t = static_cast<const Ternary*>(e);
+                    if (ctlOnPath(t->then.get(), depth + 1)) return true;
+                    e = t->els.get();
+                    break;
+                }
+                default: return false;
+            }
+        }
+        return false;
+    }
+    // …that may be lifted: a `*` in it makes the whole a WhateverCode, which
+    // runs later, where no jump of this statement's can reach
+    bool ctlLiftable(Expr* e) { return ctlOnPath(e) && !hasWhatever(e); }
+    // …and an assignment whose right side holds one: a plain `=` into a `$`,
+    // `@` or `%` variable, a `my` or none, which emitCtlPath evaluates first
+    // and assign() then stores (preEvalNode_). A subscript target is left
+    // out: its subscript would run after the right side instead of before.
+    bool ctlStoreShape(Assign* a) {
+        if (a->op != "=" || a->containerSigil || a->userOp || !a->target || !a->value ||
+            a->target->kind != NK::VarExpr)
+            return false;
+        auto* v = static_cast<VarExpr*>(a->target.get());
+        if (v->name.size() < 2 || !std::strchr("$@%", v->name[0]) ||
+            !(nameLetterAt(v->name, 1) || v->name[1] == '_'))
+            return false;
+        if (v->declare && (v->d().declScope != "my" || v->d().declExport)) return false;
+        return ctlLiftable(a->value.get());
+    }
+    // Statements that leave `e`'s value in the Value local `tmp`, each
+    // control word on its path the native jump: `f($i) // next` is `tmp =
+    // f($i); if (!rtIsDefined(tmp)) { continue; }`. Every other part is
+    // emitted as it was before: `sunk` is a statement's, whose ternary
+    // branches match a regex against the topic (exSunk); a short-circuit's
+    // right side is a value either way.
+    void emitCtlPath(Expr* e, const std::string& tmp, int ind, bool sunk = false) {
+        if (ctlWord(e)) {
+            auto* u = static_cast<Unary*>(e);
+            if (u->op == "return") emitReturn(u->operand.get(), ind);
+            else if (u->op == "next") line(ind, loopDepth_ ? "continue;" : "rtThrowNext();");
+            else line(ind, loopDepth_ ? "break;" : "rtThrowLast();");
+            return;
+        }
+        if (e->kind == NK::Binary && ctlOnPath(e)) {
+            auto* b = static_cast<Binary*>(e);
+            if (ctlWord(b->lhs.get())) { emitCtlPath(b->lhs.get(), tmp, ind, sunk); return; }
+            const bool andOp = b->op == "&&" || b->op == "and";
+            std::string cond;
+            // a regex on the left holds by matching the topic (exValTruth),
+            // as in the short-circuit infixes' own emission
+            if (b->op != "//" && rxTruthy(b->lhs.get())) {
+                std::string t = gensym("__ct");
+                line(ind, "bool " + t + " = false;");
+                line(ind, tmp + " = " + exValTruth(b->lhs.get(), t) + ";");
+                cond = andOp ? t : "!" + t;
+            } else {
+                line(ind, tmp + " = " + exArg(b->lhs.get()) + ";");
+                cond = b->op == "//" ? "!rtIsDefined(" + tmp + ")"
+                     : andOp ? "RT.boolify(" + tmp + ")" : "!RT.boolify(" + tmp + ")";
+            }
+            line(ind, "if (" + cond + ") {");
+            emitCtlPath(b->rhs.get(), tmp, ind + 1);
+            line(ind, "}");
+            return;
+        }
+        if (e->kind == NK::Ternary && ctlOnPath(e)) {
+            auto* t = static_cast<Ternary*>(e);
+            line(ind, "if (" + exBool(t->cond.get()) + ") {");
+            emitCtlPath(t->then.get(), tmp, ind + 1, sunk);
+            line(ind, "} else {");
+            emitCtlPath(t->els.get(), tmp, ind + 1, sunk);
+            line(ind, "}");
+            return;
+        }
+        line(ind, tmp + " = " + (sunk ? exSunk(e) : exArg(e)) + ";");
+    }
+    // A body's last statement, whose value the body answers: lifted as the
+    // statement would be, its value is the local emitCtlPath left
+    std::string tailValue(Expr* e) {
+        if (!ctlLiftable(e)) return exArg(e);
+        std::string t = gensym("__cv");
+        line(0, "Value " + t + ";");
+        emitCtlPath(e, t, 0);
+        return t;
     }
 
     void stmtNative(Stmt* s, int ind) {
@@ -3888,6 +4120,32 @@ struct Codegen {
                         }
                         return;
                     }
+                }
+                // `f($i) or next`, `$c ?? $v !! return 0`: the control word as
+                // its statement form's own jump (emitCtlPath)
+                if (ctlLiftable(e)) {
+                    std::string t = gensym("__cv");
+                    line(ind, "{ Value " + t + ";");
+                    emitCtlPath(e, t, ind + 1, /*sunk=*/true);
+                    line(ind, "(void)" + t + "; }");
+                    return;
+                }
+                // `my $x = f($i) // next`: the right side first, so the jump
+                // comes before the store, then the store of what it left —
+                // released after, so the local holds no second reference
+                if (e->kind == NK::Assign && ctlStoreShape(static_cast<Assign*>(e))) {
+                    auto* a = static_cast<Assign*>(e);
+                    std::string t = gensym("__cv");
+                    line(ind, "Value " + t + ";");
+                    emitCtlPath(a->value.get(), t, ind);
+                    struct PreEval {
+                        Codegen* g; const Expr* n; std::string c;
+                        ~PreEval() { g->preEvalNode_ = n; g->preEvalCode_ = std::move(c); }
+                    } pe{this, preEvalNode_, preEvalCode_};
+                    preEvalNode_ = a->value.get(); preEvalCode_ = t;
+                    line(ind, assign(a) + ";");
+                    line(ind, t + " = Value();");
+                    return;
                 }
                 // -O int lanes: statement-position int assignment / ++ / -- on plain scalars
                 if (optimize_ && e->kind == NK::Assign && tryLaneAssign(static_cast<Assign*>(e), ind)) return;
@@ -4006,24 +4264,7 @@ struct Codegen {
             }
             case NK::ReturnStmt: {
                 auto* r = static_cast<ReturnStmt*>(s);
-                // a bare `return` answers Nil, as the interpreter's and Rakudo's do
-                std::string v = r->value ? exArg(r->value.get()) : std::string("Value::nil()");
-                // In a module routine, a `return` inside a BLOCK leaves the routine,
-                // through whatever called the block — interpreted frames included —
-                // so it is thrown at the routine's own frame, as the interpreter's is.
-                const bool inBlock = (!nestKinds_.empty() && nestKinds_.back() == 'b') || iife_ > 0;
-                if (moduleMode_ && inBlock)
-                    line(ind, "throw ReturnEx{" + v + ", __fid};");
-                // …and so in a program's: a C++ `return` would leave only the
-                // block, and `(1, 2).map({ return 5 if $_ == 2; $_ })` went on
-                // with the routine. Outside any routine there is nothing to
-                // return from.
-                else if (inBlock) {
-                    if (frameUse_.empty()) unsupported("a `return` inside a block outside any routine");
-                    frameUse_.back() = 1;
-                    line(ind, "rtReturnFrom(" + v + ", __fid, __flive);");
-                }
-                else line(ind, "return " + v + ";");
+                emitReturn(r->value.get(), ind);
                 return;
             }
             case NK::LastStmt: {
@@ -4048,13 +4289,7 @@ struct Codegen {
                 auto* b = static_cast<Block*>(s);
                 // LEAVE {…} maps exactly to a C++ scope guard (runs on any exit,
                 // exceptions included)
-                if (b->phaser == "LEAVE") {
-                    std::string g = "__leave" + std::to_string(leaveCtr_++);
-                    line(ind, "struct " + g + "_t { std::function<void()> f; ~" + g + "_t(){ try { f(); } catch (...) {} } } " + g + "{[&]{");
-                    block(b, ind + 1);
-                    line(ind, "}};");
-                    return;
-                }
+                if (b->phaser == "LEAVE") { emitLeaveGuard(b, ind); return; }
                 if (b->isCatch || !b->phaser.empty()) unsupported("phaser / CATCH block");
                 line(ind, "{"); block(b, ind + 1); line(ind, "}");
                 return;
@@ -8639,7 +8874,7 @@ struct Codegen {
                 for (size_t i = 0; i < md->body.size(); i++) {
                     Stmt* s = md->body[i].get();
                     if (i + 1 == md->body.size() && s->kind == NK::ExprStmt)
-                        line(1, "return " + exArg(static_cast<ExprStmt*>(s)->e.get()) + ";");
+                        line(1, "return " + tailValue(static_cast<ExprStmt*>(s)->e.get()) + ";");
                     else if (i + 1 == md->body.size() && (s->kind == NK::IfStmt || s->kind == NK::GivenStmt)) {
                         std::string rv = gensym("__rv");
                         line(1, "Value " + rv + " = " + tailSeed(s) + ";");   // as above

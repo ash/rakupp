@@ -1736,7 +1736,7 @@ struct ExecContext {
     int loopCtl = 0;              // 0 none, 1 next, 2 last, 3 redo
     bool ctorCatchSkip = false;   // methodCall's BuildFailureEx catch is already armed for this `.new`
     short ctorCatchDepth = 0;     // how many such catches are armed on this thread (0: none — throw as before)
-    const Expr* curStmtExpr = nullptr; // the expression the current ExprStmt is evaluating — a bare `next`/`last`/`redo` may go cooperative only when it IS this
+    const Expr* curStmtExpr = nullptr; // the expression the current ExprStmt is evaluating — where ctlOnStmtPath starts (a call puts it back on return)
     // Did the value that just came out of a routine or block arrive in a
     // CONTAINER? Rakudo's sink does not descend a Scalar to sink its contents,
     // so a statement whose value is one is not sunk at all — see sinkValue.
@@ -1890,6 +1890,15 @@ struct ExecContext {
     // evalMethodCallExpr's lazy chain): only that node, while its invocant is
     // evaluated. Null everywhere else.
     const Expr* lazyChainNode = nullptr;
+    // The assignment whose store is guarded while its right side runs, and the
+    // frame it runs in: evalAssignInner's general path sets both and stores
+    // nothing once a cooperative next/last/redo/return is up, so a control word
+    // on that right side (`my $x = f() // next`) may go cooperative too
+    // (ctlOnStmtPath). Null outside that window. (Last in the struct: put
+    // beside curStmtExpr they moved every member after it, and the method-call
+    // kernels ran 3-5% more cycles on the same instructions.)
+    const Expr* coopAssign = nullptr;
+    uint64_t coopAssignFrame = 0;
 };
 
 // Backs a lazy list (an infinite `… … *` sequence, or `.map` over one). The Value

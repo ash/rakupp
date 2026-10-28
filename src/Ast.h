@@ -432,6 +432,9 @@ struct Assign : Expr {
     // (Interpreter::compoundCheckSlot): -1 undecided, 0 no, 1 nominal type,
     // 2 coercion / `where` / subset. Lexical, so decided once.
     DecidedOnce<signed char> typedCheck{-1};
+    // 1 when evalAssignInner guards this store so a next/last/redo/return on
+    // the right side's path may go cooperative (coopStoreShape): -1 undecided.
+    DecidedOnce<signed char> coopStore{-1};
     // `=$=` / `=@=` / `=%=` — assignment with the container semantics named by the
     // operator rather than by the target's sigil. The parser rewrites `op` to "="
     // and records the sigil here, so every `op == "="` test downstream still holds.

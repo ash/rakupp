@@ -760,6 +760,23 @@ section('--target=js (JavaScript backend)');
     diag("got: $got") if $got ne $want;
     try unlink $bin;
 }
+# Regression files that exist to be COMPILED, so they must stay native: one
+# refusal and the whole program bundles, which t/exe/run.raku only counts.
+# `next`, `last` and `return` written as an operand compile to their statement
+# forms' jumps (#195), and a LEAVE runs however its block is left.
+for <next-return-in-expression-native leave-on-every-exit-native> -> $name {
+    my $bin = $*TMPDIR.add("rakupp-suite-native-$name-$*PID").Str;
+    my $p = run($*EXECUTABLE, '--exe', $ROOT.add("t/regression/$name.raku").Str, '-o', $bin, :out, :err);
+    $p.out.slurp(:close);
+    my $msg = $p.err.slurp(:close);
+    ok($p.exitcode == 0 && $msg.contains('(native)'), "--exe builds $name.raku natively");
+    diag($msg.lines.grep(*.contains('note:')).join("\n")) unless $msg.contains('(native)');
+    $p = run($bin, :out);
+    my $got = $p.out.slurp(:close);
+    ok($got.lines.tail eq 'PASS', "…and its binary passes");
+    diag($got) unless $got.lines.tail eq 'PASS';
+    try unlink $bin;
+}
 # Terms that a compiled binary once got WRONG WITHOUT SAYING SO: `now` and
 # `time` fell through to the "unknown bareword is a type object" default (so
 # `now.Num` was 0 — every timing in a compiled program read zero), and a

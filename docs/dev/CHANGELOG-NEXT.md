@@ -19,7 +19,8 @@ e24f05f1 (NUM-UNBOX-PLAN P0); 8644846a; 74806a6d; 93f9a4af and c7a12943;
 5d31d4a2 and aff5032b (issue #202); 5d0e7ce9 and 170802d4 (issue #203);
 cb7933f3 (issue #204); cb5b360a, d5184116 and 50aebf54; 67a2fe76 (issue
 #198) and 4af53b07; 3ddcd58b (issue #207); 2b9494ae (issue #206);
-62e16b9e; fb9009bc (issue #56); 3c80bc24.*
+62e16b9e; fb9009bc (issue #56); 3c80bc24; 48b76d56, a348489b, aa0f3618 and
+fc262224 (issue #195).*
 
 ---
 
@@ -164,6 +165,28 @@ plain before 500c29e2 and native from it, unless they say otherwise.
   CATCH, LEAVE or END at its top level keeps its loops as they were. The
   loop 589 → 55.2 ns a call, the integer routine 75.0 → 14.6 ns (over plain
   arrays 58.0 → 14.2), the binary 0.853G → 0.767G instructions.
+- **`next`, `last`, `redo` and `return` written as an operand set the flag
+  the statement form sets** (48b76d56; issue #195): `my $x = f($i) // next`,
+  `f($i) or next`, `my $x = f($i) // return 0`, a ternary branch. Each threw
+  a C++ exception through the interpreter's frames, which macOS's unwinder
+  makes 30-65 µs a jump. The walk that decides now goes on past a call on
+  the left, and the general assignment path stores nothing once the flag is
+  up. µs per skipped iteration, the issue's script, interpreted, against
+  4083b26b: `// next` 67.4 → 0.7, `or next` 33.7 → 0.4, `// return` 62.9 →
+  0.8 (`next without`, the statement form, 0.9). That script's `--exe`
+  fell back to the interpreter, so it gained the same. Still thrown: a block
+  inside the statement (`try { … } // next`), a compound or list
+  assignment and a call argument; compiled code, until aa0f3618 below.
+- **`--exe` compiles `next`, `last` and `return` written as an operand to
+  the statement form's own jump** (aa0f3618; issue #195): `my $x = f($i) //
+  next` is `$tmp = f($i); if (!rtIsDefined($tmp)) continue;` and then the
+  store, `f($i) or return 0` a C++ `return`, a ternary branch an `if`. A
+  `next` there was an exception (rtThrowNext), and a `return` was refused,
+  which sent the whole program to `--aot` and kept a module's routine
+  interpreted. µs per skipped iteration, the issue's script, compiled, plain
+  and `-O`: `// next` 0.2 / 0.1, `or next` 0.1 / 0.1, `// return` 0.2 / 0.1
+  (`next without` 0.2 / 0.1). Before, that script bundled, and `// next`
+  compiled on its own cost ~3. A `redo` keeps the exception.
 
 ### New
 
@@ -434,6 +457,24 @@ plain before 500c29e2 and native from it, unless they say otherwise.
   Stash's variable binds its container (roast's gh2979.t). The orbits and
   fourier showcases used four constants their libraries never exported;
   those are `is export` now, and both showcases run under Rakudo too.
+- **`(return 5) or say 'x'` returns 5 without running the `say`** (48b76d56;
+  found fixing issue #195), as in Rakudo. The cooperative `return` counted
+  a left operand as on its way to the end of the statement, handed `or` an
+  Any, and `or` went on to its right side.
+- **`f($i) or return "no"` returns "no"** (a348489b; found fixing issue
+  #195), as in Rakudo. A `return` written as an operand ended before a
+  keyword by reading the next token's TEXT, a string literal's contents
+  included, so "no", "or", "and", "xor", "if", "my" and `q/or/` went: the
+  routine returned Nil and the string became a statement of its own. So did
+  `return not 1`. The statement form was right.
+- **`--exe` runs a LEAVE however its block is left** (fc262224; found fixing
+  issue #195), as interpreted and in Rakudo. A block's LEAVE ran after its
+  last statement only, so a `next`, `last`, `redo`, `return` or exception
+  that left early skipped it: `for ^3 -> $i { LEAVE { … }; next if $i ==
+  1; … }` ran two of three. It is a scope guard now, and a death in it
+  propagates, so a routine's `LEAVE { die "x" }` dies as interpreted. A
+  LEAVE that reads its block's variables beside a CATCH bundles the
+  program; its C++ did not compile before.
 
 ### Fixed: crashes
 
