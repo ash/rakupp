@@ -2224,10 +2224,42 @@ void Lexer::scanQuoteWordSubs(const std::string& src,
     });
 }
 
+// Whether the `sub` declaration at `at` carries `is export`. Traits sit between
+// the signature and the body, so the header is read up to its first `{` or `;`
+// outside the signature's brackets.
+static bool subDeclIsExported(const std::string& src, size_t at) {
+    int depth = 0;
+    for (size_t i = at + 3; i < src.size(); i++) {
+        const char c = src[i];
+        if (c == '(' || c == '[') depth++;
+        else if ((c == ')' || c == ']') && depth > 0) depth--;
+        else if (depth == 0 && (c == '{' || c == ';')) return false;
+        else if (depth == 0 && src.compare(i, 2, "is") == 0 && !rakuIdentCont(src[i - 1]) &&
+                 i + 2 < src.size() && ascii::isspace((unsigned char)src[i + 2])) {
+            size_t j = i + 2;
+            while (j < src.size() && ascii::isspace((unsigned char)src[j])) j++;
+            if (src.compare(j, 6, "export") == 0 && (j + 6 >= src.size() || !rakuIdentCont(src[j + 6])))
+                return true;
+        }
+    }
+    return false;
+}
+
 void Lexer::scanQuoteWordSubNames(const std::string& src, std::set<std::string>& into) {
-    scanDeclaredSubNames(src, [&](const std::string& n, size_t, size_t) {
-        if (isQuoteKeyword(n)) into.insert(n);
+    // Only a name the import can bring in: a sub marked `is export`. The
+    // module's other subs are its own lexicals, and its `sub q` made `q{…}` a
+    // call in every file that used it (#194). An `EXPORT` sub can hand out any
+    // of them, and the text does not say which, so with one every name counts.
+    std::vector<std::string> unexported;
+    bool exportSub = false;
+    scanDeclaredSubNames(src, [&](const std::string& n, size_t at, size_t) {
+        const bool isSub = src.compare(at, 3, "sub") == 0;
+        if (isSub && n == "EXPORT") exportSub = true;
+        if (!isQuoteKeyword(n)) return;
+        if (!isSub || subDeclIsExported(src, at)) into.insert(n);
+        else unexported.push_back(n);
     });
+    if (exportSub) into.insert(unexported.begin(), unexported.end());
 }
 
 bool Lexer::quoteWordShadowedAt(const std::string& w, size_t at) const {

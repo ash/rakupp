@@ -95,9 +95,9 @@ public:
     // range over which it is in scope.
     static void scanQuoteWordSubs(const std::string& src,
                                   std::map<std::string, std::vector<std::pair<size_t, size_t>>>& into);
-    // …and the NAME-only form, for callers that want every declaration in a file
-    // regardless of where it is in scope (an imported module's names apply to the
-    // whole importing unit).
+    // …and the NAME-only form for an imported module, whose names apply to the
+    // whole importing unit wherever the module declared them: the subs it
+    // exports (`is export`, or any of them when it has an `EXPORT` sub).
     static void scanQuoteWordSubNames(const std::string& src, std::set<std::string>& into);
     // Report every `sub NAME` declaration in `src` to `cb`, with the offset it is
     // written at and the end of the block that declares it. Used before a lex, so
