@@ -24,7 +24,8 @@ fc262224 (issue #195); 0f19ab0e (issue #208); f483f0e6 (issue #192);
 b05e989b (issue #193); 17e33a45 (issue #184); 5f87f445; 0e44c5a6 (issue
 #211); 8c871a25; 079427c0 (issue #175); 357cb4bb (issue #187); 6eddeeb5
 (issue #188); c50eb3b8 (issue #146); 09018c67 (issue #77); 099a2055 (issue
-#205); 18ef8f73 (issues #186 and #178); 642a320a; 62a3d9a5 (issue #212).*
+#205); 18ef8f73 (issues #186 and #178); 642a320a; 62a3d9a5 (issue #212);
+17a71667 (issue #213).*
 
 ---
 
@@ -903,6 +904,11 @@ does not.
   number. Cool.match is `self.Str.match` now, as in Rakudo, and a needle
   that is no Regex is matched as its Str.
   t/regression/allomorph-str-methods.raku agrees with Rakudo 2026.09.
+- **`IO::Path.chown` and `chown`** (17a71667; issue #213). An id left out keeps
+  the file's own, the method answers True, and a missing file or a refused
+  chown(2) is a Failure carrying X::IO::Chown with Rakudo's message; the
+  sub answers the paths it changed. The sandbox counts both as writes.
+  t/regression/io-path-chown.raku agrees with Rakudo 2026.09.
 
 ### Left open
 
