@@ -22,7 +22,7 @@ cb7933f3 (issue #204); cb5b360a, d5184116 and 50aebf54; 67a2fe76 (issue
 62e16b9e; fb9009bc (issue #56); 3c80bc24; 48b76d56, a348489b, aa0f3618 and
 fc262224 (issue #195); 0f19ab0e (issue #208); f483f0e6 (issue #192);
 b05e989b (issue #193); 17e33a45 (issue #184); 5f87f445; 0e44c5a6 (issue
-#211); 8c871a25.*
+#211); 8c871a25; 079427c0 (issue #175).*
 
 ---
 
@@ -574,6 +574,11 @@ plain before 500c29e2 and native from it, unless they say otherwise.
   slot layout another thread's first call is still building.
   t/race/shared-hash-pairs.raku: 36 runs in 50 failed at 5.2.1, none in 200
   now; t/stress/shared-hash-pairs.raku runs ThreadSanitizer-clean.
+- **`%h{"k$i"} = $i` in a loop no longer crashes a GCC 15 build** (079427c0;
+  issue #175). The loop kernel compiler read an interpolated string part's
+  type before computing it, an order C++ leaves open: GCC 15.3 at `-O3`
+  took it the wrong way round, and the kernel read an Int as a string
+  (SIGSEGV, every run). The Clang builds never crashed.
 
 ### Fixed: what FatRoast found
 
