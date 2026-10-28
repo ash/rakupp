@@ -8943,6 +8943,20 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
                         }
                     }
                 }
+                // A user `multi trait_mod:<is>` joins the group of the traits
+                // the engine applies itself, as a Rakudo multi joins CORE's, so
+                // `is native` is still among its candidates: NativeLibs' EXPORT
+                // looks for it there, and found nothing once Cro's `is auth`
+                // multis were in scope (#211). Each answers .dispatcher with
+                // this group, the `&trait_mod:<is>` the caller holds.
+                else if (!inv.code()->ci().isMethod && inv.code()->ci().name == "trait_mod:<is>" &&
+                         inv.code() != builtinTraitIsGroup().code()) {
+                    for (auto& c : builtinTraitIsGroup().code()->cold().candidates) {
+                        Value cc; cc.t = VT::Code; cc.setCode(makePayload<Callable>(*c.code()));
+                        cc.code()->dispatcherC = inv.codeS();
+                        out.arr()->push_back(cc);
+                    }
+                }
                 for (auto& c : inv.code()->cold().candidates)
                     // the group's own `proto … {*}` is the dispatcher, not a
                     // candidate: Rakudo lists the multis only

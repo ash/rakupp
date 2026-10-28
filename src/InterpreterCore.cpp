@@ -30638,6 +30638,54 @@ Value Interpreter::eval(Expr* e) {
     }
 }
 
+// &trait_mod:<is> — the trait dispatcher as an INSPECTABLE Routine. The traits
+// are engine built-ins applied at declaration; what ecosystem code wants from
+// this NAME is introspection: NativeLibs' EXPORT fishes the `is native`
+// candidate out of .candidates by signature and re-exports its .dispatcher, so
+// the candidates carry honest signatures and bodies that apply nothing. A user
+// `multi trait_mod:<is>` lists them ahead of its own (Code.candidates). Static
+// on purpose: the proto→candidate→dispatcher cycle lives for the process.
+const Value& builtinTraitIsGroup() {
+    static Value proto = [] {
+        static std::deque<std::vector<Param>> sigStore;
+        auto cand = [](const char* ptype, const char* pname, const char* named) {
+            Value c; c.t = VT::Code; c.setCode(makePayload<Callable>());
+            c.code()->ciM().name = "trait_mod:<is>";
+            c.code()->ciM().isMultiCandidate = true;
+            sigStore.emplace_back();
+            auto& ps = sigStore.back();
+            ps.emplace_back(); ps.back().name = pname; ps.back().type = ptype;
+            ps.emplace_back(); ps.back().name = std::string("$") + named;
+            ps.back().named = true; ps.back().required = true;
+            c.code()->ciM().params = &ps;
+            c.code()->ciM().builtin = [](Interpreter&, ValueList& a) -> Value {
+                return a.empty() ? Value::any() : a[0];
+            };
+            return c;
+        };
+        Value p; p.t = VT::Code; p.setCode(makePayload<Callable>());
+        p.code()->ciM().name = "trait_mod:<is>";
+        p.code()->ciM().isMultiDispatcher = true; p.code()->ciM().isProto = true;
+        p.code()->ciM().builtin = [](Interpreter&, ValueList& a) -> Value {
+            return a.empty() ? Value::any() : a[0];
+        };
+        for (Value c : { cand("Routine",   "$r",     "native"),
+                         cand("Routine",   "$r",     "export"),
+                         cand("Mu",        "$type",  "export"),
+                         cand("Routine",   "$r",     "rw"),
+                         cand("Parameter", "$param", "rw"),
+                         cand("Variable",  "$v",     "default"),
+                         cand("Routine",   "$r",     "pure"),
+                         cand("Routine",   "$r",     "DEPRECATED"),
+                         cand("Attribute", "$attr",  "required") }) {
+            c.code()->dispatcherC = p.codeS();
+            p.code()->coldM().candidates.push_back(std::move(c));
+        }
+        return p;
+    }();
+    return proto;
+}
+
 // eval's VarExpr arm, whole, in a frame of its own: the common read stays in
 // eval (see there); every other form of variable — pseudo-packages, special
 // names, attributes, placeholders, a miss — is here, where its locals no
@@ -31330,15 +31378,6 @@ Value Interpreter::evalVarExpr(Expr* e) {
     // &prefix:<->) and named builtins (&say) → a Callable that applies them.
     if (ve->name.size() > 1 && ve->name[0] == '&') {
         std::string bare = ve->name.substr(1);
-        // &trait_mod:<is> — the trait dispatcher as an INSPECTABLE
-        // Routine. The traits themselves are engine built-ins applied
-        // at declaration; what ecosystem code wants from this NAME is
-        // introspection: NativeLibs' EXPORT fishes the `is native`
-        // candidate out of .candidates by signature and re-exports
-        // its .dispatcher. So the candidates carry honest signatures
-        // and bodies that apply nothing (the engine already did).
-        // Static on purpose — the proto→candidate→dispatcher cycle
-        // lives for the process, like the real dispatch group would.
         // &next / &last / &redo — Rakudo's loop-control SUBS, each a multi of
         // `( --> Nil)` and `(Label:D $x --> Nil)`; calling one is the statement
         if (bare == "next" || bare == "last" || bare == "redo") {
@@ -31379,46 +31418,7 @@ Value Interpreter::evalVarExpr(Expr* e) {
             }
             return ctl[bare] = p;
         }
-        if (bare == "trait_mod:<is>") {
-            static Value proto = [] {
-                static std::deque<std::vector<Param>> sigStore;
-                auto cand = [](const char* ptype, const char* pname, const char* named) {
-                    Value c; c.t = VT::Code; c.setCode(makePayload<Callable>());
-                    c.code()->ciM().name = "trait_mod:<is>";
-                    c.code()->ciM().isMultiCandidate = true;
-                    sigStore.emplace_back();
-                    auto& ps = sigStore.back();
-                    ps.emplace_back(); ps.back().name = pname; ps.back().type = ptype;
-                    ps.emplace_back(); ps.back().name = std::string("$") + named;
-                    ps.back().named = true; ps.back().required = true;
-                    c.code()->ciM().params = &ps;
-                    c.code()->ciM().builtin = [](Interpreter&, ValueList& a) -> Value {
-                        return a.empty() ? Value::any() : a[0];
-                    };
-                    return c;
-                };
-                Value p; p.t = VT::Code; p.setCode(makePayload<Callable>());
-                p.code()->ciM().name = "trait_mod:<is>";
-                p.code()->ciM().isMultiDispatcher = true; p.code()->ciM().isProto = true;
-                p.code()->ciM().builtin = [](Interpreter&, ValueList& a) -> Value {
-                    return a.empty() ? Value::any() : a[0];
-                };
-                for (Value c : { cand("Routine",   "$r",     "native"),
-                                 cand("Routine",   "$r",     "export"),
-                                 cand("Mu",        "$type",  "export"),
-                                 cand("Routine",   "$r",     "rw"),
-                                 cand("Parameter", "$param", "rw"),
-                                 cand("Variable",  "$v",     "default"),
-                                 cand("Routine",   "$r",     "pure"),
-                                 cand("Routine",   "$r",     "DEPRECATED"),
-                                 cand("Attribute", "$attr",  "required") }) {
-                    c.code()->dispatcherC = p.codeS();
-                    p.code()->coldM().candidates.push_back(std::move(c));
-                }
-                return p;
-            }();
-            return proto;
-        }
+        if (bare == "trait_mod:<is>") return builtinTraitIsGroup();
         if (bare.rfind("infix:<", 0) == 0 && bare.back() == '>') {
             if (!operatorNameDeclared(*this, bare)) undeclaredRoutine(bare);   // `&infix:<nosuch>`
             std::string op = bare.substr(7, bare.size() - 8);

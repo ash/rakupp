@@ -550,6 +550,32 @@ bool Interpreter::importWouldShadowRoutine(const std::string& key, const Value& 
     return false;
 }
 
+// An EXPORT sub that hands back a multi (`'&trait_mod:<is>' => $exp.dispatcher`,
+// NativeLibs' re-export of the `is native` group) gives the importer that
+// group's candidates, as an exported `multi` does through the EXPORT stash: a
+// scope that declared its own `multi trait_mod:<is>(Routine, :$zap!)` keeps
+// `is zap` after `use NativeLibs`, where binding the name over it lost the
+// trait without a word. The engine's own trait group adds nothing to merge —
+// every `trait_mod:<is>` group already lists its candidates.
+bool Interpreter::importJoinsLocalMulti(const std::string& key, const Value& val) {
+    if (key.empty() || key[0] != '&' || val.t != VT::Code || !val.code() ||
+        !val.code()->ci().isMultiDispatcher || !tctx().cur) return false;
+    Value* have = tctx().cur->local(key);
+    if (!have || have->t != VT::Code || !have->code() || !have->code()->ci().isMultiDispatcher) return false;
+    if (have->code() == val.code() || val.code() == builtinTraitIsGroup().code()) return true;
+    auto& cands = have->code()->coldM().candidates;
+    for (auto& c : val.code()->cold().candidates) {
+        if (c.code() && (c.code()->ci().isProto || c.code()->ci().isProtoBody)) continue;
+        bool dup = false;
+        for (auto& h : cands)
+            if (h.code() == c.code() ||
+                (h.code() && c.code() && h.code()->ci().body && h.code()->ci().body == c.code()->ci().body &&
+                 h.code()->ci().params == c.code()->ci().params)) { dup = true; break; }
+        if (!dup) cands.push_back(c);
+    }
+    return true;
+}
+
 // Does a class body declare (not `my`) a subset named `t`? Its attributes are
 // built before the body runs, so `class Cro::HTTP::Request { subset Method of
 // Str …; has Method $.method }` would otherwise read the core Method.
@@ -1159,7 +1185,8 @@ void Interpreter::loadModuleImpl(const std::string& name, const std::vector<std:
                 Value res = callCallable(it->second, eargs);
                 if (res.t == VT::Hash && res.hash())
                     for (auto& kv : *res.hash())
-                        if (!importWouldShadowRoutine(kv.first, kv.second)) {
+                        if (!importWouldShadowRoutine(kv.first, kv.second) &&
+                            !importJoinsLocalMulti(kv.first, kv.second)) {
                             // (a package variable's container: see the first-load site)
                             if (PRef<Value> c = cellOfProxy(&kv.second)) tctx().cur->define(kv.first, Value::cellHolder(c));
                             else tctx().cur->define(kv.first, kv.second);
@@ -1864,7 +1891,8 @@ void Interpreter::loadModuleImpl(const std::string& name, const std::vector<std:
                             // real export of a real container (roast's gh2979.t).
                             if (kv.second.t == VT::Any && !kv.first.empty() && kv.first[0] == '&')
                                 continue;
-                            if (importWouldShadowRoutine(kv.first, kv.second)) continue;
+                            if (importWouldShadowRoutine(kv.first, kv.second) ||
+                                importJoinsLocalMulti(kv.first, kv.second)) continue;
                             // A package variable a Stash hands over is its CONTAINER
                             // (stashEntryOf's Proxy onto the cell): the name is bound
                             // to that cell, so `$foo.VAR` is a Scalar and a write is
