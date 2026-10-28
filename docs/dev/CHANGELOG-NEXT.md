@@ -22,7 +22,8 @@ cb7933f3 (issue #204); cb5b360a, d5184116 and 50aebf54; 67a2fe76 (issue
 62e16b9e; fb9009bc (issue #56); 3c80bc24; 48b76d56, a348489b, aa0f3618 and
 fc262224 (issue #195); 0f19ab0e (issue #208); f483f0e6 (issue #192);
 b05e989b (issue #193); 17e33a45 (issue #184); 5f87f445; 0e44c5a6 (issue
-#211); 8c871a25; 079427c0 (issue #175); 357cb4bb (issue #187).*
+#211); 8c871a25; 079427c0 (issue #175); 357cb4bb (issue #187); 6eddeeb5
+(issue #188).*
 
 ---
 
@@ -535,6 +536,10 @@ plain before 500c29e2 and native from it, unless they say otherwise.
   read the element after the one asked for and left `$i` at 2, interpreted
   and compiled. t/regression/carray-index-once.raku agrees with Rakudo
   2026.09.
+- **`"<$k>"` in a regex matches the text `<abc>`** (6eddeeb5; issue #188).
+  Inside a double-quoted atom the angles around a variable were read as
+  the `<$var>` assertion, so `/ "<$tag>" (.*?) "</$tag>" /` found nothing.
+  t/regression/regex-quoted-angle-var.raku agrees with Rakudo 2026.09.
 
 ### Fixed: crashes
 
