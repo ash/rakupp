@@ -3979,7 +3979,21 @@ Value Interpreter::bufSplice(Value& buf, ValueList& args) {
 }
 
 Value Interpreter::bufBitOp(Value& buf, const std::string& m, ValueList& args) {
-    std::string& bytes = buf.s.mut();
+    // A read looks at the bytes where they are. This took `buf.s.mut()` for
+    // every op, and on a buffer another Value shares that copies ALL of it
+    // first: `.read-uint64` on an 8 MB Buf cost 8 MB a call (issue #178).
+    const std::string& bytes = buf.s.str();
+    // A write lands IN PLACE, in the body every holder of this Buf shares — a
+    // Buf is a reference-semantics container (CowStr::mutInPlace), as `$b[2] =
+    // 3` already is — so `$b.write-uint16(…)` in a routine reaches its caller's
+    // Buf, natively compiled or not (issue #186). Only a write past the end
+    // grows a buffer of its own, as the element store does. (`bytes` is not
+    // read again once this is called.)
+    auto wbytes = [&](size_t need) -> std::string& {
+        if (buf.s.size() < need) buf.s.mut().resize(need, '\0');
+        buf.s.promote();
+        return buf.s.textInPlace();
+    };
     auto endianOf = [&](const Value& v) -> int { // 0 native, 1 little, 2 big
         std::string e = !v.enumName.empty() ? v.enumName : v.toStr();
         if (e == "LittleEndian") return 1;
@@ -4019,14 +4033,13 @@ Value Interpreter::bufBitOp(Value& buf, const std::string& m, ValueList& args) {
         BigInt v = val.big() ? *val.big() : BigInt(val.toInt());
         if (v.sign < 0) v = v + BigInt(2).pow(bits); // low `bits` bits of the 2's complement
         // grow to fit
-        long long need = (from + bits + 7) / 8;
-        if ((long long)bytes.size() < need) bytes.resize(need, '\0');
+        std::string& wb = wbytes((size_t)((from + bits + 7) / 8));
         // peel value bits LSB-first into positions from+bits-1 .. from
         for (long long i = bits - 1; i >= 0; i--) {
             BigInt q, r; BigInt::divmod(v, BigInt(2), q, r);
             v = q;
             long long bp = from + i;
-            unsigned char& byte = (unsigned char&)bytes[bp / 8];
+            unsigned char& byte = (unsigned char&)wb[bp / 8];
             unsigned char mask = (unsigned char)(1u << (7 - bp % 8));
             if (!r.isZero()) byte |= mask; else byte &= (unsigned char)~mask;
         }
@@ -4072,21 +4085,21 @@ Value Interpreter::bufBitOp(Value& buf, const std::string& m, ValueList& args) {
     // math below is then unchanged. Digest::MD5 appends its bit-length with
     // `$b.write-uint64: $b.elems, $bits` on a buf32 and relies on this.
     int elemW = buf.blobElemSize();
+    long long growTo = off + nb;                  // the bytes a write needs
     if (elemW > 1) {
         long long growElems = off + nb;           // Rakudo's quirk: nb ELEMENTS, not bytes
         off *= elemW;
-        if (isWrite && (long long)bytes.size() < growElems * elemW)
-            bytes.resize((size_t)(growElems * elemW), '\0');
+        growTo = std::max(growElems * elemW, off + nb);
     }
     if (nb > 8) { // int128/uint128: BigInt byte-peeling (the raw[8] fast path below caps at 64 bits)
         if (isWrite) {
-            if ((long long)bytes.size() < off + nb) bytes.resize(off + nb, '\0');
+            std::string& wb = wbytes((size_t)growTo);
             BigInt v = val.big() ? *val.big() : BigInt(val.toInt());
             if (v.sign < 0) v = v + BigInt(2).pow(nb * 8);
             for (int i = 0; i < nb; i++) { // peel LSB-first
                 BigInt q, r; BigInt::divmod(v, BigInt(256), q, r); v = q;
                 int pos = isLittle(endian) ? i : nb - 1 - i;
-                bytes[off + pos] = (char)(unsigned char)r.toLL();
+                wb[off + pos] = (char)(unsigned char)r.toLL();
             }
             return buf;
         }
@@ -4104,7 +4117,6 @@ Value Interpreter::bufBitOp(Value& buf, const std::string& m, ValueList& args) {
         return acc.fitsLL() ? Value::integer(acc.toLL()) : Value::bigint(acc);
     }
     if (isWrite) {
-        if ((long long)bytes.size() < off + nb) bytes.resize(off + nb, '\0');
         unsigned char raw[8] = {0};
         if (kind == "num") {
             if (nb == 4) { float f = (float)val.toNum(); std::memcpy(raw, &f, 4); }
@@ -4116,9 +4128,10 @@ Value Interpreter::bufBitOp(Value& buf, const std::string& m, ValueList& args) {
             std::memcpy(raw, &u, nb <= 8 ? nb : 8);
         }
         // raw[] is host order; reorder per requested endianness
+        std::string& wb = wbytes((size_t)growTo);
         for (int i = 0; i < nb; i++) {
             int src = isLittle(endian) == hostLittle ? i : nb - 1 - i;
-            bytes[off + i] = (char)raw[src];
+            wb[off + i] = (char)raw[src];
         }
         return buf;
     }

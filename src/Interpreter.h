@@ -6068,9 +6068,13 @@ Value rtArrayAssignTo(Interpreter& I, Value& lv, Value rhs, const char* name, bo
 bool rtPackedStore(Interpreter& I, Value& base, const Value& key, const Value& v);
 Value rtElemStoreN(Interpreter& I, Value& base, const Value& key, Value v, char how);
 // …and whether an array is native (a routine compiled in module mode asks:
-// the name it was told is native may be another array's where it runs)
+// the name it was told is native may be another array's where it runs). A Buf
+// counts: its elements are packed words too, stored by rtElemStoreN.
+inline bool rtIsBuf(const Value& b) {
+    return b.t == VT::Str && !b.hashKind.empty() && (b.hashKind == "Buf" || b.hashKind == "Blob");
+}
 inline bool rtNatArr(Interpreter& I, const Value& b) {
-    return b.t == VT::Array && !b.ofType().empty() && !I.nativeElemTypeOf(b).empty();
+    return (b.t == VT::Array && !b.ofType().empty() && !I.nativeElemTypeOf(b).empty()) || rtIsBuf(b);
 }
 Value& rtIndexRef(Value& base, const Value& key, bool isHash, const char* stepOp);
 inline void rtIndexStore(Interpreter& I, Value& base, const Value& key, Value v) {

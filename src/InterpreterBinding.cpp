@@ -8248,7 +8248,29 @@ bool rtPackedStore(Interpreter& I, Value& base, const Value& key, const Value& v
 // unbox), '+' a step (wrapped at the width). What it leaves goes in as a word
 // where it can (rtPackedStore), into the element's place otherwise; an array
 // that is not native after all takes the value as it is. Returns that value.
+// …and an element of a Buf: a byte (a word of a buf16/32/64) in its storage,
+// written IN PLACE as the interpreter's own `$buf[i] = v` writes it, so every
+// holder of the Buf sees it — a routine's parameter and its caller's variable.
+// The generic place (rtIndexRef) has no Value to hand back for one, and it
+// turned the whole Buf into an Array: `$b[1] = 5` in a compiled program
+// printed `[(Any) 5]` (issue #186).
+static Value bufElemStore(Value& buf, const Value& key, Value v) {
+    if (buf.hashKind == "Blob")    // a Blob is immutable; only a Buf writes
+        throw RakuError{Value::typeObj("X::Assignment::RO"), "Cannot modify an immutable Blob"};
+    const long long i = writeIndexInt(key);
+    if (i < 0) negIndexThrow(i);
+    const int w = buf.blobElemSize();
+    const size_t need = (size_t)(i + 1) * (size_t)w;
+    if (buf.s.size() < need) buf.s.resize(need, '\0');   // past the end: grows, zero-filled
+    const unsigned long long x = (v.t == VT::Int && v.big()) ? v.big()->toU64Wrap() : (unsigned long long)v.toInt();
+    if (char* mb = buf.s.mutInPlace())
+        for (int k = 0; k < w; k++)           // little-endian, truncating
+            mb[(size_t)i * w + k] = (char)(unsigned char)((x >> (8 * k)) & 0xFF);
+    buf.s.promote();   // shared storage from here on, as the interpreter's arm leaves it
+    return buf.blobElemAt(i);
+}
 Value rtElemStoreN(Interpreter& I, Value& base, const Value& key, Value v, char how) {
+    if (rtIsBuf(base)) return bufElemStore(base, key, std::move(v));
     if (std::string t = I.nativeElemTypeOf(base); !t.empty())
         I.nativeElemStore(t, v, how, key.t == VT::Int && !key.big() ? key.i : 0);
     if (base.pk_ == PK::Packed && rtPackedStore(I, base, key, v)) return v;
