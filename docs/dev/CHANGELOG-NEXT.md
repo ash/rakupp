@@ -27,7 +27,8 @@ b05e989b (issue #193); 17e33a45 (issue #184); 5f87f445; 0e44c5a6 (issue
 #205); 18ef8f73 (issues #186 and #178); 642a320a; 62a3d9a5 (issue #212);
 17a71667 (issue #213); 46c4ef60 (issue #194); 2deb332a, eed42468, 710dccdb,
 62b42a19, aaa97b24, 56d9a3a5, 3fae5f4e, 18ac7c39 and 2c05f00f (issue #60);
-f3fb83e3 and 5e611fa3 (issue #216); 67c35490 (issue #215); 820388ce and c9560e0d.*
+f3fb83e3 and 5e611fa3 (issue #216); 67c35490 (issue #215); 820388ce and
+c9560e0d; d1c84b6b (issue #199).*
 
 ---
 
@@ -661,6 +662,13 @@ plain before 500c29e2 and native from it, unless they say otherwise.
   the second thread freed the buffer the first had freed. The refill takes
   the storage's stripe now. t/race/array-refill-shared.raku: 50 runs in 50
   died before, none in 200 now, in parallel mode and under RAKUPP_GIL=1.
+- **`--exe` builds for another macOS deployment target beside a cached
+  header** (d1c84b6b; issue #199). The precompiled header's name left out
+  the target, which clang also takes from MACOSX_DEPLOYMENT_TARGET, so a
+  build for 13.0 after one for 11.0 failed "PCH file was compiled for the
+  target …". The name holds the compiler's predefined macros now, so each
+  target gets a header of its own; t/run.raku builds for 11.0 and 13.0 with
+  one cache on macOS.
 
 ### Fixed: what FatRoast found
 
