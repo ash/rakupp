@@ -25,8 +25,8 @@ b05e989b (issue #193); 17e33a45 (issue #184); 5f87f445; 0e44c5a6 (issue
 #211); 8c871a25; 079427c0 (issue #175); 357cb4bb (issue #187); 6eddeeb5
 (issue #188); c50eb3b8 (issue #146); 09018c67 (issue #77); 099a2055 (issue
 #205); 18ef8f73 (issues #186 and #178); 642a320a; 62a3d9a5 (issue #212);
-17a71667 (issue #213); 46c4ef60 (issue #194); 2deb332a, eed42468, 710dccdb
-and 62b42a19 (issue #60).*
+17a71667 (issue #213); 46c4ef60 (issue #194); 2deb332a, eed42468, 710dccdb,
+62b42a19 and aaa97b24 (issue #60).*
 
 ---
 
@@ -953,6 +953,13 @@ does not.
   ~10% slower. A map written where it is stored, and `for` over a map,
   stay eager (TODO.md). FunctionalParsers 0.1.11 passes 14 of its 18 test
   files. t/regression/returned-map-is-lazy.raku agrees with Rakudo 2026.09.
+- **`&{ … }` is a term** (aaa97b24; issue #60), the block itself, as `&( … )`
+  is its contents: `my &f = &{ $_ * 2 }` was "unexpected operator in term
+  position", and after a listop the `&` was the infix junction (`say &{ 42
+  }()` said an empty line). Braces that are a hash stay one (`&{ a => 1 }`),
+  and after a term `&` is still a junction. FunctionalParsers 0.1.11 passes
+  15 of its 18 test files. t/regression/amp-brace-term-is-the-block.raku
+  agrees with Rakudo 2026.09.
 
 ### Left open
 
