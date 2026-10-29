@@ -497,6 +497,82 @@ static Value handleReadChars(Interpreter& I, const Value& inv, const std::string
     return Value::str(out);
 }
 
+#ifndef _WIN32
+// The descriptor a byte read of a handle goes through: one opened to read a
+// REGULAR file whose bytes are not loaded already (`.slurp(:bin)` loads them).
+// `.read`, `.seek`, `.tell` and `.eof` then work from the "bpos" cursor and the
+// file itself (issue #176). -1 for anything else, which takes the byte copy:
+// a write or update handle, whose own writes wait in its buffer, a standard
+// handle, one made from a descriptor. The answer is kept on the handle as
+// "rfd" (the descriptor is `.native-descriptor`'s, closed with the handle).
+static int plainReadFd(Interpreter& I, const Value& inv) {
+    auto& h = *inv.hash();
+    if (h.count("bytes") || h.count("closed")) return -1;
+    if (auto r = h.find("rfd"); r != h.end()) return (int)r->second.toInt();
+    int fd = -1;
+    struct stat sb{};
+    if (!h.count("std") && !h.count("fd") && h.count("path") && (!h.count("mode") || h["mode"].toStr() == "r") &&
+        ::stat(h["path"].toStr().c_str(), &sb) == 0 && S_ISREG(sb.st_mode))
+        fd = (int)I.methodCall(inv, "native-descriptor", ValueList{}).toInt();
+    h["rfd"] = Value::integer(fd);
+    return fd;
+}
+// `.read(want)` there: the bytes asked for, from the cursor, through that
+// descriptor (pread leaves its offset alone), as Rakudo reads them; the cursor
+// moves past what was read, and stays where it is past the end
+static Value readAtCursor(const Value& inv, int fd, long long want) {
+    auto& h = *inv.hash();
+    long long pos = h.count("bpos") ? h["bpos"].toInt() : 0;
+    if (pos < 0) pos = 0;
+    if (want < 0) want = 0;
+    struct stat fs{};
+    // (no more than is there: `.read(1 +< 40)` allocates nothing extra)
+    if (want > 65536 && ::fstat(fd, &fs) == 0 && want > (long long)fs.st_size - pos)
+        want = std::max(0LL, (long long)fs.st_size - pos);
+    std::string buf((size_t)want, '\0');
+    size_t got = 0;
+    while (got < (size_t)want) {
+        ssize_t r = ::pread(fd, &buf[got], (size_t)want - got, (off_t)(pos + (long long)got));
+        if (r < 0 && errno == EINTR) continue;
+        if (r <= 0) break;
+        got += (size_t)r;
+    }
+    buf.resize(got);
+    h["bpos"] = Value::integer(pos + (long long)got);
+    return binBuf(buf);
+}
+#endif
+// The size a handle's byte cursor reads up to, for `.eof` and `.seek(…,
+// SeekFromEnd)`: the file's own where `.read` reads it in place, else the
+// bytes loaded for it, loaded now if they are not yet.
+static long long byteCursorEnd(Interpreter& I, const Value& inv) {
+#ifndef _WIN32
+    if (int fd = plainReadFd(I, inv); fd >= 0) {
+        struct stat fs{};
+        return ::fstat(fd, &fs) == 0 ? (long long)fs.st_size : 0;
+    }
+#endif
+    auto& h = *inv.hash();
+    if (!h.count("bytes")) {
+        std::ifstream bin(h["path"].toStr(), std::ios::binary);
+        std::ostringstream bs; bs << bin.rdbuf();
+        h["bytes"] = Value::str(bs.str());
+    }
+    return (long long)h["bytes"].s.size();
+}
+// What follows the byte cursor of a handle `.read` reads in place, to the end,
+// with the cursor moved there: `$fh.read: 6; $fh.slurp(:bin)`
+static std::string restFromCursor(const Value& inv) {
+    auto& h = *inv.hash();
+    std::ifstream in(h["path"].toStr(), std::ios::binary);
+    in.seekg((std::streamoff)h["bpos"].toInt());
+    std::ostringstream ss;
+    if (in) ss << in.rdbuf();
+    std::string rest = ss.str();
+    h["bpos"] = Value::integer(h["bpos"].toInt() + (long long)rest.size());
+    return rest;
+}
+
 // stat() for the IO methods that report a file's metadata. True (with `st`
 // filled) when the path is there; otherwise `out` carries the soft Failure
 // Rakudo hands back for .s/.z/.mode/.user/.group on a path that is not.
@@ -3944,12 +4020,17 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
                     return binBuf(buf);
                 }
             }
+            // a regular file opened to read: the bytes asked for, from the
+            // cursor, through the handle's descriptor (pread leaves its offset
+            // alone), as Rakudo reads them. It loaded the whole file first:
+            // `.read(8)` of a 1 GB file took 5 s and 2 GB (issue #176).
+            if (int fd = plainReadFd(*this, inv); fd >= 0) return readAtCursor(inv, fd, want);
 #endif
             if (inv.hash()->find("bytes") == inv.hash()->end()) {
                 std::ifstream in((*inv.hash())["path"].toStr(), std::ios::binary);
                 std::ostringstream ss; ss << in.rdbuf();
                 (*inv.hash())["bytes"] = Value::str(ss.str());
-                (*inv.hash())["bpos"] = Value::integer(0);
+                if (!inv.hash()->count("bpos")) (*inv.hash())["bpos"] = Value::integer(0);   // (a seek may have set it)
             }
             const std::string& all = (*inv.hash())["bytes"].s;
             long long pos = (*inv.hash())["bpos"].toInt();
@@ -3985,6 +4066,7 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
                     ::close((int)nfd->second.toInt());
                     inv.hash()->erase(nfd);
                 }
+                inv.hash()->erase("rfd");   // (plainReadFd's copy of it)
             }
             std::string mode = (*inv.hash())["mode"].toStr();
             const std::string& buf = (*inv.hash())["buffer"].s;
@@ -4174,6 +4256,11 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
                         if (sClose) methodCall(inv, "close", ValueList{});
                         return binBuf(all.substr(p));
                     }
+                    if (sBin && bit == inv.hash()->end() && bp != inv.hash()->end() && bp->second.toInt() > 0) {
+                        std::string rest = restFromCursor(inv);
+                        if (sClose) methodCall(inv, "close", ValueList{});
+                        return binBuf(rest);
+                    }
                 }
                 if (sBin || sClose) {
                     std::ifstream in((*inv.hash())["path"].toStr(), std::ios::binary); std::ostringstream ss; ss << in.rdbuf();
@@ -4274,17 +4361,11 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
             return Value::boolean(true);
         }
         if ((m == "seek" || m == "tell" || m == "eof") &&
-            ((*inv.hash()).count("bin") || (*inv.hash()).count("bytes")) &&
+            ((*inv.hash()).count("bin") || (*inv.hash()).count("bytes") || (*inv.hash()).count("bpos")) &&
             !(inv.hash()->count("std"))) {
-            if (inv.hash()->find("bytes") == inv.hash()->end()) {
-                std::ifstream bin((*inv.hash())["path"].toStr(), std::ios::binary);
-                std::ostringstream bs; bs << bin.rdbuf();
-                (*inv.hash())["bytes"] = Value::str(bs.str());
-                (*inv.hash())["bpos"] = Value::integer(0);
-            }
-            const long long total = (long long)(*inv.hash())["bytes"].s.size();
-            long long pos = (*inv.hash())["bpos"].toInt();
+            long long pos = inv.hash()->count("bpos") ? (*inv.hash())["bpos"].toInt() : 0;
             if (m == "tell") return Value::integer(pos);
+            const long long total = byteCursorEnd(*this, inv);
             if (m == "eof") return Value::boolean(pos >= total);
             long long want = args.empty() ? 0 : args[0].toInt();
             long long whence = 0;                       // SeekFromBeginning
