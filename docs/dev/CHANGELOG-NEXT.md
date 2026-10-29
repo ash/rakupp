@@ -28,7 +28,7 @@ b05e989b (issue #193); 17e33a45 (issue #184); 5f87f445; 0e44c5a6 (issue
 17a71667 (issue #213); 46c4ef60 (issue #194); 2deb332a, eed42468, 710dccdb,
 62b42a19, aaa97b24, 56d9a3a5, 3fae5f4e, 18ac7c39 and 2c05f00f (issue #60);
 f3fb83e3 and 5e611fa3 (issue #216); 67c35490 (issue #215); 820388ce and
-c9560e0d; d1c84b6b (issue #199).*
+c9560e0d; d1c84b6b (issue #199); a1bb0e7b (issue #191).*
 
 ---
 
@@ -607,6 +607,12 @@ plain before 500c29e2 and native from it, unless they say otherwise.
   it. `--exe` bundles a program that binds an element or a slice and writes
   the array, where a compiled `my \x = @a[1]` missed the write too.
   t/regression/bound-slice-is-a-list.raku agrees with Rakudo 2026.09.
+- **`--exe`: an unpassed `:@a` or `:%h` is an empty container of its type**
+  (a1bb0e7b; issue #191). Every natively compiled routine bound it to Any:
+  `sub MAIN(Str :@mode)` given no --mode had Any, and `@mode.push` died. It
+  is `Array[Str].new()`, `[]` or `{}` now, as interpreted and in Rakudo.
+  t/regression/named-container-param-absent-native.raku, which t/run.raku
+  compiles natively, agrees with Rakudo 2026.09.
 
 ### Fixed: crashes
 
