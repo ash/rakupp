@@ -8828,20 +8828,19 @@ struct Codegen {
                 for (size_t i = 0; i + 1 < keys.size(); i++)
                     chain += "rtHasNamed(__a, " + cesc(keys[i]) + ") ? rtNamed(__a, " + cesc(keys[i]) + ") : ";
                 std::string lastKey = cesc(keys.back());
+                std::string has;   // any of its keys passed
+                for (auto& k : keys) has += (has.empty() ? "" : " || ") + std::string("rtHasNamed(__a, ") + cesc(k) + ")";
                 if (p.defaultVal) bind(typedInit(chain + "(rtHasNamed(__a, " + lastKey + ") ? rtNamed(__a, " + lastKey + ") : (" + ex(p.defaultVal.get()) + "))"));
-                else if (typed) {
-                    // an unpassed typed named parameter holds its type object
-                    std::string has;
-                    for (auto& k : keys) has += (has.empty() ? "" : " || ") + std::string("rtHasNamed(__a, ") + cesc(k) + ")";
+                else if (typed)    // an unpassed typed named parameter holds its type object
                     bind("(" + has + ") ? " + typedInit(chain + "rtNamed(__a, " + lastKey + ")") +
                          " : Value::typeObj(" + cesc(p.type) + ")");
-                }
+                else if (p.sigil == '@' || p.sigil == '%')
+                    // …and an unpassed `:@a` or `:%h` an empty container of its
+                    // type, as a `my Str @a` starts: `sub MAIN(Str :@mode)` given
+                    // no --mode had Any, so `@mode.push` died (issue #191)
+                    bind("(" + has + ") ? " + chain + "rtNamed(__a, " + lastKey + ") : " + declInit(p.type, p.sigil));
                 else bind(chain + "rtNamed(__a, " + lastKey + ")");
-                if (attributive) {
-                    std::string has;
-                    for (auto& k : keys) has += (has.empty() ? "" : " || ") + std::string("rtHasNamed(__a, ") + cesc(k) + ")";
-                    attrParam(p.defaultVal ? "true" : has);
-                }
+                attrParam(p.defaultVal ? "true" : has);
                 continue;
             }
             if (p.defaultVal) bind(typedInit("rtHasPos(__a, " + pos + ") ? rtPos(__a, " + pos + ") : (" + ex(p.defaultVal.get()) + ")"));
