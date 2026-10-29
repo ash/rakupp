@@ -2711,7 +2711,7 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
                 if (emit.t == VT::Code) for (auto& v : vals()) {
                     ValueList one{v};
                     // `next` in a whenever skips this value; `last` stops the stream
-                    try { callCallable(emit, one); }
+                    try { sinkDiscarded(callCallable(emit, one)); }
                     catch (NextEx&) {}
                     catch (LastEx&) { break; }
                     // `done` inside the block closes the enclosing react: stop emitting

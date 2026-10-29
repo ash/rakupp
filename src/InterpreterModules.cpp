@@ -3469,9 +3469,12 @@ void blockDeclNames(const std::vector<StmtPtr>& stmts, std::vector<std::string>&
     // One behind a callable boundary still throws, and is still caught.)
     uint64_t savedGF = tcx.curGivenFrame; tcx.curGivenFrame = tcx.frameTop;
     struct GFRestore { ExecContext& t; uint64_t f; ~GFRestore() { t.curGivenFrame = f; t.givenCtl = 0; } } gfr{tcx, savedGF};
-    auto whenMatched = [&tcx]() {
+    // (a matched when/default's value, which nothing keeps, is sunk)
+    auto whenMatched = [this, &tcx]() {
         if (!tcx.givenCtl) return false;
-        tcx.givenCtl = 0; tcx.givenV = Value();
+        tcx.givenCtl = 0;
+        Value v = std::move(tcx.givenV); tcx.givenV = Value();
+        sinkDiscarded(v);
         return true;
     };
     // a CATCH directly inside this CATCH handles what the handler throws
@@ -3490,7 +3493,7 @@ void blockDeclNames(const std::vector<StmtPtr>& stmts, std::vector<std::string>&
             if (tcx.loopCtl || tcx.returning) break;
         }
     }
-    catch (BreakGivenEx&) { matched = true; /* when/default matched */ }
+    catch (BreakGivenEx& bg) { matched = true; if (bg.hasVal) sinkDiscarded(bg.v); /* when/default matched */ }
     catch (ResumeEx&) { return 1; }
     catch (RakuError& e2) {
         if (!innerCatch) throw;
@@ -3503,7 +3506,7 @@ void blockDeclNames(const std::vector<StmtPtr>& stmts, std::vector<std::string>&
                 if (whenMatched()) { innerMatched = true; break; }
             }
         }
-        catch (BreakGivenEx&) { innerMatched = true; }
+        catch (BreakGivenEx& bg) { innerMatched = true; if (bg.hasVal) sinkDiscarded(bg.v); }
         if (!innerMatched) throw;
         matched = true;
     }

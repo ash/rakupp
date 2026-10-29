@@ -1661,6 +1661,7 @@ bool Interpreter::runLoopBody(Block* body, const std::shared_ptr<Env>& scope, co
                   // the iteration's value and NEXT/LAST still run (Rakudo; `do for
                   // 1..3 { when 2 { "two" }; "other" }` used to lose the "two")
                   tc.givenCtl = 0; v = std::move(tc.givenV); whenValue = true;
+                  if (!collect) sinkDiscarded(v);   // …which a loop that keeps nothing sinks
               }
               if (collect) {
                   Value cont;
@@ -1699,6 +1700,7 @@ bool Interpreter::runLoopBody(Block* body, const std::shared_ptr<Env>& scope, co
         }
         catch (BreakGivenEx& bg) { // a thrown when-match: the iteration is done — like `next`, carrying the when block's value
             if (collect) collect->push_back(bg.hasVal ? bg.v : Value::nil());
+            else if (bg.hasVal) sinkDiscarded(bg.v);
             if (hasNext) {
                 try { if (nextPhasersEndLoop()) { if (hasLast) runLoopLast(body, scope); t_hot.poll.firstBody = savedSF; return false; } }
                 catch (LastEx& le) {
@@ -2235,10 +2237,12 @@ Value Interpreter::exec(Stmt* s, bool sink) {
                             if (ph.size() == 1) {
                                 auto phs = makeSlabShared<Env>(); phs->parent = tctx().cur;
                                 phs->define(ph[0], cv);
-                                return execBlock(br.second.get(), phs);
+                                return execBlock(br.second.get(), phs, sink);
                             }
                         }
-                        return execBlock(br.second.get(), tctx().cur);
+                        // (a sunk `if` sinks its branch's value too: `f() if $c;`
+                        // runs the lazy Seq `f` returns, as Rakudo does)
+                        return execBlock(br.second.get(), tctx().cur, sink);
                     }
                     PooledFrame pf(tctx());   // the branch's scope, back to the pool after it
                     auto& scope = pf.env; scope->parent = tctx().cur;
@@ -2282,7 +2286,7 @@ Value Interpreter::exec(Stmt* s, bool sink) {
                             }
                         }
                     }
-                    return execBlock(br.second.get(), scope);
+                    return execBlock(br.second.get(), scope, sink);
                 }
                 if (is->isUnless) break; // unless has single branch
             }
@@ -2298,7 +2302,7 @@ Value Interpreter::exec(Stmt* s, bool sink) {
                     if (is->elseVar[0] == '*') { Value l = Value::array({lastCond}); scope->define(is->elseVar.substr(1), l); }
                     else scope->define(is->elseVar, lastCond);
                 }
-                return execBlock(is->elseBlock.get(), scope);
+                return execBlock(is->elseBlock.get(), scope, sink);
             }
             // if/unless not taken: Empty — unless the statement is sunk, when
             // nothing reads the value but the block's success test, to which
@@ -2383,7 +2387,7 @@ Value Interpreter::exec(Stmt* s, bool sink) {
             return ws->asExpr ? Value::list(std::move(collected)) : Value::nil();
         }
         case NK::ForStmt: return execForStmt(s, sink); // out of this frame: see execForStmt
-        case NK::GivenStmt: return execGivenStmt(s); // out of this frame, as execForStmt
+        case NK::GivenStmt: return execGivenStmt(s, sink); // out of this frame, as execForStmt
         case NK::WhenStmt: {
             auto* w = static_cast<WhenStmt*>(s);
             bool match = w->isDefault;
@@ -2520,7 +2524,7 @@ Value Interpreter::exec(Stmt* s, bool sink) {
 }
 
 // exec's `given` arm, in a frame of its own for the reason execForStmt is.
-Value Interpreter::execGivenStmt(Stmt* s) {
+Value Interpreter::execGivenStmt(Stmt* s, bool sink) {
     auto* g = static_cast<GivenStmt*>(s);
     Value topic = eval(g->topic.get());
     // `with 'literal' { tr/// }` must die: a LITERAL topic is not a container
@@ -2586,10 +2590,10 @@ Value Interpreter::execGivenStmt(Stmt* s) {
         }
         uint64_t savedGF = tctx().curGivenFrame; tctx().curGivenFrame = tctx().frameTop;
         try {
-            if (skip) { if (g->hasElse) r = execBlock(g->elseBody.get(), env); }
-            else r = execBlock(g->body.get(), env);
-            if (tctx().givenCtl) { tctx().givenCtl = 0; r = std::move(tctx().givenV); } // cooperative when-match
-        } catch (BreakGivenEx& e) { r = e.hasVal ? e.v : Value::any(); }
+            if (skip) { if (g->hasElse) r = execBlock(g->elseBody.get(), env, sink); }
+            else r = execBlock(g->body.get(), env, sink);
+            if (tctx().givenCtl) { tctx().givenCtl = 0; r = std::move(tctx().givenV); if (sink) sinkDiscarded(r); } // cooperative when-match
+        } catch (BreakGivenEx& e) { r = e.hasVal ? e.v : Value::any(); if (sink) sinkDiscarded(r); }
         catch (...) {
             tctx().curGivenFrame = savedGF; tctx().givenCtl = 0;
             if (hadTopic) env->vars["$_"] = savedTopic; else env->vars.erase("$_");
@@ -2697,7 +2701,7 @@ Value Interpreter::execGivenStmt(Stmt* s) {
             if (g->elseOuterTopic && scope->parent) {
                 Value* o = scope->parent->find("$_");
                 scope->define("$_", o ? *o : Value::any());
-                return execBlock(g->elseBody.get(), scope);
+                return execBlock(g->elseBody.get(), scope, sink);
             }
             // The ELSE branch of `with`/`without` aliases the topic exactly as
             // the main branch does: `with %h<k> { } else { $_ = … }` writes
@@ -2718,8 +2722,12 @@ Value Interpreter::execGivenStmt(Stmt* s) {
                       if (Value* sl = topicAliasSlot(g->topic.get(), /*skip=*/false,
                                                      /*allowObject=*/true)) *sl = v;
                   }};
-            try { return execBlock(g->elseBody.get(), scope); }
-            catch (BreakGivenEx& e) { return e.hasVal ? e.v : Value::any(); }
+            try { return execBlock(g->elseBody.get(), scope, sink); }
+            catch (BreakGivenEx& e) {
+                Value r = e.hasVal ? e.v : Value::any();
+                if (sink) sinkDiscarded(r);
+                return r;
+            }
         }
         Value e = Value::array(); e.isList = true; e.s = "Slip"; return e; // Empty
     }
@@ -2728,11 +2736,19 @@ Value Interpreter::execGivenStmt(Stmt* s) {
         struct GF { ExecContext& t; uint64_t f;
                     // restore; clear a when-flag an exception left unconsumed
                     ~GF() { t.curGivenFrame = f; t.givenCtl = 0; } } gf{tctx(), savedGF};
-        try { Value r = execBlock(g->body.get(), scope);
-              if (tctx().givenCtl) { tctx().givenCtl = 0; r = std::move(tctx().givenV); } // cooperative when-match
+        // A sunk `given` sinks its value: the block's last statement as any
+        // sunk block's, and a matched `when`'s, which arrives here instead
+        // (`given $x { when 1 { f() } }` runs the lazy Seq `f` returns)
+        try { Value r = execBlock(g->body.get(), scope, sink);
+              if (tctx().givenCtl) { tctx().givenCtl = 0; r = std::move(tctx().givenV); if (sink) sinkDiscarded(r); } // cooperative when-match
               tback.flush();
               return r; }
-        catch (BreakGivenEx& e) { tback.flush(); return e.hasVal ? e.v : Value::any(); }
+        catch (BreakGivenEx& e) {
+            tback.flush();
+            Value r = e.hasVal ? e.v : Value::any();
+            if (sink) sinkDiscarded(r);
+            return r;
+        }
     }
 }
 
@@ -9601,7 +9617,7 @@ resumeBody:
                     CatchFence fence(tcx, catchReg.serial);
                     for (auto& s : catchBlk->stmts) exec(s.get());
                 }
-            } catch (BreakGivenEx&) { matched = true; /* a when/default matched */ }
+            } catch (BreakGivenEx& bg) { matched = true; if (bg.hasVal) sinkDiscarded(bg.v); /* a when/default matched: its value, which nothing keeps, is sunk */ }
             catch (ResumeEx&) { resumed = true; }
             catch (ReturnEx& r) {
                 // `fail` (and an explicit `return`) inside a CATCH leaves the
@@ -11256,7 +11272,7 @@ resumeMethodBody:
                 for (auto& st : catchBlk->stmts) exec(st.get());
             }
         }
-        catch (BreakGivenEx&) { matched = true; }   // a when/default matched
+        catch (BreakGivenEx& bg) { matched = true; if (bg.hasVal) sinkDiscarded(bg.v); }   // a when/default matched (its value sunk)
         catch (ResumeEx&)     { resumed = true; }   // `.resume`: carry on after the statement
         catch (ReturnEx& r) {                       // `return`/`fail` from the CATCH
             runLeaves(true);

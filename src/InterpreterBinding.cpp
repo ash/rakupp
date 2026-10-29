@@ -8058,6 +8058,15 @@ void Interpreter::sinkValue(const Value& r) {
     }
 }
 
+// …and a block's value its taker drops: a tap's or a whenever's block, a
+// matched `when`'s where its given, loop or CATCH discards it. Not one still
+// in a container (valContained, as a statement's sink reads it).
+void Interpreter::sinkDiscarded(const Value& r) {
+    if (RAKUPP_UNLIKELY((r.t == VT::Hash && !r.hashKind.empty()) || (r.t == VT::Array && r.ext())) &&
+        !tctx().valContained)
+        sinkValue(r);
+}
+
 // Is `src` a source that makes a list it is slipped into LAST endless: an
 // endless integer Range, or a lazy list that is infinite or lazy by
 // declaration (`1, |(lazy gather {…})` runs none of the gather)?

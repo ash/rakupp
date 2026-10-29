@@ -2067,7 +2067,7 @@ public:
     Value execPlainBlock(Block* b, std::shared_ptr<Env> scope, bool sink);
     // exec's `for` arm, out of exec's frame (see the definition)
     [[gnu::noinline]] Value execForStmt(Stmt* s, bool sink);
-    [[gnu::noinline]] Value execGivenStmt(Stmt* s);   // …and its `given` arm
+    [[gnu::noinline]] Value execGivenStmt(Stmt* s, bool sink);   // …and its `given` arm
     // eval's MethodCall arm and its VarExpr arm past the common read, out of
     // eval's frame the same way
     [[gnu::noinline]] Value evalMethodCallExpr(Expr* e);
@@ -2479,6 +2479,7 @@ public:
     Value seqDropSeed(Value seq); // `^...`: the sequence without its first element, lazy or not
     void sinkValue(const Value& r);                 // sink a discarded value: Failure detonates, a failed Proc throws
     void sinkReturnedValue(const Value& r);         // ...and a routine's returned value (MAIN's): also runs a user `sink`
+    void sinkDiscarded(const Value& r);             // ...and a block's value its taker drops (a tap's, a matched `when`'s)
     // `...` is list-associative: `1 ... 5 ... 1` and `'A'...'Z', 'a'...'z'` are ONE
     // operator over a list of lists. Each group's first element closes the previous
     // segment; the rest is emitted verbatim and seeds the next. Shared with codegen.

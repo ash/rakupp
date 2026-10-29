@@ -910,7 +910,7 @@ std::optional<Value> Interpreter::methodCallPart1c(const Value& inv, const MName
                     ValueList one{o};
                     if (rctx) reactStack_.push_back(rctx);
                     // `next` in a whenever skips this value; `last` closes the tap
-                    try { callCallable((*t.hash())["emit"], one); if (rctx) reactStack_.pop_back(); }
+                    try { sinkDiscarded(callCallable((*t.hash())["emit"], one)); if (rctx) reactStack_.pop_back(); }
                     catch (NextEx&) { if (rctx) reactStack_.pop_back(); }
                     catch (LastEx&) { if (rctx) reactStack_.pop_back(); (*t.hash())["closed"] = Value::boolean(true); complete = true; break; }
                     catch (DoneEx&) { if (rctx) reactStack_.pop_back(); (*t.hash())["closed"] = Value::boolean(true); complete = true; break; }
@@ -1031,7 +1031,7 @@ std::optional<Value> Interpreter::methodCallPart1c(const Value& inv, const MName
                     ValueList tail = applyTapChain(t, Value::any(), complete, /*flush=*/true);
                     for (auto& o : tail) {
                         ValueList one{o};
-                        try { callCallable((*t.hash())["emit"], one); }
+                        try { sinkDiscarded(callCallable((*t.hash())["emit"], one)); }
                         catch (NextEx&) {} catch (LastEx&) { break; } catch (DoneEx&) { break; }
                     }
                 }
@@ -1307,7 +1307,7 @@ std::optional<Value> Interpreter::methodCallPart1c(const Value& inv, const MName
                     if (ctx->emitCb.t == VT::Code) {
                         ValueList one{v};
                         ctx->emitting++;
-                        try { I2.callCallable(ctx->emitCb, one); } catch (...) { ctx->emitting--; throw; }
+                        try { I2.sinkDiscarded(I2.callCallable(ctx->emitCb, one)); } catch (...) { ctx->emitting--; throw; }
                         ctx->emitting--;
                     }
                     return Value::boolean(true);

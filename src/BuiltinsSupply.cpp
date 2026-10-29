@@ -117,7 +117,7 @@ int Interpreter::runQuitPhasers(const ValueList& quitP, const Value& ex, Value& 
         scope->define("$_", ex);
         scope->define("$!", ex);
         try { for (auto& st : *q.code()->ci().body) exec(st.get()); }
-        catch (BreakGivenEx&) { consumed = true; }   // a when/default matched: the quit is handled
+        catch (BreakGivenEx& bg) { consumed = true; if (bg.hasVal) sinkDiscarded(bg.v); }   // a when/default matched: the quit is handled
         // …and a `done` inside the phaser has ALREADY ended the supply: the quit
         // is handled by definition, and must not also reach the tapper's quit
         // handler (Roast syntax.t's `QUIT { when … { emit …; done } }`).
@@ -486,7 +486,7 @@ Value Interpreter::spawnSupplyTimer(double secs, Value blk, std::shared_ptr<Supp
         // shutdown mid-delay: release the pending hold, but never run the block
         if (!I2.workerAbort_.load(std::memory_order_relaxed) && !ctx->done && !ctx->doneFired) {
             ValueList one{Value::boolean(true)};
-            try { I2.callCallable(blk, one); }
+            try { I2.sinkDiscarded(I2.callCallable(blk, one)); }
             catch (NextEx&) {} catch (LastEx&) {} catch (DoneEx&) {}
             catch (RakuError& e) {
                 // S-57, as in the `whenever` Promise arm: a body that dies ends the
@@ -658,7 +658,7 @@ Value Interpreter::spawnSupplyChannel(Value chan, Value blk, std::shared_ptr<Sup
     Value fireW = supplyDelivery(ctx, 0, [blk, ctx, quitP](Interpreter& I2, ValueList& args) {
         if (ctx->done || ctx->doneFired) return;
         ValueList one = args;
-        try { I2.callCallable(blk, one); }
+        try { I2.sinkDiscarded(I2.callCallable(blk, one)); }
         catch (NextEx&) {} catch (LastEx&) { ctx->done = true; } catch (DoneEx&) { ctx->done = true; }
         catch (RakuError& e) {
             // same rule as every other whenever arm: the body's own QUIT phasers
@@ -740,7 +740,7 @@ Value Interpreter::spawnSupplyInterval(double interval, double delay, Value blk,
     Value fireW = supplyDelivery(ctx, ++ctx->subSeq, [blk, ctx, tick, quitP](Interpreter& I2, ValueList&) {
         if (!ctx->done && !ctx->doneFired) {
             ValueList one{Value::integer((*tick)++)};
-            try { I2.callCallable(blk, one); }
+            try { I2.sinkDiscarded(I2.callCallable(blk, one)); }
             // `done` in the tick body ends the supply: the ticker stops too
             catch (NextEx&) {} catch (LastEx&) { ctx->done = true; } catch (DoneEx&) { ctx->done = true; }
             catch (RakuError& e) {
@@ -867,7 +867,7 @@ Value Interpreter::spawnTimerWhenever(double secs, Value blk, std::shared_ptr<Re
             // receives that result — it used to be called with no argument, so
             // `$_` was Any.
             ValueList one{Value::boolean(true)};
-            try { self->callCallable(blk, one); }
+            try { self->sinkDiscarded(self->callCallable(blk, one)); }
             catch (NextEx&) {} catch (LastEx&) {} catch (DoneEx&) {}
             catch (RakuError& e) {
                 // a body that dies ends the react and rethrows at the `react`,
@@ -938,7 +938,7 @@ Value Interpreter::spawnIntervalWhenever(double interval, double delay, Value bl
                 // the tick is passed as an ARGUMENT, and a block that takes none
                 // refuses it (`Supply.interval(1).tap(-> { … })` dies "Too many
                 // positionals", as in Rakudo); a bare block's implicit `$_` takes it
-                try { self->callCallable(blk, one, nullptr, /*ownFrame=*/false, /*arityCheck=*/true); }
+                try { self->sinkDiscarded(self->callCallable(blk, one, nullptr, /*ownFrame=*/false, /*arityCheck=*/true)); }
                 catch (NextEx&) {}
                 catch (LastEx&) { lastEx = true; } // `last` ends THIS subscription
                 catch (DoneEx&) {} // `done` closed the ctx in its bookkeeping
@@ -1065,7 +1065,7 @@ Value Interpreter::spawnChannelWhenever(Value chan, Value blk, std::shared_ptr<R
                 continue;
             }
             ValueList one{v};
-            try { self->callCallable(blk, one); }
+            try { self->sinkDiscarded(self->callCallable(blk, one)); }
             catch (NextEx&) {} catch (LastEx&) { break; } catch (DoneEx&) { break; }
             catch (RakuError& e) {
                 // a die in the whenever body kills the react and propagates
@@ -1143,7 +1143,7 @@ Value Interpreter::tapSignal(const std::vector<int>& sigs, Value emitCb, Value d
                     if (t->emit.t == VT::Code) {
                         Value sv = makeSignalEnumValue(sig);
                         ValueList one{sv};
-                        try { self->callCallable(t->emit, one); }
+                        try { self->sinkDiscarded(self->callCallable(t->emit, one)); }
                         catch (RakuError& e) { fprintf(stderr, "===WARNING=== signal handler died: %s\n", e.message.c_str()); }
                         catch (...) {}
                     }
@@ -1236,7 +1236,7 @@ void Interpreter::replayPreserved(const Value& sup, Value& tapRec) {
             if (emitCb.t == VT::Code)
                 for (auto& o : outs) {
                     ValueList one{o};
-                    try { callCallable(emitCb, one); }
+                    try { sinkDiscarded(callCallable(emitCb, one)); }
                     catch (NextEx&) {}
                     catch (LastEx&) { complete = true; break; }
                     catch (DoneEx&) { complete = true; break; }
@@ -1713,9 +1713,9 @@ Value Interpreter::tapSupply(const Value& s, Value emitCb, Value doneCb, Value q
                                     "Can only migrate to a Supply"};
                 // flat: an Iterable value is spread, anything else passes through
                 if (emitCb.t == VT::Code) {
-                    if (v.t == VT::Array && v.arr()) { for (auto& x : *v.arr()) { ValueList one{x}; try { I.callCallable(emitCb, one); } catch (...) {} } }
-                    else if (v.t == VT::Range) { for (auto& x : v.flatten()) { ValueList one{x}; try { I.callCallable(emitCb, one); } catch (...) {} } }
-                    else { ValueList one{v}; try { I.callCallable(emitCb, one); } catch (...) {} }
+                    if (v.t == VT::Array && v.arr()) { for (auto& x : *v.arr()) { ValueList one{x}; try { I.sinkDiscarded(I.callCallable(emitCb, one)); } catch (...) {} } }
+                    else if (v.t == VT::Range) { for (auto& x : v.flatten()) { ValueList one{x}; try { I.sinkDiscarded(I.callCallable(emitCb, one)); } catch (...) {} } }
+                    else { ValueList one{v}; try { I.sinkDiscarded(I.callCallable(emitCb, one)); } catch (...) {} }
                 }
                 return Value::any();
             }
@@ -1725,7 +1725,7 @@ Value Interpreter::tapSupply(const Value& s, Value emitCb, Value doneCb, Value q
             ie.code()->ciM().builtin = [st, emitCb](Interpreter& I2, ValueList& b) -> Value {
                 if (st->finished || emitCb.t != VT::Code) return Value::any();
                 ValueList one{b.empty() ? Value::any() : b[0]};
-                try { I2.callCallable(emitCb, one); } catch (...) {}
+                try { I2.sinkDiscarded(I2.callCallable(emitCb, one)); } catch (...) {}
                 return Value::any();
             };
             Value id; id.t = VT::Code; id.setCode(makePayload<Callable>());

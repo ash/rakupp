@@ -141,7 +141,7 @@ void Interpreter::registerBuiltinsPart5() {
             if (ctx->emitCb.t == VT::Code) {
                 ValueList one{v};
                 ctx->emitting++;
-                try { I.callCallable(ctx->emitCb, one); } catch (...) { ctx->emitting--; throw; }
+                try { I.sinkDiscarded(I.callCallable(ctx->emitCb, one)); } catch (...) { ctx->emitting--; throw; }
                 ctx->emitting--;
             }
             return Value::boolean(true);

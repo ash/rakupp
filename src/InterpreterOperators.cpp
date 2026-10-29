@@ -1816,7 +1816,7 @@ bool Interpreter::runControlException(const Value& ex) {
         struct G { int& d; G(int& x) : d(x) { d++; } ~G() { d--; } } g{catchDepth_}; // .resume is legal here
         for (auto& s : handler.first->stmts) exec(s.get());
     }
-    catch (BreakGivenEx&) { handled = true; }   // a when/default matched
+    catch (BreakGivenEx& bg) { handled = true; if (bg.hasVal) sinkDiscarded(bg.v); }   // a when/default matched (its value sunk)
     catch (ResumeEx&) { resumed = true; }
     // Handled but not resumed: the warning is consumed AND the block that
     // declared the CONTROL is left, exactly as a CATCH leaves its block (Rakudo:
