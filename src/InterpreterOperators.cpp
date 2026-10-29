@@ -658,6 +658,10 @@ Value Interpreter::prefixNumeric(const std::string& op, const Value& v) {
     // warning (naming where it happened — the routine and the line)
     if ((op == "+" || op == "-") && (v.t == VT::Any || (v.t == VT::Type && v.s != "IterationEnd")))
         warnUninitNum(v);
+    // an enum's TYPE OBJECT is no count of its members: `+Color` is Color.Numeric,
+    // which warns and refuses (InterpreterCalls.cpp's enumTypeObjectMethod)
+    if ((op == "+" || op == "-") && v.t == VT::Array && !v.enumType.empty() && isEnumTypeObject(v))
+        return methodCall(v, "Numeric", ValueList{});
     // numeric prefix on an object uses its .Numeric (or .Bridge/.Int): `+$o`, `-$o`
     if ((op == "+" || op == "-") && v.t == VT::Object && v.obj() && v.obj()->cls) {
         for (const char* nm : {"Numeric", "Bridge", "Int"})
@@ -1698,6 +1702,11 @@ void Interpreter::uninitBinaryOperands(Binary* b, const std::string& op, Value& 
             if (v.t == VT::Type && kNotANumber.count(std::string(v.s.c_str())) && other.t != VT::Type)
                 throwTypedV("X::Numeric::Uninitialized", {{"type", v}},
                             "Use of uninitialized value of type " + std::string(v.s.c_str()) + " in numeric context");
+            // …nor is an enum's type object (`Color + 1`), whose pair list
+            // would otherwise count as its member count
+            if (v.t == VT::Array)
+                throwTypedV("X::Numeric::Uninitialized", {{"type", v}},
+                            "Use of uninitialized value of type " + std::string(v.enumType.str()) + " in numeric context");
             UninitNameScope nm(*this, named ? uninitNameOf(e) : std::string());
             warnUninitNum(v);
             if (op == "mod") warnUninitNum(v);
@@ -2186,6 +2195,12 @@ std::string Interpreter::strOf(const Value& v) {
     if (v.t == VT::Hash && v.hash() &&
         (v.hashKind == "Distro" || v.hashKind == "Kernel" || v.hashKind == "VM"))
         return methodCall(v, "Str", {}).toStr();
+    // An enum's TYPE OBJECT is its pair list here, and undefined: "" with the
+    // warning any type object gives (`"{Color}"`, `"a" ~ Color`, `put Color`)
+    if (v.t == VT::Array && !v.enumType.empty() && isEnumTypeObject(v)) {
+        warnUninitStr(v);
+        return "";
+    }
     // A LIST stringifies its elements space-separated, and each element through
     // ITS OWN .Str — a list of objects with a user `method Str` must not come out
     // as `T<obj> T<obj>` (XML::Element.contents is a list of XML::Text).

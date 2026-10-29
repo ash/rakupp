@@ -1240,6 +1240,7 @@ RAKUPP_CONSTINIT extern thread_local int g_btSettingFrames;
 // first position the error can only report the second — which is the line that
 // merely USED the value. (Rakudo prints both, under "Actually thrown at:".)
 Value rakuppNewFailure();
+bool isEnumTypeObject(const Value& v);   // an enum's type object (InterpreterCalls.cpp)
 
 // The interpreter's Raku-level throw. Constructing one CAPTURES the live call
 // chain (issue #67): every `throw RakuError{payload, message}` in the tree —
@@ -2698,6 +2699,7 @@ public:
     // an undefined built-in value as an operator meets it (Any, Nil, Int, Str, …)
     static bool uninitOperand(const Value& v) {
         if (v.t == VT::Any || v.t == VT::Nil) return true;
+        if (v.t == VT::Array) return !v.enumType.empty() && isEnumTypeObject(v);   // an enum's type object
         if (v.t != VT::Type) return false;
         static const char* const kBuiltin[] = {
             "Any", "Cool", "Str", "Numeric", "Complex", "Int", "UInt", "Num", "Rat", "FatRat", "Bool", "Real"};
@@ -2818,6 +2820,7 @@ public:
     void refuseUnpassedDefinite(const Param& p);   // an optional `T:D` param nobody passed
     std::string enumBaseType(const std::string& enumType);   // Int for `enum <a b>`, Str for `(a => "x")`
     Value enumCoerce(const Value& enumTypeObj, const Value& v);   // `Color(1)`, `$t(1)`: the member, or a Failure
+    std::optional<Value> enumTypeObjectMethod(const Value& inv, const std::string& m, ValueList& args);   // Any's methods on it
     Value coerceThroughType(const Value& v, const std::string& target, const std::string& coercion);  // COERCE, then new
     void coerceElems(Value& v, const std::string& ct, char sigil); // `my Int() @a`: the ELEMENTS coerce
     Value coerceViaSubset(const Value& v, const std::string& type); // `subset CC of Str()` param

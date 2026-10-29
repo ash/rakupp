@@ -345,6 +345,7 @@ void Interpreter::registerBuiltinsPart3() {
         if (a.empty()) return Value::integer(0);
         // count without materializing (toList deep-copies every element)
         const Value& v = a[0];
+        if (v.t == VT::Array && !v.enumType.empty() && isEnumTypeObject(v)) return Value::integer(1);   // an enum's type object is one item
         if (v.t == VT::Array && v.arr() && !v.ext()) return Value::integer((long long)v.arr()->size());
         if (v.t == VT::Hash && v.hash() && v.hashKind.empty()) return Value::integer((long long)v.hash()->size());
         return Value::integer((long long)toList(v).size());

@@ -164,8 +164,9 @@ void Interpreter::registerBuiltinsPart5() {
         ValueList rest;
         for (size_t i = 1; i < a.size(); i++) {
             // …but a JUNCTION is one value, not a list of its eigenstates: it has
-            // no single rendering, and `sprintf("%d", 0^1)` must say so.
-            if (a[i].t == VT::Array && a[i].arr() && !isJunction(a[i]))
+            // no single rendering, and `sprintf("%d", 0^1)` must say so. Nor is
+            // an enum's type object its pairs: `sprintf("%s", Color)` is ""
+            if (a[i].t == VT::Array && a[i].arr() && !isJunction(a[i]) && !isEnumTypeObject(a[i]))
                 for (auto& x : *a[i].arr()) rest.push_back(x);
             else rest.push_back(a[i]);
         }

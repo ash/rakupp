@@ -5967,7 +5967,7 @@ static void methodTermJoinsClass(std::unordered_map<std::string, std::shared_ptr
                 }
                 pairs.arr()->push_back(Value::pair(key, val));
             }
-            pairs.enumType = enumTypeName; // the type object itself is the tagged pair-list
+            pairs.enumType = enumTypeName; pairs.itemized = true;   // the type object is the tagged pair-list, and ONE item (isEnumTypeObject)
             enumPairs_[enumTypeName] = pairs; enumLangRev_[enumTypeName] = langRev_;  // reachable from any scope
             if (!ed->name.empty()) {
                 tctx().cur->define(ed->name, pairs);

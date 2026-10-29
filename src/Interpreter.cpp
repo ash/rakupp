@@ -4240,7 +4240,7 @@ Value coerceHash(const Value& v, bool store, bool objKeyed) {
     if (store && v.t == VT::Code) throwHashCallableStore();
     Value h = Value::makeHash();
     ValueList items;
-    if (v.t == VT::Array) items = *v.arr();
+    if (v.t == VT::Array && !isEnumTypeObject(v)) items = *v.arr();   // (an enum's type object is ONE item)
     else if (v.t == VT::Pair) items.push_back(v);
     else if (v.t == VT::Range && !v.itemized) items = v.flatten();   // `my %h = 1..4` is 1 => 2, 3 => 4
     else if (v.t == VT::Object && g_objListItems && g_objListItems(v, items)) { /* filled above */ }

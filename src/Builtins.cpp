@@ -2150,6 +2150,9 @@ static Value arrayHoleFill(const Value& arr, const Value& e) {
 }
 
 std::string rakuReprImpl(const Value& v, int depth, std::set<const void*>& seen) {
+    // an enum's TYPE OBJECT is its pair list here, and renders as its name,
+    // nested too: `(Color, 1).raku` is (Color, 1), `{:x(Color)}` no `$[…]`
+    if (v.t == VT::Array && !v.enumType.empty() && isEnumTypeObject(v)) return std::string(v.enumType.str());
     // an Instant or a Duration renders as its own `.raku` does, nested as at
     // the top: `:a(Instant.from-posix(0.0))`, not the bare number underneath
     // (a Rat-based one) or the `Instant:10` its .Str gives
@@ -2474,8 +2477,9 @@ std::string rakuReprImpl(const Value& v, int depth, std::set<const void*>& seen)
                 if (v.isList && v.arr()->size() == 1) o += ",";
                 // a 1-element ARRAY holding an iterable disambiguates with a
                 // trailing comma too: [1..5,] (else the raku form would flatten)
+                // — not an enum's type object, which is no list: [Color]
                 if (!v.isList && v.arr()->size() == 1 &&
-                    ((*v.arr())[0].t == VT::Range || (*v.arr())[0].t == VT::Array ||
+                    ((*v.arr())[0].t == VT::Range || ((*v.arr())[0].t == VT::Array && !isEnumTypeObject((*v.arr())[0])) ||
                      (*v.arr())[0].t == VT::Hash))
                     o += ",";
                 seen.erase(v.arr());
@@ -6526,18 +6530,10 @@ Value Interpreter::methodCall(const Value& inv, const std::string& m, ValueList 
         }
         t.ctorCatchSkip = false;
     }
-    // An ENUM's type object is its tagged pair list here, but it renders as the
-    // TYPE it is: `day.gist` is (day), `.raku` day, and `.Str` the empty string
-    // with the uninitialized warning any type object gives (Rakudo)
-    if (inv.t == VT::Array && !inv.enumType.empty() && inv.enumName.empty() &&
-        (opEq(m, "gist") || opEq(m, "raku") || opEq(m, "perl") || opEq(m, "Str")) && args.empty() && isEnumTypeObject(inv)) {
-        const std::string tn = inv.enumType.str();
-        if (opEq(m, "gist")) return Value::str("(" + tn + ")");
-        if (opEq(m, "raku") || opEq(m, "perl")) return Value::str(tn);
-        warnUninit("Use of uninitialized value of type " + tn + " in string context.\n"
-                   "Methods .^name, .raku, .gist, or .say can be used to stringify it to something meaningful.");
-        return Value::str("");
-    }
+    // An ENUM's type object is its tagged pair list here, but to every method
+    // but Enumeration's own it is the TYPE it is (InterpreterCalls.cpp)
+    if (inv.t == VT::Array && !inv.enumType.empty() && inv.enumName.empty() && isEnumTypeObject(inv))
+        if (auto r = enumTypeObjectMethod(inv, m, args)) return std::move(*r);
     // `$cool.printf` / `.sprintf` on a user class that `is Cool`: the object's
     // OWN .Str is the format, as Cool's methods are written (`self.Str`)
     if ((opEq(m, "printf") || opEq(m, "sprintf")) && inv.t == VT::Object && inv.obj() && inv.obj()->cls &&

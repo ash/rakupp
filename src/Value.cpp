@@ -521,6 +521,8 @@ bool Value::truthy() const {
                 for (auto& e : *arr()) { jc.feed(e.truthy()); if (jc.done()) break; }
                 return jc.verdict();
             }
+            // an enum's TYPE OBJECT is its pair list here, and undefined: False
+            if (!enumType.empty() && isEnumTypeObject(*this)) return false;
             // A non-empty buffer is true without asking anything else. Only an
             // EMPTY one has to check whether it is merely unpulled: a LAZY list
             // is True whether or not it has reified anything, because its Bool
@@ -879,6 +881,9 @@ std::string Value::toStr() const {
         if (t == VT::Int && pairVal() && pairVal()->t == VT::Str) return pairVal()->s;
         return enumName;
     }
+    // …and the enum's TYPE OBJECT, undefined, is "" (the interpreter's strOf
+    // warns about it first)
+    if (t == VT::Array && !enumType.empty() && isEnumTypeObject(*this)) return "";
     if (isAllomorph()) return s; // the allomorph's source string ("0123", "1/3", …)
     // an Instant says what it is: `say now` and `~now` are "Instant:1704067274"
     // in Rakudo, both .Str and .gist (its number is .Numeric / .tai / .to-posix)
@@ -1138,6 +1143,9 @@ std::string Value::gist() const {
     // …and a Pointer is its package and address: `NativeCall::Types::Pointer<0x10>`
     if (t == VT::Hash && hashKind == "Pointer" && hash() && hash()->count("addr"))
         return "NativeCall::Types::" + ncPointerText("Pointer", "", hash()->at("addr").toInt());
+    // an enum's TYPE OBJECT is its pair list here, and gists as the type it is,
+    // nested too: `say (Color, 1)` is ((Color) 1)
+    if (t == VT::Array && !enumType.empty() && isEnumTypeObject(*this)) return "(" + std::string(enumType.str()) + ")";
     // an object of a class with its OWN `.gist` renders by it, nested too
     if ((t == VT::Object || t == VT::Type) && g_objMethodStr) { std::string o; if (g_objMethodStr(*this, "gist", o)) return o; }
     // …and the DEFAULT gist of an object is its `.raku` (Mu.gist): `[Bar.new(:1x)]`

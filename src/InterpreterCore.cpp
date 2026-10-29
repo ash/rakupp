@@ -19440,7 +19440,8 @@ static Value applyArithGeneral(const std::string& op, const Value& l, const Valu
         // A written `~` names the operand before it gets here (evalBinary);
         // this is a reduction's or a metaop's, which names nothing.
         auto undef = [](const Value& v) {
-            bool u = v.t == VT::Any || v.t == VT::Nil || (v.t == VT::Type && v.s != "IterationEnd");
+            bool u = v.t == VT::Any || v.t == VT::Nil || (v.t == VT::Type && v.s != "IterationEnd") ||
+                     (v.t == VT::Array && !v.enumType.empty() && isEnumTypeObject(v));   // an enum's type object
             if (u && g_revInterp && Interpreter::uninitOperand(v)) g_revInterp->warnUninitStr(v);
             return u;
         };

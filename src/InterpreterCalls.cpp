@@ -4457,12 +4457,65 @@ std::optional<Value> setOpFoldN(const std::string& op, const ValueList& items) {
 
 // The type object of an enum is the tagged list of its pairs (see the enum
 // declaration arm); a member VALUE carries the same tag but is not a list.
-// A Scalar holding it (`my $t = Color`, a hash value) marks it itemized and is
-// still the type object: `$t.raku` is Color, not the pair list (issue #216).
+// It is declared itemized, so a list does not flatten it, and a Scalar holding
+// it is no different: `$t.raku` is Color, not the pair list (issue #216).
+// Truthiness and every binary operator ask, so the cheap tests go first.
 bool isEnumTypeObject(const Value& v) {
-    return v.t == VT::Array && !v.enumType.empty() && v.enumName.empty() &&
-           g_revInterp && g_revInterp->enumPairs_.count(std::string(v.enumType.str())) &&
-           g_revInterp->enumPairs_[std::string(v.enumType.str())].arr() == v.arr();
+    if (v.t != VT::Array || v.enumType.empty() || !v.enumName.empty() || !g_revInterp) return false;
+    auto it = g_revInterp->enumPairs_.find(std::string(v.enumType.str()));
+    return it != g_revInterp->enumPairs_.end() && it->second.arr() == v.arr();
+}
+
+// A method on an enum's TYPE OBJECT that is not Enumeration's own (`.keys`,
+// `.pairs`, `.pick`… read the members, in MethodCallPart2.cpp): it is Any's
+// on a type object, as in Rakudo. Empty when the method is not one of these.
+std::optional<Value> Interpreter::enumTypeObjectMethod(const Value& inv, const std::string& m, ValueList& args) {
+    const std::string tn = inv.enumType.str();
+    // it renders as the TYPE it is: `day.gist` is (day), `.raku` day, and `.Str`
+    // the empty string with the uninitialized warning any type object gives
+    if (m == "gist") return Value::str("(" + tn + ")");
+    if (m == "raku" || m == "perl") return Value::str(tn);
+    if (m == "Str" || m == "Stringy") { warnUninitStr(inv); return Value::str(""); }
+    // an undefined value is False
+    if (m == "Bool" || m == "so") return Value::boolean(false);
+    if (m == "not") return Value::boolean(true);
+    // Mu.Numeric warns and answers `self.new`, which an enum refuses
+    // (X::Constructor::BadType); .Num and .Rat want an instance of its value type
+    if (m == "Numeric" || m == "Int" || m == "Real") {
+        warnUninitNum(inv);
+        return methodCall(inv, "new", ValueList{});
+    }
+    if (m == "Num" || m == "Rat") {
+        const std::string vt = enumBaseType(tn);
+        throwTypedV("X::Parameter::InvalidConcreteness",
+            {{"expected", Value::typeObj(vt)}, {"got", inv}, {"routine", Value::str(m)},
+             {"param", Value::str("self")}, {"should-be-concrete", Value::boolean(true)},
+             {"param-is-invocant", Value::boolean(true)}},
+            "Invocant of method '" + m + "' must be an object instance of type '" + vt +
+            "', not a type object of type '" + tn + "'. Did you forget a '.new'?");
+    }
+    // its pair list is no Array to change: the members stay what was declared
+    if (m == "push" || m == "append" || m == "unshift" || m == "prepend" || m == "ASSIGN-POS")
+        throwTypedV("X::Assignment::RO", {{"value", inv}, {"typename", Value::str(tn)}},
+                    "Cannot modify an immutable '" + tn + "' type object");
+    if (m == "pop" || m == "shift" || m == "splice")
+        throwTypedV("X::Method::NotFound",
+                    {{"typename", Value::str(tn)}, {"method", Value::str(m)}, {"invocant", inv}},
+                    "No such method '" + m + "' for invocant of type '" + tn + "'");
+    if (m == "tree") return inv;
+    // As a LIST it is the one item it is: `.elems` is 1, `.map` calls once,
+    // `.head` is the type object, `.join` is "" with the warning
+    static const std::set<std::string> kListView = {
+        "elems", "end", "list", "List", "Array", "Seq", "Slip", "cache", "flat", "eager",
+        "head", "tail", "first", "map", "grep", "sort", "reverse", "unique", "squish",
+        "join", "fmt", "Set", "Bag", "Mix", "SetHash", "BagHash", "MixHash", "classify",
+        "categorize", "combinations", "permutations", "deepmap", "duckmap", "nodemap",
+        "skip", "AT-POS"};
+    if (!kListView.count(m)) return std::nullopt;
+    Value one = Value::array(); one.isList = true;
+    Value item = inv; item.itemized = true;
+    one.arr()->push_back(std::move(item));
+    return methodCall(one, m, std::move(args));
 }
 
 // enum-type coercion: `Color(1)` -> the enum value whose number is 1. `ty` is

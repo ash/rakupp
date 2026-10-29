@@ -10173,11 +10173,13 @@ ExprPtr Parser::parsePrimary() {
             // A TYPE name is no listop: `Int ~ "x"` and even `Int ~"x"` are the
             // infix on the type object (Rakudo), not the coercion `Int(~"x")` —
             // nor before a SPACED `<`, whatever closes it: `Int < 2, 3 > 2` is two
-            // comparisons, not `Int(<2, 3>) 2` (a tight `Int<…>` never gets here)
+            // comparisons, not `Int(<2, 3>) 2` (a tight `Int<…>` never gets here).
+            // Any type the unit declares, an enum's or a subset's too: `E ~ "x"`
+            // coerced "x" to E's first member (issue #216)
             if (listopOk && cur().kind == Tok::Op &&
                 (cur().text == "~" || cur().text == "+" || cur().text == "-" ||
                  (cur().text == "<" && cur().spaceBefore)) &&
-                (isKnownTypeName(name) || declClassDecls_.count(name)))
+                (isKnownTypeName(name) || declTypeNames_.count(name)))
                 listopOk = false;
             // `foo < 1` (space after `<`) is infix less-than, not the word-list `foo(< 1 >)` —
             // UNLESS a matching `>` actually closes a word-list first (`is < foo bar >, exp`).
