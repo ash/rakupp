@@ -136,6 +136,25 @@ moves to [TODO.md](TODO.md).
   takes `loop` as the loop keyword whatever follows it. Done when the
   program prints 2; check `if(…)`, `while(…)` and `for(…)` beside it.
 
+- [ ] **A constant's initializer calls a routine declared below it** (found
+  2026-10-29 fixing issue #196, f303f0c0; on v5.5.0 too):
+
+  ```raku
+  sub f { 0 }; { constant A = f(); sub f { 1 }; say A }                 # 1, Rakudo 0
+  constant A = abs(-3); sub abs($x) { 99 }; say A                       # 99, Rakudo 3
+  sub g { try f() }; constant A = g(); sub f { 1 }; say A // 'undef'    # 1, Rakudo undef
+  ```
+
+  f303f0c0 refuses what Rakudo refuses; these Rakudo compiles, with what was
+  declared when the constant ran: the outer `f`, the builtin `abs`, and,
+  inside the `try`, no `f` at all. rakupp declares a scope's routines before
+  the scope runs (hoistSubs) and evaluates the constant where it stands, so
+  it calls the one below. Also left to run, since the check reports only
+  certainties: a call in a block that runs at compile time, `constant A =
+  [1].map({ f() }).eager` or `sub g { if 1 { f() } }; constant A = g()`,
+  where Rakudo dies as the block runs. Done when a constant's initializer and
+  a BEGIN block see only the routines declared above them.
+
 ## Operators and types
 
 - [ ] **Built-in prefix and postfix operators fail when called by name**
