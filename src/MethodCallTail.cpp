@@ -64,7 +64,7 @@ static std::optional<Value> plainContainerStore(const Value& inv, const ValueLis
     }
     else {
         Value nv = coerceArray(pos[0], false);
-        if (nv.arr()) *inv.arr() = *nv.arr();
+        if (nv.arr()) { keptEndsRefill(inv.arr()); *inv.arr() = *nv.arr(); }
     }
     return inv;
 }

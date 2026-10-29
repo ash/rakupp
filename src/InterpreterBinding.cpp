@@ -2996,6 +2996,7 @@ Value Interpreter::assignChecked(Expr* target, Value v, const Value* invVal) {
             if (own && own->ex && own->ex->topicBindsArray) {
                 Value arr = coerceArray(v);
                 ValueList elems = arr.t == VT::Array && arr.arr() ? *arr.arr() : ValueList{v};
+                keptEndsRefill(lv->arr());
                 lv->arr()->swap(elems);
                 return *lv;
             }

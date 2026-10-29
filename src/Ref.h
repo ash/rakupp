@@ -131,6 +131,7 @@ enum : std::uint32_t {
     // ACYCLIC: an object of a class whose attributes hold only values
     // (cycleClassify); it stays untracked even after a collection.
     kPayCycleAcyclic = 16,
+    kPayKeptDetached = 32,   // a kept `@a.head(n)`'s buffer, its array refilled (keepEndsContainers)
 };
 constexpr unsigned kPayCycleIdxShift = 8;
 void cycleForget(Payload* p) noexcept;   // Cycle.cpp

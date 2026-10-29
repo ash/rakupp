@@ -2788,6 +2788,205 @@ void Interpreter::keepListContainers(const ListExpr* l, Value& list) {
     }
     if (holds) list.markHoldsContainers();
 }
+// …and a kept `@a.head(n)` / `@a.tail(n)` (`my $h = …`, `my \h = …`) holds the
+// array's ELEMENT containers, as Rakudo's Seq does: `@a[0] = 42` after it shows
+// through `h`, and through `$h` read before the write, which is when Rakudo's
+// lazy head first reads the array (issue #215). The head's elements are the
+// array's first positions, the tail's its last, read where they are as the
+// slot alias `my \x = @a.head` binds is (makeArraySlotProxy), and kept as it
+// keeps them once the array shrinks below them.
+//
+// A position is not a container, though: `@a = 7, 8, 9` refills the same
+// storage, where Rakudo's STORE makes new containers and the Seq keeps the old
+// ones. So the Seq's elements also share a buffer of their own, which holds
+// what each last read (an array that shrank below them keeps it, as a slot
+// alias's kSlotLast does). The refill finds the buffers by the array's storage
+// (keptEndsRefill), fills them with what the array held and marks them
+// detached (kPayKeptDetached): the elements read and write the buffer from then
+// on. A native or lazy array has no containers and keeps the values.
+//
+// Each element is a proxy of four entries over one shared FETCH/STORE pair, as
+// the slot alias is: a closure pair cost two 720-byte Callables an element.
+static long long slotPack(size_t idx, size_t size);
+static size_t slotIdx(const Value& ref);
+static size_t slotSize(const Value& ref);
+static const ProxyKey& kKeptArr() { static const ProxyKey k("\x01" "karr"); return k; }    // the array: as kSlotArr
+static const ProxyKey& kKeptBuf() { static const ProxyKey k("\x01" "kbuf"); return k; }    // the buffer; `i` the place in it
+std::atomic<bool> g_keptEndsLive{false};
+namespace {
+struct KeptBuf { PRef<ValueList> buf; size_t from, size; };   // the buffer of a Seq of src[from…], src's length then
+struct KeptEndsReg {
+    std::mutex mu;
+    // by the array's storage; a buffer nothing else holds is a Seq that has gone
+    std::unordered_map<const ValueList*, std::vector<KeptBuf>> bySrc;
+    size_t adds = 0, misses = 0;
+};
+KeptEndsReg& keptEndsReg() { static auto* r = new KeptEndsReg; return *r; }
+void keptEndsPrune(std::vector<KeptBuf>& v) {
+    v.erase(std::remove_if(v.begin(), v.end(), [](const KeptBuf& b) { return b.buf.use_count() < 2; }), v.end());
+}
+// …every storage's, dropping those with no Seq left: once none is, a refill
+// stops asking (g_keptEndsLive). Under the registry's lock.
+void keptEndsSweep(KeptEndsReg& r) {
+    for (auto it = r.bySrc.begin(); it != r.bySrc.end();) {
+        keptEndsPrune(it->second);
+        it = it->second.empty() ? r.bySrc.erase(it) : std::next(it);
+    }
+    if (r.bySrc.empty()) g_keptEndsLive.store(false, std::memory_order_relaxed);
+}
+// the array, the buffer and the place in it, or false for a proxy of another kind
+bool keptParts(const Value& proxy, const Value*& arr, const Value*& buf) {
+    if (!proxy.hash()) return false;
+    arr = proxy.hash()->findPre(kKeptArr().s, kKeptArr().h);
+    buf = proxy.hash()->findPre(kKeptBuf().s, kKeptBuf().h);
+    return arr && buf && arr->arr() && buf->arr();
+}
+bool keptDetached(const Value& buf) {
+    return buf.arrS().body()->pflags_.load(std::memory_order_acquire) & kPayKeptDetached;
+}
+}   // namespace
+
+void keptEndsRefillSlow(const ValueList* src) {
+    KeptEndsReg& r = keptEndsReg();
+    std::lock_guard<std::mutex> lk(r.mu);
+    auto it = r.bySrc.find(src);
+    // (a refill of another array: now and then, see whether any Seq is left)
+    if (it == r.bySrc.end()) { if (++r.misses % 64 == 0) keptEndsSweep(r); return; }
+    keptEndsPrune(it->second);
+    // Two Seqs over the array hold the SAME old containers: a write through one
+    // shows in the other. Each position they share becomes one cell both hold.
+    const bool several = it->second.size() > 1;
+    std::unordered_map<size_t, Value> cells;
+    for (KeptBuf& b : it->second) {
+        if (b.buf.body()->pflags_.load(std::memory_order_relaxed) & kPayKeptDetached) continue;
+        // (an array that shrank below the Seq already left it what it last read)
+        if (src->size() >= b.size)
+            for (size_t j = 0; j < b.buf->size(); j++) {
+                const size_t idx = b.from + j;
+                Value v = idx < src->size() ? (*src)[idx] : Value::any();
+                if (several && !cellOfProxy(&v)) {
+                    Value& c = cells[idx];
+                    if (c.t != VT::Hash) c = makeSharedCellProxy(makePayload<Value>(std::move(v)));
+                    v = c;
+                }
+                (*b.buf)[j] = std::move(v);
+            }
+        b.buf.body()->pflags_.fetch_or(kPayKeptDetached, std::memory_order_release);
+    }
+    r.bySrc.erase(it);
+    if (r.bySrc.empty()) g_keptEndsLive.store(false, std::memory_order_relaxed);
+}
+
+static Value keptRead(Interpreter& I, const Value& proxy) {
+    const Value *av, *bv;
+    if (!keptParts(proxy, av, bv)) return Value::any();
+    ValueList& buf = *bv->arr();
+    const size_t j = (size_t)bv->i;
+    // (an element may hold a container of its own: a cell two Seqs share, `@a[0] := $x`)
+    if (keptDetached(*bv)) {
+        Value v;
+        { Interpreter::ParStripe ps(I, &buf); v = j < buf.size() ? buf[j] : Value::any(); }
+        return I.deproxy(std::move(v));
+    }
+    ValueList* arr = av->arr();
+    const size_t idx = slotIdx(*av);
+    Value v;
+    {
+        Interpreter::ParStripe ps(I, arr);
+        if (arr->size() < slotSize(*av)) return buf[j];   // shrunk: what it held
+        v = idx < arr->size() ? (*arr)[idx] : Value::any();
+        if (!(v.t == VT::Hash && v.hashKind == proxyKind() && v.hash())) return buf[j] = v;
+    }
+    v = I.deproxy(std::move(v));   // (a user's Proxy runs code: not under the stripe)
+    Interpreter::ParStripe ps(I, arr);
+    return buf[j] = v;
+}
+static Value keptWrite(Interpreter& I, const Value& proxy, Value nv) {
+    const Value *av, *bv;
+    if (!keptParts(proxy, av, bv)) return nv;
+    if (const Value* g = av->elemDefault().get()) nv = I.elemAliasStore(*g, std::move(nv));   // (as kSlotGuard)
+    ValueList& buf = *bv->arr();
+    const size_t j = (size_t)bv->i;
+    // a slot holding a container of its own takes the store through it — after
+    // the stripe is let go, since a user's Proxy runs code
+    auto store = [&](ValueList* in, size_t at) {
+        Value bound;
+        {
+            Interpreter::ParStripe ps(I, in);
+            if (at >= in->size()) return;
+            Value& slot = (*in)[at];
+            if (!(slot.t == VT::Hash && slot.hashKind == proxyKind() && slot.hash())) { slot = nv; return; }
+            bound = slot;
+        }
+        I.proxyStore(bound, nv);
+    };
+    if (keptDetached(*bv)) { store(&buf, j); return nv; }
+    ValueList* arr = av->arr();
+    { Interpreter::ParStripe ps(I, arr); buf[j] = nv; }
+    if (arr->size() >= slotSize(*av)) store(arr, slotIdx(*av));   // (shrunk: written to the element it held)
+    return nv;
+}
+
+void Interpreter::keepEndsContainers(const MethodCall* mc, const Value& inv, Value& seq) {
+    if (inv.isList || inv.ext() || inv.shape() || !inv.arr() || !seq.arr() || seq.holdsContainers() ||
+        !nativeElemTypeOf(inv).empty())
+        return;
+    PRef<ValueList> arr = inv.arrS();
+    const size_t n = arr->size(), k = seq.arr()->size();
+    if (k == 0 || k > n) return;
+    const size_t from = mc->method == "head" ? 0 : n - k;
+    static const Value kFetch = [] {
+        Value f; f.t = VT::Code; f.setCode(makePayload<Callable>());
+        f.code()->ciM().builtin = [](Interpreter& I, ValueList& a) -> Value {
+            return a.empty() ? Value::any() : keptRead(I, a[0]);
+        };
+        return f;
+    }();
+    static const Value kStore = [] {   // (two parameters: proxyStore sends the proxy along)
+        Value st; st.t = VT::Code; st.setCode(makePayload<Callable>());
+        static const std::vector<Param> kTwo(2);
+        st.code()->ciM().params = &kTwo;
+        st.code()->ciM().builtin = [](Interpreter& I, ValueList& a) -> Value {
+            return a.size() < 2 ? (a.empty() ? Value::any() : a.back()) : keptWrite(I, a[0], a[1]);
+        };
+        return st;
+    }();
+    // (a typed array's element answers to its type through the alias: #184)
+    std::shared_ptr<Value> guard;
+    if (!inv.ofType().empty() || inv.elemDefault())
+        guard = std::make_shared<Value>(elemAliasGuard(inv, false, containerNameOf(mc->inv.get(), '@')));
+    if (guard && guard->t != VT::Array) guard.reset();
+    Value bv = Value::array(ValueList(arr->begin() + from, arr->begin() + from + k));
+    auto els = makePayload<ValueList>();
+    els->reserve(k);
+    for (size_t j = 0; j < k; j++) {
+        // (a slot that already holds an alias hands out that container)
+        const Value& el = (*arr)[from + j];
+        if (el.t == VT::Hash && el.hashKind == "Proxy" && el.hash()) { els->push_back(el); continue; }
+        Value av; av.t = VT::Array; av.setArr(arr);   // shares the storage
+        av.i = slotPack(from + j, n);
+        if (guard) av.elemDefaultM() = guard;
+        Value pb = bv; pb.i = (long long)j;
+        Value proxy = Value::makeHash(); proxy.hashKind = proxyKind();
+        ValueHash& h = *proxy.hash();
+        h.addFresh(kKeptArr().s, kKeptArr().h, std::move(av));
+        h.addFresh(kKeptBuf().s, kKeptBuf().h, std::move(pb));
+        h.addFresh(proxyKeyFetch().s, proxyKeyFetch().h, kFetch);
+        h.addFresh(proxyKeyStore().s, proxyKeyStore().h, kStore);
+        els->push_back(std::move(proxy));
+    }
+    {
+        KeptEndsReg& r = keptEndsReg();
+        std::lock_guard<std::mutex> lk(r.mu);
+        auto& live = r.bySrc[arr.get()];
+        keptEndsPrune(live);
+        live.push_back(KeptBuf{bv.arrS(), from, n});
+        if (++r.adds % 64 == 0) keptEndsSweep(r);   // (now and then, the storages whose Seqs have all gone)
+        g_keptEndsLive.store(true, std::memory_order_relaxed);
+    }
+    seq.setArr(std::move(els));
+    seq.markHoldsContainers();
+}
 // A kept item for a TYPED variable (`my Int $a; f(($a, 2))`), and an ALIAS of
 // one (`my $b := $a`, `sub f($x is rw)` handed `$a`, `for $a { }`: #184's twin
 // for scalars), carries what a store into the variable checks, found in the
@@ -5665,6 +5864,7 @@ void Interpreter::arrayStore(Value& lvRef, Value& rhs, bool isAssign, bool dolla
         // of it would gut the list the RHS still holds.
         if (packedNow) {}   // (lv's storage had no other holder: nv's words replace it)
         else if (lv->t == VT::Array && lv->arr() && nv.arr() && lv->arr() != nv.arr()) { raceLen(lv->arr(), RaceAcc::Write);
+            keptEndsRefill(lv->arr());
             if (nv.payloadUnique()) *lv->arr() = std::move(*nv.arr());
             else                         *lv->arr() = *nv.arr();
             nv.setArr(lv->arrS());

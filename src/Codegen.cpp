@@ -484,11 +484,26 @@ struct Codegen {
     // assignment keeps the List (as the interpreter's evalAssign marks it)
     void noteKeptList(const Assign* a) {
         if (!a->target || (a->op != "=" && a->op != ":=")) return;
-        if (a->target->kind == NK::Index) { noteKeptItems(a->value.get()); return; }
+        if (a->target->kind == NK::Index) { noteKeptItems(a->value.get()) || noteKeptEnds(a->value.get()); return; }
         if (a->target->kind != NK::VarExpr) return;
         const std::string& tn = static_cast<const VarExpr*>(a->target.get())->name;
         if (!tn.empty() && (tn[0] == '$' || ascii::isalpha((unsigned char)tn[0]) || tn[0] == '_'))
-            noteKeptItems(a->value.get());
+            noteKeptItems(a->value.get()) || noteKeptEnds(a->value.get());
+    }
+    // …and `my $h = @a.head(2)` / `.tail(2)` keeps a Seq of @a's elements (the
+    // interpreter's keepEndsContainers), which a write to @a, or one through a
+    // subscript of what holds the Seq, shows; the native Seq holds values
+    bool noteKeptEnds(const Expr* e) {
+        if (!e || e->kind != NK::MethodCall) return false;
+        auto* m = static_cast<const MethodCall*>(e);
+        if ((m->method != "head" && m->method != "tail") || m->args.size() != 1 || !m->inv) return false;
+        if (m->inv->kind == NK::VarExpr && static_cast<const VarExpr*>(m->inv.get())->name.rfind('@', 0) == 0)
+            keptNames_.insert(static_cast<const VarExpr*>(m->inv.get())->name);
+        keptListVar_ = true;
+        if (!keptListLine_) keptListLine_ = e->line ? e->line : curStmtLine_;
+        if (moduleMode_)
+            throw CodegenError{"a Seq that holds an array's elements, in a module routine", /*routineWide=*/true};
+        return true;
     }
     // a write to a variable (not its declaration): what a kept List would show
     void noteVarWrite(const Expr* t) {

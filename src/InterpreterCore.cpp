@@ -11770,7 +11770,7 @@ Value* Interpreter::lvalue(Expr* e, bool asInvocant) {
             if (slot->t == VT::Array && slot->arr() && !slot->isList && !slot->itemized &&
                 slot->hashKind.empty() && nv.t != VT::Array &&
                 exprIsArrayContainer(rOp ? a->value.get() : a->target.get(), slotAttrSigil))
-                { ValueList one{nv}; slot->arr()->swap(one); }
+                { ValueList one{nv}; keptEndsRefill(slot->arr()); slot->arr()->swap(one); }
             else *slot = nv;
             return slot;
         }
@@ -13203,10 +13203,20 @@ static bool coopStoreShape(const Assign* a) {
     return ctlOnRhsPath(a->value.get());
 }
 
+// `.head(n)` / `.tail(n)` called plainly: one count, no adverb, no meta-call
+static bool keptEndsCall(const MethodCall* m) {
+    return (m->method == "head" || m->method == "tail") && m->args.size() == 1 && m->args[0] &&
+           m->args[0]->kind != NK::Pair && m->inv && !m->methodExpr && !m->meta && !m->hyper && !m->maybe &&
+           !m->allMode && !m->bang && !m->mutate && m->methodQual.empty();
+}
+
 Value Interpreter::evalAssign(Assign* a, bool sink) {
     // `my $m = ($c, 2)` / `$l := (…)` / `my \l = (…)` keep the List, which holds
-    // its items' containers (keepListContainers)
-    if (a->value && a->value->kind == NK::ListExpr && a->target && (a->target->kind == NK::VarExpr || a->target->kind == NK::Index) &&
+    // its items' containers (keepListContainers), and `my $h = @a.head(2)` /
+    // `my \t = @a.tail(2)` the Seq, which holds the array's (keepEndsContainers)
+    if (a->value && (a->value->kind == NK::ListExpr ||
+                     (a->value->kind == NK::MethodCall && keptEndsCall(static_cast<MethodCall*>(a->value.get())))) &&
+        a->target && (a->target->kind == NK::VarExpr || a->target->kind == NK::Index) &&
         (opEq(a->op, "=") || opEq(a->op, ":="))) {
         // (…and so does `@o[0] = ($w, 0)` / `%h<k> = ($w, 0)`: the element holds the List)
         // — ONE element: a slice's targets take the List's items one by one, which
@@ -17369,6 +17379,7 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
                 else if (rhs.t == VT::Array && rhs.arr() && !rhs.itemized) items = *rhs.arr();
                 else items.push_back(rhs);
                 ParStripe ws(*this, lv);
+                keptEndsRefill(lv->arr());
                 lv->arr()->swap(items); raceLen(lv->arr(), RaceAcc::Write);
                 return sink ? Value::any() : *lv;
             }
@@ -17657,7 +17668,7 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
         if (arrayTarget && lv->t != VT::Array) {
             Value nv = *lv;
             raceW(lv) = arrKeep;                            // the SAME Array, refilled
-            ValueList one{nv}; lv->arr()->swap(one);
+            ValueList one{nv}; keptEndsRefill(lv->arr()); lv->arr()->swap(one);
         }
         // Z/X answer a Seq, and an `@`-sigil target holds an ARRAY: after
         // `@a X*= 10` the variable must still gist as [10 20 30].
@@ -32928,6 +32939,11 @@ Value Interpreter::evalMethodCallExpr(Expr* e) {
     Value res = methodCall(inv, mname, std::move(args), &mc->args);
     // …and a Seq it answers with is a Seq of its own (SeqToken)
     seqMint(res, inv);
+    // …holding the array's containers when an assignment keeps it (evalAssign)
+    if (inv.t == VT::Array && res.t == VT::Array && res.isList && RAKUPP_UNLIKELY(tctx().keepListOf == mc)) {
+        tctx().keepListOf = nullptr;
+        keepEndsContainers(mc, inv, res);
+    }
     if (mc->mutate) return assignChecked(mc->inv.get(), res, &inv); // `.=` is its STORED value
     return res;
 }

@@ -1039,6 +1039,12 @@ int paramNatSpec(const Param& p);
 // `src` unset; `at(i)` an index into `src`), as a view a write through reaches
 // the array by (ElemView; MethodCallTail.cpp)
 void attachElemView(Value& out, const Value& src, ElemView order);
+// `@a = …` refills `src` in place: a kept `@a.head(n)` keeps its elements (keepEndsContainers)
+extern std::atomic<bool> g_keptEndsLive;
+void keptEndsRefillSlow(const ValueList* src);
+inline void keptEndsRefill(const ValueList* src) {
+    if (RAKUPP_UNLIKELY(g_keptEndsLive.load(std::memory_order_relaxed)) && src) keptEndsRefillSlow(src);
+}
 // isNativeTypeName(p.type), memoised per parameter (see Param::nativeName)
 inline bool paramIsNative(const Param& p) {
     signed char n = p.nativeName;
