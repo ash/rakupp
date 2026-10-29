@@ -1,6 +1,6 @@
 # Follow-ups
 
-*Collected 2026-10-20; added to 2026-10-28.*
+*Collected 2026-10-20; added to 2026-10-29.*
 
 Findings that sessions on 2026-10-19 and 2026-10-20 proposed as follow-up
 work and nobody started: gaps found in passing while doing something else.
@@ -642,6 +642,66 @@ moves to [TODO.md](TODO.md).
   `$b[0] += 10` and `$b[1] = 7` are right; only the step is not, in a
   variable and in a parameter alike. Done when it prints Rakudo's (1 3),
   compiled too.
+- [ ] **An array slot alias still names a position after `@a = …`** (found
+  2026-10-29 while fixing issue #215, 67c35490; on v5.5.0 too). Rakudo's
+  alias is the element's Scalar, which a list assignment replaces; ours
+  (makeArraySlotProxy) reads the same position of the refilled storage:
+
+  ```raku
+  my @a = 1, 2, 3;
+  my $x := @a[0]; my \y = @a.head;
+  @a = 7, 8, 9;
+  say $x, y;        # 77; Rakudo 11
+  ```
+
+  A kept `@a.head(n)` and a bound slice `my \s = @a[0, 2]` detach on a
+  refill now (keptEndsRefill in src/InterpreterCalls.cpp: the array's storage
+  finds their buffers). Slot aliases could register the same way, but
+  BinaryHeap's sift makes about thirty per call, so the registration must
+  cost that path nothing. An `.unshift` after the bind moves the elements
+  past the positions every one of these aliases names (Rakudo's keep their
+  Scalars: `my \s = @a[2, 0]; @a.unshift(1)` is still (30 10)). Done when
+  the line prints 11.
+- [ ] **The rest of an Array's views copy its values** (found 2026-10-29
+  while fixing issue #215, 67c35490). Only a kept `.head(n)` / `.tail(n)`
+  holds the array's elements; the others still copy them, as does copying
+  a kept one:
+
+  ```raku
+  my @c = 1, 2, 3; my $r = @c.reverse; @c[0] = 42; say $r;   # (3 2 1); Rakudo (3 2 42)
+  my @s = 1, 2, 3; my \k = @s.skip(1); @s[2] = 9; say k;      # (2 3); Rakudo (2 9)
+  my @m = 1, 2, 3; my \m = @m.map(* * 2); @m[0] = 9; say m;   # (2 4 6); Rakudo (18 4 6)
+  my @h = 1, 2, 3; my $h = @h.head(2); my $g = $h; @h[0] = 9; say $g;   # (1 2); Rakudo (9 2)
+  my @p = 1, 2, 3; my $p = @p.head(2); @p.shift; say $p;       # (1 2); Rakudo (2 3)
+  ```
+
+  `.Seq`, `.reverse`, `.rotate` and `.sort` attach an ElemView, so a write
+  through them reaches the array, but not the other way. The last line is Rakudo's
+  lazy head reading the shortened array; once read, Rakudo keeps (1 2) too.
+  `--exe` bundles a program that keeps a head and writes the array (Codegen's
+  noteKeptEnds). Done when each line prints Rakudo's.
+- [ ] **A read racing a refill of the same array can read Nil or die**
+  (found 2026-10-29 while fixing the concurrent-refill abort, c9560e0d; on
+  8a23004a too, behind that abort). Two refills no longer free one buffer
+  twice (arrayStore takes the storage's stripe; t/race/array-refill-shared.raku),
+  but a READ on another thread takes the element's stripe, not the storage's:
+
+  ```raku
+  my @shared = ^20;
+  await (^8).map: { start { for ^600 -> $i { my $n = @shared[1] // say "Nil";
+                                            @shared = ^20 if $i %% 3 } } };
+  # 11 runs in 200 print Nil; reading with `== 1` instead, 3 in 200 died SIGSEGV. Rakudo: neither
+  ```
+
+  The move-assign destroys the old elements, then frees their buffer, while
+  the read's fast path in evalIndex (the "torn-copy contract, the ELEMENT
+  half") has already taken an element's address. Swapping the new buffer in
+  and freeing the old after the stripe made it worse (one run in four died
+  with one writer). Either the read takes the storage's stripe too (every
+  read of a shared array then queues on one lock) or the old buffer is freed
+  only once no read can be in it (an epoch, or locking every stripe before
+  the free). Done when the repro neither prints Nil nor dies in 200 runs, and
+  perf-guard's parallel kernels hold.
 
 ## Processes and diagnostics
 
