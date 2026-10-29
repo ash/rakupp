@@ -27,6 +27,7 @@ namespace rakupp {
 
 bool isCoreEnumMemberName(const std::string& n);   // Interpreter.cpp: `Less`, `Order::More`, `SIGINT`, …
 bool uniTypeLikeName(const std::string& n);   // Unicode.cpp: `Foo`, `Éx`, `万` read as types, `ч` not
+size_t readOpNameInAngles(const std::string& src, size_t open, std::string& name);   // Lexer.cpp: `<(\<&)>` is `(<&)`
 static bool typeLikeName(const std::string& n) { return uniTypeLikeName(n); }
 
 // A routine's or a closure's VALUE that is a plain one-argument map or grep is
@@ -1153,9 +1154,9 @@ void Parser::scanOpsIn(const std::string& src, const std::string& srcPath) {
                     (b == kl || !ascii::isalnum((unsigned char)src[b - kl - 1]))) { isDecl = true; break; }
             }
             if (!isDecl) continue;
-            size_t close = src.find('>', pos + needle.size());
+            std::string name;
+            size_t close = readOpNameInAngles(src, pos + needle.size() - 1, name);   // (`\<` is `<`)
             if (close == std::string::npos) continue;
-            std::string name = src.substr(pos + needle.size(), close - pos - needle.size());
             if (name.empty()) continue;
             // A `sub` operator reaches the importer only when it is EXPORTED:
             // `sub infix:<notthere>` with no `is export` stays the module's own,

@@ -803,6 +803,21 @@ std::string constantStringFor(const std::string& src, const std::string& var) {
 // word rules, and a one-codepoint operator is always lexed whole. Only THIS
 // file's declarations are visible here; an imported one still needs its
 // module's own parse.
+// The name an operator declaration spells between `<` (at `open`) and its `>`,
+// read as Rakudo reads it, like a `q` string: a backslash escapes the brackets
+// and itself, so `infix:<(\<&)>` is `(<&)`, `infix:<\>\>>` is `>>` (an escaped
+// `>` does not close it) and `postfix:<\\>` is `\`, and any other backslash
+// stays (`infix:<\o/>` is `\o/`, roast's sub.t). Answers where the `>` is (npos
+// with none). Parser::scanOpsIn reads an imported module's operators with it.
+size_t readOpNameInAngles(const std::string& src, size_t open, std::string& name) {
+    for (size_t k = open + 1; k < src.size(); k++) {
+        if (src[k] == '\\' && k + 1 < src.size() && std::strchr("<>\\", src[k + 1])) { name += src[++k]; continue; }
+        if (src[k] == '>') return k;
+        name += src[k];
+    }
+    return std::string::npos;
+}
+
 void Lexer::scanUserOps() {
     for (size_t p = src_.find("infix:<"); p != std::string::npos; p = src_.find("infix:<", p + 1)) {
         size_t b = p + 7, e = b;
@@ -889,8 +904,7 @@ void Lexer::scanUserOps() {
                 close = src_.find(">>", o + 2);
                 if (close != std::string::npos) name = src_.substr(o + 2, close - o - 2);
             } else if (src_.compare(o, 1, "<") == 0) {
-                close = src_.find('>', o + 1);
-                if (close != std::string::npos) name = src_.substr(o + 1, close - o - 1);
+                close = readOpNameInAngles(src_, o, name);   // (`\<` is `<`)
             } else if (src_.compare(o, 2, "\xC2\xAB") == 0) {
                 close = src_.find("\xC2\xBB", o + 2);
                 if (close != std::string::npos) name = src_.substr(o + 2, close - o - 2);
@@ -3481,7 +3495,11 @@ Token Lexer::lexIdentOrVar() {
         }
         else if (peek() == ':' && peek(1) == '<') {
             name += advance(); name += advance(); // :<
-            while (!eof() && peek() != '>') name += advance();
+            // (`&infix:<(\<&)>` names `(<&)`: see readOpNameInAngles for the escapes)
+            while (!eof() && peek() != '>') {
+                if (peek() == '\\' && (peek(1) == '<' || peek(1) == '>' || peek(1) == '\\')) advance();
+                name += advance();
+            }
             if (peek() == '>') name += advance();
         }
         // `&infix:«<=>»` — the guillemet spelling of the same name. Its content is
