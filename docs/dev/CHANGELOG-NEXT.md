@@ -27,7 +27,7 @@ b05e989b (issue #193); 17e33a45 (issue #184); 5f87f445; 0e44c5a6 (issue
 #205); 18ef8f73 (issues #186 and #178); 642a320a; 62a3d9a5 (issue #212);
 17a71667 (issue #213); 46c4ef60 (issue #194); 2deb332a, eed42468, 710dccdb,
 62b42a19, aaa97b24, 56d9a3a5, 3fae5f4e, 18ac7c39 and 2c05f00f (issue #60);
-f3fb83e3 and 5e611fa3 (issue #216).*
+f3fb83e3 and 5e611fa3 (issue #216); 67c35490 (issue #215).*
 
 ---
 
@@ -1030,6 +1030,20 @@ does not.
   enum's or subset's name before `~` is a term now, as a class's was: `MyEnum
   ~ "x"` was the coercion `MyEnum(~"x")`, the first member.
   t/regression/enum-type-object-is-one-item.raku agrees with Rakudo 2026.09.
+- **A kept `@a.head(n)` or `@a.tail(n)` holds the array's elements**
+  (67c35490; issue #215). `my \h = @a.head(2); @a[0] = 42` left `h` as
+  (1, 2), and so did `my $h = @a.head(2)` read before the write: `.head`
+  copied the elements when it ran. Assigned or bound to a variable, a name or one
+  element, it holds the array's positions now, as Rakudo's holds its
+  Scalars: a write to the array shows through it, a write through it
+  (`$h[0] = 5`, `for h { $_++ }`) reaches the array, and a typed array's
+  element still checks what it takes. `@a = …` makes new containers in
+  Rakudo, so a refill leaves the Seq the elements the array had, and two
+  Seqs over the array keep sharing them. A `.head(n)` nothing keeps (summed,
+  passed on, assigned to an `@` array) copies as before. `--exe` bundles a
+  program that keeps one and writes the array.
+  t/regression/array-head-keeps-element-containers.raku agrees with Rakudo
+  2026.09.
 
 ### Left open
 
@@ -1150,3 +1164,9 @@ does not.
   `.uc`) on it answer from the pairs or the empty string where Rakudo
   refuses or answers `{}`. `(Int, 1).Str` and a user type before `~`
   (`Foo ~ "x"`) give no uninitialized warning, for any type object.
+- Found with issue #215, the same before 67c35490: a kept head over an
+  array that `.shift` or `.pop` shortens before it is first read keeps its
+  elements, where Rakudo's lazy head reads the shorter array; `.skip`,
+  `.reverse`, `.map` and a copy of a kept head still copy the values; and
+  `my $x := @a[0]` and `my \x = @a.head` still read their position after
+  `@a = …`. TODO-FOLLOW-UPS.md has each.
