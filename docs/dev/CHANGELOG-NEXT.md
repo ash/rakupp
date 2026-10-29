@@ -27,7 +27,7 @@ b05e989b (issue #193); 17e33a45 (issue #184); 5f87f445; 0e44c5a6 (issue
 #205); 18ef8f73 (issues #186 and #178); 642a320a; 62a3d9a5 (issue #212);
 17a71667 (issue #213); 46c4ef60 (issue #194); 2deb332a, eed42468, 710dccdb,
 62b42a19, aaa97b24, 56d9a3a5, 3fae5f4e, 18ac7c39 and 2c05f00f (issue #60);
-f3fb83e3 and 5e611fa3 (issue #216); 67c35490 (issue #215).*
+f3fb83e3 and 5e611fa3 (issue #216); 67c35490 (issue #215); 820388ce.*
 
 ---
 
@@ -594,6 +594,18 @@ plain before 500c29e2 and native from it, unless they say otherwise.
   their actions; FunctionalParsers 0.1.11 now passes all 18 of its test
   files. t/regression/second-parent-attribute-defaults.raku agrees with
   Rakudo 2026.09.
+- **A slice bound to a `$` or sigilless name is the List of those
+  elements** (820388ce; found with issue #215). `my \x = @a[0, 2]` bound 30
+  and `my \w = @a[0..1]` bound 10: the subscript was read as one index, a
+  list's length or a Range's first element. `my \x = %h<a b>` bound Any and
+  made an entry under the key "a b". A list, a Range, `*` or `@keys` binds
+  the List of those elements' containers now, as `my @s := @a[0, 2]` did:
+  a write through it reaches the array or hash, a write to them shows
+  through it, a refill leaves it the elements it had, and a typed container
+  still checks what it takes. A place past the end reads Any without making
+  it. `--exe` bundles a program that binds an element or a slice and writes
+  the array, where a compiled `my \x = @a[1]` missed the write too.
+  t/regression/bound-slice-is-a-list.raku agrees with Rakudo 2026.09.
 
 ### Fixed: crashes
 
