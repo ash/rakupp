@@ -5923,9 +5923,18 @@ void Interpreter::arrayStore(Value& lvRef, Value& rhs, bool isAssign, bool dolla
         // of it would gut the list the RHS still holds.
         if (packedNow) {}   // (lv's storage had no other holder: nv's words replace it)
         else if (lv->t == VT::Array && lv->arr() && nv.arr() && lv->arr() != nv.arr()) { raceLen(lv->arr(), RaceAcc::Write);
-            keptEndsRefill(lv->arr());
-            if (nv.payloadUnique()) *lv->arr() = std::move(*nv.arr());
-            else                         *lv->arr() = *nv.arr();
+            // Under the storage's stripe: two threads refilling one array each
+            // freed its old buffer, and the second free aborted the process.
+            // (A read on another thread takes the element's stripe, not this
+            // one, so it may still see the elements mid-refill — the user's
+            // race, as an unlocked write is — but swapping the new ones in and
+            // freeing the old after the stripe widened that window to a crash.)
+            {
+                ParStripe ws(*this, lv->arr());
+                keptEndsRefill(lv->arr());
+                if (nv.payloadUnique()) *lv->arr() = std::move(*nv.arr());
+                else                         *lv->arr() = *nv.arr();
+            }
             nv.setArr(lv->arrS());
         }
         // A FRESH slot (an attribute a custom BUILD writes first, before
