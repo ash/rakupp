@@ -26,7 +26,8 @@ b05e989b (issue #193); 17e33a45 (issue #184); 5f87f445; 0e44c5a6 (issue
 (issue #188); c50eb3b8 (issue #146); 09018c67 (issue #77); 099a2055 (issue
 #205); 18ef8f73 (issues #186 and #178); 642a320a; 62a3d9a5 (issue #212);
 17a71667 (issue #213); 46c4ef60 (issue #194); 2deb332a, eed42468, 710dccdb,
-62b42a19, aaa97b24, 56d9a3a5, 3fae5f4e, 18ac7c39 and 2c05f00f (issue #60).*
+62b42a19, aaa97b24, 56d9a3a5, 3fae5f4e, 18ac7c39 and 2c05f00f (issue #60);
+f3fb83e3 (issue #216).*
 
 ---
 
@@ -1004,6 +1005,17 @@ does not.
   of as the set operator; a `multi` candidate leaves the built-in alone.
   FunctionalParsers 0.1.11 passes 17 of its 18 test files, up from 15.
   t/regression/imported-operator-traits.raku agrees with Rakudo 2026.09.
+- **An enum's type object called from a variable or a container coerces as
+  its name does** (f3fb83e3; issue #216). `MyEnum(2)` was CCC, but the same
+  type object taken out of a Hash, an Array element, a Scalar, a parameter
+  or an attribute and called, `$r<x>(2)` or `$t(2)`, died "No such method
+  'CALL-ME' for invocant of type 'MyEnum'". It answers the member now, or
+  the X::Enum::NoValue Failure the call by name gives. Held in a Scalar, the
+  type object is the type to everything else that asks too: `$t.raku` is
+  MyEnum (it was the pair list behind it), `$t ~~ Int` is True, `.^mro`
+  starts with MyEnum, and `my Int $i = $t` no longer dies.
+  t/regression/enum-type-called-from-a-container.raku agrees with Rakudo
+  2026.09.
 
 ### Left open
 
@@ -1118,3 +1130,9 @@ does not.
   package writes a global EXPORT::DEFAULT, where Rakudo resolves the name
   inside the module's package. Two packages of one file exporting the same
   name are not X::Export::NameClash.
+- Found with issue #216, the same before f3fb83e3: an enum's type object
+  inside a list, a hash or a pair renders as its pairs (`say (MyEnum, 1)`
+  is `([AAA => 0 BBB => 1 …] 1)` where Rakudo says `((MyEnum) 1)`, and
+  `say %(x => MyEnum)` is no better), and so does one interpolated or
+  concatenated (`"{MyEnum}"`). Its `.elems` is 4 where Rakudo says 1, and
+  `my @a = MyEnum` flattens it to its four pairs.
