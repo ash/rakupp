@@ -1305,8 +1305,16 @@ void Interpreter::loadModuleImpl(const std::string& name, const std::vector<std:
         // codegen runs over the module graph, so `--exe` agrees with this.
         std::set<std::string> exported;
         collectExportedSubNames(prog->stmts, exported);
+        // Selective exports: `is export(:foo)` publishes only when the importer
+        // asks (`use Mod :foo`). The name→tags map, read against the tags the
+        // importer asked for below; a tag named MANDATORY always publishes.
+        std::map<std::string, std::vector<std::string>> exportTagsByName;
+        collectExportTagsByName(prog->stmts, exportTagsByName);
         // (an exported CODE VARIABLE is exported like a sub: `our &my-counter is
-        // export`, set in a BEGIN — S10-packages/precompilation.t)
+        // export`, set in a BEGIN — S10-packages/precompilation.t — and under its
+        // own tags like one: `constant &sp is export(:shortcuts) = &drop-spaces`
+        // had no entry above, so it was taken for a plain `is export`, which
+        // `use Mod :shortcuts` withheld and a bare `use Mod` let in, issue #60)
         // …and the `$`/`@`/`%` variables the module exports, the only ones its
         // importer may see by their bare names (the publish below)
         std::set<std::string> exportedVars;
@@ -1318,7 +1326,10 @@ void Interpreter::loadModuleImpl(const std::string& name, const std::vector<std:
                 if (!x || x->kind != NK::VarExpr) return;
                 const auto* ve = static_cast<const VarExpr*>(x);
                 if (!ve->d().declExport || ve->name.size() < 2) return;
-                if (ve->name[0] == '&') exported.insert(ve->name.substr(1));
+                if (ve->name[0] == '&') {
+                    exported.insert(ve->name.substr(1));
+                    if (!ve->d().exportTags.empty()) exportTagsByName[ve->name.substr(1)] = ve->d().exportTags;
+                }
                 else exportedVars.insert(ve->name);
             };
             if (e && e->kind == NK::ListExpr) for (auto& it : static_cast<const ListExpr*>(e)->items) one(it.get());
@@ -1340,11 +1351,6 @@ void Interpreter::loadModuleImpl(const std::string& name, const std::vector<std:
             if (st->kind == NK::SubDecl && static_cast<const SubDecl*>(st.get())->isOur)
                 globalOurSubs.insert("&" + static_cast<const SubDecl*>(st.get())->name);
         }
-        // Selective exports: `is export(:foo)` publishes only when the importer
-        // asks (`use Mod :foo`). Build the name→tags map and the requested-tag
-        // set; a tag named DEFAULT or MANDATORY always publishes.
-        std::map<std::string, std::vector<std::string>> exportTagsByName;
-        collectExportTagsByName(prog->stmts, exportTagsByName);
         std::set<std::string> requestedTags;
         // `use Mod :&name` names the SYMBOL, not a tag. A module publishes such a
         // routine under the bare tag (`is export(:ast-coerce)`), so the sigil is
