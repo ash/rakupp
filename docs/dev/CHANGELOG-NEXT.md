@@ -25,8 +25,8 @@ b05e989b (issue #193); 17e33a45 (issue #184); 5f87f445; 0e44c5a6 (issue
 #211); 8c871a25; 079427c0 (issue #175); 357cb4bb (issue #187); 6eddeeb5
 (issue #188); c50eb3b8 (issue #146); 09018c67 (issue #77); 099a2055 (issue
 #205); 18ef8f73 (issues #186 and #178); 642a320a; 62a3d9a5 (issue #212);
-17a71667 (issue #213); 46c4ef60 (issue #194); 2deb332a and eed42468 (issue
-#60).*
+17a71667 (issue #213); 46c4ef60 (issue #194); 2deb332a, eed42468 and
+710dccdb (issue #60).*
 
 ---
 
@@ -573,6 +573,15 @@ plain before 500c29e2 and native from it, unless they say otherwise.
   interpreted and compiled. t/regression/buf-write-in-place.raku agrees
   with Rakudo 2026.09, and t/aot/cases/buf-args prints Rakudo's output in
   all three of its modes.
+- **A sunk `if`, `given` or CATCH sinks its block's value, and so does a tap
+  or a whenever** (710dccdb; issue #60). A lazy value a call handed back — a
+  gather, a map whose block `return`s — never ran under `f() if $c`, at the
+  end of an `if`/`else`/`with`/`given` block, in a matched `when` or
+  `default` (in a given, a loop or a CATCH), or as a tap's or whenever's
+  block; a Failure there was dropped instead of detonating. Each is sunk now,
+  as in Rakudo, and a value that is kept (`my $x = do given …`) is kept
+  unrun. t/regression/sunk-construct-sinks-its-value.raku agrees with Rakudo
+  2026.09.
 
 ### Fixed: crashes
 
