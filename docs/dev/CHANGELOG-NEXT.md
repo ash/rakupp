@@ -27,7 +27,7 @@ b05e989b (issue #193); 17e33a45 (issue #184); 5f87f445; 0e44c5a6 (issue
 #205); 18ef8f73 (issues #186 and #178); 642a320a; 62a3d9a5 (issue #212);
 17a71667 (issue #213); 46c4ef60 (issue #194); 2deb332a, eed42468, 710dccdb,
 62b42a19, aaa97b24, 56d9a3a5, 3fae5f4e, 18ac7c39 and 2c05f00f (issue #60);
-f3fb83e3 and 5e611fa3 (issue #216); 67c35490 (issue #215); 820388ce.*
+f3fb83e3 and 5e611fa3 (issue #216); 67c35490 (issue #215); 820388ce and c9560e0d.*
 
 ---
 
@@ -654,6 +654,13 @@ plain before 500c29e2 and native from it, unless they say otherwise.
   type before computing it, an order C++ leaves open: GCC 15.3 at `-O3`
   took it the wrong way round, and the kernel read an Int as a string
   (SIGSEGV, every run). The Clang builds never crashed.
+- **Two threads refilling one array no longer abort the process**
+  (c9560e0d; found with issue #215). Eight `start` workers each running `@a
+  = …` on one array died every run, SIGTRAP or SIGABRT with nothing on
+  stderr: the in-place refill move-assigned into the array's storage, and
+  the second thread freed the buffer the first had freed. The refill takes
+  the storage's stripe now. t/race/array-refill-shared.raku: 50 runs in 50
+  died before, none in 200 now, in parallel mode and under RAKUPP_GIL=1.
 
 ### Fixed: what FatRoast found
 
@@ -1182,3 +1189,7 @@ does not.
   `.reverse`, `.map` and a copy of a kept head still copy the values; and
   `my $x := @a[0]` and `my \x = @a.head` still read their position after
   `@a = …`. TODO-FOLLOW-UPS.md has each.
+- A read on another thread while `@a = …` refills the array can still read
+  Nil (11 runs in 200 of eight threads reading and refilling) or die: the
+  read takes the element's stripe, not the storage's (c9560e0d).
+  TODO-FOLLOW-UPS.md has it.
