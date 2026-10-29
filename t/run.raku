@@ -719,6 +719,23 @@ section('--target=js (JavaScript backend)');
     my $qmsg = $p.err.slurp(:close);
     ok($p.exitcode == 0 && $qmsg eq '' && $qbin.IO.e, "--exe -q builds the binary and says nothing");
     try unlink $qbin;
+    # …and a precompiled header is one per macOS deployment target: clang reads
+    # MACOSX_DEPLOYMENT_TARGET from the environment, and refused a header built
+    # for another one (issue #199)
+    if $*KERNEL.name eq 'darwin' {
+        my $pch = $*TMPDIR.add("rakupp-suite-pch-$*PID");
+        my @built;
+        for <11.0 13.0> -> $min {
+            my $tbin = $*TMPDIR.add("rakupp-suite-exe-min-$*PID").Str;
+            my $tp = run($*EXECUTABLE, '--exe', '-q', $ROOT.add('examples/fibonacci.raku').Str, '-o', $tbin, :out, :err,
+                         :env(%(|%*ENV, MACOSX_DEPLOYMENT_TARGET => $min, RAKUPP_PCH_DIR => $pch.Str)));
+            $tp.out.slurp(:close); $tp.err.slurp(:close);
+            @built.push($tp.exitcode == 0 && $tbin.IO.e);
+            try unlink $tbin;
+        }
+        ok(@built.all.so, '--exe builds for two deployment targets with one header cache');
+        try { for $pch.dir { .unlink }; $pch.rmdir; }
+    }
 }
 # Native parity: deep recursion (real main-thread stack), CATCH .message on
 # builtin errors, block-final if/else value, Order-comparator sort — each of

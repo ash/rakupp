@@ -267,8 +267,10 @@ which is why it is larger than any binary built with it.
 - **Where:** `$XDG_CACHE_HOME/rakupp/pch`, or `~/.cache/rakupp/pch`;
   `RAKUPP_PCH_DIR` names another directory.
 - **One per build.** A header is named after the rakupp build, the compiler's
-  `--version` and the compile flags (`-O3` gets its own), so an upgraded
-  rakupp or compiler makes a new one rather than reading a stale one. The
+  `--version`, the compile flags (`-O3` gets its own) and the target the
+  compiler builds for (its predefined macros: `MACOSX_DEPLOYMENT_TARGET=11.0`
+  or `CXX="c++ -arch x86_64"` gets its own), so an upgraded rakupp or
+  compiler, or another target, makes a new one rather than reading a stale one. The
   three most recently used are kept — an installed rakupp and a checkout's
   build can share the directory without rebuilding each other's — and making
   a new one removes the rest.

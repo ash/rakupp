@@ -736,7 +736,7 @@ static std::string nativeCflags(const std::string& opt) {
 // it instead — a precompiled header. clang takes one as a `.pch` named with
 // -include-pch; GCC finds an `Interpreter.h.gch` in a directory searched ahead
 // of the real headers. It is built on the user's machine (it is tied to the
-// exact compiler), once per rakupp build, compiler and flag set, in the cache
+// exact compiler), once per rakupp build, compiler, flag set and target, in the cache
 // (~37 MB with clang); the three most recently used are kept. The compiler's
 // own --version is part of the key, so an
 // upgraded compiler gets a new header rather than refusing a stale one.
@@ -767,6 +767,19 @@ static std::string exePchFlags(const std::string& cxx, const std::string& cflags
     const bool gcc = !clang && (version.find("Free Software Foundation") != std::string::npos ||
                                 version.find("g++") != std::string::npos || version.find("GCC") != std::string::npos);
     if (!clang && !gcc) return "";
+    // The target a header is built for is more than the command line names:
+    // clang takes the macOS deployment target from MACOSX_DEPLOYMENT_TARGET
+    // in the environment too, and a header built for 11.0 is refused by a
+    // compile for 13.0 ("PCH file was compiled for the target …", issue #199).
+    // The compiler's predefined macros carry the target, the architecture and
+    // the minimum OS version wherever they came from, so they join the key.
+    std::string macros;
+    if (FILE* p = ::popen((cxx + cflags + " -x c++ -E -dM /dev/null 2>&1").c_str(), "r")) {
+        char buf[4096];
+        size_t n;
+        while ((n = std::fread(buf, 1, sizeof buf, p)) > 0) macros.append(buf, n);
+        ::pclose(p);
+    }
     std::string dir;
     if (const char* d = std::getenv("RAKUPP_PCH_DIR"); d && *d) dir = d;
     else if (const char* x = std::getenv("XDG_CACHE_HOME"); x && *x) dir = std::string(x) + "/rakupp/pch";
@@ -779,7 +792,7 @@ static std::string exePchFlags(const std::string& cxx, const std::string& cflags
     if (::stat(selfExe.c_str(), &st) == 0)
         self += "|" + std::to_string((long long)st.st_size) + "|" + std::to_string((long long)st.st_mtime);
     const std::string build = pchFnv(self).substr(0, 8);
-    const std::string stem = "exe-" + build + "-" + pchFnv(cxx + "|" + version + "|" + cflags);
+    const std::string stem = "exe-" + build + "-" + pchFnv(cxx + "|" + version + "|" + cflags + "|" + macros);
     const std::string target = clang ? dir + "/" + stem + ".pch" : dir + "/" + stem + "/Interpreter.h.gch";
     const std::string flags = clang ? " -include-pch " + shq(target) : " -I " + shq(dir + "/" + stem);
     // (a use marks it recent: the pruning below keeps the most recently used)
