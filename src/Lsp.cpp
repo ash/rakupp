@@ -376,7 +376,7 @@ Json computeDiagnostics(const std::string& src) {
                 std::string msg = d.message();
                 for (size_t p; (p = msg.find("\n    ")) != std::string::npos; )
                     msg.replace(p, 5, msg[p - 1] == ':' ? " " : ", ");
-                findings.push_back({d.line, 'E', "will-never-work", msg, d.name});
+                findings.push_back({d.line, 'E', d.undeclared ? "undeclared-routine" : "will-never-work", msg, d.name});
             }
         } catch (...) {
             addDiag(1, 3, "callcheck-unavailable", "the will-never-work check did not run");

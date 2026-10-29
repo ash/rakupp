@@ -10,6 +10,7 @@
 #include <memory>
 #include <set>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 namespace rakupp {
@@ -941,6 +942,7 @@ struct Checker {
             case NK::Unary: walkExpr(static_cast<const Unary*>(e)->operand.get()); return;
             case NK::Assign: {
                 auto* a = static_cast<const Assign*>(e);
+                if (a->target && a->target->kind == NK::VarExpr) earlyInitializer(a);
                 walkExpr(a->target.get()); walkExpr(a->value.get()); return;
             }
             case NK::Binary: {
@@ -993,7 +995,10 @@ struct Checker {
                 walkBody(sd->params, sd->body, &sd->altParams);
                 return;
             }
-            case NK::Block: walkBlock(static_cast<const Block*>(s)); return;
+            case NK::Block:
+                if (static_cast<const Block*>(s)->phaser == "BEGIN") earlyBegin(static_cast<const Block*>(s));
+                walkBlock(static_cast<const Block*>(s));
+                return;
             case NK::IfStmt: {
                 auto* f = static_cast<const IfStmt*>(s);
                 for (size_t i = 0; i < f->branches.size(); i++) {
@@ -1070,6 +1075,257 @@ struct Checker {
             }
             default: return;
         }
+    }
+
+    // ---- a call made while the unit compiles (issue #196) --------------------
+    //
+    // A constant's initializer and a BEGIN block run as soon as they are
+    // compiled, and Rakudo looks every routine they name up then, so one the
+    // unit declares only further down is "Undeclared routine": `constant A =
+    // f(); sub f { 1 }`. What the probes against Rakudo 2026.09 showed:
+    //   · in the initializer, every name outside a nested block is looked up,
+    //     run or not: `1 || f()`, `0 ?? f() !! 1`, `try f()`; a block's are
+    //     not, `[1].map({ f() })` builds and runs later;
+    //   · a routine declared above that the code calls is compiled then, and
+    //     the names in its body are looked up too, nested blocks and `try`
+    //     aside, even past a `return`;
+    //   · a BEGIN block's body is such a body;
+    //   · an outer routine declared above answers before an inner one declared
+    //     below, and so does a builtin.
+    // Only what is certain is reported: a called routine is followed only from
+    // a place that surely runs, and a `do` block's body only where it surely
+    // runs. "Above" is source order (stmtSeq), so a one-line program counts.
+
+    std::unordered_map<const Node*, int> seq_;   // pre-order position, built on first need
+    const std::vector<StmtPtr>* unitStmts = nullptr;
+    std::set<std::string> earlyReported;
+
+    int seqOf(const Node* n) {
+        if (seq_.empty() && unitStmts) {
+            int k = 0;
+            Visitor v;
+            v.onStmt = [&](const Stmt* s) { seq_.emplace(s, k++); };
+            v.onExpr = [&](const Expr* e) { seq_.emplace(e, k++); };
+            v.stmts(*unitStmts);
+        }
+        auto it = seq_.find(n);
+        return it == seq_.end() ? -1 : it->second;
+    }
+
+    struct Early {
+        int at = -1;               // the position the code runs at
+        int from = 0;              // the innermost scope its names are looked up in
+        std::set<std::string> locals;   // names the routine being followed declares itself
+        bool lookAll = true;       // every name is looked up, or only what surely runs
+        bool initializer = false;  // the initializer itself, not a body it runs
+        int line = 0;              // the statement being read, for a node that has no line
+        int depth = 0;
+        std::set<const SubDecl*>* seen = nullptr;
+    };
+    enum { E_UNKNOWN, E_ABOVE, E_BELOW };
+
+    // Where `name` stands relative to `x.at`: declared above it in the nearest
+    // scope that has it (with that sub and its scope when it is the only one),
+    // only below it in every scope that has it, or nothing this pass can say.
+    int earlyResolve(const std::string& name, const Early& x, const SubDecl** only, int* where) {
+        if (x.locals.count(name)) return E_UNKNOWN;
+        bool below = false;
+        for (int i = x.from; i >= 0; i--) {
+            const Scope& sc = scopes[i];
+            if (sc.terms.count(name) || sc.vars.count("&" + name)) return below ? E_BELOW : E_UNKNOWN;
+            auto r = sc.subs.find(name);
+            if (r == sc.subs.end()) continue;
+            const Routines& rs = r->second;
+            std::vector<const SubDecl*> all(rs.multis.begin(), rs.multis.end());
+            if (rs.only) all.push_back(rs.only);
+            if (rs.proto) all.push_back(rs.proto);
+            int above = 0;
+            for (auto* sd : all) {
+                const int s = seqOf(sd);
+                if (s < 0) return E_UNKNOWN;
+                if (s < x.at) above++;
+            }
+            if (above) {
+                if (rs.only && all.size() == 1) { *only = rs.only; *where = i; }
+                return E_ABOVE;
+            }
+            below = true;   // (an outer one declared above would answer)
+        }
+        return below ? E_BELOW : E_UNKNOWN;
+    }
+
+    // `name`, written at `line`, is looked up by code running at `x.at`; a
+    // routine declared above is followed when the place surely runs
+    void earlyName(const std::string& name, int line, bool sure, Early& x) {
+        if (name.empty() || name.find(':') != std::string::npos) return;
+        const SubDecl* only = nullptr;
+        int where = 0;
+        const int r = earlyResolve(name, x, &only, &where);
+        if (r == E_BELOW) {
+            if ((*isCore)(name) || !earlyReported.insert(name).second) return;   // a builtin answers before
+            DoomedCall d;
+            d.undeclared = true;
+            d.name = name;
+            d.line = line ? line : x.line ? x.line : curLine;
+            out.push_back(std::move(d));
+        }
+        else if (r == E_ABOVE && only && sure) earlyBody(only->params, only->body, where, x, only);
+    }
+
+    // a routine or block body run now: the names its statements hold, outside
+    // the blocks nested in them, are looked up as it compiles
+    void earlyBody(const std::vector<Param>& ps, const std::vector<StmtPtr>& body, int from, Early& outer,
+                   const SubDecl* sd = nullptr, bool lookAll = true) {
+        if (outer.depth > 16 || (sd && !outer.seen->insert(sd).second)) return;
+        Early x;
+        x.at = outer.at; x.from = from; x.lookAll = lookAll; x.depth = outer.depth + 1; x.seen = outer.seen;
+        x.locals = outer.locals;
+        x.line = outer.line;
+        // what the body declares itself is its own, wherever it is declared
+        auto local = [&](std::string n) {
+            if (n.empty()) return;
+            if (n[0] == '&' || n[0] == '\\') n = n.substr(1);
+            else if (std::strchr("$@%", n[0])) return;
+            x.locals.insert(n);
+        };
+        for (auto& p : ps) local(p.name);
+        Visitor v;
+        v.onStmt = [&](const Stmt* s) { if (s->kind == NK::SubDecl) local(static_cast<const SubDecl*>(s)->name); };
+        v.onExpr = [&](const Expr* e) {
+            if (e->kind == NK::VarExpr && static_cast<const VarExpr*>(e)->declare) local(static_cast<const VarExpr*>(e)->name);
+        };
+        v.stmts(body);
+        bool sure = true;
+        for (auto& st : body) {
+            const Stmt* s = st.get();
+            if (!s) continue;
+            if (s->line) x.line = s->line;
+            if (s->kind == NK::ExprStmt) {
+                const Expr* e = static_cast<const ExprStmt*>(s)->e.get();
+                earlyExpr(e, sure, x);
+                // (what follows a `die`, a `fail` or an `exit` may not run)
+                if (e && e->kind == NK::Call) {
+                    const std::string& n = static_cast<const Call*>(e)->name;
+                    if (n == "die" || n == "fail" || n == "exit" || n == "return" || n == "return-rw") sure = false;
+                }
+            }
+            else if (s->kind == NK::VarDecl) earlyExpr(static_cast<const VarDecl*>(s)->init.get(), sure, x);
+            else if (s->kind == NK::ReturnStmt) { earlyExpr(static_cast<const ReturnStmt*>(s)->value.get(), sure, x); sure = false; }
+            else if (s->kind != NK::SubDecl && s->kind != NK::UseStmt) sure = false;   // a branch, a loop, a block
+        }
+    }
+
+    void earlyExpr(const Expr* e, bool sure, Early& x) {
+        if (!e) return;
+        auto look = [&](const std::string& name, int line) { if (x.lookAll || sure) earlyName(name, line, sure, x); };
+        switch (e->kind) {
+            case NK::Call: {
+                auto* c = static_cast<const Call*>(e);
+                if (!c->callee && !c->name.empty()) look(c->name, c->line);
+                // `(sub { … })()` runs the block now
+                if (c->callee && c->callee->kind == NK::BlockExpr) {
+                    auto* be = static_cast<const BlockExpr*>(c->callee.get());
+                    if (sure) earlyBody(be->params, be->body, x.from, x, nullptr, x.lookAll);
+                }
+                else earlyExpr(c->callee.get(), sure, x);
+                const bool later = c->name == "lazy" || c->name == "start";
+                for (auto& a : c->args) earlyExpr(a.get(), sure && !later, x);
+                return;
+            }
+            case NK::NameTerm: {
+                auto* n = static_cast<const NameTerm*>(e);
+                if (!n->defConstraint && n->ofType.empty() && !n->pkgSelf && !n->symbolicStrict) look(n->name, n->line);
+                return;
+            }
+            case NK::VarExpr: {
+                // `&f`, `.map(&f)`, `.&f`: a reference is looked up too
+                auto* v = static_cast<const VarExpr*>(e);
+                if (!v->declare && v->name.size() > 1 && v->name[0] == '&' && !std::strchr("*?!.^:=~<", v->name[1]))
+                    if (x.lookAll || sure) earlyName(v->name.substr(1), v->line, /*sure=*/false, x);
+                return;
+            }
+            case NK::MethodCall: {
+                auto* m = static_cast<const MethodCall*>(e);
+                if (m->method.size() > 1 && m->method[0] == '&' && (x.lookAll || sure))
+                    earlyName(m->method.substr(1), m->line, false, x);
+                earlyExpr(m->inv.get(), sure, x); earlyExpr(m->methodExpr.get(), sure, x);
+                for (auto& a : m->args) earlyExpr(a.get(), sure, x);
+                return;
+            }
+            case NK::Unary: {
+                auto* u = static_cast<const Unary*>(e);
+                if (u->op == "do" && u->operand && u->operand->kind == NK::BlockExpr) {
+                    auto* be = static_cast<const BlockExpr*>(u->operand.get());
+                    if (sure) earlyBody(be->params, be->body, x.from, x, nullptr, /*lookAll=*/false);
+                    return;
+                }
+                // a routine's `try` compiles its operand when it runs; the
+                // initializer's own is looked up with the rest of it
+                if (u->op == "try" && !x.initializer) return;
+                const bool later = u->op == "try" || u->op == "lazy" || u->op == "gather" || u->op == "start";
+                earlyExpr(u->operand.get(), sure && !later, x);
+                return;
+            }
+            case NK::Binary: {
+                auto* b = static_cast<const Binary*>(e);
+                static const std::set<std::string> kThunky = {
+                    "&&", "||", "//", "^^", "and", "or", "xor", "andthen", "orelse", "notandthen",
+                    "ff", "^ff", "ff^", "^ff^", "fff", "^fff", "fff^", "^fff^"};
+                const bool thunk = kThunky.count(b->op) > 0;
+                earlyExpr(b->lhs.get(), sure && b->op != "xx", x);
+                earlyExpr(b->rhs.get(), sure && !thunk, x);
+                return;
+            }
+            case NK::Ternary: {
+                auto* t = static_cast<const Ternary*>(e);
+                earlyExpr(t->cond.get(), sure, x);
+                earlyExpr(t->then.get(), false, x); earlyExpr(t->els.get(), false, x);
+                return;
+            }
+            case NK::ChainExpr: {
+                auto& ops = static_cast<const ChainExpr*>(e)->operands;
+                for (size_t i = 0; i < ops.size(); i++) earlyExpr(ops[i].get(), sure && i < 2, x);
+                return;
+            }
+            case NK::Assign: {
+                auto* a = static_cast<const Assign*>(e);
+                earlyExpr(a->target.get(), sure, x); earlyExpr(a->value.get(), sure, x); return;
+            }
+            case NK::Index: {
+                auto* i = static_cast<const Index*>(e);
+                earlyExpr(i->base.get(), sure, x); earlyExpr(i->index.get(), sure, x); return;
+            }
+            case NK::Range: {
+                auto* r = static_cast<const RangeExpr*>(e);
+                earlyExpr(r->from.get(), sure, x); earlyExpr(r->to.get(), sure, x); return;
+            }
+            case NK::Pair: {
+                auto* p = static_cast<const PairExpr*>(e);
+                earlyExpr(p->keyExpr.get(), sure, x); earlyExpr(p->value.get(), sure, x); return;
+            }
+            case NK::AllomorphLit: earlyExpr(static_cast<const AllomorphLit*>(e)->num.get(), sure, x); return;
+            case NK::ListExpr:  for (auto& i : static_cast<const ListExpr*>(e)->items) earlyExpr(i.get(), sure, x); return;
+            case NK::ArrayLit:  for (auto& i : static_cast<const ArrayLit*>(e)->items) earlyExpr(i.get(), sure, x); return;
+            case NK::HashLit:   for (auto& i : static_cast<const HashLit*>(e)->items) earlyExpr(i.get(), sure, x); return;
+            case NK::InterpStr: for (auto& i : static_cast<const InterpStr*>(e)->parts) earlyExpr(i.get(), sure, x); return;
+            default: return;   // a block's body runs later, if at all
+        }
+    }
+
+    // the two places compiled code runs at once
+    void earlyInitializer(const Assign* a) {
+        auto* v = static_cast<const VarExpr*>(a->target.get());
+        if (!v->declare || v->d().declScope != "constant") return;
+        std::set<const SubDecl*> seen;
+        Early x;
+        x.at = seqOf(a); x.from = (int)scopes.size() - 1; x.seen = &seen; x.initializer = true; x.line = a->line;
+        if (x.at >= 0) earlyExpr(a->value.get(), true, x);
+    }
+    void earlyBegin(const Block* b) {
+        std::set<const SubDecl*> seen;
+        Early x;
+        x.at = seqOf(b); x.from = (int)scopes.size() - 1; x.seen = &seen; x.line = b->line;
+        if (x.at >= 0) earlyBody({}, b->stmts, x.from, x);
     }
 
     // ---- judging one call ------------------------------------------------------
@@ -1547,6 +1803,7 @@ struct Checker {
 } // namespace
 
 std::string DoomedCall::message() const {
+    if (undeclared) return "Undeclared routine:\n    " + name + " used at line " + std::to_string(line);
     std::string args;
     for (auto& a : arguments) args += (args.empty() ? "" : ", ") + a;
     std::string m = "Calling " + name + "(" + args + ") will never work with ";
@@ -1563,6 +1820,7 @@ std::vector<DoomedCall> findDoomedCalls(const Program& prog, const std::vector<s
                                         const std::function<bool(const std::string&)>& isCoreRoutine) {
     Checker C;
     C.isCore = &isCoreRoutine;
+    C.unitStmts = &prog.stmts;
     C.langRev = prog.langRev;
     C.survey(prog.stmts);
     if (C.standDown) return {};

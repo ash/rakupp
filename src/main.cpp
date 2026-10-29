@@ -1650,6 +1650,9 @@ static std::vector<DoomedCall> doomedCallsOf(const Program& prog, const std::vec
     });
 }
 
+// the rule a finding of the call check is filed under, by --lint and -c --json
+static const char* callRule(const DoomedCall& d) { return d.undeclared ? "undeclared-routine" : "will-never-work"; }
+
 static int declCheckGate(const std::string& src, const std::string& fileName,
                          const std::vector<std::string>& searchPath) {
     if (!declCheckEnabled() && !callCheckEnabled()) return -1;
@@ -4342,7 +4345,7 @@ int main(int argc, char** argv) {
         if (!dc.empty()) {
             if (!jsonOut) return reportDoomedCalls(dc, fileName, src);
             std::vector<std::string> items;
-            for (auto& d : dc) items.push_back(jsonFinding(fileName, d.line, "error", "will-never-work", d.message()));
+            for (auto& d : dc) items.push_back(jsonFinding(fileName, d.line, "error", callRule(d), d.message()));
             printJsonFindings(items);
             return 1;
         }
@@ -4389,7 +4392,7 @@ int main(int argc, char** argv) {
             std::string msg = d.message();
             for (size_t p; (p = msg.find("\n    ")) != std::string::npos; )
                 msg.replace(p, 5, msg[p - 1] == ':' ? " " : ", ");
-            findings.push_back({d.line, 'E', "will-never-work", msg});
+            findings.push_back({d.line, 'E', callRule(d), msg});
         }
         std::stable_sort(findings.begin(), findings.end(),
                          [](const LintFinding& a, const LintFinding& b) {

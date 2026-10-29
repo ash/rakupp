@@ -19,6 +19,10 @@ struct DoomedCall {
     std::vector<std::string> signatures;
     bool multi = false;
     bool protoguilt = false;
+    // …or a routine the unit runs while it is still compiling (a constant's
+    // initializer, a BEGIN block) and declares only below that point: Rakudo's
+    // "Undeclared routine", X::Undeclared::Symbols (issue #196)
+    bool undeclared = false;
     std::string message() const;
 };
 
@@ -42,6 +46,12 @@ struct DoomedCall {
 // if it truly can never bind. Rakudo types `my @a` as Positional and so refuses
 // `f(@a)` against an `Iterable $x` that an Array satisfies at run time; this
 // pass judges `my @a` as the Array it is, and leaves such a call to run.
+//
+// It also finds a call that runs while the unit compiles — in a constant's
+// initializer or a BEGIN block, or in a routine one of those calls — to a routine
+// declared only further down: `constant A = f(); sub f { 1 }` is "Undeclared
+// routine" in Rakudo, which looks each such name up as it compiles the code that
+// runs then.
 //
 // Like findUndeclaredVars it must never refuse a working program, so it stands
 // down — reports nothing — wherever it cannot see enough: a name an imported

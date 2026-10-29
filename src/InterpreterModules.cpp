@@ -2774,6 +2774,15 @@ Value Interpreter::evalString(const std::string& srcIn, bool mainlinePH, bool* i
         auto dc = findDoomedCalls(*prog, libPaths_, [this](const std::string& n) { return builtinRef(n) != nullptr; });
         if (!dc.empty()) {
             const DoomedCall& d = dc.front();
+            if (d.undeclared) {   // a routine run while compiling, declared further down (#196)
+                Value unk = Value::makeHash(), at = Value::array();
+                at.isList = true;
+                at.arr()->push_back(Value::integer(d.line));
+                (*unk.hash())[d.name] = at;
+                throwTypedV("X::Undeclared::Symbols",
+                    {{"unk_routines", unk}, {"routine_suggestion", Value::makeHash()},
+                     {"type_suggestion", Value::makeHash()}}, d.message());
+            }
             Value argTypes = Value::array(); argTypes.isList = true;
             for (auto& a : d.arguments) argTypes.arr()->push_back(Value::str(a));
             std::string sig;
