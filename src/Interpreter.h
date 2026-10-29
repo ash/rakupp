@@ -3779,6 +3779,7 @@ public:
     // package's qualified globals in, so `our`-scoped symbols show up too.
     std::map<std::string, PRef<ValueMap>> pkgStashes_;
     std::shared_ptr<ClassInfo> howClsInfo_; // shared class of persistent .HOW metaobjects (see m == "HOW")
+    std::shared_ptr<ClassInfo> howGrammarClsInfo_;   // …a grammar's: Metamodel::GrammarHOW, a ClassHOW
     std::unordered_map<std::string, std::string> classAliases_;
     // …the ones the PROGRAM's own declarations made (not a module's): those
     // answer only inside their package (see the NameTerm arm)

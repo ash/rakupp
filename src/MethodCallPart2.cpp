@@ -9626,7 +9626,7 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
     // Test::META chain).
     {
         const std::string* howObjName = inv.t == VT::Object && inv.obj() && inv.obj()->cls &&
-            (inv.obj()->cls->name == "Metamodel::ClassHOW" ||
+            (inv.obj()->cls->name == "Metamodel::ClassHOW" || inv.obj()->cls->name == "Metamodel::GrammarHOW" ||
              inv.obj()->cls->name == "Metamodel::ParametricRoleGroupHOW" ||
              inv.obj()->cls->name == "Metamodel::CurriedRoleHOW" ||
              inv.obj()->cls->name == "Metamodel::ConcreteRoleHOW") ? &inv.obj()->cls->name : nullptr;
@@ -10826,8 +10826,15 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
                     howRoleClsInfo_ = std::make_shared<ClassInfo>();
                     howRoleClsInfo_->name = "Metamodel::ParametricRoleGroupHOW";
                 }
+                // …and a GRAMMAR's is a GrammarHOW, which is a ClassHOW: Rakudo
+                // answers both smartmatches True (seen checking issue #214)
+                if (hci->isGrammar && !howGrammarClsInfo_) {
+                    howGrammarClsInfo_ = std::make_shared<ClassInfo>();
+                    howGrammarClsInfo_->name = "Metamodel::GrammarHOW";
+                    howGrammarClsInfo_->parent = howClsInfo_;
+                }
                 Value h; h.t = VT::Object; h.setObj(makePayload<ObjectData>());
-                h.obj()->cls = hci->isRole ? howRoleClsInfo_ : howClsInfo_;
+                h.obj()->cls = hci->isRole ? howRoleClsInfo_ : hci->isGrammar ? howGrammarClsInfo_ : howClsInfo_;
                 h.obj()->attrs["__type"] = Value::typeObj(hci->name);
                 hci->howObj = std::move(h);
             }
