@@ -29,7 +29,7 @@ b05e989b (issue #193); 17e33a45 (issue #184); 5f87f445; 0e44c5a6 (issue
 62b42a19, aaa97b24, 56d9a3a5, 3fae5f4e, 18ac7c39 and 2c05f00f (issue #60);
 f3fb83e3 and 5e611fa3 (issue #216); 67c35490 (issue #215); 820388ce and
 c9560e0d; d1c84b6b (issue #199); a1bb0e7b (issue #191); 55565059 (issue
-#177); ad2bba29 (issue #176); 308aecdf (issue #179).*
+#177); ad2bba29 (issue #176); 308aecdf (issue #179); 94172cb6.*
 
 ---
 
@@ -704,6 +704,12 @@ plain before 500c29e2 and native from it, unless they say otherwise.
   target …". The name holds the compiler's predefined macros now, so each
   target gets a header of its own; t/run.raku builds for 11.0 and 13.0 with
   one cache on macOS.
+- **A utf8-c8 string holding a stray continuation byte answers positions on
+  every call** (94172cb6). The empty table cached to mean "no grapheme
+  table" was handed back as a table from the second call on: `.index` from a
+  position missed, `.substr` saw -1 characters, and `.rindex` died of
+  SIGSEGV. t/regression/utf8-c8-stray-byte-positions.raku agrees with Rakudo
+  2026.09.
 
 ### Fixed: what FatRoast found
 
