@@ -10283,9 +10283,9 @@ void Interpreter::setupRwLinks(const std::vector<Param>* params, std::shared_ptr
             Value* pv = env->local(p.name);
             // `hashKind` is empty on every ordinary value, and this runs for every
             // plain scalar parameter of every call — so test that before comparing
-            // it against two literals (each of those is a strlen plus a memcmp).
-            if (pv && pv->t == VT::Str && !pv->hashKind.empty() &&
-                (pv->hashKind == "Buf" || pv->hashKind == "Blob"))
+            // it against a literal (a strlen plus a memcmp). A Blob is immutable,
+            // so it has nothing to copy back (issue #177).
+            if (pv && pv->t == VT::Str && !pv->hashKind.empty() && pv->hashKind == "Buf")
                 env->x().rwSynced[p.name] = *pv;
         }
         // `f(($a, 2))`: the List a parameter of a ROUTINE holds keeps $a's
@@ -15194,7 +15194,15 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
         }
         if (invE) {
             Value* bp = lvalue(invE);
-            if (bp && bp->t == VT::Str && (bp->hashKind == "Buf" || bp->hashKind == "Blob")) {
+            // a Blob is immutable: Rakudo has no subbuf-rw for it, and a Blob
+            // parameter is not copied back to the caller (issue #177)
+            if (bp && bp->t == VT::Str && bp->hashKind == "Blob") {
+                const std::string tn = bp->typeName();
+                throwTypedV("X::Method::NotFound",
+                            {{"typename", Value::str(tn)}, {"method", Value::str("subbuf-rw")}, {"invocant", *bp}},
+                            "No such method 'subbuf-rw' for invocant of type '" + tn + "'");
+            }
+            if (bp && bp->t == VT::Str && bp->hashKind == "Buf") {
                 long long n = (long long)bp->s.size();
                 long long from = sbArgs->size() > argOfs ? eval((*sbArgs)[argOfs].get()).toInt() : 0;
                 long long len  = sbArgs->size() > argOfs + 1 ? eval((*sbArgs)[argOfs + 1].get()).toInt() : n - from;

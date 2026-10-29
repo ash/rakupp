@@ -1743,7 +1743,10 @@ void Interpreter::copyOutRw(const std::vector<Param>* params, std::shared_ptr<En
             if (sy == fe->xr().rwSynced.end()) return false;
             syv = sy->second;
         }
-        return valueEqv(cur, syv);
+        // (the same body is the same value, and costs nothing to tell: a 16 MB
+        // Buf the callee did not write was compared byte by byte, 1 ms a call,
+        // issue #177)
+        return cur.sameRep(syv) || valueEqv(cur, syv);
     };
     auto hasSynced = [&](const std::string& n) { ParStripe ss(*this, fe); return fe->xr().rwSynced.count(n) > 0; };
     auto noneSynced = [&]() { ParStripe ss(*this, fe); return fe->xr().rwSynced.empty(); };
