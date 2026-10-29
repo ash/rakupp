@@ -864,19 +864,62 @@ size_t uniGraphemeCount(const std::vector<uint32_t>& cps) {
     return uniGraphemeStarts(cps).size();
 }
 
+// The walk from a fresh start at s[0] the two below make: `brk(at)` at the
+// byte offset of every cluster after the first, false to stop. Two codepoints
+// below U+0300 with no CR first always break (nothing there extends, prepends
+// or joins but CR LF, and the state after a break is the fresh one), so text
+// in ASCII and Latin-1 skips the property lookups: the grapheme table of 16 MB
+// with an é in it took 270 ms, 4 MB 68 ms (issue #179).
+template <class F> static void graphemeWalkUtf8(const char* s, size_t len, F&& brk) {
+    if (!len) return;
+    uint32_t prev;
+    size_t p = decUtf8(s, 0, len, prev);
+    GbState st(prev);
+    bool fresh = false;   // st is stale: GbState(prev) is the state, made when the rules need it
+    while (p < len) {
+        uint32_t cp;
+        const size_t at = p;
+        p += decUtf8(s, p, len, cp);
+        bool b = true;
+        if (prev < 0x300 && cp < 0x300 && prev != '\r') fresh = true;
+        else {
+            if (fresh) { st = GbState(prev); fresh = false; }
+            int cur = gbProp(cp), ip = incbProp(cp);
+            b = gbBreakBefore(st, cur, ip);
+            gbAdvance(st, cur, ip, b);
+        }
+        if (b && !brk(at)) return;
+        prev = cp;
+    }
+}
+
 size_t uniGraphemeCountUtf8(const char* s, size_t len) {
     if (!len) return 0;
-    uint32_t cp;
-    size_t p = decUtf8(s, 0, len, cp), n = 1;
-    GbState st(cp);
-    while (p < len) {
-        p += decUtf8(s, p, len, cp);
-        int cur = gbProp(cp), ip = incbProp(cp);
-        bool brk = gbBreakBefore(st, cur, ip);
-        n += brk;
-        gbAdvance(st, cur, ip, brk);
-    }
+    size_t n = 1;
+    graphemeWalkUtf8(s, len, [&](size_t) { n++; return true; });
     return n;
+}
+
+// The byte offset where each cluster of s[0, len) starts, then `len`. False,
+// with `out` empty, where utf8cp and a count of lead bytes disagree on the
+// codepoints: a stray continuation byte, which is a synthetic, and so a
+// cluster of its own.
+bool uniGraphemeStartsUtf8(const char* s, size_t len, std::vector<uint32_t>& out) {
+    auto stray = [s](size_t at) { return ((unsigned char)s[at] & 0xC0) == 0x80; };
+    out.clear();
+    if (len) {
+        if (stray(0)) return false;
+        out.push_back(0);
+        bool ok = true;
+        graphemeWalkUtf8(s, len, [&](size_t at) {
+            if (stray(at)) return ok = false;
+            out.push_back((uint32_t)at);
+            return true;
+        });
+        if (!ok) { out.clear(); return false; }
+    }
+    out.push_back((uint32_t)len);
+    return true;
 }
 
 // A boundary between `prev` and `cur` whatever came before `prev`: the rules

@@ -2878,8 +2878,13 @@ long long cowGraphemeCount(const CowStr& s) {
     if (!b) return graphemeCount(s.str());
     long long n = b->nGraphemes.load(std::memory_order_relaxed);
     if (n < 0) {
-        n = cowByteIsGraphemeIndex(s) ? (long long)b->size()
-                                      : (long long)uniGraphemeCount(utf8cp(b->str()), b->str());
+        // (the grapheme table's count where it is built, else one walk over
+        // the bytes: decoding them first cost `.chars` 225 ms on 16 MB with an
+        // é in it, #179)
+        const std::vector<uint32_t>* gi = b->gIndex.load(std::memory_order_acquire);
+        if (cowByteIsGraphemeIndex(s)) n = (long long)b->size();
+        else if (gi && !gi->empty()) n = (long long)gi->size() - 1;
+        else n = (long long)uniGraphemeCountUtf8(b->str().data(), b->size());
         b->nGraphemes.store(n, std::memory_order_relaxed);
     }
     return n;
@@ -2909,22 +2914,22 @@ const std::vector<uint32_t>* cowCpIndex(const CowStr& s) {
     delete mine;
     return expect;
 }
+bool uniGraphemeStartsUtf8(const char* s, size_t len, std::vector<uint32_t>& out);   // Unicode.cpp
 const std::vector<uint32_t>* cowGraphemeIndex(const CowStr& s) {
     const StrBody* b = s.body();
     if (!b) return nullptr;
     const std::vector<uint32_t>* t = b->gIndex.load(std::memory_order_acquire);
     if (t) return t;
     const std::string& x = b->str();
-    const std::vector<uint32_t>* ci = cowCpIndex(s); // byte offset per codepoint
-    auto cps = utf8cp(x);
+    // One walk over the bytes, deciding each boundary as the decoded codepoints
+    // would: decoding them, indexing them and mapping their cluster starts back
+    // to bytes took 17 ms a MB, the first `.index($n, $pos)` on 4 MB of text
+    // with an é in it 68 ms (issue #179).
     auto* mine = new std::vector<uint32_t>;
-    if (ci && cps.size() + 1 == ci->size()) {
-        auto starts = uniGraphemeStarts(cps, x); // cluster starts, codepoint space
-        mine->reserve(starts.size() + 1);
-        for (size_t g : starts) mine->push_back((*ci)[g]);
-        mine->push_back((uint32_t)x.size());
-    }
-    // else: decode disagreement (malformed UTF-8) — install the EMPTY table as
+    mine->reserve(x.size() / 2 + 2);
+    uniGraphemeStartsUtf8(x.data(), x.size(), *mine);
+    mine->shrink_to_fit();
+    // empty: decode disagreement (malformed UTF-8) — install the EMPTY table as
     // a cached negative so the disagreement is not re-derived per call; callers
     // treat empty as "no table" and keep the legacy path
     const std::vector<uint32_t>* expect = nullptr;
