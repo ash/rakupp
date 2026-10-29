@@ -29,7 +29,7 @@ b05e989b (issue #193); 17e33a45 (issue #184); 5f87f445; 0e44c5a6 (issue
 62b42a19, aaa97b24, 56d9a3a5, 3fae5f4e, 18ac7c39 and 2c05f00f (issue #60);
 f3fb83e3 and 5e611fa3 (issue #216); 67c35490 (issue #215); 820388ce and
 c9560e0d; d1c84b6b (issue #199); a1bb0e7b (issue #191); 55565059 (issue
-#177); ad2bba29 (issue #176).*
+#177); ad2bba29 (issue #176); 308aecdf (issue #179).*
 
 ---
 
@@ -219,6 +219,16 @@ plain before 500c29e2 and native from it, unless they say otherwise.
   Write and update handles and Windows keep the copy.
   t/regression/handle-read-reads-what-it-asks.raku agrees with Rakudo
   2026.09.
+- **A non-ASCII string's grapheme table and `.chars` take one walk over its
+  bytes** (308aecdf; issue #179). The table `.index` and `.substr` read was
+  built by decoding the string, indexing its codepoints and mapping cluster
+  starts back to bytes, 17 ms a MB, and `.chars` decoded it too; one pass
+  over the UTF-8 does each now, and a pair of codepoints below U+0300 skips
+  the property lookups. 16 MB with an é every eight characters: `.chars` 226
+  → 13 ms, the first `.index($n, $pos)` 271 → 25 ms. The issue's script on 4
+  MB with é: 0.136 → 0.013 ms a call (Rakudo 2026.09: 0.001). 800 random
+  strings over every cluster rule split the same before and after.
+  t/regression/grapheme-table-one-walk.raku agrees with Rakudo 2026.09.
 
 ### New
 
