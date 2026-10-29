@@ -8224,6 +8224,91 @@ static void topicWriteBack(Interpreter& I, Value* wb, const Value* guard, Env& e
     else try { *wb = I.elemAliasStore(*guard, it->second); } catch (...) {}
 }
 
+// Invoking a value that is not a Code: what callCallableRaw does with one,
+// out of its line so the common case stays short. Answers or throws.
+Value Interpreter::callNonCode(const Value& codeVal, ValueList args, const std::vector<ExprPtr>* rwArgs) {
+    // an object (or type object) with a CALL-ME method is invokable: $obj(…)
+    if (codeVal.t == VT::Object && codeVal.obj() && codeVal.obj()->cls) {
+        if (Value* cm = codeVal.obj()->cls->findMethod("CALL-ME"))
+            return invokeMethod(*cm, codeVal, std::move(args));
+        // a `but`-mixin over a Code stays callable — the mixin adds methods,
+        // the boxed code is still what gets invoked (Log::Async wraps its
+        // formatter `but role { method is-hidden-from-backtrace {…} }`)
+        if (codeVal.obj()->hasBoxed && codeVal.obj()->boxed().t == VT::Code)
+            return callCallable(codeVal.obj()->boxed(), std::move(args), rwArgs);
+    }
+    // an ENUM's TYPE OBJECT held in a variable or a container invokes as
+    // the coercion its name does: `my %h = x => Color; %h<x>(1)` is
+    // Color(1) (issue #216)
+    if (!args.empty() && isEnumTypeObject(codeVal)) return enumCoerce(codeVal, args[0]);
+    // an ENUM VALUE is callable like its type: `WARNING(TRACE)` coerces via
+    // Loglevels(…) — a same-type arg passes through, else match by value or
+    // name in the type's pair list (Log::Async's default level filter)
+    if (!codeVal.enumType.empty() && !codeVal.enumName.empty() && !args.empty()) {
+        const Value& a0 = args[0];
+        if (a0.enumType == codeVal.enumType) return a0;
+        Value* ty = tctx().cur ? tctx().cur->find(codeVal.enumType) : nullptr;
+        if (!ty && global_) ty = global_->find(codeVal.enumType);
+        if (ty && ty->t == VT::Array && ty->arr()) {
+            long long counter2 = 0;
+            for (auto& p : *ty->arr()) {
+                if (p.t != VT::Pair) continue;
+                long long pv = p.pairVal() ? p.pairVal()->toInt() : counter2;
+                counter2 = pv + 1;
+                bool hit = a0.t == VT::Str ? (p.s == a0.s) : (pv == a0.toInt());
+                if (hit) {
+                    Value ev = Value::enumVal(p.s, pv);
+                    ev.enumType = codeVal.enumType;
+                    return ev;
+                }
+            }
+        }
+    }
+    if (codeVal.t == VT::Type) {
+        auto cit = classes_.find(codeVal.s);
+        if (cit != classes_.end())
+            if (Value* cm = cit->second->findMethod("CALL-ME"))
+                return invokeMethod(*cm, codeVal, std::move(args));
+        // a TYPE OBJECT held in a variable invokes as the coercion call,
+        // exactly like the literal spelling: `my $t = Int; $t('123')` is
+        // Int('123') (DBDish's convert-function builds converters this way)
+        if (!args.empty()) return coerceToType(args[0], codeVal.s);
+    }
+    // The undefined value IS the Any type object, and invoking it is the
+    // Any coercion — identity (`my $x; $x(5)` is 5 in Rakudo). Fez's own
+    // 02-checkbuild.t leans on this through a package-stash miss:
+    // `Fez::CLI::<&MAIN>('checkbuild')` finds no &MAIN there (the multis
+    // are my-scoped) and Rakudo happily coerces instead (issue #37).
+    if (codeVal.t == VT::Any && !args.empty()) return args[0];
+    // A Regex is Callable: `$rx($str)` is `$str ~~ $rx`. Called on a CURSOR
+    // — the Match that `Match!cursor_init($str, :c($n))` hands out, which is
+    // how String::Utils' replace/replace-all walk a haystack — it matches
+    // from the cursor's position and answers a Match whose pos is -3 when
+    // nothing matched (MoarVM's value, Rakudo-verified); the regex rides
+    // along (named slot "\x01rx") so CURSOR_MORE can continue it.
+    if (codeVal.t == VT::Regex && !args.empty()) {
+        const Value& a0 = args[0];
+        if (a0.t == VT::Match) {
+            std::string orig = a0.ext() ? *std::static_pointer_cast<std::string>(a0.ext()) : a0.s.str();
+            long long start = a0.rFrom() < 0 ? 0 : a0.rFrom();
+            if (start > (long long)orig.size()) start = (long long)orig.size();
+            Value m = regexMatch(orig.substr((size_t)start), codeVal.s, &codeVal);
+            // (no match is a FALSE Match here, not Nil — test the truth of it)
+            Value cur = m.t == VT::Match && m.truthy()
+                ? Value::matchVal(m.s.str(), start + m.rFrom(), start + m.rTo())
+                : Value::matchVal("", start, -3);   // -3: MoarVM's "matched nothing" pos (Rakudo-verified)
+            cur.extM() = std::make_shared<std::string>(orig);
+            if (cur.md() && cur.md()->named) (*cur.md()->named)["\x01rx"] = codeVal;
+            return cur;
+        }
+        return regexMatch(rxSubject(a0), codeVal.s, &codeVal);
+    }
+    throwTypedV("X::Method::NotFound",
+                {{"typename", Value::str(codeVal.typeName())}, {"method", Value::str("CALL-ME")},
+                 {"invocant", codeVal}},
+                "No such method 'CALL-ME' for invocant of type '" + codeVal.typeName() + "'");
+}
+
 Value Interpreter::callCallableRaw(const Value& codeVal, ValueList args, const std::vector<ExprPtr>* rwArgs, bool ownFrame, bool arityCheck, bool whereVerified) {
     ExecContext& tcx = tctx();   // one thread-local resolution — see execBlock
     // the name the call site used (the arity check's), consumed before anything
@@ -8408,84 +8493,9 @@ Value Interpreter::callCallableRaw(const Value& codeVal, ValueList args, const s
         }
     }
     if (codeVal.t == VT::Array && codeVal.s == "WalkList") return methodCall(codeVal, "invoke", std::move(args));
-    if (codeVal.t != VT::Code || !codeVal.code()) {
-        // an object (or type object) with a CALL-ME method is invokable: $obj(…)
-        if (codeVal.t == VT::Object && codeVal.obj() && codeVal.obj()->cls) {
-            if (Value* cm = codeVal.obj()->cls->findMethod("CALL-ME"))
-                return invokeMethod(*cm, codeVal, std::move(args));
-            // a `but`-mixin over a Code stays callable — the mixin adds methods,
-            // the boxed code is still what gets invoked (Log::Async wraps its
-            // formatter `but role { method is-hidden-from-backtrace {…} }`)
-            if (codeVal.obj()->hasBoxed && codeVal.obj()->boxed().t == VT::Code)
-                return callCallable(codeVal.obj()->boxed(), std::move(args), rwArgs);
-        }
-        // an ENUM VALUE is callable like its type: `WARNING(TRACE)` coerces via
-        // Loglevels(…) — a same-type arg passes through, else match by value or
-        // name in the type's pair list (Log::Async's default level filter)
-        if (!codeVal.enumType.empty() && !codeVal.enumName.empty() && !args.empty()) {
-            const Value& a0 = args[0];
-            if (a0.enumType == codeVal.enumType) return a0;
-            Value* ty = tcx.cur ? tcx.cur->find(codeVal.enumType) : nullptr;
-            if (!ty && global_) ty = global_->find(codeVal.enumType);
-            if (ty && ty->t == VT::Array && ty->arr()) {
-                long long counter2 = 0;
-                for (auto& p : *ty->arr()) {
-                    if (p.t != VT::Pair) continue;
-                    long long pv = p.pairVal() ? p.pairVal()->toInt() : counter2;
-                    counter2 = pv + 1;
-                    bool hit = a0.t == VT::Str ? (p.s == a0.s) : (pv == a0.toInt());
-                    if (hit) {
-                        Value ev = Value::enumVal(p.s, pv);
-                        ev.enumType = codeVal.enumType;
-                        return ev;
-                    }
-                }
-            }
-        }
-        if (codeVal.t == VT::Type) {
-            auto cit = classes_.find(codeVal.s);
-            if (cit != classes_.end())
-                if (Value* cm = cit->second->findMethod("CALL-ME"))
-                    return invokeMethod(*cm, codeVal, std::move(args));
-            // a TYPE OBJECT held in a variable invokes as the coercion call,
-            // exactly like the literal spelling: `my $t = Int; $t('123')` is
-            // Int('123') (DBDish's convert-function builds converters this way)
-            if (!args.empty()) return coerceToType(args[0], codeVal.s);
-        }
-        // The undefined value IS the Any type object, and invoking it is the
-        // Any coercion — identity (`my $x; $x(5)` is 5 in Rakudo). Fez's own
-        // 02-checkbuild.t leans on this through a package-stash miss:
-        // `Fez::CLI::<&MAIN>('checkbuild')` finds no &MAIN there (the multis
-        // are my-scoped) and Rakudo happily coerces instead (issue #37).
-        if (codeVal.t == VT::Any && !args.empty()) return args[0];
-        // A Regex is Callable: `$rx($str)` is `$str ~~ $rx`. Called on a CURSOR
-        // — the Match that `Match!cursor_init($str, :c($n))` hands out, which is
-        // how String::Utils' replace/replace-all walk a haystack — it matches
-        // from the cursor's position and answers a Match whose pos is -3 when
-        // nothing matched (MoarVM's value, Rakudo-verified); the regex rides
-        // along (named slot "\x01rx") so CURSOR_MORE can continue it.
-        if (codeVal.t == VT::Regex && !args.empty()) {
-            const Value& a0 = args[0];
-            if (a0.t == VT::Match) {
-                std::string orig = a0.ext() ? *std::static_pointer_cast<std::string>(a0.ext()) : a0.s.str();
-                long long start = a0.rFrom() < 0 ? 0 : a0.rFrom();
-                if (start > (long long)orig.size()) start = (long long)orig.size();
-                Value m = regexMatch(orig.substr((size_t)start), codeVal.s, &codeVal);
-                // (no match is a FALSE Match here, not Nil — test the truth of it)
-                Value cur = m.t == VT::Match && m.truthy()
-                    ? Value::matchVal(m.s.str(), start + m.rFrom(), start + m.rTo())
-                    : Value::matchVal("", start, -3);   // -3: MoarVM's "matched nothing" pos (Rakudo-verified)
-                cur.extM() = std::make_shared<std::string>(orig);
-                if (cur.md() && cur.md()->named) (*cur.md()->named)["\x01rx"] = codeVal;
-                return cur;
-            }
-            return regexMatch(rxSubject(a0), codeVal.s, &codeVal);
-        }
-        throwTypedV("X::Method::NotFound",
-                    {{"typename", Value::str(codeVal.typeName())}, {"method", Value::str("CALL-ME")},
-                     {"invocant", codeVal}},
-                    "No such method 'CALL-ME' for invocant of type '" + codeVal.typeName() + "'");
-    }
+    // a value that is not a Code: an object's CALL-ME, the coercion an enum or
+    // a type object answers, a Regex (callNonCode, above)
+    if (codeVal.t != VT::Code || !codeVal.code()) return callNonCode(codeVal, std::move(args), rwArgs);
     DepthGuard guard(tcx.callDepth);
     Callable& c = *codeVal.code();
     // A METHOD GROUP invoked as a plain callable — `$obj.$m(…)` where $m is the
@@ -26541,51 +26551,8 @@ Value Interpreter::evalCall(Call* c) {
             return it->second(*this, args);
         }
         // enum-type coercion: `Color(1)` -> the enum value whose number is 1
-        if (Value* v = tctx().cur->find(c->name); v && !v->enumType.empty() && v->t == VT::Array && !args.empty()) {
-            // a MEMBER of this enum coerces to itself
-            if (!args[0].enumName.empty() && args[0].enumType == v->enumType) return args[0];
-            // …and a value with the enum MIXED IN (`'Today' but day(Tue)`)
-            // coerces to its mixed member: the mixin is a method named after
-            // the type (roast S12-enums/pseudo-functional's `day($x)`)
-            if (args[0].t == VT::Object || args[0].t == VT::Str) {
-                try {
-                    ValueList none;
-                    Value m2 = methodCall(args[0], std::string(v->enumType.str()), none);
-                    if (!m2.enumName.empty() && m2.enumType == v->enumType) return m2;
-                } catch (RakuError&) {}
-            }
-            long long want = args[0].toInt();
-            // a member of ANOTHER enum is no value of this one, whatever its
-            // number: `Direction(2 <=> 3)` is Less, which Direction lacks
-            const bool foreignMember = !args[0].enumName.empty() && !args[0].enumType.empty() &&
-                                       args[0].enumType != v->enumType;
-            // A member is found by its VALUE, compared as that value is: a
-            // Str-valued enum (`enum S (Strict => "Strict", Lax => "Lax")`) is
-            // looked up by string, so `S("Lax")` is Lax — reducing both sides
-            // to integers made every Str value 0 and answered the first member.
-            if (v->arr() && !foreignMember) for (auto& pr : *v->arr()) {
-                if (pr.t != VT::Pair || !pr.pairVal()) continue;
-                const Value& pv = *pr.pairVal();
-                const bool hit = pv.t == VT::Int ? pv.toInt() == want : pv.toStr() == args[0].toStr();
-                if (!hit) continue;
-                if (Value* mv = tctx().cur->find(std::string(v->enumType.str()) + "::" + pr.s.str())) return *mv;
-                Value ev = Value::enumVal(pr.s, want); ev.enumType = v->enumType; return ev;
-            }
-            // no member with that value → a FAILURE, as Rakudo's X::Enum::NoValue:
-            // it lives until used, and assigning it into an attribute detonates
-            // (Date::Event's `dies-ok { .new(:Etype(300)) }`)
-            {
-                Value f = rakuppNewFailure();
-                const std::string msg = "No value '" + args[0].toStr() + "' found in enum " +
-                                        std::string(v->enumType.str());
-                // (the exception carries what was asked: `.type` the enum, `.value`
-                // the argument — `Direction(Less)` names Direction and Less)
-                (*f.hash())["exception"] = makeTypedEx("X::Enum::NoValue",
-                    {{"type", *v}, {"value", args[0]}}, msg);
-                (*f.hash())["message"] = Value::str(msg);
-                return f;
-            }
-        }
+        if (Value* v = tctx().cur->find(c->name); v && !v->enumType.empty() && v->t == VT::Array && !args.empty())
+            return enumCoerce(*v, args[0]);
     }
     // `@a»++` / `%h»--` / `@a»!` (user postfix) / `(2,3)»i` — hyper postfix:
     // descends nested arrays, keeps hash keys; ++/-- mutate the elements in

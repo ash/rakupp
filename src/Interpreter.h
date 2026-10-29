@@ -2255,6 +2255,7 @@ public:
     // layout under the interpreter's hot thread-locals. The context object
     // travels with the block, is already thread-correct, and is free.)
     Value callCallableRaw(const Value& codeVal, ValueList args, const std::vector<ExprPtr>* rwArgs, bool ownFrame = false, bool arityCheck = false, bool whereVerified = false); // no wrap layer
+    Value callNonCode(const Value& codeVal, ValueList args, const std::vector<ExprPtr>* rwArgs);   // its arm for an invoked non-Code
     // rwArgOff: how many leading `args` entries have no matching `rwArgs` expression
     // — 1 for a NativeCall METHOD, whose invocant is prepended as C's first argument.
     Value callNative(Callable& c, ValueList& args, const std::vector<ExprPtr>* rwArgs = nullptr,
@@ -2816,6 +2817,7 @@ public:
     void checkBoxedStrSource(const ClassInfo* cls, const Value& v);
     void refuseUnpassedDefinite(const Param& p);   // an optional `T:D` param nobody passed
     std::string enumBaseType(const std::string& enumType);   // Int for `enum <a b>`, Str for `(a => "x")`
+    Value enumCoerce(const Value& enumTypeObj, const Value& v);   // `Color(1)`, `$t(1)`: the member, or a Failure
     Value coerceThroughType(const Value& v, const std::string& target, const std::string& coercion);  // COERCE, then new
     void coerceElems(Value& v, const std::string& ct, char sigil); // `my Int() @a`: the ELEMENTS coerce
     Value coerceViaSubset(const Value& v, const std::string& type); // `subset CC of Str()` param

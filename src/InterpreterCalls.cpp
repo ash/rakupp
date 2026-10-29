@@ -4457,10 +4457,57 @@ std::optional<Value> setOpFoldN(const std::string& op, const ValueList& items) {
 
 // The type object of an enum is the tagged list of its pairs (see the enum
 // declaration arm); a member VALUE carries the same tag but is not a list.
+// A Scalar holding it (`my $t = Color`, a hash value) marks it itemized and is
+// still the type object: `$t.raku` is Color, not the pair list (issue #216).
 bool isEnumTypeObject(const Value& v) {
-    return v.t == VT::Array && !v.enumType.empty() && v.enumName.empty() && !v.itemized &&
+    return v.t == VT::Array && !v.enumType.empty() && v.enumName.empty() &&
            g_revInterp && g_revInterp->enumPairs_.count(std::string(v.enumType.str())) &&
            g_revInterp->enumPairs_[std::string(v.enumType.str())].arr() == v.arr();
+}
+
+// enum-type coercion: `Color(1)` -> the enum value whose number is 1. `ty` is
+// the type object, written by name (evalCall) or held in a variable or a
+// container and invoked (`my %h = x => Color; %h<x>(1)`, callNonCode).
+Value Interpreter::enumCoerce(const Value& ty, const Value& a) {
+    // a MEMBER of this enum coerces to itself
+    if (!a.enumName.empty() && a.enumType == ty.enumType) return a;
+    // …and a value with the enum MIXED IN (`'Today' but day(Tue)`)
+    // coerces to its mixed member: the mixin is a method named after
+    // the type (roast S12-enums/pseudo-functional's `day($x)`)
+    if (a.t == VT::Object || a.t == VT::Str) {
+        try {
+            ValueList none;
+            Value m2 = methodCall(a, std::string(ty.enumType.str()), none);
+            if (!m2.enumName.empty() && m2.enumType == ty.enumType) return m2;
+        } catch (RakuError&) {}
+    }
+    long long want = a.toInt();
+    // a member of ANOTHER enum is no value of this one, whatever its
+    // number: `Direction(2 <=> 3)` is Less, which Direction lacks
+    const bool foreignMember = !a.enumName.empty() && !a.enumType.empty() && a.enumType != ty.enumType;
+    // A member is found by its VALUE, compared as that value is: a
+    // Str-valued enum (`enum S (Strict => "Strict", Lax => "Lax")`) is
+    // looked up by string, so `S("Lax")` is Lax — reducing both sides
+    // to integers made every Str value 0 and answered the first member.
+    if (ty.arr() && !foreignMember) for (auto& pr : *ty.arr()) {
+        if (pr.t != VT::Pair || !pr.pairVal()) continue;
+        const Value& pv = *pr.pairVal();
+        const bool hit = pv.t == VT::Int ? pv.toInt() == want : pv.toStr() == a.toStr();
+        if (!hit) continue;
+        if (Value* mv = tctx().cur->find(std::string(ty.enumType.str()) + "::" + pr.s.str())) return *mv;
+        Value ev = Value::enumVal(pr.s, want); ev.enumType = ty.enumType; return ev;
+    }
+    // no member with that value → a FAILURE, as Rakudo's X::Enum::NoValue:
+    // it lives until used, and assigning it into an attribute detonates
+    // (Date::Event's `dies-ok { .new(:Etype(300)) }`)
+    Value f = rakuppNewFailure();
+    const std::string msg = "No value '" + a.toStr() + "' found in enum " + std::string(ty.enumType.str());
+    // (the exception carries what was asked: `.type` the enum, `.value`
+    // the argument — `Direction(Less)` names Direction and Less)
+    Value type = ty; type.itemized = false;
+    (*f.hash())["exception"] = makeTypedEx("X::Enum::NoValue", {{"type", type}, {"value", a}}, msg);
+    (*f.hash())["message"] = Value::str(msg);
+    return f;
 }
 
 // The repetition count of `xx`. `*` and `+Inf` are legitimate — they ask for an
