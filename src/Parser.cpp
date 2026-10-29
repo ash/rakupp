@@ -1553,6 +1553,7 @@ bool Parser::startsListopArg(const Token& t, const std::string& lhsName) const {
                    (t.text == "&" && &t == &cur() && !peek().spaceBefore &&
                     (peek().kind == Tok::LBracket ||   // infix-as-value `say &[+](2,3)`
                      peek().kind == Tok::LParen ||     // Callable contextualizer `say &(%h<k>)()`
+                     peek().kind == Tok::LBrace ||     // …over a block `say &{ 42 }()`
                      (peek().kind == Tok::Var && peek().text.size() > 1 &&
                       (peek().text[0] == '%' || peek().text[0] == '@' || peek().text[0] == '$')))) || // `say &%h<k>()`
                    t.text == "\xE2\x88\x9E" || t.text == "\xC2\xAB" || t.text == "<<" || fusedQqww(t) || // ∞, «qw», <<qww>>
@@ -8646,6 +8647,13 @@ ExprPtr Parser::parsePrimary() {
                 auto inner = parseExpression();
                 expectKind(Tok::RParen, ")");
                 return parsePostfix(std::move(inner));
+            }
+            // `&{ … }` — the same over a BRACED term, written tight: the block
+            // itself (a `{ a => 1 }` is a Hash by the usual rule, as in Rakudo).
+            // FunctionalParsers' EBNF generator writes `apply(&{ … }, …)`.
+            if (t.text == "&" && peek().kind == Tok::LBrace && !peek().spaceBefore) {
+                advance(); // &
+                return parsePostfix(parsePrimary());
             }
             if (t.text == "*") { advance(); return std::make_unique<WhateverExpr>(); }
             if (t.text == "**") { advance(); auto w = std::make_unique<WhateverExpr>(); w->hyper = true; return w; } // HyperWhatever (e.g. %h{**})
