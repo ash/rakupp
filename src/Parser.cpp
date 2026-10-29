@@ -28,6 +28,7 @@ namespace rakupp {
 bool isCoreEnumMemberName(const std::string& n);   // Interpreter.cpp: `Less`, `Order::More`, `SIGINT`, …
 bool uniTypeLikeName(const std::string& n);   // Unicode.cpp: `Foo`, `Éx`, `万` read as types, `ч` not
 size_t readOpNameInAngles(const std::string& src, size_t open, std::string& name);   // Lexer.cpp: `<(\<&)>` is `(<&)`
+bool lexesSplitUnlessNoted(const std::string& name, bool term);   // Lexer.cpp: `(<&)` and `⨁⨁` are, `⨁` is not
 static bool typeLikeName(const std::string& n) { return uniTypeLikeName(n); }
 
 // A routine's or a closure's VALUE that is a plain one-argument map or grep is
@@ -812,14 +813,13 @@ bool Parser::isWordInfixName(const std::string& n) {
     return kWordInfix.count(n) > 0;
 }
 
-void Parser::scanModuleOps(const std::string& module) {
+bool Parser::scanModuleOps(const std::string& module) {
     lastScanSlang_ = false;
-    if (module.empty() || module[0] == 'v' || !scannedMods_.insert(module).second) return;
+    if (module.empty() || module[0] == 'v' || !scannedMods_.insert(module).second) return false;
     // A module compiled into this binary answers before the disk is consulted.
     if (const std::string* emb = rakuppEmbeddedModuleSource(module)) {
         lastScanSlang_ = module != "Slangify" && module != "if" && module.rfind("L10N::", 0) != 0 && rakuppIsSlangSource(*emb);
-        scanOpsIn(*emb, "<embedded:" + module + ">");
-        return;
+        return scanOpsIn(*emb, "<embedded:" + module + ">");
     }
     // A module the COMPILER answers is never loaded, so its operators can never
     // be imported and scanning it is work for nothing — 10.2 ms when the name is
@@ -828,7 +828,7 @@ void Parser::scanModuleOps(const std::string& module) {
     // scanned normally; the check below is directory-only on purpose, since
     // consulting the store is the expense being skipped.
     if (rakuppCompilerAnswersModule(module) &&
-        !moduleFileOnPath(module, libPaths_, langRev_ >= 2)) return;
+        !moduleFileOnPath(module, libPaths_, langRev_ >= 2)) return false;
     // The SAME resolution the loader performs: the lib search path first, then
     // the installed CompUnit repositories. Searching only lib paths here meant a
     // zef-INSTALLED module was never scanned, so the operators and the sigilless
@@ -836,15 +836,14 @@ void Parser::scanModuleOps(const std::string& module) {
     // the normal case, not the exotic one. (`SPACE ~ $word` in an installed
     // Text::Utils parsed as a call to `SPACE`.)
     std::string src, srcPath;
-    if (!rakuppFindModuleSource(module, libPaths_, srcPath, src, langRev_ >= 2)) return;
-    if (src.empty()) return;
+    if (!rakuppFindModuleSource(module, libPaths_, srcPath, src, langRev_ >= 2) || src.empty()) return false;
     // Slangify is the interface, never a slang; an L10N dist registers one too,
     // but what it carries is a keyword table, applied by the token rewrite
     // (Interpreter::applyL10NSlang) before this parser ever ran
     // `if` is answered by the parser itself (the `:if(EXPR)` pair on a later
     // `use`), so its actions-only slang is never activated — see loadModule.
     lastScanSlang_ = module != "Slangify" && module != "if" && module.rfind("L10N::", 0) != 0 && rakuppIsSlangSource(src);
-    scanOpsIn(src, srcPath);
+    return scanOpsIn(src, srcPath);
 }
 
 // A module can add a PACKAGE DECLARATOR — its own spelling of `class` — by
@@ -1040,7 +1039,7 @@ void Parser::scanDeclaratorsIn(const std::string& src) {
     }
 }
 
-void Parser::scanOpsIn(const std::string& src, const std::string& srcPath) {
+bool Parser::scanOpsIn(const std::string& src, const std::string& srcPath) {
     opScanned_.push_back({srcPath, src});
     // A module that declares `sub div` / `sub min` exports a name this file will
     // otherwise read as the OPERATOR at term position, and `div "txt"` then binds
@@ -1055,14 +1054,15 @@ void Parser::scanOpsIn(const std::string& src, const std::string& srcPath) {
     // …and the ones that collide with a QUOTE form (`sub tr`, `sub q`). Those are
     // decided in the lexer, which ran before this file's `use` was reached, so the
     // rest of the unit is re-lexed with them vetoed — the path a slang takes.
-    {
-        // An IMPORTED name is in scope for the whole importing unit, so only the
-        // names matter here — where the module happened to declare them says
-        // nothing about where they are visible in THIS file.
-        size_t before = quoteWordSubs_.size();
-        Lexer::scanQuoteWordSubNames(src, quoteWordSubs_);
-        if (quoteWordSubs_.size() != before) relexForQuoteWords();
-    }
+    // An IMPORTED name is in scope for the whole importing unit, so only the
+    // names matter here — where the module happened to declare them says
+    // nothing about where they are visible in THIS file.
+    const size_t quoteWordsBefore = quoteWordSubs_.size();
+    Lexer::scanQuoteWordSubNames(src, quoteWordSubs_);
+    // An operator spelling the built-in rules would split needs the same re-lex
+    // (`(<&)` was `(` and a word list, `⨁⨁` two `⨁`s). The answer goes back to
+    // the `use`, which re-lexes once.
+    bool relex = quoteWordSubs_.size() != quoteWordsBefore;
     // A module that RE-EXPORTS another one's names — `use Monarch::HTML;` plus an
     // `EXPORT` sub — passes on its operators and its `sub tr`/`sub div` too, so
     // the scan has to follow the `use`. Without this, `use Monarch` left `tr { … }`
@@ -1084,7 +1084,7 @@ void Parser::scanOpsIn(const std::string& src, const std::string& srcPath) {
         if (mod.empty() || !ascii::isalpha((unsigned char)mod[0])) continue;
         if (mod == "lib" || mod == "strict" || mod == "v6" || mod == "nqp" || mod == "js" || mod == "JS" || mod == "Test") continue;
         bool wasSlang = lastScanSlang_;
-        scanModuleOps(mod);
+        relex |= scanModuleOps(mod);
         lastScanSlang_ = wasSlang;   // only the module the USER named may arm a slang
     }
     // an operator spelled only in ASCII operator characters is almost certainly a
@@ -1125,7 +1125,10 @@ void Parser::scanOpsIn(const std::string& src, const std::string& srcPath) {
             size_t close = src.find('>', pos + needle.size());
             if (close == std::string::npos) continue;
             const std::string name = src.substr(pos + needle.size(), close - pos - needle.size());
-            if (!name.empty() && name.find(' ') == std::string::npos) { sigilless_.insert(name); termSubs_.insert(name); }
+            if (!name.empty() && name.find(' ') == std::string::npos) {
+                sigilless_.insert(name);
+                relex |= termSubs_.insert(name).second && lexesSplitUnlessNoted(name, true);   // `ℵ₀ℵ₀`
+            }
         }
     }
     for (const char* cat : {"infix", "prefix", "postfix", "circumfix", "postcircumfix"}) {
@@ -1183,6 +1186,7 @@ void Parser::scanOpsIn(const std::string& src, const std::string& srcPath) {
                 if (sp == std::string::npos) continue;
                 if (c1 == "circumfix") regMap('c', userCircumfix_, name.substr(0, sp), name.substr(sp + 1));
                 else regMap('C', userPostcircumfix_, name.substr(0, sp), name.substr(sp + 1));
+                relex |= lexesSplitUnlessNoted(name.substr(0, sp), false) || lexesSplitUnlessNoted(name.substr(sp + 1), false);
                 continue;
             }
             if (c1 == "infix") {
@@ -1196,7 +1200,7 @@ void Parser::scanOpsIn(const std::string& src, const std::string& srcPath) {
                 Token ti; ti.text = name; ti.kind = Tok::Ident;
                 InfixInfo word = classifyInfix(ti);
                 if (!builtin) builtin = word.valid;
-                if (!builtin && !userInfix_.count(name)) regInfix(name, BP_ADD);
+                if (!builtin && !userInfix_.count(name)) { regInfix(name, BP_ADD); relex |= lexesSplitUnlessNoted(name, false); }
                 // A WORD operator the module redeclares (`multi infix:<gcd>(Complex,
                 // Complex)` in Math::NumberTheory) still has to reach the user's
                 // candidates: the built-in `gcd` coerces its operands to Int, so it
@@ -1209,8 +1213,11 @@ void Parser::scanOpsIn(const std::string& src, const std::string& srcPath) {
                     regInfix(name, word.lbp);
             }
             else if (asciiOnlyOp(name)) continue;
-            else if (c1 == "prefix") regSet('p', userPrefix_, name);
-            else regSet('P', userPostfix_, name);
+            else {
+                if (c1 == "prefix") regSet('p', userPrefix_, name);
+                else regSet('P', userPostfix_, name);
+                relex |= lexesSplitUnlessNoted(name, false);   // `√√`, `‼‼`
+            }
         }
     }
     scanDeclaratorsIn(src);
@@ -1242,6 +1249,7 @@ void Parser::scanOpsIn(const std::string& src, const std::string& srcPath) {
             between.find("is ") == std::string::npos) continue;
         sigilless_.insert(name);
     }
+    return relex;
 }
 
 // The LIST infixes (Z/X and their metaops, the sequence operator) chain only
@@ -16881,7 +16889,7 @@ StmtPtr Parser::parseStatementImpl() {
                 advance(); advance();
                 u->emptyImport = true;
             }
-            if (!u->isNo && u->fromLang.empty()) scanModuleOps(u->module); // its operators must parse HERE
+            if (!u->isNo && u->fromLang.empty() && scanModuleOps(u->module)) relexForImports(); // its operators must parse HERE
             if (!u->isNo && u->module.compare(0, 6, "MONKEY") == 0)
                 monkeyScopes_.back() = 1; // use MONKEY-TYPING / use MONKEY (lexical)
             // `use lib` takes an expression unless it is the plain one-string form,
@@ -18216,26 +18224,52 @@ ExprPtr Parser::makeNqpOp(const std::string& op, std::vector<ExprPtr>& args) {
 // the pragma's own words are never read through the slang. Unit-scoped, as
 // L10N is here and as mutsu is: a `use` inside a block governs to the end
 // of the file, where Rakudo would stop at the block's brace.
-// An imported module declares `sub tr` / `sub q`: the quote form of that name has
-// to stop being one for the rest of THIS unit. The lexer already ran, so the tail
-// of the token stream is replaced by a fresh lex that knows the names — the same
-// splice activateSlang performs, and subject to the same limit: it needs the
-// unit's source, so a `use` inside an EVAL of a string this parser never saw
-// keeps the quote reading.
-void Parser::relexForQuoteWords() {
-    if (!src_ || quoteWordSubs_.empty()) return;
+// The lexer read the whole unit before the parser met its first `use`, so what an
+// import changes about LEXING reaches it only through a fresh lex whose tokens
+// replace the tail of the stream, from the byte just past the `use`. What it
+// arms: the slangs in force (`slangHere`: the one this `use` applies, read from
+// here on), the imported `sub tr` / `sub q` that stop being quote forms, and
+// every operator in scope that the built-in rules would split — an imported
+// `(<&)` was `(` and a word list, `⨁⨁` two `⨁`s, where the unit's own
+// declaration of either lexes whole (#60). It needs the unit's source, so a `use`
+// inside an EVAL of a string this parser never saw keeps the first reading.
+void Parser::relexForImports(bool slangHere) {
+    if (!src_) return;
     const size_t from = pos_ > 0 ? toks_[pos_ - 1].off : 0;   // just past the `use`
     Lexer lx(*src_);
+    lx.tolerant_ = true;   // as the first lex was: a later slang may own what this one cannot read
     lx.slang_ = slang_;
-    lx.slangFrom_ = slang_ ? 0 : 0;
+    lx.slangFrom_ = slangHere ? from : 0;
     // imported names shadow the quote form everywhere in this unit; the unit's
     // OWN declarations are re-scanned by the lexer, with their real scopes
     for (auto& n : quoteWordSubs_) lx.notQuoteWords_[n].push_back({0, SIZE_MAX});
+    for (auto& kv : userInfix_) lx.noteUserOp(kv.first, false);   // noteUserOp keeps what it must
+    for (auto* set : {&userPrefix_, &userPostfix_}) for (auto& n : *set) lx.noteUserOp(n, false);
+    for (auto* map : {&userCircumfix_, &userPostcircumfix_})
+        for (auto& kv : *map) { lx.noteUserOp(kv.first, false); lx.noteUserOp(kv.second, false); }
+    for (auto& n : termSubs_) lx.noteUserOp(n, true);
     std::vector<Token> nt = lx.tokenize();
     size_t i = 0;
     while (i < nt.size() && nt[i].kind != Tok::End && nt[i].off <= from) i++;
+    // An L10N rewrite (Interpreter::applyL10NSlang) ran on the first stream only:
+    // a word it translated (`sonst` read as `else`) keeps that reading wherever
+    // this lex finds the same word ending at the same place (`off` is the end).
+    // A word this lex reads differently (an imported term `ℵ₀ℵ₀` where `ℵ` was)
+    // ends elsewhere, and a word nothing translated is raw in both streams.
+    auto rawAt = [&](const Token& t) {
+        return t.text.size() <= t.off && src_->compare(t.off - t.text.size(), t.text.size(), t.text) == 0;
+    };
+    for (size_t j = pos_, k = i; k < nt.size() && j < toks_.size(); k++) {
+        while (j < toks_.size() && toks_[j].off < nt[k].off) j++;
+        if (j < toks_.size() && toks_[j].off == nt[k].off && toks_[j].kind == Tok::Ident &&
+            nt[k].kind == Tok::Ident && rawAt(nt[k]) && !rawAt(toks_[j]))
+            nt[k].text = toks_[j].text;
+    }
     toks_.erase(toks_.begin() + pos_, toks_.end());
     toks_.insert(toks_.end(), nt.begin() + i, nt.end());
+    // declarator pod after the `use` comes from the second lexer — same text, same lines
+    for (auto& kv : lx.declPod_) declPod_[kv.first] = kv.second;
+    for (auto& kv : lx.leadPod_) leadPod_[kv.first] = kv.second;
 }
 
 void Parser::activateSlang(const std::string& module) {
@@ -18259,18 +18293,7 @@ void Parser::activateSlang(const std::string& module) {
         slang_ = merged;
     }
     else slang_ = seams;
-    const size_t from = pos_ > 0 ? toks_[pos_ - 1].off : 0;   // just past the `use` statement
-    Lexer lx(*src_);
-    lx.slang_ = slang_;
-    lx.slangFrom_ = from;
-    std::vector<Token> nt = lx.tokenize();
-    size_t i = 0;
-    while (i < nt.size() && nt[i].kind != Tok::End && nt[i].off <= from) i++;
-    toks_.erase(toks_.begin() + pos_, toks_.end());
-    toks_.insert(toks_.end(), nt.begin() + i, nt.end());
-    // declarator pod after the pragma comes from the second lexer — same text, same lines
-    for (auto& kv : lx.declPod_) declPod_[kv.first] = kv.second;
-    for (auto& kv : lx.leadPod_) leadPod_[kv.first] = kv.second;
+    relexForImports(/*slangHere=*/true);
 }
 
 // Tuxic's `term:sym<identifier>`: `name (args)` is a call with those args —

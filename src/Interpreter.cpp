@@ -9178,6 +9178,7 @@ std::vector<BundledModule> collectModuleGraph(const Program& prog,
             parser.leadPod_ = lx.leadPod_;
             parser.libPaths_ = searchPath;                // its own `use`s resolve like the real load
             parser.srcFile_ = path;
+            parser.src_ = &src;                           // …and re-read its tail, an imported `(<&)` lexed whole
             mp = parser.parseProgram();
             finish = lx.finishData();
         } catch (ParseError&) {                           // let the run-time loader report it

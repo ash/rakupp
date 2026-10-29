@@ -945,7 +945,13 @@ void Lexer::scanUserOps() {
     }
 }
 
-void Lexer::noteUserOp(const std::string& name, bool term) {
+// Is `name` a spelling the built-in rules would split, so that it lexes whole
+// only once noted? Not a word (the identifier rule reads that whole already),
+// not one codepoint unless it is a TERM (which lexes as a name), and not one of
+// the two set operators spelled with a word. noteUserOp keeps exactly these;
+// Parser::scanOpsIn asks it of a module's operators, to know whether the
+// importing unit has to be lexed again.
+bool lexesSplitUnlessNoted(const std::string& name, bool term) {
     auto wordish = [](const std::string& n) {
         for (size_t i = 0; i < n.size();) {
             unsigned char c = (unsigned char)n[i];
@@ -966,15 +972,19 @@ void Lexer::noteUserOp(const std::string& name, bool term) {
         }
         return true;
     };
-    if (!term && name.size() == 1 && std::strchr("@$", name[0]) && userSigilOps_.find(name[0]) == std::string::npos)
-        userSigilOps_ += name[0];
-    if (name.empty() || name.find_first_of(" \t\n") != std::string::npos) return;
-    if (wordish(name)) return;
+    if (name.empty() || name.find_first_of(" \t\n") != std::string::npos) return false;
+    if (wordish(name)) return false;
     int l0; cpAt(name, 0, l0);
-    if (!term && (size_t)l0 == name.size()) return;   // one codepoint: already whole
+    if (!term && (size_t)l0 == name.size()) return false;   // one codepoint: already whole
     // The two set operators spelled with a word are the built-in's, and
     // the built-in rules own them (`multi infix:<(elem)>` redeclares).
-    if (name == "(elem)" || name == "(cont)") return;
+    return name != "(elem)" && name != "(cont)";
+}
+
+void Lexer::noteUserOp(const std::string& name, bool term) {
+    if (!term && name.size() == 1 && std::strchr("@$", name[0]) && userSigilOps_.find(name[0]) == std::string::npos)
+        userSigilOps_ += name[0];
+    if (!lexesSplitUnlessNoted(name, term)) return;
     if (std::find(userOps_.begin(), userOps_.end(), name) == userOps_.end()) {
         userOps_.push_back(name);
         std::stable_sort(userOps_.begin(), userOps_.end(),

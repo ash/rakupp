@@ -304,9 +304,9 @@ private:
     }
     // Quote-form keywords an imported module declares as subs (`sub tr`). The
     // lexer decided those before this file's `use` was parsed, so learning one
-    // re-lexes what is left of the unit with the quote form vetoed.
+    // (or a slang, or an operator spelling) re-lexes what is left of the unit.
     std::set<std::string> quoteWordSubs_;
-    void relexForQuoteWords();
+    void relexForImports(bool slangHere = false);
 public:
     // Is `n` a word-shaped infix operator whose name a sub may also carry?
     static bool isWordInfixName(const std::string& n);
@@ -517,9 +517,9 @@ private:
     bool startsListopArg(const Token& t, const std::string& lhsName = "") const;
     int infixBpOf(const std::string& op) const;    // binding power of a named infix (builtin or user)
     // `use Foo` where Foo declares operators: find its source and register them,
-    // so `$c ◐ 20` parses in the importing file. Defined in Parser.cpp.
-    void scanModuleOps(const std::string& module);
-    void scanOpsIn(const std::string& src, const std::string& srcPath); // the scan itself, shared by the disk and embedded paths
+    // so `$c ◐ 20` parses in the importing file. True: the LEXER must re-read it.
+    bool scanModuleOps(const std::string& module);
+    bool scanOpsIn(const std::string& src, const std::string& srcPath); // the scan itself, shared by the disk and embedded paths
     std::set<std::string> scannedMods_;            // modules already scanned for operators
     bool lastScanSlang_ = false;                   // …and whether the one just scanned registers a slang
     void activateSlang(const std::string& module); // run it, arm its seams, re-lex the rest of the unit
