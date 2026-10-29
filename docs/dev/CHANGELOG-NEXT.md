@@ -25,7 +25,7 @@ b05e989b (issue #193); 17e33a45 (issue #184); 5f87f445; 0e44c5a6 (issue
 #211); 8c871a25; 079427c0 (issue #175); 357cb4bb (issue #187); 6eddeeb5
 (issue #188); c50eb3b8 (issue #146); 09018c67 (issue #77); 099a2055 (issue
 #205); 18ef8f73 (issues #186 and #178); 642a320a; 62a3d9a5 (issue #212);
-17a71667 (issue #213); 46c4ef60 (issue #194).*
+17a71667 (issue #213); 46c4ef60 (issue #194); 2deb332a (issue #60).*
 
 ---
 
@@ -915,6 +915,16 @@ does not.
   Only a sub the import can bring in shadows a quote word now: one marked
   `is export`, or any of them when the module has an EXPORT sub.
   t/regression/module-quote-word-sub-scope.raku agrees with Rakudo 2026.09.
+- **`proto f(|)` keeps its signature beside a declared `infix:<(|)>`**
+  (2deb332a; issue #60). With the operator declared anywhere in the file, or
+  imported, `(|)` after a routine declarator or glued to a name lexed as that
+  operator, so the proto took no arguments and every call died "will never
+  work with signature of the proto ()"; `sub g(&)` beside `infix:<(&)>` broke
+  the same way. A declared `(…)` spelling yields where the built-in set
+  operators do now. FunctionalParsers 0.1.11 loads again: 5 of its 18 test
+  files pass, the rest on faults of their own.
+  t/regression/paren-signature-beside-declared-set-op.raku agrees with Rakudo
+  2026.09.
 
 ### Left open
 
