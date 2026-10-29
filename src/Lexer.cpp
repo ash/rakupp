@@ -818,6 +818,41 @@ size_t readOpNameInAngles(const std::string& src, size_t open, std::string& name
     return std::string::npos;
 }
 
+// The precedence and associativity traits a declaration of `infix:<…>` writes
+// between its name and its body (`decl`), read off a module's raw source for
+// the file that imports it (Parser::scanOpsIn), as (trait, argument) pairs the
+// way Parser::applyInfixTrait takes them: the operator a precedence trait names
+// as written (`&infix:<&&>`, `&[**]`, `*` from `is tighter<*>`), or the
+// associativity's word (`is assoc<right>`, `is assoc('non')`).
+std::vector<std::pair<std::string, std::string>> infixTraitsIn(const std::string& decl) {
+    std::vector<std::pair<std::string, std::string>> out;
+    auto wordCh = [](char c) { return ascii::isalnum((unsigned char)c) || c == '_' || c == '-'; };
+    for (size_t p = decl.find("is"); p != std::string::npos; p = decl.find("is", p + 2)) {
+        if ((p > 0 && wordCh(decl[p - 1])) || p + 2 >= decl.size() || !ascii::isspace((unsigned char)decl[p + 2])) continue;
+        size_t q = p + 2;
+        while (q < decl.size() && ascii::isspace((unsigned char)decl[q])) q++;
+        const size_t w = q;
+        while (q < decl.size() && wordCh(decl[q])) q++;
+        const std::string trait = decl.substr(w, q - w);
+        if (trait != "tighter" && trait != "looser" && trait != "equiv" && trait != "assoc") continue;
+        std::string arg;
+        if (q < decl.size() && decl[q] == '(') {   // `is equiv( &infix:<(&)> )`: to the MATCHING paren
+            size_t e = q;
+            for (int depth = 0; e < decl.size(); e++)
+                if (decl[e] == '(') depth++;
+                else if (decl[e] == ')' && --depth == 0) break;
+            arg = decl.substr(q + 1, e - q - 1);
+        }
+        else if (q < decl.size() && decl[q] == '<') {
+            size_t e = decl.find('>', q + 1);
+            arg = decl.substr(q + 1, e == std::string::npos ? std::string::npos : e - q - 1);
+        }
+        size_t b = arg.find_first_not_of(" \t\n'\""), e = arg.find_last_not_of(" \t\n'\"");
+        out.push_back({trait, b == std::string::npos ? std::string() : arg.substr(b, e - b + 1)});
+    }
+    return out;
+}
+
 void Lexer::scanUserOps() {
     for (size_t p = src_.find("infix:<"); p != std::string::npos; p = src_.find("infix:<", p + 1)) {
         size_t b = p + 7, e = b;

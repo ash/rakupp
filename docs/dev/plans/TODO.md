@@ -510,20 +510,27 @@ The same items grouped by theme, with a complexity estimate for each:
     cap), so append needs its own answer for one. And `[+] f()` over a
     returned map is ~10% slower than when the map was eager: endlessReduce
     drains it one appendNext call per element before folding.
-- [ ] **An imported operator loses its precedence and associativity traits**
-  (found 2026-10-29 with issue #60; checked against Rakudo 2026.09).
-  Parser::scanOpsIn registers a module's exported infix at the default
-  additive precedence, left-associative, whatever its traits say: with
-  `sub infix:<⊗>($a, $b) is assoc<right> is export`, `1 ⊗ 2 ⊗ 3` in the
-  importing file is `(1 ⊗ 2) ⊗ 3` (Rakudo `1 ⊗ (2 ⊗ 3)`), and `is
-  equiv(&infix:<&&>)`, `is tighter`, `is looser` are dropped the same way.
-  The file's own declaration honours all of them. FunctionalParsers' t/01
-  #10 (`«&»`, `is assoc<right>`) and t/12 #10–12 (`«&»`, equiv `&&`, under
-  `«||»`, equiv `||`) fail on this alone. Found beside it:
+- [ ] **User operators: what the issue #60 work found and left** (found
+  2026-10-29 while FunctionalParsers was brought up; checked against Rakudo
+  2026.09). An imported operator lexes whole (3fae5f4e) and keeps its
+  precedence and associativity traits now; these stay:
+  - EVAL loses the caller's operator traits: with `sub infix:<⊗>($a, $b) is
+    assoc<right> { "<$a,$b>" }` in scope, `EVAL q[1 ⊗ 2 ⊗ 3]` is
+    `<<1,2>,3>` (Rakudo `<1,<2,3>>`), and with `sub infix:<⊘>($a, $b) is
+    tighter(&infix:<*>) { $a * 10 + $b }`, `EVAL q[2 * 3 ⊘ 4]` is 64
+    (Rakudo 68). The EVAL parser is seeded with each name at
+    the default precedence (Parser::declareUserOp, from the loop in
+    InterpreterModules.cpp's EVAL); the routine would have to carry its
+    traits for the seed to read.
+  - At EQUAL precedence the left operator's associativity decides, where
+    Rakudo's EXPR asks the incoming one: with `infix:<⊲> is equiv(&[**])
+    is assoc<left>`, `1 ⊲ 2 ⊲ 3 ** 2` here is `((1 ⊲ 2) ⊲ 3) ** 2`, in
+    Rakudo `(1 ⊲ 2) ⊲ (3 ** 2)`. Only a mix of associativities at one level
+    shows it, and only a user operator makes one.
   - an imported ASCII-only prefix or postfix is skipped as a redeclared
     built-in even when it is not one: an exported `postfix:<!!>` leaves
-    `5!!` "Confused" (Rakudo `F(5)`); the infix branch asks classifyInfix,
-    the prefix/postfix one only asciiOnlyOp;
+    `5!!` "Confused" (Rakudo `F(5)`); the infix branch of scanOpsIn asks
+    classifyInfix, the prefix/postfix one only asciiOnlyOp;
   - the file's OWN two-character brackets: `sub circumfix:<[[ ]]>` makes
     `[[6]]` the array `[6]`, silently, and `sub postcircumfix:<⟨⟨ ⟩⟩>`
     leaves `7⟨⟨8⟩⟩` a parse error (Rakudo `C(6)`, `PC(7,8)`); IMPORTED,

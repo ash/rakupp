@@ -29,6 +29,7 @@ bool isCoreEnumMemberName(const std::string& n);   // Interpreter.cpp: `Less`, `
 bool uniTypeLikeName(const std::string& n);   // Unicode.cpp: `Foo`, `Éx`, `万` read as types, `ч` not
 size_t readOpNameInAngles(const std::string& src, size_t open, std::string& name);   // Lexer.cpp: `<(\<&)>` is `(<&)`
 bool lexesSplitUnlessNoted(const std::string& name, bool term);   // Lexer.cpp: `(<&)` and `⨁⨁` are, `⨁` is not
+std::vector<std::pair<std::string, std::string>> infixTraitsIn(const std::string& decl);   // Lexer.cpp: `is assoc<right>`, …
 static bool typeLikeName(const std::string& n) { return uniTypeLikeName(n); }
 
 // A routine's or a closure's VALUE that is a plain one-argument map or grep is
@@ -657,6 +658,33 @@ int Parser::infixBpOf(const std::string& op) const {
     return BP_ADD; // unknown reference → additive default
 }
 
+// A precedence or associativity trait on a declared infix, kept in the tables
+// the expression parser reads — for the file's own `sub infix:<…>` (parseSub)
+// and for one a module exports (scanOpsIn), so the two cannot drift. `arg` is
+// what the trait names: an operator in any spelling (`&infix:<+>`, `&infix:«+»`,
+// `&[**]`, `*`), or the associativity's word. A `sub` (no multi candidate) that
+// gives a BUILT-IN spelling traits declares an operator of its own, as in
+// Rakudo: `sub infix:<(&)> is equiv(&infix:<&&>)` binds as `&&` does.
+void Parser::applyInfixTrait(const std::string& op, const std::string& trait, const std::string& arg, bool multi) {
+    if (trait == "assoc") {
+        if (arg == "right") regSet('r', userInfixRight_, op);
+        else userInfixRight_.erase(op);
+        if (arg == "non") userInfixNon_.insert(op);
+        if (arg == "chain") userInfixChain_.insert(op);
+        if (arg == "list") userInfixList_.insert(op);
+    } else {
+        std::string ref = arg;
+        size_t lt = ref.find('<'), gt = ref.rfind('>'), open = 1;
+        if (lt == std::string::npos) { lt = ref.find("\xC2\xAB"); gt = ref.rfind("\xC2\xBB"); open = 2; }
+        if (ref.size() > 3 && ref.compare(0, 2, "&[") == 0 && ref.back() == ']') ref = ref.substr(2, ref.size() - 3);
+        else if (lt != std::string::npos && gt != std::string::npos && gt > lt) ref = ref.substr(lt + open, gt - lt - open);
+        const int refBp = infixBpOf(ref);
+        regInfix(op, trait == "equiv" ? refBp : trait == "tighter" ? refBp + 5 : refBp - 5);
+    }
+    Token t; t.text = op; t.kind = Tok::Op;
+    if (!multi && classifyInfix(t).valid) userInfixTraited_.insert(op);
+}
+
 // An operator declared in another file still has to be known HERE, at parse time,
 // or `$c ◐ 20` is a syntax error before the module is ever loaded. Rakudo gets this
 // from compiling the module during compilation of the importer; rakupp parses the
@@ -1165,18 +1193,26 @@ bool Parser::scanOpsIn(const std::string& src, const std::string& srcPath) {
             // `sub infix:<notthere>` with no `is export` stays the module's own,
             // and `3 notthere 4` is then two terms in a row. (The `my &infix:<…>`
             // spelling is how `sub EXPORT` builds what it exports — kept.)
+            std::string decl;   // a routine's signature and traits, up to its body
+            bool multi = false;
             {
                 bool routineKw = false;
                 for (const char* kw : {"sub", "multi", "proto", "only"}) {
                     size_t kl = std::strlen(kw);
                     if (b >= kl && src.compare(b - kl, kl, kw) == 0 &&
-                        (b == kl || !ascii::isalnum((unsigned char)src[b - kl - 1]))) { routineKw = true; break; }
+                        (b == kl || !ascii::isalnum((unsigned char)src[b - kl - 1]))) {
+                        size_t m = b - kl;   // `multi sub infix:<…>` is a candidate too
+                        while (m > 0 && ascii::isspace((unsigned char)src[m - 1])) m--;
+                        multi = !std::strcmp(kw, "multi") || (m >= 5 && src.compare(m - 5, 5, "multi") == 0);
+                        routineKw = true;
+                        break;
+                    }
                 }
                 if (routineKw) {
                     size_t bodyAt = src.find('{', close);
                     size_t stop = bodyAt == std::string::npos ? std::min(src.size(), close + 400)
                                                               : std::min(bodyAt, close + 400);
-                    const std::string decl = src.substr(close, stop - close);
+                    decl = src.substr(close, stop - close);
                     if (decl.find("is export") == std::string::npos) continue;
                 }
             }
@@ -1211,6 +1247,15 @@ bool Parser::scanOpsIn(const std::string& src, const std::string& srcPath) {
                 // through a user dispatcher is what the ASCII rule above avoids.
                 else if (word.valid && identShapedOpName(name) && !userInfix_.count(name))
                     regInfix(name, word.lbp);
+                // …and its traits, as the file's own declaration has them (parseSub): an
+                // imported `⨂ is equiv(&infix:<&&>) is assoc<right>` binds as `&&`
+                // does and nests to the right, where it took the default additive
+                // precedence, left-associative. A `sub` giving a BUILT-IN spelling
+                // traits is an operator of its own (FunctionalParsers' `(&)`).
+                auto traits = infixTraitsIn(decl);
+                if (builtin && !word.valid && !multi && !traits.empty() && !userInfix_.count(name)) regInfix(name, BP_ADD);
+                if (userInfix_.count(name))
+                    for (auto& tr : traits) applyInfixTrait(name, tr.first, tr.second, multi);
             }
             else if (asciiOnlyOp(name)) continue;
             else {
@@ -2332,7 +2377,7 @@ ExprPtr Parser::parseExpr(int minbp) {
             }
         }
         if ((cur().kind == Tok::Ident ||
-             (cur().kind == Tok::Op && !classifyInfix(cur()).valid)) &&
+             (cur().kind == Tok::Op && (!classifyInfix(cur()).valid || userInfixTraited_.count(cur().text)))) &&
             userInfix_.count(cur().text)) {
             // meta-assignment `$x op= y` — the infix tight against `=`
             if (peek().kind == Tok::Op && peek().text == "=" && !peek().spaceBefore) {
@@ -13645,13 +13690,7 @@ StmtPtr Parser::parseSub(bool isMulti, bool isProto, bool asMethod) {
                     if (!w.empty()) ref = "<" + w[0] + ">";
                 }
                 else if (isKind(Tok::QwList) && !cur().spaceBefore) ref = "<" + advance().text + ">";
-                // ref looks like `&infix:<+>` — pull the operator out of the <…>/«…»
-                auto lt = ref.find('<'), gt = ref.rfind('>');
-                if (lt == std::string::npos) { lt = ref.find("\xC2\xAB"); gt = ref.rfind("\xC2\xBB"); }
-                std::string refOp = (lt != std::string::npos && gt != std::string::npos && gt > lt)
-                                  ? ref.substr(lt + 1, gt - lt - 1) : ref;
-                int refBp = infixBpOf(refOp);
-                regInfix(declInfix, trait == "equiv" ? refBp : trait == "tighter" ? refBp + 5 : refBp - 5);
+                applyInfixTrait(declInfix, trait, ref, s->isMulti);   // ref looks like `&infix:<+>`
                 continue;
             }
             if (trait == "assoc") {
@@ -13663,11 +13702,8 @@ StmtPtr Parser::parseSub(bool isMulti, bool isProto, bool asMethod) {
                          peek(2).kind == Tok::RParen) {
                     advance(); kind = advance().text; advance();
                 }
-                if (kind == "right") { regSet('r', userInfixRight_, declInfix); s->assocRight = true; }
-                else userInfixRight_.erase(declInfix);
-                if (kind == "non") { userInfixNon_.insert(declInfix); s->assocNon = true; }
-                if (kind == "chain") { s->assocChain = true; userInfixChain_.insert(declInfix); }
-                if (kind == "list") userInfixList_.insert(declInfix);
+                applyInfixTrait(declInfix, "assoc", kind, s->isMulti);
+                s->assocRight = kind == "right"; s->assocNon = kind == "non"; s->assocChain = kind == "chain";
                 continue;
             }
         }

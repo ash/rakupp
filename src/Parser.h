@@ -320,6 +320,8 @@ private:
     std::string newlineSeq_ = "\n";        // what `\n` means (`use newline :cr`)
     std::set<std::string> userInfixNon_;     // …and `is assoc<non>` (they do not chain)
     std::set<std::string> userInfixList_, userInfixChain_; // `is assoc<list>` / `is assoc<chain>`
+    std::set<std::string> userInfixTraited_; // a BUILT-IN spelling a `sub` gave traits (`infix:<(&)> is equiv(…)`): the sub's
+    void applyInfixTrait(const std::string& op, const std::string& trait, const std::string& arg, bool multi);
     std::set<std::string> userPrefix_, userPostfix_; // user-declared operators (sub prefix:<…> / postfix:<…>)
     std::map<std::string, int> userPrefixBp_; // a user prefix declared `is looser(…)`: its operand's binding power
     // a user POSTFIX declared `is looser(&prefix:<p>)`: p's operand stops before it, so
