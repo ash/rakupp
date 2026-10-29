@@ -2959,6 +2959,7 @@ public:
     bool isContainerElem(const Value& v);    // …is this element one?
     void keepListContainers(const struct ListExpr* l, Value& list); // a kept literal holds its items' containers
     void keepEndsContainers(const struct MethodCall* mc, const Value& inv, Value& seq); // …a kept `@a.head(n)`, the array's
+    Value sliceAlias(Value& base, const struct Expr* baseE, Value key);  // …a bound `@a[0, 2]`, the List of its elements'
     void noteKeptVarType(const struct Expr* item, Value& proxy);     // …a typed variable's, with its type
     Value keptTypedStore(const Value& proxy, Value v);               // …which a store through it checks
     bool keptTyped(const Value& proxy) const;                         // …does it carry one?

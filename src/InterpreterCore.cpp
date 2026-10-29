@@ -16203,15 +16203,28 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
                     // keyed as every other write keys it, so `my \t := %type2allo{Int}`
                     // finds the entry an object hash (`%h{Any}`) stored under Int
                     Value kv = subscriptKey(ix->index.get());
+                    // (a typed hash's element answers to its type through the alias: #184)
+                    const Value guard = hv.ofType().empty() && !hv.elemDefault() ? Value::any()
+                                      : elemAliasGuard(hv, true, containerNameOf(ix->base.get(), '%'));
+                    // a SLICE binds the List of those entries' containers, as `my @s
+                    // := %h<a b>` does: one key made of them all was made instead
+                    if (kv.t == VT::Whatever || (kv.t == VT::Range && !isEndlessRange(kv)) ||
+                        (kv.t == VT::Array && kv.arr() && !kv.itemized)) {
+                        Value lst = Value::array(); lst.isList = true;
+                        for (auto& k : (kv.t == VT::Whatever ? methodCall(hv, "keys", ValueList{}) : kv).flatten()) {
+                            checkObjHashKey(hv, k);
+                            lst.arr()->push_back(makeHashSlotProxy(h, hashSubKey(k, &hv), &guard));
+                        }
+                        lst.markHoldsContainers();
+                        *lvalue(a->target.get()) = lst;
+                        return sink ? Value::any() : lst;
+                    }
                     checkObjHashKey(hv, kv);
                     std::string key = hashSubKey(kv, &hv);
                     if (h->emplace(key, Value::any()).second && !objHashKeyType(hv).empty()) {
                         Value stored = kv; stored.itemized = false;
                         h->setObjKey(key, stored);
                     }                                        // the slot exists from now on
-                    // (a typed hash's element answers to its type through the alias: #184)
-                    const Value guard = hv.ofType().empty() && !hv.elemDefault() ? Value::any()
-                                      : elemAliasGuard(hv, true, containerNameOf(ix->base.get(), '%'));
                     Value proxy = makeHashSlotProxy(h, key, &guard);
                     Value* blv = lvalue(a->target.get());
                     *blv = proxy;
@@ -16243,6 +16256,13 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
                     Value kv = subscriptKey(ix->index.get());
                     if (kv.t == VT::Code && kv.code() && kv.code()->ci().isWhateverCode)
                         kv = callCallable(kv, ValueList{Value::integer((long long)arr->size())});
+                    // a SLICE binds the List of those elements' containers: its
+                    // length or first key, read as one index, named one element
+                    if (kv.t == VT::Whatever || kv.t == VT::Range || (kv.t == VT::Array && kv.arr() && !kv.itemized)) {
+                        Value lst = sliceAlias(*base, ix->base.get(), std::move(kv));
+                        *lvalue(a->target.get()) = lst;
+                        return sink ? Value::any() : lst;
+                    }
                     long long i = kv.toInt();
                     if (i < 0) negIndexThrow(i);
                     if (i >= 0) {

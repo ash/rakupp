@@ -488,7 +488,23 @@ struct Codegen {
         if (a->target->kind != NK::VarExpr) return;
         const std::string& tn = static_cast<const VarExpr*>(a->target.get())->name;
         if (!tn.empty() && (tn[0] == '$' || ascii::isalpha((unsigned char)tn[0]) || tn[0] == '_'))
-            noteKeptItems(a->value.get()) || noteKeptEnds(a->value.get());
+            noteKeptItems(a->value.get()) || noteKeptEnds(a->value.get()) || noteBoundElems(a, tn);
+    }
+    // …and `my \x = @a[1]` / `$s := @a[0, 2]` binds @a's elements' containers
+    // (the interpreter's slot aliases and sliceAlias), which a write to @a
+    // shows; the native name holds values
+    bool noteBoundElems(const Assign* a, const std::string& tn) {
+        if (!a->value || a->value->kind != NK::Index || (a->op != ":=" && tn[0] == '$')) return false;
+        auto* ix = static_cast<const Index*>(a->value.get());
+        if (!ix->base || ix->base->kind != NK::VarExpr || !ix->adverb.empty()) return false;
+        const std::string& n = static_cast<const VarExpr*>(ix->base.get())->name;
+        if (n.size() < 2 || (n[0] != '@' && n[0] != '%')) return false;
+        keptNames_.insert(n);
+        keptListVar_ = true;
+        if (!keptListLine_) keptListLine_ = a->line ? a->line : curStmtLine_;
+        if (moduleMode_)
+            throw CodegenError{"a name bound to an element's container, in a module routine", /*routineWide=*/true};
+        return true;
     }
     // …and `my $h = @a.head(2)` / `.tail(2)` keeps a Seq of @a's elements (the
     // interpreter's keepEndsContainers), which a write to @a, or one through a

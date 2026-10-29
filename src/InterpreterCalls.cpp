@@ -2810,11 +2810,18 @@ void Interpreter::keepListContainers(const ListExpr* l, Value& list) {
 static long long slotPack(size_t idx, size_t size);
 static size_t slotIdx(const Value& ref);
 static size_t slotSize(const Value& ref);
+static Value nativeFill(const std::string& t);
 static const ProxyKey& kKeptArr() { static const ProxyKey k("\x01" "karr"); return k; }    // the array: as kSlotArr
 static const ProxyKey& kKeptBuf() { static const ProxyKey k("\x01" "kbuf"); return k; }    // the buffer; `i` the place in it
 std::atomic<bool> g_keptEndsLive{false};
 namespace {
-struct KeptBuf { PRef<ValueList> buf; size_t from, size; };   // the buffer of a Seq of src[from…], src's length then
+// the buffer of a list of src's elements at `at` (null: from, from+1, …), and src's length then
+struct KeptBuf {
+    PRef<ValueList> buf;
+    std::shared_ptr<const std::vector<size_t>> at;
+    size_t from, size;
+    size_t pos(size_t j) const { return at ? (*at)[j] : from + j; }
+};
 struct KeptEndsReg {
     std::mutex mu;
     // by the array's storage; a buffer nothing else holds is a Seq that has gone
@@ -2862,7 +2869,7 @@ void keptEndsRefillSlow(const ValueList* src) {
         // (an array that shrank below the Seq already left it what it last read)
         if (src->size() >= b.size)
             for (size_t j = 0; j < b.buf->size(); j++) {
-                const size_t idx = b.from + j;
+                const size_t idx = b.pos(j);
                 Value v = idx < src->size() ? (*src)[idx] : Value::any();
                 if (several && !cellOfProxy(&v)) {
                     Value& c = cells[idx];
@@ -2909,32 +2916,36 @@ static Value keptWrite(Interpreter& I, const Value& proxy, Value nv) {
     const size_t j = (size_t)bv->i;
     // a slot holding a container of its own takes the store through it — after
     // the stripe is let go, since a user's Proxy runs code
-    auto store = [&](ValueList* in, size_t at) {
+    auto store = [&](ValueList* in, size_t at, bool grow) {
         Value bound;
         {
             Interpreter::ParStripe ps(I, in);
-            if (at >= in->size()) return;
+            if (at >= in->size()) {
+                if (!grow) return;
+                while (in->size() <= at) in->push_back(Value::any());   // (a slice's place past the end)
+            }
             Value& slot = (*in)[at];
             if (!(slot.t == VT::Hash && slot.hashKind == proxyKind() && slot.hash())) { slot = nv; return; }
             bound = slot;
         }
         I.proxyStore(bound, nv);
     };
-    if (keptDetached(*bv)) { store(&buf, j); return nv; }
+    if (keptDetached(*bv)) { store(&buf, j, false); return nv; }
     ValueList* arr = av->arr();
     { Interpreter::ParStripe ps(I, arr); buf[j] = nv; }
-    if (arr->size() >= slotSize(*av)) store(arr, slotIdx(*av));   // (shrunk: written to the element it held)
+    if (arr->size() >= slotSize(*av)) store(arr, slotIdx(*av), true);   // (shrunk: written to the element it held)
     return nv;
 }
 
-void Interpreter::keepEndsContainers(const MethodCall* mc, const Value& inv, Value& seq) {
-    if (inv.isList || inv.ext() || inv.shape() || !inv.arr() || !seq.arr() || seq.holdsContainers() ||
-        !nativeElemTypeOf(inv).empty())
-        return;
-    PRef<ValueList> arr = inv.arrS();
-    const size_t n = arr->size(), k = seq.arr()->size();
-    if (k == 0 || k > n) return;
-    const size_t from = mc->method == "head" ? 0 : n - k;
+// The elements of `holder`'s storage at the positions `at` (null: from,
+// from+1, …, k of them), each such a proxy; `holderE` names the array for a
+// typed element's message. A place past the end reads (Any) and is written
+// into, growing the array, as a slice's is.
+static PRef<ValueList> keptElems(Interpreter& I, const Value& holder, const Expr* holderE, size_t from, size_t k,
+                                 std::shared_ptr<const std::vector<size_t>> at) {
+    PRef<ValueList> arr = holder.arrS();
+    const size_t n = arr->size();
+    auto pos = [&](size_t j) { return at ? (*at)[j] : from + j; };
     static const Value kFetch = [] {
         Value f; f.t = VT::Code; f.setCode(makePayload<Callable>());
         f.code()->ciM().builtin = [](Interpreter& I, ValueList& a) -> Value {
@@ -2953,18 +2964,20 @@ void Interpreter::keepEndsContainers(const MethodCall* mc, const Value& inv, Val
     }();
     // (a typed array's element answers to its type through the alias: #184)
     std::shared_ptr<Value> guard;
-    if (!inv.ofType().empty() || inv.elemDefault())
-        guard = std::make_shared<Value>(elemAliasGuard(inv, false, containerNameOf(mc->inv.get(), '@')));
+    if (!holder.ofType().empty() || holder.elemDefault())
+        guard = std::make_shared<Value>(I.elemAliasGuard(holder, false, containerNameOf(holderE, '@')));
     if (guard && guard->t != VT::Array) guard.reset();
-    Value bv = Value::array(ValueList(arr->begin() + from, arr->begin() + from + k));
+    Value bv = Value::array();
+    bv.arr()->reserve(k);
+    for (size_t j = 0; j < k; j++) bv.arr()->push_back(pos(j) < n ? (*arr)[pos(j)] : Value::any());
     auto els = makePayload<ValueList>();
     els->reserve(k);
     for (size_t j = 0; j < k; j++) {
         // (a slot that already holds an alias hands out that container)
-        const Value& el = (*arr)[from + j];
+        const Value& el = (*bv.arr())[j];
         if (el.t == VT::Hash && el.hashKind == "Proxy" && el.hash()) { els->push_back(el); continue; }
         Value av; av.t = VT::Array; av.setArr(arr);   // shares the storage
-        av.i = slotPack(from + j, n);
+        av.i = slotPack(pos(j), n);
         if (guard) av.elemDefaultM() = guard;
         Value pb = bv; pb.i = (long long)j;
         Value proxy = Value::makeHash(); proxy.hashKind = proxyKind();
@@ -2980,12 +2993,58 @@ void Interpreter::keepEndsContainers(const MethodCall* mc, const Value& inv, Val
         std::lock_guard<std::mutex> lk(r.mu);
         auto& live = r.bySrc[arr.get()];
         keptEndsPrune(live);
-        live.push_back(KeptBuf{bv.arrS(), from, n});
+        live.push_back(KeptBuf{bv.arrS(), std::move(at), from, n});
         if (++r.adds % 64 == 0) keptEndsSweep(r);   // (now and then, the storages whose Seqs have all gone)
         g_keptEndsLive.store(true, std::memory_order_relaxed);
     }
-    seq.setArr(std::move(els));
+    return els;
+}
+
+void Interpreter::keepEndsContainers(const MethodCall* mc, const Value& inv, Value& seq) {
+    if (inv.isList || inv.ext() || inv.shape() || !inv.arr() || !seq.arr() || seq.holdsContainers() ||
+        !nativeElemTypeOf(inv).empty())
+        return;
+    const size_t n = inv.arr()->size(), k = seq.arr()->size();
+    if (k == 0 || k > n) return;
+    seq.setArr(keptElems(*this, inv, mc->inv.get(), mc->method == "head" ? 0 : n - k, k, nullptr));
     seq.markHoldsContainers();
+}
+
+// `my \x = @a[0, 2]`, `$z := @a[1..*]`: a SLICE binds the List of those
+// elements' containers (keptElems), as Rakudo's does — a write through it
+// lands in the array, `@a = …` leaves it the elements it had. Its keys read
+// as a subscript's do: `*` and an endless Range stop at the array's end, `*-1`
+// counts back from it, a Str numifies, a negative key dies. A native or lazy
+// array has no containers: the List holds its values.
+Value Interpreter::sliceAlias(Value& base, const Expr* baseE, Value key) {
+    if (base.ext()) forceLazy(base);   // (a finite lazy array, read to its end)
+    const size_t n = base.arr()->size();
+    auto at = std::make_shared<std::vector<size_t>>();
+    auto add = [&](Value k) {
+        if (k.t == VT::Code && k.code() && k.code()->ci().isWhateverCode)
+            k = callCallable(k, ValueList{Value::integer((long long)n)});
+        const long long i = k.toInt();
+        if (i < 0) negIndexThrow(i);
+        at->push_back((size_t)i);
+    };
+    if (key.t == VT::Whatever)
+        for (size_t i = 0; i < n; i++) at->push_back(i);
+    else if (key.t == VT::Range && isEndlessRange(key))
+        for (long long i = key.rFrom() + (key.rExFrom() ? 1 : 0); i < (long long)n; i++) add(Value::integer(i));
+    else
+        for (auto& k : key.flatten()) add(k);
+    Value lst = Value::array(); lst.isList = true;
+    const std::string natT = nativeElemTypeOf(base);
+    if (base.ext() || !natT.empty()) {
+        if (base.ext() && !at->empty()) materializeLazy(base, *std::max_element(at->begin(), at->end()) + 1);
+        const ValueList& el = *base.arr();
+        for (size_t p : *at)
+            lst.arr()->push_back(p < el.size() ? el[p] : natT.empty() ? Value::any() : nativeFill(natT));
+        return lst;
+    }
+    lst.setArr(keptElems(*this, base, baseE, 0, at->size(), at));
+    lst.markHoldsContainers();
+    return lst;
 }
 // A kept item for a TYPED variable (`my Int $a; f(($a, 2))`), and an ALIAS of
 // one (`my $b := $a`, `sub f($x is rw)` handed `$a`, `for $a { }`: #184's twin
