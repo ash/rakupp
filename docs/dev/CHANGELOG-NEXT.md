@@ -26,7 +26,7 @@ b05e989b (issue #193); 17e33a45 (issue #184); 5f87f445; 0e44c5a6 (issue
 (issue #188); c50eb3b8 (issue #146); 09018c67 (issue #77); 099a2055 (issue
 #205); 18ef8f73 (issues #186 and #178); 642a320a; 62a3d9a5 (issue #212);
 17a71667 (issue #213); 46c4ef60 (issue #194); 2deb332a, eed42468, 710dccdb,
-62b42a19, aaa97b24, 56d9a3a5 and 3fae5f4e (issue #60).*
+62b42a19, aaa97b24, 56d9a3a5, 3fae5f4e and 18ac7c39 (issue #60).*
 
 ---
 
@@ -977,17 +977,29 @@ does not.
   that exports none costs nothing. That re-lex keeps an L10N rewrite now,
   where `use L10N::XX` before a module exporting `sub tr` left the
   keywords after it untranslated, and a slang's re-lex keeps the imported
-  quote words and operators. FunctionalParsers' t/01 and t/12 parse now and
-  fail on the operators' traits (Left open).
+  quote words and operators. FunctionalParsers' t/01 and t/12 parse now, and
+  fail on the operators' traits, the next entry.
   t/regression/imported-operator-spellings.raku agrees with Rakudo 2026.09.
+- **An imported operator keeps its precedence and associativity traits**
+  (18ac7c39; issue #60). The importing file took a module's operators by name
+  only, so each bound at the default additive precedence, left-associative:
+  an exported `is assoc<right>` nested left, and `is equiv(&infix:<&&>)`
+  under `is equiv(&infix:<||>)` made one long left-nested chain. `is
+  tighter`, `is looser`, `is equiv` and `is assoc` are read off the module
+  now, by the reader the file's own declarations use. With it, declared in
+  the file or imported, `is equiv(&[**])` binds as `**` (it stayed
+  additive), and a `sub` that gives a built-in spelling traits, such as
+  `sub infix:<(&)> is equiv(&infix:<&&>)`, binds as its traits say instead
+  of as the set operator; a `multi` candidate leaves the built-in alone.
+  FunctionalParsers 0.1.11 passes 17 of its 18 test files, up from 15.
+  t/regression/imported-operator-traits.raku agrees with Rakudo 2026.09.
 
 ### Left open
 
-- An imported operator takes the default precedence, left-associative,
-  whatever its `is assoc`, `is equiv`, `is tighter` or `is looser` say
-  (the file's own declaration honours them); FunctionalParsers' t/01 and
-  t/12 fail on this alone. TODO.md has it, with three smaller faults found
-  beside it (3fae5f4e).
+- EVAL seeds the caller's operators at the default precedence, so their
+  traits are lost inside it, and at equal precedence the left operator's
+  associativity decides where Rakudo asks the incoming one; with three
+  smaller faults found beside them, TODO.md has each (3fae5f4e, 18ac7c39).
 - A `for` loop's, `given`'s or `.map`'s alias of a typed array element
   refuses at its write-back, after the rest of the body; `.hyper.map`, `for
   @a.kv -> $k, $v is rw` and `.first` still store anything; and `my Int:D
