@@ -28,7 +28,8 @@ b05e989b (issue #193); 17e33a45 (issue #184); 5f87f445; 0e44c5a6 (issue
 17a71667 (issue #213); 46c4ef60 (issue #194); 2deb332a, eed42468, 710dccdb,
 62b42a19, aaa97b24, 56d9a3a5, 3fae5f4e, 18ac7c39 and 2c05f00f (issue #60);
 f3fb83e3 and 5e611fa3 (issue #216); 67c35490 (issue #215); 820388ce and
-c9560e0d; d1c84b6b (issue #199); a1bb0e7b (issue #191).*
+c9560e0d; d1c84b6b (issue #199); a1bb0e7b (issue #191); 55565059 (issue
+#177).*
 
 ---
 
@@ -200,6 +201,15 @@ plain before 500c29e2 and native from it, unless they say otherwise.
   shared it: on an 8 KB, 800 KB and 8 MB Buf a call cost 0.38, 11.35 and
   116.33 µs, and costs 0.31, 0.29 and 0.27 µs now (Rakudo 2026.09: 0.29,
   0.66, 0.22; the issue's script, interpreted).
+- **Passing a Blob or a Buf to a routine costs nothing** (55565059; issue
+  #177). The snapshot taken to copy a write to a Buf or Blob parameter back
+  to the caller was compared with it byte by byte when the call returned:
+  1.2 ms a call for 16 MB. A Blob, which is immutable, is not snapshotted,
+  and a Buf the callee did not write is told by its body's pointer. ms per
+  call, 1 MB / 16 MB: a Blob 0.046 / 1.199 → 0.001 / 0.000, a Buf 0.050 /
+  1.229 → 0.000 / 0.000 (Rakudo 2026.09: 0.000). `subbuf-rw` refuses a Blob,
+  as in Rakudo. t/regression/blob-param-costs-nothing.raku agrees with
+  Rakudo 2026.09.
 
 ### New
 
@@ -1108,9 +1118,8 @@ does not.
 - A `let` in a routine whose LEAVE dies while it unwinds is not undone,
   where Rakudo restores it (099a2055). TODO-FOLLOW-UPS.md has it.
 - A write past a Buf's end grows a buffer of its own, which a second holder
-  and a compiled caller do not see; `$b[1]++` on a Buf element dies with
-  X::OutOfRange; and issue #177's cost per call is the copy-back's snapshot
-  of a Blob parameter (18ef8f73). TODO-FOLLOW-UPS.md has each.
+  and a compiled caller do not see, and `$b[1]++` on a Buf element dies with
+  X::OutOfRange (18ef8f73). TODO-FOLLOW-UPS.md has both.
 - A phaser written last (LEAVE, KEEP, ENTER, FIRST…) still leaves the
   statement before it as the block's or routine's value: `sub f { 42; LEAVE
   { } }` answers 42, Rakudo Nil (642a320a). TODO-FOLLOW-UPS.md has it.
