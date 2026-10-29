@@ -27,7 +27,7 @@ b05e989b (issue #193); 17e33a45 (issue #184); 5f87f445; 0e44c5a6 (issue
 #205); 18ef8f73 (issues #186 and #178); 642a320a; 62a3d9a5 (issue #212);
 17a71667 (issue #213); 46c4ef60 (issue #194); 2deb332a, eed42468, 710dccdb,
 62b42a19, aaa97b24, 56d9a3a5, 3fae5f4e, 18ac7c39 and 2c05f00f (issue #60);
-f3fb83e3 (issue #216).*
+f3fb83e3 and 5e611fa3 (issue #216).*
 
 ---
 
@@ -1016,6 +1016,20 @@ does not.
   starts with MyEnum, and `my Int $i = $t` no longer dies.
   t/regression/enum-type-called-from-a-container.raku agrees with Rakudo
   2026.09.
+- **An enum's type object is one undefined item, not the list of its pairs**
+  (5e611fa3; issue #216). Nested in a list, a hash or a pair it rendered as
+  `[AAA => 0 BBB => 1 …]`, and `say %(x => MyEnum)` with it; interpolated,
+  joined or concatenated it was "AAA\t0 BBB\t1 …"; `.elems` was 4, `my @a =
+  MyEnum` took four Pairs and `for MyEnum` ran four times; it was True, `+MyEnum`
+  was 4, and `.pop` took a member out of the enum for good. It gists as
+  `(MyEnum)` and `.raku`s as `MyEnum` wherever it is, is "" in string context
+  with the uninitialized warning, is one element, False, refuses to be a
+  number (X::Constructor::BadType, or X::Numeric::Uninitialized under an
+  infix) and refuses `.push` and `.pop`, as in Rakudo; `.keys`, `.pairs`,
+  `.pick` and the rest of Enumeration still read the members. A declared
+  enum's or subset's name before `~` is a term now, as a class's was: `MyEnum
+  ~ "x"` was the coercion `MyEnum(~"x")`, the first member.
+  t/regression/enum-type-object-is-one-item.raku agrees with Rakudo 2026.09.
 
 ### Left open
 
@@ -1130,9 +1144,9 @@ does not.
   package writes a global EXPORT::DEFAULT, where Rakudo resolves the name
   inside the module's package. Two packages of one file exporting the same
   name are not X::Export::NameClash.
-- Found with issue #216, the same before f3fb83e3: an enum's type object
-  inside a list, a hash or a pair renders as its pairs (`say (MyEnum, 1)`
-  is `([AAA => 0 BBB => 1 …] 1)` where Rakudo says `((MyEnum) 1)`, and
-  `say %(x => MyEnum)` is no better), and so does one interpolated or
-  concatenated (`"{MyEnum}"`). Its `.elems` is 4 where Rakudo says 1, and
-  `my @a = MyEnum` flattens it to its four pairs.
+- Found with issue #216, the same before 5e611fa3: `|MyEnum` still slips
+  an enum's four pairs where Rakudo slips the one type object, and `.Hash`,
+  `.Map`, `.min`, `.max`, `.rotor` and the Cool string methods (`.chars`,
+  `.uc`) on it answer from the pairs or the empty string where Rakudo
+  refuses or answers `{}`. `(Int, 1).Str` and a user type before `~`
+  (`Foo ~ "x"`) give no uninitialized warning, for any type object.
