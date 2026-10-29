@@ -25,8 +25,8 @@ b05e989b (issue #193); 17e33a45 (issue #184); 5f87f445; 0e44c5a6 (issue
 #211); 8c871a25; 079427c0 (issue #175); 357cb4bb (issue #187); 6eddeeb5
 (issue #188); c50eb3b8 (issue #146); 09018c67 (issue #77); 099a2055 (issue
 #205); 18ef8f73 (issues #186 and #178); 642a320a; 62a3d9a5 (issue #212);
-17a71667 (issue #213); 46c4ef60 (issue #194); 2deb332a, eed42468 and
-710dccdb (issue #60).*
+17a71667 (issue #213); 46c4ef60 (issue #194); 2deb332a, eed42468, 710dccdb
+and 62b42a19 (issue #60).*
 
 ---
 
@@ -943,6 +943,16 @@ does not.
   FunctionalParsers 0.1.11 passes 13 of its 18 test files with this, up
   from 5. t/regression/tagged-code-constant-export.raku agrees with Rakudo
   2026.09.
+- **A map or grep a routine or closure returns is lazy** (62b42a19; issue
+  #60). `sub f { @a.map(…) }; f().head` ran the block over every element;
+  it runs it once now, a Seq kept from `f()` runs as it is read, and a sunk
+  one still runs where it stands. `.is-lazy` says False for a map or grep
+  over a finite list, as Rakudo's does, `.append`/`.prepend` read such a
+  Seq to its end, and `.sum`/`.min`/`.max` fold it in place. perf-guard
+  within noise; a returned map's `.head` is 89% faster and `[+]` over one
+  ~10% slower. A map written where it is stored, and `for` over a map,
+  stay eager (TODO.md). FunctionalParsers 0.1.11 passes 14 of its 18 test
+  files. t/regression/returned-map-is-lazy.raku agrees with Rakudo 2026.09.
 
 ### Left open
 
