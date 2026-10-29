@@ -80,79 +80,31 @@ bool attrInitNoted(const ObjectData* od, const Value* slot);
 bool attrInitWatchOpen(const ObjectData* od, ClassInfo* ci);
 void attrInitWatchClose(const ObjectData* od);
 
-// The per-class step alone, least-derived first down the primary parent chain
-// — what the construction protocol reduces to when no class in the ancestry
-// declares a BUILD or a TWEAK. Recursive so the order costs no list.
+// The classes a construction seeds and checks attributes on, most-derived
+// first, into a stack buffer that spills past eight: the parent chain — a role
+// that took the parent slot included — and, when a CLASS parent comes past the
+// first (`is A is B`, or `does R is A`, where R took the slot), the whole
+// linearization instead (attrChainMore). The walk followed `parent` alone, so
+// A's (or B's) defaults never ran and its `is required` was never asked for:
+// FunctionalParsers' `does … is Raku::AST` actions got none of their actions.
+void attrChainMore(ClassInfo* ci, ClassInfo** buf, std::vector<ClassInfo*>& spill, size_t& n);   // InterpreterCalls.cpp
+static inline void attrChainOf(ClassInfo* ci, ClassInfo** buf, std::vector<ClassInfo*>& spill, size_t& n) {
+    bool more = false;
+    for (ClassInfo* c = ci; c; c = c->parent.get()) {
+        if (n < 8) buf[n] = c; else spill.push_back(c);
+        n++;
+        for (auto& p : c->extraParents) more |= p && !p->isRole;
+    }
+    if (RAKUPP_UNLIKELY(more)) attrChainMore(ci, buf, spill, n);
+}
+
+// The per-class step alone, least-derived first over those classes — what the
+// construction protocol reduces to when no class in the ancestry declares a
+// BUILD or a TWEAK.
 static void stepDownChain(ClassInfo* c, Interpreter::BuildStep step) {
-    if (!c) return;
-    stepDownChain(c->parent.get(), step);
-    step.fn(step.ctx, c);
-}
-
-// A class's parent CLASSES, in the order it named them. A composed role is not
-// an ancestor, but a class a role inherits (`role R is Exception`) becomes the
-// composer's, so a role in a parent slot is looked through.
-static void classParentsInto(ClassInfo* c, std::vector<ClassInfo*>& r, int depth) {
-    auto add = [&](ClassInfo* p) {
-        if (!p) return;
-        if (p->isRole) { if (depth < 16) classParentsInto(p, r, depth + 1); return; }
-        if (std::find(r.begin(), r.end(), p) == r.end()) r.push_back(p);
-    };
-    add(c->parent.get());
-    for (auto& p : c->extraParents) add(p.get());
-}
-
-static bool c3Merge(ClassInfo* c, std::vector<ClassInfo*>& out, int depth) {
-    if (depth > 64) return false;
-    std::vector<ClassInfo*> ps;
-    classParentsInto(c, ps, 0);
-    std::vector<std::vector<ClassInfo*>> seqs;
-    for (ClassInfo* p : ps) {
-        std::vector<ClassInfo*> l;
-        if (!c3Merge(p, l, depth + 1)) return false;
-        seqs.push_back(std::move(l));
-    }
-    seqs.push_back(ps);
-    out.push_back(c);
-    for (;;) {
-        ClassInfo* pick = nullptr;
-        bool left = false;
-        for (auto& sq : seqs) {
-            if (sq.empty()) continue;
-            left = true;
-            ClassInfo* h = sq.front();
-            bool inTail = false;
-            for (auto& t : seqs)
-                if (t.size() > 1 && std::find(t.begin() + 1, t.end(), h) != t.end()) { inTail = true; break; }
-            if (!inTail) { pick = h; break; }
-        }
-        if (!left) return true;
-        if (!pick) return false;    // an inconsistent hierarchy
-        out.push_back(pick);
-        for (auto& sq : seqs) if (!sq.empty() && sq.front() == pick) sq.erase(sq.begin());
-    }
-}
-
-// The C3 linearisation Rakudo's `.^mro` reports — `E is C is D` with `C is A
-// is B` and `D is A` is E C D A B, where a depth-first walk keeping the last
-// occurrence said E C B D A. Only the user classes; the built-in tail is the
-// caller's. A hierarchy C3 cannot order falls back to that depth-first walk.
-std::vector<ClassInfo*> c3ClassMro(ClassInfo* c) {
-    std::vector<ClassInfo*> out;
-    if (!c) return out;
-    if (c3Merge(c, out, 0)) return out;
-    out.clear();
-    std::vector<ClassInfo*> lin;
-    std::function<void(ClassInfo*)> visit = [&](ClassInfo* k) {
-        lin.push_back(k);
-        std::vector<ClassInfo*> ps;
-        classParentsInto(k, ps, 0);
-        for (ClassInfo* p : ps) visit(p);
-    };
-    visit(c);
-    for (size_t i = 0; i < lin.size(); i++)
-        if (std::find(lin.begin() + i + 1, lin.end(), lin[i]) == lin.end()) out.push_back(lin[i]);
-    return out;
+    ClassInfo* buf[8]; std::vector<ClassInfo*> spill; size_t n = 0;
+    attrChainOf(c, buf, spill, n);
+    for (size_t i = n; i-- > 0;) step.fn(step.ctx, i < 8 ? buf[i] : spill[i - 8]);   // least-derived first
 }
 
 // The MRO as `.^mro` REPORTS it, which is c3ClassMro plus one thing: a role a
@@ -1084,10 +1036,7 @@ void Interpreter::runAttrDefaults(const PRef<ObjectData>& od,
     ClassInfo* chainBuf[8];
     std::vector<ClassInfo*> chainSpill;
     size_t nChain = 0;
-    for (ClassInfo* c = ci.get(); c; c = c->parent.get()) {
-        if (nChain < 8) chainBuf[nChain] = c; else chainSpill.push_back(c);
-        nChain++;
-    }
+    attrChainOf(ci.get(), chainBuf, chainSpill, nChain);
     auto chainAt = [&](size_t i) -> ClassInfo* { return i < 8 ? chainBuf[i] : chainSpill[i - 8]; };
     // the attribute table gets one chunk the size the class declares
     // (VALUEHASH-SMALL-PLAN.md), before anything is stored in it
@@ -1667,10 +1616,7 @@ Value Interpreter::constructDefault(const std::shared_ptr<ClassInfo>& ci, ValueL
     ClassInfo* chainBuf[8];
     std::vector<ClassInfo*> chainSpill;
     size_t nChain = 0;
-    for (ClassInfo* c = ci.get(); c; c = c->parent.get()) {
-        if (nChain < 8) chainBuf[nChain] = c; else chainSpill.push_back(c);
-        nChain++;
-    }
+    attrChainOf(ci.get(), chainBuf, chainSpill, nChain);
     auto chainAt = [&](size_t i) -> ClassInfo* { return i < 8 ? chainBuf[i] : chainSpill[i - 8]; };
     // enforce an attribute type smiley (`has Int:D $.a` / `has Int:U $.a`)
     // on the FINAL slot value, matching Rakudo's X::TypeCheck::Attribute::Default.

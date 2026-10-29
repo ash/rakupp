@@ -6087,6 +6087,7 @@ static bool kvFamilyAnswersList(const Value& inv, const std::string& m) {
 // such a class the general path's special cases cannot apply, and its `.new`
 // is runAttrDefaults and the build chain.
 extern std::atomic<uint64_t> g_symbolGen;
+static bool plainNewAncestry(ClassInfo* c, bool& checked, int depth);   // (at the end of this file)
 static int plainNewClass(Interpreter& I, ClassInfo& ci) {
     if (!ci.decl || ci.isRole || !ci.repr.empty() || ci.awaitingCompose || !ci.roleVariants.empty())
         return 0;
@@ -6097,13 +6098,7 @@ static int plainNewClass(Interpreter& I, ClassInfo& ci) {
     // `is required`, a type smiley, `where` or a shape: still the default
     // construction, but with the checks that come with it (constructDefault)
     bool checked = false;
-    for (ClassInfo* c = &ci; c; c = c->parent.get()) {
-        if (!c->nativeParent.empty()) return 0;
-        for (auto& at : c->attrs)
-            if (at.required || at.defConstraint || at.where || at.shape) checked = true;
-        for (auto& r : c->doneRoles)
-            if (r == "Rational" || r.rfind("Rational[", 0) == 0) return 0;
-    }
+    if (!plainNewAncestry(&ci, checked, 0)) return 0;
     if (I.typeOrSubsetMatches(Value::typeObj(n), "Rational")) return 0;
     return checked ? 2 : 1;
 }
@@ -10543,6 +10538,25 @@ Value Interpreter::methodCallUnresolved(const Value& inv, const MName& m, ValueL
                  {"private",  Value::boolean(priv)}},
                 std::string("No such ") + (priv ? "private " : "") + "method '" +
                     (const std::string&)m + "' for invocant of type '" + inv.typeName() + "'");
+}
+
+// plainNewClass's walk over the ancestry: false for an ancestor that rules the
+// plain path out (a built-in parent, a Rational), and `checked` set for one
+// whose attributes want the checking constructor. EVERY parent counts, not
+// only the first: `class Y is A is Q`, with Q's `has $.q is required`, took
+// the unchecked path and built without it. Kept down here, away from
+// methodCall, which follows plainNewClass and is the hot path: growing the code
+// in front of it measured ~1% on `objnew`, on placement alone.
+static bool plainNewAncestry(ClassInfo* c, bool& checked, int depth) {
+    for (; c && depth < 64; c = c->parent.get()) {
+        if (!c->nativeParent.empty()) return false;
+        for (auto& at : c->attrs)
+            if (at.required || at.defConstraint || at.where || at.shape) checked = true;
+        for (auto& r : c->doneRoles)
+            if (r == "Rational" || r.rfind("Rational[", 0) == 0) return false;
+        for (auto& p : c->extraParents) if (!plainNewAncestry(p.get(), checked, depth + 1)) return false;
+    }
+    return true;
 }
 
 } // namespace rakupp

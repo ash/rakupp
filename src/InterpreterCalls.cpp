@@ -6269,5 +6269,84 @@ Value Interpreter::rtTypeCall(const char* name, ValueList args, bool parenned) {
     throw RakuError{Value::typeObj("X::AdHoc"), std::string("Undefined routine '") + name + "'"};
 }
 
+// A class's parent CLASSES, in the order it named them. A composed role is not
+// an ancestor, but a class a role inherits (`role R is Exception`) becomes the
+// composer's, so a role in a parent slot is looked through.
+static void classParentsInto(ClassInfo* c, std::vector<ClassInfo*>& r, int depth) {
+    auto add = [&](ClassInfo* p) {
+        if (!p) return;
+        if (p->isRole) { if (depth < 16) classParentsInto(p, r, depth + 1); return; }
+        if (std::find(r.begin(), r.end(), p) == r.end()) r.push_back(p);
+    };
+    add(c->parent.get());
+    for (auto& p : c->extraParents) add(p.get());
+}
+
+static bool c3Merge(ClassInfo* c, std::vector<ClassInfo*>& out, int depth) {
+    if (depth > 64) return false;
+    std::vector<ClassInfo*> ps;
+    classParentsInto(c, ps, 0);
+    std::vector<std::vector<ClassInfo*>> seqs;
+    for (ClassInfo* p : ps) {
+        std::vector<ClassInfo*> l;
+        if (!c3Merge(p, l, depth + 1)) return false;
+        seqs.push_back(std::move(l));
+    }
+    seqs.push_back(ps);
+    out.push_back(c);
+    for (;;) {
+        ClassInfo* pick = nullptr;
+        bool left = false;
+        for (auto& sq : seqs) {
+            if (sq.empty()) continue;
+            left = true;
+            ClassInfo* h = sq.front();
+            bool inTail = false;
+            for (auto& t : seqs)
+                if (t.size() > 1 && std::find(t.begin() + 1, t.end(), h) != t.end()) { inTail = true; break; }
+            if (!inTail) { pick = h; break; }
+        }
+        if (!left) return true;
+        if (!pick) return false;    // an inconsistent hierarchy
+        out.push_back(pick);
+        for (auto& sq : seqs) if (!sq.empty() && sq.front() == pick) sq.erase(sq.begin());
+    }
+}
+
+// The C3 linearisation Rakudo's `.^mro` reports — `E is C is D` with `C is A
+// is B` and `D is A` is E C D A B, where a depth-first walk keeping the last
+// occurrence said E C B D A. Only the user classes; the built-in tail is the
+// caller's. A hierarchy C3 cannot order falls back to that depth-first walk.
+std::vector<ClassInfo*> c3ClassMro(ClassInfo* c) {
+    std::vector<ClassInfo*> out;
+    if (!c) return out;
+    if (c3Merge(c, out, 0)) return out;
+    out.clear();
+    std::vector<ClassInfo*> lin;
+    std::function<void(ClassInfo*)> visit = [&](ClassInfo* k) {
+        lin.push_back(k);
+        std::vector<ClassInfo*> ps;
+        classParentsInto(k, ps, 0);
+        for (ClassInfo* p : ps) visit(p);
+    };
+    visit(c);
+    for (size_t i = 0; i < lin.size(); i++)
+        if (std::find(lin.begin() + i + 1, lin.end(), lin[i]) == lin.end()) out.push_back(lin[i]);
+    return out;
+}
+
+// MethodCallPart2.cpp's attrChainOf, for a class with a CLASS parent past the
+// first: its classes in the order `.^mro` reports (C3, so a diamond's base
+// comes once, after both sides), each followed by the roles in its parent
+// slot, whose attributes it seeds on its behalf.
+void attrChainMore(ClassInfo* ci, ClassInfo** buf, std::vector<ClassInfo*>& spill, size_t& n) {
+    n = 0; spill.clear();
+    auto put = [&](ClassInfo* k) { if (n < 8) buf[n] = k; else spill.push_back(k); n++; };
+    for (ClassInfo* k : c3ClassMro(ci)) {
+        put(k);
+        for (ClassInfo* r = k->parent.get(); r && r->isRole; r = r->parent.get()) put(r);
+    }
+}
+
 } // namespace rakupp
 
