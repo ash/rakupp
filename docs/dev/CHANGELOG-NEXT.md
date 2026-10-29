@@ -30,7 +30,7 @@ b05e989b (issue #193); 17e33a45 (issue #184); 5f87f445; 0e44c5a6 (issue
 f3fb83e3 and 5e611fa3 (issue #216); 67c35490 (issue #215); 820388ce and
 c9560e0d; d1c84b6b (issue #199); a1bb0e7b (issue #191); 55565059 (issue
 #177); ad2bba29 (issue #176); 308aecdf (issue #179); 94172cb6; 7f28cba0
-(issue #189).*
+(issue #189); f303f0c0 (issue #196).*
 
 ---
 
@@ -1119,9 +1119,22 @@ does not.
   program that keeps one and writes the array.
   t/regression/array-head-keeps-element-containers.raku agrees with Rakudo
   2026.09.
+- **A constant's initializer or a BEGIN block that calls a routine declared
+  further down is "Undeclared routine"** (f303f0c0; issue #196). Such a call
+  ran, with the routine rakupp had already declared, and read whatever it
+  read that was not set yet as Any; Rakudo refuses the file before running
+  any of it. The call check finds it now, as far as Rakudo looks: what the
+  initializer names outside a nested block, run or not, and what the body of
+  a routine above it that it surely calls names. A `-c` scan of 3,489 files
+  refuses none for it.
+  t/regression/issue-196-compile-time-call-declared-later.raku agrees with
+  Rakudo 2026.09.
 
 ### Left open
 
+- A constant's initializer still calls a routine declared below it where
+  Rakudo calls an outer one or the builtin, or finds nothing yet inside a
+  `try` (f303f0c0). TODO-FOLLOW-UPS.md has it.
 - Compiled prefix `+` of a non-numeric Str or Match dies, where Rakudo and
   the interpreter's `+` of a Str answer a Failure (7f28cba0).
   TODO-FOLLOW-UPS.md has it.
