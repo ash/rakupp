@@ -394,24 +394,6 @@ moves to [TODO.md](TODO.md).
   accessors still build before changing it. Done when the three lines
   are Rakudo 2026.09's.
 
-- [ ] **A grammar's HOW is no `Metamodel::GrammarHOW`** (found 2026-10-29
-  checking issue #214; on v5.5.0 too):
-
-  ```raku
-  grammar G {}
-  say G.HOW.^name;                        # Perl6::Metamodel::ClassHOW, Rakudo …GrammarHOW
-  say G.HOW ~~ Metamodel::GrammarHOW;     # False, Rakudo True
-  say G.HOW ~~ Metamodel::ClassHOW;       # True in both
-  ```
-
-  Issue #214's golfed `Int.HOW ~~ Metamodel::ClassHOW` is True on
-  5.5.0-228, and the shape Cro::RPC::JSON's HOW-onto-type has (a method
-  trait doing `given $*PACKAGE.HOW { when Metamodel::ClassHOW { $how does
-  R } }`) passes here, so the issue may be closed already; Cro::RPC::JSON
-  is not installed on this box to run the issue's program. Done when a
-  grammar's HOW is a GrammarHOW that is still a ClassHOW, and the issue's
-  `use Cro::RPC::JSON:api<2>` program compiles.
-
 ## Control flow and containers
 
 - [ ] **A phaser written last does not make the block's value Nil**
@@ -932,40 +914,6 @@ moves to [TODO.md](TODO.md).
   tools/source-helpers/interpreter.plan is the plan that
   split Interpreter.cpp, and split.raku can cut along another one. Done
   when it is under its 34d064ca ceiling again.
-
-- [ ] **Compiled prefix `+` of a non-numeric Str or Match dies** (found
-  2026-10-29 fixing issue #189, 7f28cba0; the Str case on v5.5.0 too):
-
-  ```raku
-  my $s = "=42"; say (+$s).^name;          # --exe dies "Cannot convert string to number"; Rakudo Failure
-  "=42" ~~ / "=" (\d+) /; say (+$/).^name; # --exe dies the same; interpreted Any; Rakudo Failure
-  ```
-
-  Codegen's prefixBuiltin writes `+$x` as `applyArith("+", 0, $x)`, whose
-  Str arm (a Match's too, since 7f28cba0) numifies with numifyStrOrThrow. `-$x`
-  goes through rtNeg to prefixNumeric, which answers the interpreter's
-  Failure; `+` can do the same. The interpreter's own `+` of a Match is Any
-  where Rakudo has a Failure. Done when both engines answer Rakudo's
-  Failure for both.
-
-- [ ] **`--exe` does not embed a module found through the program's own
-  `use lib`** (found 2026-10-29 reproducing issue #189; on v5.5.0 too):
-
-  ```sh
-  mkdir mods; printf 'unit module UL;\nsub hi() is export { "hi" }\n' > mods/UL.rakumod
-  printf 'use lib "mods";\nuse UL;\nsay hi();\n' > a.raku
-  rakupp --exe a.raku -o a.bin
-  # --exe: not embedded: UL — not found on the module search path (the binary will need the disk at run time)
-  ```
-
-  `rakupp -I mods --exe a.raku` embeds it and compiles its routine
-  natively. collectModuleGraph (src/main.cpp) searches
-  effectiveSearchPath(libPaths): `-I`, RAKULIB and the defaults, `lib`
-  among them (so `use lib "lib"` looks right), not what the program's `use
-  lib` adds, literal or `$?FILE.IO.parent.add(…)`. The binary then loads
-  the module from disk, interpreted, and dies where it is absent; issue
-  #189's program, built so, never compiled the routine it was about. Done
-  when the paths a `use lib` adds at compile time are searched too.
 
 ## Performance
 
