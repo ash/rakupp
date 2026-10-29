@@ -30,7 +30,7 @@ b05e989b (issue #193); 17e33a45 (issue #184); 5f87f445; 0e44c5a6 (issue
 f3fb83e3 and 5e611fa3 (issue #216); 67c35490 (issue #215); 820388ce and
 c9560e0d; d1c84b6b (issue #199); a1bb0e7b (issue #191); 55565059 (issue
 #177); ad2bba29 (issue #176); 308aecdf (issue #179); 94172cb6; 7f28cba0
-(issue #189); f303f0c0 (issue #196); 43341539; 392873ab.*
+(issue #189); f303f0c0 (issue #196); 43341539; 392873ab; 78c4f478.*
 
 ---
 
@@ -1141,6 +1141,10 @@ does not.
   Failure too, where it was Any.
   t/regression/prefix-plus-failure-native.raku, which t/run.raku compiles
   natively, agrees with Rakudo 2026.09.
+- **A grammar's HOW is a Metamodel::GrammarHOW** (78c4f478), which is a
+  ClassHOW, as in Rakudo: `G.HOW ~~ Metamodel::GrammarHOW` was False and its
+  `.^name` said ClassHOW. Found checking issue #214.
+  t/regression/grammar-how-is-grammarhow.raku agrees with Rakudo 2026.09.
 
 ### Left open
 
