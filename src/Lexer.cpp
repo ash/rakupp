@@ -1032,6 +1032,34 @@ size_t Lexer::builtinOpLenHere() const {
     return best;
 }
 
+// May a `(op)` set operator be glued to what we just lexed? Only after a metaop
+// letter (`Z(|)`) or another operator — never after a name, where the parens are
+// that name's argument list.
+static bool setOpFollows(const std::vector<Token>& out) {
+    if (out.empty()) return true;
+    const Token& pv = out.back();
+    if (pv.kind == Tok::Ident) {
+        if (pv.text.empty() || pv.text.size() > 2) return false;
+        for (char c : pv.text) if (c != 'Z' && c != 'X' && c != 'R' && c != 'S') return false;
+        return true;
+    }
+    return pv.kind == Tok::Op || pv.kind == Tok::Comma || pv.kind == Tok::LParen ||
+           pv.kind == Tok::LBracket || pv.kind == Tok::LBrace;
+}
+
+// After a routine declarator (`sub (|) {…}`, `proto f (|)`) a `(` opens a
+// SIGNATURE, so `(|)` there is one anonymous capture, not a set operator.
+static bool afterRoutineDeclarator(const std::vector<Token>& out) {
+    auto isDecl = [](const Token& k) {
+        return k.kind == Tok::Ident &&
+               (k.text == "sub" || k.text == "method" || k.text == "submethod" ||
+                k.text == "multi" || k.text == "proto" || k.text == "only");
+    };
+    size_t n = out.size();
+    return (n >= 1 && isDecl(out[n - 1])) ||
+           (n >= 2 && out[n - 1].kind == Tok::Ident && isDecl(out[n - 2]));
+}
+
 bool Lexer::tryUserOpToken(std::vector<Token>& out, bool spaced) {
     if (userOps_.empty()) return false;
     // tight after a word, a spelling that STARTS like a word would split one
@@ -1064,11 +1092,19 @@ bool Lexer::tryUserOpToken(std::vector<Token>& out, bool spaced) {
                 return true;
             }
     }
+    // a declared `(…)` spelling yields where the built-in set operators do: glued
+    // to a name it is that name's argument list (`f(|)`), and after a routine
+    // declarator a signature — `proto f(|)` in a file that declares
+    // `infix:<(|)>` had read as `proto f` and an infix, so the proto took no
+    // arguments at all (issue #60)
+    const bool parenOpensArgs = afterRoutineDeclarator(out) ||
+        (!spaced && !out.empty() && out.back().kind == Tok::Ident && !setOpFollows(out));
     // the longest BUILT-IN operator spelled here: a declared `infix:<..>` must
     // not cut the `..^` of `1..^5` in two (measured once a declared one matches)
     size_t builtinLen = (size_t)-1;
     for (const std::string& uo : userOps_) {
         if (src_.compare(pos_, uo.size(), uo) != 0) continue;
+        if (uo[0] == '(' && parenOpensArgs) continue;
         if (builtinLen == (size_t)-1) builtinLen = builtinOpLenHere();
         if (builtinLen > uo.size()) continue;
         if (afterWord && wordish0(uo)) continue;
@@ -4339,21 +4375,6 @@ static bool prevIsClearTerm(const std::vector<Token>& out) {
     }
 }
 
-// May a `(op)` set operator be glued to what we just lexed? Only after a metaop
-// letter (`Z(|)`) or another operator — never after a name, where the parens are
-// that name's argument list.
-static bool setOpFollows(const std::vector<Token>& out) {
-    if (out.empty()) return true;
-    const Token& pv = out.back();
-    if (pv.kind == Tok::Ident) {
-        if (pv.text.empty() || pv.text.size() > 2) return false;
-        for (char c : pv.text) if (c != 'Z' && c != 'X' && c != 'R' && c != 'S') return false;
-        return true;
-    }
-    return pv.kind == Tok::Op || pv.kind == Tok::Comma || pv.kind == Tok::LParen ||
-           pv.kind == Tok::LBracket || pv.kind == Tok::LBrace;
-}
-
 static bool angleTermContext(const std::vector<Token>& out) {
     if (out.empty()) return true;
     const Token& pv = out.back();
@@ -4931,17 +4952,7 @@ void Lexer::tokenizeImpl(std::vector<Token>& out) {
         // tight — so a preceding bare Z/X/R still opens an operator.
         // …and after a routine declarator (`sub (|) {…}`, `sub f (|)`) the paren
         // opens a SIGNATURE whose one parameter is an anonymous capture
-        } else if (c == '(' && (spaced || setOpFollows(out)) &&
-                   !([&] {
-                       auto isDecl = [](const Token& k) {
-                           return k.kind == Tok::Ident &&
-                                  (k.text == "sub" || k.text == "method" || k.text == "submethod" ||
-                                   k.text == "multi" || k.text == "proto" || k.text == "only");
-                       };
-                       size_t n = out.size();
-                       return (n >= 1 && isDecl(out[n - 1])) ||
-                              (n >= 2 && out[n - 1].kind == Tok::Ident && isDecl(out[n - 2]));
-                   }()) &&
+        } else if (c == '(' && (spaced || setOpFollows(out)) && !afterRoutineDeclarator(out) &&
                    trySetOp(t)) {
             // `!(elem)` — the negation metaop written tight on a parenthesized
             // set operator is ONE negated infix (the `(!elem)` spelling the
