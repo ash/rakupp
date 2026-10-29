@@ -30,7 +30,7 @@ b05e989b (issue #193); 17e33a45 (issue #184); 5f87f445; 0e44c5a6 (issue
 f3fb83e3 and 5e611fa3 (issue #216); 67c35490 (issue #215); 820388ce and
 c9560e0d; d1c84b6b (issue #199); a1bb0e7b (issue #191); 55565059 (issue
 #177); ad2bba29 (issue #176); 308aecdf (issue #179); 94172cb6; 7f28cba0
-(issue #189); f303f0c0 (issue #196); 43341539.*
+(issue #189); f303f0c0 (issue #196); 43341539; 392873ab.*
 
 ---
 
@@ -717,6 +717,12 @@ plain before 500c29e2 and native from it, unless they say otherwise.
   position missed, `.substr` saw -1 characters, and `.rindex` died of
   SIGSEGV. t/regression/utf8-c8-stray-byte-positions.raku agrees with Rakudo
   2026.09.
+- **`--exe` and the other compile modes embed a module the program finds
+  through its own `use lib`** (392873ab). The module graph was collected
+  from the command line's search path alone, so such a module was left on
+  disk and loaded at run time, interpreted, and a binary moved without it
+  died. Issue #189's program was built that way. t/run.raku builds two such
+  programs and runs them with the module's directory gone.
 
 ### Fixed: what FatRoast found
 
