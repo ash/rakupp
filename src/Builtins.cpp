@@ -2919,7 +2919,9 @@ const std::vector<uint32_t>* cowGraphemeIndex(const CowStr& s) {
     const StrBody* b = s.body();
     if (!b) return nullptr;
     const std::vector<uint32_t>* t = b->gIndex.load(std::memory_order_acquire);
-    if (t) return t;
+    // (the cached negative is no table on every call, not just the first: read
+    // as one, `.substr` saw -1 characters and `.rindex` read before its start)
+    if (t) return t->empty() ? nullptr : t;
     const std::string& x = b->str();
     // One walk over the bytes, deciding each boundary as the decoded codepoints
     // would: decoding them, indexing them and mapping their cluster starts back
