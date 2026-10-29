@@ -19003,7 +19003,7 @@ static Value applyArithGeneral(const std::string& op, const Value& l, const Valu
     // falls through to the existing (Num) path unchanged.
     if ((l.t == VT::Str || r.t == VT::Str || l.t == VT::Array || r.t == VT::Array ||
          l.t == VT::Hash || r.t == VT::Hash || l.t == VT::Any || r.t == VT::Any ||
-         l.t == VT::Type || r.t == VT::Type) && !isSetOpStr(op) &&
+         l.t == VT::Type || r.t == VT::Type || l.t == VT::Match || r.t == VT::Match) && !isSetOpStr(op) &&
         (opEq(op, "+") || opEq(op, "-") || opEq(op, "*") || opEq(op, "/") || opEq(op, "**") ||
          opEq(op, "%") || opEq(op, "%%") || opEq(op, "div") || opEq(op, "mod") || opEq(op, "gcd") || opEq(op, "lcm") ||
          // NUMERIC comparisons coerce too (`"a" == "b"` dies); the string ops
@@ -19018,7 +19018,9 @@ static Value applyArithGeneral(const std::string& op, const Value& l, const Valu
             if (v.t == VT::Str && (v.hashKind == "Blob" || v.hashKind == "Buf")) {
                 out = Value::integer((long long)v.blobList().size()); return true;
             }
-            if (v.t == VT::Str && !v.isAllomorph()) {
+            // (a Match numifies as the text it matched: `0 + $0` of ｢42｣ is Int
+            // 42, which a compiled `+$0` is too, not 42e0, issue #189)
+            if ((v.t == VT::Str && !v.isAllomorph()) || v.t == VT::Match) {
                 // a NON-numeric string is an error here, not a silent 0 (Rakudo)
                 Value t = numifyStrOrThrow(v.toStr());
                 // a COMPLEX-shaped string carries its imaginary part along too —
