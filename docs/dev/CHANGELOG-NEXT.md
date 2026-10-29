@@ -26,7 +26,7 @@ b05e989b (issue #193); 17e33a45 (issue #184); 5f87f445; 0e44c5a6 (issue
 (issue #188); c50eb3b8 (issue #146); 09018c67 (issue #77); 099a2055 (issue
 #205); 18ef8f73 (issues #186 and #178); 642a320a; 62a3d9a5 (issue #212);
 17a71667 (issue #213); 46c4ef60 (issue #194); 2deb332a, eed42468, 710dccdb,
-62b42a19, aaa97b24 and 56d9a3a5 (issue #60).*
+62b42a19, aaa97b24, 56d9a3a5 and 3fae5f4e (issue #60).*
 
 ---
 
@@ -964,12 +964,30 @@ does not.
   issue #60). `sub infix:<(\<&)>` declares `(<&)` and `infix:<(&\>)>`
   declares `(&>)`, as in Rakudo, where `1 (<&) 2` was a word-list parse error
   and `&infix:<(\<&)>` an undefined routine; `\\` is `\`, and any other
-  backslash stays (`infix:<\o/>`). An imported operator the lexer would split
-  is still split in the importing file, escaped or not.
+  backslash stays (`infix:<\o/>`).
   t/regression/escaped-operator-name.raku agrees with Rakudo 2026.09.
+- **An imported operator lexes whole, as the file's own declaration does**
+  (3fae5f4e; issue #60). The lexer learned which spellings to read whole from
+  the file's own declarations only, so a spelling the built-in rules split
+  stayed split when a module exported it: `1 (<&) 2` was a word-list parse
+  error, `(+&)`, `⨁⨁` and `√√` were "unexpected operator in term position",
+  `1 +++ 2` read as `1++ + 2`, and a circumfix `[[ ]]` silently made the
+  array `[6]`. A `use` that brings such a spelling in lexes the rest of the
+  unit again knowing it, once, as an imported `sub tr` already did; a module
+  that exports none costs nothing. That re-lex keeps an L10N rewrite now,
+  where `use L10N::XX` before a module exporting `sub tr` left the
+  keywords after it untranslated, and a slang's re-lex keeps the imported
+  quote words and operators. FunctionalParsers' t/01 and t/12 parse now and
+  fail on the operators' traits (Left open).
+  t/regression/imported-operator-spellings.raku agrees with Rakudo 2026.09.
 
 ### Left open
 
+- An imported operator takes the default precedence, left-associative,
+  whatever its `is assoc`, `is equiv`, `is tighter` or `is looser` say
+  (the file's own declaration honours them); FunctionalParsers' t/01 and
+  t/12 fail on this alone. TODO.md has it, with three smaller faults found
+  beside it (3fae5f4e).
 - A `for` loop's, `given`'s or `.map`'s alias of a typed array element
   refuses at its write-back, after the rest of the body; `.hyper.map`, `for
   @a.kv -> $k, $v is rw` and `.first` still store anything; and `my Int:D
