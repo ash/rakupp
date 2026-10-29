@@ -29,7 +29,7 @@ b05e989b (issue #193); 17e33a45 (issue #184); 5f87f445; 0e44c5a6 (issue
 62b42a19, aaa97b24, 56d9a3a5, 3fae5f4e, 18ac7c39 and 2c05f00f (issue #60);
 f3fb83e3 and 5e611fa3 (issue #216); 67c35490 (issue #215); 820388ce and
 c9560e0d; d1c84b6b (issue #199); a1bb0e7b (issue #191); 55565059 (issue
-#177).*
+#177); ad2bba29 (issue #176).*
 
 ---
 
@@ -210,6 +210,15 @@ plain before 500c29e2 and native from it, unless they say otherwise.
   1.229 → 0.000 / 0.000 (Rakudo 2026.09: 0.000). `subbuf-rw` refuses a Blob,
   as in Rakudo. t/regression/blob-param-costs-nothing.raku agrees with
   Rakudo 2026.09.
+- **`.read($n)` reads $n bytes of the file** (ad2bba29; issue #176). The
+  first `.read` on a handle read the whole file into it, and `.seek` and
+  `.eof` did too; a handle opened to read a regular file reads with pread at
+  its cursor now. The first `.read(8)` of 64 MB / 256 MB: 224.3 / 903.7 ms →
+  0.5 / 0.2 (Rakudo 2026.09: 0.5 / 0.1); each later one 0.001 ms, before and
+  after. A read sees bytes appended since the one before, as in Rakudo.
+  Write and update handles and Windows keep the copy.
+  t/regression/handle-read-reads-what-it-asks.raku agrees with Rakudo
+  2026.09.
 
 ### New
 
