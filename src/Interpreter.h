@@ -1951,6 +1951,7 @@ struct LazySeqState {
     // (lazyChainSource): the buffer IS the array's, so a block's write to `$_`
     // lands in the element, as the eager map's does
     bool aliasSource = false;
+    bool finiteChain = false; // a map/grep view over a FINITE source: not lazy (`.is-lazy`), as in Rakudo
     bool exhausted = false;
     // How many elements the NEXT appendNext call is wanted for, when the caller
     // knows (materializeLazy does); 0 means one. A gather's coroutine runs until
@@ -2605,7 +2606,7 @@ public:
     // this map/grep to stay lazy, and passes the request on to the link below.
     struct LazyChainMark {
         explicit LazyChainMark(const MethodCall* mc) : was(tctx().lazyChainNode) {
-            if (RAKUPP_UNLIKELY(was != nullptr || mc->lazyChain != 0)) arm(mc);
+            if (RAKUPP_UNLIKELY(was != nullptr || mc->lazyChain != 0 || mc->lazyTail)) arm(mc);
         }
         ~LazyChainMark() { if (on) tctx().lazyChainNode = was; }
         void arm(const MethodCall* mc);

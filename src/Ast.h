@@ -651,6 +651,7 @@ struct MethodCall : Expr {
     // runs only for what the consumer reads (evalMethodCallExpr's lazy chain).
     // -1 undecided, 0 no, 1 yes (decided once, from the syntax)
     mutable DecidedOnce<signed char> lazyChain{-1};
+    bool lazyTail = false; // a routine's or closure's VALUE: read lazily too (Parser's markLazyTail)
     MethodCall(): Expr(NK::MethodCall) {}
 };
 

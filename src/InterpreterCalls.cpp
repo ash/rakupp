@@ -6131,7 +6131,9 @@ static bool lazyChainConsumer(const MethodCall* m) {
 
 void Interpreter::LazyChainMark::arm(const MethodCall* mc) {
     if (mc->lazyChain < 0) mc->lazyChain = lazyChainConsumer(mc) ? 1 : 0;
-    wanted = was == mc;
+    // …and a map/grep that is a routine's or closure's value asks for itself:
+    // its reader is the caller, after the routine has returned (markLazyTail)
+    wanted = was == mc || mc->lazyTail;
     on = true;
     // the link below, if this call reads one lazily; nothing for any other call,
     // so the mark never reaches past the node it names
@@ -6157,6 +6159,7 @@ Value Interpreter::lazyChainSource(const Value& inv, const std::string& m, const
         !inv.elemDefault() && !inv.holdsContainers() && !inv.elemView() && !isMultiDimShaped(inv)) {
         Value lz = inv;
         st->aliasSource = true;
+        st->finiteChain = true;
         st->appendNext = [](ValueList&) { return false; };
         lz.extM() = st;
         return lz;
@@ -6172,6 +6175,7 @@ Value Interpreter::lazyChainSource(const Value& inv, const std::string& m, const
             buf.push_back(Value::integer((*next)++));
             return true;
         };
+        st->finiteChain = true;
         Value lz = Value::array(); lz.isList = true;
         lz.extM() = st;
         return lz;

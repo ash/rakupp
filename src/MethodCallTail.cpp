@@ -609,6 +609,23 @@ static inline void aliasTopic(ExecContext& t, Value* slot, const Value& guard) {
     if (guard.t == VT::Array) t.topicWritebackGuard = {slot, &guard};
 }
 
+// The elements `.append(LIST)` / `.prepend(LIST)` add: a FINITE lazy list is
+// read to its end first, since its buffer holds only what was pulled — a map
+// a routine returned appended nothing. (An endless one was refused already.)
+static ValueList soleListElems(Interpreter& I, const Value& lst) {
+    if (lst.ext()) I.drainIfFiniteLazy(lst);
+    return *lst.arr();
+}
+
+// A lazy list read to its END holds every element in its buffer, as a plain
+// one does: `.sum`/`.min`/`.max` may fold it in place too (the whole-list
+// methods have read it out by the time they ask) — a map a routine returned
+// paid a 25% slower `.sum` for being lazy.
+static bool lazyReadOut(const Value& lst) {
+    auto st = std::static_pointer_cast<LazySeqState>(lst.ext());
+    return st && st->exhausted && !st->infinite;
+}
+
 std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& m,
                                                  ValueList& args,
                                                  const std::vector<ExprPtr>* rwArgs) {
@@ -1283,8 +1300,8 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
             if (lst->gatherSeq) { materializeLazy(inv, 1); return Value::boolean(!lst->exhausted); }
 #endif
             // a source read live but finite (a Channel, a handle's lines, a conditioned
-            // `Seq.from-loop`) is not lazy either: Rakudo asks the iterator, and theirs say no
-            if ((lst->streaming || lst->finiteSource) && !lst->infinite) return Value::boolean(false);
+            // `Seq.from-loop`, a map or grep over a list) is not lazy either: Rakudo asks the iterator, and theirs say no
+            if (((lst->streaming || lst->finiteSource) && !lst->infinite) || lst->finiteChain) return Value::boolean(false);
             return Value::boolean(true);
         }
 #if RAKUPP_HAVE_CORO
@@ -1438,7 +1455,7 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
             st->infinite = infinite; // a view over an endless source is endless too
             // …and one over a gather is what a gather is: not reified yet, and
             // not lazy unless it was declared so (`.is-lazy`, list assignment)
-            st->gatherSeq = lst->gatherSeq; st->declaredLazy = lst->declaredLazy;
+            st->gatherSeq = lst->gatherSeq; st->declaredLazy = lst->declaredLazy; st->finiteChain = lst->finiteChain;
             st->mapView = true;
             Interpreter* self = this;
             // (its own source position: a `next` skips an element, so the cache
@@ -1495,7 +1512,7 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
             Value out = Value::array(); out.isList = true; out.s = "Seq";   // a lazy grep is a Seq, as an eager one
             if (inv.s == "HyperSeq" || inv.s == "RaceSeq") out.s = inv.s;   // (and a hyper one stays one)
             auto st = std::make_shared<LazySeqState>();
-            st->gatherSeq = lst->gatherSeq; st->declaredLazy = lst->declaredLazy;   // see map
+            st->gatherSeq = lst->gatherSeq; st->declaredLazy = lst->declaredLazy; st->finiteChain = lst->finiteChain;   // see map
             // NOT marked infinite even over an endless source: a grep can still
             // end — `(^Inf).grep({last if $_ > 5; True}).eager` is Roast's own
             // (S32-list/grep.t) — so whether it drains is only known by trying.
@@ -1577,7 +1594,7 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
             Value out = Value::array(); out.isList = true; out.s = "Seq";
             auto st = std::make_shared<LazySeqState>();
             st->infinite = infinite; // a view over an endless source is endless too
-            st->gatherSeq = lst->gatherSeq; st->declaredLazy = lst->declaredLazy;   // see map
+            st->gatherSeq = lst->gatherSeq; st->declaredLazy = lst->declaredLazy; st->finiteChain = lst->finiteChain;   // see map
             Interpreter* self = this;
             st->appendNext = [self, src, n](ValueList& cache) -> bool {
                 size_t si = cache.size() + (size_t)n;
@@ -2476,7 +2493,7 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
         // read the elements where they are: the snapshot below copied every
         // element to fold it once. Only when no element could run user code —
         // an object, a hole, an allomorph or a mixin takes the general arms.
-        if (inv.t == VT::Array && inv.arr() && !inv.ext() && args.empty() &&
+        if (inv.t == VT::Array && inv.arr() && (!inv.ext() || lazyReadOut(inv)) && args.empty() &&
             (m == "sum" || m == "min" || m == "max")) {
             if (auto r = borrowedNumericFold(*inv.arr(), m == "sum" ? 's' : m == "min" ? '<' : '>'))
                 return r;
@@ -4548,7 +4565,7 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
                 const size_t ar = std::max<size_t>(1, codeArity(fn));
                 Value lz = Value::array(); lz.isList = true; lz.s = "Seq";
                 auto st = std::make_shared<LazySeqState>();
-                st->mapView = true;
+                st->mapView = true; st->finiteChain = true;   // (over `items`, a finished list)
                 auto pos = std::make_shared<size_t>(0);
                 Interpreter* self = this;
                 st->appendNext = [self, src, fn, ar, pos](ValueList& cache) -> bool {
@@ -5246,7 +5263,7 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
             // append/prepend follow the single-argument rule: a lone Positional arg is
             // treated as the list of values (flattened one level); multiple args are each
             // added as-is (nested lists preserved, exactly like push).
-            auto appendValues = [](ValueList& args) -> ValueList {
+            auto appendValues = [this](ValueList& args) -> ValueList {
                 // …but an ITEMIZED array is one item, not a list to flatten:
                 // `@paths.append($[|@prefix, $node])` adds ONE path, which is how
                 // ML::TriesWithFrequencies gathers its root-to-leaf paths.
@@ -5255,7 +5272,7 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
                 if (args.size() == 1 && isMultiDimShaped(args[0]))
                     return shapedLeaves(args[0]);   // a shaped array appends its leaves
                 if (args.size() == 1 && args[0].t == VT::Array && args[0].arr())
-                    return *args[0].arr();   // one-level: the sole list's own elements
+                    return soleListElems(*this, args[0]);   // one-level: the sole list's own elements
                 // …and a sole RANGE contributes its VALUES, by the same
                 // single-argument rule. `my Int @x; @x.append: $from .. $to` is
                 // how Text::CSV builds a column range, and appending the Range

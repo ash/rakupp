@@ -29,6 +29,36 @@ bool isCoreEnumMemberName(const std::string& n);   // Interpreter.cpp: `Less`, `
 bool uniTypeLikeName(const std::string& n);   // Unicode.cpp: `Foo`, `Éx`, `万` read as types, `ч` not
 static bool typeLikeName(const std::string& n) { return uniTypeLikeName(n); }
 
+// A routine's or a closure's VALUE that is a plain one-argument map or grep is
+// a lazy Seq, as in Rakudo: its block runs for what the caller reads, not
+// where it is written. `apply(&f, &p)` returning `-> @x { &p(@x).map(…) }`
+// answers `.head` with one call of its block. Only the return positions are
+// marked — the body's last statement and `return`'s operand — and the shape
+// is lazyChainLink's (InterpreterCalls.cpp), whose lazy read it asks for.
+static void markLazyTail(Expr* e) {
+    if (!e || e->kind != NK::MethodCall) return;
+    auto* m = static_cast<MethodCall*>(e);
+    if ((m->method == "map" || m->method == "grep") && m->args.size() == 1 && m->inv && !m->methodExpr &&
+        !m->meta && !m->hyper && !m->maybe && !m->allMode && !m->bang && !m->mutate && m->methodQual.empty())
+        m->lazyTail = true;
+}
+static void markLazyTail(std::vector<StmtPtr>& body) {
+    if (!body.empty() && body.back() && body.back()->kind == NK::ExprStmt)
+        markLazyTail(static_cast<ExprStmt*>(body.back().get())->e.get());
+}
+// The value of a pointy block or an anonymous routine: a `--> LIT` literal in
+// its signature is its last statement, as a declared sub's is, and whatever is
+// last then is marked as the value it is.
+static void closeBlockValue(BlockExpr& be, ExprPtr retLit) {
+    if (retLit) {
+        auto es = std::make_unique<ExprStmt>();
+        es->e = std::move(retLit);
+        be.body.push_back(std::move(es));
+        be.retLiteralPresent = true;
+    }
+    markLazyTail(be.body);
+}
+
 // Does a pattern call `<sym>` — outside its quoted literals, where `"<sym>"`
 // is only text? Inside a code block a `<sym>` straight after a term is a
 // SUBSCRIPT: `{ $<item><sym> }` reads a capture's `sym` (issue #139). One in
@@ -8764,13 +8794,7 @@ ExprPtr Parser::parsePrimary() {
                                              "X::Signature::Placeholder", {{"placeholder", tk.text}});
                     }
                 }
-                // `-> --> 42 { }`: the literal is the block's value, as for a sub
-                if (retLit) {
-                    auto es = std::make_unique<ExprStmt>();
-                    es->e = std::move(retLit);
-                    be->body.push_back(std::move(es));
-                    be->retLiteralPresent = true;
-                }
+                closeBlockValue(*be, std::move(retLit));   // `-> --> 42 { }`
                 return be;
             }
             // `&[+]` / `&[!~~]` / `&[max]` — the infix operator as a value == `&infix:<OP>`.
@@ -9157,12 +9181,7 @@ ExprPtr Parser::parsePrimary() {
                     routineDepth_--;
                     be->body = std::move(blk->stmts);
                 }
-                if (subRetLit) {   // the literal is the routine's value, as a declared sub's is
-                    auto es = std::make_unique<ExprStmt>();
-                    es->e = std::move(subRetLit);
-                    be->body.push_back(std::move(es));
-                    be->retLiteralPresent = true;
-                }
+                closeBlockValue(*be, std::move(subRetLit));   // `sub (--> 5) { }`
                 attachTrailingPod(*be);
                 if (be->podTrail.empty() && !openTrail.empty()) {
                     be->podTrail = openTrail;
@@ -13811,6 +13830,7 @@ StmtPtr Parser::parseSub(bool isMulti, bool isProto, bool asMethod) {
         es->e = std::move(s->retLiteral);
         s->body.push_back(std::move(es));
     }
+    markLazyTail(s->body);
     // `sub MAIN (sig);` with no block: like `unit sub MAIN` — the rest of the
     // file is the body (a common PWC idiom Rakudo accepts). An explicit `{}`
     // (however empty) is a real body — no capture.
@@ -17264,6 +17284,7 @@ StmtPtr Parser::parseStatementImpl() {
                         (peek().kind == Tok::LBrace || (peek().kind == Tok::Op && peek().text == "::")))) {
                 r->value = parseExpression();
             }
+            markLazyTail(r->value.get());   // `return @a.map(…)` is the routine's value too
             return applyModifiers(std::move(r));
         }
         if ((kw == "last" || kw == "next" || kw == "redo") &&

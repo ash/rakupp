@@ -472,11 +472,14 @@ The same items grouped by theme, with a complexity estimate for each:
   (found 2026-10-14 by fez; checked against Rakudo 2026.09). b6ac7079 made
   the one shape that broke real code lazy: a `.first`/`.head` over a plain
   map/grep chain marks it (LazyChainMark, lazyChainSource in
-  src/InterpreterCalls.cpp) and only the elements it reads are mapped. The
-  general case is still eager, and shows in two places:
-  - A Seq kept for later runs its block where it is written: `my $s =
-    (1..3).map({ print "m$_ " }); say "made"` prints `m1 m2 m3 made`
-    (Rakudo `made m1 m2 m3`).
+  src/InterpreterCalls.cpp) and only the elements it reads are mapped. A
+  map/grep that is a routine's or closure's VALUE is lazy too since issue
+  #60 (the parser's markLazyTail): `sub f { @a.map(…) }; f().head` maps one
+  element, and `my $s = f()` runs the block when `$s` is read. The rest is
+  still eager, and shows in two places:
+  - A Seq kept for later, written where it is kept, runs its block there:
+    `my $s = (1..3).map({ print "m$_ " }); say "made"` prints `m1 m2 m3
+    made` (Rakudo `made m1 m2 m3`).
   - `for` over a map runs the whole map before the body's first pass:
     `for (1..3).map({ print "m$_ " }) { print "b$_ " }` is `m1 m2 m3 b1 b2
     b3` (Rakudo `m1 b1 m2 b2 m3 b3`), and so for grep. Beyond the order of
@@ -500,6 +503,13 @@ The same items grouped by theme, with a complexity estimate for each:
     `first`/`head` arms of methodCallTail (src/MethodCallTail.cpp);
     lazyChainConsumer keeps the lazy chain away from both shapes, which is
     why b6ac7079 does not hit them.
+  - Found with the returned-map half: `my @r; @r.append(gather { take 1;
+    take 2 })` appends nothing (Rakudo `[1 2]`). `.append` now drains a
+    finite lazy list first, but drainIfFiniteLazy leaves a gather that has
+    not ended alone on purpose (an endless `gather loop` would run to its
+    cap), so append needs its own answer for one. And `[+] f()` over a
+    returned map is ~10% slower than when the map was eager: endlessReduce
+    drains it one appendNext call per element before folding.
 
 ## 3. Compiled backends
 
