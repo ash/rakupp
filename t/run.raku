@@ -1054,6 +1054,28 @@ section('native bodies for embedded module routines (--exe)');
     }
 }
 
+# …and a module the program finds through its own `use lib` is embedded too,
+# with `-I` given or not: the binary runs with the module's directory gone
+{
+    my $dir = $*TMPDIR.add("rakupp-suite-uselib-$*PID");
+    my $mods = $dir.add('mods');
+    $mods.mkdir;
+    $mods.add('UseLibMod.rakumod').spurt: "unit module UseLibMod;\nsub hello(\$n) is export \{ \"hello, \$n\" \}\n";
+    my %forms = literal => "use lib '{$mods.Str}';", relative => "use lib \$?FILE.IO.parent.add('mods');";
+    for %forms.sort -> (:key($form), :value($line)) {
+        my $prog = $dir.add("$form.raku");
+        $prog.spurt: "$line\nuse UseLibMod;\nsay hello('world');\n";
+        my $bin = $dir.add("{$form}-bin").Str;
+        my $c = run($*EXECUTABLE, '--exe', $prog.Str, '-o', $bin, :out, :err);
+        $c.out.slurp(:close); my $err = $c.err.slurp(:close);
+        ok($c.exitcode == 0 && $err.contains('embedded 1 module: UseLibMod'), "--exe embeds a module its `use lib` finds ($form)");
+        $mods.rename($dir.add('gone'));
+        is(run($bin, :out, :err).out.slurp(:close), "hello, world\n", "…and its binary needs no module directory ($form)");
+        $dir.add('gone').rename($mods);
+    }
+    try { for $mods.dir { .unlink }; $mods.rmdir; for $dir.dir { .unlink }; $dir.rmdir; }
+}
+
 # ---- atomic operations in native code (--exe) ----------------------------
 # `$n⚛++` and `cas` are special forms on a container; native codegen used to
 # emit them as calls of routines that do not exist. The program checks itself

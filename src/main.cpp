@@ -1495,11 +1495,12 @@ static int compileToExe(const std::string& src, const std::string& srcName, std:
                 Lexer lx(src);
                 Parser ps(lx.tokenize());
                 ps.libPaths_ = effectiveSearchPath(libPaths); // find a `use`d module's operators
+                ps.srcFile_ = srcName;                        // (a `use lib $?FILE.IO.parent…`)
                 Program pr = ps.parseProgram();
                 std::vector<ModuleSkip> skips;
                 std::set<std::string> natives;
                 std::set<std::string> exports;
-                mods = collectModuleGraph(pr, effectiveSearchPath(libPaths), &exports,
+                mods = collectModuleGraph(pr, ps.libPaths_, &exports,
                                           &skips, &natives);
                 if (!reportModuleEmbedding("--bundle", mods, skips, natives)) return 4;
                 if (moduleBodies) {
@@ -1803,7 +1804,7 @@ static int compileJs(const std::string& src, const std::string& srcName, std::st
         parser.srcFile_ = srcName;
         Program prog = parser.parseProgram();
         std::vector<ModuleSkip> skips; std::set<std::string> natives;
-        auto mods = collectModuleGraph(prog, effectiveSearchPath(libPaths), &jo.moduleExports, &skips, &natives);
+        auto mods = collectModuleGraph(prog, parser.libPaths_, &jo.moduleExports, &skips, &natives);
         std::vector<JsModuleUnit> units = jsModuleUnits(prog, mods, effectiveSearchPath(libPaths));
         js = transpileToJs(prog, jo, &dts, &srcMap, &units);
     } catch (const ParseError& e) {
@@ -1827,7 +1828,7 @@ static int compileJs(const std::string& src, const std::string& srcName, std::st
             Lexer lexer(src); lexer.tolerant_ = true; Parser parser(lexer.tokenize()); parser.declPod_ = lexer.declPod_; parser.leadPod_ = lexer.leadPod_; parser.src_ = &src; parser.libPaths_ = effectiveSearchPath(libPaths); parser.srcFile_ = srcName;
             Program prog = parser.parseProgram();
             // its modules afresh too: the first pass renamed theirs in place
-            auto vmods = collectModuleGraph(prog, effectiveSearchPath(libPaths));
+            auto vmods = collectModuleGraph(prog, parser.libPaths_);
             std::vector<JsModuleUnit> vunits = jsModuleUnits(prog, vmods, effectiveSearchPath(libPaths));
             runnable = transpileToJs(prog, so, nullptr, nullptr, &vunits); }
         { std::ofstream f = openOut(vpath); if (!f) { std::cerr << "Cannot write " << vpath << "\n"; return 5; } f << runnable; }
@@ -1894,7 +1895,9 @@ static int compileNative(const std::string& src, const std::string& srcName, std
         std::set<std::string> moduleExports;
         std::vector<ModuleSkip> skips;
         std::set<std::string> natives, engineAnswered;
-        auto mods = collectModuleGraph(prog, effectiveSearchPath(libPaths), &moduleExports,
+        // (the parser's search path: the command line's, and what the program's
+        // own `use lib` added — a module found there is embedded too, #189)
+        auto mods = collectModuleGraph(prog, parser.libPaths_, &moduleExports,
                                        &skips, &natives, nullptr, &engineAnswered);
         if (!reportModuleEmbedding("--exe", mods, skips, natives)) return 4;
         aotMods = mods;
@@ -1997,7 +2000,7 @@ static int compileAotAst(const std::string& src, const std::string& srcName, std
         // run-time load — see collectModuleGraph.
         std::vector<ModuleSkip> skips;
         std::set<std::string> natives;
-        auto mods = collectModuleGraph(prog, effectiveSearchPath(libPaths), nullptr,
+        auto mods = collectModuleGraph(prog, parser.libPaths_, nullptr,
                                        &skips, &natives);
         if (!reportModuleEmbedding("--aot", mods, skips, natives)) return 4;
         std::ostringstream ss;
@@ -2280,7 +2283,7 @@ static int slimExplain(const std::string& src, const std::string& srcName,
         parser.libPaths_ = effectiveSearchPath(libPaths);
         parser.srcFile_ = srcName;
         prog = parser.parseProgram();
-        mods = collectModuleGraph(prog, effectiveSearchPath(libPaths), nullptr, nullptr, nullptr,
+        mods = collectModuleGraph(prog, parser.libPaths_, nullptr, nullptr, nullptr,
                                   nullptr, &engineAnswered);
     } catch (const ParseError& e) {
         std::cerr << "===SORRY!=== Parse error at line " << e.line << ": " << e.what() << "\n";
@@ -4449,7 +4452,7 @@ int main(int argc, char** argv) {
             Program prog = parser.parseProgram();
             // same module scan as --exe, so what this prints is what --exe compiles
             std::set<std::string> moduleExports;
-            collectModuleGraph(prog, effectiveSearchPath(libPaths), &moduleExports);
+            collectModuleGraph(prog, parser.libPaths_, &moduleExports);
             std::string cpp = transpileToCpp(prog, optimize, absPath(fileName), moduleExports, src);
             if (outPath.empty()) std::cout << cpp;
             else {
