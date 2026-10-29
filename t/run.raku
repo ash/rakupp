@@ -781,9 +781,10 @@ section('--target=js (JavaScript backend)');
 # refusal and the whole program bundles, which t/exe/run.raku only counts.
 # `next`, `last` and `return` written as an operand compile to their statement
 # forms' jumps (#195), a LEAVE runs however its block is left, an unpassed
-# `:@a` or `:%h` is an empty container (#191), and `+$0` is an Int (#189).
+# `:@a` or `:%h` is an empty container (#191), `+$0` is an Int (#189), and `+`
+# of what is no number a Failure.
 for <next-return-in-expression-native leave-on-every-exit-native named-container-param-absent-native
-     match-numifies-exact-native> -> $name {
+     match-numifies-exact-native prefix-plus-failure-native> -> $name {
     my $bin = $*TMPDIR.add("rakupp-suite-native-$name-$*PID").Str;
     my $p = run($*EXECUTABLE, '--exe', $ROOT.add("t/regression/$name.raku").Str, '-o', $bin, :out, :err);
     $p.out.slurp(:close);

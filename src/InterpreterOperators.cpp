@@ -785,7 +785,9 @@ Value Interpreter::prefixNumeric(const std::string& op, const Value& v) {
         if (v.isAllomorph()) { // +IntStr strips to the pure numeric side
             Value nv = v; nv.hashKind.clear(); nv.s.clear(); return nv;
         }
-        if (v.t == VT::Match) return numifyStr(strOf(v)); // +$0 of digits is an Int, like +Str
+        // +$0 of digits is an Int, like +Str — and of anything else the same
+        // Failure (X::Str::Numeric), not an undefined value
+        if (v.t == VT::Match) return numifyStrFailure(strOf(v));
         if (v.isNumeric() && !v.enumName.empty()) { // +EnumValue is a PLAIN Int, not the name
             Value nv = v; nv.enumName.clear(); nv.enumType.clear(); return nv;
         }

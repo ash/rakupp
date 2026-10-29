@@ -696,7 +696,7 @@ struct Codegen {
         if (u->op == "?")  return "Value::boolean(RT.boolify(" + x + "))";
         if (u->op == "-")  return nativeNumericStatic(u) ? "rtNativeNeg(" + x + ")"
                                                          : "rtNeg(RT, " + x + ")";
-        if (u->op == "+")  return "applyArith(\"+\", Value::integer(0), " + x + ")";
+        if (u->op == "+")  return "rtPlus(RT, " + x + ")";
         if (u->op == "~")  return "Value::str(rtInterpStr(" + x + "))";   // `~$obj` asks its .Str
         if (u->op == "+^") return "Value::integer(~(" + x + ").toInt())";          // bitwise NOT
         if (u->op == "?^") return "Value::boolean(!RT.boolify(" + x + "))";        // boolean NOT (xor form)

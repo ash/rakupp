@@ -1516,6 +1516,23 @@ Value rtNegSlow(Interpreter& I, const Value& v) {
     }
     return I.prefixNumeric("-", v);
 }
+// prefix `+` in compiled code: a plain Int or Num is itself (a fresh one, not
+// a native's width), and anything else is what the interpreter's `+` answers —
+// `+"=42"` its Failure, where the `0 + $x` this was died "Cannot convert string
+// to number". An undefined operand keeps that, silently, as rtNegSlow's does.
+Value rtPlus(Interpreter& I, const Value& v) {
+    if (v.hashKind.empty() && v.enumName.empty()) {
+        if (v.t == VT::Int && !v.big()) return Value::integer(v.i);
+        if (v.t == VT::Num) return Value::number(v.n);
+    }
+    if (v.t == VT::Any || v.t == VT::Type || v.t == VT::Nil) return applyArith("+", Value::integer(0), v);
+    if (isJunction(v)) {
+        Value out = Value::array(); out.enumName = v.enumName;
+        for (auto& e : *v.arr()) out.arr()->push_back(I.prefixNumeric("+", e));
+        return out;
+    }
+    return I.prefixNumeric("+", v);
+}
 void collectPHExprPublic(const Expr* e, std::set<std::string>& out) { collectPHExpr(e, out); }
 
 // the root variable a write lands on: `@a`, `@a[$k]`, `%h<x><y>`, `$obj.attr`

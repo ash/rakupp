@@ -5482,6 +5482,7 @@ inline Value rtNeg(Interpreter& I, const Value& v) {
     }
     return rtNegSlow(I, v);
 }
+Value rtPlus(Interpreter& I, const Value& v);   // prefix `+`, the same way (Interpreter.cpp)
 // `/` has no Int case (two Ints make a Rat); a zero divisor is the general path's Failure
 inline Value rtSlash(const Value& l, const Value& r) { double a, b; if (rtNumPair(l, r, a, b) && b != 0.0) return Value::number(a / b); return applyArith("/", l, r); }
 inline Value rtLt(const Value& l, const Value& r) { double a, b; if (rtBothInt(l, r)) return Value::boolean(l.i <  r.i); if (rtNumPair(l, r, a, b)) return Value::boolean(a <  b); return applyArith("<",  l, r); }
