@@ -684,7 +684,7 @@ section('--target=js (JavaScript backend)');
             sub greet(Str $n, Int :$times = 1) is export { ("hi $n" xx $times).join(' ') }
             sub hidden { 'no' }
             class C { has Int $.n = 0; method bump { $!n++; self } }
-            grammar G { token TOP { <k> '=' <v> } token k { \w+ } token v { \d+ } }
+            grammar G { token TOP { <k> '=' <v> }; token k { \w+ }; token v { \d+ } }
             END
         $mdir.add('package.json').spurt('{ "type": "module" }');
         $mdir.add('use.mjs').spurt(q:to/END/);
