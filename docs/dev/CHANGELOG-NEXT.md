@@ -26,7 +26,7 @@ b05e989b (issue #193); 17e33a45 (issue #184); 5f87f445; 0e44c5a6 (issue
 (issue #188); c50eb3b8 (issue #146); 09018c67 (issue #77); 099a2055 (issue
 #205); 18ef8f73 (issues #186 and #178); 642a320a; 62a3d9a5 (issue #212);
 17a71667 (issue #213); 46c4ef60 (issue #194); 2deb332a, eed42468, 710dccdb,
-62b42a19, aaa97b24, 56d9a3a5, 3fae5f4e and 18ac7c39 (issue #60).*
+62b42a19, aaa97b24, 56d9a3a5, 3fae5f4e, 18ac7c39 and 2c05f00f (issue #60).*
 
 ---
 
@@ -582,6 +582,17 @@ plain before 500c29e2 and native from it, unless they say otherwise.
   as in Rakudo, and a value that is kept (`my $x = do given …`) is kept
   unrun. t/regression/sunk-construct-sinks-its-value.raku agrees with Rakudo
   2026.09.
+- **A class's second parent seeds its attributes** (2c05f00f; issue #60). In
+  `class X is A is B` every default of B's came back undefined, and in
+  `class F does R is A`, where the role took the first parent slot, every
+  default of A's did; methods, `.^mro` and named arguments were right, so
+  the object looked whole until a default was read. A second parent's `is
+  required` was not checked either. Every parent seeds now, in the order
+  `.^mro` reports (a diamond's base once), and every parent is checked.
+  FunctionalParsers' MermaidJS actions, `does … is Raku::AST`, had none of
+  their actions; FunctionalParsers 0.1.11 now passes all 18 of its test
+  files. t/regression/second-parent-attribute-defaults.raku agrees with
+  Rakudo 2026.09.
 
 ### Fixed: crashes
 
