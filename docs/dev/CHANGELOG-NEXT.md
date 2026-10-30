@@ -31,7 +31,7 @@ f3fb83e3 and 5e611fa3 (issue #216); 67c35490 (issue #215); 820388ce and
 c9560e0d; d1c84b6b (issue #199); a1bb0e7b (issue #191); 55565059 (issue
 #177); ad2bba29 (issue #176); 308aecdf (issue #179); 94172cb6; 7f28cba0
 (issue #189); f303f0c0 (issue #196); 43341539; 392873ab; 78c4f478; 946d29e4
-(issue #190); e9455bfa; be510e3a; 5801c286; c5fd7f1d; 7aa4256c.*
+(issue #190); e9455bfa; be510e3a; 5801c286; c5fd7f1d; 7aa4256c; c4df7b96.*
 
 ---
 
@@ -1201,6 +1201,13 @@ does not.
   Cro::Core's uri test from compiling. A name nothing declares is still that
   error, as in Rakudo. t/regression/module-type-before-pointy-block.raku
   agrees with Rakudo 2026.09.
+- **A BUILD's attributive parameter that nobody passed stores its default
+  in the attribute** (c4df7b96), through the attribute's type check, as in
+  Rakudo: `has Str $.s` with `submethod BUILD(:$!s)` refuses the Any, and an
+  attribute's own default is not applied after it. Cro::HTTP::Cookie.new
+  lived without a name or a value, which stopped `rakupp install cro` at
+  Cro::HTTP. t/regression/build-attributive-param-unpassed.raku agrees with
+  Rakudo 2026.09.
 
 ### Left open
 
