@@ -26026,9 +26026,18 @@ static void spreadSlipArg(Interpreter& I, ValueList& args, const Value& v) {
         // (held in a local: ranging over `*I.decontList(v).arr()` read the
         // buffer of a temporary already destroyed — `f(|List.new($b, 7))`
         // passed an address for $b)
-        if (v.holdsContainers()) { const Value d = I.decontList(v); for (auto& x : *d.arr()) args.push_back(x); }
-        else if (v.elemDefault()) { ValueList f = *v.arr(); fillArrayHoles(v, f); for (auto& x : f) args.push_back(x); }
-        else for (auto& x : *v.arr()) args.push_back(x);
+        // An ARRAY's elements arrive in their Scalars, as `@a[1]` reads them:
+        // a list one is an item, which a `*@` slurpy keeps whole — `f(|@a)`
+        // for `@a = 1, [2, 3]` is `[1, [2, 3]]` (Cro::RPC::JSON hands a JSON
+        // array on so). A List's elements are bare and flatten.
+        const bool items = !v.isList && v.hashKind.empty();
+        auto put = [&](const Value& x) {
+            args.push_back(x);
+            if (items && (x.t == VT::Array || x.t == VT::Hash) && x.hashKind.empty()) args.back().itemized = true;
+        };
+        if (v.holdsContainers()) { const Value d = I.decontList(v); for (auto& x : *d.arr()) put(x); }
+        else if (v.elemDefault()) { ValueList f = *v.arr(); fillArrayHoles(v, f); for (auto& x : f) put(x); }
+        else for (auto& x : *v.arr()) put(x);
     }
     else if (v.t == VT::Range) { for (auto& x : v.flatten()) args.push_back(x); }
     // A Blob/Buf is Positional over its ELEMENTS, so `|$blob` slips those
