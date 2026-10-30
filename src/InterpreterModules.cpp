@@ -690,6 +690,24 @@ void Interpreter::exportSymbol(const std::string& pkg, const std::string& sym, c
     recs.push_back({sym, std::move(all), v});
 }
 
+// An imported MULTI joins a same-named multi the importing scope already has
+// (`use Foo; multi waz($x) {…}` dispatches to both): its candidates go into
+// that one, each once. False when `have` is no other multi to join.
+static bool joinImportedMulti(Value* have, const Value& v) {
+    if (!have || have->t != VT::Code || !have->code() || !have->code()->ci().isMultiDispatcher ||
+        v.t != VT::Code || !v.code() || !v.code()->ci().isMultiDispatcher || have->code() == v.code())
+        return false;
+    auto& cands = have->code()->coldM().candidates;
+    for (auto& c : v.code()->cold().candidates) {
+        bool dup = false;
+        for (auto& h : cands)
+            if (h.code() && c.code() && h.code()->ci().body == c.code()->ci().body &&
+                h.code()->ci().params == c.code()->ci().params) { dup = true; break; }
+        if (!dup) cands.push_back(c);
+    }
+    return true;
+}
+
 void Interpreter::recordPackageExports(const std::string& pkg, const std::vector<StmtPtr>& body, Env* env) {
     if (!global_ || pkg.empty()) return;
     const std::string pfx = pkg + "::";
@@ -1148,24 +1166,7 @@ void Interpreter::loadModuleImpl(const std::string& name, const std::vector<std:
                         want = tag == "MANDATORY" || (tag == "DEFAULT" ? reqDefault : reqTags.count(tag) != 0) ||
                                (tag == "ALL" && reqNames.count(bare));
                     }
-                    // an imported MULTI joins a same-named multi the scope
-                    // already declared (`use Foo; multi waz($x) {…}` sees both)
-                    if (want && se.value.t == VT::Code && se.value.code() &&
-                        se.value.code()->ci().isMultiDispatcher) {
-                        Value* have = tctx().cur->local(se.key);
-                        if (have && have->t == VT::Code && have->code() && have->code()->ci().isMultiDispatcher &&
-                            have->code() != se.value.code()) {
-                            auto& cands = have->code()->coldM().candidates;
-                            for (auto& c : se.value.code()->cold().candidates) {
-                                bool dup = false;
-                                for (auto& h : cands)
-                                    if (h.code() && c.code() && h.code()->ci().body == c.code()->ci().body &&
-                                        h.code()->ci().params == c.code()->ci().params) { dup = true; break; }
-                                if (!dup) cands.push_back(c);
-                            }
-                            continue;
-                        }
-                    }
+                    if (want && joinImportedMulti(tctx().cur->local(se.key), se.value)) continue;
                     // a routine is kept off a name the PROGRAM declared only
                     // when it lands in the mainline; inside a block or routine
                     // the import is lexical and shadows it there, as a first
@@ -1562,23 +1563,9 @@ void Interpreter::loadModuleImpl(const std::string& name, const std::vector<std:
                 // module's scope is its own business.
                 // an exported MULTI joins the importing scope's own multi of the
                 // same name (`use Foo; multi waz($x) {…}` dispatches to both)
-                if (k.size() > 1 && k[0] == '&' && exported.count(k.substr(1)) &&
-                    doImport && saved && kv.second.t == VT::Code && kv.second.code() &&
-                    kv.second.code()->ci().isMultiDispatcher) {
-                    Value* have = saved->local(k);
-                    if (have && have->t == VT::Code && have->code() && have->code()->ci().isMultiDispatcher &&
-                        have->code() != kv.second.code()) {
-                        auto& cands = have->code()->coldM().candidates;
-                        for (auto& c : kv.second.code()->cold().candidates) {
-                            bool dup = false;
-                            for (auto& h : cands)
-                                if (h.code() && c.code() && h.code()->ci().body == c.code()->ci().body &&
-                                    h.code()->ci().params == c.code()->ci().params) { dup = true; break; }
-                            if (!dup) cands.push_back(c);
-                        }
-                        continue;
-                    }
-                }
+                if (k.size() > 1 && k[0] == '&' && exported.count(k.substr(1)) && doImport && saved &&
+                    joinImportedMulti(saved->local(k), kv.second))
+                    continue;
                 if (k.size() > 1 && k[0] == '&' && exported.count(k.substr(1)) &&
                     doImport && saved && saved.get() != global_.get()) {
                     // …but never over a routine the importing scope DECLARES
@@ -1664,12 +1651,17 @@ void Interpreter::loadModuleImpl(const std::string& name, const std::vector<std:
                 if (pkg.size() <= tagPfx.size() || pkg.compare(0, tagPfx.size(), tagPfx) != 0) return;
                 std::string tag = pkg.substr(tagPfx.size());
                 if (tag.find("::") != std::string::npos || key.empty()) return;
-                // (what `is export` put there is imported by its own road)
-                if (exportSymbolNames_.count(std::strchr("$@%&", key[0]) ? key.substr(0, 1) + pkg + "::" + key.substr(1)
-                                                                         : pkg + "::" + key))
-                    return;
+                // (what `is export` put there is imported by its own road: a
+                // routine the module's scope holds by the walk above, anything
+                // else by its record. A routine declared `is export` in a nested
+                // block has only this one — Cro::RPC::JSON declares its
+                // `trait_mod:<is>` multis in a BEGIN.)
                 std::string bare = std::strchr("$@%&", key[0]) ? key.substr(1) : key;
-                if (key[0] == '&' && (exported.count(bare) || exportTagsByName.count(bare))) return;
+                if (key[0] == '&' ? exported.count(bare) || exportTagsByName.count(bare)
+                                  : exportSymbolNames_.count(std::strchr("$@%", key[0])
+                                                                 ? key.substr(0, 1) + pkg + "::" + key.substr(1)
+                                                                 : pkg + "::" + key) != 0)
+                    return;
                 handBuilt.emplace(std::make_pair(tag, key), v);
             };
             for (auto& kv : global_->vars) {
@@ -1691,6 +1683,7 @@ void Interpreter::loadModuleImpl(const std::string& name, const std::vector<std:
                 if (!want || !doImport || !saved) continue;
                 // a placeholder never displaces a routine (see importWouldShadowRoutine)
                 if (key[0] == '&' && v.t != VT::Code) continue;
+                if (key[0] == '&' && joinImportedMulti(saved->local(key), v)) continue;
                 if (saved.get() != global_.get()) {
                     if (!saved->local(key)) saved->define(key, v);
                 }
@@ -3934,6 +3927,29 @@ bool isKnownTypeName(const std::string& n) {
     if (n == "CArray" || n == "Pointer" ||
         n.rfind("CArray[", 0) == 0 || n.rfind("Pointer[", 0) == 0) return true;
     return false;
+}
+
+// What the setting's Metamodel package holds (Rakudo 2026.09's
+// `Metamodel::.keys`), by its qualified name: isKnownTypeName takes any
+// `Metamodel::` name, and a module's own nested `Metamodel::Mine` is not one.
+bool isSettingMetamodelName(const std::string& n) {
+    static const std::unordered_set<std::string> kNames = [] {
+        std::unordered_set<std::string> s;
+        for (const char* m : {
+                 "Archetypes", "ArrayType", "AttributeContainer", "BUILDALL", "BUILDPLAN", "BaseType",
+                 "BoolificationProtocol", "C3MRO", "ClassHOW", "CoercionHOW", "Composing", "ConcreteRoleHOW",
+                 "Concretization", "ConcretizationCache", "Configuration", "ContainerSpecProtocol",
+                 "CurriedRoleHOW", "DefaultParent", "DefiniteHOW", "Documenting", "EnumHOW", "Explaining",
+                 "Finalization", "GenericHOW", "GrammarHOW", "LanguageRevision", "MROBasedMethodDispatch",
+                 "MROBasedTypeChecking", "MetaMethodContainer", "MethodContainer", "MethodDelegation", "Mixins",
+                 "ModuleHOW", "MultiMethodContainer", "MultipleInheritance", "Naming", "NativeHOW",
+                 "NativeRefHOW", "Nominalizable", "PackageHOW", "ParametricRoleGroupHOW", "ParametricRoleHOW",
+                 "Primitives", "PrivateMethodContainer", "REPRComposeProtocol", "RoleContainer", "RolePunning",
+                 "Stashing", "SubsetHOW", "Trusting", "TypePretense", "Versioning"})
+            s.insert(std::string("Metamodel::") + m);
+        return s;
+    }();
+    return kNames.count(n) != 0;
 }
 
 // The core type names isKnownTypeName answers for, as a set a caller can walk

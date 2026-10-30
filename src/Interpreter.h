@@ -94,6 +94,7 @@ bool coreEnumValue(const std::string& n, Value& out);
 const Value* coreEnumValueRef(const std::string& n);
 bool isCoreEnumMemberName(const std::string& n);   // …is there one by this name (cheaply)
 bool isKnownTypeName(const std::string& n); // core type-name set (Int, Str, …)
+bool isSettingMetamodelName(const std::string& n); // `Metamodel::ClassHOW` and the rest of the setting's
 const std::set<std::string>& coreTypeNames(); // …the set itself, for "Did you mean" ranking
 std::vector<std::string> suggestNames(const std::string& name, const std::vector<std::string>& cands);
 std::string didYouMean(const std::vector<std::string>& sug); // ". Did you mean 'X'?" or ""
@@ -3911,7 +3912,11 @@ public:
         // Rakudo resolves it lexically; here the registry is flat, so accept the
         // unique registered name that ends with `::n`. Only qualified names take
         // this road — a bare `Match` must not silently find a nested one.
-        if (n.find("::") != std::string::npos) {
+        // Nor does a name the setting's Metamodel package holds, which has no
+        // class entry here: Cro::RPC::JSON::Utils tests `when Metamodel::ClassHOW`
+        // beside the dist's own Cro::RPC::JSON::Metamodel::ClassHOW, and means
+        // the setting's, as Rakudo resolves it.
+        if (n.find("::") != std::string::npos && !isSettingMetamodelName(n)) {
             const std::string suffix = "::" + n;
             const std::string* hit = nullptr;
             for (auto& kv : classes_) {
