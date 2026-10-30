@@ -31,7 +31,7 @@ f3fb83e3 and 5e611fa3 (issue #216); 67c35490 (issue #215); 820388ce and
 c9560e0d; d1c84b6b (issue #199); a1bb0e7b (issue #191); 55565059 (issue
 #177); ad2bba29 (issue #176); 308aecdf (issue #179); 94172cb6; 7f28cba0
 (issue #189); f303f0c0 (issue #196); 43341539; 392873ab; 78c4f478; 946d29e4
-(issue #190).*
+(issue #190); e9455bfa.*
 
 ---
 
@@ -1163,9 +1163,25 @@ does not.
   docs/guide/CLI.md says what a build computes.
   t/regression/issue-190-binary-embeds-compile-time.raku checks all three
   modes with the files gone.
+- **A supply whose tapper dies on an emit no longer quits or closes**
+  (e9455bfa). The error comes out of `emit`, where a CATCH in the whenever
+  body still gets it, and goes back to whoever delivered the value: a
+  Supplier's `.emit`, the caller of `.tap`, or nobody for a Promise; the
+  supply's next values still arrive, as in Rakudo, whose block CATCH cannot
+  see what the tapper throws. IO::Socket::Async::SSL's listener lost every
+  connection after one whose tap block died, which stopped `rakupp install
+  cro` at its client-server test. A react tapping a supply now dies of its
+  own whenever body's death itself, and that whenever's QUIT no longer sees
+  it. t/regression/supply-tapper-death-is-not-a-quit.raku agrees with
+  Rakudo 2026.09.
 
 ### Left open
 
+- A tapper dying on a value from `Supply.interval` or a Channel still quits
+  the supply, where Rakudo's scheduler prints it and ends the process: code
+  cued on rakupp's scheduler that dies is silent (e9455bfa). A supply that
+  quits also tells its tapper before running CLOSE, the other way round
+  from Rakudo. TODO-FOLLOW-UPS.md has both.
 - A binary still computes at start a constant in an embedded module, in a
   routine or in a class body, and `constant T = now`, since rakupp's
   `Instant.raku` is not exact (946d29e4). TODO-FOLLOW-UPS.md has both.
