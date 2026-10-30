@@ -408,6 +408,25 @@ moves to [TODO.md](TODO.md).
   isEnumTypeObject) should take the last part of the name, as a class's
   does. Done when `say` and `.gist` print (Idx).
 
+- [ ] **An optional parameter typed by a subset binds its type object
+  unchecked when nothing is passed** (found 2026-10-30 fixing
+  Cro::HTTP::Cookie's BUILD, c4df7b96):
+
+  ```raku
+  my subset CN of Str where /^ \w+ $/;
+  sub f(CN :$x) { $x }; say f();   # (CN), Rakudo: Constraint type check failed in binding
+                                   #   to parameter '$x'; expected CN but got Str (Str)
+  say CN ~~ CN;                    # False, Rakudo True
+  ```
+
+  Rakudo's default for an unpassed parameter is its NOMINAL type (Str for
+  CN), and the subset's `where` then refuses it. unpassedDefault in
+  src/InterpreterCore.cpp hands back typedDefault(type), the subset's own
+  type object, and nothing checks it. The same default reaches an
+  attributive `CN :$!n`, where c4df7b96's store refuses it, but names CN
+  as what it got where Rakudo names Str. Done when both lines match Rakudo
+  2026.09.
+
 ## Control flow and containers
 
 - [ ] **A top-level `use` and `constant` run in the mainline, after BEGIN,
