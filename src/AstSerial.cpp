@@ -359,14 +359,23 @@ template <class IO> void visit(IO& io, HashLit& n)  { ioExprVec(io, n.items); }
 template <class IO> void visit(IO& io, Assign& n)   { ioExpr(io, n.target); F(io, n.op); ioExpr(io, n.value); F(io, n.containerSigil);
                                                       F(io, n.uniSpelled); }
 template <class IO> void visit(IO& io, Binary& n)   { F(io, n.op); ioExpr(io, n.lhs); ioExpr(io, n.rhs); F(io, n.parenned);
-                                                      F(io, n.uniSpelled); }
+                                                      F(io, n.uniSpelled);
+                                                      F(io, n.curryClosed); }   // `(( … ))` finishes a WhateverCode
 template <class IO> void visit(IO& io, Unary& n)    { F(io, n.op); F(io, n.postfix); ioExpr(io, n.operand); }
 template <class IO> void visit(IO& io, Call& n)     { F(io, n.name); ioExpr(io, n.callee); ioExprVec(io, n.args);
-                                                      F(io, n.parenned); }  // P1 surface fact
+                                                      F(io, n.parenned);    // P1 surface fact
+                                                      F(io, n.fatalExempt); }
+// The parser decides these flags and records them nowhere else, so a cached
+// module that dropped them ran differently from the second load on: a returned
+// `.map` ran every block where `.head` asks for one (lazyTail — FunctionalParsers'
+// chain-left died on a parse it never reads, issue #60), `.+m` called one
+// candidate, `((*.flip))` curried on, and `so f()` under `use fatal` threw.
 template <class IO> void visit(IO& io, MethodCall& n) { ioExpr(io, n.inv); F(io, n.method); F(io, n.methodQual);
                                                         ioExpr(io, n.methodExpr); ioExprVec(io, n.args);
                                                         F(io, n.maybe); F(io, n.bang); F(io, n.mutate);
-                                                        F(io, n.hyper); F(io, n.meta); }
+                                                        F(io, n.hyper); F(io, n.meta);
+                                                        F(io, n.allMode); F(io, n.curryClosed); F(io, n.lazyTail);
+                                                        F(io, n.fatalExempt); }
 template <class IO> void visit(IO& io, Index& n)    { ioExpr(io, n.base); ioExpr(io, n.index); F(io, n.isHash);
                                                       F(io, n.multiDim); F(io, n.semicolonSub); F(io, n.adverb);
                                                       F(io, n.angleKey); }  // P1 surface fact
@@ -394,7 +403,7 @@ template <class IO> void visit(IO& io, BlockExpr& n){ ioParams(io, n.params); io
                                                           for (auto& t : n.userTraits) ioTrait(io, t);
                                                       } }
 template <class IO> void visit(IO&, SelfTerm&)      {}
-template <class IO> void visit(IO& io, WhateverExpr& n) { F(io, n.hyper); }
+template <class IO> void visit(IO& io, WhateverExpr& n) { F(io, n.hyper); F(io, n.curryClosed); }
 
 template <class IO> void visit(IO& io, ExprStmt& n) { ioExpr(io, n.e); }
 template <class IO> void visit(IO& io, NamedRegexDecl& n) { F(io, n.name); F(io, n.pattern); F(io, n.kind); }

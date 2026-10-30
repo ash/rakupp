@@ -412,6 +412,16 @@ sub trace-start() {
         trace("os: {$*KERNEL.name} / {(try $*DISTRO.Str) // '?'}");
         trace("exe: {$*EXECUTABLE.absolute}");
         trace("argv: " ~ (@*ARGS ?? @*ARGS.join(' ') !! '(none)'));
+        # whether a suite's modules load from the parse cache: a test that
+        # passes on its first load and fails once 00-sanity has cached the
+        # module is a cache fault, and the setting is the user's, not ours
+        # (issue #60 — the log said nothing of it)
+        with try run $*EXECUTABLE.absolute, '--precomp-info', :out, :err {
+            my @l = .out.slurp(:close).lines;
+            .err.slurp(:close);
+            my @half = @l.map({ ~$0 ~ ' ' ~ $1 ~ " ($2)" if / ^ \s* (modules|files) ':' \s+ (\S+) \s+ '(' (<-[)]>+) ')' / });
+            trace("precomp: {@half.join(', ')} — {@l[0]}") if .exitcode == 0 && @half;
+        }
     }
 }
 

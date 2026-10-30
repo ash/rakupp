@@ -485,6 +485,7 @@ check $trace.e, 'trace: the log exists';
 my $tlog = $trace.e ?? $trace.slurp !! '';
 check $tlog.contains('==== rakupp install trace'), 'trace: runs open with a header';
 check $tlog.contains('engine: '), 'trace: the engine build stamp is recorded';
+check $tlog ~~ / 'precomp: modules ' (on|off) ' (' /, 'trace: the parse-cache setting is recorded';
 check $tlog.contains('engine install: dist-id '), 'trace: an install records its dist-id';
 check $tlog.contains('verify: wrapper') && $tlog.contains('gate-hello'),
       'trace: the bin wrapper write is verified on disk';
