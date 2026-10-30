@@ -39,6 +39,16 @@ ck d((:a)), $(:a,), 'the inner coercion alone';
 sub s(Str(Rat(Int)) $x) { $x }
 ck s(3), '3', 'a nested coercion with no smiley, as before';
 
+# …and dispatch asks a nested coercion's whole source chain: a bare
+# `is json-rpc-actor` (True) is the Bool:D candidate's, not the Hash one's
+multi t(Mu:U \t, Hash:D(List:D(Pair:D)) :$a!) { "hash" }
+multi t(Mu:U \t, Bool:D :$a!) { "bool" }
+ck (t(Int, :a), t(Int, :a(:x<1>)), t(Int, :a((:x<1>, :y<2>)))), ('bool', 'hash', 'hash'),
+   "a named nested coercion takes only what its chain can convert";
+multi p(Str(Rat(Int)) $x) { "coerce" }
+multi p(Bool $x) { "bool" }
+ck (p(3), p(1.5), p(True)), ('coerce', 'coerce', 'bool'), '…and a positional one';
+
 my $err = try { b(42); Nil } // $!;
 ck $err.^name, 'X::TypeCheck::Binding::Parameter', 'a value no inner type takes is still refused';
 

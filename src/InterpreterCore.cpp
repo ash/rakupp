@@ -6471,6 +6471,24 @@ bool Interpreter::methodTakesAnyNamed(const Callable& c, const ValueList& args) 
 // they are, a List's elements with its Str-keyed Pairs as nameds (List.Capture),
 // a Range's elements, a Hash's pairs as nameds. False for anything else, which
 // the older, shape-only checks below still answer.
+// Whether a coercion parameter takes `v` at all: its target type, or a type
+// its FROM spec names along the whole nested chain — `Hash:D(List:D(Pair:D))`
+// takes a Hash, a List or a Pair, and leaves a Bool alone. An empty, Any or
+// Mu source takes anything, as `Foo()` does. Definedness is the binder's.
+template <class Match>
+static bool coercionTakes(const Value& v, const std::string& target, std::string from, Match&& matches) {
+    if (target.empty() || matches(v, target)) return true;
+    for (;;) {
+        if (from.empty() || from == "Any" || from == "Mu") return true;
+        const size_t l = from.find('(');
+        std::string t = l == std::string::npos ? from : from.substr(0, l);
+        if (t.size() > 2 && t[t.size() - 2] == ':') t.resize(t.size() - 2);
+        if (t.empty() || t == "Any" || t == "Mu" || matches(v, t)) return true;
+        if (l == std::string::npos || from.back() != ')') return false;
+        from = from.substr(l + 1, from.size() - l - 2);
+    }
+}
+
 static bool subSigArgs(Interpreter& I, const Value& v0, ValueList& out) {
     Value v = v0;
     if (v.t == VT::Object && v.obj() && v.obj()->cls && v.obj()->cls->findMethod("Capture")) {
@@ -7008,13 +7026,11 @@ int Interpreter::scoreCandidate(const Value& cand, const ValueList& args,
             // A coercion FROM a named type takes that type or the target, and
             // nothing else: `IO::Path(Str) $src` leaves an IO::Handle to the
             // `IO::Handle $src` candidate beside it (XML's open-xml), as in
-            // Rakudo. A nested from-type (`Str(Rat(Src))`) stays permissive.
-            if (!p->coerceFrom.empty() && p->coerceFrom != "Any" && p->coerceFrom != "Mu" &&
-                p->coerceFrom.find('(') == std::string::npos && !isJunction(pos[i])) {
-                std::string from = p->coerceFrom;
-                if (from.size() > 2 && from[from.size() - 2] == ':') from.resize(from.size() - 2);
-                if (!typeOrSubsetMatches(pos[i], p->type) && !typeOrSubsetMatches(pos[i], from)) return -1;
-            }
+            // Rakudo — and a nested from-type any type along its chain.
+            if (!isJunction(pos[i]) &&
+                !coercionTakes(pos[i], p->type, p->coerceFrom,
+                               [&](const Value& v, const std::string& t) { return typeOrSubsetMatches(v, t); }))
+                return -1;
         }
         else if ((p->sigil == '@' || p->sigil == '%') && !p->type.empty() &&
                  p->type != "Any" && p->type != "Mu" && p->type != "Positional" &&
@@ -7256,6 +7272,12 @@ int Interpreter::scoreCandidate(const Value& cand, const ValueList& args,
             // on the positional arm
             if (p.sigil == '$' && !p.type.empty() && !p.coerce &&
                 !typeOrSubsetMatches(sval, p.type)) return -1;
+            // (…which still takes only what it can convert: `Hash:D(List:D(Pair:D))
+            // :$json-rpc-actor!` leaves a bare trait's True to the `Bool:D` one)
+            if (p.sigil == '$' && p.coerce && !p.type.empty() && !isJunction(sval) &&
+                !coercionTakes(sval, p.type, p.coerceFrom,
+                               [&](const Value& v, const std::string& t) { return typeOrSubsetMatches(v, t); }))
+                return -1;
             // a `&`-sigil named is implicitly Callable, whether or not it also
             // spells a type — `(:&content)` must NOT bind `content => "text"`.
             // HTTP::Tiny chains Str → Blob → Callable content multis, and the
