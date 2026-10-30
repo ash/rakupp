@@ -394,6 +394,20 @@ moves to [TODO.md](TODO.md).
   accessors still build before changing it. Done when the three lines
   are Rakudo 2026.09's.
 
+- [ ] **A qualified enum's type object gists with its whole name** (found
+  2026-10-30 fixing HTTP::HPACK's module enums, 5801c286; a class already
+  answers Rakudo's):
+
+  ```raku
+  class A::B {}; say A::B;          # (B) in both
+  enum B::Idx <X Y>; say B::Idx;    # (B::Idx), Rakudo (Idx)
+  ```
+
+  `.^name` and `.raku` are B::Idx in both, and `.^shortname` is Idx in
+  both. The gist of an enum's type object (the tagged pair list,
+  isEnumTypeObject) should take the last part of the name, as a class's
+  does. Done when `say` and `.gist` print (Idx).
+
 ## Control flow and containers
 
 - [ ] **A top-level `use` and `constant` run in the mainline, after BEGIN,
