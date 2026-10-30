@@ -34,7 +34,7 @@ c9560e0d; d1c84b6b (issue #199); a1bb0e7b (issue #191); 55565059 (issue
 (issue #190); e9455bfa; be510e3a; 5801c286; c5fd7f1d; 7aa4256c; c4df7b96; 67b676cf; 38fe9757; a81b6f91;
 bd8936e7; 0938078e; 858a037e; 21c37405; 0b29ef00; 9b3fbb8a; de0d04e5;
 3e15da85; 2df02ed1; 2adfaa34; c91a94fb; 1676fc8a; 5b70d2e1; d54cc3ba;
-d4ed6cac (issue #60).*
+d4ed6cac (issue #60); 480f6850; a92d9cfd; 0d089427; 9cac10e4; f3ffb5c3.*
 
 ---
 
@@ -688,6 +688,11 @@ plain before 500c29e2 and native from it, unless they say otherwise.
   install trace now records the parse-cache setting and where it came from.
   t/regression/precomp-method-call-flags.raku, three runs against one cache,
   agrees with Rakudo 2026.09.
+- **A module's name stays the module beside a type inside it whose name
+  ends with it** (480f6850). The tails of a class's qualified name are
+  short aliases, and `Cro::RPC::JSON.^name` answered X::Cro::RPC::JSON, the
+  role that dist declares. t/regression/module-name-not-taken-by-nested-type.raku
+  agrees with Rakudo 2026.09.
 
 ### Fixed: crashes
 
@@ -762,6 +767,21 @@ plain before 500c29e2 and native from it, unless they say otherwise.
   disk and loaded at run time, interpreted, and a binary moved without it
   died. Issue #189's program was built that way. t/run.raku builds two such
   programs and runs them with the module's directory gone.
+- **Two threads no longer replace one `$/` at once** (a92d9cfd). A subset's
+  `where /…/` checked off the main thread set the `$/` of the scope the
+  subset was declared in, which every thread shares, and a grammar's inline
+  block saved and restored `$/` past its routine: the old value was freed
+  twice. Cro::HTTP checks such a subset for each request it builds, and its
+  session test, whose two clients run at once, crashed in about one run in
+  four. t/regression/match-var-shared-scope-across-threads.raku agrees with
+  Rakudo 2026.09.
+- **Four more races under Cro's WebSocket and session tests** (0d089427),
+  found with ThreadSanitizer: an exception type made on the fly went into
+  the class table that other threads read without a lock (a lookup lost in
+  the rehash made `DeepCompareRec.new` die "No such method 'new'"); a tap
+  record gained a key while another thread read it; and a supply's
+  completion flags and the cycle-break counter were plain fields several
+  threads changed, so two of them could both fire a supply's `done`.
 
 ### Fixed: what FatRoast found
 
@@ -1314,6 +1334,19 @@ does not.
   timeout after the server closed.
   t/regression/react-last-done-from-another-thread.raku agrees with Rakudo
   2026.09.
+- **A react's whenever over a Supplier runs its body as the react's**
+  (9cac10e4), not as the supply block that emitted into the Supplier on that
+  thread: a `whenever` in the body joined that supply block, so the react
+  ended without waiting for it, and a `done` there ended the supply block.
+  Cro::RPC::JSON's WebSocket test registers its close that way.
+  t/regression/react-body-fed-from-inside-a-supply-block.raku agrees with
+  Rakudo 2026.09.
+- **An emit into a supply block busy on another thread waits for it**
+  (f3ffb5c3), 25 ms at most, as Rakudo's emit waits on the supply's lock,
+  and the value is handled before emit returns: Cro::WebSocket's handler
+  test counted its replies before the last one had been made.
+  t/regression/emit-waits-for-busy-supply-on-another-thread.raku agrees with
+  Rakudo 2026.09.
 
 ### Left open
 

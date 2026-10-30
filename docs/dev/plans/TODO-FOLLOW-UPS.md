@@ -593,6 +593,22 @@ moves to [TODO.md](TODO.md).
   answer showed in 300 runs of the repros, but a torn copy is possible. The
   fix is to write back only what the block assigned: a flags-only difference
   skipped, or a mark on the topic's store.
+- [ ] **What ThreadSanitizer still reports under Cro's tests** (found
+  2026-10-30; a92d9cfd and 0d089427 fixed the rest). A build configured
+  with `-DCMAKE_BUILD_TYPE=RelWithDebInfo -DCMAKE_CXX_FLAGS=-fsanitize=thread
+  -DCMAKE_EXE_LINKER_FLAGS=-fsanitize=thread` and run on Cro::RPC::JSON's
+  t/060-websocket.rakutest and Cro::HTTP's t/http-session-inmemory.rakutest
+  still reports: callNative's nativeSymCache and nativeCifCache, each
+  published once (the second's atypes vector is read while another thread
+  builds its own); the fatalPragma an EVAL sets on its caller's scope while
+  another thread reads it in fatalHere; and setupRwLinks' anyRwLinks_ flag.
+  Four more places save and restore `$/` through `find`, which walks past
+  the routine into scopes other threads share (two in regexMatch's
+  code-block arms in InterpreterCore.cpp, one each in MethodCallPart2.cpp
+  and MethodCallPart3.cpp), InterpreterModules.cpp's loop reads one that
+  way, and a `where { … ~~ /…/ }` block, unlike `where /…/`, still sets the
+  declaring scope's `$/` from any thread. Each should go through
+  matchVarSlot or keep its match.
 - [ ] **An enum's type object is a list of its pairs** (found 2026-10-27
   while making statement conditions Rakudo's xblock, 4af53b07; on daf9c03c
   too). A type object is one item, and `Int` is, but an enum's is not:
@@ -835,6 +851,24 @@ moves to [TODO.md](TODO.md).
     while the first request's `start` block is still awaiting its body, and
     that block's "ok - check 4" lands in the next subtest's plan. A race in
     the test; Rakudo's scheduling hides it;
+  - Cro::RPC::JSON's t/060-websocket.rakutest fails now and then under
+    six-way CPU load (4 runs in 10 at 71fcbbb4, 1 in 15 at f3ffb5c3; none
+    in 15 idle), and failed once in a fresh `rakupp install` (then passed
+    six times running): the client reads the close code, or the actor's
+    reaction to the close, before the server's `whenever $close` body has
+    run. Cro's handler emits its Close reply before it keeps that promise,
+    so Rakudo races too, but timed with notes the server sets the code 0.8
+    to 2 ms ahead of the client's check there, and 0.01 to 0.2 ms here: this
+    socket write is done inside the reply's `emit` (Rakudo's goes through
+    its event loop), and each promise whenever starts a thread (Rakudo's
+    `.then` takes a pool thread);
+  - IO::Socket::Async::SSL's t/encoding.rakutest failed once in a fresh
+    `rakupp install` (it read "¸ВО" for "ПИВО": the reply's first bytes were
+    lost) and has passed 80 runs since, idle and under load;
+  - a Vow's `.keep` with no argument keeps the promise with True; Rakudo's
+    needs the value ("Too few positionals passed");
+  - `.slurp` on a directory dies X::IO::Directory "Failed to open file …: is
+    a directory"; Rakudo's dies X::AdHoc "Tried to open directory …";
   - Cro::RPC::JSON's test-only dependencies JSON::Unmarshal
     (t/080-trait.rakutest), URI (t/query.rakutest) and Test::META
     (t/010-use.t) still fail their own suites. Cro::RPC::JSON's tests do
