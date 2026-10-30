@@ -814,6 +814,53 @@ moves to [TODO.md](TODO.md).
 
 ## Backends
 
+- [ ] **A binary computes at start a constant in a module, a routine or a
+  class body** (found 2026-10-30 fixing issue #190, 946d29e4). The build
+  embeds what the MAIN program's compile-time code came to — its top-level
+  constants, its BEGIN values, its top-level BEGIN blocks' variables — and
+  nothing deeper:
+
+  ```raku
+  # lib/M.rakumod: unit module M; constant DATA is export = 'data.txt'.IO.slurp;
+  use M; say DATA;                       # the binary reads data.txt at start
+  class C { constant X = 'data.txt'.IO.slurp }   # so does this one
+  sub f { constant Y = 'data.txt'.IO.slurp; Y }  # and this, at each call
+  ```
+
+  Rakudo's precompiled module keeps all three. computeCompileTimeValues
+  (src/CompileTime.cpp) records only what the pass's mainline computes: a
+  module's constants need each embedded module's tree (BundledModule)
+  numbered and substituted the same way, at the load the pass already does;
+  a class body's need ctMainlineStmt to walk the body's constants; a
+  routine's need the static environment runStaticPhasers builds for a nested
+  BEGIN. A BEGIN statement inside a routine or block still runs at start
+  too, and keeps the top-level ones running when it touches the program's
+  variables.
+
+- [ ] **`Instant.raku` is not exact, so a binary does not embed `constant T =
+  now`** (found 2026-10-30 fixing issue #190, 946d29e4):
+
+  ```raku
+  my $i = now; say $i.raku; say (EVAL $i.raku) eqv $i
+  # rakupp: Instant.from-posix(1793331244.935708e0) / False
+  # Rakudo: Instant.from-posix(1793331244.919478689) / True
+  ```
+
+  The build embeds a value only when its `.raku` reads back `eqv`, so an
+  Instant constant is computed at start, with a note. Write the posix value
+  as Rakudo does, a Rat.
+
+- [ ] **`--exe`: a list constant says it is an Array** (found 2026-10-30
+  fixing issue #190; base ba17e855 does the same):
+
+  ```raku
+  constant @L = (2, 4); say @L;   # interpreted and Rakudo: (2 4); --exe: [2 4]
+  ```
+
+  Natively compiled, `constant @L = LIST` binds an Array where the
+  interpreter binds a List (InterpreterCore.cpp's `isList` bind for a
+  constant); Codegen should mark it a List.
+
 - [ ] **`--exe`: `:=` inside a natively compiled routine copies instead of
   aliasing** (found 2026-10-19 verifying the non-ASCII binding fix; the
   ASCII copy fails the same way, so it is older):
