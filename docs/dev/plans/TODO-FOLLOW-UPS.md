@@ -396,6 +396,49 @@ moves to [TODO.md](TODO.md).
 
 ## Control flow and containers
 
+- [ ] **A top-level `use` and `constant` run in the mainline, after BEGIN,
+  CHECK and INIT** (found 2026-10-30 checking what a #190 build runs; on
+  main at 8aec0a66). Rakudo runs a unit's compile-time parts while it
+  parses, in source order — a `use` (and the module's mainline with it), a
+  BEGIN, a constant — then CHECK, then INIT, then the mainline.
+  Interpreter::run (src/InterpreterModules.cpp) runs the top-level BEGIN
+  blocks first, then CHECK and INIT, and meets a `use` or a `constant` only
+  when the mainline reaches it, after the mainline statements above it:
+
+  ```raku
+  # lib/N.rakumod: unit module N; note 'N mainline'; sub nf is export { 'nf' }
+  note 'mainline 1';
+  use N;
+  BEGIN note 'BEGIN';
+  constant C = do { note 'constant'; 42 };
+  CHECK note 'CHECK';
+  INIT note 'INIT';
+  END note 'END';
+  note 'mainline 2';
+  # rakupp -I lib: BEGIN, CHECK, INIT, mainline 1, N mainline, constant, mainline 2, END
+  # Rakudo:        N mainline, BEGIN, constant, CHECK, INIT, mainline 1, mainline 2, END
+  ```
+
+  Where it breaks a program: a top-level BEGIN cannot call what a `use`
+  above it imports. `BEGIN note nf()` in that program dies "Undefined
+  routine 'nf'" (Rakudo prints nf), though `use Test; BEGIN ok 1` works. A
+  binary built since 946d29e4 inherits the order: its build runs the
+  BEGINs, then the `use`s, then the constants, and the binary runs each
+  module's mainline again when it starts, after INIT. TODO.md's "A `use`
+  inside a routine runs when the routine is CALLED" is the same gap one
+  level in.
+
+  A way in: run()'s partition already pulls the top-level BEGIN and CHECK
+  blocks out of the mainline; a `use` and a constant would join the BEGINs
+  there, all in source order, before CHECK. Two things lean on today's
+  order: the module INIT hoisting in src/InterpreterModules.cpp (its
+  comment says "In rakupp a `use` is a mainline statement") and
+  ctMainlineStmt (src/CompileTime.cpp), which picks the `use`s and
+  constants out of the mainline loop for a binary's build and would move
+  with them. A constant reading a mainline variable must keep Rakudo's
+  answer (`my $n = 5; constant C = $n` is 5). Done when the program above
+  prints Rakudo's order, and `BEGIN note nf()` prints nf.
+
 - [ ] **A phaser written last does not make the block's value Nil**
   (found 2026-10-28 while fixing `rakupp install
   https://github.com/antononcube/Raku-Woxi`, 642a320a; on v5.5.0 too).
