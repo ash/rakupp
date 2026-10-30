@@ -621,6 +621,18 @@ void Interpreter::setMatchVar(Value v) {
     }
 }
 
+// The `$/` slot setMatchVar would update (nullptr: it would make one). A save
+// and restore around a match goes through this, not `find`, which walks on
+// past the routine into a scope other threads write (a module's, a class's).
+Value* Interpreter::matchVarSlot() {
+    for (Env* e = tctx().cur.get(); e; e = e->parent.get()) {
+        auto it = e->vars.find("$/");
+        if (it != e->vars.end()) return &it->second;
+        if (e->routineFrame || !e->parent) return nullptr;
+    }
+    return nullptr;
+}
+
 // Raku `my`/`state` declarations are visible throughout their enclosing block,
 // even when the declaration is textually inside one branch of a ternary/if/nqp
 // op and referenced from a sibling branch (JSON::Fast declares `my int $codepoint`

@@ -2702,7 +2702,7 @@ Value Interpreter::grammarParse(ClassInfo* g, const std::string& input, bool sub
             restore.push_back({name, own ? std::optional<Value>(*own) : std::nullopt});
             tctx().cur->define(name, v);
         };
-        bool hadSlash = tctx().cur->find("$/") != nullptr; Value savedSlash = hadSlash ? *tctx().cur->find("$/") : Value::nil();
+        Value* slash = matchVarSlot(); Value savedSlash = slash ? *slash : Value::nil();
         setMatchVar(m);
         // `self` in a rule's code is the cursor the rule was called with — it
         // answers `.orig`, and `.pos`/`.from` where the rule began (`:my $o =
@@ -2753,7 +2753,7 @@ Value Interpreter::grammarParse(ClassInfo* g, const std::string& input, bool sub
             if (it->second) tctx().cur->define(it->first, *it->second);
             else tctx().cur->undefine(it->first);
         }
-        if (Value* s2 = tctx().cur->find("$/")) *s2 = savedSlash;
+        if (Value* s2 = matchVarSlot()) *s2 = savedSlash;
         return last;
     };
     gm.hooks.assertPass = [runCode, parseCode](const std::string& code, long from, long to, const NamedMap& nm, const ParamMap& pm) -> bool {
@@ -3222,7 +3222,7 @@ Value Interpreter::grammarParse(ClassInfo* g, const std::string& input, bool sub
                 homeSwap.enter(homes->eff, mh, homes->matchScope, tctx());
             }
             if (auto prog = parseCode(code)) {
-                Value* slot = tctx().cur->find("$/"); Value saved = slot ? *slot : Value::nil();
+                Value* slot = matchVarSlot(); Value saved = slot ? *slot : Value::nil();
                 setMatchVar(mv);
                 tctx().makeTargets.push_back(&mv);
                 try { for (auto& s : prog->stmts) exec(s.get()); }
@@ -3234,7 +3234,7 @@ Value Interpreter::grammarParse(ClassInfo* g, const std::string& input, bool sub
                     if (std::getenv("RAKUPP_DEBUG_MAKE")) fprintf(stderr, "[make] threw (non-Raku)\n");
                 }
                 tctx().makeTargets.pop_back();
-                if (Value* s2 = tctx().cur->find("$/")) *s2 = saved;
+                if (Value* s2 = matchVarSlot()) *s2 = saved;
             }
         }
         auto pm = pendingMakes->find({pn.from, pn.to});

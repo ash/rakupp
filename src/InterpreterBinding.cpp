@@ -1168,15 +1168,25 @@ bool Interpreter::subsetMatches(const std::string& name, const Value& v, int dep
     if (si.where) {
         auto env = makeSlabShared<Env>(); env->parent = si.declEnv ? si.declEnv : tctx().cur;
         env->define("$_", sv);
+        // `where /…/` sets the `$/` of the scope the subset was declared in, as
+        // Rakudo's does. Off the main thread the check keeps its match: that
+        // scope (a module's, a class body's) is every thread's, and two threads
+        // writing its `$/` at once freed the old value twice (Cro checks
+        // `subset Method of Str where /^<[A..Z]>+$/` for each request it builds).
+        if (si.declEnv && std::this_thread::get_id() != mainThread_) env->define("$/", Value::nil());
         auto saved = tctx().cur; tctx().cur = env;
         bool ok = false;
         try {
             Value cv;
-            if (si.whereBlock) cv = *si.whereBlock;
+            // (the block is made once, by whichever thread checks first)
+            if (auto wb = std::atomic_load(&si.whereBlock)) cv = *wb;
             else {
                 cv = eval(const_cast<Expr*>(si.where));
-                if (si.where->kind == NK::BlockExpr && cv.t == VT::Code)
-                    const_cast<SubsetInfo&>(si).whereBlock = std::make_shared<Value>(cv);
+                if (si.where->kind == NK::BlockExpr && cv.t == VT::Code) {
+                    auto mine = std::make_shared<Value>(cv); std::shared_ptr<Value> first;
+                    if (!std::atomic_compare_exchange_strong(&const_cast<SubsetInfo&>(si).whereBlock, &first, mine))
+                        cv = *first;
+                }
             }
             // `where EXPR` is a smartmatch: a Code/WhateverCode is called with
             // the value; anything else (a type, a junction like

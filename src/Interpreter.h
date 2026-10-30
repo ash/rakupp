@@ -3036,6 +3036,7 @@ public:
     // ordinary eval+boolify), else 0/1.
     int tryCondBool(Expr* e);
     void setMatchVar(Value v); // set $/ (updates an enclosing scope's $/ if present)
+    Value* matchVarSlot();     // …the slot it would update (nullptr: it would make one)
     // A match against a NON-Str topic (`12345 ~~ /2../`) keeps that topic as its
     // .orig — on the Match handed back and on the `$/` the match just set
     void keepMatchOrig(Value& m, const Value& topic);
