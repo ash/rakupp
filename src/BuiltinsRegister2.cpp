@@ -1624,6 +1624,7 @@ void Interpreter::registerBuiltinsPart4() {
                         { std::lock_guard<std::mutex> lk(es->m); if (es->ended) return; }
                         auto c = wctx.lock();
                         if (c) { std::lock_guard<std::mutex> lk(c->m); if (c->closed) return; }   // after `done`, nothing more
+                        ReactBodyTapScope asReact(I2, (bool)c);
                         struct Push {
                             Interpreter& I; bool on;
                             ~Push() { if (on && !I.reactStack_.empty()) I.reactStack_.pop_back(); }

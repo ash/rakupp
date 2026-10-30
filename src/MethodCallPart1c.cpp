@@ -907,6 +907,7 @@ std::optional<Value> Interpreter::methodCallPart1c(const Value& inv, const MName
                 // closes the enclosing react (the block runs here, on whatever
                 // thread emitted — reactStack_ is thread-local, so it wasn't set)
                 std::shared_ptr<ReactCtx> rctx = t.ext() ? std::static_pointer_cast<ReactCtx>(t.ext()) : nullptr;
+                ReactBodyTapScope asReact(*this, (bool)rctx);   // (and not a supply's delivering here)
                 for (auto& o : outs) {
                     ValueList one{o};
                     if (rctx) reactStack_.push_back(rctx);

@@ -19,7 +19,7 @@ function Interpreter::evalUnary 1552
 function Interpreter::execDeclStmt 3640
 function Interpreter::lvalue 1678
 function Interpreter::methodCallInner 3371
-function Interpreter::methodCallPart1c 1823
+function Interpreter::methodCallPart1c 1824
 function Interpreter::methodCallPart2 9280
 function Interpreter::methodCallPart3 6580
 function Interpreter::methodCallTail 5098

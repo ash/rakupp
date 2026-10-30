@@ -358,6 +358,18 @@ static inline Value ctxCallable(std::shared_ptr<SupplyTapCtx> ctx,
     };
     return v;
 }
+// …and the other way round: while a react's whenever body runs, the
+// activation delivering on this thread (a supply block that emitted into the
+// Supplier the react taps) is set aside, so a `whenever` or `done` in the
+// body is the react's. Cro's WebSocket client emits each message from its
+// parser's whenever; a `whenever` in the react over them joined the parser.
+struct ReactBodyTapScope {
+    std::vector<std::shared_ptr<SupplyTapCtx>>& live;
+    std::vector<std::shared_ptr<SupplyTapCtx>> aside;
+    bool on;
+    ReactBodyTapScope(Interpreter& I, bool on_) : live(I.tctx().tapStack), on(on_) { if (on) aside.swap(live); }
+    ~ReactBodyTapScope() { if (on) live.swap(aside); }
+};
 
 // The tapper's quit handler, called because a whenever body died. Whatever it
 // throws stays here, the supply is ending anyway, except a `return`: that
