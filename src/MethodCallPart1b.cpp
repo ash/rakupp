@@ -903,9 +903,9 @@ std::optional<Value> Interpreter::methodCallPart1b(const Value& inv, const MName
         if (m == "socket-host" || m == "peer-host") return Value::typeObj("Str");
         if (m == "socket-port" || m == "peer-port") return Value::typeObj("Int");
     }
-    // A connected async socket: .Supply taps a read worker; write/print are
-    // synchronous sends answered with a kept Promise (Cro awaits them via
-    // `whenever $socket.write(…) {}`).
+    // A connected async socket: .Supply taps a read worker; write/print queue
+    // their bytes for a writer worker (AsyncSockWriter) and answer a Promise it
+    // keeps once they are sent (Cro awaits them via `whenever $socket.write(…) {}`).
     if (inv.t == VT::Hash && inv.hashKind == "AsyncSocket") {
         // under the hash's stripe: the socket's reader worker writes both at EOF
         int fd = -1; bool sockClosed = false;
@@ -943,6 +943,18 @@ std::optional<Value> Interpreter::methodCallPart1b(const Value& inv, const MName
             }
             auto ps = std::make_shared<PromiseState>();
             Value p = Value::makeHash(); p.hashKind = "Promise"; p.extM() = ps;
+            if (auto w = asyncSockWriter(inv)) {   // queued; its worker keeps the promise
+                (*p.hash())["status"] = Value::str("Planned");
+                bool start;
+                {   std::lock_guard<std::mutex> lk(w->m);
+                    w->q.push_back({std::move(data), ps});
+                    start = !w->running;
+                    w->running = true;
+                }
+                if (start) startSocketWriter(w);
+                else w->cv.notify_one();
+                return p;
+            }
             ssize_t off = 0; bool ok = fd >= 0;
             while (ok && off < (ssize_t)data.size()) {
                 // no gilPark: send on a local socket won't block meaningfully,
@@ -958,7 +970,14 @@ std::optional<Value> Interpreter::methodCallPart1b(const Value& inv, const MName
             return p;
         }
         if (m == "close") {
-            if (fd >= 0) { ::shutdown(fd, SHUT_WR); }
+            bool queued = false;   // behind writes still queued, as they were made first
+            auto w = asyncSockWriter(inv);
+            if (w) {
+                std::lock_guard<std::mutex> lk(w->m);
+                if (w->running) { w->q.push_back({std::string(), nullptr}); queued = true; }
+            }
+            if (queued) w->cv.notify_one();
+            else if (fd >= 0) { ::shutdown(fd, SHUT_WR); }
             ParStripe g(*this, inv.hash());
             (*inv.hash())["closed"] = Value::boolean(true);
             return Value::boolean(true);

@@ -277,6 +277,27 @@ struct UdpSockState {
 static inline std::shared_ptr<UdpSockState> udpState(const Value& s) {
     return std::static_pointer_cast<UdpSockState>(s.ext());
 }
+// A TCP IO::Socket::Async's sending side, shared by the socket value and its
+// writer worker. A write queues its bytes and answers a Planned Promise; one
+// worker at a time sends the queue in order and keeps each promise with its
+// byte count, as Rakudo's event loop does. Sent on the caller's thread, a
+// write blocked it until the peer read: a program that wrote more than the
+// socket buffers hold before it tapped the reply never got to tap it.
+// `fd` is the socket's descriptor until its reader closes it at EOF; both do
+// that under `fdM`, so a send never reaches a number reused by a newer accept.
+struct AsyncSockWriter {
+    std::mutex m;                 // q and running
+    std::condition_variable cv;   // a write for a worker that waits for the next one
+    std::mutex fdM;               // fd, and any send or close through it
+    int fd = -1;
+    struct Item { std::string data; std::shared_ptr<PromiseState> ps; };   // no ps: a close's shutdown
+    std::deque<Item> q;
+    bool running = false;         // a worker is sending q, or waiting a moment for more
+};
+static inline std::shared_ptr<AsyncSockWriter> asyncSockWriter(const Value& s) {
+    if (s.t != VT::Hash || s.hashKind != "AsyncSocket" || s.hash()->count("udp")) return nullptr;
+    return std::static_pointer_cast<AsyncSockWriter>(s.ext());
+}
 static inline int udpOpen(int family, bool broadcast) {
     // no SO_REUSEADDR: on Linux it lets two sockets bind one port, and a
     // second bind-udp of a taken port has to die

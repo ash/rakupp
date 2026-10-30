@@ -2367,6 +2367,7 @@ public:
     Value spawnChannelWhenever(Value chan, Value blk, std::shared_ptr<ReactCtx> ctx); // `whenever $channel`
     Value spawnSupplyTimer(double secs, Value blk, std::shared_ptr<SupplyTapCtx> ctx); // same, inside a supply {} block
     void spawnDelayedNative(double secs, std::function<void()> fn); // run fn on a worker after a real delay (Promise.in(N).then)
+    void startSocketWriter(std::shared_ptr<struct AsyncSockWriter> w); // send an async socket's queued writes on a worker
     // `whenever $channel { … }` inside a `supply {}` block. The REACT path has
     // had this for a while (spawnChannelWhenever); the supply path fell through
     // to tapSupply(), which cannot tap a Channel and so emitted the Channel

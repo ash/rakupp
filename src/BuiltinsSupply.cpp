@@ -375,6 +375,9 @@ Value makeAsyncSocket(int fd) {
     // table out from under that reader. Writing a key that is already there
     // leaves the hash's shape alone; both sides take the hash's stripe.
     (*s.hash())["closed"] = Value::boolean(false);
+    auto w = std::make_shared<AsyncSockWriter>();
+    w->fd = fd;
+    s.extM() = w;
     sockaddr_storage a{}; socklen_t alen = sizeof(a);
     std::string h; long long p = 0;
     if (::getsockname(fd, (sockaddr*)&a, &alen) == 0) {
@@ -901,6 +904,77 @@ void Interpreter::spawnDelayedNative(double secs, std::function<void()> fn) {
         tctx().dynStack.push_back(spawnScope.get());
         if (!stopped) { try { fn(); } catch (...) {} }
         self->gilYieldNotify();
+        self->workerFinished();
+        fin->store(true, std::memory_order_release);
+    }), fin);
+}
+
+// The worker behind AsyncSockWriter: it sends the queue until it is empty,
+// waits a moment for the next write (one that awaits the last is usually
+// there by then: a thread per write made 2000 of them 30 times slower), and
+// ends; the next write starts another. A send never blocks it (the peer may
+// not read until our caller does something), so it waits for room with poll,
+// and gives up a stalled send only once the program is ending.
+void Interpreter::startSocketWriter(std::shared_ptr<AsyncSockWriter> w) {
+    engageGil();
+    liveWorkers_++;
+    auto fin = std::make_shared<std::atomic<bool>>(false);
+    auto spawnScope = tctx().cur ? tctx().cur : global_;
+    Interpreter* self = this;
+    throttleSpawn();
+    addWorker(BigStackThread([self, w, fin, spawnScope]() mutable {
+        t_hot.poll.isWorker = true;
+        for (;;) {
+            AsyncSockWriter::Item it;
+            {   std::unique_lock<std::mutex> lk(w->m);
+                if (w->q.empty() && !self->workerAbort_.load(std::memory_order_relaxed))
+                    w->cv.wait_for(lk, std::chrono::milliseconds(2), [&] { return !w->q.empty(); });
+                if (w->q.empty()) { w->running = false; break; }
+                it = std::move(w->q.front()); w->q.pop_front();
+            }
+            if (!it.ps) {   // a close behind the writes queued before it
+                std::lock_guard<std::mutex> lk(w->fdM);
+                if (w->fd >= 0) ::shutdown(w->fd, SHUT_WR);
+                continue;
+            }
+            bool ok = true;
+            size_t off = 0;
+            while (off < it.data.size()) {
+                int fd; ssize_t n;
+                {   std::lock_guard<std::mutex> lk(w->fdM);
+                    fd = w->fd;
+                    if (fd < 0) { ok = false; break; }
+#ifdef MSG_DONTWAIT
+                    n = ::send(fd, it.data.data() + off, it.data.size() - off, MSG_DONTWAIT);
+#else
+                    n = ::send(fd, it.data.data() + off, it.data.size() - off, 0);
+#endif
+                }
+                if (n > 0) { off += (size_t)n; continue; }
+                if (n < 0 && (errno == EINTR || errno == EAGAIN || errno == EWOULDBLOCK)) {
+                    if (self->workerAbort_.load(std::memory_order_relaxed)) { ok = false; break; }
+                    struct pollfd pfd { fd, POLLOUT, 0 };
+                    ::poll(&pfd, 1, 20);
+                    continue;
+                }
+                ok = false; break;
+            }
+            std::vector<std::function<void()>> fire;
+            {   std::lock_guard<std::mutex> lk(it.ps->m);
+                if (ok) it.ps->result = Value::integer((long long)it.data.size());
+                else { it.ps->broken = true; it.ps->cause = Value::typeObj("X::IO"); it.ps->causeMsg = "Socket write failed"; }
+                it.ps->done = true;
+                fire.swap(it.ps->thens);
+            }
+            it.ps->cv.notify_all();
+            if (fire.empty()) continue;
+            self->gilLock();
+            ExecContext wctx; self->loadCtx(wctx);
+            tctx().cur = spawnScope;
+            tctx().dynStack.push_back(spawnScope.get());
+            for (auto& f : fire) { try { f(); } catch (...) {} }
+            self->gilYieldNotify();
+        }
         self->workerFinished();
         fin->store(true, std::memory_order_release);
     }), fin);
@@ -2713,7 +2787,13 @@ Value Interpreter::tapSupply(const Value& s, Value emitCb, Value doneCb, Value q
                 (*sock.hash())["closed"] = Value::boolean(true);
             }
             self->gilYieldNotify();
-            if (!tapClosed && fd >= 0) ::close(fd);
+            if (!tapClosed && fd >= 0) {
+                // …and its writer forgets it too, in the same step as the close
+                auto w = asyncSockWriter(sock);
+                std::unique_lock<std::mutex> lk;
+                if (w) { lk = std::unique_lock<std::mutex>(w->fdM); w->fd = -1; }
+                ::close(fd);
+            }
             self->workerFinished();
             fin->store(true, std::memory_order_release);
         }), fin);
