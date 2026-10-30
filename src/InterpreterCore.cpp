@@ -10750,6 +10750,26 @@ Value Interpreter::invokeMethod(const Value& codeVal, const Value& self, ValueLi
                         } un{markIdx};
                         return parentNext(as);
                     }
+                    // …and a dispatcher CALLED DIRECTLY has no chain behind it —
+                    // `$obj.&m()` with `&m = Kid.^find_method('foo')`, which is how
+                    // Cro::RPC::JSON calls an actor's method — so it asks the
+                    // parent of the class it belongs to, whose candidates are
+                    // Kid's too in Rakudo
+                    if (!parentNext && !anyJunction && visited.empty()) {
+                        ClassInfo* k = selfCopy.t == VT::Object && selfCopy.obj() ? selfCopy.obj()->cls.get() : nullptr;
+                        if (!k && selfCopy.t == VT::Type) {
+                            auto it = classes_.find(selfCopy.s);
+                            if (it != classes_.end()) k = it->second.get();
+                        }
+                        for (; k; k = k->parent.get()) {
+                            auto own = k->methods.find(c.ci().name);
+                            if (own == k->methods.end() || own->second.code() != &c) continue;
+                            if (Value* up = k->parent ? k->parent->findMethod(c.ci().name) : nullptr)
+                                if (up->t == VT::Code && up->code() && up->code() != &c)
+                                    return invokeMethod(*up, selfCopy, as, rwArgs);
+                            break;
+                        }
+                    }
                 }
                 // …and Mu's `new(*%attrinit)` is one of `new`'s candidates: a
                 // samewith whose arguments no user candidate takes builds the
@@ -11562,6 +11582,11 @@ Value* Interpreter::lvalue(Expr* e, bool asInvocant) {
                 if (hm.count(ve->attrBare)) return &hm[ve->attrBare];  // …or its public one
                 return &hm[ve->name[1] == '!' ? pk : ve->attrBare];    // neither yet: make the right one
             }
+            // …and a ROUTINE with a role mixed in keeps them beside the role's
+            // name (mixinValue), where its accessor reads them: Cro::RPC::JSON's
+            // `meth does Cro::RPC::JSON::Method; meth.set-json-rpc-name(…)`
+            if (selfp && selfp->t == VT::Code && selfp->code() && selfp->code()->mixins.p)
+                return &selfp->code()->mixinsRW().attrs[ve->attrBare];
             if (selfp && selfp->t == VT::Object && selfp->obj()) {
                 // record the attr's declared type for the assignment check
                 // (`$.method = $m.uc` with `has RequestMethod $.method is rw`
@@ -31046,6 +31071,12 @@ Value Interpreter::evalVarExpr(Expr* e) {
             auto it = selfp->hash()->find(privMixinKey(ve->attrBare));
             if (it == selfp->hash()->end()) it = selfp->hash()->find(ve->attrBare);
             if (it != selfp->hash()->end()) return it->second;
+        }
+        // …and a ROUTINE with a role mixed in, as the write path has it
+        if (selfp->t == VT::Code && selfp->code() && selfp->code()->mixins.p) {
+            auto& ma = selfp->code()->mixins.p->attrs;
+            auto it = ma.find(ve->attrBare);
+            if (it != ma.end()) return it->second;
         }
         if (selfp && selfp->t == VT::Object && selfp->obj()) {
             const std::string& an = ve->attrBare;   // built once, at parse
