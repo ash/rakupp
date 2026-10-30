@@ -608,7 +608,13 @@ moves to [TODO.md](TODO.md).
   and MethodCallPart3.cpp), InterpreterModules.cpp's loop reads one that
   way, and a `where { … ~~ /…/ }` block, unlike `where /…/`, still sets the
   declaring scope's `$/` from any thread. Each should go through
-  matchVarSlot or keep its match.
+  matchVarSlot or keep its match. Seen since a11aa7ab, and not from it: a
+  class declared at run time once workers exist (060's `my class
+  WS-Actor-Child`) is inserted into classes_ by execDeclStmt while a worker
+  reads it (userShadowsCoreRole), the kind of insert after the freeze
+  0d089427 stopped for exception types; and `keep` inserts the promise
+  hash's "vowed" key outside ps->m while another thread reads that hash
+  (the react arm's `count("kind")`).
 - [ ] **An enum's type object is a list of its pairs** (found 2026-10-27
   while making statement conditions Rakudo's xblock, 4af53b07; on daf9c03c
   too). A type object is one item, and `Int` is, but an enum's is not:
@@ -862,8 +868,9 @@ moves to [TODO.md](TODO.md).
     before c067446c queued socket writes as Rakudo does) and 1 to 6 ms
     there. The steps are the same; Rakudo's lead is its client's `await
     Promise.anyof(Promise.in(…), $!closer)`, two thread-pool hops of 0.5 to
-    2 ms where rakupp's wait wakes in 0.05 ms. A pool for promise whenevers
-    (see Performance) would speed both ends alike. Once under
+    2 ms where rakupp's wait wakes in 0.05 ms. a11aa7ab's pool for promise
+    continuations speeds both ends alike and leaves the margin as it was
+    (medians 0.23 and 0.27 ms against 0.24 and 0.21). Once under
     ThreadSanitizer, "Async Notifications With Object" failed too: the
     test's own JRPC-WS-Actor ticker walks `%!subscriptions.keys` while an
     `rpc.off` on another thread deletes them, and its `++` brings ns2 and
@@ -1274,25 +1281,6 @@ moves to [TODO.md](TODO.md).
   move it into binBuf; the handle's `.slurp(:bin)` and a `.read` of the
   whole file want the same look. Done when the first line's 256 MB peaks
   under 300 MB, one copy of the file and the interpreter.
-
-- [ ] **A `whenever` over a promise that settles later starts a thread for
-  its body** (found 2026-10-30: since c067446c queued socket writes, every
-  `whenever $socket.write(…) {}` in Cro's TCP replier is one):
-
-  ```raku
-  my $l = IO::Socket::Async.listen('127.0.0.1', 0).tap: -> $conn { $conn.Supply(:bin).tap: -> $ { } };
-  my $c = await IO::Socket::Async.connect('127.0.0.1', $l.socket-port.result);
-  my $blob = Blob.allocate(100, 1); my $t = now;
-  await Promise(supply { whenever Supply.from-list(^2000) { whenever $c.write($blob) {} } });
-  say now - $t;   # 0.059 to 0.071; 0.015 to 0.021 before c067446c, Rakudo 2026.09 1.6
-  ```
-
-  The Promise arm of `whenever` in src/BuiltinsRegister2.cpp hands its
-  `later` to spawnPromise, a BigStackThread per settle, and `.then` does
-  the same through spawnDelayedNative; Rakudo cues both on its thread
-  pool. A few lingering workers taking these continuations off a queue
-  would keep their order per supply (supplyDelivery already serializes
-  the bodies) and spare the thread start.
 
 ## Gates
 

@@ -35,7 +35,7 @@ c9560e0d; d1c84b6b (issue #199); a1bb0e7b (issue #191); 55565059 (issue
 bd8936e7; 0938078e; 858a037e; 21c37405; 0b29ef00; 9b3fbb8a; de0d04e5;
 3e15da85; 2df02ed1; 2adfaa34; c91a94fb; 1676fc8a; 5b70d2e1; d54cc3ba;
 d4ed6cac (issue #60); 480f6850; a92d9cfd; 0d089427; 9cac10e4; f3ffb5c3;
-c067446c.*
+c067446c; a11aa7ab.*
 
 ---
 
@@ -245,6 +245,14 @@ plain before 500c29e2 and native from it, unless they say otherwise.
   instead of their next 5 ms look: a value from `$channel.Supply` arrives in
   about 0.6 ms on an idle machine (4 to 6 ms before). Cro::WebSocket keeps a
   connection's close promise one such hop after it answers the close frame.
+- **A promise's continuation runs on a pooled worker** (a11aa7ab), as
+  Rakudo's do: a `.then`, or a `whenever` over a promise that settles later,
+  started a thread each. 2000 `whenever $socket.write(…) {}`, Cro's TCP
+  replier's shape, take 19 to 27 ms (50 to 72 before), and 2000 `.then`s 14
+  ms (32). Such a whenever's delivery into a supply block busy on another
+  thread queues behind that body instead of holding its worker.
+  t/regression/promise-continuations-reuse-threads.raku agrees with Rakudo
+  2026.09.
 
 ### New
 
