@@ -30848,6 +30848,9 @@ const Value& builtinTraitIsGroup() {
                          cand("Variable",  "$v",     "default"),
                          cand("Routine",   "$r",     "pure"),
                          cand("Routine",   "$r",     "DEPRECATED"),
+                         // (Test::Assertion counts this one to decide whether to
+                         // supply its own: CORE has had it since 2020.10)
+                         cand("Routine",   "$r",     "test-assertion"),
                          cand("Attribute", "$attr",  "required") }) {
             c.code()->dispatcherC = p.codeS();
             p.code()->coldM().candidates.push_back(std::move(c));
