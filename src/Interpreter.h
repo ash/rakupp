@@ -95,6 +95,10 @@ const Value* coreEnumValueRef(const std::string& n);
 bool isCoreEnumMemberName(const std::string& n);   // …is there one by this name (cheaply)
 bool isKnownTypeName(const std::string& n); // core type-name set (Int, Str, …)
 bool isSettingMetamodelName(const std::string& n); // `Metamodel::ClassHOW` and the rest of the setting's
+// a channel's send/close wakes its parallel-mode readers (BuiltinsSupply.cpp)
+void chanWake();
+uint64_t chanWakeGen();
+void chanWaitFor(uint64_t seen, int ms);
 const std::set<std::string>& coreTypeNames(); // …the set itself, for "Did you mean" ranking
 std::vector<std::string> suggestNames(const std::string& name, const std::vector<std::string>& cands);
 std::string didYouMean(const std::vector<std::string>& sug); // ". Did you mean 'X'?" or ""

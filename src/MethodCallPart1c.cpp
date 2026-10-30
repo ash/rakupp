@@ -593,7 +593,7 @@ std::optional<Value> Interpreter::methodCallPart1c(const Value& inv, const MName
             std::lock_guard<std::recursive_mutex> lk(chm);
             if (isClosed()) throw RakuError{Value::typeObj("X::Channel::SendOnClosed"), "Cannot send a message on a closed channel"};
             raceChanSend(inv.hash());
-            q.push_back(v); return v;
+            q.push_back(v); chanWake(); return v;
         }
         if (m == "poll") {
             std::lock_guard<std::recursive_mutex> lk(chm);
@@ -656,7 +656,7 @@ std::optional<Value> Interpreter::methodCallPart1c(const Value& inv, const MName
                   }
         }
         if (m == "close") {
-            { std::lock_guard<std::recursive_mutex> lk(chm); raceChanClose(inv.hash()); (*inv.hash())["closed"] = Value::boolean(true); keepClosedIfDrained(); }
+            { std::lock_guard<std::recursive_mutex> lk(chm); raceChanClose(inv.hash()); (*inv.hash())["closed"] = Value::boolean(true); keepClosedIfDrained(); } chanWake();
             // A `whenever $c` / `$c.Supply` reader gets to see everything sent
             // before the close returns: `$c.close; is-deeply @seen, …` right
             // after the last send (S17-channel/basic.t) found the reader still
@@ -689,6 +689,7 @@ std::optional<Value> Interpreter::methodCallPart1c(const Value& inv, const MName
             }
             raceChanClose(inv.hash());
             (*inv.hash())["closed"] = Value::boolean(true);
+            chanWake();
             Value cause = args.empty() ? Value::str("Died") : args[0];
             if (cause.t != VT::Object) { // wrap a plain cause in X::AdHoc (like die/break)
                 auto xit = classes_.find("X::AdHoc");

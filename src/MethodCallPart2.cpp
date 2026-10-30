@@ -2116,6 +2116,7 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
                     std::lock_guard<std::recursive_mutex> lk(Interpreter::atomicStripe(ch.get()));
                     raceChanClose(ch.get());
                     (*ch)["closed"] = Value::boolean(true);
+                    chanWake();
                     if (failed) (*ch)["failCause"] = cause;
                     if ((*ch)["queue"].arr()->empty()) {
                         std::lock_guard<std::mutex> lk(ps->m);
@@ -2131,7 +2132,7 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
                 Value emitCb; emitCb.t = VT::Code; emitCb.setCode(makePayload<Callable>());
                 emitCb.code()->ciM().builtin = [ch](Interpreter&, ValueList& a) -> Value {
                     std::lock_guard<std::recursive_mutex> lk(Interpreter::atomicStripe(ch.get()));
-                    if (!a.empty()) { raceChanSend(ch.get()); (*ch)["queue"].arr()->push_back(a[0]); }
+                    if (!a.empty()) { raceChanSend(ch.get()); (*ch)["queue"].arr()->push_back(a[0]); chanWake(); }
                     return Value::any();
                 };
                 Value doneCb; doneCb.t = VT::Code; doneCb.setCode(makePayload<Callable>());
@@ -2544,7 +2545,7 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
             // holding the channel here would close a supplier→tap→channel cycle)
             emitCb.code()->ciM().builtin = [qarr, key = (const void*)c.hash()](Interpreter&, ValueList& a) -> Value {
                 std::lock_guard<std::recursive_mutex> lk(Interpreter::atomicStripe(key));
-                if (!a.empty()) { raceChanSend(key); qarr->push_back(a[0]); }
+                if (!a.empty()) { raceChanSend(key); qarr->push_back(a[0]); chanWake(); }
                 return Value::any();
             };
             (*tapRec.hash())["emit"] = emitCb;
@@ -2562,6 +2563,7 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
                 std::lock_guard<std::recursive_mutex> lk(Interpreter::atomicStripe(ch.get()));
                 raceChanClose(ch.get());
                 (*ch)["closed"] = Value::boolean(true);
+                chanWake();
                 if (failed) (*ch)["failCause"] = cause;
                 if ((*ch)["queue"].arr()->empty()) {
                     std::lock_guard<std::mutex> plk(ps->m);

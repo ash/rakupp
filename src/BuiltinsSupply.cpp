@@ -10,7 +10,35 @@
 #include <sys/inotify.h>
 #endif
 
+
 namespace rakupp {
+// A channel's send and close wake the parallel-mode workers that read it
+// (spawnChannelWhenever and kin), which otherwise looked again only every
+// 5 ms: Cro::WebSocket keeps its close promise one Channel hop after it
+// answers the close frame, and a reader that slept through the hop lost the
+// race to the server's own shutdown (Cro::RPC::JSON's close-code tests). The
+// generation makes a wake between a reader's look and its wait count, and the
+// 5 ms cap stays as the backstop; a send with nobody waiting takes no lock.
+static std::mutex g_chanWakeM;
+static std::condition_variable g_chanWakeCv;
+static std::atomic<uint64_t> g_chanWakeGen{0};
+static std::atomic<int> g_chanWaiters{0};
+void chanWake() {
+    g_chanWakeGen.fetch_add(1, std::memory_order_acq_rel);
+    if (g_chanWaiters.load(std::memory_order_acquire) <= 0) return;
+    std::lock_guard<std::mutex> lk(g_chanWakeM);
+    g_chanWakeCv.notify_all();
+}
+uint64_t chanWakeGen() { return g_chanWakeGen.load(std::memory_order_acquire); }
+void chanWaitFor(uint64_t seen, int ms) {
+    g_chanWaiters.fetch_add(1, std::memory_order_acq_rel);
+    {
+        std::unique_lock<std::mutex> lk(g_chanWakeM);
+        g_chanWakeCv.wait_for(lk, std::chrono::milliseconds(ms),
+                              [&] { return g_chanWakeGen.load(std::memory_order_acquire) != seen; });
+    }
+    g_chanWaiters.fetch_sub(1, std::memory_order_acq_rel);
+}
 
 // ---------------- real supply wiring (on-demand supplies, async sockets) ----
 // The tap-driven model that a live Cro server needs: `supply {…}` returns an
@@ -708,6 +736,7 @@ Value Interpreter::spawnSupplyChannel(Value chan, Value blk, std::shared_ptr<Sup
         };
         for (;;) {
             if (stop()) break;
+            const uint64_t wakeSeen = chanWakeGen();   // (before the look: see chanWake)
             Value v; bool got = false, drained = false;
             {   std::lock_guard<std::recursive_mutex> lk(Interpreter::atomicStripe(chan.hash()));
                 auto qi = chan.hash() ? chan.hash()->find("queue") : ValueMap::iterator{};
@@ -723,7 +752,7 @@ Value Interpreter::spawnSupplyChannel(Value chan, Value blk, std::shared_ptr<Sup
             }
             if (drained) break;
             if (!got) {
-                if (self->parallelMode_) std::this_thread::sleep_for(std::chrono::milliseconds(5));
+                if (self->parallelMode_) chanWaitFor(wakeSeen, 5);
                 else self->yieldToWorkerFor(0.02);
                 continue;
             }
@@ -1037,6 +1066,7 @@ Value Interpreter::spawnChannelWhenever(Value chan, Value blk, std::shared_ptr<R
         if (ctx) self->reactStack_.push_back(ctx);
         for (;;) {
             if (ctx && ctx->closed) break;
+            const uint64_t wakeSeen = chanWakeGen();   // (before the look: see chanWake)
             // Poll and POP under the channel's stripe — the same lock send and
             // receive use. The old loop read "closed"/"queue" and erased the
             // front element with NO lock, racing send's striped push_back and
@@ -1078,8 +1108,8 @@ Value Interpreter::spawnChannelWhenever(Value chan, Value blk, std::shared_ptr<R
             if (fin) break;
             if (!got) {
                 // yieldToWorkerFor is a no-op in parallel mode (nothing to
-                // yield) — without the sleep this loop was a hot spin
-                if (self->parallelMode_) std::this_thread::sleep_for(std::chrono::milliseconds(5));
+                // yield) — without the wait this loop was a hot spin
+                if (self->parallelMode_) chanWaitFor(wakeSeen, 5);
                 else self->yieldToWorkerFor(0.02);
                 continue;
             }
