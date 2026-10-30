@@ -32,7 +32,8 @@ c9560e0d; d1c84b6b (issue #199); a1bb0e7b (issue #191); 55565059 (issue
 #177); ad2bba29 (issue #176); 308aecdf (issue #179); 94172cb6; 7f28cba0
 (issue #189); f303f0c0 (issue #196); 43341539; 392873ab; 78c4f478; 946d29e4
 (issue #190); e9455bfa; be510e3a; 5801c286; c5fd7f1d; 7aa4256c; c4df7b96; 67b676cf; 38fe9757; a81b6f91;
-bd8936e7; 0938078e; 858a037e; 21c37405.*
+bd8936e7; 0938078e; 858a037e; 21c37405; 0b29ef00; 9b3fbb8a; de0d04e5;
+3e15da85; 2df02ed1; 2adfaa34; c91a94fb.*
 
 ---
 
@@ -232,6 +233,11 @@ plain before 500c29e2 and native from it, unless they say otherwise.
   MB with é: 0.136 → 0.013 ms a call (Rakudo 2026.09: 0.001). 800 random
   strings over every cluster rule split the same before and after.
   t/regression/grapheme-table-one-walk.raku agrees with Rakudo 2026.09.
+
+- **A channel's send and close wake its parallel-mode readers** (c91a94fb)
+  instead of their next 5 ms look: a value from `$channel.Supply` arrives in
+  about 0.6 ms on an idle machine (4 to 6 ms before). Cro::WebSocket keeps a
+  connection's close promise one such hop after it answers the close frame.
 
 ### New
 
@@ -1247,6 +1253,39 @@ does not.
 - **`|@a` passes an Array's list and hash elements as items** (21c37405), so
   a `*@` slurpy keeps them whole: `f(|@a)` for `@a = 1, [2, 3]` is `[1, [2,
   3]]`. t/regression/slip-array-elements-stay-items.raku agrees with Rakudo
+  2026.09.
+- **A role's own metaobject keeps a mixin and hears of each class that does
+  the role** (0b29ef00): `$*PACKAGE.HOW` in a role body is one
+  ParametricRoleHOW per role, traits on the role declaration and
+  `.^candidates[0].HOW` reach it, and a `specialize_with`, `add_method` or
+  `incorporate_multi_candidates` that a mixin supplies is called as a class
+  composes, as Rakudo does. A trait that dies in a class body no longer
+  leaves the package prefix behind. Cro::RPC::JSON's trait and auth tests
+  pass. t/regression/role-metaclass-mixin-hooks.raku agrees with Rakudo
+  2026.09.
+- **A role mixed into a routine keeps the attributes its methods write, and
+  a subclass's dispatcher called directly reaches its parents' candidates**
+  (9b3fbb8a): `meth does R; meth.set-name(…)` and `$obj.&m()` with `&m =
+  Kid.^find_method('foo')`.
+  t/regression/routine-mixin-attribute-and-direct-dispatcher.raku agrees
+  with Rakudo 2026.09.
+- **Dispatch asks a nested coercion's whole source chain** (de0d04e5): a
+  bare `is json-rpc-actor` goes to `Bool:D :$json-rpc-actor!`, not to
+  `Hash:D(List:D(Pair:D)) :$json-rpc-actor!`.
+- **The core `trait_mod:<is>` candidates include `:$test-assertion!`**
+  (3e15da85), so Test::Assertion adds none of its own and its suite
+  passes. t/regression/core-trait-candidates-test-assertion.raku agrees with
+  Rakudo 2026.09.
+- **A typed `@` parameter's type names its class's own element type, and an
+  Array held in a Scalar binds to `@` as itself** (2df02ed1):
+  Positional[K::In], not Positional[In], and `Int @x` takes `@args[0]`
+  holding an Array[Int]. t/regression/typed-positional-param-element-and-item.raku
+  agrees with Rakudo 2026.09.
+- **`.on-close` wraps a supply without running it, and a CLOSE phaser sees
+  its body's lexicals from the first `whenever`** (2adfaa34): on-close over
+  a channel-fed supply hung, which hung every request Cro::HTTP::Test made.
+  Cro::HTTP::Test's seven test files pass.
+  t/regression/supply-on-close-and-close-phaser-scope.raku agrees with Rakudo
   2026.09.
 
 ### Left open
