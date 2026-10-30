@@ -1043,6 +1043,39 @@ moves to [TODO.md](TODO.md).
   start-position paths do not take (a Num or Rat position, `:i` or `:m`, a
   needle that is not a plain Str). Needs the reporter's search loop.
 
+- [ ] **Issue #179 is still slower than Rakudo: a non-ASCII string's first
+  position call costs its length** (found 2026-10-30 timing the closed
+  issue after 308aecdf). Each `.index($n, $pos)` after the first is as fast
+  as Rakudo's, but the first `.chars`, `.substr` or `.index` from a
+  position on a string holding a non-ASCII character builds its grapheme
+  table (cowGraphemeIndex, src/Builtins.cpp), about 1.5 ms a MB, where
+  Rakudo, whose strings are stored by grapheme, has nothing to build. The
+  issue's loop, 500 calls, ms per call at 1 / 4 / 16 MB:
+
+  ```
+  with é          rakupp 0.004 / 0.011 / 0.057   Rakudo 0.001 / 0.001 / 0.001
+  ASCII           rakupp 0.003 / 0.001 / 0.002   Rakudo 0.003 / 0.001 / 0.001
+  ```
+
+  The difference is all in the first call, 1.7 / 5.2 / 27.9 ms for the é
+  string (Rakudo 0.004–0.006); each call after it is 0.0007–0.0008 ms on
+  both. One call on a fresh 16 MB string with an é, ms:
+
+  ```
+                       rakupp   Rakudo
+  .chars                 15.9      0.5
+  .substr(8e6, 5)        30.3      0.3
+  .index('gh', 8e6)      24.1      0.4
+  ```
+
+  So a program that makes many large non-ASCII strings and touches each
+  only a few times (a file decoded window by window, each window searched
+  once) pays the table for every one. Ways in: build the table only as far
+  as the position asked for and extend it on demand; skip ASCII runs a word
+  at a time in graphemeWalkUtf8 (src/Unicode.cpp); hand a table on to what
+  `x`, `~` and `.substr` make from strings that have one. Done when the
+  first `.index($n, $pos)` on 16 MB with an é costs under 2 ms.
+
 ## Gates
 
 - [ ] **t/jit/run.raku: 5 of its 21 tier-up cases enter no kernel** (found
