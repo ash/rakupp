@@ -1230,6 +1230,21 @@ moves to [TODO.md](TODO.md).
   case's construct (a call, an element, an inlined sub, a method, a native)
   has fallen off, or the case no longer shows what its header says. Then
   fix the backend or the case.
+- [ ] **Roast's S17-promise/nonblocking-await.t fails now and then under
+  load** (found 2026-10-30 gating 67b676cf): in one full run, with every
+  file reparsing after the AST cache's version change, it passed 6 of 28,
+  and once more in fourteen runs of it alone:
+
+  ```bash
+  for i in $(seq 20); do ROAST=~/roast build/rakupp tools/run-roast.raku S17-promise/nonblocking-await.t | grep nonblocking; done
+  ```
+
+  The build of 5e740224 passed eleven of eleven, too few to say it is new.
+  The file has no class, enum or BUILD, only awaits on timers and
+  promises (twelve sleeps, Promise.in and timeouts); start with which of
+  its 28 tests the 22 failures are, and whether a loaded machine makes
+  them miss a deadline or the scheduler lose an await. Done when it
+  passes 50 of 50 runs beside a full Roast run.
 
 ## FatRoast
 
