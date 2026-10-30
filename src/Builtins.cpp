@@ -5014,7 +5014,13 @@ Value makeSignature(const Callable* c) {
             Value tv;
             if (!p.type.empty() && (p.sigil == '@' || p.sigil == '%') && !p.slurpy) {
                 tv = Value::typeObj(p.sigil == '@' ? "Positional" : "Associative");
-                tv.ofTypeM() = p.type; // renders as Positional[Str]; .of answers Str
+                // renders as Positional[Str]; .of answers Str — by the name the
+                // routine's own class knows it as: `IntraFoo:D @foo` in a method
+                // of JRPC-Actor is Positional[JRPC-Actor::IntraFoo], and a bare
+                // IntraFoo matched nothing where Cro::RPC::JSON's unmarshaller
+                // dispatches on it
+                Interpreter* li = Interpreter::liveTarget();
+                tv.ofTypeM() = li && c ? li->qualifyDeclType(p.type, c->ci().pkg) : p.type;
             }
             // a COERCION parameter reports the coercion type itself, as Rakudo
             // does: `Foo(Str) :$foo` is `Foo(Str)` and a bare `Foo()` is

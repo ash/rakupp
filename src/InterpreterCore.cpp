@@ -5497,7 +5497,11 @@ void Interpreter::bindParams(const std::vector<Param>& params, ValueList& args,
                     u.itemized = false;
                     // (…and a Seq in a `$` binds as the List it caches into)
                     if (u.isList && !p.isCopy && u.s == "Seq") u.s.clear();
-                    v = u.isList && !p.isCopy ? u : coerceArray(u);   // (`is copy`: a fresh Array)
+                    // An Array binds as ITSELF too, its element type and its
+                    // buffer: `g(@b[0])` pushes onto @b's own element, and
+                    // `Int @x` takes an Array[Int] held in a Scalar (Cro::RPC::JSON
+                    // passes its unmarshalled arguments so). (`is copy`: a fresh Array)
+                    v = !p.isCopy ? u : coerceArray(u);
                 }
                 // …and a LIST binds AS THE LIST IT IS. Binding never itemises, so
                 // Rakudo keeps `sub f(@c)` called with `(7,8,9)` a List — `@c.WHAT`
