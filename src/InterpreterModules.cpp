@@ -5016,6 +5016,17 @@ static void methodTermJoinsClass(std::unordered_map<std::string, std::shared_ptr
     cands.push_back(code);
 }
 
+// An enum is `our`: its name as written is a GLOBAL name too when a module
+// declares it outside any package, or when the name is already qualified —
+// `enum HTTP::HPACK::Indexing` at a module's top level, or `enum G::Idx`
+// inside `unit module G` (G's own Idx, not G::G::Idx). Only the module's own
+// scope saw them, so the program's `HTTP::HPACK::Indexing::Indexed` was
+// "Could not find symbol". (Inside a package a bare name stays under the
+// package: a class's `enum Type` must not shadow some other `Type`.)
+static bool enumNameIsGlobal(const std::string& name, bool loadingModule, const std::string& pkgPrefix) {
+    return !name.empty() && ((loadingModule && pkgPrefix.empty()) || name.find("::") != std::string::npos);
+}
+
 // The declaration statements exec dispatches here, kept out of its frame.
 //
 // exec is one switch over every statement kind, and a switch's stack frame is
@@ -5904,6 +5915,7 @@ static void methodTermJoinsClass(std::unordered_map<std::string, std::shared_ptr
                 enumTypeName = std::string(kAnonEnumPrefix) + std::to_string(++anonEnums);
             }
             std::string enumBaseType;  // the type every value must share
+            const bool ourEnumName = global_ && enumNameIsGlobal(ed->name, loadingModuleDepth_ > 0, tctx().pkgPrefix);
             for (auto& it : items) {
                 std::string key; Value val;
                 if (it.t == VT::Pair) { key = it.s; val = it.pairVal() ? *it.pairVal() : Value::integer(counter); if (val.t == VT::Int && !val.big()) counter = val.toInt() + 1; }
@@ -5966,6 +5978,7 @@ static void methodTermJoinsClass(std::unordered_map<std::string, std::shared_ptr
                     if (!ed->name.empty())
                         global_->define(tctx().pkgPrefix + ed->name + "::" + key, ev);
                 }
+                if (ourEnumName) global_->define(ed->name + "::" + key, ev);
                 // `enum EType is export (…)` outside any module load: the
                 // members are global, as they always were. A module's
                 // importer takes them by tag from what the module exported
@@ -5982,6 +5995,7 @@ static void methodTermJoinsClass(std::unordered_map<std::string, std::shared_ptr
             if (!ed->name.empty()) {
                 tctx().cur->define(ed->name, pairs);
                 if (!tctx().pkgPrefix.empty()) global_->define(tctx().pkgPrefix + ed->name, pairs);
+                if (ourEnumName) global_->define(ed->name, pairs);
                 if (ed->isExport && global_ && loadingModuleDepth_ == 0) global_->define(ed->name, pairs);
             }
             // an enum declaration is valued as the Map of its members, named or

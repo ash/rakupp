@@ -16,7 +16,7 @@ function Interpreter::evalAssignInner 3805
 function Interpreter::evalBinary 1704
 function Interpreter::evalIndex 2106
 function Interpreter::evalUnary 1552
-function Interpreter::execDeclStmt 3635
+function Interpreter::execDeclStmt 3640
 function Interpreter::lvalue 1678
 function Interpreter::methodCallInner 3371
 function Interpreter::methodCallPart1c 1823
