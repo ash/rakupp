@@ -1,6 +1,6 @@
 # Follow-ups
 
-*Collected 2026-10-20; added to 2026-10-29.*
+*Collected 2026-10-20; added to 2026-10-30.*
 
 Findings that sessions on 2026-10-19 and 2026-10-20 proposed as follow-up
 work and nobody started: gaps found in passing while doing something else.
@@ -765,6 +765,25 @@ moves to [TODO.md](TODO.md).
   the free). Done when the repro neither prints Nil nor dies in 200 runs, and
   perf-guard's parallel kernels hold.
 
+- [ ] **A supply that quits tells its tapper before running its CLOSE
+  phasers; Rakudo runs CLOSE first** (found 2026-10-30 fixing the
+  IO::Socket::Async::SSL listener, e9455bfa, whose tapper's death no longer
+  quits it):
+
+  ```raku
+  my $src = Supplier.new;
+  supply { whenever $src.Supply { die "own" }; CLOSE { note "CLOSE" } }.tap: -> $ { }, quit => { note "quit" };
+  $src.emit(1);                                                     # quit, CLOSE; Rakudo CLOSE, quit
+  supply { die "body"; CLOSE { note "CLOSE 2" } }.tap: -> $ { }, quit => { note "quit 2" };   # same
+  ```
+
+  Rakudo's BlockState.run-catch tears down (CLOSE phasers) and then calls
+  the quit handler. Here the whenever arms in src/BuiltinsRegister2.cpp and
+  tapSupply in src/BuiltinsSupply.cpp call callQuitCb and then
+  closeTapHandle. Swap them in every arm (the Promise, timer, interval and
+  Channel ones too), then check Cro, whose handlers read state a CLOSE
+  clears. Done when both lines print Rakudo's order.
+
 ## Processes and diagnostics
 
 - [ ] **`run` and `shell` silently accept named arguments they do not take**
@@ -854,6 +873,24 @@ moves to [TODO.md](TODO.md).
   and how `SessionStore::Session` is declared; or DBIish installed here to
   try `:memory:` under Cro. Done when each runs as under Rakudo, or turns
   out not to be rakupp's.
+
+- [ ] **Code cued on the scheduler that dies is silent; Rakudo prints it
+  and exits 1** (found 2026-10-30 fixing the IO::Socket::Async::SSL
+  listener, e9455bfa):
+
+  ```raku
+  $*SCHEDULER.cue({ die "boom" }); sleep 0.3; note "end"
+  # rakupp: end, exit 0
+  # Rakudo: Unhandled exception in code scheduled on thread 4 / boom / backtrace, exit 1
+  ```
+
+  Rakudo's ThreadPoolScheduler sends it to `$*SCHEDULER.uncaught_handler`,
+  or prints it and exits. It is why a supply whose tapper dies on a value
+  from `Supply.interval` or a Channel still quits (spawnSupplyInterval and
+  spawnSupplyChannel in src/BuiltinsSupply.cpp): Rakudo hands that error to
+  the scheduler, which ends the process, and here the worker would drop it,
+  so those two arms keep the quit. Done when the line above matches Rakudo,
+  `uncaught_handler` is honoured, and those arms hand the tapper's error on.
 
 ## Backends
 
