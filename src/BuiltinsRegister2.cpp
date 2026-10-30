@@ -1761,9 +1761,15 @@ void Interpreter::registerBuiltinsPart4() {
                         { std::lock_guard<std::mutex> lk(rctx->m); rctx->liveSources++; }
                     }
                     if (!lastP.empty()) {
+                        // (the react this LAST belongs to, for a `done` in it: the
+                        // supplier's done fans out on ITS thread, where no react is
+                        // on the stack, and the done then ended nothing — a
+                        // WebSocket client's `whenever .messages { …; LAST done }`
+                        // waited out its timeout after the server closed)
+                        std::weak_ptr<ReactCtx> wctx = rctx;
                         Value doneW; doneW.t = VT::Code; doneW.setCode(makePayload<Callable>());
-                        doneW.code()->ciM().builtin = [lastP](Interpreter& I2, ValueList&) -> Value {
-                            I2.runLastPhasers(lastP, nullptr);
+                        doneW.code()->ciM().builtin = [lastP, wctx](Interpreter& I2, ValueList&) -> Value {
+                            I2.runLastPhasers(lastP, wctx.lock());
                             return Value::any();
                         };
                         (*tapRec.hash())["done"] = doneW;
