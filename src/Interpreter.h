@@ -3754,9 +3754,12 @@ public:
     // same completed captures again and again.
     struct MatchMemoEntry { std::shared_ptr<const void> hold; long from, to; Value v; };
     using MatchMemo = std::unordered_map<const void*, MatchMemoEntry>;
+    // `fired`, when given, answers a rule's node with the Match a grammar
+    // already built for it (and fired its action on) mid-parse, `.made` and all.
+    using FiredMatch = std::function<const Value*(const ParseNode&)>;
     static Value matchFromNode(const ParseNode& c, const std::string& subject,
                                const std::shared_ptr<std::string>& orig = nullptr,
-                               MatchMemo* memo = nullptr);
+                               MatchMemo* memo = nullptr, const FiredMatch* fired = nullptr);
     // …and the way back: a Match VALUE (with its capture tree) as a parse node,
     // spans shifted by `offset`. A qualified `<G::rule>` call and a grammar
     // method's returned Match both hand their result to the engine this way.

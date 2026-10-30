@@ -4526,10 +4526,12 @@ void Interpreter::adoptProcessStatics() {
     g_deproxy = [this](const Value& v) -> Value { return deproxy(v); };
     // Only an OBJECT with a `Str` of its own: everything else keeps the
     // rendering it already had, so this cannot change what a plain value
-    // sprintf'd or a plain key hashed to.
+    // sprintf'd or a plain key hashed to. An exception's `message` counts as
+    // its Str, as it does for strOf: Template::Mustache logs with
+    // `sprintf "%s: %s", $level.uc, $e`, which printed X::FieldNotFound<id>.
     g_userStr = [this](const Value& v, std::string& out) {
         if (v.t != VT::Object || !v.obj() || !v.obj()->cls) return false;
-        if (!v.obj()->cls->findMethod("Str")) return false;
+        if (!v.obj()->cls->findMethod("Str") && !v.obj()->cls->findMethod("message")) return false;
         out = strOf(v);
         return true;
     };

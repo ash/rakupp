@@ -24970,15 +24970,15 @@ Value Interpreter::evalUnary(Unary* u) {
         v.hashKind = "Capture"; v.itemized = true; v.isList = false;
         return v;
     }
-    // the zen slice `$x<>` / `$x[]` / `$x{}` — `.item`'s exact inverse: the value
-    // steps out of its item container, so `for $aoa<>` walks the elements
+    // the zen slice `$x<>` / `$x[]` / `$x{}` — `.item`'s exact inverse: the value, READ through a Proxy
+    // (as `@(…)` reads it too; `%a<x> := %b<y>` leaves one), steps out of its item container
     if (opEq(u->op, "decont")) {
-        Value v = eval(u->operand.get());
+        Value v = deproxy(eval(u->operand.get()));
         if (v.t == VT::Array || v.t == VT::Hash || v.t == VT::Range) v.itemized = false;
         return v;
     }
     if (opEq(u->op, "ctx$") || opEq(u->op, "ctx@") || opEq(u->op, "ctx%") || opEq(u->op, "ctx%{}")) {
-        Value v = eval(u->operand.get());
+        Value v = deproxy(eval(u->operand.get()));
         if (opEq(u->op, "ctx@")) {
             seqUse(v, SeqUse::Cache);   // `@$s` keeps a Seq's values — unless it was read (SeqToken)
             // A Match in list context is its POSITIONAL CAPTURES — `.list` — and

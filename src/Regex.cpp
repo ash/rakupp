@@ -3750,6 +3750,11 @@ bool Regex::matchNode(const Node* n, MState& st, long pos, const FnRef& k) const
             // so node and matcher share a lifetime).
             if (st.grammar) {
                 if (!n->metaCache) n->metaCache = &st.grammar->nameMeta(n->ruleName);
+                if (n->noBack)
+                    return st.grammar->matchSubCommitted(*n->metaCache, n->ruleName, n->ruleArgs,
+                                            n->ruleCapture ? (n->ruleAlias.empty() ? n->ruleName : n->ruleAlias) : std::string(),
+                                            st, pos, k,
+                                            /*alsoBareName=*/n->ruleCapture && !n->ruleAlias.empty() && !n->aliasDotted);
                 return st.grammar->matchSubMeta(*n->metaCache, n->ruleName, n->ruleArgs,
                                             n->ruleCapture ? (n->ruleAlias.empty() ? n->ruleName : n->ruleAlias) : std::string(),
                                             st, pos, k,
@@ -4228,6 +4233,17 @@ bool Regex::matchNode(const Node* n, MState& st, long pos, const FnRef& k) const
                 }
                 else if (st.hooks && st.hooks->runCaps) st.hooks->runCaps(n->lit, st.startPos, pos, st.named, st.caps, params);
                 else if (st.hooks && st.hooks->run) st.hooks->run(n->lit, st.startPos, pos, st.named, params);
+                return k(pos);
+            }
+            // A probe fires no action, so an assertion that reads one's result
+            // (Template::Mustache's `<tag> <?{ $<tag>.made<type> ~~ none(…) }>`)
+            // has no answer while measuring: it is a stand-in there, as a skipped
+            // method is. The branch still ranks, and the token around it is not
+            // memoised on the probe's word (which was Nil's).
+            if ((st.probing || st.probeAbove) && st.grammar &&
+                (n->lit.find(".made") != std::string::npos || n->lit.find(".ast") != std::string::npos)) {
+                st.grammar->probeMethodHits_++;
+                if (pos > st.grammar->probeMethodPos_) st.grammar->probeMethodPos_ = pos;
                 return k(pos);
             }
             bool ok;
@@ -5332,6 +5348,44 @@ bool GrammarMatcher::matchSub(const std::string& name, const std::string& args, 
     return matchSubMeta(nameMeta(name), name, args, capKey, st, pos, k);
 }
 
+bool GrammarMatcher::matchSubCommitted(const GrammarRuleMeta& meta, const std::string& name,
+                                       const std::string& args, const std::string& capKey,
+                                       Regex::MState& st, long pos, const FnRef& k,
+                                       bool alsoBareName) {
+    // A token's `<tag>` where `tag` is a `regex` (or a proto of them) took the
+    // callee's first answer in Rakudo and failed if what followed did not fit.
+    // Threading `k` into the callee let the token pull a LONGER answer out of
+    // it instead: Template::Mustache's `token linetag { ^^ (\h*) <tag> \h* \n }`
+    // stretched `regex tag:sym<section> { … (\N*?) … }` over `{{#a}}{{line}}`
+    // to reach the newline, and the section was named "a}}{{line".
+    // (A ratchet callee commits on its own, and a method is never re-entered.)
+    if (!meta.proto && (!meta.rule || meta.ratchet)) return matchSubMeta(meta, name, args, capKey, st, pos, k, alsoBareName);
+    // The callee records its one completion under capKey (and under the rule
+    // name for `<alias=rule>`, as matchSubMeta's record does) and is told that
+    // was enough. If the caller's continuation then fails, that recording is
+    // ours to roll back.
+    const bool alsoRule = alsoBareName && !meta.proto && !capKey.empty() && capKey != name && capKey[0] != '\x01';
+    bool hadSpan = !capKey.empty() && st.named.count(capKey);
+    auto savedSpan = hadSpan ? st.named[capKey] : std::pair<long, long>{-1, -1};
+    bool hadSpan2 = alsoRule && st.named.count(name);
+    auto savedSpan2 = hadSpan2 ? st.named[name] : std::pair<long, long>{-1, -1};
+    long end = -1;
+    if (!matchSubMeta(meta, name, args, capKey, st, pos, [&](long e) { end = e; return true; }, alsoBareName))
+        return false;
+    if (k(end)) return true;
+    if (!capKey.empty()) {
+        auto it = st.children.find(capKey);
+        if (it != st.children.end()) { it->second.pop_back(); if (it->second.empty()) st.children.erase(it); }
+        if (hadSpan) st.named[capKey] = savedSpan; else st.named.erase(capKey);
+    }
+    if (alsoRule) {
+        auto it = st.children.find(name);
+        if (it != st.children.end()) { it->second.pop_back(); if (it->second.empty()) st.children.erase(it); }
+        if (hadSpan2) st.named[name] = savedSpan2; else st.named.erase(name);
+    }
+    return false;
+}
+
 bool RxCursorCall::hasRule(const std::string& name) const {
     return gm->rules.count(name) || gm->protos.count(name);
 }
@@ -5484,11 +5538,16 @@ bool GrammarMatcher::matchSubMeta(const GrammarRuleMeta& meta, const std::string
         // a candidate with no code block ranks by its full match. First pass: measure each.
         struct Ranked { long declEnd; long litPrefix; const std::string* cand; };
         std::vector<Ranked> ranked;
+        noFire_++;   // measuring only: the winner is matched (and fires) below
         for (auto& cand : cands) {
             candDeclEnd_ = -1; candLitPrefix_ = 0;
-            if (matchSub(cand, args, "", st, pos, [&](long) { return true; }) && candDeclEnd_ >= 0)
+            bool hit;
+            try { hit = matchSub(cand, args, "", st, pos, [&](long) { return true; }); }
+            catch (...) { noFire_--; throw; }
+            if (hit && candDeclEnd_ >= 0)
                 ranked.push_back({candDeclEnd_, candLitPrefix_, &cand});
         }
+        noFire_--;
         // LTM ranking (S05): longest declarative match first; on a tie the more
         // specific candidate — the longer literal prefix (a literal outranks an open
         // char class / subrule) — wins; stable_sort leaves declaration order as the
@@ -5650,9 +5709,9 @@ bool GrammarMatcher::matchSubMeta(const GrammarRuleMeta& meta, const std::string
         pn.caps = caps; pn.named = named; pn.kids = std::move(kids);
         pn.listNames = std::move(listNames);
         pn.listCaps = std::move(listCaps); pn.capReps = std::move(capReps);
-        // The node's action fires from this tree long after the parse, when every
-        // rule's dynamic scope has been rolled back, so the scope travels with
-        // the node. On the ratchet path the rollback has already happened by
+        // The node's action fires after the rule has exited (or, with no action
+        // of its own, once the parse is over), when its dynamic scope has been
+        // rolled back, so the scope travels with the node. On the ratchet path the rollback has already happened by
         // now and dynAtExit holds what was live; otherwise take it here, which
         // is still inside the rule (its restore comes after matchNode returns).
         if (dynAtExit) pn.dynScope = dynAtExit;
@@ -5676,6 +5735,22 @@ bool GrammarMatcher::matchSubMeta(const GrammarRuleMeta& meta, const std::string
     };
 
     if (ratchet) {
+        // This rule's action fires once per completion, and not for one a probe
+        // reached: a probe only measures (Rakudo's LTM runs no action either),
+        // so the memo entry it leaves fires on its first real replay instead.
+        const bool quiet = st.probing || st.probeAbove || noFire_;
+        auto fire = [&](MemoEntry& e, std::shared_ptr<const void> dyn) {
+            if (quiet || e.fired || !st.hooks || !st.hooks->onRule || !st.hooks->hasAction ||
+                !st.hooks->hasAction(name)) return;
+            e.fired = true;
+            ParseNode fp; fp.name = name;
+            fp.from = e.capFrom >= 0 ? e.capFrom : pos;
+            fp.to = e.capFrom >= 0 ? e.capTo : e.end;
+            fp.caps = e.caps; fp.named = e.named; fp.kids = e.kids;
+            fp.listNames = e.listNames; fp.listCaps = e.listCaps; fp.capReps = e.capReps;
+            fp.dynScope = std::move(dyn);
+            st.hooks->onRule(std::move(fp));
+        };
         // Packrat: a ratchet token's match at (rule, params, pos) is deterministic. Serve
         // it from the memo when seen before; otherwise run once, committing to the first
         // (greedy/longest) complete match, and cache it. This is what makes recursive LTM
@@ -5692,7 +5767,9 @@ bool GrammarMatcher::matchSubMeta(const GrammarRuleMeta& meta, const std::string
             auto mit = memo_.find(mkey);
             if (mit != memo_.end()) {
                 if (!mit->second.matched) return false;
-                const MemoEntry& me = mit->second;
+                MemoEntry& me = mit->second;
+                if (!me.fired && !quiet)
+                    fire(me, dynScopeDepth_ && st.hooks && st.hooks->captureDyn ? st.hooks->captureDyn() : nullptr);
                 candDeclEnd_ = me.declEnd;
                 candLitPrefix_ = me.litPrefix;
                 return record(me.end, me.caps, me.named, me.kids, me.listNames, me.listCaps, me.capReps,
@@ -5743,16 +5820,7 @@ bool GrammarMatcher::matchSubMeta(const GrammarRuleMeta& meta, const std::string
         if (!me.matched) noteFail(pos, name); // the RULE failed here (not a continuation)
         // a FRESH completion fires its action method now (memo replays reuse it) —
         // Rakudo fires actions during the match, and a later failure keeps them
-        if (me.matched && st.hooks && st.hooks->onRule && st.hooks->hasAction &&
-            st.hooks->hasAction(name)) {
-            ParseNode fp; fp.name = name;
-            fp.from = me.capFrom >= 0 ? me.capFrom : pos;
-            fp.to = me.capFrom >= 0 ? me.capTo : me.end;
-            fp.caps = me.caps; fp.named = me.named; fp.kids = me.kids;
-            fp.listNames = me.listNames; fp.listCaps = me.listCaps; fp.capReps = me.capReps;
-            fp.dynScope = dynAtExit; // captured above, before the restore
-            st.hooks->onRule(std::move(fp));
-        }
+        if (me.matched) fire(me, dynAtExit); // dynamics captured above, before the restore
         // a probe that skipped a method inside the body measured a stand-in,
         // not the rule's match: it must not answer for the real one later
         if (!memoise || probeMethodHits_ != methodHits0) {
@@ -5805,7 +5873,8 @@ bool GrammarMatcher::matchSubMeta(const GrammarRuleMeta& meta, const std::string
         CapRepsPtr myReps = sub.capReps.empty() ? nullptr
             : std::make_shared<const std::map<int, std::vector<std::pair<long,long>>>>(sub.capReps);
         localizeFrame(re, myCaps, myList, myReps);
-        if (st.hooks && st.hooks->onRule && st.hooks->hasAction && st.hooks->hasAction(name)) {
+        if (!st.probing && !st.probeAbove && !noFire_ && // (a probe only measures, as above)
+            st.hooks && st.hooks->onRule && st.hooks->hasAction && st.hooks->hasAction(name)) {
             ParseNode fp; fp.name = name;
             fp.from = sub.capFrom >= 0 ? sub.capFrom : pos;
             fp.to = sub.capFrom >= 0 ? sub.capTo : end;

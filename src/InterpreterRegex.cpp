@@ -1538,12 +1538,15 @@ void Interpreter::matchValueToNode(const Value& mv, long offset, ParseNode& node
 }
 
 Value Interpreter::matchFromNode(const ParseNode& c, const std::string& subject,
-                                 const std::shared_ptr<std::string>& orig, MatchMemo* memo) {
+                                 const std::shared_ptr<std::string>& orig, MatchMemo* memo,
+                                 const FiredMatch* fired) {
     auto sub = [&](const ParseNode& n) -> Value {
-        if (!memo || !n.kids) return matchFromNode(n, subject, orig, memo);
+        if (fired)
+            if (const Value* done = (*fired)(n)) return *done;
+        if (!memo || !n.kids) return matchFromNode(n, subject, orig, memo, fired);
         auto it = memo->find(n.kids.get());
         if (it != memo->end() && it->second.from == n.from && it->second.to == n.to) return it->second.v;
-        Value v = matchFromNode(n, subject, orig, memo);
+        Value v = matchFromNode(n, subject, orig, memo, fired);
         (*memo)[n.kids.get()] = {n.kids, n.from, n.to, v};
         return v;
     };
@@ -2371,26 +2374,6 @@ std::string Interpreter::substSelect(const std::string& subj, const std::string&
 // below, so the cast back is local to this file.
 using GrammarDynSnap = std::vector<std::pair<std::string, Value>>;
 
-
-// A grammar parse's (rule name, from, to) keys for the action replay below:
-// the names are views of the ParseNodes' own strings, which outlive both
-// sets, so a key costs no copy, and the lookup is one hash, where a
-// std::set<std::tuple<std::string, long, long>> copied the name per insert
-// and compared strings down a tree per probe (4.6% of a grammar parse).
-struct ReplayKey {
-    std::string_view name; long from, to;
-    bool operator==(const ReplayKey& o) const { return from == o.from && to == o.to && name == o.name; }
-};
-struct ReplayKeyHash {
-    size_t operator()(const ReplayKey& k) const {
-        size_t h = std::hash<std::string_view>{}(k.name);
-        h ^= (size_t)k.from * 0x9E3779B97F4A7C15ull + 0x632BE59BD9B4E019ull + (h << 6) + (h >> 2);
-        h ^= (size_t)k.to * 0xC2B2AE3D27D4EB4Full + (h << 6) + (h >> 2);
-        return h;
-    }
-};
-using ReplayKeySet = std::unordered_set<ReplayKey, ReplayKeyHash>;
-
 // While a rule's code runs, hang the match scope off the scope the rule was
 // written in (grammarParse's RuleHomes) and put it back after. The match scope
 // becomes a routine frame for the duration, with what it hung off before on
@@ -2452,16 +2435,17 @@ Value Interpreter::grammarParse(ClassInfo* g, const std::string& input, bool sub
     };
 
     // run the actions method for `name` (if any) on a freshly built Match, setting .made
-    auto runAction = [&](const std::string& name, Value& mv) {
-        if (!haveActions || !actCls) return;
+    auto runAction = [&](const std::string& name, Value& mv) -> bool {
+        if (!haveActions || !actCls) return false;
         Value* method = resolveAction(name);
-        if (!method) return;
+        if (!method) return false;
         if (g) stampMatchGrammar(mv, g->name);   // an action's $/ is a G too
         tctx().makeTargets.push_back(&mv);
         try { invokeMethod(*method, actions, {mv}); }
         catch (RakuError& e) { if (std::getenv("RAKUPP_ACTTRACE")) std::cerr << "[ACT] " << name << " threw: " << e.message << "\n"; tctx().makeTargets.pop_back(); throw; }
         catch (...) { tctx().makeTargets.pop_back(); throw; }
         tctx().makeTargets.pop_back();
+        return true;
     };
 
     // Gather every rule (walking the inheritance chain; child overrides parent)
@@ -2613,20 +2597,52 @@ Value Interpreter::grammarParse(ClassInfo* g, const std::string& input, bool sub
     // Inline `{ make … }` blocks in a token run during matching; their made value is
     // recorded here by span and applied to the node in build().
     auto pendingMakes = std::make_shared<std::map<std::pair<long, long>, Value>>();
-    // …and a NAME-qualified twin, filled by the success-path replay of rules
-    // reached through a non-capturing `<.rule>` call. A non-captured rule's
-    // children are not in the tree either, so when the parent's replay rebuilds
-    // them their actions are suppressed and any `.make` they set is lost — so
-    // `$/<child>.made` came back empty (HTTP::Parser reads its header name that
-    // way; the whole key vanished). The span-only map cannot carry it: a
-    // captured rule over the SAME span (CSS::Grammar's token-over-comment) would
-    // then inherit a sibling's made. Keying by NAME as well as span keeps each
-    // rule's made to itself.
-    auto pendingMakesNamed = std::make_shared<std::map<std::tuple<std::string, long, long>, Value>>();
     // A block containing `make` is DEFERRED: it runs in build() with $/ = the fully-built
     // match (so `{ make $/.values[0].ast }` sees children's .made). A queue per span
     // disambiguates a parent and child that happen to share the same span (innermost-first).
     auto pendingMakeCode = std::make_shared<std::map<std::pair<long, long>, std::vector<std::string>>>();
+    // Actions fire DURING the match, as Rakudo's do: a completed subrule that
+    // has an action method is built and fired then and there (gm.hooks.onRule
+    // below), so the rest of the parse sees what it did — `$<tag>.made` in the
+    // `<?{ … }>` right after the call, and any dynamic variable it set
+    // (Template::Mustache's hunk action changes `$*LEFT`/`$*RIGHT`, the
+    // delimiters its tokens match, on reading `{{=<% %>=}}`). Every node built
+    // is kept by rule, span and frozen child map (held, so the address cannot
+    // be reused), and the parent's build, a code block's `$/` and the finished
+    // tree all take that same Match: each node is built, and fired, once.
+    // (Hashed, not a tree of string keys: one probe per node, no name copied
+    // to ask — a string-keyed std::map cost a JSON grammar's parse a third.
+    // Only a node whose action ran mid-parse is kept: one without an action is
+    // built inside its parent's build, which is kept, and nothing asks for a
+    // node the final build makes.)
+    struct FiredNode {
+        const std::string* name; long from, to;   // (interned in firedNames)
+        std::shared_ptr<const void> hold;   // the child map: its address is part of the key
+        std::vector<std::pair<long, long>> caps;
+        Value v;
+    };
+    auto fired = std::make_shared<std::unordered_multimap<size_t, FiredNode>>();
+    auto firedNames = std::make_shared<std::unordered_set<std::string>>();
+    bool parsing = false;   // true while gm.parse runs: what is built then is kept
+    auto firedName = [](const ParseNode& n) -> const std::string& { return n.actualRule.empty() ? n.name : n.actualRule; };
+    auto firedHash = [firedName](const ParseNode& n) -> size_t {
+        size_t h = std::hash<std::string_view>{}(firedName(n));
+        h ^= (size_t)n.from * 0x9E3779B97F4A7C15ull + 0x632BE59BD9B4E019ull + (h << 6) + (h >> 2);
+        h ^= (size_t)n.to * 0xC2B2AE3D27D4EB4Full + (h << 6) + (h >> 2);
+        h ^= (size_t)(uintptr_t)n.kids.get() + (h << 6) + (h >> 2);
+        return h;
+    };
+    auto firedLookup = std::make_shared<std::function<const Value*(const ParseNode&)>>(
+        [fired, firedName, firedHash](const ParseNode& n) -> const Value* {
+            if (fired->empty() || n.name.empty()) return nullptr;
+            auto [it, end] = fired->equal_range(firedHash(n));
+            for (; it != end; ++it) {
+                const FiredNode& f = it->second;
+                if (f.from == n.from && f.to == n.to && f.hold.get() == (const void*)n.kids.get() &&
+                    *f.name == firedName(n) && f.caps == n.caps) return &f.v;
+            }
+            return nullptr;
+        });
     // Execute `code` with an overlay of the current rule params (as Str) and $/ (carrying
     // the named captures so far) temporarily bound; `:my`/assignments persist in tctx().cur.
     using NamedMap = GrammarHooks::NamedMap; using ParamMap = GrammarHooks::ParamMap;
@@ -2635,7 +2651,7 @@ Value Interpreter::grammarParse(ClassInfo* g, const std::string& input, bool sub
     auto blockMemo = std::make_shared<MatchMemo>();
     // the objects rule arguments carry (rxArgEncode's V tag), for this parse
     auto argTab = std::make_shared<RxArgTable>();
-    auto runCode = [this, &input, &gm, homes, argTab, parseCode, pendingMakes, subMatch, targetStr, blockMemo](const std::string& code, long from, long to,
+    auto runCode = [this, &input, &gm, homes, argTab, parseCode, pendingMakes, subMatch, targetStr, blockMemo, firedLookup](const std::string& code, long from, long to,
                                              const NamedMap& named, const ParamMap& params,
                                              const std::vector<std::pair<long, long>>* caps = nullptr,
                                              const RxCursorCaps* cc = nullptr) -> Value {
@@ -2667,7 +2683,7 @@ Value Interpreter::grammarParse(ClassInfo* g, const std::string& input, bool sub
                     std::shared_ptr<const void>(), cc->capReps);
             cur.listCaps = cc->listCaps;
             cur.listNames = cc->listNames;
-            m = matchFromNode(cur, input, targetStr, blockMemo.get());
+            m = matchFromNode(cur, input, targetStr, blockMemo.get(), firedLookup.get());
             if (caps) {
                 size_t built = m.arr() ? m.arr()->size() : 0;
                 for (size_t ci = 0; ci < caps->size(); ci++)
@@ -2995,28 +3011,18 @@ Value Interpreter::grammarParse(ClassInfo* g, const std::string& input, bool sub
             "Method '" + name + "' was called as a subrule and must return a Match, not " + r.typeName()};
     };
 
-    // Completed-subrule log: on an overall parse FAILURE the actions of the
-    // subrules that DID complete replay in completion order — Rakudo fires
-    // actions during the match and a failing TOP does not unfire them
-    // (HTTP::Header sets its fields from a parse that fails on a missing
-    // trailing newline). A SUCCESSFUL parse discards the log and fires
-    // everything once in the normal bottom-up build — the proven path.
-    auto completionLog = std::make_shared<std::vector<ParseNode>>();
-    bool replayBuild = false;  // building $/ for a replayed firing: build fires nothing…
-    // …except beneath the replayed node, for a kid the log does not replay on
-    // its own. The replayed node builds its children, and one it shares with
-    // the final tree (the memo answered the second call, so it was logged once,
-    // as a tree node) or one the matcher inlined without logging (a
-    // single-character rule such as `space`) would otherwise have no `.made`.
-    // YAMLish's `<key>` tries `<single-key>` on `'a b'` before a list entry
-    // wins with `<single-quoted>`: single-key's action joined Nils (issue #100).
-    // Rakudo fires such a kid on every attempt, having no memo.
-    const ParseNode* replayRoot = nullptr;
-    ReplayKeySet replayedKeys;
-
-    // Turn the recorded parse tree into Match values, running actions bottom-up
-    // so `$<child>.made` is available to a parent's action.
+    // Turn a recorded node into its Match, running actions bottom-up so
+    // `$<child>.made` is available to a parent's action: at the node's
+    // completion when it has an action (gm.hooks.onRule), and over what is
+    // left of the tree once the parse is done. A kid with no action of its own
+    // — one the matcher inlined, such as `space` — is built (and its `{ make }`
+    // run) inside its parent's build, so YAMLish's `<single-key>` action, fired
+    // on `'a b'` before a list entry wins, reads its kids' `.made` (issue #100).
+    const bool fireDuring = haveActions && actCls;   // (see `fired` above)
     std::function<Value(const ParseNode&)> build = [&](const ParseNode& pn) -> Value {
+        // built (and fired) already, when it completed
+        if (fireDuring && !pn.name.empty())
+            if (const Value* done = (*firedLookup)(pn)) return *done;
         // Put this node's dynamic scope back for the whole subtree. It has to
         // go on BEFORE the children are built, not just around this node's own
         // make and action: the rule that DECLARES `:my %*FOO` is an ancestor of
@@ -3239,35 +3245,28 @@ Value Interpreter::grammarParse(ClassInfo* g, const std::string& input, bool sub
         }
         auto pm = pendingMakes->find({pn.from, pn.to});
         if (pm != pendingMakes->end() && !mv.pairVal()) mv.setPairVal(makePayload<Value>(pm->second));
-        // a made value the success replay recorded for THIS rule at THIS span
-        // (its own name — never a same-span sibling's): applied when the parent's
-        // replay rebuilds this child with its action suppressed
-        if (!mv.pairVal()) {
-            auto pmn = pendingMakesNamed->find({pn.name, pn.from, pn.to});
-            if (pmn != pendingMakesNamed->end()) mv.setPairVal(makePayload<Value>(pmn->second));
-        }
         // an action-class method (if any) can still override; a proto node
         // dispatches to the winning candidate's method (`x:sym<y>`), falling
-        // back to a method named after the proto itself. (A failure-replay
-        // build dispatches its own method — build must not double-fire.)
-        if (!replayBuild || (&pn != replayRoot && !replayedKeys.count({pn.name, pn.from, pn.to}))) {
-            // A proto used as the parse ENTRY POINT (`.parse(:rule<string>)`)
-            // records the winning candidate in actualRule and the PROTO in name.
-            // Fire the candidate — and NOT the proto as well: an explicit `proto
-            // method string {*}` in the actions class, invoked directly with just
-            // `$/`, cannot pick a `:sym<…>` candidate and dies "No matching multi
-            // candidate" (CSS::Grammar parses `string` as its entry rule). Rakudo
-            // fires the candidate once; the proto merely redispatches. actualRule
-            // is set ONLY on this proto-entry path, so this never drops a wanted
-            // firing elsewhere.
-            if (!pn.actualRule.empty() && pn.actualRule != pn.name) runAction(pn.actualRule, mv);
-            else runAction(pn.name, mv);
-        }
+        // back to a method named after the proto itself.
+        // A proto used as the parse ENTRY POINT (`.parse(:rule<string>)`)
+        // records the winning candidate in actualRule and the PROTO in name.
+        // Fire the candidate — and NOT the proto as well: an explicit `proto
+        // method string {*}` in the actions class, invoked directly with just
+        // `$/`, cannot pick a `:sym<…>` candidate and dies "No matching multi
+        // candidate" (CSS::Grammar parses `string` as its entry rule). Rakudo
+        // fires the candidate once; the proto merely redispatches. actualRule
+        // is set ONLY on this proto-entry path, so this never drops a wanted
+        // firing elsewhere.
+        const bool acted = !pn.actualRule.empty() && pn.actualRule != pn.name
+                         ? runAction(pn.actualRule, mv) : runAction(pn.name, mv);
+        if (acted && fireDuring && parsing)
+            fired->emplace(firedHash(pn), FiredNode{&*firedNames->insert(firedName(pn)).first,
+                                                    pn.from, pn.to, pn.kids, pn.caps, mv});
         return mv;
     };
 
-    // Log completed subrules that HAVE an action method: on an overall failure
-    // their actions replay in completion order (see completionLog above).
+    // A completed subrule that HAS an action method is built, and fired, at
+    // once (see `fired` above).
     if (haveActions && actCls) {
         gm.hooks.hasAction = [resolveAction](const std::string& nm) -> bool {
             if (resolveAction(nm)) return true; // cached; guillemet form included
@@ -3275,9 +3274,7 @@ Value Interpreter::grammarParse(ClassInfo* g, const std::string& input, bool sub
             if (c != std::string::npos && c > 0 && resolveAction(nm.substr(0, c))) return true;
             return false;
         };
-        gm.hooks.onRule = [completionLog](ParseNode pn) {
-            completionLog->push_back(std::move(pn)); // moved end-to-end from the fire site
-        };
+        gm.hooks.onRule = [&build](ParseNode pn) { build(pn); };
     }
 
     // Match against a dedicated child scope so match-time `:my` vars land in a small,
@@ -3376,8 +3373,10 @@ Value Interpreter::grammarParse(ClassInfo* g, const std::string& input, bool sub
         tctx().cur = matchScope;
         // a grammar method may `die` mid-parse (issue #64): the exception is the
         // caller's, the match scope is not
+        parsing = true;
         try { matched = gm.parse(input, startRule, subparse, tree, endPos, startPos); }
-        catch (...) { tctx().cur = savedScope; throw; }
+        catch (...) { parsing = false; tctx().cur = savedScope; throw; }
+        parsing = false;
         if (consumedEnd) *consumedEnd = matched ? endPos : -1;
         // G1: publish the highwater for rakupp-parse-diagnosis — byte offset
         // to CHARACTER position here, where the input is at hand. A success
@@ -3390,84 +3389,18 @@ Value Interpreter::grammarParse(ClassInfo* g, const std::string& input, bool sub
         }
         else grammarParseDiag() = {};
         if (!matched) {
-            // the parse FAILED, but the subrules that completed still fire their
-            // actions, in completion order — Rakudo's during-match firing does
-            // not unfire on a later failure (HTTP::Header relies on the side
-            // effects of exactly such a parse)
-            if (haveActions && actCls && !completionLog->empty()) {
-                replayBuild = true;
-                replayedKeys.clear();
-                for (auto& pn : *completionLog) replayedKeys.insert({pn.name, pn.from, pn.to});
-                for (auto& pn : *completionLog) {
-                    Value mv;
-                    replayRoot = &pn;
-                    try { mv = build(pn); } catch (...) { continue; }
-                    if (!pn.actualRule.empty() && pn.actualRule != pn.name)
-                        try { runAction(pn.actualRule, mv); } catch (RakuError&) {}
-                    try { runAction(pn.name, mv); }
-                    catch (RakuError&) {} // a throwing action cannot abort a parse that already failed
-                    // proto-candidate fallback: `x:sym<y>` fires `method x` when
-                    // no candidate-named method exists
-                    size_t c = pn.name.find(':');
-                    if (c != std::string::npos && c > 0 && !actCls->findMethod(pn.name))
-                        try { runAction(pn.name.substr(0, c), mv); } catch (RakuError&) {}
-                    // the replay is bottom-up (completion order): store this
-                    // made so a later PARENT's build sees `$<child>.made`
-                    if (std::getenv("RAKUPP_DEBUG_REPLAY"))
-                        fprintf(stderr, "[replay] %s %ld..%ld made=%s\n", pn.name.c_str(),
-                                pn.from, pn.to, mv.pairVal() ? "yes" : "no");
-                    if (mv.pairVal()) (*pendingMakes)[{pn.from, pn.to}] = *mv.pairVal();
-                }
-                replayBuild = false; replayRoot = nullptr;
-            }
+            // the parse FAILED, but the subrules that completed have fired their
+            // actions already, during the match, and a later failure does not
+            // unfire them (HTTP::Header relies on the side effects of exactly
+            // such a parse)
             tctx().cur = savedScope;
             setMatchVar(Value::nil()); return Value::nil();
         }
-        // Success: the bottom-up build below fires an action for every node
-        // in the TREE — but a rule reached only through a non-capturing call
-        // (`<.ws>` → `<.comment>` → `<unclosed-comment>`, CSS::Grammar's
-        // unterminated-comment warning) leaves no node, and Rakudo fires its
-        // action all the same. Those completions are in the log; replay the
-        // ones the tree does not carry, in completion order, exactly as the
-        // failure path does.
-        if (haveActions && actCls && !completionLog->empty()) {
-            ReplayKeySet inTree;
-            std::function<void(const ParseNode&)> walk = [&](const ParseNode& pn) {
-                inTree.insert({pn.name, pn.from, pn.to});
-                if (!pn.actualRule.empty()) inTree.insert({pn.actualRule, pn.from, pn.to});
-                if (!pn.kids) return;
-                std::unordered_set<uint64_t> seen;   // an alias pair is one subtree: walk it once
-                for (auto& kv : *pn.kids)
-                    for (auto& k : kv.second)
-                        if (!k.aliasId || seen.insert(k.aliasId).second) walk(k);
-            };
-            walk(tree);
-            replayBuild = true;
-            replayedKeys.clear();
-            for (auto& pn : *completionLog)
-                if (!inTree.count({pn.name, pn.from, pn.to})) replayedKeys.insert({pn.name, pn.from, pn.to});
-            for (auto& pn : *completionLog) {
-                if (inTree.count({pn.name, pn.from, pn.to})) continue;
-                Value mv;
-                replayRoot = &pn;
-                try { mv = build(pn); } catch (...) { continue; }
-                if (!pn.actualRule.empty() && pn.actualRule != pn.name)
-                    try { runAction(pn.actualRule, mv); } catch (RakuError&) {}
-                try { runAction(pn.name, mv); } catch (RakuError&) {}
-                // Keep the made, but ONLY under this node's own name+span, so a
-                // PARENT replayed later (completion order is bottom-up) can read
-                // `$/<child>.made` when it rebuilds this child. A same-span
-                // captured rule has a different NAME and so cannot inherit it —
-                // the span-only map's hazard that this twin exists to avoid.
-                if (mv.pairVal()) {
-                    (*pendingMakesNamed)[{pn.name, pn.from, pn.to}] = *mv.pairVal();
-                    if (!pn.actualRule.empty() && pn.actualRule != pn.name)
-                        (*pendingMakesNamed)[{pn.actualRule, pn.from, pn.to}] = *mv.pairVal();
-                }
-            }
-            replayBuild = false; replayRoot = nullptr;
-        }
-        completionLog->clear(); // the normal bottom-up build fires the rest once
+        // Success. A rule reached only through a non-capturing call (`<.ws>` →
+        // `<.comment>` → `<unclosed-comment>`, CSS::Grammar's unterminated-
+        // comment warning) leaves no node in the tree, and Rakudo fires its
+        // action all the same: it fired when it completed. The build below
+        // fires what is left, and takes the rest as the parse built it.
         // build with the match scope still current: a deferred `{ make … }`
         // may read the rule's `:my` vars (Cro's route matcher makes `$cap`)
         Value mv;

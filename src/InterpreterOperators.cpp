@@ -646,6 +646,11 @@ static Value negInt(long long i) {
 }
 
 Value Interpreter::prefixNumeric(const std::string& op, const Value& v) {
+    // An element BOUND to another (`%a<x> := %b<y>`) is read through its
+    // Proxy, as `~` reads it (strOf): `+` counted the Proxy record's own
+    // three entries, so Template::Mustache's spec runner planned 3 tests
+    // for each file of 11 and walked the record instead of the tests.
+    if (v.t == VT::Hash && v.hashKind == proxyKind() && v.hash()) return prefixNumeric(op, deproxy(v));
     if (v.t == VT::Array) { v.seqTouch(); raceOn(&v, std::string()); }   // `+$s` is its count: a Seq is cached (SeqToken)
     if ((op == "+" || op == "-") && v.t == VT::Code && v.code() && !v.code()->ci().isWhateverCode &&
         !v.code()->ci().isBlock)

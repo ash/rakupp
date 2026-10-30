@@ -2855,9 +2855,16 @@ bool Lexer::tryQuoteForm(Token& out) {
     // `s`) is on the same line. The adverbed forms above take them already;
     // `S`/`TR` stay conservative, where `S%pat%` and `S % $x` are one lexer
     // decision apart. A `=` that starts `=>` is a pair, never a delimiter.
+    // The q family and its word lists take the same set on the same terms:
+    // `q+{{planet}}+` is how Template::Mustache's spec tests write a lambda
+    // whose body is full of braces. Not `; , .`, though Rakudo takes them:
+    // those are what follows a sigilless term NAMED q whose declaration this
+    // lexer cannot see (`$cap = q; callsame };` read as a quote to the `;`).
+    const bool qForm = w == "q" || w == "qq" || w == "Q" || isWords;
     auto bareRxDelim = [&](char dc) -> bool {
-        if (!((isRegex && w != "mm") || w == "s" || w == "ss")) return false;
+        if (!((isRegex && w != "mm") || w == "s" || w == "ss" || qForm)) return false;
         if (!std::strchr("^$%@&=?*+;.,\"`", dc) || dc == '\0') return false;
+        if (qForm && std::strchr(";,.", dc)) return false;
         if (dc == '=' && p + 1 < src_.size() && (src_[p + 1] == '>' || src_[p + 1] == '=')) return false;
         size_t need = isSubst ? 2 : 1, q = p + 1;
         for (; q < src_.size() && src_[q] != '\n' && need; q++) {
@@ -4011,9 +4018,16 @@ void Lexer::refreshTermNames(const std::vector<Token>& out) {
         if (d.kind == Tok::RParen) { if (termParen_ > 0) termParen_--; termScan_++; continue; }
         if (termScan_ + 1 >= out.size()) break; // the name may not be lexed yet
         const Token& nm = out[termScan_ + 1];
+        // …and a CAPTURE parameter `|name`, which is sigilless too:
+        // `-> \s, |q { $cap = q; … }` (where `q;` must not open a quote).
+        // Only where a parameter can stand, so `$a |b` stays a junction.
+        const Token* pv = termScan_ > 0 ? &out[termScan_ - 1] : nullptr;
+        const bool capture = d.kind == Tok::Op && d.text == "|" && pv &&
+            (pv->kind == Tok::LParen || pv->kind == Tok::Comma ||
+             (pv->kind == Tok::Op && (pv->text == "->" || pv->text == "<->")));
         if (nm.kind == Tok::Ident &&
             ((d.kind == Tok::Ident && d.text == "constant") ||
-             (d.kind == Tok::Op && d.text == "\\"))) {
+             (d.kind == Tok::Op && d.text == "\\") || capture)) {
             // A `\name` inside PARENS is a signature parameter: it belongs to the
             // block about to open, not to the scope the signature sits in. Recorded
             // one level down, it goes out of scope with that block — which is the

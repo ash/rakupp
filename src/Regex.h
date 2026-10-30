@@ -104,7 +104,8 @@ struct GrammarHooks {
     // unfire it (HTTP::Header sets header fields from actions of a parse whose
     // TOP ultimately fails on a missing trailing newline). hasAction gates the
     // node assembly so rules with no method cost nothing; onRule fires it.
-    // Fired on FRESH completions only — a memo replay reuses the first firing.
+    // Fired on FRESH completions only — a memo replay reuses the first firing —
+    // and never inside a probe (a memo entry a probe left fires on its first real replay).
     std::function<bool(const std::string&)> hasAction;
     std::function<void(ParseNode)> onRule; // by value: fire sites move their freshly built node in
     std::function<bool(const std::string&, long, long, const NamedMap&, const ParamMap&)> assertPass; // <?{…}>
@@ -730,6 +731,12 @@ public:
     bool matchSubMeta(const GrammarRuleMeta& meta, const std::string& name, const std::string& args,
                       const std::string& capKey, Regex::MState& st, long pos, const FnRef& k,
                       bool alsoBareName = false);
+    // Same, for a call written under :ratchet (every call in a `token` or
+    // `rule`): it commits to the callee's FIRST completion, so a `regex` or
+    // a proto is not backtracked into when what follows the call fails.
+    bool matchSubCommitted(const GrammarRuleMeta& meta, const std::string& name, const std::string& args,
+                           const std::string& capKey, Regex::MState& st, long pos, const FnRef& k,
+                           bool alsoBareName = false);
 
     // The parameter bindings of the rule currently being matched (for code-block access).
     const std::map<std::string, std::string>& currentParams() const;
@@ -753,7 +760,11 @@ public:
         std::shared_ptr<const std::set<std::string>> listNames; // the rule's quantified capture keys
         std::shared_ptr<const std::set<int>> listCaps; // list-valued positional capture indices
         std::shared_ptr<const std::map<int, std::vector<std::pair<long, long>>>> capReps; // their per-iteration spans
+        bool fired = false; // its action has run (a completion inside a probe has not; a later replay fires it)
     };
+    // Completions inside a legacy proto RANKING pass (no NFA for the proto)
+    // fire no action: that pass only measures, and the winner is matched again.
+    int noFire_ = 0;
     // How many `:my` subrules are currently on the stack. Zero — the answer for
     // every grammar that declares no dynamics, and for most nodes of one that
     // does — means there is nothing for captureDyn to find, so the node skips
