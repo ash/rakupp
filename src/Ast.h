@@ -1298,6 +1298,7 @@ struct EnumDecl : Stmt {
     std::vector<std::string> exportTags; // …`is export(:a :b)`: its tags (none = DEFAULT)
     std::string pod, podTrail; // declarator pod (.WHY)
     std::string ofType;  // `my Str enum …` / `enum E of Str …` — every value must be one
+    bool isMy = false;   // `my enum` — lexical: no module publishes its type or its members
     EnumDecl(): Stmt(NK::EnumDecl) {}
 };
 

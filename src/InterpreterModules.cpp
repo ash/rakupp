@@ -5023,6 +5023,9 @@ static void methodTermJoinsClass(std::unordered_map<std::string, std::shared_ptr
 // scope saw them, so the program's `HTTP::HPACK::Indexing::Indexed` was
 // "Could not find symbol". (Inside a package a bare name stays under the
 // package: a class's `enum Type` must not shadow some other `Type`.)
+// Outside any package the members' BARE names reach the program as well,
+// named enum or anonymous (Cro::HTTP2's PROTOCOL_ERROR and `data`); a `my
+// enum` publishes nothing.
 static bool enumNameIsGlobal(const std::string& name, bool loadingModule, const std::string& pkgPrefix) {
     return !name.empty() && ((loadingModule && pkgPrefix.empty()) || name.find("::") != std::string::npos);
 }
@@ -5915,7 +5918,8 @@ static bool enumNameIsGlobal(const std::string& name, bool loadingModule, const 
                 enumTypeName = std::string(kAnonEnumPrefix) + std::to_string(++anonEnums);
             }
             std::string enumBaseType;  // the type every value must share
-            const bool ourEnumName = global_ && enumNameIsGlobal(ed->name, loadingModuleDepth_ > 0, tctx().pkgPrefix);
+            const bool ourEnumName = global_ && !ed->isMy && enumNameIsGlobal(ed->name, loadingModuleDepth_ > 0, tctx().pkgPrefix);
+            const bool ourMembers = global_ && !ed->isMy && loadingModuleDepth_ > 0 && tctx().pkgPrefix.empty();
             for (auto& it : items) {
                 std::string key; Value val;
                 if (it.t == VT::Pair) { key = it.s; val = it.pairVal() ? *it.pairVal() : Value::integer(counter); if (val.t == VT::Int && !val.big()) counter = val.toInt() + 1; }
@@ -5966,6 +5970,7 @@ static bool enumNameIsGlobal(const std::string& name, bool loadingModule, const 
                         tctx().cur->define(key, pz);
                     }
                     else tctx().cur->define(key, ev);
+                    if (ourMembers) global_->define(key, *tctx().cur->local(key));   // poisoned stays poisoned
                 }
                 tctx().cur->define(enumTypeName + "::" + key, ev);   // (`.succ` finds a member by it)
                 // …and under the PACKAGE-QUALIFIED names, so another compilation

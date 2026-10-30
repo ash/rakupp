@@ -10,7 +10,7 @@ file src/Builtins.cpp 10600
 file src/Codegen.cpp 10100
 file src/InterpreterCore.cpp 33000
 file src/MethodCallPart2.cpp 11200
-file src/Parser.cpp 18410
+file src/Parser.cpp 18420
 
 function Interpreter::evalAssignInner 3805
 function Interpreter::evalBinary 1704

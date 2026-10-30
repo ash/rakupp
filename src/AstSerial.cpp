@@ -483,7 +483,7 @@ template <class IO> void visit(IO& io, ClassDecl& n) {
 }
 template <class IO> void visit(IO& io, Block& n)    { ioStmtVec(io, n.stmts); F(io, n.isCatch);
                                                       F(io, n.phaser); F(io, n.stmtForm); }
-template <class IO> void visit(IO& io, EnumDecl& n) { F(io, n.name); ioExpr(io, n.values); F(io, n.isExport); ioVec(io, n.exportTags); F(io, n.pod); F(io, n.podTrail); }
+template <class IO> void visit(IO& io, EnumDecl& n) { F(io, n.name); ioExpr(io, n.values); F(io, n.isExport); ioVec(io, n.exportTags); F(io, n.pod); F(io, n.podTrail); F(io, n.ofType); F(io, n.isMy); }
 template <class IO> void visit(IO& io, IfStmt& n)   {
     F(io, n.thenVar);
     if constexpr (IO::reading) {

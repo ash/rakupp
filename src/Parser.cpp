@@ -16411,9 +16411,11 @@ StmtPtr Parser::parseStatementImpl() {
         if ((kw == "my" || kw == "our") && peek().kind == Tok::Ident &&
             ascii::isupper((unsigned char)peek().text[0]) &&
             peek(2).kind == Tok::Ident && peek(2).text == "enum") {
-            advance();                            // my
+            const bool wasMy = advance().text == "my";
             pendingEnumType_ = advance().text;    // Str
-            return parseStatement();              // enum …
+            StmtPtr st = parseStatement();        // enum …
+            if (wasMy && st && st->kind == NK::EnumDecl) static_cast<EnumDecl*>(st.get())->isMy = true;
+            return st;
         }
         // `my Str subset MyStr` — a TYPE before `subset` is the subset's base
         if ((kw == "my" || kw == "our") && peek().kind == Tok::Ident &&
@@ -16450,6 +16452,7 @@ StmtPtr Parser::parseStatementImpl() {
                 // …and so is `my subset F`: not published under its package's name
                 if (wasMy && st && st->kind == NK::SubsetDecl)
                     static_cast<SubsetDecl*>(st.get())->isMy = true;
+                if (wasMy && st && st->kind == NK::EnumDecl) static_cast<EnumDecl*>(st.get())->isMy = true;   // `my enum`
                 // `my constant X = …` stays lexical (a bare one is `our`)
                 if (wasMy && st && st->kind == NK::ExprStmt) {
                     Expr* e = static_cast<ExprStmt*>(st.get())->e.get();
