@@ -7264,11 +7264,15 @@ int Interpreter::scoreCandidate(const Value& cand, const ValueList& args,
             // as its Capture, or the candidate is out. Red declares four such
             // `is referencing` candidates told apart only by their inner
             // signatures; unchecked, the first one won every call and then
-            // failed to bind. Lists and hashes only — an object destructures
-            // through its accessors, which scoring must not call.
-            if (p.subSig && ((sval.t == VT::Array && sval.arr()) || (sval.t == VT::Hash && sval.hash() && sval.hashKind.empty()))) {
+            // failed to bind. Lists, hashes and a Pair, whose Capture is the one
+            // named (`is json-rpc(:async)` is no `(Str:D $name, *%params)`) —
+            // an object destructures through its accessors, which scoring must
+            // not call.
+            if (p.subSig && ((sval.t == VT::Array && sval.arr()) || (sval.t == VT::Hash && sval.hash() && sval.hashKind.empty()) ||
+                             (sval.t == VT::Pair && !sval.hasPairKey()))) {
                 ValueList inner;
-                if (sval.t == VT::Hash) {
+                if (sval.t == VT::Pair) { inner.push_back(sval); inner.back().namedArg = true; }
+                else if (sval.t == VT::Hash) {
                     for (auto& kv : *sval.hash()) { Value na = Value::pair(kv.first, kv.second); na.namedArg = true; inner.push_back(na); }
                 }
                 else {

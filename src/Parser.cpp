@@ -12575,10 +12575,16 @@ std::vector<Param> Parser::parseSignature(Tok closeTok) {
                                 ((peek().kind == Tok::Ident && peek(2).kind == Tok::RParen) || fromSmiley ||
                                  peek().kind == Tok::RParen); // `Foo()` — coerce from Any
                 // …or NESTED, a coercion type for the source itself:
-                // `Str(Rat(Source)) $p` (S02-types/nominalizables.t)
+                // `Str(Rat(Source)) $p` (S02-types/nominalizables.t), the
+                // source with a smiley too: `Hash:D(List:D(Pair:D)) :$json-rpc!`
+                // (Cro::RPC::JSON), which read as a sub-signature
                 size_t nestedEnd = 0;
+                const bool innerSmiley = peek(2).kind == Tok::Op && peek(2).text == ":" &&
+                                         peek(3).kind == Tok::Ident &&
+                                         (peek(3).text == "D" || peek(3).text == "U" || peek(3).text == "_");
+                const Token& innerParen = innerSmiley ? peek(4) : peek(2);
                 if (!coercion && !cur().spaceBefore && peek().kind == Tok::Ident &&
-                    peek(2).kind == Tok::LParen && !peek(2).spaceBefore) {
+                    innerParen.kind == Tok::LParen && !innerParen.spaceBefore) {
                     size_t j = pos_; int d = 0; bool ok = true;
                     do {
                         const Token& tk = toks_[j];

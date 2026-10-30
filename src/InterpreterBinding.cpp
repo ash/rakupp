@@ -690,7 +690,11 @@ void Interpreter::coerceParam(const Param& p, Value& v, const std::string* typeO
                 return t.empty() || t == "Any" || t == "Mu" || typeOrSubsetMatches(x, t);
             }
             std::string t = spec.substr(0, l), f = spec.substr(l + 1, spec.size() - l - 2);
-            if (typeOrSubsetMatches(x, t)) return true;
+            int sm = 0;   // (`List:D(Pair:D)`: the smiley is the target's)
+            if (t.size() > 2 && t[t.size() - 2] == ':') {
+                char c = t.back(); sm = c == 'D' ? 1 : c == 'U' ? 2 : 0; t.resize(t.size() - 2);
+            }
+            if (typeOrSubsetMatches(x, t) && !(sm == 1 && !isDefined(x)) && !(sm == 2 && isDefined(x))) return true;
             if (!satisfy(x, f)) return false;
             x = coerceToType(x, t);
             return true;
@@ -701,6 +705,9 @@ void Interpreter::coerceParam(const Param& p, Value& v, const std::string* typeO
                 "Type check failed in binding to parameter '" + paramShownName(p) + "'; expected " + render() +
                 " but got " + v.typeName() + " (" + typeCheckRepr(v) + ")");
         from = from.substr(0, lp);
+        if (from.size() > 2 && from[from.size() - 2] == ':') {
+            char c = from.back(); fsm = c == 'D' ? 1 : c == 'U' ? 2 : 0; from.resize(from.size() - 2);
+        }
     }
     const bool defined = isDefined(v);
     if ((!from.empty() && from != "Any" && from != "Mu" && !typeOrSubsetMatches(v, from)) ||
