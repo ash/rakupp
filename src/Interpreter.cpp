@@ -4559,7 +4559,7 @@ void Interpreter::adoptProcessStatics() {
 
 std::set<std::string>& envSyncedNames();   // InterpreterBinding.cpp
 
-Interpreter::~Interpreter() { cycleDetach(this); }
+Interpreter::~Interpreter() { endPool(); cycleDetach(this); }
 
 Interpreter::Interpreter() {
     adoptProcessStatics();
@@ -6823,6 +6823,104 @@ Value Interpreter::spawnPromise(Value code, Value threadVal) {
     return p;
 }
 
+// A promise's continuation fires once per settle, and a thread started for
+// each one cost more than the work: 2000 `whenever $socket.write(…) {}` took
+// 60 ms, against 15 when the writes were kept before they returned. Rakudo
+// cues them on its thread pool. The GIL's workers and --race's fork edges
+// keep a thread each, as before.
+void Interpreter::spawnContinuation(Value code) {
+    if (!parallelMode_ || RAKUPP_RACE_ON()) { spawnPromise(code); return; }
+    everSpawned_.store(true, std::memory_order_relaxed);
+    auto spawnScope = tctx().cur ? tctx().cur : global_;   // as spawnPromise's worker
+    Interpreter* self = this;
+    runPooled([self, code, spawnScope]() mutable {
+        tctx().cur = spawnScope;
+        tctx().dynStack.push_back(spawnScope.get());
+        tctx().forceRoutineFrame = true;
+        try { ValueList noargs; self->callCallable(code, noargs); } catch (...) {}
+    });
+}
+
+// The job is counted in liveWorkers_ from here, as a spawn is. A pooled worker
+// gives the count back once the job and its registers are gone, holding
+// nothing of the program's after that, so a waiting worker is no live one: the
+// kernels and the cycle collector go on as if it were not there. It never ends
+// on its own, since its teardown frees thread-locals and must be counted:
+// drainWorkers counts the idle ones again and wakes them to end.
+static constexpr int kPoolIdleMax = 8;
+void Interpreter::runPooled(std::function<void()> job) {
+    engageGil();
+    liveWorkers_++;
+    {   std::lock_guard<std::mutex> lk(poolM_);
+        if (!poolStopping_ && poolIdle_ > (int)poolJobs_.size()) {
+            poolJobs_.push_back(std::move(job));
+            poolCv_.notify_one();
+            return;
+        }
+    }
+    auto fin = std::make_shared<std::atomic<bool>>(false);
+    Interpreter* self = this;
+    throttleSpawn();
+    addWorker(BigStackThread([self, job, fin]() mutable {
+        t_hot.poll.isWorker = true;
+        self->poolWorker(std::move(job));
+        fin->store(true, std::memory_order_release);
+    }), fin, /*pooled=*/true);
+}
+
+void Interpreter::poolWorker(std::function<void()> job) {
+    for (;;) {
+        tctx() = ExecContext();            // a new thread's registers, for every job
+        reactStack_.clear();
+        job();
+        job = nullptr;                     // its captures go while this thread counts
+        tctx() = ExecContext();            // …and so does what it left in the registers
+        std::unique_lock<std::mutex> lk(poolM_);
+        if (poolStopping_ || poolIdle_ >= kPoolIdleMax) break;
+        poolIdle_++;
+        lk.unlock();
+        liveWorkers_.fetch_sub(1, std::memory_order_release);
+        lk.lock();
+        poolCv_.wait(lk, [&] { return !poolJobs_.empty() || poolStopping_; });
+        poolIdle_--;
+        if (poolJobs_.empty()) break;      // stopping: drainWorkers counted this thread
+        job = std::move(poolJobs_.front());
+        poolJobs_.pop_front();
+    }
+    workerFinished();                      // the count goes back once the thread is gone
+}
+
+// The idle workers end too, counted again until their threads are gone (one
+// woken onto a queued job is counted by that job); later jobs get threads.
+void Interpreter::stopPool() {
+    std::lock_guard<std::mutex> lk(poolM_);
+    if (poolStopping_) return;
+    poolStopping_ = true;
+    liveWorkers_ += poolIdle_ - (int)poolJobs_.size();
+    poolCv_.notify_all();
+}
+
+// An idle pooled worker waits on this object for ever, so it may not go
+// first: a program's end has joined them (drainWorkers), but an embedding
+// host's rk_free, the REPL's and a compile-time interpreter end without that.
+// One still busy after two seconds is left to run, as drainWorkers leaves one.
+void Interpreter::endPool() {
+    stopPool();
+    std::vector<WorkerSlot> pooled;
+    {   std::lock_guard<std::mutex> lk(sharedMut_);
+        auto mid = std::partition(workers_.begin(), workers_.end(), [](WorkerSlot& w) { return !w.pooled; });
+        for (auto it = mid; it != workers_.end(); ++it) pooled.push_back(std::move(*it));
+        workers_.erase(mid, workers_.end());
+    }
+    auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+    for (auto& w : pooled) {
+        while (!w.done->load(std::memory_order_acquire) && std::chrono::steady_clock::now() < deadline)
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        if (w.done->load(std::memory_order_acquire)) { if (w.th.joinable()) w.th.join(); }
+        else w.th.detach();
+    }
+}
+
 // $*SCHEDULER.cue(&code, :in/:at → delaySecs, :every, :times, :stop, :catch).
 // A worker sleeps GIL-free, takes the GIL per run, and re-arms for :every.
 Value Interpreter::cueJob(Value code, double delaySecs, double everySecs, long long times,
@@ -7158,6 +7256,7 @@ void Interpreter::drainWorkers() {
         workerAbort_.store(true, std::memory_order_relaxed);
         wakeSignalWorker();
         wakeParkedReacts();
+        stopPool();
         auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
         while (liveWorkers_.load() > 0 && std::chrono::steady_clock::now() < deadline)
             std::this_thread::sleep_for(std::chrono::milliseconds(5));

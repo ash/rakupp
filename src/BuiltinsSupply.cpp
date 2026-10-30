@@ -111,9 +111,13 @@ void Interpreter::maybeFinishSupply(const std::shared_ptr<SupplyTapCtx>& ctx) {
 // did next. (Cro::WebSocket's handler test counts the replies it got when the
 // close promise this thread keeps afterwards fires.) The bound keeps two
 // activations delivering into each other from waiting on one another.
+// A promise's whenever does not wait: nothing on its worker comes after the
+// delivery, and waiting kept a pooled worker from the next continuation
+// (Rakudo's waits on the supply's lock with an `await`, which gives its
+// pool thread back).
 Value Interpreter::supplyDelivery(const std::shared_ptr<SupplyTapCtx>& ctx, long long sub,
-                                  std::function<void(Interpreter&, ValueList&)> fn) {
-    return ctxCallable(ctx, [ctx, sub, fn](Interpreter& I2, ValueList& args) -> Value {
+                                  std::function<void(Interpreter&, ValueList&)> fn, bool waitIfBusy) {
+    return ctxCallable(ctx, [ctx, sub, fn, waitIfBusy](Interpreter& I2, ValueList& args) -> Value {
         // (queued, it runs on whichever thread drains the queue: that thread
         // holds the activation, so the entry leaves `running` alone)
         Interpreter* ip = &I2;
@@ -136,7 +140,7 @@ Value Interpreter::supplyDelivery(const std::shared_ptr<SupplyTapCtx>& ctx, long
                 std::lock_guard<std::mutex> lk(ctx->m);
                 if (ctx->done || (sub && ctx->closedSubs.count(sub))) return Value::any();
                 if (ctx->running <= 0) break;
-                if (ctx->runner == me || std::chrono::steady_clock::now() >= until) {
+                if (ctx->runner == me || !waitIfBusy || std::chrono::steady_clock::now() >= until) {
                     ctx->queue.push_back(deferred());
                     return Value::any();
                 }
@@ -880,11 +884,22 @@ Value Interpreter::spawnSupplyInterval(double interval, double delay, Value blk,
 // same sliced wait as spawnTimerWhenever: shutdown wakes it within ~50 ms, and
 // an aborted worker never runs the continuation.
 void Interpreter::spawnDelayedNative(double secs, std::function<void()> fn) {
+    auto spawnScope = tctx().cur ? tctx().cur : global_;
+    Interpreter* self = this;
+    if (secs <= 0 && parallelMode_ && !RAKUPP_RACE_ON()) {   // a `.then`: no wait, a pooled worker
+        runPooled([self, fn, spawnScope]() {
+            if (self->workerAbort_.load(std::memory_order_relaxed)) return;
+            self->gilLock();
+            tctx().cur = spawnScope;
+            tctx().dynStack.push_back(spawnScope.get());
+            try { fn(); } catch (...) {}
+            self->gilYieldNotify();
+        });
+        return;
+    }
     engageGil();
     liveWorkers_++;
     auto fin = std::make_shared<std::atomic<bool>>(false);
-    auto spawnScope = tctx().cur ? tctx().cur : global_;
-    Interpreter* self = this;
     if (secs < 0) secs = 0;
     throttleSpawn();
     addWorker(BigStackThread([self, secs, fn, fin, spawnScope]() mutable {

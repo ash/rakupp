@@ -1351,11 +1351,12 @@ void Interpreter::registerBuiltinsPart4() {
                     }
                     ctx->pending--;
                     I2.maybeFinishSupply(ctx);
-                });
+                }, /*waitIfBusy=*/false);
                 Interpreter* self = &I;
                 std::function<void()> run = [self, fireW]() { ValueList na; try { self->callCallable(fireW, na); } catch (...) {} };
-                // A promise that settles LATER fires the body on a worker of its
-                // own, as Rakudo's `.then` does — not inside whatever kept it.
+                // A promise that settles LATER fires the body on a worker (a pooled
+                // one: spawnContinuation), as Rakudo's `.then` does — not inside
+                // whatever kept it.
                 // Inline, Cro::WebSocket's handler, which keeps the close promise
                 // mid-stream, ran Cro::RPC::JSON's `whenever $close { …; done }`
                 // before it passed on the input's end, so the actor's supply was
@@ -1366,7 +1367,7 @@ void Interpreter::registerBuiltinsPart4() {
                         ValueList na; try { I3.callCallable(fireW, na); } catch (...) {}
                         return Value::any();
                     };
-                    self->spawnPromise(body);
+                    self->spawnContinuation(body);
                 };
                 bool now = false;
                 { std::lock_guard<std::mutex> lk(ps->m); if (ps->done) now = true; else ps->thens.push_back(later); }
@@ -2175,7 +2176,7 @@ void Interpreter::registerBuiltinsPart4() {
                     std::function<void()> later = [self, fire]() {
                         Value body; body.t = VT::Code; body.setCode(makePayload<Callable>());
                         body.code()->ciM().builtin = [fire](Interpreter&, ValueList&) -> Value { fire(); return Value::any(); };
-                        self->spawnPromise(body);
+                        self->spawnContinuation(body);
                     };
                     bool now = false;
                     { std::lock_guard<std::mutex> lk(ps->m); if (ps->done) now = true; else ps->thens.push_back(later); }

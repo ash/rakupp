@@ -4266,6 +4266,7 @@ public:
     struct WorkerSlot {
         BigStackThread th;
         std::shared_ptr<std::atomic<bool>> done;
+        bool pooled = false;               // runPooled's: endPool joins it
     };
     std::vector<WorkerSlot> workers_;      // outstanding `start`/async worker threads
     // The ONLY safe way to register a worker thread. In parallel mode spawns
@@ -4275,7 +4276,7 @@ public:
     // vector::erase corrupted it and the process SEGFAULTED (syntax.t's
     // CLOSE-phaser stress, crash report: erase inside spawnSupplyInterval on
     // thread 5 of 292). Under the GIL the lock is uncontended.
-    void addWorker(BigStackThread&& th, std::shared_ptr<std::atomic<bool>> fin) {
+    void addWorker(BigStackThread&& th, std::shared_ptr<std::atomic<bool>> fin, bool pooled = false) {
         // Collect finished slots under the lock, JOIN THEM OUTSIDE IT. Joining
         // under sharedMut_ deadlocked: the joinee had set its done flag but was
         // still unwinding through code that itself wants sharedMut_ (a worker
@@ -4289,7 +4290,7 @@ public:
             });
             for (auto it = mid; it != workers_.end(); ++it) dead.push_back(std::move(*it));
             workers_.erase(mid, workers_.end());
-            workers_.push_back({std::move(th), std::move(fin)});
+            workers_.push_back({std::move(th), std::move(fin), pooled});
         }
         for (auto& w : dead) if (w.th.joinable()) w.th.join();
     }
@@ -4301,6 +4302,13 @@ public:
     }
     std::atomic<int> liveWorkers_{0};      // workers that have not yet finished
     void workerFinished();                 // a worker body's end: liveWorkers_ drops at its thread's exit
+    // runPooled's idle workers: not in liveWorkers_ while they wait (they hold
+    // nothing of the program's), each queued job handed to one of them
+    std::mutex poolM_;
+    std::condition_variable poolCv_;
+    std::deque<std::function<void()>> poolJobs_;
+    int poolIdle_ = 0;
+    bool poolStopping_ = false;            // drainWorkers: idle workers end, new jobs get threads
     std::atomic<bool> everSpawned_{false}; // a `start` has run: declarations pre-bind (see evalAssignInner)
     // Backpressure for worker creation, PARALLEL MODE ONLY. A tap-and-close
     // loop over interval supplies (syntax.t's CLOSE-phaser stress: 4 spawners
@@ -4398,6 +4406,15 @@ public:
     // a PromiseState. awaitPromise blocks the caller until `ps` completes, dropping
     // the GIL so the worker can run. drainWorkers joins everything at program end.
     Value spawnPromise(Value code, Value threadVal = Value());
+    // A promise's continuation: `code` runs as spawnPromise runs it, with no
+    // Promise of its own, on an idle pooled worker if there is one (runPooled).
+    void spawnContinuation(Value code);
+    // Run `job` on a worker: an idle pooled one, else a new thread that joins
+    // the pool after it. Parallel mode only; poolWorker is that thread's loop.
+    void runPooled(std::function<void()> job);
+    void poolWorker(std::function<void()> job);
+    void stopPool();   // idle pooled workers end (drainWorkers, endPool)
+    void endPool();    // …and are joined (the destructor)
     Value cueJob(Value code, double delaySecs, double everySecs, long long times,
                  Value stopF, Value catchF); // $*SCHEDULER.cue — returns a Cancellation
     // Real (wired) tap of a Supply value: on-demand blocks run with emits routed
@@ -4442,9 +4459,10 @@ public:
     int runQuitPhasers(const ValueList& quitP, const Value& ex, Value& replacement);
     // One delivery into a supply activation, wrapped for S-53: it runs now when
     // no body is running, and otherwise joins the queue behind the body that
-    // is. `sub` tags the entry with its subscription.
+    // is. `sub` tags the entry with its subscription. `waitIfBusy` false: a
+    // body another thread is running is not waited for, just queued behind.
     Value supplyDelivery(const std::shared_ptr<SupplyTapCtx>& ctx, long long sub,
-                         std::function<void(Interpreter&, ValueList&)> fn);
+                         std::function<void(Interpreter&, ValueList&)> fn, bool waitIfBusy = true);
     std::atomic<int> noCycleBreak_{0}; // >0: breakSelfClosures suspended (supply-block wiring; env outlives frame; any thread)
     std::atomic<long> cuedLoads_{0}; // outstanding cued jobs ($*SCHEDULER.loads)
     void awaitPromise(const std::shared_ptr<struct PromiseState>& ps);
