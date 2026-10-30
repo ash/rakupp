@@ -31,7 +31,7 @@ f3fb83e3 and 5e611fa3 (issue #216); 67c35490 (issue #215); 820388ce and
 c9560e0d; d1c84b6b (issue #199); a1bb0e7b (issue #191); 55565059 (issue
 #177); ad2bba29 (issue #176); 308aecdf (issue #179); 94172cb6; 7f28cba0
 (issue #189); f303f0c0 (issue #196); 43341539; 392873ab; 78c4f478; 946d29e4
-(issue #190); e9455bfa; be510e3a; 5801c286.*
+(issue #190); e9455bfa; be510e3a; 5801c286; c5fd7f1d; 7aa4256c.*
 
 ---
 
@@ -650,6 +650,14 @@ plain before 500c29e2 and native from it, unless they say otherwise.
   return with it. It takes a Str's exact arm now, an Int, Rat or Num by the
   literal. t/regression/match-numifies-exact-native.raku, which t/run.raku
   compiles natively, agrees with Rakudo 2026.09.
+- **A map or grep a routine returned is read whole by the built-in subs
+  and operators** (c5fd7f1d). Since c0691dff made such a map lazy,
+  `flat(f(), $x)`, `slip`, `cache`, `zip`, `cross`, `any`, `first`, infix
+  `X` and `[\+]` saw it empty: Cro's ConnectionConditional ran none of its
+  transforms. Every built-in sub now drains a finite lazy argument, as the
+  methods already did, and so do Z, X and the reduce; a returned map's
+  `.head` still runs one block.
+  t/regression/returned-map-read-by-builtins.raku agrees with Rakudo 2026.09.
 
 ### Fixed: crashes
 
@@ -1187,6 +1195,12 @@ does not.
   G::Idx` inside `unit module G` is G's own Idx, not G::G::Idx, as in
   Rakudo. HTTP::HPACK's encoder test, which stopped `rakupp install cro`,
   passes. t/regression/module-enum-is-our.raku agrees with Rakudo 2026.09.
+- **A class, role or grammar a `use`d module declares is a type while the
+  importing file is parsed** (7aa4256c): `for Cro::Iri -> $p { … }` was
+  "Function 'Cro::Iri' needs parens to avoid gobbling block", which kept
+  Cro::Core's uri test from compiling. A name nothing declares is still that
+  error, as in Rakudo. t/regression/module-type-before-pointy-block.raku
+  agrees with Rakudo 2026.09.
 
 ### Left open
 
