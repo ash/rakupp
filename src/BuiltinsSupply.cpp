@@ -45,6 +45,22 @@ void scanSupplyPhasers(const Value& blk, ValueList* lastP,
     }
 }
 
+// The supply body is running, so its lexicals exist: a CLOSE phaser reads and
+// writes THEM (`until my $done { emit … }; CLOSE { $done = True }` ends the
+// loop when the consumer says done; S17-supply/syntax.t), not the definition
+// scope it was collected against. The first `emit` or `whenever` of the body
+// does it — Cro::RPC::JSON's actor handler emits nothing itself, and its
+// `CLOSE { call-phaser-methods 'close' }` calls a `my sub` of the body.
+void Interpreter::closeOverRunningBody() {
+    if (tctx().tapStack.empty()) return;
+    const auto& ctx = tctx().tapStack.back();
+    if (!ctx || !ctx->inBody || ctx->closeRebound || !ctx->tap || !tctx().cur) return;
+    ctx->closeRebound = true;
+    for (auto& cp : ctx->tap->closePhasers)
+        if (cp.t == VT::Code && cp.code() && !cp.code()->ci().builtin && cp.code()->ci().body)
+            cp.code()->closure = tctx().cur;
+}
+
 void Interpreter::maybeFinishSupply(const std::shared_ptr<SupplyTapCtx>& ctx) {
     if (!ctx || ctx->doneFired || ctx->done) return;
     if (!ctx->blockDone || ctx->pending > 0) return;
@@ -1608,6 +1624,8 @@ Value Interpreter::tapSupply(const Value& s, Value emitCb, Value doneCb, Value q
         catch (...) { tctx().tapStack.pop_back(); closeTapHandle(handle); throw; }
         Value t = Value::makeHash(); t.hashKind = "Tap"; t.extM() = handle;
         (*t.hash())["wired"] = Value::boolean(true);
+        // `.on-close` hooks run when this tap is closed (Tap.close reads them)
+        if (h.count("closers")) (*t.hash())["closers"] = h.at("closers");
         return t;
     }
     // 2) live Supplier-backed supply: register a tap record; emit/done/quit fan out later

@@ -2148,7 +2148,9 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
             // `.share` subscribes LIVE (S-48 below taps the block itself): a
             // drained block's whenevers would emit into a finished collection,
             // so Pakku's `watch-recursive($dir).share` reached no tap at all
-            if (!introspect && m != "share") inv = drainSupplyBlock(inv);
+            // …and `.on-close` only wraps it: draining a block that waits on a
+            // channel never returned (Cro::HTTP::Test's in-memory connector)
+            if (!introspect && m != "share" && m != "on-close") inv = drainSupplyBlock(inv);
         }
         bool listy = inv.hash()->count("values");
         auto vals = [&]() -> ValueList { return listy ? *(*inv.hash())["values"].arr() : ValueList{}; };

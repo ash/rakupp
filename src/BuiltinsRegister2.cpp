@@ -1193,6 +1193,7 @@ void Interpreter::registerBuiltinsPart4() {
         catch (RakuError& e) { reactDied(e); throw; }
     };
     B["whenever"] = [](Interpreter& I, ValueList& a) -> Value {
+        I.closeOverRunningBody();   // (a body that never emits: see there)
         // S-60: `whenever` coerces its argument with `Supply()`. An Iterable is
         // one event per element; a Str, an Int or any other single value is one
         // event. Coercing to a from-list Supply (rather than running the body

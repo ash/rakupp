@@ -4418,6 +4418,7 @@ public:
     Value drainSupplyBlock(const Value& s);
     void closeTapHandle(const std::shared_ptr<TapHandle>& h); // run closers + CLOSE phasers once
     void maybeFinishSupply(const std::shared_ptr<SupplyTapCtx>& ctx); // fire done when block returned + no live inner taps
+    void closeOverRunningBody();                                      // a supply body's CLOSE sees its lexicals
     // Hand over the events S-53 deferred, in arrival order. Only the outermost
     // body drains; a nested one returns and lets its caller carry on.
     void drainSupplyQueue(const std::shared_ptr<SupplyTapCtx>& ctx);

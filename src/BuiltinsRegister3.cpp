@@ -127,16 +127,7 @@ void Interpreter::registerBuiltinsPart5() {
             // block is unwound. (The on-demand producer of S-15 keeps running:
             // its Supplier has its own emit route, not this one.)
             if (ctx->done) throw DoneEx{};
-            // The body is running now, so its lexicals exist: a CLOSE phaser reads
-            // and writes THEM (`until my $done { emit … }; CLOSE { $done = True }`
-            // ends the loop when the consumer says done; S17-supply/syntax.t), not
-            // the definition scope it was collected against
-            if (ctx->inBody && !ctx->closeRebound && ctx->tap && I.tctx().cur) {
-                ctx->closeRebound = true;
-                for (auto& cp : ctx->tap->closePhasers)
-                    if (cp.t == VT::Code && cp.code() && !cp.code()->ci().builtin && cp.code()->ci().body)
-                        cp.code()->closure = I.tctx().cur;
-            }
+            I.closeOverRunningBody();
             if (ctx->collect) { ctx->collect->push_back(v); return Value::boolean(true); }
             if (ctx->emitCb.t == VT::Code) {
                 ValueList one{v};
