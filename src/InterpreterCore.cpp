@@ -5419,10 +5419,14 @@ void Interpreter::bindParams(const std::vector<Param>& params, ValueList& args,
                 throw RakuError{Value::typeObj("X::AdHoc"),
                                 "Required named parameter '" + bareName + "' not passed"};
             else { refuseUnpassedDefinite(p);
-                   env->define(slotName(p, pidx), unpassedDefault(p.type, p.sigil, blockParams));
-                   // (`:$!t` with nothing passed has initialized $!t all the same: attrParamRef notes it)
-                   Value* sp = attributive && g_attrInitWatchers.load(std::memory_order_relaxed) ? env->find("self") : nullptr;
-                   if (sp && sp->t == VT::Object && sp->obj()) attrParamRef(sp->obj(), p.name, t_bindCallable); }
+                   Value dv = unpassedDefault(p.type, p.sigil, blockParams);
+                   env->define(slotName(p, pidx), dv);
+                   // `:$!t` with nothing passed still STORES its default in $!t, as
+                   // Rakudo's binder does: Any, or the parameter's type, through the
+                   // attribute's type check — so `has Str $.s` refuses the Any, and
+                   // the attribute's own default is not applied. Only noting $!t as
+                   // initialized let Cro::HTTP::Cookie.new() live without a name.
+                   attrWrite(dv); }
             continue;
         }
         if (pi < positional.size()) {
