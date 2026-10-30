@@ -30,7 +30,8 @@ b05e989b (issue #193); 17e33a45 (issue #184); 5f87f445; 0e44c5a6 (issue
 f3fb83e3 and 5e611fa3 (issue #216); 67c35490 (issue #215); 820388ce and
 c9560e0d; d1c84b6b (issue #199); a1bb0e7b (issue #191); 55565059 (issue
 #177); ad2bba29 (issue #176); 308aecdf (issue #179); 94172cb6; 7f28cba0
-(issue #189); f303f0c0 (issue #196); 43341539; 392873ab; 78c4f478.*
+(issue #189); f303f0c0 (issue #196); 43341539; 392873ab; 78c4f478; 946d29e4
+(issue #190).*
 
 ---
 
@@ -1145,9 +1146,29 @@ does not.
   ClassHOW, as in Rakudo: `G.HOW ~~ Metamodel::GrammarHOW` was False and its
   `.^name` said ClassHOW. Found checking issue #214.
   t/regression/grammar-how-is-grammarhow.raku agrees with Rakudo 2026.09.
+- **A binary carries its constants and what its BEGIN blocks computed, as a
+  precompiled Rakudo module does** (946d29e4; issue #190). `--exe`, `--aot`
+  and `--bundle` ran a constant's initializer and the BEGIN blocks when the
+  binary started, so a constant that `slurp`s a file read it on the machine
+  running the binary, and died where it was missing. The build runs the
+  program's compile-time part now — BEGIN, CHECK, `use`, declarations,
+  top-level constants, no mainline — and the binary carries each constant's
+  value, each BEGIN value, and what the top-level BEGIN blocks left in the
+  program's variables, written as Raku; none of that code runs at start. A
+  value that is not plain data reading back `eqv` through its `.raku` (an
+  object, a closure, a lazy list) is computed at start as before, and the
+  build names it; so is a constant that reads the program's own variables or
+  sits in a routine, and a BEGIN that reaches past them (EVAL, a package's
+  stash) keeps them all running.
+  docs/guide/CLI.md says what a build computes.
+  t/regression/issue-190-binary-embeds-compile-time.raku checks all three
+  modes with the files gone.
 
 ### Left open
 
+- A binary still computes at start a constant in an embedded module, in a
+  routine or in a class body, and `constant T = now`, since rakupp's
+  `Instant.raku` is not exact (946d29e4). TODO-FOLLOW-UPS.md has both.
 - A constant's initializer still calls a routine declared below it where
   Rakudo calls an outer one or the builtin, or finds nothing yet inside a
   `try` (f303f0c0). TODO-FOLLOW-UPS.md has it.
