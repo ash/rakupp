@@ -18191,6 +18191,9 @@ ExprPtr Parser::makeNqpOp(const std::string& op, std::vector<ExprPtr>& args) {
         {"what", NqpOpc::What}, {"islist", NqpOpc::IsList},
         {"iscont", NqpOpc::IsCont}, {"istrue", NqpOpc::IsTrue},
         {"isconcrete", NqpOpc::IsConcrete}, {"isconcrete_nd", NqpOpc::IsConcrete},
+        // MoarVM's `defined` is `isconcrete` that also answers 0 for a null:
+        // Cro::RPC::JSON's metaclass roles test their lazily built hashes so
+        {"defined", NqpOpc::IsConcrete},
         // Rakudo's own op, not NQP's: same question as `isconcrete`, but the
         // answer is a Raku Bool rather than an nqp int. Compress::Zlib's line
         // reader loops on it (`while nqp::p6definite(my $line = self.get)`).

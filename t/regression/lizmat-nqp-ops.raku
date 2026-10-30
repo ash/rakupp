@@ -158,5 +158,18 @@ ck nqp::pop($buf), 'z', 'nqp::pop takes from it';
 nqp::splice($buf, nqp::list(), 0, 1);
 ck $buf.List, ('b', 'c', 'd'), 'nqp::splice deletes from it';
 
+# ---- nqp::defined: Cro::RPC::JSON's metaclass roles build hashes lazily
+# behind it, and it was no op at all ("Undefined routine 'nqp::defined'")
+class LazyHash {
+    has $!h; has $.built = 0;
+    method h { unless nqp::defined($!h) { $!h := nqp::hash(); $!built++ }; $!h }
+}
+ck nqp::defined(Int), 0, 'nqp::defined: a type object is not defined';
+ck nqp::defined(0), 1, '…a defined value is, falsy or not';
+ck nqp::defined(nqp::null()), 0, '…and a null is not';
+my $lh = LazyHash.new;
+$lh.h for ^3;
+ck $lh.built, 1, '…so a lazily built attribute is built once';
+
 say $fails ?? "\n$fails FAILED" !! "\nPASS";
 exit $fails ?? 1 !! 0;
