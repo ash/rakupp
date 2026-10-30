@@ -31,7 +31,7 @@ f3fb83e3 and 5e611fa3 (issue #216); 67c35490 (issue #215); 820388ce and
 c9560e0d; d1c84b6b (issue #199); a1bb0e7b (issue #191); 55565059 (issue
 #177); ad2bba29 (issue #176); 308aecdf (issue #179); 94172cb6; 7f28cba0
 (issue #189); f303f0c0 (issue #196); 43341539; 392873ab; 78c4f478; 946d29e4
-(issue #190); e9455bfa.*
+(issue #190); e9455bfa; be510e3a.*
 
 ---
 
@@ -1174,6 +1174,13 @@ does not.
   own whenever body's death itself, and that whenever's QUIT no longer sees
   it. t/regression/supply-tapper-death-is-not-a-quit.raku agrees with
   Rakudo 2026.09.
+- **`whenever $obj` taps the Supply of a user class with a Supply method
+  of its own** (be510e3a), as in Rakudo; the body ran once with the object
+  as its value. IO::Socket::Async::SSL's upgrade test reads a line with
+  `whenever $conn.head` and got the socket. With e9455bfa its suite is
+  green under `rakupp install`.
+  t/regression/whenever-coerces-user-class-supply.raku agrees with Rakudo
+  2026.09.
 
 ### Left open
 
