@@ -6955,7 +6955,7 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
     // package-relative short name: a bare `Frog` type invocant answers as its
     // qualified nested class (`Forest::Frog`) when no real class claims the
     // short name — covers `.new`, `.= new` on typed decls, and user methods
-    if (invIn.t == VT::Type && !invIn.s.empty() && !classes_.count(invIn.s)) {
+    if (invIn.t == VT::Type && !invIn.s.empty() && !classes_.count(invIn.s) && !pkgKind_.count(invIn.s)) {
         auto ai = classAliases_.find(invIn.s);
         if (ai != classAliases_.end()) { invCopy = invIn; invCopy->s = ai->second; invp = &*invCopy; }
     }

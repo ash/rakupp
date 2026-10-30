@@ -3919,6 +3919,10 @@ public:
             auto q = ncq.find(n);
             if (q != ncq.end()) return q->second;
         }
+        // A name that is itself a module or package is that, not a class whose
+        // name ends with it: `Cro::RPC::JSON` is the module, not the
+        // X::Cro::RPC::JSON role its dist declares (whose tails are aliases)
+        if (pkgKind_.count(n)) return n;
         auto it = classAliases_.find(n);
         if (it != classAliases_.end()) return it->second;
         // A nested type named by a PARTIAL path from inside its own package:

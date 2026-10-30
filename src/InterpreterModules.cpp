@@ -8179,8 +8179,10 @@ static bool enumNameIsGlobal(const std::string& name, bool loadingModule, const 
                 std::string tail = clsName.substr(sep + 2);
                 // never shadow a BUILT-IN type: `class X::Roast::Channel` must not
                 // make bare `Channel` mean the exception class
+                // …nor a MODULE or package of that name (`role X::ModE::B` inside
+                // `module ModE::B` must not make ModE::B mean the role)
                 if (!tail.empty() && !isKnownTypeName(tail) &&
-                    !classes_.count(tail) && !classAliases_.count(tail)) {
+                    !classes_.count(tail) && !classAliases_.count(tail) && !pkgKind_.count(tail)) {
                     classAliases_[tail] = clsName;
                     if (loadingModuleDepth_ == 0) programAliases_.insert(tail);
                 }
