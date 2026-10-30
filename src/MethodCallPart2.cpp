@@ -10762,8 +10762,9 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
                 return Value::typeObj("Metamodel::EnumHOW");
         }
         // a role's own body sees the ROLE, made by ParametricRoleHOW (see
-        // rolePackageValue) — its group is what the bare role name answers
-        if (inv.t == VT::Type && inv.hashKind == "\x01role-body") return roleBodyHow(inv);
+        // rolePackageValue), and so does each of `.^candidates` — its group
+        // is what the bare role name answers
+        if (roleOwnValue(inv)) return roleBodyHow(inv);
         // …and a COERCION type object (`Foo(Str)`) answers a CoercionHOW, which
         // is how a module tells a coercion apart from a plain type before
         // asking for its two halves (Getopt::Long's coercion-converter branch).

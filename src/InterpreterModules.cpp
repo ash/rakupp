@@ -4883,6 +4883,15 @@ bool mayHaveStateDecl(const Stmt* s) {
 // `token tok:sym(EXPR)` arrives named `tok:sym<\x02HEX>` (the parser's
 // encoding of EXPR): evaluate it now, in the declaring scope, and install the
 // rule as `tok:sym<VALUE>`.
+// The scope and package prefix a declaration step switched to, put back
+// however the step ends: a trait that died left the next declaration nested
+// in this one — `my class Foo` and then `my role Bar` was Foo::Bar.
+struct ScopeBack {
+    decltype(Interpreter::tctx().cur) cur = Interpreter::tctx().cur;
+    std::string pfx = Interpreter::tctx().pkgPrefix;
+    ~ScopeBack() { Interpreter::tctx().cur = cur; Interpreter::tctx().pkgPrefix = pfx; }
+};
+
 // `$*PACKAGE` as a trait in a package body sees it. In a ROLE body that is
 // the role itself, whose metaobject is a ParametricRoleHOW — not the group's
 // (`given $*PACKAGE.HOW { when Metamodel::ParametricRoleHOW {…} }`); the mark
@@ -6983,6 +6992,7 @@ static bool enumNameIsGlobal(const std::string& name, bool loadingModule, const 
             // merged per candidate; an implementation displaces a same-signature
             // stub, never the other way around.
             std::vector<std::string> composeNames = cd->roles;
+            std::vector<std::pair<std::shared_ptr<ClassInfo>, std::string>> composedForHooks;   // (metaComposeHooks)
             for (auto& vr : viaParamRoles)
                 if (std::find(composeNames.begin(), composeNames.end(), vr) == composeNames.end())
                     composeNames.push_back(vr);
@@ -7059,6 +7069,7 @@ static bool enumNameIsGlobal(const std::string& name, bool loadingModule, const 
                 // (`.lvalue`, `.of-att`) went missing exactly there.
                 if (std::find(ci->composedRoles.begin(), ci->composedRoles.end(), rinfo) == ci->composedRoles.end())
                     ci->composedRoles.push_back(rinfo);
+                composedForHooks.push_back({rinfo, it->second->name});
                 std::vector<ClassInfo*> roleChain;
                 {
                     std::set<ClassInfo*> seenRC;
@@ -8015,7 +8026,8 @@ static bool enumNameIsGlobal(const std::string& name, bool loadingModule, const 
                     if (tm->t == VT::Code) {
                         Value pr = Value::pair(tn, Value::boolean(true));
                         pr.namedArg = true;
-                        ValueList ta; ta.push_back(Value::typeObj(clsName)); ta.push_back(pr);
+                        // (a ROLE's trait gets the role, as its `$*PACKAGE` is, not the group)
+                        ValueList ta; ta.push_back(rolePackageValue(clsName, cd->isRole)); ta.push_back(pr);
                         // the trait sees the package it is applied to as `$*PACKAGE`
                         // (`$*PACKAGE.HOW does R` reaches THIS type, not its outer one)
                         Env* pe = tctx().cur.get();
@@ -8062,8 +8074,7 @@ static bool enumNameIsGlobal(const std::string& name, bool loadingModule, const 
             // and the module refused its own keys. Hoisted exactly once — running
             // it twice would append each `multi` candidate a second time.
             {
-                auto savedCur = tctx().cur;
-                std::string savedPfx = tctx().pkgPrefix;
+                ScopeBack back;   // (see ScopeBack)
                 tctx().pkgPrefix = clsName + "::";
                 tctx().cur = bodyEnv;
                 hoistSubs(cd->body);
@@ -8075,15 +8086,12 @@ static bool enumNameIsGlobal(const std::string& name, bool loadingModule, const 
                 // Re-running the declaration when the body executes is harmless.
                 for (auto& st : cd->body)
                     if (st->kind == NK::EnumDecl) try { exec(st.get()); } catch (...) {}
-                tctx().cur = savedCur;
-                tctx().pkgPrefix = savedPfx;
             }
             // METHOD-level user `is` traits: `method m() is also<mag> {…}` calls
             // trait_mod:<is>($m, :also<mag>) with $*PACKAGE bound to the class under
             // declaration (Method::Also registers aliases keyed by $*PACKAGE.^name).
             if (!methodTraitQueue.empty()) {
-                auto savedCur = tctx().cur;
-                std::string savedPfx = tctx().pkgPrefix;
+                ScopeBack back;   // (see ScopeBack)
                 tctx().cur = bodyEnv;                 // the handler may live in the body
                 tctx().pkgPrefix = clsName + "::";    // …and so may the types it names,
                                                      // which must register under the
@@ -8156,8 +8164,6 @@ static bool enumNameIsGlobal(const std::string& name, bool loadingModule, const 
                         else bodyEnv->vars.erase("$*PACKAGE");
                     }
                 }
-                tctx().cur = savedCur;
-                tctx().pkgPrefix = savedPfx;
             }
             // a qualified name also answers to its TAIL where no real class claims
             // it: `use URI::Path` inside `unit class URI` lets bare `Path` resolve
@@ -8279,13 +8285,10 @@ static bool enumNameIsGlobal(const std::string& name, bool loadingModule, const 
                 bool anyIs = false;
                 for (auto& ca2 : ci->attrs) if (!ca2.containerIs.empty()) { anyIs = true; break; }
                 if (anyIs) {
-                    auto savedCur = tctx().cur;
-                    std::string savedPfx = tctx().pkgPrefix;
+                    ScopeBack back;   // (see ScopeBack)
                     tctx().cur = bodyEnv;
                     tctx().pkgPrefix = clsName + "::";
                     for (auto& ca2 : ci->attrs) applyContainerElemType(ca2);
-                    tctx().cur = savedCur;
-                    tctx().pkgPrefix = savedPfx;
                 }
             }
             // The metaobject a MODULE-SUPPLIED DECLARATOR names (`model Foo`),
@@ -8539,7 +8542,7 @@ static bool enumNameIsGlobal(const std::string& name, bool loadingModule, const 
             if (!cd->userTraits.empty()) {
                 if (Value* tm = tctx().cur ? tctx().cur->find("&trait_mod:<is>") : nullptr) {
                     if (tm->t == VT::Code) {
-                        Value tobj = Value::typeObj(clsName);
+                        Value tobj = rolePackageValue(clsName, cd->isRole);   // (a role's: see above)
                         for (auto& ut : cd->userTraits) {
                             Value tv = Value::boolean(true);   // a bare trait: `is temp`
                             if (ut.second) { try { tv = eval(ut.second.get()); } catch (...) { continue; } }
@@ -8654,6 +8657,7 @@ static bool enumNameIsGlobal(const std::string& name, bool loadingModule, const 
             // Rakudo's per-composition run of a role body does them, before
             // the class's own compose below
             if (!cd->isRole) runRoleClassStatements(ci.get(), clsName);
+            metaComposeHooks(ci.get(), cd, clsName, composedForHooks, concArgv);
             // Composition hook: a role mixed into the class's persistent .HOW (via a
             // method trait — Method::Also's AliasableClassHOW) may define `compose`;
             // Rakudo's metamodel calls it when the class finishes composing, and the

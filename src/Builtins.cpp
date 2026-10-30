@@ -9086,19 +9086,23 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
         // AliasableClassHOW) or a class declared under a module-supplied HOW put
         // their methods there and nowhere else. Last, so every built-in
         // meta-method above keeps its answer.
+        // (a role seen from its body or as a candidate asks its OWN metaobject)
         if (tobj.t == VT::Type && !tctx().metaForwarding.count(mm)) {
-            auto hit = classes_.find(tobj.s);
-            if (hit != classes_.end() && hit->second &&
-                hit->second->howObj.t == VT::Object && hit->second->howObj.obj() &&
-                hit->second->howObj.obj()->cls &&
-                hit->second->howObj.obj()->cls->findMethod(mm)) {
+            const Value* how = roleOwnHowIfAny(tobj);
+            if (!how) {
+                auto hit = classes_.find(tobj.s);
+                if (hit != classes_.end() && hit->second) how = &hit->second->howObj;
+            }
+            if (how && how->t == VT::Object && how->obj() && how->obj()->cls &&
+                how->obj()->cls->findMethod(mm)) {
                 ValueList ha; ha.reserve(args.size() + 1);
                 // `$obj.^m(…)` is `$obj.HOW.m($obj, …)` — the INSTANCE, not its
                 // type: Red's `self.^set-dirty(…)` in a model's TWEAK reads the
                 // row's own attributes through it
                 ha.push_back(inv.t == VT::Object ? inv : tobj);
                 for (auto& a : args) ha.push_back(a);
-                return methodCall(hit->second->howObj, mm, ha, rwArgs);
+                const Value howv = *how;
+                return methodCall(howv, mm, ha, rwArgs);
             }
         }
         return methodCall(tobj, mm, args, rwArgs);

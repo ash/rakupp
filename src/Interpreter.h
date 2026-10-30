@@ -2310,6 +2310,7 @@ public:
     std::string shadowLibDir_;                             // the binary-relative rakulib/, once found
     std::shared_ptr<ClassInfo> howRoleClsInfo_;            // Metamodel::ParametricRoleGroupHOW, shared by every role
     std::shared_ptr<ClassInfo> howParamRoleClsInfo_;       // Metamodel::ParametricRoleHOW: a role seen from its own body
+    std::unordered_map<const void*, Value> roleOwnHows_;    // …one per role declaration, so a mixin into it sticks
     std::shared_ptr<ClassInfo> howCurriedClsInfo_, howConcreteClsInfo_;   // …CurriedRoleHOW (R[Int]), …ConcreteRoleHOW
     std::unordered_map<std::string, Value> typeHowCache_;   // a pun's / a concretization handle's .HOW, by type name
     std::unordered_map<std::string, ValueList> punArgs_;     // R[Int]'s arguments, by pun name (.^role_arguments)
@@ -3485,6 +3486,15 @@ public:
     Value matchSubscriptAdverb(const Value& base, Index* idx, bool& done);  // `$<a>:exists`, `$0:kv`, …
     bool cmpEndlessLazy(const Value& l, const Value& r, Value& out);      // `(1..Inf).Seq cmp (1, 2)`
     Value roleBodyHow(const Value& inv);                                  // `$*PACKAGE.HOW` in a role body
+    Value* roleOwnHowIfAny(const Value& inv);                             // …that one, when it was ever made
+    bool roleOwnValue(const Value& inv) const;                            // a role-body or role-candidate value
+    Value concreteRoleRoles(const Value& how);                            // a ConcreteRoleHOW's `@!roles`
+    // a metaclass's hooks as a class finishes composing: each role's own
+    // `specialize_with`, its concretization's `add_method`, the class's
+    // `incorporate_multi_candidates` (InterpreterBinding.cpp)
+    void metaComposeHooks(ClassInfo* ci, const ClassDecl* cd, const std::string& clsName,
+                          std::vector<std::pair<std::shared_ptr<ClassInfo>, std::string>> roles,
+                          const std::map<const ClassInfo*, ValueList>& roleArgs);
     void refuseValueMixin(const Value& v, const Value& base);            // `5 but Any`
     Value fatalCheckedMethodCall(Expr* e);                                // a method call under `use fatal`
     Value inlineBlockValue();                                             // `&?BLOCK` in an inline block

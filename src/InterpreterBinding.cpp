@@ -8179,9 +8179,51 @@ bool Interpreter::cmpEndlessLazy(const Value& l, const Value& r, Value& out) {
 }
 
 
-// A role seen from its own body (rolePackageValue) is made by
-// ParametricRoleHOW; the bare role name answers its group's HOW.
+// A role seen from its own body (rolePackageValue), or as one of its group's
+// `.^candidates`, is made by ParametricRoleHOW; the bare role name answers
+// its group's HOW. ONE such metaobject per role declaration: Cro::RPC::JSON
+// mixes its own role into it from a method trait and reads it back through
+// `.^json-rpc-add-method` and `.^candidates[0].HOW`.
+static const void* roleDeclOf(const Value& inv,
+                              const std::unordered_map<std::string, std::shared_ptr<ClassInfo>>& classes) {
+    if (inv.ext()) {
+        auto rc = std::static_pointer_cast<RoleCandidateRef>(inv.ext());
+        if (rc->ci && rc->ci->decl) return rc->ci->decl;
+    }
+    auto it = classes.find(inv.s);
+    return it != classes.end() && it->second && it->second->isRole ? it->second->decl : nullptr;
+}
+bool Interpreter::roleOwnValue(const Value& inv) const {
+    if (inv.t != VT::Type) return false;
+    if (inv.hashKind == "\x01role-body") return true;
+    if (!inv.ext()) return false;
+    auto it = classes_.find(inv.s);
+    return it != classes_.end() && it->second && it->second->isRole;
+}
+Value* Interpreter::roleOwnHowIfAny(const Value& inv) {
+    if (!roleOwnValue(inv)) return nullptr;
+    auto it = roleOwnHows_.find(roleDeclOf(inv, classes_));
+    return it != roleOwnHows_.end() ? &it->second : nullptr;
+}
+// `nqp::getattr($how, Metamodel::ConcreteRoleHOW, '@!roles')`: the role a
+// concrete role was made from, as its own body sees it — Cro::RPC::JSON
+// reads a role's auth through it, off the role's own metaobject
+Value Interpreter::concreteRoleRoles(const Value& how) {
+    Value out = Value::array(); out.isList = true;
+    if (how.t != VT::Object || !how.obj()) return out;
+    auto ti = how.obj()->attrs.find("__type");
+    if (ti == how.obj()->attrs.end()) return out;
+    auto it = classes_.find(ti->second.s);
+    if (it == classes_.end() || !it->second || !it->second->isRole) return out;
+    Value r = Value::typeObj(it->second->dispName.empty() ? it->second->name : it->second->dispName);
+    r.hashKind = "\x01role-body";
+    auto ref = std::make_shared<RoleCandidateRef>(); ref->ci = it->second;
+    r.extM() = std::static_pointer_cast<void>(ref);
+    out.arr()->push_back(r);
+    return out;
+}
 Value Interpreter::roleBodyHow(const Value& inv) {
+    if (Value* have = roleOwnHowIfAny(inv)) return *have;
     if (!howParamRoleClsInfo_) {
         howParamRoleClsInfo_ = std::make_shared<ClassInfo>();
         howParamRoleClsInfo_->name = "Metamodel::ParametricRoleHOW";
@@ -8189,7 +8231,74 @@ Value Interpreter::roleBodyHow(const Value& inv) {
     Value h; h.t = VT::Object; h.setObj(makePayload<ObjectData>());
     h.obj()->cls = howParamRoleClsInfo_;
     h.obj()->attrs["__type"] = Value::typeObj(inv.s);
+    if (const void* d = roleDeclOf(inv, classes_)) roleOwnHows_[d] = h;
     return h;
+}
+
+// A metaclass's hooks as a class finishes composing. Rakudo hands each role
+// to its own metaobject — `specialize_with` on the role's ParametricRoleHOW,
+// which fills the concrete role through `add_method` / `add_multi_method` —
+// and the class's compose runs `incorporate_multi_candidates`. rakupp builds
+// all that itself, so only a hook a metaclass MIXIN supplies is called, where
+// Rakudo would call it: Cro::RPC::JSON mixes its roles into these metaobjects
+// from its `is json-rpc` traits and keeps its method tables there. A
+// `callsame` / `nextsame` past the mixin has no built-in to reach, and that
+// is let go, as for `compose`.
+static bool userHowMethod(const Value& how, const char* m) {
+    return how.t == VT::Object && how.obj() && how.obj()->cls && how.obj()->cls->findMethod(m);
+}
+void Interpreter::metaComposeHooks(ClassInfo* ci, const ClassDecl* cd, const std::string& clsName,
+                                   std::vector<std::pair<std::shared_ptr<ClassInfo>, std::string>> roles,
+                                   const std::map<const ClassInfo*, ValueList>& roleArgs) {
+    if (cd->isRole || (roleOwnHows_.empty() && ci->howObj.t != VT::Object)) return;
+    // (the first `does` sits in the parent slot, not among the composed roles)
+    if (cd->parentIsDoes && ci->parent && ci->parent->isRole) roles.insert(roles.begin(), {ci->parent, ci->parent->name});
+    auto call = [&](const Value& how, const char* m, ValueList a) {
+        try { methodCall(how, m, a); }
+        catch (RakuError& e) {
+            if (e.message.find("to redispatch to") == std::string::npos &&
+                e.message.find("not in the dynamic scope of a dispatcher") == std::string::npos)
+                throw;
+        }
+    };
+    const Value cls = Value::typeObj(clsName);
+    for (auto& [role, group] : roles) {
+        if (!role || !role->decl) continue;
+        auto own = roleOwnHows_.find(role->decl);
+        if (own == roleOwnHows_.end() || !userHowMethod(own->second, "specialize_with")) continue;
+        const Value roleHow = own->second;
+        Value r = Value::typeObj(group);   // the role as its own body sees it
+        r.hashKind = "\x01role-body";
+        auto ref = std::make_shared<RoleCandidateRef>(); ref->ci = role;
+        r.extM() = std::static_pointer_cast<void>(ref);
+        const Value conc = concretizationHandle(ci, role.get());
+        Value params = Value::array(); params.isList = true;   // (the class, then the role's arguments)
+        params.arr()->push_back(cls);
+        auto ra = roleArgs.find(role.get());
+        if (ra != roleArgs.end()) for (auto& a : ra->second) params.arr()->push_back(a);
+        call(roleHow, "specialize_with", ValueList{r, conc, Value::typeObj("Mu"), params});
+        auto cit = classes_.find(conc.s);
+        if (cit == classes_.end() || !cit->second) continue;
+        const Value concHow = cit->second->howObj;
+        const bool addM = userHowMethod(concHow, "add_method");
+        const bool addMM = userHowMethod(concHow, "add_multi_method");
+        if (!addM && !addMM) continue;
+        const auto methods = role->methods;   // (a hook may add to them)
+        for (auto& [name, code] : methods) {
+            if (name.empty() || name[0] == '!' || code.t != VT::Code || !code.code()) continue;
+            const Value nm = Value::str(name);
+            if (!code.code()->ci().isMultiDispatcher) {
+                if (addM) call(concHow, "add_method", ValueList{conc, nm, code});
+                continue;
+            }
+            if (addM && code.code()->ci().isProto) call(concHow, "add_method", ValueList{conc, nm, code});
+            if (addMM)
+                for (auto& cand : code.code()->cold().candidates)
+                    call(concHow, "add_multi_method", ValueList{conc, nm, cand});
+        }
+    }
+    if (userHowMethod(ci->howObj, "incorporate_multi_candidates"))
+        call(ci->howObj, "incorporate_multi_candidates", ValueList{cls});
 }
 
 

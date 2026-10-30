@@ -1323,6 +1323,11 @@ Value rtNqpOp(NqpOpc op, ValueList& v) {
                 if (nm == "$!from" || nm == "from") return Value::integer(v[0].rFrom());
                 if (nm == "$!pos"  || nm == "pos")  return Value::integer(v[0].rTo());
             }
+            // a concrete role's metaobject knows the role it was made from
+            if (nm == "@!roles" && v[0].t == VT::Object && v[0].obj())
+                for (ClassInfo* c = v[0].obj()->cls.get(); c; c = c->parent.get())
+                    if (c->name == "Metamodel::ConcreteRoleHOW")
+                        return Interpreter::liveTarget()->concreteRoleRoles(v[0]);
             if (v[0].t == VT::Object && v[0].obj()) {
                 std::string bare = nm.size() > 2 ? nm.substr(2) : nm;
                 auto it = v[0].obj()->attrs.find(bare);
