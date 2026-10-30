@@ -1284,8 +1284,11 @@ void Interpreter::registerBuiltinsPart4() {
                 // (so the block that ends after registering it doesn't finish early),
                 // and release the hold once it fires.
                 ctx->pending++;
-                // fire under the supply activation so the body's emits reach downstream
-                Value fireW = ctxCallable(ctx, [blk, lastP, quitP, ps, ctx](Interpreter& I2, ValueList&) -> Value {
+                // fire under the supply activation so the body's emits reach downstream,
+                // and as a DELIVERY to it (S-53), like the Supply arm's: one body at
+                // a time, and running while it runs (closeTapHandle waits on that)
+                const long long promSub = ++ctx->subSeq;
+                Value fireW = I.supplyDelivery(ctx, promSub, [blk, lastP, quitP, ps, ctx](Interpreter& I2, ValueList&) {
                     if (ps->broken) {
                         // S-57, the same rule the Supply path's quitW follows: a QUIT
                         // phaser works like CATCH. A matching when/default consumes
@@ -1319,8 +1322,10 @@ void Interpreter::registerBuiltinsPart4() {
                             // Promise.Supply loses it in a `then`, and the done
                             // after its emit never comes, so this whenever stays
                             // pending. (A TLS listener's second client vanished
-                            // when the first connection's tap block died.)
-                            if (e.fromTapperOf == ctx.get()) throw;
+                            // when the first connection's tap block died.) Lost
+                            // HERE, inside the delivery: thrown out of it, it
+                            // left the next promise's body queued behind it.
+                            if (e.fromTapperOf == ctx.get()) return;
                             // S-57: an exception raised by the whenever BODY is not a
                             // source quit — no QUIT phaser sees it; it ends the supply
                             // and reaches the TAPPER's quit handler, exactly as the
@@ -1346,12 +1351,25 @@ void Interpreter::registerBuiltinsPart4() {
                     }
                     ctx->pending--;
                     I2.maybeFinishSupply(ctx);
-                    return Value::any();
                 });
                 Interpreter* self = &I;
                 std::function<void()> run = [self, fireW]() { ValueList na; try { self->callCallable(fireW, na); } catch (...) {} };
+                // A promise that settles LATER fires the body on a worker of its
+                // own, as Rakudo's `.then` does — not inside whatever kept it.
+                // Inline, Cro::WebSocket's handler, which keeps the close promise
+                // mid-stream, ran Cro::RPC::JSON's `whenever $close { …; done }`
+                // before it passed on the input's end, so the actor's supply was
+                // done before its `whenever $in` could see a LAST.
+                std::function<void()> later = [self, fireW]() {
+                    Value body; body.t = VT::Code; body.setCode(makePayload<Callable>());
+                    body.code()->ciM().builtin = [fireW](Interpreter& I3, ValueList&) -> Value {
+                        ValueList na; try { I3.callCallable(fireW, na); } catch (...) {}
+                        return Value::any();
+                    };
+                    self->spawnPromise(body);
+                };
                 bool now = false;
-                { std::lock_guard<std::mutex> lk(ps->m); if (ps->done) now = true; else ps->thens.push_back(run); }
+                { std::lock_guard<std::mutex> lk(ps->m); if (ps->done) now = true; else ps->thens.push_back(later); }
                 if (now) run();
                 Value t = Value::makeHash(); t.hashKind = "Tap"; return t;
             }
@@ -2146,8 +2164,14 @@ void Interpreter::registerBuiltinsPart4() {
                         self->reactStack_.pop_back();
                         { std::lock_guard<std::mutex> lk(rctx->m); if (rctx->liveSources > 0) rctx->liveSources--; rctx->cv.notify_all(); }
                     };
+                    // (settling later, on a worker of its own: see the supply arm)
+                    std::function<void()> later = [self, fire]() {
+                        Value body; body.t = VT::Code; body.setCode(makePayload<Callable>());
+                        body.code()->ciM().builtin = [fire](Interpreter&, ValueList&) -> Value { fire(); return Value::any(); };
+                        self->spawnPromise(body);
+                    };
                     bool now = false;
-                    { std::lock_guard<std::mutex> lk(ps->m); if (ps->done) now = true; else ps->thens.push_back(fire); }
+                    { std::lock_guard<std::mutex> lk(ps->m); if (ps->done) now = true; else ps->thens.push_back(later); }
                     if (now) fire();
                     Value t = Value::makeHash(); t.hashKind = "Tap"; return t;
                 }
