@@ -16030,6 +16030,25 @@ static bool isDoBlockExprStmt(const Stmt* s) {
 }
 
 StmtPtr Parser::applyModifiers(StmtPtr s) {
+    // `EXPR.return` as a whole statement IS `return EXPR` (Mu.return returns its
+    // invocant from the routine it is written in), and as one it takes the
+    // statement's cooperative path: thrown from a method call, the return cost
+    // ~160 µs of unwinding, and Cro picks every body's parser with
+    // `.return if .is-applicable($message)`
+    if (s && s->kind == NK::ExprStmt) {
+        auto* es = static_cast<ExprStmt*>(s.get());
+        auto* mc = es->e && es->e->kind == NK::MethodCall ? static_cast<MethodCall*>(es->e.get()) : nullptr;
+        if (mc && (mc->method == "return" || mc->method == "return-rw") && mc->inv && mc->args.empty() &&
+            !mc->meta && !mc->hyper && !mc->maybe && !mc->bang && !mc->mutate && !mc->allMode &&
+            !mc->methodExpr && mc->methodQual.empty()) {
+            auto r = std::make_unique<ReturnStmt>();
+            r->line = es->line ? es->line : mc->line;
+            r->isRw = mc->method == "return-rw";
+            if (r->isRw) sawReturnRw_ = true;
+            r->value = std::move(mc->inv);
+            s = std::move(r);
+        }
+    }
     // a BLOCK's `}` at end-of-line TERMINATES the statement (Rakudo's rule) — so
     // `x => {…}\n if COND {…}` starts a NEW if statement, while a modifier on
     // a continuation line after a non-brace token still attaches. Any RBrace
