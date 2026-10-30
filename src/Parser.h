@@ -350,6 +350,7 @@ private:
     // recorded as parseClass/parseSubset/parseEnum see them, handed to the
     // Program at the end of parseProgram.
     std::set<std::string> declTypeNames_;
+    std::set<std::string> usedTypeNames_;      // …and those a `use`d module declares (scanOpsIn): parse-time only
     std::set<std::string> typeCaptureNames_;   // `::T` in a signature: a type VARIABLE, no class
     // a class declared `is T` where T is only a capture so far — checked once the
     // unit's own classes are all known (a real class of that name makes it fine)

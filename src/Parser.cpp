@@ -1078,6 +1078,16 @@ bool Parser::scanOpsIn(const std::string& src, const std::string& srcPath) {
         if (isWordInfixName(n)) wordInfixSubs_.insert(n);
         // `Foo { … }` (#198) — a `sub`, not the `class Generic` the scan reports too
         if (!n.empty() && ascii::isupper((unsigned char)n[0]) && src.compare(at, 3, "sub") == 0) capSubNames_.insert(n);
+        // …and that class, role or grammar is a TYPE here, by its whole name:
+        // `for Cro::Iri -> $p { … }` read Cro::Iri as a routine claiming the block
+        if (src.compare(at, 3, "sub") != 0) {
+            size_t b = at, e;
+            while (b < src.size() && !ascii::isspace((unsigned char)src[b])) b++;
+            while (b < src.size() && ascii::isspace((unsigned char)src[b])) b++;
+            for (e = b + n.size(); src.compare(e, 2, "::") == 0 && e + 2 < src.size() && ascii::isalpha((unsigned char)src[e + 2]); )
+                for (e += 2; e < src.size() && (ascii::isalnum((unsigned char)src[e]) || src[e] == '_' || src[e] == '-'); e++) {}
+            usedTypeNames_.insert(src.substr(b, e - b));
+        }
     });
     // …and the ones that collide with a QUOTE form (`sub tr`, `sub q`). Those are
     // decided in the lexer, which ran before this file's `use` was reached, so the
@@ -10115,7 +10125,7 @@ ExprPtr Parser::parsePrimary() {
             // …and so, before a block or a pointy, are `rand`, `i` and a TYPE: the block is
             // the statement's (`if rand { … }`, `for buf8 -> \bt { }`), as in Rakudo
             if (listopOk && (isKind(Tok::LBrace) || isOp("->") || isOp("<->")) && (name == "rand" || name == "i" ||
-                isKnownTypeName(name) || declTypeNames_.count(name) || declClassDecls_.count(name) ||
+                isKnownTypeName(name) || declTypeNames_.count(name) || declClassDecls_.count(name) || usedTypeNames_.count(name) ||
                 (isNativeTypeName(name) && !declaredSubNames_.count(name)))) listopOk = false;   // `for uint64 -> \T`
             // callsame/nextsame are nullary redispatchers — they reuse the current
             // args and take none of their own, so `"[" ~ callsame ~ "]"` must not read
