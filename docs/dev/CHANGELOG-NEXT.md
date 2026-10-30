@@ -33,7 +33,8 @@ c9560e0d; d1c84b6b (issue #199); a1bb0e7b (issue #191); 55565059 (issue
 (issue #189); f303f0c0 (issue #196); 43341539; 392873ab; 78c4f478; 946d29e4
 (issue #190); e9455bfa; be510e3a; 5801c286; c5fd7f1d; 7aa4256c; c4df7b96; 67b676cf; 38fe9757; a81b6f91;
 bd8936e7; 0938078e; 858a037e; 21c37405; 0b29ef00; 9b3fbb8a; de0d04e5;
-3e15da85; 2df02ed1; 2adfaa34; c91a94fb; 1676fc8a; 5b70d2e1; d54cc3ba.*
+3e15da85; 2df02ed1; 2adfaa34; c91a94fb; 1676fc8a; 5b70d2e1; d54cc3ba;
+d4ed6cac (issue #60).*
 
 ---
 
@@ -677,6 +678,16 @@ plain before 500c29e2 and native from it, unless they say otherwise.
   methods already did, and so do Z, X and the reduce; a returned map's
   `.head` still runs one block.
   t/regression/returned-map-read-by-builtins.raku agrees with Rakudo 2026.09.
+- **A module loaded from the parse cache keeps the flags the parser set on
+  its calls** (d4ed6cac; issue #60). With `--precomp-modules=on`, every
+  load after the first ran a returned map's every block where `.head` reads
+  one, called one candidate for `.+m`, curried on through `((*.flip))`, and
+  threw the Failure `so f()` tests under `use fatal`: the AST cache wrote
+  none of those flags (AST cache v55). `rakupp install FunctionalParsers`
+  failed its t/06 that way, once 00-sanity had cached the module. The
+  install trace now records the parse-cache setting and where it came from.
+  t/regression/precomp-method-call-flags.raku, three runs against one cache,
+  agrees with Rakudo 2026.09.
 
 ### Fixed: crashes
 
