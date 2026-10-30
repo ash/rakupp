@@ -852,16 +852,22 @@ moves to [TODO.md](TODO.md).
     that block's "ok - check 4" lands in the next subtest's plan. A race in
     the test; Rakudo's scheduling hides it;
   - Cro::RPC::JSON's t/060-websocket.rakutest fails now and then under
-    six-way CPU load (4 runs in 10 at 71fcbbb4, 1 in 15 at f3ffb5c3; none
-    in 15 idle), and failed once in a fresh `rakupp install` (then passed
+    six-way CPU load (2 runs in 20 at c067446c, 1 in 20 at its parent; none
+    in 10 idle), and failed once in a fresh `rakupp install` (then passed
     six times running): the client reads the close code, or the actor's
     reaction to the close, before the server's `whenever $close` body has
     run. Cro's handler emits its Close reply before it keeps that promise,
-    so Rakudo races too, but timed with notes the server sets the code 0.8
-    to 2 ms ahead of the client's check there, and 0.01 to 0.2 ms here: this
-    socket write is done inside the reply's `emit` (Rakudo's goes through
-    its event loop), and each promise whenever starts a thread (Rakudo's
-    `.then` takes a pool thread);
+    so Rakudo races too. Timed with notes under that load, the server sets
+    the code a median 0.2 ms ahead of the client's check here (0.15 ms
+    before c067446c queued socket writes as Rakudo does) and 1 to 6 ms
+    there. The steps are the same; Rakudo's lead is its client's `await
+    Promise.anyof(Promise.in(…), $!closer)`, two thread-pool hops of 0.5 to
+    2 ms where rakupp's wait wakes in 0.05 ms. A pool for promise whenevers
+    (see Performance) would speed both ends alike. Once under
+    ThreadSanitizer, "Async Notifications With Object" failed too: the
+    test's own JRPC-WS-Actor ticker walks `%!subscriptions.keys` while an
+    `rpc.off` on another thread deletes them, and its `++` brings ns2 and
+    ns3 back at 1;
   - IO::Socket::Async::SSL's t/encoding.rakutest failed once in a fresh
     `rakupp install` (it read "¸ВО" for "ПИВО": the reply's first bytes were
     lost) and has passed 80 runs since, idle and under load;
@@ -1268,6 +1274,25 @@ moves to [TODO.md](TODO.md).
   move it into binBuf; the handle's `.slurp(:bin)` and a `.read` of the
   whole file want the same look. Done when the first line's 256 MB peaks
   under 300 MB, one copy of the file and the interpreter.
+
+- [ ] **A `whenever` over a promise that settles later starts a thread for
+  its body** (found 2026-10-30: since c067446c queued socket writes, every
+  `whenever $socket.write(…) {}` in Cro's TCP replier is one):
+
+  ```raku
+  my $l = IO::Socket::Async.listen('127.0.0.1', 0).tap: -> $conn { $conn.Supply(:bin).tap: -> $ { } };
+  my $c = await IO::Socket::Async.connect('127.0.0.1', $l.socket-port.result);
+  my $blob = Blob.allocate(100, 1); my $t = now;
+  await Promise(supply { whenever Supply.from-list(^2000) { whenever $c.write($blob) {} } });
+  say now - $t;   # 0.059 to 0.071; 0.015 to 0.021 before c067446c, Rakudo 2026.09 1.6
+  ```
+
+  The Promise arm of `whenever` in src/BuiltinsRegister2.cpp hands its
+  `later` to spawnPromise, a BigStackThread per settle, and `.then` does
+  the same through spawnDelayedNative; Rakudo cues both on its thread
+  pool. A few lingering workers taking these continuations off a queue
+  would keep their order per supply (supplyDelivery already serializes
+  the bodies) and spare the thread start.
 
 ## Gates
 

@@ -34,7 +34,8 @@ c9560e0d; d1c84b6b (issue #199); a1bb0e7b (issue #191); 55565059 (issue
 (issue #190); e9455bfa; be510e3a; 5801c286; c5fd7f1d; 7aa4256c; c4df7b96; 67b676cf; 38fe9757; a81b6f91;
 bd8936e7; 0938078e; 858a037e; 21c37405; 0b29ef00; 9b3fbb8a; de0d04e5;
 3e15da85; 2df02ed1; 2adfaa34; c91a94fb; 1676fc8a; 5b70d2e1; d54cc3ba;
-d4ed6cac (issue #60); 480f6850; a92d9cfd; 0d089427; 9cac10e4; f3ffb5c3.*
+d4ed6cac (issue #60); 480f6850; a92d9cfd; 0d089427; 9cac10e4; f3ffb5c3;
+c067446c.*
 
 ---
 
@@ -1347,6 +1348,13 @@ does not.
   test counted its replies before the last one had been made.
   t/regression/emit-waits-for-busy-supply-on-another-thread.raku agrees with
   Rakudo 2026.09.
+- **IO::Socket::Async's `write` and `print` queue their bytes and return
+  at once** (c067446c), with a Promise kept once the bytes are out, as
+  Rakudo's event loop does. Sent on the caller's thread, a write blocked
+  until the peer read, so a client that wrote more than the socket buffers
+  hold before it tapped the echo hung for ever. A `close` goes out after
+  the writes made before it. t/regression/async-socket-write-queued.raku
+  agrees with Rakudo 2026.09.
 
 ### Left open
 
