@@ -1435,13 +1435,15 @@ struct SupplyTapCtx {
     Value emitCb, doneCb, quitCb;   // downstream callbacks (may be empty)
     ValueList* collect = nullptr;   // eager drain: emits append here instead
     std::shared_ptr<TapHandle> tap;
-    bool done = false;              // explicit `done` ran
+    // (these four are read and set by every thread a source delivers on, some
+    // outside the activation: atomic, and doneFired is claimed by exchange)
+    std::atomic<bool> done{false};       // explicit `done` ran
     // implicit completion: the supply is done when its block has returned AND
     // every inner whenever-tap has signalled done (a listener's tap never does,
     // keeping that supply live)
-    int pending = 0;                // inner taps not yet done
-    bool blockDone = false;         // the supply block returned
-    bool doneFired = false;         // downstream done already delivered
+    std::atomic<int> pending{0};         // inner taps not yet done
+    std::atomic<bool> blockDone{false};  // the supply block returned
+    std::atomic<bool> doneFired{false};  // downstream done already delivered
     bool closeRebound = false;      // CLOSE phasers now close over the running body (see emit)
     ValueList closers;              // Supply.on-close callbacks for THIS activation
     // S-53: a `whenever` subscribes the instant its statement runs, but the
@@ -4441,7 +4443,7 @@ public:
     // is. `sub` tags the entry with its subscription.
     Value supplyDelivery(const std::shared_ptr<SupplyTapCtx>& ctx, long long sub,
                          std::function<void(Interpreter&, ValueList&)> fn);
-    int noCycleBreak_ = 0; // >0: breakSelfClosures suspended (supply-block wiring; env outlives frame)
+    std::atomic<int> noCycleBreak_{0}; // >0: breakSelfClosures suspended (supply-block wiring; env outlives frame; any thread)
     std::atomic<long> cuedLoads_{0}; // outstanding cued jobs ($*SCHEDULER.loads)
     void awaitPromise(const std::shared_ptr<struct PromiseState>& ps);
     // Has promise `p` settled? Every shape a Promise takes here: a start/vow

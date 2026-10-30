@@ -1878,7 +1878,15 @@ Value Interpreter::exceptionFor(const RakuError& e) {
         // attribute below is set on the object either way, but `.payload` is a
         // missing METHOD without a declaration to generate it from.
         if (isAdHocKind(tn)) { ClassAttr pa; pa.name = "payload"; pa.sigil = '$'; pa.pub = true; ci->attrs.push_back(pa); }
-        classes_[tn] = ci;
+        // …kept for the next one only while the program is single-threaded:
+        // once the symbol tables freeze, other threads read classes_ without a
+        // lock, and an insert that rehashed it under them lost their lookups
+        // (`DeepCompareRec.new` died "No such method 'new'" in Cro::RPC::JSON's
+        // WebSocket test the moment a socket write failed with X::IO elsewhere)
+        if (!symbolsFrozen_.load(std::memory_order_relaxed)) {
+            noteSymbolMutation("exception type");
+            classes_[tn] = ci;
+        }
     }
     auto od = makePayload<ObjectData>();
     od->cls = ci;

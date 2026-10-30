@@ -92,7 +92,9 @@ void Interpreter::closeOverRunningBody() {
 void Interpreter::maybeFinishSupply(const std::shared_ptr<SupplyTapCtx>& ctx) {
     if (!ctx || ctx->doneFired || ctx->done) return;
     if (!ctx->blockDone || ctx->pending > 0) return;
-    ctx->doneFired = true;
+    // the block's own thread and an inner tap's last delivery may both get
+    // here; one of them fires
+    if (ctx->doneFired.exchange(true)) return;
     if (ctx->doneCb.t == VT::Code) { ValueList na; try { callCallable(ctx->doneCb, na); } catch (...) {} }
     closeTapHandle(ctx->tap);
 }
@@ -1580,6 +1582,11 @@ std::unique_lock<RaceMutex> lockTapRecord(const ValueMap& rec) {
 }
 void stampTapRecord(ValueMap& rec, const ValueMap* sup) {
     rec[kTapSupKey] = Value::integer((long long)(uintptr_t)sup);
+    // …and the flags a close or the supplier's `done` sets later exist from the
+    // start, as a Channel's "closed" does: added then, the new key reshaped the
+    // record under lockTapRecord's unlocked find on the thread closing the tap
+    if (!rec.count("closed")) rec["closed"] = Value::boolean(false);
+    if (!rec.count("ended")) rec["ended"] = Value::boolean(false);
 }
 template <class H> static void closeTapRecord(H& rec) {
     auto lk = lockTapRecord(rec);
@@ -1607,7 +1614,7 @@ Value Interpreter::tapSupply(const Value& s, Value emitCb, Value doneCb, Value q
         scanSupplyPhasers(blk, nullptr, &quitP, &handle->closePhasers);
         tctx().tapStack.push_back(ctx);
         noCycleBreak_++;
-        struct CBGuard { int& n; ~CBGuard() { n--; } } cbGuard{noCycleBreak_};
+        struct CBGuard { std::atomic<int>& n; ~CBGuard() { n--; } } cbGuard{noCycleBreak_};
         try {
             { std::lock_guard<std::mutex> lk(ctx->m); ctx->running++; }
             ctx->inBody = true;
