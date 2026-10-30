@@ -104,6 +104,13 @@ void Interpreter::maybeFinishSupply(const std::shared_ptr<SupplyTapCtx>& ctx) {
 // thread's own body, or another thread's, since a `start` block emitting into
 // a Supplier delivers on its own thread. Deciding which, and queueing, happen
 // under ctx->m; see drainSupplyQueue for the other half.
+// When ANOTHER thread holds the activation, this one first waits for it, a
+// little (25 ms at most), and then delivers itself, as Rakudo's emit waits on
+// a busy supply's lock: queued instead, a value this thread emitted reached
+// the tapper only once the holder had drained it, after whatever this thread
+// did next. (Cro::WebSocket's handler test counts the replies it got when the
+// close promise this thread keeps afterwards fires.) The bound keeps two
+// activations delivering into each other from waiting on one another.
 Value Interpreter::supplyDelivery(const std::shared_ptr<SupplyTapCtx>& ctx, long long sub,
                                   std::function<void(Interpreter&, ValueList&)> fn) {
     return ctxCallable(ctx, [ctx, sub, fn](Interpreter& I2, ValueList& args) -> Value {
@@ -122,11 +129,27 @@ Value Interpreter::supplyDelivery(const std::shared_ptr<SupplyTapCtx>& ctx, long
             }};
         };
         bool now;
+        const auto me = std::this_thread::get_id();
+        const auto until = std::chrono::steady_clock::now() + std::chrono::milliseconds(25);
+        for (;;) {
+            {
+                std::lock_guard<std::mutex> lk(ctx->m);
+                if (ctx->done || (sub && ctx->closedSubs.count(sub))) return Value::any();
+                if (ctx->running <= 0) break;
+                if (ctx->runner == me || std::chrono::steady_clock::now() >= until) {
+                    ctx->queue.push_back(deferred());
+                    return Value::any();
+                }
+            }
+            if (I2.gilHeld_ && !I2.parallelMode_) I2.yieldToWorkerFor(0.0002);
+            else std::this_thread::sleep_for(std::chrono::microseconds(20));
+        }
         {
             std::lock_guard<std::mutex> lk(ctx->m);
             if (ctx->done || (sub && ctx->closedSubs.count(sub))) return Value::any();
             if (ctx->running > 0) { ctx->queue.push_back(deferred()); return Value::any(); }
             ctx->running++;                  // the activation is this thread's now
+            ctx->runner = me;
             raceAcquire(ctx->race, RaceEdge::Supply);
             // …but older deliveries still waiting go first: this one joins the
             // back of the line (a holder that died on an exception left them)
@@ -251,7 +274,7 @@ Value Interpreter::drainSupplyBlock(const Value& s) {
     try {
         // S-53 holds here too: the body runs first, then what its whenevers'
         // sources delivered while it ran (the drain releases the activation).
-        { std::lock_guard<std::mutex> lk(ctx->m); ctx->running++; }
+        { std::lock_guard<std::mutex> lk(ctx->m); ctx->running++; ctx->runner = std::this_thread::get_id(); }
         ctx->inBody = true;
         if (blk.t == VT::Code) {
             ValueList na;
@@ -1616,7 +1639,7 @@ Value Interpreter::tapSupply(const Value& s, Value emitCb, Value doneCb, Value q
         noCycleBreak_++;
         struct CBGuard { std::atomic<int>& n; ~CBGuard() { n--; } } cbGuard{noCycleBreak_};
         try {
-            { std::lock_guard<std::mutex> lk(ctx->m); ctx->running++; }
+            { std::lock_guard<std::mutex> lk(ctx->m); ctx->running++; ctx->runner = std::this_thread::get_id(); }
             ctx->inBody = true;
             if (blk.t == VT::Code) {
                 ValueList na;

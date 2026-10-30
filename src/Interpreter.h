@@ -1458,6 +1458,7 @@ struct SupplyTapCtx {
     std::set<long long> closedSubs; // whenevers whose source is finished or `last`-ed
     long long subSeq = 0;           // ids for this activation's subscriptions
     int running = 0;
+    std::thread::id runner;         // …the thread that took it (set with running 0 -> 1)
     // `queue`, `running` and `closedSubs` are shared by every thread that
     // delivers into this activation — a `start` block emitting into a
     // Supplier runs the whenever on ITS thread — so they change under `m`
