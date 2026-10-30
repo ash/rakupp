@@ -141,7 +141,14 @@ void Interpreter::registerBuiltinsPart5() {
             if (ctx->emitCb.t == VT::Code) {
                 ValueList one{v};
                 ctx->emitting++;
-                try { I.sinkDiscarded(I.callCallable(ctx->emitCb, one)); } catch (...) { ctx->emitting--; throw; }
+                // A tapper that dies hands its error back through this emit: the
+                // emitting body may CATCH it, but if it gets out of the body the
+                // supply neither quits nor closes for it. It goes on to whoever
+                // delivered the value (Rakudo's EMIT handler is still active when
+                // the tapper throws, so the block's own CATCH never sees it).
+                try { I.sinkDiscarded(I.callCallable(ctx->emitCb, one)); }
+                catch (RakuError& e) { ctx->emitting--; e.fromTapperOf = ctx.get(); throw; }
+                catch (...) { ctx->emitting--; throw; }
                 ctx->emitting--;
             }
             return Value::boolean(true);

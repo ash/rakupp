@@ -1311,6 +1311,13 @@ void Interpreter::registerBuiltinsPart4() {
                         try { I2.callCallable(blk, one); }
                         catch (NextEx&) {} catch (LastEx&) {} catch (DoneEx&) {}
                         catch (RakuError& e) {
+                            // …but one the TAPPER raised through our emit is not the
+                            // body's: no quit, and the supply goes on. Rakudo's
+                            // Promise.Supply loses it in a `then`, and the done
+                            // after its emit never comes, so this whenever stays
+                            // pending. (A TLS listener's second client vanished
+                            // when the first connection's tap block died.)
+                            if (e.fromTapperOf == ctx.get()) throw;
                             // S-57: an exception raised by the whenever BODY is not a
                             // source quit — no QUIT phaser sees it; it ends the supply
                             // and reaches the TAPPER's quit handler, exactly as the
@@ -1378,6 +1385,9 @@ void Interpreter::registerBuiltinsPart4() {
                 }
                 catch (DoneEx&) {}
                 catch (RakuError& e) {
+                    // the TAPPER died on our emit: the source that delivered
+                    // this value gets the error, and the supply stays open
+                    if (e.fromTapperOf == ctx.get()) throw;
                     // S-57: an exception raised by the whenever BODY is not a
                     // source quit. The QUIT phasers — this whenever's or the
                     // supply block's — do not see it; it ends the supply and
@@ -1864,6 +1874,18 @@ void Interpreter::registerBuiltinsPart4() {
                         ValueList one = args;
                         Value r = Value::any();
                         try { r = I2.callCallable(blkCopy, one); } catch (NextEx&) {} catch (LastEx&) {} catch (DoneEx&) {}
+                        catch (RakuError& e) {
+                            // a die in the body is the react's: it ends the react,
+                            // and so the supply delivering to it, whose emit then
+                            // returns as usual — it is not that supply's error
+                            // (Rakudo; the supply's tapper raised it, so the
+                            // supply would hand it on to its own source)
+                            if (!c) throw;
+                            {   std::lock_guard<std::mutex> lk(c->m);
+                                if (!c->quitFlag) { c->quitFlag = true; c->quitErr = I2.exceptionFor(e); }
+                                c->closed = true; c->cv.notify_all();
+                            }
+                        }
                         endDelivering();
                         return r;
                     };

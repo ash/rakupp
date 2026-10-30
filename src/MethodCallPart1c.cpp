@@ -924,6 +924,10 @@ std::optional<Value> Interpreter::methodCallPart1c(const Value& inv, const MName
                             if (rctx) reactStack_.pop_back();
                             throw;
                         }
+                        // …and so is one that a supply block's own TAPPER raised
+                        // on the emit this value caused: that supply stays open
+                        // and handed it back here, to the emitter (Rakudo).
+                        if (e.fromTapperOf && !rctx) throw;
                         // an exception in the tap's block QUITS the tap — the
                         // quit handler gets the exception and the EMITTER is
                         // not unwound (Cro's frame parser dies per malformed

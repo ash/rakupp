@@ -1249,6 +1249,7 @@ bool isEnumTypeObject(const Value& v);   // an enum's type object (InterpreterCa
 // does not throw. The frames reach user code as `$!.backtrace` and the
 // uncaught-error printer (Interpreter::exceptionFor attaches them).
 struct CatchOutcome;
+struct SupplyTapCtx;
 struct RakuError {
     Value payload; std::string message;
     std::shared_ptr<BtRecord> bt;                 // innermost first; null = not captured
@@ -1266,6 +1267,10 @@ struct RakuError {
     // `outcome` is how that handler left, for its own block to act on.
     uint64_t dispCtx = 0, seenTo = ~uint64_t(0), takenBy = 0;
     std::shared_ptr<CatchOutcome> outcome;
+    // The supply activation whose `emit` this came out of: its TAPPER's
+    // callback died. That supply does not quit for it — the error goes on to
+    // whoever delivered the value, as in Rakudo (see the emit builtin).
+    const SupplyTapCtx* fromTapperOf = nullptr;
     RakuError() = default;
     RakuError(Value p, std::string m);            // captures (defined in InterpreterBinding.cpp)
     // …and the form that does NOT: a RakuError built only to be converted

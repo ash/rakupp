@@ -489,6 +489,9 @@ Value Interpreter::spawnSupplyTimer(double secs, Value blk, std::shared_ptr<Supp
             try { I2.sinkDiscarded(I2.callCallable(blk, one)); }
             catch (NextEx&) {} catch (LastEx&) {} catch (DoneEx&) {}
             catch (RakuError& e) {
+                // the tapper died on an emit, as in the `whenever` Promise arm:
+                // no quit, and the supply goes on
+                if (e.fromTapperOf == ctx.get()) throw;
                 // S-57, as in the `whenever` Promise arm: a body that dies ends the
                 // supply and reaches the TAPPER's quit handler. Without this the
                 // throw escaped the worker's catch(...) below and the pending hold
@@ -1572,7 +1575,7 @@ Value Interpreter::tapSupply(const Value& s, Value emitCb, Value doneCb, Value q
             // S-53: the body has returned — now hand over what its whenevers'
             // sources delivered while it ran, and release the activation.
             tctx().tapStack.push_back(ctx);
-            try { drainSupplyQueue(ctx); } catch (...) { tctx().tapStack.pop_back(); throw; }
+            drainSupplyQueue(ctx);    // (a throw is popped by the catches below)
             tctx().tapStack.pop_back();
             // the block returned: with no live inner taps the supply is done
             ctx->blockDone = true;
@@ -1580,6 +1583,9 @@ Value Interpreter::tapSupply(const Value& s, Value emitCb, Value doneCb, Value q
         }
         catch (RakuError& e) {
             tctx().tapStack.pop_back();
+            // our tapper died on an emit: the error is the caller of .tap's,
+            // and this supply neither quits nor closes for it (Rakudo)
+            if (e.fromTapperOf == ctx.get()) throw;
             Value ex = exceptionFor(e);
             bool handled = false;
             for (auto& q : quitP) { ValueList one{ex}; try { callCallable(q, one); handled = true; } catch (...) {} }
