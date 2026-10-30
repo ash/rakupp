@@ -31,7 +31,7 @@ f3fb83e3 and 5e611fa3 (issue #216); 67c35490 (issue #215); 820388ce and
 c9560e0d; d1c84b6b (issue #199); a1bb0e7b (issue #191); 55565059 (issue
 #177); ad2bba29 (issue #176); 308aecdf (issue #179); 94172cb6; 7f28cba0
 (issue #189); f303f0c0 (issue #196); 43341539; 392873ab; 78c4f478; 946d29e4
-(issue #190); e9455bfa; be510e3a.*
+(issue #190); e9455bfa; be510e3a; 5801c286.*
 
 ---
 
@@ -1181,6 +1181,12 @@ does not.
   green under `rakupp install`.
   t/regression/whenever-coerces-user-class-supply.raku agrees with Rakudo
   2026.09.
+- **An enum a module declares outside any package is `our`** (5801c286):
+  the program reaches its type and its members by their qualified names,
+  where `use C; C::Idx::NotIndexed` was "Could not find symbol", and `enum
+  G::Idx` inside `unit module G` is G's own Idx, not G::G::Idx, as in
+  Rakudo. HTTP::HPACK's encoder test, which stopped `rakupp install cro`,
+  passes. t/regression/module-enum-is-our.raku agrees with Rakudo 2026.09.
 
 ### Left open
 
