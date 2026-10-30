@@ -817,36 +817,6 @@ moves to [TODO.md](TODO.md).
   Channel ones too), then check Cro, whose handlers read state a CLOSE
   clears. Done when both lines print Rakudo's order.
 
-- [ ] **Cro::RPC::JSON's WebSocket tests lose the race between a client's
-  close and `$server.stop`** (found 2026-10-30; t/060-websocket.rakutest
-  fails 4 to 11 of its checks, varying run to run): "connection close
-  code", "websocket is closed with correct code", "actor's 'last' hook",
-  sometimes "connection close code (set by 'wsclose' hook)". Each test
-  closes the client, stops the server at once and reads what the server's
-  close handling set. Cro::WebSocket::Handler answers the close frame first
-  and keeps the close promise one Channel hop later (`$supplier.Supply
-  .Channel.Supply.grep`); the input's end reaches the actor handler through
-  that hop, the request parser and Cro::RPC::JSON's Handler. Measured with
-  the channel wake of this round: the server's `whenever $close` runs about
-  0.2 ms before the client's close completes, and the code it sets lands
-  0.3 to 0.7 ms after `$server.stop`. With a 10 ms pause before the stop the
-  close-code subtest passes; the others still vary. Rakudo passes the file.
-  The likely difference: closing a supply block's tap in Rakudo takes the
-  block's lock, so it waits for a `whenever` body already running; rakupp's
-  closeTapHandle does not wait. Try making closeTapHandle wait for an
-  activation's running body (SupplyTapCtx::running) before tearing it down,
-  without waiting on the closing thread's own activation. Done when
-  t/060-websocket.rakutest passes 20 runs in a row.
-
-- [ ] **A die in a WebSocket actor's async supply does not close the
-  connection with 1011** (Cro::RPC::JSON t/070-errors.rakutest, 2 of 3
-  checks): the actor's `whenever Supply.interval(…) { die … }` should end
-  the actor handler's supply, reach Cro::WebSocket::Handler's `whenever
-  $block-result { … QUIT { close(1011) } }` and close the socket. The client
-  waits out its 10 s timeout instead. Not traced yet: start from where the
-  quit stops (the Handler's `whenever $from-user`, or the Cro.compose
-  around it).
-
 - [ ] **Smaller differences met on the way** (2026-10-30):
   - `Kid.^find_method('foo').candidates` lists a role's multi candidate
     twice when Kid and a parent both declare candidates (Rakudo: once);
@@ -856,6 +826,9 @@ moves to [TODO.md](TODO.md).
   - `R.^candidates.map(*.HOW.^name)` dies "Cannot map a List using a Str":
     `.^name` after `*.HOW` is not curried into the WhateverCode;
   - `GLOBAL::.keys` is empty after `class A::B::C { }` (Rakudo: (A));
+  - closing the tap of a supply block calls the tapper's `done` callback
+    (`supply { whenever Supply.interval(10) { } }.tap(done => { note
+    "done" }).close` says "done"; Rakudo says nothing);
   - Cro::HTTP's t/http2-request-parser.rakutest fails now and then (3 runs
     in 20 at 12a8fee3, 2 in 20 after it): the "Header1 + Continuation1 +
     Header2 + Data1" case passes as soon as its second request is checked,

@@ -33,7 +33,7 @@ c9560e0d; d1c84b6b (issue #199); a1bb0e7b (issue #191); 55565059 (issue
 (issue #189); f303f0c0 (issue #196); 43341539; 392873ab; 78c4f478; 946d29e4
 (issue #190); e9455bfa; be510e3a; 5801c286; c5fd7f1d; 7aa4256c; c4df7b96; 67b676cf; 38fe9757; a81b6f91;
 bd8936e7; 0938078e; 858a037e; 21c37405; 0b29ef00; 9b3fbb8a; de0d04e5;
-3e15da85; 2df02ed1; 2adfaa34; c91a94fb.*
+3e15da85; 2df02ed1; 2adfaa34; c91a94fb; 1676fc8a; 5b70d2e1; d54cc3ba.*
 
 ---
 
@@ -234,6 +234,11 @@ plain before 500c29e2 and native from it, unless they say otherwise.
   strings over every cluster rule split the same before and after.
   t/regression/grapheme-table-one-walk.raku agrees with Rakudo 2026.09.
 
+- **`EXPR.return` as a whole statement is `return EXPR`** (d54cc3ba): about
+  1 µs a call instead of about 160 µs, the cost of unwinding an exception out
+  of a method call. Cro picks every message body's parser with `.return if
+  .is-applicable($message)`. t/regression/method-return-as-statement.raku
+  agrees with Rakudo 2026.09.
 - **A channel's send and close wake its parallel-mode readers** (c91a94fb)
   instead of their next 5 ms look: a value from `$channel.Supply` arrives in
   about 0.6 ms on an idle machine (4 to 6 ms before). Cro::WebSocket keeps a
@@ -1286,6 +1291,17 @@ does not.
   a channel-fed supply hung, which hung every request Cro::HTTP::Test made.
   Cro::HTTP::Test's seven test files pass.
   t/regression/supply-on-close-and-close-phaser-scope.raku agrees with Rakudo
+  2026.09.
+- **A `whenever $promise` that settles later runs on a worker after `keep`
+  returns, and in turn with its supply's other whenevers** (1676fc8a), as
+  Rakudo's `.then` does: run inline, Cro::RPC::JSON's actor ended its
+  supply from `whenever $close` before its input's end arrived.
+  t/regression/promise-whenever-fires-later-and-in-turn.raku agrees with
+  Rakudo 2026.09.
+- **`done` in a react whenever's LAST ends the react** (5b70d2e1) when the
+  source finishes on another thread; Cro's WebSocket client waited out its
+  timeout after the server closed.
+  t/regression/react-last-done-from-another-thread.raku agrees with Rakudo
   2026.09.
 
 ### Left open
