@@ -1232,12 +1232,14 @@ void Interpreter::registerBuiltinsPart4() {
                     ValueList none; a[0] = I.methodCall(a[0], "Supply", none);
                     break;
                 }
-        // NOT extended to a user CLASS that publishes a Supply, though Rakudo
-        // does coerce those too: IO::Socket::Async::SSL's `whenever $conn.head`
-        // then taps a real stream and its upgrade test HANGS where it used to
-        // finish with one failure. The tap is right and something downstream of
-        // it is not; shipping the coercion without knowing what would trade a
-        // wrong answer for a hang.
+        // …and so does a user CLASS with a Supply method of its own, as in
+        // Rakudo. IO::Socket::Async::SSL's upgrade test reads a line with
+        // `whenever $conn.head` (`.head` of one object is that object), which
+        // ran the body once with the socket itself as the line.
+        if (!a.empty() && a[0].t == VT::Object && a[0].obj() && a[0].obj()->cls &&
+            a[0].obj()->cls->findMethodForCall("Supply")) {
+            ValueList none; a[0] = I.methodCall(a[0], "Supply", none);
+        }
         // Inside an on-demand supply activation (real tap or eager drain): wire a
         // real inner tap. The body runs (now or later, from an I/O worker) with
         // this activation re-established, so its emits reach the downstream tap.
