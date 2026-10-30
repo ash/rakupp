@@ -3,6 +3,7 @@
 // One of the parts InterpreterParts.h lists; what they share is declared there.
 #include <unordered_set>
 #include "InterpreterParts.h"
+#include "CompileTime.h"
 #include "Sandbox.h"
 #include "AotModules.h"
 #include "CallCheck.h"
@@ -8828,7 +8829,7 @@ int Interpreter::run(Program& prog) {
                 auto* us = static_cast<UseStmt*>(s.get());
                 if (us->isNo && (us->module == "worries" || us->module == "warnings")) noWorries = true;
             }
-        if (!noWorries) {
+        if (!noWorries && !ctValues_) {   // (a binary's build-time pass: the binary warns)
             std::vector<std::string> ws;
             for (auto& s : prog.stmts) sinkWarnStmt(s.get(), false, ws);
             for (auto& w : ws) std::cerr << w << "\n";
@@ -9148,8 +9149,11 @@ int Interpreter::run(Program& prog) {
             for (; bi < beginP.size(); bi++) runBegin(beginP[bi]);
         }
         for (auto it = checkP.rbegin(); it != checkP.rend(); ++it) runPhaser(*it); // CHECK: reverse
-        for (auto* b : initP) runHoistedInit(b);                                  // INIT: source order, program-wide
-        for (auto* b : enterP) runPhaser(b);                                      // ENTER: on UNIT-block entry, before the mainline
+        if (ctValues_) ctAfterCheck(*this, prog);   // a binary's build-time pass: no INIT, no ENTER
+        else {
+            for (auto* b : initP) runHoistedInit(b);                              // INIT: source order, program-wide
+            for (auto* b : enterP) runPhaser(b);                                  // ENTER: on UNIT-block entry, before the mainline
+        }
         // a mainline CONTROL {} is the outermost warn handler for the run
         if (topControl) tctx().controlHandlers.push_back({topControl, tctx().cur});
         // …and its CATCH the outermost handler (see dispatchBeforeUnwind)
@@ -9158,6 +9162,7 @@ int Interpreter::run(Program& prog) {
         for (auto* s : mainline) {
             tctx().endCurTopStmt = s;   // a `use` in it places the module's ENDs (see EndUnitScope)
             if (prog.mayHaveRoutineUse) preloadRoutineUses(s);
+            if (ctValues_ && !ctMainlineStmt(*this, s, constEarly.count(s) > 0)) continue;   // what runs when the binary does
             if (!constEarly.empty() && constEarly.count(s)) continue;   // bound ahead of the phasers
             if (s->kind == NK::SubDecl && !static_cast<SubDecl*>(s)->name.empty() &&
                 !static_cast<SubDecl*>(s)->isMethod) {
@@ -9257,7 +9262,8 @@ int Interpreter::run(Program& prog) {
         }
         // auto-invoke MAIN with command-line arguments, if defined
         // (a mainline CONTROL, registered below, is already live here)
-        Value* mainSub = tctx().cur->find("&MAIN");
+        if (ctValues_) (*ctValues_)[nullptr] = Value::boolean(true);   // the build-time pass got here
+        Value* mainSub = ctValues_ ? nullptr : tctx().cur->find("&MAIN");
         // never the run-script CALLER's MAIN — a wrapper's own dispatch would
         // recurse into run-script forever (see inheritedMainBarrier_)
         if (mainSub && mainSub != inheritedMainBarrier_) {
@@ -9345,6 +9351,7 @@ int Interpreter::run(Program& prog) {
     // would point into a dead scope
     if (topControl && !tctx().controlHandlers.empty()) tctx().controlHandlers.pop_back();
     flushOpenWriteHandles(); // write out any file handle the program forgot to .close
+    if (ctValues_) { drainWorkers(); return code; }   // no LEAVE or END at build time
     // Compilation-unit LEAVE/KEEP/UNDO phasers run (reverse source order) on the
     // way out — after the mainline, before END.
     for (auto it = leaveP.rbegin(); it != leaveP.rend(); ++it) {

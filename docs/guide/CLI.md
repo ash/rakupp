@@ -950,6 +950,37 @@ output and macOS already are that way, and the flag says so and does nothing.
 What each platform's output needs, with and without it, is the table in
 [COMPILERS.md](COMPILERS.md#what-runs-where).
 
+### Constants and BEGIN blocks are computed when the binary is built
+
+A binary is the program precompiled, the way Rakudo precompiles a module, so
+its compile-time code runs when the binary is **built** and the binary carries
+what it came to. A constant's initializer, a `BEGIN` used for its value, and
+what the top-level `BEGIN` and `CHECK` blocks leave in the program's variables
+are computed by `--exe`, `--aot` and `--bundle`, and none of that code runs
+again when the binary starts:
+
+```raku
+constant DATA = $?FILE.IO.parent.add('data.txt').slurp;   # read while building
+my %words;
+BEGIN %words{$_} = True for 'words.txt'.IO.lines;          # so is this
+```
+
+The binary needs neither file. A `BEGIN` that prints, prints during the build,
+and `constant WHO = %*ENV<USER>` is whoever built the binary. Code that should
+run each time the binary starts belongs in the mainline or an `INIT`.
+
+A value is carried as Raku source (its `.raku`), and only when that reads back
+to an equal value of the same type: strings, numbers, `Bool`, enums, type
+objects, and lists, arrays, hashes, maps, pairs, ranges, sets, bags and blobs
+of them. An object, a closure or a lazy list is computed when the binary
+starts, and the build names it; so are a constant that reads one of the
+program's own variables and one inside a routine. A `BEGIN` block that
+reaches past the program's variables — EVAL, a package's stash, a dynamic
+variable it changes, a routine a module supplies — keeps the `BEGIN` blocks
+running when the binary starts, and the build says which. If the
+compile-time code dies while building, the build says so and the binary runs
+it when it starts instead.
+
 ### `--slim` — how much of itself a compiled binary keeps
 
 Compiled binaries are **dead-stripped and symbol-stripped by default** (level

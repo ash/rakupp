@@ -2865,6 +2865,10 @@ public:
     // that run first (#171). See the definition in InterpreterModules.cpp.
     bool bindConstantEarly(Stmt* s, std::set<std::string>& bound);
     bool constantInitIsStatic(const Expr* e, const std::set<std::string>& bound);
+    // A binary's build-time pass (CompileTime.cpp, #190): set, run() does the
+    // program's compile-time part only — BEGIN, CHECK, `use`, declarations,
+    // constants — and keeps here what they come to, by node.
+    std::unordered_map<const void*, Value>* ctValues_ = nullptr;
     Value gatherTake(const ValueList& items, const Value& ret);
     // After a take landed in the collector of the gather whose block is running
     // as a coroutine: hand control back to its consumer once it has what it

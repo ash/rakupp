@@ -1,6 +1,7 @@
 #include "Runtime.h"
 #include "AotModules.h"
 #include "CallCheck.h"
+#include "CompileTime.h"
 #include "DeclCheck.h"
 #include "Interpreter.h"
 #include "Lexer.h"
@@ -190,6 +191,19 @@ void rakuppSetStageStats(bool on) { g_stageStats = on; stageStatsEnable(on); }
 // want. Empty for the interpreter's own runs, where the two are the same.
 static std::string g_progName;
 void rakuppSetProgramName(const std::string& name) { g_progName = name; }
+
+// a binary's compile-time values (CompileTime.h)
+void (*g_ctApply)(Program&) = nullptr;
+
+void rakuppPrepareInterp(Interpreter& interp, const std::string& src, const std::string& fileName,
+                         const std::vector<std::string>& libPaths, const std::string& finish) {
+    interp.libPaths_.insert(interp.libPaths_.begin(), libPaths.begin(), libPaths.end());
+    interp.srcFile_ = fileName;
+    interp.srcFileAbs_ = absSrcPath(fileName);
+    interp.finishData_ = finish;
+    interp.progName_ = g_progName;
+    interp.seedSrcLines(fileName, src);
+}
 namespace {
 struct StageClock {
     using clk = std::chrono::steady_clock;
@@ -305,6 +319,7 @@ int rakuppRunOn(Interpreter& interp, const std::string& src, std::vector<std::st
                 interp.progName_ = g_progName;
                 interp.libPaths_.insert(interp.libPaths_.begin(), libPaths.begin(), libPaths.end());
                 interp.seedSrcLines(fileName, src);
+                if (g_ctApply) g_ctApply(cachedProg);   // a bundled binary's compile-time values
                 if (int rc = declCheckRc(cachedProg); rc >= 0) return rc;
                 stage.lap("check");
                 attachMainAot(cachedProg);   // a bundled --exe binary's own routines, if it carries them
@@ -368,6 +383,7 @@ int rakuppRunOn(Interpreter& interp, const std::string& src, std::vector<std::st
         interp.progName_ = g_progName;
         // srcFile_ and the -I lib dirs are set above, before the L10N rewrite
         interp.seedSrcLines(fileName, src);   // --trace and the parse-error excerpt for -e code
+        if (g_ctApply) g_ctApply(prog);   // …after the cache took the tree as parsed
         if (int rc = declCheckRc(prog); rc >= 0) return rc;
         stage.lap("check");
         attachMainAot(prog);   // a bundled --exe binary's own routines, if it carries them

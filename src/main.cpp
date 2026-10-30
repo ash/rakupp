@@ -23,6 +23,7 @@
 #include "Lexer.h"
 #include "Parser.h"
 #include "AstSerial.h"
+#include "CompileTime.h"
 #include "AotModules.h"
 #include "SlimScan.h"
 #include "BuiltinRakuSrc.h"
@@ -307,6 +308,12 @@ static bool g_static = false;
 // A mode with nothing informational to say accepts the flag and changes
 // nothing, the way -l does.
 static bool g_quiet = false;
+
+// What the program's compile-time code came to (#190): computed ONCE per
+// build, at the dispatch, because it runs the program's BEGIN blocks — and a
+// build may compile twice (--slim=verify) or fall back from one mode to
+// another. Each mode substitutes it in the tree it compiles.
+static rakupp::CtTable g_ct;
 
 // --jit[=SPEC] and --cnp[=SPEC] — the two tier-up backends. BOTH ARE WORK IN
 // PROGRESS and both spellings are provisional: they are one feature kept behind
@@ -1482,6 +1489,17 @@ static int compileToExe(const std::string& src, const std::string& srcName, std:
         if (src.empty()) stub << "0"; // avoid zero-size array; length tracked separately
         stub << "};\n";
         stub << "static const unsigned long SRC_LEN = " << src.size() << "UL;\n";
+        // …and what its compile-time code came to, which the runtime applies to
+        // the tree it parses (CompileTime.h)
+        std::string ctCall;
+        if (!g_ct.empty()) {
+            std::string ct = encodeCtTable(g_ct);
+            stub << "static const unsigned char CT[] = {";
+            for (size_t i = 0; i < ct.size(); i++) { if (i) stub << ","; stub << (int)(unsigned char)ct[i]; }
+            stub << "};\n";
+            stub << "namespace rakupp { void rakuppSetCtTable(const char*, std::size_t); }\n";
+            ctCall = "  rakupp::rakuppSetCtTable(reinterpret_cast<const char*>(CT), sizeof CT);\n";
+        }
         // …and the modules it uses, as parsed ASTs, so a bundled binary is as
         // self-sufficient as an --exe or --aot one. Bundling only the mainline
         // left it needing the module tree at run time, which defeats the point of
@@ -1510,6 +1528,7 @@ static int compileToExe(const std::string& src, const std::string& srcName, std:
                     // every routine its native body (attachMainAot)
                     uint64_t fp = 0;
                     if (Program mp; !aotEnvOn("RAKUPP_NO_AOT") && parseAsBundled(src, baseOf(srcName), libPaths, mp)) {
+                        applyCompileTimeValues(mp, g_ct);   // as the binary will, before it attaches these
                         BundledModule mm;
                         mm.name = kMainAotKey;
                         mm.blob = serializeAst(mp);
@@ -1556,6 +1575,7 @@ static int compileToExe(const std::string& src, const std::string& srcName, std:
              << ((g_jitAsked && g_jitOpt.on && g_jitOpt.backend == rakupp::jit::Backend::Cnp)
                      ? "true" : "false")
              << ", exe);\n"
+             << ctCall
              << "  return rakupp::rakuppRunBigStack(src, args, " << cppstr(baseOf(srcName)) << ", exe, {});\n"
                 "}\n";
         stubTail << slimManifestTU("bundle");
@@ -1675,6 +1695,15 @@ static int declCheckGate(const std::string& src, const std::string& fileName,
     }
     auto dc = doomedCallsOf(prog, searchPath);
     return dc.empty() ? -1 : reportDoomedCalls(dc, fileName, src);
+}
+
+// What a build checks before it compiles — and then what the program's
+// compile-time code comes to (g_ct), which runs its BEGIN blocks, so it waits
+// for the checks to pass
+static int buildGate(const std::string& src, const std::string& fileName, const std::vector<std::string>& libPaths) {
+    if (int rc = declCheckGate(src, fileName, effectiveSearchPath(libPaths)); rc >= 0) return rc;
+    g_ct = computeCompileTimeValues(src, fileName, libPaths);
+    return -1;
 }
 
 // ---- --target=js ------------------------------------------------------------
@@ -1886,6 +1915,7 @@ static int compileNative(const std::string& src, const std::string& srcName, std
         parser.libPaths_ = effectiveSearchPath(libPaths); // find a `use`d module's operators
         parser.srcFile_ = srcName;
         Program prog = parser.parseProgram();
+        applyCompileTimeValues(prog, g_ct);
         // The program is compiled; its MODULES ride along as parsed ASTs, so the
         // binary is self-sufficient. (Natively compiling module code is a separate
         // step — most module files declare a package, which codegen does not take.)
@@ -1995,6 +2025,7 @@ static int compileAotAst(const std::string& src, const std::string& srcName, std
         parser.srcFile_ = srcName;
         finish = lexer.finishData();
         Program prog = parser.parseProgram();
+        applyCompileTimeValues(prog, g_ct);
         // Everything the program `use`s, resolved and parsed NOW, so the binary
         // carries it. Anything unresolvable is simply absent and falls back to a
         // run-time load — see collectModuleGraph.
@@ -2358,6 +2389,7 @@ static int slimVerify(char modeCh, const std::string& src, const std::string& sr
     if (outPath.empty()) outPath = defaultOut(srcName);
     ensureExeSuffix(outPath);
     if (outIsDirectory(outPath)) { std::cerr << "Cannot write " << outPath << ": is a directory\n"; return 5; }
+    g_ct = computeCompileTimeValues(src, srcName, libPaths);   // once, for both builds
     auto build = [&](const std::string& out) -> int {
         if (modeCh == 'x') return compileNative(src, srcName, out, selfExe, optimize, ccOpt, libPaths);
         if (modeCh == 'a') return compileAotAst(src, srcName, out, selfExe, libPaths);
@@ -4491,7 +4523,7 @@ int main(int argc, char** argv) {
         if (g_slim.directive == SlimDirective::Verify)
             return slimVerify(mode == Mode::Exe ? 'x' : mode == Mode::Aot ? 'a' : 'b',
                               src, fileName, outPath, exePath, optimize, ccOpt, libPaths);
-        if (int rc = declCheckGate(src, fileName, effectiveSearchPath(libPaths)); rc >= 0) return rc;
+        if (int rc = buildGate(src, fileName, libPaths); rc >= 0) return rc;
         if (mode == Mode::Exe) return compileNative(src, fileName, outPath, exePath, optimize, ccOpt, libPaths);
         if (mode == Mode::Aot) return compileAotAst(src, fileName, outPath, exePath, libPaths);
         return compileToExe(src, fileName, outPath, exePath, libPaths); // --bundle
