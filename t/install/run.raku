@@ -43,7 +43,7 @@ sub sha1-of(Str $path) {
 # the same Gate::Shared with byte-identical content in every dist that asks),
 # so two dists share one content-addressed blob; :depends declares runtime deps.
 sub make-dist(Str $name, Str $modname, Str $version,
-              Bool :$failing-test, Bool :$shared, :@depends, :@build-depends,
+              Bool :$failing-test, Bool :$vm-check, Bool :$shared, :@depends, :@build-depends,
               Bool :$build-hook, Bool :$bin, Bool :$native-lib,
               Str :$meta-auth = 'test:gate') {
     my $safe = $name.subst('::', '-', :g);
@@ -120,6 +120,8 @@ sub make-dist(Str $name, Str $modname, Str $version,
              !! qq[print "1..1\\n"; print 'built.flag'.IO.e ?? "ok 1\\n" !! "not ok 1\\n";] )
         !! $failing-test
         ?? qq[use $modname; print "1..1\\nnot ok 1\\n"; exit 1;]
+        !! $vm-check   # LibraryMake's shape: its test stops on the VM's name
+        ?? qq[use $modname; die "Unknown VM; don't know how to build" unless \$*VM.name eq 'moar'; print "1..1\\nok 1\\n";]
         !! qq[use $modname; print "1..1\\n"; print which-version() eq '$version' ?? "ok 1\\n" !! "not ok 1\\n";]);
     my $tar = $tmp.add("$safe-$version.tar.gz").Str;
     my $p = run 'tar', '-czf', $tar, '-C', $tmp.Str, "build-$safe-$version", :err;
@@ -132,6 +134,7 @@ sub make-dist(Str $name, Str $modname, Str $version,
 
 my ($arc1, $sha1a) = make-dist('Gate::Demo', 'Gate::Demo', '0.4.2', :bin);
 my ($arc2, $sha2)  = make-dist('Gate::Flaky', 'Gate::Flaky', '0.1.0', :failing-test);
+my ($arcV, $shaV)  = make-dist('Gate::VmCheck', 'Gate::VmCheck', '0.1.0', :vm-check);
 my ($arc3, $sha3)  = make-dist('Gate::ShareA', 'Gate::ShareA', '0.1.0', :shared);
 my ($arc4, $sha4)  = make-dist('Gate::ShareB', 'Gate::ShareB', '0.1.0', :shared);
 my ($arc5, $sha5)  = make-dist('Gate::Consumer', 'Gate::Consumer', '0.1.0',
@@ -184,6 +187,10 @@ $tmp.add('index.json').spurt(qq:to/END/);
          "dist": "Gate::Flaky:ver<0.1.0>:auth<test:gate>",
          "provides": \{ "Gate::Flaky": "lib/Gate/Flaky.rakumod" \},
          "depends": [], "path": "$sha2.tar.gz" \},
+      \{ "name": "Gate::VmCheck", "version": "0.1.0", "auth": "test:gate",
+         "dist": "Gate::VmCheck:ver<0.1.0>:auth<test:gate>",
+         "provides": \{ "Gate::VmCheck": "lib/Gate/VmCheck.rakumod" \},
+         "depends": [], "path": "$shaV.tar.gz" \},
       \{ "name": "Gate::ShareA", "version": "0.1.0", "auth": "test:gate",
          "dist": "Gate::ShareA:ver<0.1.0>:auth<test:gate>",
          "provides": \{ "Gate::ShareA": "lib/Gate/ShareA.rakumod",
@@ -364,6 +371,16 @@ check %flaky<exit> != 0 && %flaky<err>.contains('test suite fails'),
       'M4: a failing test suite refuses the install';
 my %forced = installer('--no-test', 'Gate::Flaky');
 check %forced<exit> == 0, 'M4: --no-test overrides, loudly chosen';
+# …but a suite that stops on `$*VM.name` (LibraryMake's) is tested again as
+# `moar`, says so, and installs; a suite failing for any other reason is not
+my %vm = installer('Gate::VmCheck');
+my $vm-said = %vm<out> ~ %vm<err>;
+check %vm<exit> == 0 && $vm-said.contains('testing it again as `moar`') && !$vm-said.contains('FAILED'),
+      'M4: a suite stopping on $*VM.name is tested again as moar and installs';
+check !(%flaky<out> ~ %flaky<err>).contains('as `moar`'), 'M4: …and only that suite';
+my %vmv = installer('-v', '--force', 'Gate::VmCheck');
+check %vmv<exit> == 0 && (%vmv<out> ~ %vmv<err>).contains('testing it again as `moar`'),
+      'M4: …under -v as well';
 
 # ---- -v: the suite's own output, as it runs --------------------------------
 # The test child inherits the installer's stdout, so its TAP lands there; the

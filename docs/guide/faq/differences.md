@@ -158,7 +158,7 @@ everything they then reach for works here. The variable makes that your call:
 ```sh
 rakupp -e 'say $*VM.name'                      # → cpp
 RAKUPP_VM_NAME=moar rakupp -e 'say $*VM.name'  # → moar
-RAKUPP_VM_NAME=moar rakupp test LibraryMake    # passes; without it, does not
+RAKUPP_VM_NAME=moar rakupp -e 'use LibraryMake; say get-vars(".")<CC>'   # → cc; without it, dies
 ```
 
 It also joins `$*RAKU.VMnames`, so `$*VM.name eq any($*RAKU.VMnames)` still
@@ -166,10 +166,11 @@ holds, and it moves `$*RAKU.compiler.backend` with it — Rakudo answers one
 string in both spellings, and a module reading the other one must not see a
 contradiction. Nothing else changes: `$*VM.config` already carries this
 engine's real toolchain (`cc`, `ldshared`, `obj`), and those values are what
-the recipe actually builds with. Nothing sets the variable for you — not `rakupp install`,
-not the test runner — because the default is the honest answer, and reporting
-`cpp` as `moar` is a claim only the person running the program is entitled to
-make. It is for the case where you have looked at a module and concluded its
+the recipe actually builds with. Nothing sets the variable for your programs,
+because the default is the honest answer, and reporting `cpp` as `moar` is a
+claim only the person running the program is entitled to make. The one thing
+that does is the installer, for a distribution's test suite that has already
+stopped on the name, and only for a second run of that suite. It is for the case where you have looked at a module and concluded its
 `moar` branch is the right one for this engine; it is not a compatibility mode,
 and a module that genuinely needs MoarVM will fail later rather than sooner.
 [unknown-vm.md](unknown-vm.md) has the practical side: installing LibraryMake,

@@ -1615,39 +1615,65 @@ sub run-dist-tests(%e, $root, Str $prefix) {
     }
     progress("testing %e<name>: {@tests.elems} file{@tests.elems == 1 ?? '' !! 's'}");
     trace("tests: {@tests.elems} file{@tests.elems == 1 ?? '' !! 's'}");
+    my $failed = run-suite($root, $prefix, @tests, child-env());
+    # A suite that stops on `$*VM.name` — LibraryMake's tests its own build
+    # recipe and dies "Unknown VM; don't know how to build" on anything but
+    # `moar` or `jvm` — runs once more answering `moar`, the dialect the build
+    # step already speaks (vm-toolchain-shim). `$*VM.config` holds this
+    # machine's real toolchain, so the name was all that was in the way; the
+    # engine is untouched, and programs and every other suite still see `cpp`
+    # (docs/guide/faq/unknown-vm.md).
+    if $failed && $failed<vm-name> && (%*ENV<RAKUPP_VM_NAME> // '') ne 'moar' {
+        progress("%e<name> stops on \$*VM.name, which is `cpp` here: testing it again as `moar`");
+        trace("tests: {$failed<file>} stopped on \$*VM.name — the suite again with RAKUPP_VM_NAME=moar");
+        my %env = child-env();
+        %env<RAKUPP_VM_NAME> = 'moar';
+        $failed = run-suite($root, $prefix, @tests, %env);
+        trace("tests: green with RAKUPP_VM_NAME=moar") unless $failed;
+    }
+    return True unless $failed;
+    note "FAILED: {$failed<file>}";
+    if $VERBOSE {
+        trace("test FAILED: {$failed<file>} (exit {$failed<exit>}) — run with -v, output went to the terminal");
+    }
+    else {
+        note $failed<err>.indent(2);
+        # the child's own words are the diagnosis a remote report needs
+        trace("test FAILED: {$failed<file>} (exit {$failed<exit>})\n"
+            ~ clip(($failed<err> ~ ($failed<out>.trim ?? "--- stdout ---\n{$failed<out>}" !! '')).trim).indent(4));
+    }
+    False
+}
+
+# The suite's files in order, stopping at the first that fails: Nil when all
+# pass, else what failed and whether it stopped on `$*VM.name`. `-I
+# inst#<prefix>`: the suite must see the dependencies this plan installed into
+# the TARGET store, wherever --to pointed it.
+sub run-suite($root, Str $prefix, @tests, %env) {
+    my $vm-stop = / "Unknown VM; don't know how to build" | 'Unexpected backend name' /;
     for @tests -> $t {
         my @cmd = $*EXECUTABLE.absolute, '-I', $root.IO.add('lib').Str,
                   '-I', "inst#$prefix", $t.Str;
         if $VERBOSE {
             # inherited stdout/stderr: the file's output is already on the
-            # terminal, so a failure needs only its name
+            # terminal, so a failure needs only its name — and, to know whether
+            # it stopped on the VM's name, its stderr once more, quietly
             note "=== {$t.relative($root)}";
-            my $p = run |@cmd, :cwd($root), :env(child-env());
-            if $p.exitcode != 0 {
-                note "FAILED: {$t.basename}";
-                trace("test FAILED: {$t.basename} (exit {$p.exitcode}) — run with -v, output went to the terminal");
-                return False;
-            }
-            next;
+            my $p = run |@cmd, :cwd($root), :env(%env);
+            next if $p.exitcode == 0;
+            my $q = run |@cmd, :out, :err, :cwd($root), :env(%env);
+            $q.out.slurp(:close);
+            my $qerr = $q.err.slurp(:close);
+            return { file => $t.basename, exit => $p.exitcode, err => '', out => '',
+                     vm-name => so $qerr ~~ $vm-stop };
         }
-        # `-I inst#<prefix>`: the suite must see the dependencies this plan
-        # installed into the TARGET store, wherever --to pointed it
-        my $p = run $*EXECUTABLE.absolute, '-I', $root.IO.add('lib').Str,
-                    '-I', "inst#$prefix", $t.Str,
-                    :out, :err, :cwd($root), :env(child-env());
+        my $p = run |@cmd, :out, :err, :cwd($root), :env(%env);
         my $out = $p.out.slurp(:close);
         my $err = $p.err.slurp(:close);
-        if $p.exitcode != 0 {
-            note "FAILED: {$t.basename}";
-            note $err.indent(2);
-            # the child's own words are the diagnosis a remote report needs
-            trace("test FAILED: {$t.basename} (exit {$p.exitcode})\n"
-                ~ clip(($err ~ ($out.trim ?? "--- stdout ---\n$out" !! '')).trim).indent(4));
-            return False;
-        }
+        return { file => $t.basename, exit => $p.exitcode, :$err, :$out, vm-name => so $err ~~ $vm-stop }
+            if $p.exitcode != 0;
     }
-    trace("tests: all green");
-    True
+    Nil
 }
 
 # Does rakupp already ship this dist? The shadows (rakulib/NativeHelpers/*) are

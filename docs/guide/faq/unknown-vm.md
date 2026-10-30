@@ -14,40 +14,35 @@ past them, and when that variable is the right thing to use. The other places
 the two engines differ are in [differences.md](differences.md), and installing
 modules in general is in [modules.md](modules.md).
 
-Checked 2026-10-18 with Raku++ 5.4.1 (main) and Rakudo v2026.09.
+Checked 2026-10-18 with Raku++ 5.4.1 (main) and Rakudo v2026.09; the
+installer's second run as `moar` 2026-10-30.
 
-## `rakupp install LibraryMake` fails with "Unknown VM; don't know how to build"
+## `rakupp install LibraryMake` says it is "testing it again as `moar`"
 
 ```console
 $ rakupp install LibraryMake
 …
 testing LibraryMake: 1 file
-FAILED: 01-basic.t
-  Unknown VM; don't know how to build
-    in sub get-vars at …/lib/LibraryMake.rakumod line 161
-    in block <unit> at …/t/01-basic.t line 7
-
-LibraryMake: its own test suite fails under rakupp — not installing (--no-test to override)
+LibraryMake stops on $*VM.name, which is `cpp` here: testing it again as `moar`
+installed LibraryMake:ver<1.0.5>:auth<zef:jjmerelo>
 ```
 
-Install it with the variable set:
+LibraryMake's own test calls its `get-vars`, which knows `moar` and `jvm`
+and dies *Unknown VM; don't know how to build* on anything else. When a
+distribution's test suite stops with that message, or with *Unexpected
+backend name*, the installer runs the suite once more with `$*VM.name`
+answering `moar` (the variable below, set for that run only), says so, and
+installs if it passes. Before 2026-10-30 it refused, and LibraryMake needed
+`RAKUPP_VM_NAME=moar rakupp install LibraryMake`; that still works.
 
-```sh
-RAKUPP_VM_NAME=moar rakupp install LibraryMake
-```
-
-You need the variable once, for this one install. LibraryMake is a build
+LibraryMake is a build
 helper: 29 distributions in the ecosystem depend on it, most of them to compile
 their C code when they are installed. Among them are LibXML, Font::FreeType,
 Digest::SHA1::Native, Math::DistanceFunctions::Native and
 Math::SparseMatrix::Native. Once
 LibraryMake is in the store, those install with a plain `rakupp install`,
 because the installer already gives their build step the name it expects
-([below](#why-is-moar-not-the-default)). Only LibraryMake's own test suite
-asks the question outside a build step.
-
-`rakupp install --no-test LibraryMake` installs it too, but without running
-the test. With the variable the test runs and passes.
+([below](#why-is-moar-not-the-default)).
 
 ## Why does `$*VM.name` say `cpp`?
 
@@ -118,21 +113,22 @@ here.
 There is one place the installer answers `moar` on its own: the **build step**
 of a distribution, a `Build.rakumod` or a `builder` named in `META6.json`. The
 ecosystem's build recipes read their toolchain behind a `moar` check and have
-no other branch, and that step is the installer's own work. Nothing outside it
-sees the name: not your programs, and not the distribution's test suite. That
-is why LibraryMake's dependents build without the variable, and why LibraryMake
-itself, which has no build step but tests its own recipe, does not.
+no other branch, and that step is the installer's own work. A test suite that
+stops on the name gets one more run with it, as above: LibraryMake has no
+build step but tests its own recipe. Nothing else sees the name: not your
+programs, and not a suite that passes, or fails for another reason.
 
 ## It worked before, or it works on another machine
 
 Up to v3.x, `$*VM.name` answered `moar`; since v4.0.0 it answers `cpp`. A
 LibraryMake installed before that stays installed, so a machine set up earlier
-has it, and a fresh machine cannot install it without the variable.
+has it. From 4.0.0 until the installer learned to test it again as `moar`
+(2026-10-30), a fresh machine could not install it without the variable.
 `rakupp install --list` shows what a store already holds.
 
 ## Do I have to keep the variable set?
 
-For LibraryMake, no: only the install needs it. For a module that checks the
+For LibraryMake, no: the installer takes care of its install. For a module that checks the
 name every time it is loaded, yes, on every run. uniprop is one: it checks in a
 `BEGIN` block, so `use uniprop` dies on Raku++ without the variable.
 
@@ -164,7 +160,7 @@ The ones known today:
 
 | Module | Where it checks | With `RAKUPP_VM_NAME=moar` |
 |---|---|---|
-| LibraryMake | its own test suite | installs; set it for the install only |
+| LibraryMake | its own test suite | not needed: the installer tests it again as `moar` |
 | uniprop | every `use` | loads and works; set it whenever the program runs |
 
 NativeHelpers::Blob used to be on this list. The installer now ships its own
