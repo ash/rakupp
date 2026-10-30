@@ -6640,7 +6640,12 @@ int Interpreter::scoreCandidate(const Value& cand, const ValueList& args,
         for (auto& p : params) {
             if (p.slurpy && (p.sigil == '%' || p.sigil == '\\')) { takesAny = true; continue; }
             if (!p.named) continue;
-            addName(p.name);
+            // the variable's own name is a key only when nothing else names it,
+            // or when it is written `:$var` too: `:ws(:web-socket($websocket))`
+            // takes no `:websocket`, and Cro::RPC::JSON's candidate spelled so
+            // won a call its `&block` sibling takes and then failed to bind
+            if (p.namedKey.empty() || p.aliasBoth)
+                addName(p.name.size() > 2 && (p.name[1] == '!' || p.name[1] == '.') ? p.name.substr(2) : p.name);
             addName(p.namedKey);
             for (auto& a : p.aliasKeys) addName(a);   // `:buf(:$bin)` answers to both
         }
@@ -6774,9 +6779,13 @@ int Interpreter::scoreCandidate(const Value& cand, const ValueList& args,
         // comparison. Every path below either `continue`s or falls through to the
         // bottom of the loop, so the delta is taken by a guard that runs on both.
         const int scoreBefore = score;
+        // (A smiley is left out of it, and counts in the summed score only:
+        // Rakudo weighs definedness once every type has tied, so `($j, @x)` is
+        // narrower than `(Any:D $j, Any $x)` for a Positional type object —
+        // Cro::RPC::JSON's unmarshaller.)
         struct ParamDelta {
-            std::vector<int>* out; const int& now; const int& was;
-            ~ParamDelta() { if (out) out->push_back(now - was); }
+            std::vector<int>* out; const int& now; const int& was; int smiley = 0;
+            ~ParamDelta() { if (out) out->push_back(now - was - smiley); }
         } paramDelta{perParam, score, scoreBefore};
         // `::T $x, T $y`: a type CAPTURE records the first argument's type, and a
         // later parameter typed T must be of that type (`wins(Paper, Paper)`)
@@ -6949,6 +6958,12 @@ int Interpreter::scoreCandidate(const Value& cand, const ValueList& args,
             // (a Regex is a Callable too: `rak(/ pattern /, :paths(…))` binds
             // `&pattern` in rak's multis)
             if (pos[i].t != VT::Code && pos[i].t != VT::Regex && !isCallableTypeObj(pos[i])) return -1;
+            // …and that implied Callable is a NOMINAL type: narrower than `Any:D
+            // $obj`, whose smiley weighs only against another Any. Cro::RPC::JSON's
+            // `json-rpc(&block, …)` lost a block to its `json-rpc(Any:D $obj, …)`
+            // sibling. One under a written nominal's 8, so `Code $c` and the
+            // other Callables still come first, as they did.
+            score += 7;
             // `&code:(Int)`: the argument's own signature decides
             if (p->codeSig) {
                 if (!codeSigAccepts(*p, pos[i])) return -1;
@@ -7051,7 +7066,7 @@ int Interpreter::scoreCandidate(const Value& cand, const ValueList& args,
         // type smiley: :D requires a defined arg, :U requires an undefined one
         if (p->defConstraint == 1 && !isDefinite(pos[i])) return -1;
         if (p->defConstraint == 2 && isDefinite(pos[i])) return -1;
-        if (p->defConstraint) score += 2; // a smiley is more specific
+        if (p->defConstraint) { score += 2; paramDelta.smiley = 2; } // a smiley is more specific
         // `Any` is narrower than `Mu` — Mu is the root, and everything except a
         // Junction is an Any. Both matched everything and scored the same, so
         // declaration order decided: Data::Dump writes `multi Dump(Mu $obj) {
@@ -7061,8 +7076,11 @@ int Interpreter::scoreCandidate(const Value& cand, const ValueList& args,
             bool junc = pos[i].t == VT::Array && pos[i].arr() &&
                         (pos[i].enumName == "any" || pos[i].enumName == "all" ||
                          pos[i].enumName == "one" || pos[i].enumName == "none");
-            if (p->type == "Any" && !junc &&
-                !(pos[i].t == VT::Type && pos[i].s == "Mu")) score++;
+            // (an untyped `$j` is an Any too, and ties `Any $j`)
+            const bool anyTyped = p->type == "Any" ||
+                                  (p->type.empty() && (p->sigil == '$' || (p->sigil == '\\' && !p->slurpy)) &&
+                                   !p->typeCapture && !p->subSig);
+            if (anyTyped && !junc && !(pos[i].t == VT::Type && pos[i].s == "Mu")) score++;
         }
         // A COERCION parameter ranks by its FROM type — `IO::Path(Str)` sits
         // where a `Str` param would (so with its where satisfied it outranks
