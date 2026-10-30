@@ -35,7 +35,7 @@ c9560e0d; d1c84b6b (issue #199); a1bb0e7b (issue #191); 55565059 (issue
 bd8936e7; 0938078e; 858a037e; 21c37405; 0b29ef00; 9b3fbb8a; de0d04e5;
 3e15da85; 2df02ed1; 2adfaa34; c91a94fb; 1676fc8a; 5b70d2e1; d54cc3ba;
 d4ed6cac (issue #60); 480f6850; a92d9cfd; 0d089427; 9cac10e4; f3ffb5c3;
-c067446c; a11aa7ab.*
+c067446c; a11aa7ab; 594d4aac (Template::Mustache).*
 
 ---
 
@@ -702,6 +702,20 @@ plain before 500c29e2 and native from it, unless they say otherwise.
   short aliases, and `Cro::RPC::JSON.^name` answered X::Cro::RPC::JSON, the
   role that dist declares. t/regression/module-name-not-taken-by-nested-type.raku
   agrees with Rakudo 2026.09.
+- **`sprintf('%s', $e)` prints an exception's message** (594d4aac), as `~$e`
+  and `$e.Str` do, when its class writes only `message`: `%s` asked an
+  object for its Str only when the class writes `Str`, and printed
+  `X::FieldNotFound<4365607088>`. Template::Mustache logs every warning that
+  way. t/regression/sprintf-s-exception-message.raku agrees with Rakudo
+  2026.09.
+- **An element bound to another reads as its value everywhere**
+  (594d4aac). After `%specs<x> := %data<tests>`, prefix `+` and `-`, the zen
+  slices `<>` and `[]`, and `@(…)` read the binding's Proxy record, so `+`
+  of four tests was 3 and `for %specs<x><>` walked the record; they now read
+  through it as `~` does, and through a user's Proxy (its FETCH) the same
+  way. Template::Mustache's spec runner planned 3 tests for each file of 11.
+  t/regression/bound-element-reads-through-proxy.raku agrees with Rakudo
+  2026.09.
 
 ### Fixed: crashes
 
@@ -1363,9 +1377,46 @@ does not.
   hold before it tapped the echo hung for ever. A `close` goes out after
   the writes made before it. t/regression/async-socket-write-queued.raku
   agrees with Rakudo 2026.09.
+- **A grammar's actions fire as each subrule completes** (594d4aac), not once
+  the parse is over, so the rest of the parse sees what they did: a
+  `<?{ $<tag>.made … }>` right after the call reads the action's `.made`,
+  and a dynamic variable an action sets is what the next token matches.
+  Template::Mustache needs both, to keep the whitespace around a tag that
+  shares its line and to switch delimiters on `{{=<% %>=}}`. Each node is
+  still built and fired once: the parent's action, a code block's `$/` and
+  the finished tree get the Match built when it completed. A parse that
+  fails keeps what fired before it failed, and an action that dies ends the
+  parse. No action fires inside an LTM probe, as in Rakudo. The JSON grammar
+  in tools/bench/grammar-json parses as fast as before (five runs, best: api
+  94 → 94 ms, deep 136 → 135, numbers 55 → 55, strings 61 → 59).
+  t/regression/grammar-actions-fire-during-parse.raku agrees with Rakudo
+  2026.09.
+- **A `token` commits to a `regex` it calls** (594d4aac), and to a proto of
+  them: when what follows the call fails, the token fails, where it used to
+  pull a longer match out of the regex. Template::Mustache's linetag
+  stretched a section tag over `{{#a}}{{line}}` and named the section
+  "a}}{{line". A `regex` calling a `regex` still backtracks into it.
+  t/regression/token-commits-to-regex-subrule.raku agrees with Rakudo
+  2026.09.
+- **`q+…+`, `qq*…*`, `Q=…=` and `qw^…^` are quotes** (594d4aac): the q family
+  takes the punctuation delimiters a bare `m` takes, tight against the
+  keyword and closing on the same line, except `; , .` (Left open).
+  Template::Mustache's spec tests write their lambdas as `q+{{planet}}+`.
+  A `|q` capture parameter is a term, so `q;` after it ends the statement.
+  t/regression/q-bare-punctuation-delimiters.raku agrees with Rakudo 2026.09.
+
+  With these five, Template::Mustache 1.2.7's suite passes, all thirteen
+  files: `rakupp install` refused it, and with it Pod::To::HTML,
+  Raku::Pod::Render, Pod::To::Markdown and App::Assixt, which need it (not
+  re-run yet).
 
 ### Left open
 
+- A `token` the packrat memo answers fires its action once, where Rakudo,
+  which has no memo, fires it on every call: `<a> 'x' || <a> 'y'` on "12y"
+  fires `a` once (594d4aac). `q;…;`, `q,…,` and `q.….` are still not
+  quotes, and `~X::AdHoc.new(:payload<boom>)` is the empty string with a
+  warning. TODO-FOLLOW-UPS.md has all three.
 - A tapper dying on a value from `Supply.interval` or a Channel still quits
   the supply, where Rakudo's scheduler prints it and ends the process: code
   cued on rakupp's scheduler that dies is silent (e9455bfa). A supply that

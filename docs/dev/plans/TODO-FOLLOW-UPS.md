@@ -154,6 +154,39 @@ moves to [TODO.md](TODO.md).
   [1].map({ f() }).eager` or `sub g { if 1 { f() } }; constant A = g()`,
   where Rakudo dies as the block runs. Done when a constant's initializer and
   a BEGIN block see only the routines declared above them.
+- [ ] **A `token` the packrat memo answers fires its action once** (found
+  2026-10-30 making actions fire as subrules complete, 594d4aac; the final
+  build fired it once before that too):
+
+  ```raku
+  grammar G { token TOP { <a> 'x' || <a> 'y' }; token a { \d+ } }
+  my $n = 0; class A { method a($/) { $n++ } }
+  G.parse('12y', :actions(A)); say $n;   # 1, Rakudo 2
+  ```
+
+  Rakudo has no memo, so the second `<a>` matches again and fires again.
+  GrammarMatcher::matchSubMeta's ratchet path serves the second call from
+  memo_ and fires only an entry a probe left unfired (MemoEntry::fired).
+  Firing on every replay would mean building the node again for each call
+  (the cache in grammarParse's `fired` is keyed by the child map, which a
+  replay shares). Done when the count matches Rakudo's without a JSON-grammar
+  slowdown (tools/bench/grammar-json).
+- [ ] **`q;…;`, `q,…,` and `q.….` are not quotes** (found 2026-10-30, 594d4aac,
+  which made the rest of a bare `m`'s punctuation delimiters the q
+  family's):
+
+  ```raku
+  say q;abc;   # Undefined routine 'q', Rakudo abc
+  say q,abc,   # the same
+  say q.abc.   # a parse error, Rakudo abc
+  ```
+
+  Left out on purpose in bareRxDelim (src/Lexer.cpp): those three are what
+  follows a sigilless term named `q`, and the lexer knows only the terms it
+  has seen declared (`my \q`, `\q`, `|q`, `constant q`). dist-suite-quartet's
+  `-> \s, |q { $cap = q; callsame };` read as a quote to the `;` before
+  `|q` counted as one. Done when a declared term wins over the quote however
+  it was declared, and these three then follow Rakudo.
 
 ## Operators and types
 
@@ -426,6 +459,22 @@ moves to [TODO.md](TODO.md).
   attributive `CN :$!n`, where c4df7b96's store refuses it, but names CN
   as what it got where Rakudo names Str. Done when both lines match Rakudo
   2026.09.
+- [ ] **`~` of a built-in exception made with `.new` is the empty string**
+  (found 2026-10-30 fixing `sprintf('%s', $e)` for a user's exception,
+  594d4aac):
+
+  ```raku
+  my $e = X::AdHoc.new(:payload<boom>);
+  say ~$e;                 # "" and "Use of uninitialized value", Rakudo boom
+  say $e.Str;              # boom
+  say sprintf('%s', $e);   # X::AdHoc<4377956096>, Rakudo boom
+  ```
+
+  A user's exception class writes `message`, and strOf
+  (src/InterpreterOperators.cpp) and g_userStr (src/Interpreter.cpp) both
+  find it; a built-in one made with `.new` has no such method on its class
+  and neither path reaches its `.Str`. A `die "x"` exception (`~$!`) is
+  fine. Done when the three lines match Rakudo 2026.09.
 
 ## Control flow and containers
 
