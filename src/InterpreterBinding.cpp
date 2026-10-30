@@ -5257,6 +5257,10 @@ Value Interpreter::captureBacktrace() {
 // a Blob/Buf spreads to its elements (`$H Z+ $M` in Digest::SHA1).
 Value Interpreter::zxOp(const std::string& op, Value l, Value r) {
     std::string sub = op.substr(1);
+    // a FINITE lazy side — a map a routine returned — is read to its end: it
+    // holds none of its elements until then, and `f() X <a>` crossed nothing
+    if (l.t == VT::Array && l.ext()) drainIfFiniteLazy(l);
+    if (r.t == VT::Array && r.ext()) drainIfFiniteLazy(r);
     auto oneLevel = [](const Value& v) -> ValueList {
         // an ITEMIZED array is ONE element: `$[1,2] X~ "a"` is ("1 2a"), not
         // two crossings (Z/X are not nodal — `.item` is what stops the spread)

@@ -448,9 +448,16 @@ void Interpreter::registerBuiltinsPart5() {
         // spreads its Iterable, an ARRAY's slot never does — array assignment
         // itemises each element. `flat [[1,2],[3]]` stays two elements, and so
         // does `my @a = (1,2),(3,4); flat @a`, List elements or not.
+        // A Seq a routine returned is still lazy: it has none of its values
+        // until something drains it, and walking it as it stands read nothing.
+        // `flat(before, $t, after)` with `before` a `.map` from a sub lost
+        // every element (Cro's CompositeConnector, so a ConnectionConditional
+        // ran none of its transforms).
         std::function<void(const Value&, bool)> deeper = [&](const Value& x, bool ofArray) {
-            if (x.t == VT::Array && x.arr() && !x.itemized && !ofArray)
+            if (x.t == VT::Array && x.arr() && !x.itemized && !ofArray) {
+                I.drainIfFiniteLazy(x);
                 for (auto& e : *x.arr()) deeper(e, !x.isList);
+            }
             else if (x.t == VT::Range) for (auto& e : x.flatten()) out.arr()->push_back(e);
             else {
                 // an element kept whole was kept BECAUSE it is in a container
@@ -466,7 +473,11 @@ void Interpreter::registerBuiltinsPart5() {
             if (v.itemized && v.s != "Seq" && a.size() > 1) { out.arr()->push_back(v); continue; }
             // a shaped array contributes its leaves: `flat @a[3;2]` is six values
             if (isMultiDimShaped(v)) { for (auto& e : shapedLeaves(v)) out.arr()->push_back(e); continue; }
-            if (v.t == VT::Array && v.arr()) { for (auto& e : *v.arr()) deeper(e, !v.isList); continue; }
+            if (v.t == VT::Array && v.arr()) {
+                I.drainIfFiniteLazy(v);
+                for (auto& e : *v.arr()) deeper(e, !v.isList);
+                continue;
+            }
             if (v.t == VT::Range) { for (auto& e : v.flatten()) out.arr()->push_back(e); continue; }
             // A HASH flattens to its Pairs — an EMPTY one therefore contributes
             // nothing. Pushing the hash itself made `flat %new, @new` (URI's

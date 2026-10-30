@@ -24735,7 +24735,11 @@ Value Interpreter::evalUnary(Unary* u) {
                 sawEndless = true; return; // answered without the elements
             }
             if (v.t == VT::Range) { for (auto& x : v.flatten()) items.push_back(x); return; }
-            if (v.t == VT::Array && v.arr() && !v.itemized) { for (auto& x : *v.arr()) spread(x); return; }
+            if (v.t == VT::Array && v.arr() && !v.itemized) {
+                if (v.ext()) drainIfFiniteLazy(v);   // a returned map: `[\+] f()` scanned nothing
+                for (auto& x : *v.arr()) spread(x);
+                return;
+            }
             items.push_back(v);
         };
         auto pushFlat = [&](Value v, bool item) {
@@ -24809,7 +24813,10 @@ Value Interpreter::evalUnary(Unary* u) {
                 }
             }
             if (v.t == VT::Range) { for (auto& x : v.flatten()) items.push_back(x); }
-            else if (v.t == VT::Array && v.arr() && !v.itemized) { for (auto& x : *v.arr()) items.push_back(x); }
+            else if (v.t == VT::Array && v.arr() && !v.itemized) {
+                if (v.ext()) drainIfFiniteLazy(v);   // (the scan form missed endlessReduce's drain)
+                for (auto& x : *v.arr()) items.push_back(x);
+            }
             else items.push_back(std::move(v));
         }
         (void)pushFlat;
@@ -26573,8 +26580,13 @@ Value Interpreter::evalCall(Call* c) {
             // cached (SeqToken) — `eager` excepted, which reads one for good,
             // and `list`, which hands a lone Seq back UNREAD (Rakudo:
             // `(list seq)».abs, (list seq)».abs` reads the one Seq twice)
+            // …and a finite LAZY one, a map a routine returned (c0691dff), is
+            // read to its end first: the subs walk the elements they hold, and
+            // one that had not been pulled held none — `slip`, `cache`, `zip`,
+            // `cross`, `any`, `first` and `flat(f(), $x)` saw an empty list
             if (c->name != "eager" && !(c->name == "list" && args.size() == 1))
-                for (auto& a : args) if (a.t == VT::Array) a.seqTouch();
+                for (auto& a : args)
+                    if (a.t == VT::Array) { if (a.ext()) drainIfFiniteLazy(a); a.seqTouch(); }
             // a WRAPPED builtin goes the long way so its wrapper stack runs
             if (!builtinRefs_.empty()) {
                 auto rit = builtinRefs_.find(c->name);
