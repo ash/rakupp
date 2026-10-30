@@ -31,7 +31,7 @@ f3fb83e3 and 5e611fa3 (issue #216); 67c35490 (issue #215); 820388ce and
 c9560e0d; d1c84b6b (issue #199); a1bb0e7b (issue #191); 55565059 (issue
 #177); ad2bba29 (issue #176); 308aecdf (issue #179); 94172cb6; 7f28cba0
 (issue #189); f303f0c0 (issue #196); 43341539; 392873ab; 78c4f478; 946d29e4
-(issue #190); e9455bfa; be510e3a; 5801c286; c5fd7f1d; 7aa4256c; c4df7b96; 67b676cf.*
+(issue #190); e9455bfa; be510e3a; 5801c286; c5fd7f1d; 7aa4256c; c4df7b96; 67b676cf; 38fe9757.*
 
 ---
 
@@ -233,6 +233,13 @@ plain before 500c29e2 and native from it, unless they say otherwise.
   t/regression/grapheme-table-one-walk.raku agrees with Rakudo 2026.09.
 
 ### New
+
+- **`rakupp install` tests a suite that stops on `$*VM.name` once more as
+  `moar`** (38fe9757), and installs it if that passes, saying so.
+  LibraryMake, whose own test dies *Unknown VM; don't know how to build*
+  on `cpp`, installs without `RAKUPP_VM_NAME=moar`, so `rakupp install cro`
+  gets past it. Programs, and a suite failing for any other reason, still
+  see `cpp`. docs/guide/faq/unknown-vm.md says what changed.
 
 - **`--detect-races` reports data races between threads** (12af490d;
   docs/dev/plans/RACE-DETECTOR-PLAN.md). `rakupp --detect-races prog.raku`,
