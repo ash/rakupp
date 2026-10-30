@@ -1076,6 +1076,29 @@ moves to [TODO.md](TODO.md).
   `x`, `~` and `.substr` make from strings that have one. Done when the
   first `.index($n, $pos)` on 16 MB with an é costs under 2 ms.
 
+- [ ] **`.slurp(:bin)` peaks at five times the file's size** (found
+  2026-10-30 measuring issue #176's fix; Rakudo needs two). Peak memory
+  footprint (`/usr/bin/time -l`) reading a random 256 MB file, with the
+  empty program's 2 MB (Rakudo's 73 MB) beside it:
+
+  ```
+                                            rakupp     Rakudo 2026.09
+  'f256.bin'.IO.slurp(:bin)                1,283 MB      589 MB
+  $fh.slurp(:bin)  (opened :bin)           1,923 MB    1,329 MB
+  $fh.read('f256.bin'.IO.s)                  514 MB      336 MB
+  ```
+
+  64 MB slurps to 322 MB (Rakudo 205), so it grows with the file. The path
+  slurp (src/MethodCallPart3.cpp) holds three copies of the bytes at once:
+  an ostringstream's (`ss << in.rdbuf()`, which regrows as it reads, the
+  old buffer and the new both live), `ss.str()`'s, and the one
+  `binBuf(text)` makes, since it takes its bytes by value and is handed
+  `text` rather than moved (the Value it builds moves them, as CowStr's
+  take does). Size the string from the file's `stat`, read it in once and
+  move it into binBuf; the handle's `.slurp(:bin)` and a `.read` of the
+  whole file want the same look. Done when the first line's 256 MB peaks
+  under 300 MB, one copy of the file and the interpreter.
+
 ## Gates
 
 - [ ] **t/jit/run.raku: 5 of its 21 tier-up cases enter no kernel** (found
