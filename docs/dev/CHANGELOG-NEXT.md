@@ -31,7 +31,8 @@ f3fb83e3 and 5e611fa3 (issue #216); 67c35490 (issue #215); 820388ce and
 c9560e0d; d1c84b6b (issue #199); a1bb0e7b (issue #191); 55565059 (issue
 #177); ad2bba29 (issue #176); 308aecdf (issue #179); 94172cb6; 7f28cba0
 (issue #189); f303f0c0 (issue #196); 43341539; 392873ab; 78c4f478; 946d29e4
-(issue #190); e9455bfa; be510e3a; 5801c286; c5fd7f1d; 7aa4256c; c4df7b96; 67b676cf; 38fe9757.*
+(issue #190); e9455bfa; be510e3a; 5801c286; c5fd7f1d; 7aa4256c; c4df7b96; 67b676cf; 38fe9757; a81b6f91;
+bd8936e7; 0938078e; 858a037e; 21c37405.*
 
 ---
 
@@ -1220,6 +1221,33 @@ does not.
   and a `my enum` publishes nothing. Cro::HTTP2's `PROTOCOL_ERROR` and
   `data` were undeclared outside their modules, failing five of Cro::HTTP's
   test files. t/regression/module-enum-is-our.raku agrees with Rakudo 2026.09.
+- **A routine `is export` declared in a module's BEGIN block reaches the
+  importer** (a81b6f91), joining a same-named multi there, and
+  **`Metamodel::ClassHOW` is the setting's** even with a dist's own
+  `…::Metamodel::ClassHOW` loaded. Cro::RPC::JSON declares its `is json-rpc`
+  traits that way, and they were silently no traits at all.
+  t/regression/module-trait-exported-from-begin.raku agrees with Rakudo
+  2026.09.
+- **`nqp::defined` exists under `use nqp`** (bd8936e7); Cro::RPC::JSON's
+  metaclass roles died "Undefined routine". t/regression/lizmat-nqp-ops.raku
+  agrees with Rakudo 2026.09.
+- **A Pair does not bind a named sub-signature that wants a positional, and
+  `Hash:D(List:D(Pair:D))` is a nested coercion** (0938078e), not a type with
+  a sub-signature: `is json-rpc(:async)` died "expected Str but got Pair".
+  t/regression/named-subsig-pair-and-nested-coercion-smiley.raku agrees with
+  Rakudo 2026.09.
+- **Multi dispatch ranks three more pairs as Rakudo does** (858a037e):
+  `:ws(:web-socket($websocket))` takes no `:websocket`; an `&block`
+  parameter is a Callable, narrower than `Any:D $obj`; and a smiley weighs
+  only once every type has tied, so `($j, @x)` beats `(Any:D $j, Any $x)` for
+  a Positional type object. Each sent a Cro::RPC::JSON call to the wrong
+  candidate. Roast's dispatch directories pass the same 188 files.
+  t/regression/multi-callable-alias-and-smiley-ranking.raku agrees with
+  Rakudo 2026.09.
+- **`|@a` passes an Array's list and hash elements as items** (21c37405), so
+  a `*@` slurpy keeps them whole: `f(|@a)` for `@a = 1, [2, 3]` is `[1, [2,
+  3]]`. t/regression/slip-array-elements-stay-items.raku agrees with Rakudo
+  2026.09.
 
 ### Left open
 
