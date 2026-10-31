@@ -3702,6 +3702,46 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
         if (m == "trailing")  return h.count("trailing") ? h["trailing"] : Value::any();
         if (m == "WHAT")     return Value::typeObj(h.count("podclass") ? h["podclass"].s.str() : std::string("Pod::Block"));
         if (m == "defined" || m == "Bool") return Value::boolean(true);
+        // `.gist` is Rakudo's pod-gist: the block's class with its truthy
+        // config/name/level/caption/type/term (a Hash's `.raku`), then each of
+        // its contents two spaces deeper — a block in the same shape, a table
+        // row as its Strs' `.raku`, text as itself. It was the flattened text,
+        // and Pod::Load's suite looks for `Pod::FormattingCode{:type("K")}`
+        // in it. A declarator's gist is its text, as Rakudo's is.
+        if (m == "gist" && !(h.count("podclass") && h["podclass"].s.str() == "Pod::Block::Declarator")) {
+            std::function<std::string(const Value&, long)> podGist = [&](const Value& b, long level) -> std::string {
+                const auto& bh = *b.hash();
+                Value confs = Value::makeHash();
+                for (const char* k : {"config", "name", "level", "caption", "type", "term"}) {
+                    auto it = bh.find(k);
+                    if (it == bh.end() || !it->second.truthy()) continue;
+                    Value thing = it->second;
+                    const bool iterable = thing.t == VT::Hash || thing.t == VT::Array;
+                    if (iterable) thing.itemized = true;   // `-> $thing` holds it: `${…}`
+                    (*confs.hash())[k] = Value::str(iterable ? methodCall(thing, "raku", {}).toStr() : strOf(thing));
+                }
+                std::string out(level, ' ');
+                out += bh.count("podclass") ? bh.at("podclass").s.str() : std::string("Pod::Block");
+                if (!confs.hash()->empty()) out += methodCall(confs, "raku", {}).toStr();
+                out += "\n";
+                auto ci = bh.find("contents");
+                if (ci == bh.end() || ci->second.t != VT::Array || !ci->second.arr()) return out;
+                const Value indent = Value::integer(level + 2);
+                for (const Value& c : *ci->second.arr()) {
+                    if (c.t == VT::Hash && c.hashKind == "Pod" && c.hash()) { out += podGist(c, level + 2); continue; }
+                    Value text;
+                    if (c.t == VT::Array && c.arr()) {   // a table row: `$c>>.Str.raku`
+                        Value strs = Value::array();
+                        for (auto& e : *c.arr()) strs.arr()->push_back(Value::str(strOf(e)));
+                        text = Value::str(methodCall(strs, "raku", {}).toStr());
+                    }
+                    else text = Value::str(strOf(c));
+                    out += methodCall(text, "indent", {indent}).toStr() + "\n";
+                }
+                return out;
+            };
+            return Value::str(podGist(inv, 0));
+        }
         if (m == "Str" || m == "gist" || m == "raku") {
             // stringify to the concatenated text of the contents (paragraphs/children)
             std::function<std::string(const Value&)> flat = [&](const Value& v) -> std::string {

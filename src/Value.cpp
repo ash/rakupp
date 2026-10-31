@@ -1146,8 +1146,10 @@ std::string Value::gist() const {
     // an enum's TYPE OBJECT is its pair list here, and gists as the type it is,
     // nested too: `say (Color, 1)` is ((Color) 1)
     if (t == VT::Array && !enumType.empty() && isEnumTypeObject(*this)) return "(" + std::string(enumType.str()) + ")";
-    // an object of a class with its OWN `.gist` renders by it, nested too
-    if ((t == VT::Object || t == VT::Type) && g_objMethodStr) { std::string o; if (g_objMethodStr(*this, "gist", o)) return o; }
+    // an object of a class with its OWN `.gist` renders by it, nested too (and a Pod block)
+    if ((t == VT::Object || t == VT::Type || (t == VT::Hash && hashKind == "Pod")) && g_objMethodStr) {
+        std::string o; if (g_objMethodStr(*this, "gist", o)) return o;
+    }
     // …and the DEFAULT gist of an object is its `.raku` (Mu.gist): `[Bar.new(:1x)]`
     // shows `[Bar.new(x => 1)]`, not an address
     if (t == VT::Object && obj() && obj()->cls && !obj()->hasBoxed && g_rakuRepr &&
