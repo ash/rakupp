@@ -8478,9 +8478,11 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
         // else fall through to universal methods (.defined/.WHAT/.gist/...)
     }
 
-    // `*.method` -> a WhateverCode that applies the method to its argument
+    // A Whatever VALUE (`my $w = *; $w.grep(…)`) is an ordinary Any: the call
+    // is on it. Only a `*` WRITTEN as the invocant curries, and the evaluator
+    // has made that WhateverCode before a call gets here — currying a value
+    // too handed Red's AST walk a Sub where Rakudo's `.grep` filtered `(*,)`.
     if (inv.t == VT::Whatever) {
-        // introspection metamethods do NOT autocurry: *.WHAT is (Whatever)
         if (m == "WHAT") return Value::typeObj("Whatever");
         // …and a Whatever VALUE has no Capture to give (`((*)).Capture`)
         if (m == "Capture")
@@ -8489,18 +8491,16 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
                             "To create a Capture, add parentheses: \\(...)\n"
                             "If unpacking in a signature, perhaps you needlessly used parentheses? -> ($x) {} vs. -> $x {}\n"
                             "or missed `:` in signature unpacking? -> &c:(Int) {}"};
-        if (m == "HOW" || m == "WHO" || m == "VAR" || m == "WHICH" || m == "raku")
-            { /* fall through to the generic paths below with the Whatever value */ }
-        else {
-        Value code; code.t = VT::Code; code.setCode(makePayload<Callable>());
-        std::string mc = m; ValueList ar = args;
-        code.code()->ciM().builtin = [mc, ar](Interpreter& I, ValueList& a) -> Value {
-            Value arg = a.empty() ? Value::any() : a[0];
-            ValueList aa = ar;
-            return I.methodCall(arg, mc, aa);
-        };
-        return code;
-        }
+        // Whatever.ACCEPTS takes anything, and the list methods see the
+        // one-element list any Any is: `$w.grep({ True })` is `(*,).Seq`
+        if (m == "ACCEPTS") return Value::boolean(true);
+        static const std::set<std::string> kAsList = {
+            "grep", "map", "first", "list", "List", "Seq", "flat", "eager", "cache", "lazy", "Array",
+            "Slip", "head", "tail", "sort", "reverse", "join", "unique", "squish", "repeated", "pairs",
+            "kv", "keys", "values", "antipairs", "iterator", "rotor", "batch", "pick", "roll", "min",
+            "max", "minmax", "classify", "categorize", "produce", "reduce", "flatmap", "deepmap",
+            "duckmap", "nodemap", "toggle", "first-index", "grep-index", "skip", "snip", "Set", "Bag", "Mix"};
+        if (kAsList.count(m)) return methodCall(Value::list({inv}), m, std::move(args), rwArgs);
     }
 
     // Code introspection / currying
