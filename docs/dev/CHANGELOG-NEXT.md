@@ -35,7 +35,9 @@ c9560e0d; d1c84b6b (issue #199); a1bb0e7b (issue #191); 55565059 (issue
 bd8936e7; 0938078e; 858a037e; 21c37405; 0b29ef00; 9b3fbb8a; de0d04e5;
 3e15da85; 2df02ed1; 2adfaa34; c91a94fb; 1676fc8a; 5b70d2e1; d54cc3ba;
 d4ed6cac (issue #60); 480f6850; a92d9cfd; 0d089427; 9cac10e4; f3ffb5c3;
-c067446c; a11aa7ab; 594d4aac (Template::Mustache).*
+c067446c; a11aa7ab; 594d4aac (Template::Mustache); 9695e120, 1d5e98c0,
+4df715fc, c423e9db, 5ebfc05f, 3f0baa68, 57a9a792, 0abc0b39, 52426690,
+3c62ef44, 34168c0e and aa309270 (issue #77).*
 
 ---
 
@@ -256,6 +258,23 @@ plain before 500c29e2 and native from it, unless they say otherwise.
 
 ### New
 
+- **The subset metamodel** (0abc0b39; issue #77): `Metamodel::SubsetHOW
+  .new_type(:name, :refinee, :refinement)`, also asked of a metaclass made
+  from SubsetHOW; `.^refinee` and `.^refinement`; a `.HOW` of each subset's
+  own, so what a role mixes into it sticks and `S.^m` reaches the methods
+  it brings; and a subset's user traits, which went to no `trait_mod:<is>`
+  before. Red's sub-models (`User.^submodel(…)`, `subset Administrator is
+  sub-model of User where …`) stand on all of it. The module cache is
+  format v56 (SubsetDecl.traits). t/regression/subset-metamodel-for-sub-models.raku
+  agrees with Rakudo 2026.09.
+- **The NQP exception ops and `nqp::where`** (aa309270; issue #77):
+  `nqp::newexception` with `setmessage`/`setextype`/`setpayload` and their
+  `get` forms, `nqp::throw` — a CONTROL_WARN one is a resumable warning
+  that reaches CONTROL with its payload — `nqp::where`, and the
+  `nqp::const::CONTROL_*` values. Red raises its "pending Promise" warning
+  through them and compares shared query ASTs by `where`.
+  t/regression/nqp-exception-ops-and-where.raku agrees with Rakudo 2026.09,
+  and as `--exe`.
 - **`rakupp install` tests a suite that stops on `$*VM.name` once more as
   `moar`** (38fe9757), and installs it if that passes, saying so.
   LibraryMake, whose own test dies *Unknown VM; don't know how to build*
@@ -626,6 +645,50 @@ plain before 500c29e2 and native from it, unless they say otherwise.
   POSTs; so does Raku++ now. Red's transactions committed where they should
   have rolled back. t/regression/return-through-block-undo.raku agrees with
   Rakudo 2026.09.
+- **An object hash copied into another keeps its keys as the objects they
+  were** (9695e120; issue #77, FCO's item 3). `my %copy{K} = %original`,
+  typed or not, in a declaration or a later assignment, answered "(K)", a
+  Str, for each key: the copy took the entries but not the table of the
+  objects they were subscripted with. A plain hash still stringifies them.
+  Red keys query branches by AST objects. t/regression/object-hash-copy-keeps-keys.raku
+  agrees with Rakudo 2026.09.
+- **A role's own multi candidates join those of a role it does**
+  (1d5e98c0; issue #77, FCO's item 5). Through `role SQLMapping does
+  BaseMapping` a class found SQLMapping's group and stopped there, so
+  BaseMapping's `('int' --> 'integer')` lost 'int' to `(Str $value)`, and
+  any literal or `where` candidate one role in to a plain type one role
+  out. Red's SQL type aliases came back untranslated, and SQLite refused an
+  auto-incrementing key typed `int`. t/regression/role-in-role-multi-candidates-join.raku
+  agrees with Rakudo 2026.09.
+- **A named `@`/`%` parameter refuses a type object that is no
+  Positional/Associative** (c423e9db; issue #77). `:to(Str)` reached Red's
+  `inflate(Str $value, :@to!)` and died binding it, where Rakudo takes
+  `inflate(Any $value, Any :$to)`; `:to(Array)` still binds. t/regression/named-positional-param-refuses-type-object.raku
+  agrees with Rakudo 2026.09.
+- **`.^find_method` on a built-in type answers no for a name it does not
+  have** (3f0baa68; issue #77, FCO's item 4). Some forty built-in types —
+  Set, Bag, Mix and their mutable forms, Range, Pair, Seq, Rat, Complex,
+  Buf, Blob, Version, Duration, Instant, IO::Path, Uni, and the roles Cool,
+  Real, Numeric, Stringy and Iterable — answered a method object for any
+  name, and Red called the "red-type-db-methods" it found on a Set column.
+  `.can` shares the new sentinels, so `Set.can('elems')` and
+  `Version.can('parts')` answer yes. t/regression/builtin-type-find-method-answers-no.raku
+  agrees with Rakudo 2026.09.
+- **An X::TypeCheck built by hand renders its message** (52426690; issue
+  #77). `X::TypeCheck::Assignment.new(symbol => '$x', got => 42, expected =>
+  Str).message` was undefined, and so was every hand-built member of the
+  family; they now read as Rakudo's `method message`s do (Assignment,
+  Binding, Binding::Parameter, Return, Splice, Argument and the base
+  class). Red builds the Assignment one for a column refusing a value.
+  t/regression/typecheck-exception-built-by-hand.raku agrees with Rakudo
+  2026.09.
+- **A method called on a Whatever value is called on it** (34168c0e; issue
+  #77). `my $w = *; $w.grep({ True })` answered a Sub: every method on a
+  Whatever VALUE curried, behind the evaluator that curries a written
+  `*.grep(…)` already. Its list methods now see `(*,)` and `.ACCEPTS` is
+  True, as in Rakudo; Red walks an AST whose nodes may hold a `*`.
+  t/regression/whatever-value-method-does-not-curry.raku agrees with Rakudo
+  2026.09, and as `--exe`.
 - **A Buf is written in place** (18ef8f73; issue #186). In a binary built with
   `--exe`, a natively compiled module routine's `$b.write-uint16(…)` and
   `$b[2] = 3` on a Buf it was passed left the caller's Buf as it was, and in
@@ -719,6 +782,32 @@ plain before 500c29e2 and native from it, unless they say otherwise.
 
 ### Fixed: crashes
 
+- **Two candidates of one role that differ only by a named both survive
+  composition** (4df715fc; issue #77). Red::AST::Infix's `new($l, $r,
+  :$cast!)` and `new($l, $r)` share the positional key composition dedupes
+  by, so a class adding its own `multi method new` dropped the plain one
+  and `Red::AST::Concat.new($left, $right)` died "Default constructor for
+  'Concat' only takes named arguments"; a role composed by copy dropped it
+  too, and a second role with any `new` made the pair a conflict.
+  t/regression/role-multi-siblings-differing-by-named.raku agrees with
+  Rakudo 2026.09.
+- **A return type check sees through a bound attribute's Proxy**
+  (5ebfc05f; issue #77, FCO's item 2). `method model(--> Mu:U) { $!model :=
+  $type; $!model }` died "expected Mu:U but got Proxy (BoundType)"; a
+  smiley or a built-in return type now judges what the cell holds, and the
+  container still goes back for `is rw`. Red resolves its lazy
+  relationship models this way. t/regression/return-check-sees-through-bound-attribute.raku
+  agrees with Rakudo 2026.09.
+- **`Lock.condition` is a Lock::ConditionVariable** (57a9a792; issue #77).
+  It was a kind named LockCondition, and `Lock::ConditionVariable` named
+  nothing, so Red's Transaction::Guard died declaring `has
+  Lock::ConditionVariable $!available`. t/regression/lock-condition-variable-type.raku
+  agrees with Rakudo 2026.09.
+- **A bare block's implicit `$_` parameter answers `.named_names`**
+  (3c62ef44; issue #77, FCO's item 1), and the other fields every Parameter
+  has; `{ .say }.signature.params[0].named_names` died NotFound. Red reads
+  a transaction callback's parameters this way. t/regression/implicit-topic-parameter-introspects.raku
+  agrees with Rakudo 2026.09.
 - **A worker thread's teardown no longer races the cycle collector**
   (e30e2827). A worker gave its count back at the end of its body, before its
   closure, ExecContext and frame pools were let go, and a collection on the
@@ -1412,6 +1501,15 @@ does not.
 
 ### Left open
 
+- From issue #77's fixes (9695e120 … aa309270): a role candidate's
+  `callsame` still reaches the inner role's candidate it overrides; a
+  class's own candidate overrides a role's that differs only by a required
+  named; `.^find_method` on Promise, Channel, Supply, Lock, Semaphore,
+  Thread and the code types still answers yes for any name, and `.can` on a
+  role no; an infix on a Whatever value still curries; a subset's unknown
+  trait is ignored, and a runtime subset on a taken name answers it with a
+  suffix; and a cell bound in a method and returned `is raw` is not the
+  attribute's. TODO-FOLLOW-UPS.md has each.
 - A `token` the packrat memo answers fires its action once, where Rakudo,
   which has no memo, fires it on every call: `<a> 'x' || <a> 'y'` on "12y"
   fires `a` once (594d4aac). `q;…;`, `q,…,` and `q.….` are still not

@@ -1,6 +1,6 @@
 # Follow-ups
 
-*Collected 2026-10-20; added to 2026-10-30.*
+*Collected 2026-10-20; added to 2026-10-31.*
 
 Findings that sessions on 2026-10-19 and 2026-10-20 proposed as follow-up
 work and nobody started: gaps found in passing while doing something else.
@@ -187,6 +187,24 @@ moves to [TODO.md](TODO.md).
   `-> \s, |q { $cap = q; callsame };` read as a quote to the `;` before
   `|q` counted as one. Done when a declared term wins over the quote however
   it was declared, and these three then follow Rakudo.
+- [ ] **A subset's unknown trait is ignored, and a runtime subset on a taken
+  name answers that name with a suffix** (found 2026-10-31 giving subsets
+  their traits and `SubsetHOW.new_type`, 0abc0b39):
+
+  ```raku
+  subset S is no-such-trait of Int;   # accepted; Rakudo: 'S' cannot inherit from
+                                      # 'no-such-trait' because it is unknown
+  class User { }
+  say Metamodel::SubsetHOW.new_type(:name<User>, :refinee(User), :refinement(True)).^name;
+                                      # User+1, Rakudo User
+  ```
+
+  A trait no `trait_mod:<is>` candidate takes is dropped (the subset arm of
+  execDeclStmt). Types are registered by name, so a second one asking for a
+  taken name is keyed `User+1` (subsetNewType, src/InterpreterBinding.cpp),
+  as a runtime class is; Red names a sub-model after its model. Done when
+  the first is refused as Rakudo does and the second answers the name it
+  was given.
 
 ## Operators and types
 
@@ -475,6 +493,63 @@ moves to [TODO.md](TODO.md).
   find it; a built-in one made with `.new` has no such method on its class
   and neither path reaches its `.Str`. A `die "x"` exception (`~$!`) is
   fine. Done when the three lines match Rakudo 2026.09.
+- [ ] **`callsame` from a role's candidate reaches the one it overrides in a
+  role it does** (found 2026-10-31 making a role's multis join its parent
+  role's, 1d5e98c0; the build before it answered the same):
+
+  ```raku
+  role B { multi method m(Int $v) { "B" } }
+  role S does B { multi method m(Int $v) { callsame } }
+  class M does S { }
+  say M.new.m(1);   # B, Rakudo Nil
+  ```
+
+  S's candidate overrides B's same-signature one, so in Rakudo nothing is
+  left to call; here the redispatch defers up the parent chain (S's parent
+  slot holds B) and finds it. Done when an overridden role candidate is out
+  of the redispatch too.
+- [ ] **A class's own candidate overrides a role's that differs only by a
+  required named** (found 2026-10-31, 4df715fc, which stopped a role's own
+  two such candidates from overriding each other):
+
+  ```raku
+  role I { multi method m($a, :$cast!) { "cast" }; multi method m($a) { "plain" } }
+  class C does I { multi method m($a) { "own" } }
+  say C.new.m(1, :cast);   # own, Rakudo cast
+  ```
+
+  Composition keys a candidate by its positional types only (sigKeyParams
+  in execDeclStmt, src/InterpreterModules.cpp), so `m($a)` counts as the
+  same signature as `m($a, :$cast!)` and replaces it. Rakudo keeps a role
+  candidate unless the class has one with an identical signature, nameds
+  included. Done when the key carries the required nameds, for overrides,
+  conflicts and stub requirements alike.
+- [ ] **`.^find_method` on Promise, Channel, Supply, Lock, Semaphore, Thread
+  and the code types answers yes for any name** (found 2026-10-31, 3f0baa68,
+  which gave the value types a sentinel):
+
+  ```raku
+  say so Promise.^find_method('nope');   # True, Rakudo False
+  say so Cool.can('chars');              # False, Rakudo True
+  ```
+
+  A built-in type is probed through an empty instance (probeSentinel,
+  src/MethodCallPart2.cpp); an empty one of these could block on or start
+  what a probe calls (`.result`, `.receive`, `.join`), so they have none.
+  `.can` on a role has no sentinel either. Done when these answer from a
+  table of their methods rather than a probe.
+- [ ] **An infix on a Whatever value curries** (found 2026-10-31 making a
+  method on one call it, 34168c0e):
+
+  ```raku
+  my $w = *;
+  say $w ~ "a";   # WhateverCode.new, Rakudo *a
+  say 5 ~~ $w;    # WhateverCode.new, Rakudo True
+  ```
+
+  evalBinary (src/InterpreterCore.cpp) curries whenever an operand IS a
+  Whatever (`isWhateverish`), not only when the operand was a written `*`.
+  Done when, as for methods, only a written star curries.
 
 ## Control flow and containers
 
@@ -935,6 +1010,25 @@ moves to [TODO.md](TODO.md).
     (t/080-trait.rakutest), URI (t/query.rakutest) and Test::META
     (t/010-use.t) still fail their own suites. Cro::RPC::JSON's tests do
     not need them, so `rakupp install` skips them.
+- [ ] **A cell bound inside a method and returned `is raw` is not the
+  attribute's any more** (found 2026-10-31 checking the return-type fix,
+  5ebfc05f; the build before it answered the same):
+
+  ```raku
+  class C {
+      has $!n;
+      method bind is raw { my $t = 5; $!n := $t; $t }
+      method n { $!n }
+  }
+  my $c = C.new;
+  my $cell := $c.bind;
+  $cell = 8;
+  say $c.n;   # 5, Rakudo 8
+  ```
+
+  `$!n := $t` makes the attribute a Proxy over `$t`'s cell, but the `is raw`
+  return hands back a container that is not that cell. Done when the
+  returned container and the attribute share it.
 
 ## Processes and diagnostics
 
