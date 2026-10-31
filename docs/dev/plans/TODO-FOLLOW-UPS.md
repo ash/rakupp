@@ -475,6 +475,45 @@ moves to [TODO.md](TODO.md).
   find it; a built-in one made with `.new` has no such method on its class
   and neither path reaches its `.Str`. A `die "x"` exception (`~$!`) is
   fine. Done when the three lines match Rakudo 2026.09.
+- [ ] **`=for para` and `=begin para` are a Pod::Block::Para, not a
+  Pod::Block::Named** (found 2026-10-31 checking Pod gists against Rakudo,
+  5d4de331):
+
+  ```raku
+  =for para
+  y
+
+  =begin para
+  x
+  =end para
+
+  say $=pod.map(*.^name);   # (Pod::Block::Para Pod::Block::Para),
+                            # Rakudo (Pod::Block::Named Pod::Block::Named)
+  ```
+
+  Rakudo makes a Named block called "para" with the Para inside it, as
+  rakupp already does for the abbreviated `=para`; the Para inside is right
+  in both, only the outer block's class and name differ, so `.gist` shows
+  `Pod::Block::Para` where Rakudo shows `Pod::Block::Named{:name("para")}`.
+  The blocks are built in src/Pod.cpp. Done when both lines' names and
+  `$=pod.gist` match Rakudo 2026.09.
+- [ ] **A Pod block's `.Str` and `.raku` are its text** (found 2026-10-31
+  making its `.gist` Rakudo's, 5d4de331):
+
+  ```raku
+  =para Some B<bold> text
+
+  say $=pod[0].Str;    # Some bold text, Rakudo Pod::Block::Named<3797218828536>
+  say $=pod[0].raku;   # Some bold text, Rakudo Pod::Block::Named.new(name => "para", config => {}, contents => [Pod::Block::Para.new(…)])
+  ```
+
+  The `m == "Str" || m == "gist" || m == "raku"` branch for a "Pod" hash in
+  src/MethodCallPart2.cpp flattens the contents for all three; 5d4de331 took
+  `.gist` out of it. A declarator block's `.Str` is its text in Rakudo too
+  (`~&f.WHY` is "doc"), so it stays. Whatever else in rakupp reads a
+  block's text through `.Str` has to move to the contents first. Done when
+  both lines match Rakudo 2026.09 (an address aside) and the suite still
+  passes.
 
 ## Control flow and containers
 

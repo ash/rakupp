@@ -35,7 +35,7 @@ c9560e0d; d1c84b6b (issue #199); a1bb0e7b (issue #191); 55565059 (issue
 bd8936e7; 0938078e; 858a037e; 21c37405; 0b29ef00; 9b3fbb8a; de0d04e5;
 3e15da85; 2df02ed1; 2adfaa34; c91a94fb; 1676fc8a; 5b70d2e1; d54cc3ba;
 d4ed6cac (issue #60); 480f6850; a92d9cfd; 0d089427; 9cac10e4; f3ffb5c3;
-c067446c; a11aa7ab; 594d4aac (Template::Mustache).*
+c067446c; a11aa7ab; 594d4aac (Template::Mustache); 5d4de331 (Pod::Load).*
 
 ---
 
@@ -1409,8 +1409,25 @@ does not.
   files: `rakupp install` refused it, and with it Pod::To::HTML,
   Raku::Pod::Render, Pod::To::Markdown and App::Assixt, which need it (not
   re-run yet).
+- **A Pod block gists as Rakudo's tree of block classes** (5d4de331): its
+  class with its config, name, level, caption, type and term, then each of
+  its contents two spaces deeper, as in `Pod::FormattingCode{:type("B")}`
+  over `bold`, and nested in a list too (`$=pod.gist`). It was the text of
+  its contents run together. A declarator block still gists as its text, as
+  Rakudo's does. A table with a header row carries `:header-row(0)` in its
+  config, as Rakudo's does. Pod::Load 0.7.2's suite looks for
+  `Pod::FormattingCode{:type("K")}` in the gist and failed; it passes now,
+  and Pod::To::HTML, which needs it, comes next (not re-run yet).
+  t/regression/pod-block-gist-is-rakudos.raku agrees with Rakudo 2026.09
+  byte for byte.
 
 ### Left open
+
+- `=for para` and `=begin para` make a Pod::Block::Para, where Rakudo makes a
+  Pod::Block::Named named "para" around one, so their gist differs; and a
+  Pod block's `.Str` and `.raku` are still its text, where Rakudo's are its
+  class with an address (`Pod::Heading<…>`) and a `.new(…)` (5d4de331). TODO-FOLLOW-UPS.md has
+  both.
 
 - A `token` the packrat memo answers fires its action once, where Rakudo,
   which has no memo, fires it on every call: `<a> 'x' || <a> 'y'` on "12y"
