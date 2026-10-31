@@ -37,7 +37,8 @@ bd8936e7; 0938078e; 858a037e; 21c37405; 0b29ef00; 9b3fbb8a; de0d04e5;
 d4ed6cac (issue #60); 480f6850; a92d9cfd; 0d089427; 9cac10e4; f3ffb5c3;
 c067446c; a11aa7ab; 594d4aac (Template::Mustache); 9695e120, 1d5e98c0,
 4df715fc, c423e9db, 5ebfc05f, 3f0baa68, 57a9a792, 0abc0b39, 52426690,
-3c62ef44, 34168c0e, aa309270 and 8a6c9d9a (issue #77).*
+3c62ef44, 34168c0e, aa309270, 8a6c9d9a, ad7f05dc and e6777420 (issue
+#77).*
 
 ---
 
@@ -701,6 +702,23 @@ plain before 500c29e2 and native from it, unless they say otherwise.
   this, none lost, and no file meets the empty WHEN. Roast's spectest list
   passes as in v5.5.0. t/regression/module-sees-not-the-programs-operators.raku
   agrees with Rakudo 2026.09, and as `--exe`.
+- **`.can` on a Failure answers Failure's own methods and Any's**
+  (ad7f05dc; issue #77). The probe that answers `.can` for a built-in value
+  calls the method, and a Failure throws what it holds at any call, which
+  read as "found": `$failure.^can('anything')` was True. With no
+  `$*RED-DB`, Red's `try $*RED-DB.^can("table-name-formatter")` took its
+  branch and died "Dynamic variable $*RED-DB not found" there, in eight
+  test files. t/regression/failure-can-is-failures-own.raku agrees with
+  Rakudo 2026.09.
+- **A dynamic variable no caller declares is GLOBAL's before it is an
+  error** (e6777420; issue #77). `%*RED-DEFAULT-DRIVERS` reads the
+  `%GLOBAL::RED-DEFAULT-DRIVERS` Red's `red-defaults` writes, as Rakudo's
+  lookup does (S02), so a test that sets its database that way no longer
+  dies "$*RED-DB wasn't defined". Only a `GLOBAL::` write or a top-level
+  `our` counts, not a top-level `my`; a caller's own `my $*x` still wins.
+  Red's suite: 50 of 126 files pass before these two, 58 with them, none
+  lost. t/regression/dynamic-falls-back-to-global.raku agrees with Rakudo
+  2026.09.
 - **A Buf is written in place** (18ef8f73; issue #186). In a binary built with
   `--exe`, a natively compiled module routine's `$b.write-uint16(…)` and
   `$b[2] = 3` on a Buf it was passed left the caller's Buf as it was, and in
