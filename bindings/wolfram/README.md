@@ -111,6 +111,16 @@ function rather than an import:
 wolframscript -code 'PacletSymbol["AntonAntonov/RakuppLink", "RakuppEval"]["[*] 1..20"]'
 ```
 
+Version 1.0.3 (2026-10-31) is the first to carry the output capture of
+[section 4](#4-running-raku). Under an older one, `say` prints nothing in a
+notebook and `RakuppEval["say 3 ** 2"]` returns `True`. `PacletInstall`
+updates an installed paclet when the repository has a newer one, and
+`UpdatePacletSites -> True` has it read the repository afresh first:
+
+```bash
+wolframscript -code 'PacletInstall["AntonAntonov/RakuppLink", UpdatePacletSites -> True]'
+```
+
 Either route needs the library found the same way, and everything past that
 is the same too — the paclet is this file, renamed. A session under it,
 declaring a postfix operator once and then using it from both sides of the

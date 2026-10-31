@@ -318,7 +318,8 @@ plain before 500c29e2 and native from it, unless they say otherwise.
   its value. An eval that prints nothing measured 49 µs against 44 µs, and
   printing costs about 14 µs a write (20,000 `say`s: 0.28 s against
   0.02 s). bindings/wolfram/tests/output.wls is a new Wolfram leg of
-  tools/bindings-smoke.raku, which the old package fails.
+  tools/bindings-smoke.raku, which the old package fails. The RakuppLink
+  paclet carries the fix from version 1.0.3 (2026-10-31).
 - **The bindings' guides give three ways to get librakupp, and the loaders'
   not-found errors print the commands** (62e16b9e). A release archive
   carries the library (every one but OpenBSD's), a fresh checkout builds it

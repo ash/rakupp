@@ -102,8 +102,7 @@ a planted exfiltration in a test file fails closed, gated.
 - **More hosts on the one C API.** The JavaScript binding is Bun-only
   (`bun:ffi`); Node needs N-API. Emacs Lisp is requested (issue #44, with
   raku-mode and org-babel named). Ruby, PHP, Java, .NET, Swift and Lua each cost
-  one thin binding over `rakupp.h`. Wolfram's `RakuEval` prints and then returns
-  `True` (issue #56).
+  one thin binding over `rakupp.h`.
 - **Distribution channels.** A Homebrew tap and the curl-pipe installer exist;
   deb/rpm, AUR, nix, Scoop and winget do not. The `setup-rakupp` GitHub Action
   is staged locally and not pushed. The glibc-2.28 floor and the manylinux

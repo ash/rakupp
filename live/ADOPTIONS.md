@@ -33,7 +33,7 @@ raku.online — those are ours and belong in
 
 [**RakuppLink**](https://resources.wolframcloud.com/PacletRepository/resources/AntonAntonov/RakuppLink/)
 is in Wolfram's Paclet Repository, packaged by Anton Antonov
-([source](https://github.com/antononcube/WL-RakuppLink-paclet)) — v1.0.2, MIT,
+([source](https://github.com/antononcube/WL-RakuppLink-paclet)) — v1.0.3, MIT,
 Wolfram Language 13.3+, context ``AntonAntonov`RakuppLink` ``. So a Wolfram
 user reaches Raku with `PacletInstall["AntonAntonov/RakuppLink"]` and never
 sees this repository.
@@ -52,7 +52,10 @@ The same author filed [#38](https://github.com/ash/rakupp/issues/38) — the
 `Math::NumberTheory` install that cost twelve engine fixes — so the packaging
 and the bug reports arrived in the same week. That is the pattern `live/`
 predicts: somebody using the thing for their own purposes finds what we would
-not have thought to test.
+not have thought to test. [#56](https://github.com/ash/rakupp/issues/56) went
+round the whole loop: in a RakuMode notebook, `say` under the binding printed
+nothing and returned `True`; the fix landed here on 2026-10-27 (fb9009bc), and
+v1.0.3, published 2026-10-31, took the fixed RakuLang.wl into the paclet.
 
 ## Raku Playground — one dropdown, four runtimes
 
@@ -255,7 +258,8 @@ item belongs to.
 Nearly every one of these pins a snapshot. The playground vendors a July
 build, the Guix channel a v1.2.0 tag, the koans, `321` and `iz4` a v4.0.1
 release by checksum, `xc` a v5.2.1 release by checksum, and the
-paclet is written against the C ABI in
+paclet carries its own copy of RakuLang.wl (v1.0.3's code is the file as
+fb9009bc left it), written against the C ABI in
 [include/rakupp/rakupp.h](../include/rakupp/rakupp.h), linking whatever
 `librakupp` its user happened to build. A fix landing here reaches none of
 them until their author re-vendors or re-pins — worth remembering before
@@ -267,5 +271,5 @@ are the exception: they pin nothing, and tell the agent to check whatever
 
 None of this is under our control. Rows can move or disappear without notice;
 the links are what they were on the date each was last checked —
-**2026-10-04** for xc and the agent skills, **2026-10-03** for 321 and iz4, **2026-09-28** for Raku Koans, **2026-08-28** for
+**2026-10-31** for RakuppLink, **2026-10-04** for xc and the agent skills, **2026-10-03** for 321 and iz4, **2026-09-28** for Raku Koans, **2026-08-28** for
 the rest.
