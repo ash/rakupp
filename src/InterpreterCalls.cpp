@@ -2521,6 +2521,7 @@ Value* Interpreter::ourCell(const VarExpr* ve, Env* de, Value* init) {
     const std::string& n = ve->name;
     Env* g = global_.get();
     const std::string& pfx = ourPkgPrefix(de);
+    if (pfx.empty()) globalPkgVars_.insert(n);   // GLOBAL's: `$*n` finds it (dynMiss)
     // (outside a package the published name is the name: no string to build)
     std::string qual;
     const std::string& pub = pfx.empty() ? n : (qual = ourPublishedName(n, pfx));
@@ -2587,6 +2588,7 @@ Value* Interpreter::cellLaneSlot(VarExpr* tv, Env* cur) {
 // 3, our.t). The global scope's own `our` is simply its variable.
 Value Interpreter::ourViewFallback(const VarExpr* ve, const std::shared_ptr<Env>& deh, Value init) {
     Env* de = deh.get();
+    if (global_ && de == global_.get()) globalPkgVars_.insert(ve->name);   // (GLOBAL's, see dynMiss)
     if (!global_ || de == global_.get() || ve->name.size() < 2) return de->define(ve->name, std::move(init));
     const std::string pub = ourPublishedName(ve->name, ourPkgPrefix(de));
     if (!de->local(ve->name))

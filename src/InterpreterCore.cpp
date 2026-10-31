@@ -11692,7 +11692,7 @@ Value* Interpreter::lvalue(Expr* e, bool asInvocant) {
             // falls through to lvalue() for the target. Declarations and
             // `PROCESS::<$x>` returned above; the engine's own dynamics are
             // exempt because their slot is synthesized on first write.
-            if (!ve->declare && !isBuiltinDynamic(ve->name)) dynNotFoundThrow(ve->name);
+            if (!ve->declare && !isBuiltinDynamic(ve->name)) return dynMissSlot(ve->name);
         }
         // The three standard handles have no stored container until someone
         // writes one — they are synthesized on read. A write must therefore land
@@ -11730,7 +11730,7 @@ Value* Interpreter::lvalue(Expr* e, bool asInvocant) {
         if (ve->pkgSymbol) {
             auto g = global_ ? global_ : tcx.cur;
             const std::string nm = pkgSymbolName(ve->name);
-            if (!g->vars.count(nm)) g->define(nm, Value::any());
+            if (!g->vars.count(nm)) g->define(nm, Value::any()); if (g == global_) globalPkgVars_.insert(nm);
             return &g->vars[nm];
         }
         if (!isSpecialVar(ve->name)) {
@@ -14068,7 +14068,7 @@ Value Interpreter::evalAssign(Assign* a, bool sink) {
         // already: nothing to publish)
         if (ve->declare && ve->d().declScope == "our" && ve->name.size() > 1 && !ourBoundToCell(ve)) {
             if (Value* p = tctx().cur->find(ve->name)) {
-                std::string qual = ourPublishedName(ve->name, tctx().pkgPrefix);
+                std::string qual = ourPublishedName(ve->name, tctx().pkgPrefix); if (tctx().pkgPrefix.empty()) globalPkgVars_.insert(ve->name);
                 noteSymbolMutation("our-declaration publish");
                 // The qualified name and the module's own name are ONE container:
                 // `$Pkg::VAR = 4` written outside is a write to the very variable
@@ -31557,7 +31557,7 @@ Value Interpreter::evalVarExpr(Expr* e) {
         // stay quiet on a Failure; only actually USING the value
         // detonates, which is the whole distinction Rakudo draws here.
         if (!ve->declare && !isBuiltinDynamic(ve->name))
-            return dynNotFound(ve->name);
+            return dynMiss(ve->name);   // (GLOBAL's, else the Failure)
     }
     Value* p = tctx().cur->find(ve->name);
     if (p) {

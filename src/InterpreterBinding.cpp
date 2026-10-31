@@ -3494,6 +3494,25 @@ void Interpreter::dynNotFoundThrow(const std::string& name) {
     const std::string msg = "Dynamic variable " + name + " not found";
     throw RakuError{makeTypedEx("X::Dynamic::NotFound", {{"name", Value::str(name)}}, msg), msg};
 }
+// A dynamic no caller declares is GLOBAL's, twigil dropped, before it is an
+// error (S02): `%*RED-DEFAULT-DRIVERS` is the `%GLOBAL::RED-DEFAULT-DRIVERS`
+// Red's `red-defaults` fills, and every model's database lookup reads it that
+// way. Only a name put THERE counts — a `GLOBAL::` write or a top-level `our`
+// (globalPkgVars_) — because global_ is the program's top scope as well, and
+// its `my $DEBUG` is no `$*DEBUG`.
+static Value* globalDynamic(Interpreter& I, const std::string& name) {
+    if (name.size() < 3 || name[1] != '*' || !I.global_) return nullptr;
+    const std::string g = name.substr(0, 1) + name.substr(2);
+    return I.globalPkgVars_.count(g) ? I.global_->local(g) : nullptr;
+}
+Value Interpreter::dynMiss(const std::string& name) {
+    if (Value* p = globalDynamic(*this, name)) return *p;
+    return dynNotFound(name);
+}
+Value* Interpreter::dynMissSlot(const std::string& name) {
+    if (Value* p = globalDynamic(*this, name)) return p;
+    dynNotFoundThrow(name);
+}
 
 // @a[i]:exists / %h<k>:delete / :k / :v / :kv / :p for native codegen — the
 // static subset of the interpreter's adverbed indexing (no $var conditionals).

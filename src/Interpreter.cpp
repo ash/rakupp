@@ -5356,6 +5356,7 @@ void Interpreter::preinstallOurCells(const Program& prog) {
         if (!ourShareable(ve)) continue;
         const VarDeclInfo& vd = ve->d();
         const std::string pub = ourPublishedName(ve->name, pfx);
+        if (pfx.empty()) globalPkgVars_.insert(ve->name);   // GLOBAL's: `$*x` finds it (dynMiss)
         if (!decided.insert(pub).second) continue;
         if (vd.declDefault || !vd.containerIs.empty() || vd.declShape || vd.declTypeExpr || !vd.declCoerce.empty())
             continue;

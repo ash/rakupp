@@ -2550,6 +2550,9 @@ public:
     static bool isBuiltinDynamic(const std::string& name);
     Value dynNotFound(const std::string& name);                   // the Failure a read answers
     [[noreturn]] void dynNotFoundThrow(const std::string& name);  // …and what a write does
+    Value dynMiss(const std::string& name);       // …after GLOBAL's: `%*X` reads `%GLOBAL::X`
+    Value* dynMissSlot(const std::string& name);  // (the write's: GLOBAL's slot, else the throw)
+    std::unordered_set<std::string> globalPkgVars_;   // what IS GLOBAL's in global_ (dynMiss)
     // The working directory as the program sees it: an active `my $*CWD`
     // binding wins, then the logical name chdir/indir maintain (symlinks stay
     // as spelled, `..` collapses textually — Rakudo's model), then the
