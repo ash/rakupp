@@ -757,6 +757,17 @@ std::string typeCheckRepr(const Value& v) {
     if (r.size() > 1 && r[0] == '$' && (r[1] == '(' || r[1] == '[' || r[1] == '{')) r.erase(0, 1);
     return r.size() > 23 ? r.substr(0, 20) + "..." : r;
 }
+// What Failure declares itself (Rakudo 2026.09's `Failure.^methods(:local)`):
+// `.can` on a Failure answers these and Any's, never by calling it — every
+// call on an unhandled one throws the exception it holds.
+bool failureOwnMethod(const std::string& n) {
+    static const std::set<std::string> kOwn = {
+        "AT-KEY", "AT-POS", "Bag", "BagHash", "Bool", "CALL-ME", "Capture", "DESTROY", "FALLBACK",
+        "Failure", "Int", "Mix", "MixHash", "Num", "Numeric", "POPULATE", "STORE", "Set", "SetHash",
+        "Str", "UPGRADE-RAT", "backtrace", "defined", "exception", "gist", "handled", "iterator",
+        "list", "mess", "new", "raku", "self", "sink"};
+    return kOwn.count(n) > 0;
+}
 // Rakudo gives each X::TypeCheck class a `method message` that renders its
 // attributes, so one built by hand reports like one the engine threw — Red
 // constructs X::TypeCheck::Assignment with `symbol`, `got` and `expected` for

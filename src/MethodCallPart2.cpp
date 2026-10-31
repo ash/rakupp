@@ -9846,6 +9846,10 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
         // failed — can-ok is Test's .^can)
         Value probeInv = inv;
         if (!ci && inv.t == VT::Type && !classes_.count(inv.s)) probeInv = probeSentinel(inv.s);
+        // (a Failure throws what it holds at any call, which a probe reads as "found":
+        // its own methods are its and the rest an Any's — Red's `try $*RED-DB.^can(…)`)
+        const bool failure = !ci && inv.t == VT::Hash && inv.hashKind == "Failure", failureOwn = failure && failureOwnMethod(mn);
+        if (failure && !failureOwn) { probeInv = Value::makeHash(); probeInv.hashKind = "Any"; }
         if (!ci && out.arr()->empty() && !mn.empty() &&
             probeInv.t != VT::Object && probeInv.t != VT::Type && probeInv.t != VT::Any && probeInv.t != VT::Nil &&
             // Date/DateTime share one dispatch surface here, so a probe cannot
@@ -9855,7 +9859,7 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
                 // one probe (shared with .^lookup): 1 = found, -1 = not found,
                 // 0 = a side-effectful name that must not be probed (no stub —
                 // the permissive answer this fallback has always given)
-                if (probeMethodExists(probeInv, mn, "/nonexistent/rakupp-can-probe") == 1) {
+                if (failureOwn || probeMethodExists(probeInv, mn, "/nonexistent/rakupp-can-probe") == 1) {
                     Value stub; stub.t = VT::Code; stub.setCode(makePayload<Callable>());
                     stub.code()->ciM().name = mn; stub.code()->ciM().isMethod = true;
                     std::string mnc = mn;

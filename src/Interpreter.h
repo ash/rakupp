@@ -72,6 +72,7 @@ std::string typeCheckRepr(const Value& v);
 // …and the whole message a hand-built X::TypeCheck renders from its attributes
 // (InterpreterBinding.cpp); "" for any other type
 std::string typeCheckMessageFor(const std::string& type, const ValueList& namedArgs);
+bool failureOwnMethod(const std::string& name);   // a method Failure itself declares (InterpreterBinding.cpp)
 // The value half of a typed container's `ofType` — the ELEMENT type it
 // constrains its slots to, "" when it constrains nothing (untyped, Any/Mu, or
 // one of the NATIVE lowercase types, which have their own narrower checks).
