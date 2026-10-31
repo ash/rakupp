@@ -205,6 +205,26 @@ moves to [TODO.md](TODO.md).
   as a runtime class is; Red names a sub-model after its model. Done when
   the first is refused as Rakudo does and the second answers the name it
   was given.
+- [ ] **A sub the main program imports is visible to a module that never
+  imported it** (found 2026-10-31 hiding the program's operators from
+  modules, 8a6c9d9a, which did that for operators only):
+
+  ```raku
+  # lib/Helper.rakumod:      unit module Helper; sub helper() is export { "helper" }
+  # lib/CallsHelper.rakumod: unit module CallsHelper; sub call-helper() is export { helper() }
+  use Helper; use CallsHelper;
+  say call-helper();   # helper; Rakudo refuses to compile CallsHelper
+  ```
+
+  The program's top scope is global_, the root of every scope; 8a6c9d9a
+  puts a hole in moduleRoot_ (between the modules and global_) for each
+  OPERATOR the program defines (hideProgramOperator,
+  src/InterpreterModules.cpp), because an operator there shadowed the
+  built-in a module meant. A routine name the program imports reaches a
+  module the same way, which only changes what code Rakudo would reject —
+  unless it shadows a built-in a module calls (`say`, `dd`). Done when the
+  program's lexicals live in a scope of their own, under global_, and the
+  holes go.
 
 ## Operators and types
 

@@ -37,7 +37,7 @@ bd8936e7; 0938078e; 858a037e; 21c37405; 0b29ef00; 9b3fbb8a; de0d04e5;
 d4ed6cac (issue #60); 480f6850; a92d9cfd; 0d089427; 9cac10e4; f3ffb5c3;
 c067446c; a11aa7ab; 594d4aac (Template::Mustache); 9695e120, 1d5e98c0,
 4df715fc, c423e9db, 5ebfc05f, 3f0baa68, 57a9a792, 0abc0b39, 52426690,
-3c62ef44, 34168c0e and aa309270 (issue #77).*
+3c62ef44, 34168c0e, aa309270 and 8a6c9d9a (issue #77).*
 
 ---
 
@@ -689,6 +689,18 @@ plain before 500c29e2 and native from it, unless they say otherwise.
   True, as in Rakudo; Red walks an AST whose nodes may hold a `*`.
   t/regression/whatever-value-method-does-not-curry.raku agrees with Rakudo
   2026.09, and as `--exe`.
+- **A module does not see the operators the main program imports or
+  declares** (8a6c9d9a; issue #77). The program's top scope is global_,
+  every module's hung from it, and so `use Red;` in a test put
+  Red::Operators' `eqv` in front of Red's Case optimizer, which imports no
+  operators: its `where { [eqv] |%when.values, $else }` answered an AST,
+  and `.grep(…).map(*.id)` sent SQLite `CASE WHEN  THEN "bla".id END`.
+  Module scopes now hang from a scope that holds a hole for each operator
+  the program defines, so a module finds its own import or the built-in;
+  the program keeps its own. Red's suite: 40 of 126 files pass, 50 with
+  this, none lost, and no file meets the empty WHEN. Roast's spectest list
+  passes as in v5.5.0. t/regression/module-sees-not-the-programs-operators.raku
+  agrees with Rakudo 2026.09, and as `--exe`.
 - **A Buf is written in place** (18ef8f73; issue #186). In a binary built with
   `--exe`, a natively compiled module routine's `$b.write-uint16(…)` and
   `$b[2] = 3` on a Buf it was passed left the caller's Buf as it was, and in
@@ -1508,8 +1520,10 @@ does not.
   Thread and the code types still answers yes for any name, and `.can` on a
   role no; an infix on a Whatever value still curries; a subset's unknown
   trait is ignored, and a runtime subset on a taken name answers it with a
-  suffix; and a cell bound in a method and returned `is raw` is not the
-  attribute's. TODO-FOLLOW-UPS.md has each.
+  suffix; a cell bound in a method and returned `is raw` is not the
+  attribute's; and a sub the program imports is still visible to a module
+  that never imported it (8a6c9d9a hid only operators). TODO-FOLLOW-UPS.md
+  has each.
 - A `token` the packrat memo answers fires its action once, where Rakudo,
   which has no memo, fires it on every call: `<a> 'x' || <a> 'y'` on "12y"
   fires `a` once (594d4aac). `q;…;`, `q,…,` and `q.….` are still not
