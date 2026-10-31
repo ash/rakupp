@@ -5958,6 +5958,7 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
             }
             else if (t == "X::NYI" && at.count("feature"))
                 syn = at["feature"] + " not yet implemented. Sorry.";
+            else syn = typeCheckMessageFor(t, args);   // X::TypeCheck and its family
             // The rendered message WINS over an explicit `message` argument, as
             // Rakudo's `method message` does — it is a method there, so an
             // attribute of the same name never gets a say.

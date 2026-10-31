@@ -69,6 +69,9 @@ using SubResolver = std::function<bool(const std::string& name, const std::strin
 // How a type-check failure renders the offending value (Rakudo: `.raku`, elided
 // past 23 chars). Shared by the five message builders across Interpreter/Builtins.
 std::string typeCheckRepr(const Value& v);
+// …and the whole message a hand-built X::TypeCheck renders from its attributes
+// (InterpreterBinding.cpp); "" for any other type
+std::string typeCheckMessageFor(const std::string& type, const ValueList& namedArgs);
 // The value half of a typed container's `ofType` — the ELEMENT type it
 // constrains its slots to, "" when it constrains nothing (untyped, Any/Mu, or
 // one of the NATIVE lowercase types, which have their own narrower checks).

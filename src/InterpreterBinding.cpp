@@ -757,6 +757,60 @@ std::string typeCheckRepr(const Value& v) {
     if (r.size() > 1 && r[0] == '$' && (r[1] == '(' || r[1] == '[' || r[1] == '{')) r.erase(0, 1);
     return r.size() > 23 ? r.substr(0, 20) + "..." : r;
 }
+// Rakudo gives each X::TypeCheck class a `method message` that renders its
+// attributes, so one built by hand reports like one the engine threw — Red
+// constructs X::TypeCheck::Assignment with `symbol`, `got` and `expected` for
+// a column that refuses a value, and its `.message` was undefined. The same
+// gotn/expectedn rules: a value of the expected type shows as itself, an
+// Associative constraint names only the type, anything else `Type (value)`.
+std::string typeCheckMessageFor(const std::string& t, const ValueList& args) {
+    static const std::set<std::string> kinds = {
+        "X::TypeCheck", "X::TypeCheck::Binding", "X::TypeCheck::Binding::Parameter",
+        "X::TypeCheck::Return", "X::TypeCheck::Assignment", "X::TypeCheck::Splice", "X::TypeCheck::Argument"};
+    if (!kinds.count(t)) return "";
+    std::map<std::string, Value> a;
+    for (auto& v : args) if (v.t == VT::Pair && v.pairVal()) a[v.s] = *v.pairVal();
+    auto str = [&](const char* k) {
+        auto it = a.find(k);
+        return it != a.end() && isDefined(it->second) ? it->second.toStr() : std::string();
+    };
+    auto truthy = [&](const char* k) { auto it = a.find(k); return it != a.end() && it->second.truthy(); };
+    if (t == "X::TypeCheck::Argument") {
+        std::string sig = str("signature"), as;
+        if (auto it = a.find("arguments"); it != a.end() && it->second.t == VT::Array && it->second.arr())
+            for (auto& e : *it->second.arr()) as += (as.empty() ? "" : ", ") + e.toStr();
+        else as = str("arguments");
+        return "Calling " + str("objname") + "(" + as + ") will never work with " +
+               (truthy("protoguilt") ? "signature of the proto "
+                : sig.find('\n') != std::string::npos ? "any of these multi signatures:" : "declared signature ") + sig;
+    }
+    if (!a.count("got") && !a.count("expected")) return "";
+    const Value got = a.count("got") ? a["got"] : Value::nil();
+    const Value exp = a.count("expected") ? a["expected"] : Value::nil();
+    const char sm = exp.t == VT::Type && exp.i ? (exp.i == 1 ? 'D' : 'U') : 0;   // `Int:D` is no Int
+    const bool same = !sm && got.typeName() == exp.typeName();
+    const bool expAssoc = exp.t == VT::Type && typeNameConforms(exp.s, "Associative", std::string(), std::string());
+    const std::string gotn = same ? typeCheckRepr(got) : expAssoc ? got.typeName() : got.typeName() + " (" + typeCheckRepr(got) + ")";
+    const std::string expn = same ? typeCheckRepr(exp) : exp.typeName() + (sm ? std::string(":") + sm : "");
+    const bool itself = same && got.t == VT::Type && exp.t == VT::Type;   // `expected Int, got Int`
+    const std::string explain = itself ? "expected type " + expn + " cannot be itself" : "expected " + expn + " but got " + gotn;
+    const std::string sym = str("symbol");
+    const bool noSym = sym.empty() || sym == "$";
+    if (t == "X::TypeCheck") return "Type check failed in " + str("operation") + "; " + explain;
+    if (t == "X::TypeCheck::Splice") return "Type check failed in " + str("action") + "; " + explain;
+    if (t == "X::TypeCheck::Return")
+        return "Type check failed for return value; " +
+               (itself ? "expected return type " + expn + " cannot be itself (perhaps returning a :D type object?)" : explain);
+    if (t == "X::TypeCheck::Binding") return "Type check failed in binding" + (noSym ? "" : " to '" + sym + "'") + "; " + explain;
+    if (t == "X::TypeCheck::Binding::Parameter")
+        return (a.count("what") ? str("what") : truthy("constraint") ? "Constraint type" : "Type") + " check failed in binding" +
+               (noSym ? " to anonymous parameter" : " to parameter '" + sym + "'") + "; " + explain;
+    return "Type check failed " + (noSym ? std::string("in assignment")
+                                   : sym[0] == '@' || sym[0] == '%' ? "for an element of " + sym
+                                   : "in assignment to " + sym) + "; " + explain +
+           (itself || (sm == 'D' && got.t == VT::Type && got.typeName() == exp.typeName())
+                ? " (perhaps Nil was assigned to a :D which had no default?)" : "");
+}
 // Value::natWidthOfType, memoised per parameter: it substr()s the type name, so
 // calling it per bind allocated a std::string for every typed parameter of every
 // call. Answer encoded as bits<<1 | signed (0 = not a native-width type).
