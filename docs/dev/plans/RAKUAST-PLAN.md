@@ -2294,7 +2294,7 @@ src/RakuAstDeparse.cpp asks it, through one helper, at the places Rakudo's
 deparser does, with the same category. Which places those are is measured,
 not read off Rakudo's source, which was wrong once (a subset's `of` is asked
 as `traitmod`, not `trait`): `tools/rakuast-deparse-l10n-spec.raku` deparses
-23 cases with a role that answers each question with the question itself,
+31 cases with a role that answers each question with the question itself,
 `<block:for>`, and docs/dev/findings/rakuast/deparse-l10n-2026.09.tsv is
 Rakudo's output. Three things it shows a real table hides: `for` before a
 block is `block` and after a statement `modifier`; a method call's dot is
@@ -2313,6 +2313,35 @@ a deparser class in place of Rakudo's fails as it does upstream.
 `t/regression/rakuast-deparse-l10n.raku` holds the spec to the TSV, renders a
 fixture language by name and reads it back with `.AST("ZZ")` as the same
 program, and checks the arguments that are not a language.
+
+### The view keeps what a declaration says (landed 2026-10-31)
+
+Comparing the localized rendering with Rakudo's showed the ENGLISH one
+dropping declaration details, each time into valid Raku meaning something
+else: `has $.x is rw` → `has $.x`, `sub f($a is rw)` → `sub f($a)`, `class C is
+Int does R` → `class C`, `our sub f` → `sub f`, `if $x -> $y` → `if $x`, `for @a
+-> Int $i` and `for @a -> ($p, $q)` → `for @a`, `no strict` → `use strict`,
+`use lib "x"` → `use lib`, `$x.=abs` → `$x.abs`. The renderer was not the
+cause; the view built the nodes without the trait, the scope, the binder, the
+`off` or the argument. They now carry what Rakudo's carry — a `traits` list of
+Trait::Is / Trait::Does on a variable, a parameter and a package, `scope` on a
+Sub, a PointyBlock for every binder, RakuAST::Pragma for a pragma, an
+`argument` on a `use`, a `sub-signature` on a parameter, ApplyDottyInfix for
+`.=` — and each renders as Rakudo 2026.09 writes it.
+
+**The round-trip harness could not see any of this**, and could not have: it
+asks only that the rendered text parse again, and every one of these did.
+`t/regression/rakuast-view-declarations.raku` asks the question that matters
+— `$src.AST.EVAL` against `EVAL $src` on the same engine — beside Rakudo's
+rendering of each shape. Two files the harness counted as `ok` (dirstat,
+factorize) were among them, rendering a `for` with its destructuring binder
+gone.
+
+The class table's full-set walk (tools/rakuast-class-table.raku) skips a stub
+package's children, so `DottyInfix::CallAssign`, nested under the stub
+`DottyInfix`, was never in it; it is in the demand list now. What the view
+still drops — `is export`, user traits, `use Mod <a>` and `:tag` — is in
+TODO-FOLLOW-UPS.md.
 
 ## P4 — traversal, and what the acceptance corpus actually said (landed 2026-09-12)
 

@@ -88,6 +88,7 @@ my @demand = <
     StatementPrefix::Phaser::Post StatementPrefix::Phaser::Close
     StatementPrefix::Phaser::Quit StatementPrefix::Phaser::Catch
     StatementPrefix::Phaser::Control StatementPrefix::Phaser::Doc
+    Pragma Trait::Does ApplyDottyInfix DottyInfix::CallAssign
 >;
 
 # `::("RakuAST::A::B")` answers a Failure for a NESTED name (measured on

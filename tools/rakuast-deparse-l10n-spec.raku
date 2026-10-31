@@ -27,6 +27,7 @@ use experimental :rakuast;
 
 my role Trace { method xsyn($p, $k) { "<$p:$k>" } }
 my ($x, $y, @a, %h);
+my role R { }; my role RP[::T] { };
 
 sub d($label, $src) { say $label ~ "\t" ~ $src.AST.DEPARSE(Trace).raku }
 
@@ -53,3 +54,11 @@ d 'method-calls',    Q[@a.map(*.abs).elems; %h.keys; $x.^name; $x.?y];
 d 'terms',           Q[True; False; now; rand; pi; exit];
 d 'use-need-import', Q[use Test; need Test; import Test; use strict];
 d 'list-comma',      Q[my $s = "ab"; my @l = 1, 2, 3];
+d 'attribute-traits', Q[class AT { has $.x is rw; has $.z is required("why"); has $.v is built(False) }];
+d 'package-traits',  Q[class PT is Int does R does RP[Str] is rw { has $.q }];
+d 'our-sub',         Q[module MS { our sub f { 1 } }];
+d 'param-traits',    Q[my $c = -> $a is rw, $b is copy, ($p, $q) { 1 }];
+d 'if-binders',      Q[if $x -> $a { 1 } elsif $y -> $b { 2 } else -> $c { 3 }];
+d 'loop-binders',    Q[with $x -> $a { 1 }; for @a -> Int $i { 1 }; for @a -> $j is rw { 1 }];
+d 'pragmas',         Q[no strict; use lib "x"; use lib "a", "b"];
+d 'dotty-assign',    Q[$x.=abs; $x .= substr(1); $x.=uc.lc];

@@ -250,6 +250,16 @@ struct Builder {
                 // saw in `synthTopic`, because the two deparse the same and a
                 // view that guessed would answer a different tree each way.
                 Expr* inv = m->inv.get();
+                // `$x.=abs` ASSIGNS the call's result: an ApplyDottyInfix with
+                // the CallAssign infix upstream, not a postfix call. Built as a
+                // call it came back as `$x.abs`, which leaves $x as it was.
+                if (m->mutate) {
+                    if (m->meta || m->bang || m->maybe || m->hyper || m->allMode)
+                        unmapped("a `.=` call through `.^`, `!`, `.?`, `>>.`, `.+` or `.*`");
+                    return node("ApplyDottyInfix", {{"left", buildExpr(inv)},
+                                                    {"infix", node("DottyInfix::CallAssign")},
+                                                    {"right", call}});
+                }
                 if (inv && inv->kind == NK::VarExpr && static_cast<VarExpr*>(inv)->synthTopic)
                     return node("Term::TopicCall", {{"call", call}});
                 return node("ApplyPostfix", {{"operand", buildExpr(inv)}, {"postfix", call}});
@@ -424,6 +434,34 @@ struct Builder {
         return st;
     }
 
+    // `is rw`, `is required("why")`: a Trait::Is, whose argument upstream is
+    // the parenthesized list it was written as.
+    Value traitIs(const std::string& nm, const Value* arg = nullptr) {
+        Value t = node("Trait::Is", {{"name", name(nm)}});
+        if (arg)
+            t.obj()->attrs["argument"] =
+                node("Circumfix::Parentheses", {{"semilist", semiList({*arg})}});
+        return t;
+    }
+
+    // The `-> $y` of an `if`, an `elsif`, an `else`, a `with` or a `given`:
+    // the parse keeps one plain name, or the whole parameter list when there
+    // is more to it than a name. Upstream the block it introduces IS a
+    // PointyBlock, and building a plain Block dropped the binder: `if $x ->
+    // $y { say $y }` came back as `if $x { say $y }`, a program whose `$y` is
+    // undeclared.
+    Value binderBlock(const std::string& var, const std::vector<Param>& params,
+                      const std::vector<StmtPtr>& body) {
+        if (!params.empty()) return blockLike(false, params, body);
+        if (var.empty()) return node("Block", {{"body", blockoid(body)}});
+        ValueList ps;
+        ps.push_back(node("Parameter",
+            {{"target", node("ParameterTarget::Var", {{"name", Value::str(var)}})}}));
+        return node("PointyBlock",
+                    {{"signature", node("Signature", {{"parameters", list(ps)}})},
+                     {"body", blockoid(body)}});
+    }
+
     // A block or a pointy block, with its signature when it has one.
     Value blockLike(bool isSub, const std::vector<Param>& params, const std::vector<StmtPtr>& body) {
         Value bd = blockoid(body);
@@ -442,10 +480,15 @@ struct Builder {
         ValueList ps;
         for (auto& p : d->params) ps.push_back(parameter(p));
         const char* cls = d->isSubmethod ? "Submethod" : d->isMethod ? "Method" : "Sub";
-        return node(cls, {{"name", name((d->isPrivate ? "!" : "") + d->name)},
-                          {"multiness", Value::str(d->isMulti ? "multi" : "")},
-                          {"signature", node("Signature", {{"parameters", list(ps)}})},
-                          {"body", blockoid(d->body)}});
+        Value n = node(cls, {{"name", name((d->isPrivate ? "!" : "") + d->name)},
+                             {"multiness", Value::str(d->isMulti ? "multi" : "")},
+                             {"signature", node("Signature", {{"parameters", list(ps)}})},
+                             {"body", blockoid(d->body)}});
+        // `our sub f` is visible from the package, `sub f` is not, so the
+        // scope is part of what the declaration says; a sub's default is `my`.
+        if (!d->isMethod && !d->isSubmethod)
+            n.obj()->attrs["scope"] = Value::str(d->isOur ? "our" : "my");
+        return n;
     }
 
     // `has $.x` — an attribute is a `VarDeclaration::Simple` with scope `has`
@@ -459,6 +502,24 @@ struct Builder {
              {"desigilname", name(a.name)}});
         if (!a.type.empty())
             n.obj()->attrs["type"] = node("Type::Simple", {{"name", name(a.type)}});
+        // The traits the parse keeps as flags, each a Trait::Is upstream.
+        // `has $.x is rw` came back as `has $.x`, whose accessor no longer
+        // assigns. (The order is fixed, not the source's: the flags do not
+        // record it, and a different order is the same attribute.)
+        ValueList traits;
+        if (a.rw)       traits.push_back(traitIs("rw"));
+        if (a.readonly) traits.push_back(traitIs("readonly"));
+        if (a.required) {
+            Value why = node("QuotedString", {{"segments", list({
+                node("StrLiteral", {{"value", Value::str(a.requiredWhy)}})})}});
+            traits.push_back(traitIs("required", a.requiredWhy.empty() ? nullptr : &why));
+        }
+        if (a.built) traits.push_back(traitIs("built"));
+        if (a.notBuilt) {
+            Value no = node("Term::Enum", {{"name", name("False")}});
+            traits.push_back(traitIs("built", &no));
+        }
+        if (!traits.empty()) n.obj()->attrs["traits"] = list(traits);
         if (a.def)
             n.obj()->attrs["initializer"] =
                 node("Initializer::Assign", {{"expression", buildExpr(a.def.get())}});
@@ -593,8 +654,20 @@ struct Builder {
     }
 
     Value parameter(const Param& p) {
-        Value target = node("ParameterTarget::Var", {{"name", Value::str(p.name)}});
-        Value n = node("Parameter", {{"target", target}});
+        Value n = node("Parameter");
+        if (!p.name.empty())
+            n.obj()->attrs["target"] = node("ParameterTarget::Var", {{"name", Value::str(p.name)}});
+        // `-> ($a, $b)` / `@y ($head, *@tail)`: the DESTRUCTURING binder is a
+        // sub-signature on the parameter upstream. Without it `for @x -> ($a,
+        // $b) { say $a }` came back as `for @x { say $a }`, which parses and
+        // has no `$a` — the round-trip harness counted that file as fine.
+        if (p.subSig) {
+            if (!p.subSigRet.empty())
+                unmapped("a sub-signature with a return type (`-->`)");
+            ValueList sps;
+            for (auto& q : *p.subSig) sps.push_back(parameter(q));
+            n.obj()->attrs["sub-signature"] = node("Signature", {{"parameters", list(sps)}});
+        }
         if (!p.type.empty())
             n.obj()->attrs["type"] = node("Type::Simple", {{"name", name(p.type)}});
         // The slurpy marker is a TYPE OBJECT on the parameter upstream, not a
@@ -618,6 +691,16 @@ struct Builder {
         }
         if (p.optional) n.obj()->attrs["optional"] = Value::boolean(true);
         if (p.required) n.obj()->attrs["required"] = Value::boolean(true);
+        // `$a is rw` writes back to the caller and `$a is copy` may be
+        // assigned to; without the trait `sub f($a is rw) { $a++ }` came back
+        // as a sub whose body cannot run. A `<->` block sets the flag on every
+        // parameter and records nothing else, so it renders `-> $x is rw`:
+        // the same block, where Rakudo writes `<-> $x`.
+        ValueList traits;
+        if (p.isRw)   traits.push_back(traitIs("rw"));
+        if (p.isCopy) traits.push_back(traitIs("copy"));
+        if (p.isRaw)  traits.push_back(traitIs("raw"));
+        if (!traits.empty()) n.obj()->attrs["traits"] = list(traits);
         if (p.defaultVal) n.obj()->attrs["default"] = buildExpr(p.defaultVal.get());
         return n;
     }
@@ -686,19 +769,27 @@ struct Builder {
                         return modifierStmt(i->isUnless ? "StatementModifier::Unless"
                                                         : "StatementModifier::If",
                                             false, i->branches[0].first.get(), b);
+                // branchVars / branchParams run beside branches, the first
+                // entry being the `if`'s own `-> $y`
+                auto then = [&](size_t k) {
+                    static const std::vector<Param> none;
+                    return binderBlock(k < i->branchVars.size() ? i->branchVars[k] : std::string(),
+                                       k < i->branchParams.size() ? i->branchParams[k] : none,
+                                       i->branches[k].second->stmts);
+                };
                 Value n = node(i->isUnless ? "Statement::Unless" : "Statement::If",
                     {{"condition", buildExpr(i->branches[0].first.get())},
-                     {"then", node("Block", {{"body", blockoid(i->branches[0].second->stmts)}})}});
+                     {"then", then(0)}});
                 if (i->branches.size() > 1) {
                     ValueList elsifs;
                     for (size_t k = 1; k < i->branches.size(); k++)
                         elsifs.push_back(node("Statement::Elsif",
                             {{"condition", buildExpr(i->branches[k].first.get())},
-                             {"then", node("Block", {{"body", blockoid(i->branches[k].second->stmts)}})}}));
+                             {"then", then(k)}}));
                     n.obj()->attrs["elsifs"] = list(elsifs);
                 }
                 if (i->elseBlock)
-                    n.obj()->attrs["else"] = node("Block", {{"body", blockoid(i->elseBlock->stmts)}});
+                    n.obj()->attrs["else"] = binderBlock(i->elseVar, i->elseParams, i->elseBlock->stmts);
                 return n;
             }
             case NK::WhileStmt: {
@@ -722,10 +813,22 @@ struct Builder {
                 if (f->modifier && f->body)
                     if (Expr* b = soleExpr(f->body->stmts))
                         return modifierStmt("StatementModifier::For", true, f->list.get(), b);
+                // The parse keeps plain names in `vars`, with an rw/raw flag
+                // each, and moves ANY richer binder — a type, a default, a
+                // sub-signature — whole into `params`. Reading only `vars`
+                // made `for @a -> Int $x { … }` come back as `for @a { … }`,
+                // whose `$x` is undeclared.
                 ValueList ps;
-                for (auto& v : f->vars)
-                    ps.push_back(node("Parameter",
-                        {{"target", node("ParameterTarget::Var", {{"name", Value::str(v)}})}}));
+                for (auto& p : f->params) ps.push_back(parameter(p));
+                for (size_t k = 0; k < f->vars.size(); k++) {
+                    Value pn = node("Parameter",
+                        {{"target", node("ParameterTarget::Var", {{"name", Value::str(f->vars[k])}})}});
+                    // VT_RAW is also set for a sigilless `\e`, which is raw by
+                    // nature and says nothing, so only rw is written
+                    if (k < f->varTraits.size() && (f->varTraits[k] & ForStmt::VT_RW))
+                        pn.obj()->attrs["traits"] = list({traitIs("rw")});
+                    ps.push_back(pn);
+                }
                 // A TOPIC-LESS `for` has a plain Block upstream, not a pointy
                 // one with an empty signature — measured. Building the pointy
                 // block anyway rendered `for 1, 2 -> { … }`, which takes no
@@ -763,7 +866,29 @@ struct Builder {
                     return node("Statement::Import", {{"module-name", name(u->module)}});
                 if (u->isNeed)
                     return node("Statement::Need", {{"module-name", name(u->module)}});
-                return node("Statement::Use", {{"module-name", name(u->module)}});
+                // The argument, where the parse keeps it whole: `use lib`'s
+                // one plain path as text, and any expression list. Dropping it
+                // made `use lib "x"` a `use lib` that adds no path. (Strings,
+                // tags and angle words for any other module are kept as bare
+                // words, `<a>` and `:a` alike, so they cannot be rendered.)
+                Value arg;
+                if (u->argExpr) arg = buildExpr(u->argExpr.get());
+                else if (u->module == "lib" && !u->arg.empty())
+                    arg = node("QuotedString", {{"segments", list({
+                        node("StrLiteral", {{"value", Value::str(u->arg)}})})}});
+                // A pragma is RakuAST::Pragma upstream, `no` and all; `no
+                // strict` was built as `use strict`, the opposite pragma.
+                if (isRakuAstPragmaName(u->module)) {
+                    Value n = node("Pragma", {{"name", Value::str(u->module)},
+                                              {"off",  Value::boolean(u->isNo)}});
+                    if (arg.t == VT::Object) n.obj()->attrs["argument"] = arg;
+                    return n;
+                }
+                // Rakudo builds no tree for `no` on a module either
+                if (u->isNo) unmapped("`no` with a module that is not a pragma");
+                Value n = node("Statement::Use", {{"module-name", name(u->module)}});
+                if (arg.t == VT::Object) n.obj()->attrs["argument"] = arg;
+                return n;
             }
             case NK::ClassDecl: {
                 // `class` / `role` / `grammar` / `module` / `package` — four
@@ -826,8 +951,35 @@ struct Builder {
                     body.push_back(node("Statement::Expression", {{"expression", routine(m.get())}}));
                 for (auto& st : cd->body) body.push_back(buildStmt(st.get()));
                 for (auto& rn : ruleNodes) body.push_back(rn);
+                // `is Parent` and `does Role`, each a trait upstream. The parse
+                // keeps the first of them apart and the rest by kind, so they
+                // come back as the first, then the `is`, then the `does` —
+                // not the source's order when the two interleave, and the same
+                // class. A role's arguments (`does R[Str]`) come with it.
+                ValueList traits;
+                auto roleType = [&](const std::string& r) {
+                    Value t = node("Type::Simple", {{"name", name(r)}});
+                    for (auto& ra : cd->roleArgs) {
+                        if (ra.first != r) continue;
+                        ValueList as;
+                        for (auto& x : ra.second) as.push_back(buildExpr(x.get()));
+                        return node("Type::Parameterized",
+                                    {{"base-type", t}, {"args", node("ArgList", {{"args", list(as)}})}});
+                    }
+                    return t;
+                };
+                auto isParent = [&](const std::string& t) {
+                    return node("Trait::Is", {{"type", node("Type::Simple", {{"name", name(t)}})}});
+                };
+                if (!cd->parent.empty())
+                    traits.push_back(cd->parentIsDoes ? node("Trait::Does", {{"type", roleType(cd->parent)}})
+                                                      : isParent(cd->parent));
+                for (auto& t : cd->extraParents) traits.push_back(isParent(t));
+                for (auto& r : cd->roles) traits.push_back(node("Trait::Does", {{"type", roleType(r)}}));
+                if (cd->classRw) traits.push_back(traitIs("rw"));
                 Value pkg = node(cls, {{"name", name(cd->name)},
                                        {"scope", Value::str(cd->isMy ? "my" : "our")},
+                                       {"traits", list(traits)},
                                        {"body", node("Block", {{"body",
                                            node("Blockoid", {{"statement-list",
                                                node("StatementList", {{"statements", list(body)}})}})}})}});
@@ -901,8 +1053,8 @@ struct Builder {
                                           : g->defGuard == 2 ? "StatementModifier::Without"
                                                              : "StatementModifier::Given",
                                             g->defGuard == 0, g->topic.get(), b);
-                Value body = node("Block", {{"body",
-                    g->body ? blockoid(g->body->stmts) : blockoid({})}});
+                static const std::vector<StmtPtr> noStmts;
+                Value body = binderBlock(g->var, g->params, g->body ? g->body->stmts : noStmts);
                 // `given`, `with` and `without` share one node in OUR tree and
                 // are three classes upstream — and the two defined-guards are
                 // shaped like the `if` family (`condition`/`then`), not like
@@ -919,8 +1071,7 @@ struct Builder {
                     {{"condition", buildExpr(g->topic.get())},
                      {g->defGuard == 1 ? "then" : "body", body}});
                 if (g->elseBody)
-                    n.obj()->attrs["else"] =
-                        node("Block", {{"body", blockoid(g->elseBody->stmts)}});
+                    n.obj()->attrs["else"] = binderBlock(g->elseVar, g->elseParams, g->elseBody->stmts);
                 return n;
             }
             case NK::WhenStmt: {

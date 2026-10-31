@@ -55,6 +55,20 @@ inline bool isRakuAstNode(const Value& v) {
     return v.t == VT::Object && v.obj() && v.obj()->cls && isRakuAstName(v.obj()->cls->name);
 }
 
+// The `use` targets that are a RakuAST::Pragma upstream rather than a
+// Statement::Use: Rakudo's KNOWN-PRAGMAS, src/Raku/ast/pragma.rakumod. The view
+// builds the one and the renderer writes its name as a `pragma` keyword, so
+// both read this one list.
+inline bool isRakuAstPragmaName(const std::string& w) {
+    static const char* const t[] = {
+        "attributes", "dynamic-scope", "fatal", "internals", "invocant", "isms",
+        "lib", "MONKEY", "MONKEY-GUTS", "MONKEY-SEE-NO-EVAL", "MONKEY-TYPING",
+        "nqp", "parameters", "precompilation", "soft", "strict", "trace",
+        "variables", "worries"};
+    for (const char* p : t) if (w == p) return true;
+    return false;
+}
+
 // The classes whose positionals are a LIST — every positional goes into one
 // array slot (`RakuAST::ArgList.new($a, $b)`). Header-inline because both the
 // deparser and the node methods need it and either TU can be cut from a

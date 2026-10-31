@@ -68,7 +68,7 @@ const std::map<std::string, const char*>& positionalSlot() {
         {"Blockoid", "statement-list"},
         {"Term::TopicCall", "call"}, {"Term::Name", "name"}, {"Term::Enum", "name"},
         {"Name::Part::Simple", "name"}, {"Name::Part::Expression", "expr"},
-        {"Type::Simple", "name"}, {"Type::Capture", "name"},
+        {"Type::Simple", "name"}, {"Type::Capture", "name"}, {"Trait::Does", "type"},
         {"ParameterTarget::Term", "name"},
         {"Initializer::Assign", "expression"}, {"Initializer::Bind", "expression"},
         {"StatementModifier::If", "expression"},
@@ -156,18 +156,6 @@ bool isStatementPrefixWord(const std::string& w) {
     return t.count(w) > 0;
 }
 
-// The `use` targets that are a RakuAST::Pragma upstream, whose name is a
-// `pragma` keyword (`use strict` is `используй строго`): Rakudo's
-// KNOWN-PRAGMAS, src/Raku/ast/pragma.rakumod.
-bool isPragmaName(const std::string& w) {
-    static const std::set<std::string> t = {
-        "attributes", "dynamic-scope", "fatal", "internals", "invocant", "isms",
-        "lib", "MONKEY", "MONKEY-GUTS", "MONKEY-SEE-NO-EVAL", "MONKEY-TYPING",
-        "nqp", "parameters", "precompilation", "soft", "strict", "trace",
-        "variables", "worries"};
-    return t.count(w) > 0;
-}
-
 // The method names a localization may translate (`system` keywords): the
 // ones the metamodel calls, Rakudo's `%system-names`.
 bool isSystemMethodName(const std::string& w) {
@@ -211,6 +199,17 @@ struct Deparser {
             return xs("meta", std::string(1, op[0])) + infixOp(op.substr(1));
         if (op[0] == '!' && op != "!=") return "!" + infixOp(op.substr(1));
         return xs("infix", op);
+    }
+
+    // A declaration's traits, each after a space: Rakudo writes them after the
+    // name and before an initializer, a default or a body.
+    std::string traits(const Value& node, int indent) {
+        std::string out;
+        if (const Value* ts = attr(node, "traits"))
+            if (ts->t == VT::Array && ts->arr())
+                for (auto& t : *ts->arr())
+                    if (isNode(t)) out += " " + render(t, indent);
+        return out;
     }
 
     // `:k`, `:!k`, `:by(1)`. A NAMED ARGUMENT's key is a keyword upstream
@@ -544,8 +543,27 @@ struct Deparser {
                 const Value* n = attr(*opnd, "name");
                 if (n && n->toStr() == "$_" && !post.empty() && post[0] == '.') return post;
             }
+            // `($x .= uc).lc`: without the parentheses the `.lc` would be the
+            // right side of the `.=`, a different call — Rakudo writes them
+            if (opnd && isNode(*opnd) && shortName(*opnd) == "ApplyDottyInfix")
+                return "(" + opt(opnd, indent) + ")" + post;
             return opt(opnd, indent) + post;
         }
+        // `$x .= abs`: the call on the right is written without its dot, which
+        // the infix supplies, and so its dot is no `routine` keyword either
+        if (c == "ApplyDottyInfix") {
+            std::string right;
+            const Value* r = attr(node, "right");
+            if (r && isNode(*r) && shortName(*r) == "Call::Method") {
+                const Value* a = attr(*r, "args");
+                std::string args = opt(a, indent);
+                right = xs("core", opt(attr(*r, "name"), indent)) +
+                        (a && isNode(*a) && !args.empty() ? "(" + args + ")" : "");
+            }
+            else right = opt(r, indent);
+            return opt(attr(node, "left"), indent) + opt(attr(node, "infix"), indent) + right;
+        }
+        if (c == "DottyInfix::CallAssign") return " .= ";
         if (c == "Ternary")
             return opt(attr(node, "condition"), indent) + " ?? " +
                    opt(attr(node, "then"), indent) + " !! " + opt(attr(node, "else"), indent);
@@ -653,9 +671,21 @@ struct Deparser {
         if (c == "StatementList") return statements(node, indent);
         if (c == "Statement::Empty") return "";
         if (c == "Statement::Use") {
-            // a PRAGMA's name is a keyword as well as the `use`
-            std::string m = opt(attr(node, "module-name"), indent);
-            return xs("use", "use") + " " + (isPragmaName(m) ? xs("pragma", m) : m);
+            std::string out = xs("use", "use") + " " + opt(attr(node, "module-name"), indent);
+            if (const Value* a = attr(node, "argument"))
+                if (isNode(*a)) out += " " + render(*a, indent);
+            return out;
+        }
+        // `use strict`, `no strict`, `use lib "x"`: a pragma's name is a
+        // keyword as well as its `use` or `no`
+        if (c == "Pragma") {
+            const Value* n = attr(node, "name");
+            const Value* off = attr(node, "off");
+            std::string out = xs("use", off && off->truthy() ? "no" : "use") + " " +
+                              xs("pragma", n ? n->toStr() : std::string());
+            if (const Value* a = attr(node, "argument"))
+                if (isNode(*a)) out += " " + render(*a, indent);
+            return out;
         }
         if (c == "Statement::Import") return xs("use", "import") + " " + opt(attr(node, "module-name"), indent);
         if (c == "Statement::Need")   return xs("use", "need") + " " + opt(attr(node, "module-name"), indent);
@@ -703,6 +733,12 @@ struct Deparser {
             // is a redeclaration error rather than a program.
             if (const Value* mn = attr(node, "multiness"))
                 if (!mn->toStr().empty()) kw = xs("multi", mn->toStr()) + " " + kw;
+            // …and so is a scope that is not a sub's default `my`: `our sub`
+            // is reachable from its package. It goes before the `multi`.
+            if (c == "Sub")
+                if (const Value* sc = attr(node, "scope"))
+                    if (!sc->toStr().empty() && sc->toStr() != "my")
+                        kw = xs("scope", sc->toStr()) + " " + kw;
             std::string nm = opt(attr(node, "name"), indent);
             // a submethod is a Method upstream, so `BUILD` is a keyword in both
             if (c != "Sub" && isSystemMethodName(nm)) nm = xs("system", nm);
@@ -847,8 +883,8 @@ struct Deparser {
             std::string sc;
             if (const Value* s = attr(node, "scope"))
                 if (s->toStr() == "my") sc = xs("scope", "my") + " ";
-            return sc + xs("package", kw) + " " + opt(attr(node, "name"), indent) + " " +
-                   opt(attr(node, "body"), indent) + "\n";
+            return sc + xs("package", kw) + " " + opt(attr(node, "name"), indent) +
+                   traits(node, indent) + " " + opt(attr(node, "body"), indent) + "\n";
         }
         if (c == "Statement::Loop::While" || c == "Statement::Loop::Until")
             return xs("block", c == "Statement::Loop::While" ? "while" : "until") + " " +
@@ -868,7 +904,7 @@ struct Deparser {
             // the round trip could not see it for exactly that reason.
             const Value* tw = attr(node, "twigil");
             out += (sig ? sig->toStr() : "") + (tw ? tw->toStr() : "")
-                 + opt(attr(node, "desigilname"), indent);
+                 + opt(attr(node, "desigilname"), indent) + traits(node, indent);
             if (const Value* i = attr(node, "initializer"))
                 if (isNode(*i)) out += render(*i, indent);
             return out;
@@ -879,7 +915,6 @@ struct Deparser {
         if (c == "Parameter") {
             std::string out;
             std::string ty = opt(attr(node, "type"), indent);
-            if (!ty.empty()) out += ty + " ";
             // The slurpy marker is a TYPE OBJECT on the parameter, not a node:
             // `slurpy => RakuAST::Parameter::Slurpy::Flattened`.
             if (const Value* s = attr(node, "slurpy")) {
@@ -904,8 +939,18 @@ struct Deparser {
             } else {
                 out += target;
             }
+            // a destructuring binder, after its target when it has one:
+            // `@y ($h, *@t)`, and `($a, $b)` alone
+            if (const Value* ss = attr(node, "sub-signature"))
+                if (isNode(*ss))
+                    out += (target.empty() ? "(" : " (") + render(*ss, indent) + ")";
+            // The type, and a space only when something follows it: a
+            // parameter that is only a type (`sub f(Int)`, `&cmp (Int, Int)`)
+            // came back as `Int `.
+            if (!ty.empty()) out = out.empty() ? ty : ty + " " + out;
             if (const Value* o = attr(node, "optional")) if (o->truthy()) out += "?";
             if (const Value* r = attr(node, "required")) if (r->truthy()) out += "!";
+            out += traits(node, indent);
             if (const Value* d = attr(node, "default"))
                 if (isNode(*d)) out += " " + xs("infix", "=") + " " + render(*d, indent);
             return out;
@@ -926,7 +971,19 @@ struct Deparser {
         if (c == "Type::Parameterized")
             return opt(attr(node, "base-type"), indent) + "[" +
                    opt(attr(node, "args"), indent) + "]";
-        if (c == "Trait::Is")  return xs("traitmod", "is")   + " " + opt(attr(node, "name"), indent);
+        if (c == "Trait::Is") {
+            // `is rw` names a trait, `is Int` a parent TYPE; an argument is the
+            // parenthesized list it was written as, `is required("why")`
+            const Value* n = attr(node, "name");
+            std::string out = xs("traitmod", "is") + " " +
+                              (n && isNode(*n) ? render(*n, indent) : opt(attr(node, "type"), indent));
+            if (const Value* a = attr(node, "argument"))
+                if (isNode(*a)) {
+                    std::string arg = render(*a, indent);
+                    out += arg.empty() || arg[0] == '(' ? arg : "(" + arg + ")";
+                }
+            return out;
+        }
         if (c == "Trait::Of")  return xs("traitmod", "of")   + " " + opt(attr(node, "type"), indent);
         if (c == "Trait::Does") return xs("traitmod", "does") + " " + opt(attr(node, "type"), indent);
 

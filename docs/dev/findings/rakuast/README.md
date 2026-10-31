@@ -120,6 +120,23 @@ Three conventions the table pins, all of them measured rather than assumed:
   *means* `$_.fc` — but a renderer that does not do it produces a tree of a
   different shape on the way back.
 
+## `deparse-l10n-2026.09.tsv` — which keyword a localization is asked for
+
+What `.DEPARSE(Trace)` answers on Rakudo 2026.09 for 31 parsed fragments, where
+`Trace` is a role whose `xsyn($prefix, $key)` returns `<prefix:key>`: every
+question a localization (`.DEPARSE("RU")`) is asked, at the place it is asked,
+whatever any language's table holds. Produced by
+[tools/rakuast-deparse-l10n-spec.raku](../../../../tools/rakuast-deparse-l10n-spec.raku),
+engine-neutral; `t/regression/rakuast-deparse-l10n.raku` holds rakupp to it.
+2026.09 rather than 2026.08 because 2026.08 renders two of the fragments'
+English differently (`-> $n!`, a newline before a `;`) while asking the same
+questions; nothing about the localization moved between them.
+
+Three things a real table hides and this shows: `for` before a block is
+`<block:for>` and after a statement `<modifier:for>`; a method call's dot is
+asked (`<routine:.>`) as well as its name (`<core:push>`); and a list's comma
+is asked and the answer thrown away, so it never appears.
+
 ## `eval-2026.08.tsv` — what a tree ANSWERS, on both engines
 
 Nine rows from [tools/rakuast-eval-spec.raku](../../../../tools/rakuast-eval-spec.raku),
