@@ -187,22 +187,30 @@ moves to [TODO.md](TODO.md).
   `-> \s, |q { $cap = q; callsame };` read as a quote to the `;` before
   `|q` counted as one. Done when a declared term wins over the quote however
   it was declared, and these three then follow Rakudo.
-- [ ] **`.DEPARSE($lang)` ignores the language it is handed** (found
-  2026-10-31 making L10N::RU and L10N::BG install, 21cd03cd):
+- [ ] **`.AST.DEPARSE` drops what a declaration says beyond its name**, and
+  each rendering is valid Raku meaning a different program, so `.AST.EVAL`
+  runs it without a word (found 2026-10-31 comparing localized `.DEPARSE`
+  against Rakudo, 3431c375; on 23e143f2 too):
 
   ```raku
-  print Q[my $x = 1; say $x].AST.DEPARSE("RU");   # my $x = 1; say $x
-  print Q[my $x = 1].AST.DEPARSE("XX");           # my $x = 1, no error
+  print Q[class P { has $.x is rw }].AST.DEPARSE;           # has $.x
+  print Q[sub f($a is rw) { }].AST.DEPARSE;                 # sub f($a) { }
+  print Q[class C is Int does Positional { }].AST.DEPARSE;  # class C { }
+  print Q[module M { our sub f { 1 } }].AST.DEPARSE;        # sub f { 1 }
+  print Q[my $x; if $x -> $y { say $y }].AST.DEPARSE;       # if $x { say $y }
+  print Q[no strict; 1].AST.DEPARSE;                        # use strict;
+  print Q[use lib "x"; 1].AST.DEPARSE;                      # use lib;
+  print Q[my $x; $x.=abs].AST.DEPARSE;                      # $x.abs
   ```
 
-  With L10N::RU installed Rakudo prints `мой $x = 1;` and `скажи $x`, and a
-  language that is not installed is an error, as `.AST("XX")` already is
-  here. Every L10N dist's suite asks for it under a `todo`, so they install
-  without it. The table is the dist's `RakuAST::Deparse::L10N::<lang>` role,
-  read the other way from how `.AST($lang)` reads `L10N::<lang>`
-  (src/RakuAstDeparse.cpp renders only English). Done when both lines match
-  Rakudo 2026.09 and the L10N::RU suite passes its test 15 without the
-  `todo`.
+  Rakudo 2026.09 renders each as written. The renderer is not the cause:
+  the view (src/RakuAstView.cpp) builds the node without the trait, the
+  scope, the `if` binder, `no`, the `use` argument or the `.=`, and
+  src/RakuAstDeparse.cpp renders what it is given; it has arms for
+  Trait::Is, Trait::Does and a package scope already. Done when each line
+  matches Rakudo 2026.09, with a localized rendering then following by
+  itself (tools/rakuast-deparse-l10n-spec.raku leaves these shapes out
+  today).
 - [ ] **`.DEPARSE` drops the parentheses around a non-associative chain**
   (found 2026-10-31 running tools/rakuast-roundtrip.raku beside 21cd03cd; on
   23e143f2 too):
@@ -219,6 +227,18 @@ moves to [TODO.md](TODO.md).
 
 ## Operators and types
 
+- [ ] **`or` and `xor` chain, where Rakudo refuses them** (found 2026-10-31
+  writing tools/rakuast-deparse-l10n-spec.raku, 3431c375):
+
+  ```raku
+  say (1 or 0 xor 1);   # Nil, Rakudo: "Only identical operators may be list
+                        # associative; since 'or' and 'xor' differ, they are
+                        # non-associative and you need to clarify with parentheses"
+  ```
+
+  The loose-or level is list-associative upstream, so mixing two of its
+  operators is a compile error, as `max` and `min` are at theirs. Done when
+  the line is refused with Rakudo's message, and `1 or 0 or 1` still runs.
 - [ ] **Built-in prefix and postfix operators fail when called by name**
   (found 2026-10-19 while fixing undeclared operator names, 145cddbf):
 

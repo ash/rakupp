@@ -36,7 +36,7 @@ bd8936e7; 0938078e; 858a037e; 21c37405; 0b29ef00; 9b3fbb8a; de0d04e5;
 3e15da85; 2df02ed1; 2adfaa34; c91a94fb; 1676fc8a; 5b70d2e1; d54cc3ba;
 d4ed6cac (issue #60); 480f6850; a92d9cfd; 0d089427; 9cac10e4; f3ffb5c3;
 c067446c; a11aa7ab; 594d4aac (Template::Mustache); 5d4de331 (Pod::Load);
-21cd03cd (L10N::BG and L10N::RU).*
+21cd03cd (L10N::BG and L10N::RU); 3431c375 (localized DEPARSE).*
 
 ---
 
@@ -328,6 +328,21 @@ plain before 500c29e2 and native from it, unless they say otherwise.
   `-DRAKUPP_BUILD_SHARED=ON` directory of its own, named with `RAKUPP_LIB`.
   The Python, JS and Wolfram errors print those commands;
   bindings/README.md, section 1, has the rest.
+- **`.DEPARSE("RU")` renders the tree in Russian** (3431c375), and in any
+  language whose L10N dist is installed: `Q[my $x = 1; say $x].AST.DEPARSE("RU")`
+  is `мой $x = 1;` and `скажи $x`. It ignored its arguments and rendered
+  English. The spellings are the dist's `RakuAST::Deparse::L10N::RU` role,
+  whose `xsyn` method is asked at every keyword with the category Rakudo's
+  deparser asks it with, so `.DEPARSE` takes a role of the user's own too.
+  A language that is not installed is X::CompUnit::UnsatisfiedDependency, as
+  upstream; a role that highlights (`hsyn`) is X::NYI, where Rakudo colours
+  the output. L10N::BG, LV, RU and UK 0.0.2 now pass their test 15 outright,
+  which their suites ran under a `todo` here. Which keyword is asked, where,
+  and under which category is tools/rakuast-deparse-l10n-spec.raku, 23 cases,
+  and t/regression/rakuast-deparse-l10n.raku holds it to Rakudo 2026.09
+  (docs/dev/findings/rakuast/deparse-l10n-2026.09.tsv); it also renders a
+  fixture language by name and reads it back with `.AST("ZZ")` as the same
+  program.
 
 ### Fixed: silent wrong answers
 
@@ -1442,11 +1457,14 @@ does not.
   class with an address (`Pod::Heading<…>`) and a `.new(…)` (5d4de331). TODO-FOLLOW-UPS.md has
   both.
 
-- `.DEPARSE("RU")` renders English whatever language it is handed, and one
-  that is not installed is no error; the L10N suites ask for it under a
-  `todo`. `.DEPARSE` also drops the parentheses in `(0 max 5) min 3`, which
-  then does not parse, as in showcase/eclipse and showcase/fourier (21cd03cd,
-  and on 23e143f2 too). TODO-FOLLOW-UPS.md has both.
+- `.DEPARSE` drops the parentheses in `(0 max 5) min 3`, which then does not
+  parse, as in showcase/eclipse and showcase/fourier (21cd03cd, and on
+  23e143f2 too). It also drops what a declaration says beyond its name — an
+  `is rw`, a class's `is`/`does`, `our` on a sub, an `if`'s `-> $y`, `no`,
+  `use lib`'s path, the `=` of `.=` — so `.AST.EVAL` runs a different
+  program; and `1 or 0 xor 1` runs, where Rakudo refuses it as
+  non-associative (3431c375, all three on 23e143f2 too). TODO-FOLLOW-UPS.md has
+  each.
 
 - A `token` the packrat memo answers fires its action once, where Rakudo,
   which has no memo, fires it on every call: `<a> 'x' || <a> 'y'` on "12y"
