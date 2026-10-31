@@ -2343,6 +2343,27 @@ package's children, so `DottyInfix::CallAssign`, nested under the stub
 still drops — `is export`, user traits, `use Mod <a>` and `:tag` — is in
 TODO-FOLLOW-UPS.md.
 
+### Written parentheses, and the subscript (landed 2026-10-31)
+
+A written `( … )` is a Circumfix::Parentheses upstream, and the view built
+one only for a list: `(1 + 2) * 3` rendered `1 + 2 * 3` and `.AST.EVAL`
+answered 7, `(-$y) ** 2` answered -9, `(1 .. 4).sum` a Range. The parse knew
+for three kinds (`parenned` on a Binary, a list, a pair) and kept a set of the
+rest for itself. Every expression now records it, `Node::inParens`, set where
+the parser closes a `( … )`; it sits in the two bytes a 16-bit `NK` leaves
+before `line`, so no node grows, and rides the line varint in the AST cache
+(kAstSerialVersion 56). The view wraps any expression that has it, twice
+where the parse records a second pair (`((* + 1))` finishes a WhateverCode).
+
+The angle subscript's index is the word list upstream, so `%h<a>` no longer
+renders `%h<"a">`, a lookup of the quoted key; and a subscript's adverbs are
+its `colonpairs`, so `%h{"a"}:delete` deletes again. The round-trip harness
+now reports `reparse 0`. Its blind spot remains — text that parses is all it
+asks — so t/regression/rakuast-view-parentheses.raku asks `.AST.EVAL` against
+`EVAL`, and rendering each example twice (`.AST.DEPARSE.AST.DEPARSE`) gives
+the same text for 38 of the 43 with a view; the other five are `start`'s
+implicit `$!`/`$/` (TODO-FOLLOW-UPS.md).
+
 ## P4 — traversal, and what the acceptance corpus actually said (landed 2026-09-12)
 
 `visit-children` and the vocabulary growth are in, gated cross-engine. The

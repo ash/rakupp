@@ -583,9 +583,10 @@ template <class IO> void ioExpr(IO& io, ExprPtr& e) {
     if constexpr (IO::reading) {
         uint8_t k = io.u8();
         if (k == kNull) { e.reset(); return; }
-        int line = (int)io.uvar();
+        uint64_t lp = io.uvar();   // the line, shifted, over the inParens bit
+        int line = (int)(lp >> 1);
         switch ((NK)k) {
-#define X(K, T) case NK::K: { auto n = makeNode<T>(); n->line = line; visit(io, *n); e = std::move(n); break; }
+#define X(K, T) case NK::K: { auto n = makeNode<T>(); n->line = line; n->inParens = lp & 1; visit(io, *n); e = std::move(n); break; }
             EXPR_KINDS(X)
 #undef X
             default: throw AstSerialError{"unknown expression kind in AST cache"};
@@ -593,7 +594,8 @@ template <class IO> void ioExpr(IO& io, ExprPtr& e) {
     } else {
         if (!e) { io.u8(kNull); return; }
         io.u8((uint8_t)e->kind);
-        io.uvar(io.stripLines ? 0 : (uint64_t)(e->line < 0 ? 0 : e->line));
+        uint64_t line = io.stripLines ? 0 : (uint64_t)(e->line < 0 ? 0 : e->line);
+        io.uvar(line << 1 | (e->inParens ? 1 : 0));
         switch (e->kind) {
 #define X(K, T) case NK::K: visit(io, static_cast<T&>(*e)); break;
             EXPR_KINDS(X)

@@ -212,6 +212,15 @@ struct Deparser {
         return out;
     }
 
+    std::string subscriptAdverbs(const Value& node, int indent) {
+        std::string out;
+        if (const Value* cs = attr(node, "colonpairs"))
+            if (cs->t == VT::Array && cs->arr())
+                for (auto& cp : *cs->arr())
+                    if (isNode(cp)) out += render(cp, indent);
+        return out;
+    }
+
     // `:k`, `:!k`, `:by(1)`. A NAMED ARGUMENT's key is a keyword upstream
     // (`:k` is `:к` in Russian, `named-k`); a colonpair anywhere else keeps its
     // key, and so does a fat arrow, even as an argument.
@@ -627,10 +636,11 @@ struct Deparser {
             return xs("routine", dot) + nm + (hasArgs ? "(" + args + ")" : "");
         }
         if (c == "Term::TopicCall") return opt(attr(node, "call"), indent);
+        // A subscript's adverbs follow it, `%h<a>:exists`, `@a[0]:!exists`.
         if (c == "Postcircumfix::ArrayIndex")
-            return "[" + opt(attr(node, "index"), indent) + "]";
+            return "[" + opt(attr(node, "index"), indent) + "]" + subscriptAdverbs(node, indent);
         if (c == "Postcircumfix::HashIndex")
-            return "{" + opt(attr(node, "index"), indent) + "}";
+            return "{" + opt(attr(node, "index"), indent) + "}" + subscriptAdverbs(node, indent);
         if (c == "Circumfix::Parentheses")
             return "(" + opt(attr(node, "semilist"), indent) + ")";
         if (c == "Circumfix::ArrayComposer")
@@ -640,8 +650,13 @@ struct Deparser {
         if (c == "Contextualizer::Item") return "$(" + opt(attr(node, "target"), indent) + ")";
         if (c == "Circumfix::HashComposer")
             return "{" + opt(attr(node, "semilist"), indent) + "}";
-        if (c == "Postcircumfix::LiteralHashIndex")
-            return "<" + opt(attr(node, "index"), indent) + ">";
+        // The index is the word list, which renders with its own angles
+        // (`<a b>`); one built some other way gets them put round it.
+        if (c == "Postcircumfix::LiteralHashIndex") {
+            std::string ix = opt(attr(node, "index"), indent);
+            if (ix.empty() || ix[0] != '<') ix = "<" + ix + ">";
+            return ix + subscriptAdverbs(node, indent);
+        }
         if (c == "Call::Term")
             return "(" + opt(attr(node, "args"), indent) + ")";
         if (c == "ApplyInfix::Chaining") {

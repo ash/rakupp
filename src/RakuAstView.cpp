@@ -111,7 +111,24 @@ struct Builder {
     }
 
     // ---- expressions ----------------------------------------------------
+    // Written `( … )` is a Circumfix::Parentheses upstream, around whatever
+    // was written inside. Without it `(1 + 2) * 3` came back as `1 + 2 * 3`,
+    // `(-$y) ** 2` as `-$y ** 2` and `(1 .. 4).sum` as `1 .. 4.sum`, and
+    // `.AST.EVAL` answered 7, -9 and a Range — while the round-trip harness,
+    // which asks only that the text parse, saw the one case that did not:
+    // `(0 max 5) min 3`. A list builds its own (its `parenned`), and a SECOND
+    // pair is kept where the parse records one, `((* + 1))`, because it
+    // finishes a WhateverCode rather than currying it.
     Value buildExpr(Expr* e) {
+        Value v = buildExprBare(e);
+        if (!e || !e->inParens || e->kind == NK::ListExpr) return v;
+        v = parenthesized(v);
+        bool twice = e->kind == NK::Binary     ? static_cast<Binary*>(e)->curryClosed
+                   : e->kind == NK::MethodCall ? static_cast<MethodCall*>(e)->curryClosed
+                   : e->kind == NK::Whatever   ? static_cast<WhateverExpr*>(e)->curryClosed : false;
+        return twice ? parenthesized(v) : v;
+    }
+    Value buildExprBare(Expr* e) {
         if (!e) return Value::any();
         switch (e->kind) {
             case NK::IntLit: {
@@ -266,20 +283,81 @@ struct Builder {
             }
             case NK::Index: {
                 auto* ix = static_cast<Index*>(e);
-                Value inner = semiList({buildExpr(ix->index.get())});
                 // `%h<a>` is a different class from `%h{'a'}` upstream, and the
                 // parser records which spelling it saw (`angleKey`).
                 const char* cls = ix->isHash ? (ix->angleKey ? "Postcircumfix::LiteralHashIndex"
                                                              : "Postcircumfix::HashIndex")
                                              : "Postcircumfix::ArrayIndex";
+                // The angle form's index is the WORD LIST upstream, a
+                // QuotedString with the `words` processor — as in `enum C <a
+                // b>` below. Our parse keeps the words as string literals, and
+                // rendering those put quotes inside the angles: `%h<a>` came
+                // back as `%h<"a">`, a lookup of the key `"a"`, quotes and all.
+                // A ZEN slice (`%h<>:k`, `%h{}:k`, `@a[]:v`) has an empty
+                // index, where the parse holds a stand-in Whatever.
+                Value inner;
+                if (ix->angleKey) {
+                    std::string words;
+                    Expr* w = ix->zen ? nullptr : ix->index.get();
+                    if (w && w->kind == NK::StrLit) words = static_cast<StrLit*>(w)->v;
+                    else if (w && w->kind == NK::ArrayLit) {
+                        for (auto& it : static_cast<ArrayLit*>(w)->items) {
+                            if (!it || it->kind != NK::StrLit) unmapped("an angle subscript that is not a word list");
+                            if (!words.empty()) words += " ";
+                            words += static_cast<StrLit*>(it.get())->v;
+                        }
+                    }
+                    else if (w) unmapped("an angle subscript that is not a word list");
+                    ValueList procs;
+                    procs.push_back(Value::str("words"));
+                    procs.push_back(Value::str("val"));
+                    inner = node("QuotedString",
+                        {{"segments",   list({node("StrLiteral", {{"value", Value::str(words)}})})},
+                         {"processors", list(procs)}});
+                }
+                else inner = ix->zen ? node("SemiList", {{"statements", list({})}})
+                                     : semiList({buildExpr(ix->index.get())});
+                Value pc = node(cls, {{"index", inner}});
+                // `:exists`, `:!exists`, `:delete`, `:kv`, … — the adverbs are
+                // the subscript's `colonpairs` upstream. Dropped, `%h{"a"}:delete`
+                // came back as a lookup that deletes nothing. The parse joins
+                // them with `:`, and spells `:$delete` as `$delete` and
+                // `:exists($v)` as `exists?$v`.
+                if (!ix->adverb.empty()) {
+                    ValueList cps;
+                    size_t at = 0;
+                    for (;;) {
+                        size_t c = ix->adverb.find(':', at);
+                        std::string a = ix->adverb.substr(at, c == std::string::npos ? std::string::npos : c - at);
+                        size_t q = a.find('?');
+                        if (q != std::string::npos)
+                            cps.push_back(node("ColonPair::Value", {{"key", Value::str(a.substr(0, q))},
+                                {"value", node("Var::Lexical", {{"name", Value::str(a.substr(q + 1))}})}}));
+                        else if (!a.empty() && a[0] == '$')
+                            cps.push_back(node("ColonPair::Value", {{"key", Value::str(a.substr(1))},
+                                {"value", node("Var::Lexical", {{"name", Value::str(a)}})}}));
+                        else if (!a.empty() && a[0] == '!')
+                            cps.push_back(node("ColonPair::False", {{"key", Value::str(a.substr(1))}}));
+                        else if (!a.empty())
+                            cps.push_back(node("ColonPair::True", {{"key", Value::str(a)}}));
+                        if (c == std::string::npos) break;
+                        at = c + 1;
+                    }
+                    pc.obj()->attrs["colonpairs"] = list(cps);
+                }
                 return node("ApplyPostfix", {{"operand", buildExpr(ix->base.get())},
-                                             {"postfix", node(cls, {{"index", inner}})}});
+                                             {"postfix", pc}});
             }
             case NK::ListExpr: {
                 auto* l = static_cast<ListExpr*>(e);
                 ValueList items;
                 for (auto& i : l->items) items.push_back(buildExpr(i.get()));
-                if (l->semicolon) return semiList(items);
+                // `(1 + 2; 3 + 4)` is a list of two; without its parentheses
+                // it rendered as two statements, and the second one's value
+                if (l->semicolon)
+                    return l->parenned || l->inParens
+                        ? node("Circumfix::Parentheses", {{"semilist", semiList(items)}})
+                        : semiList(items);
                 Value applied = node("ApplyListInfix",
                     {{"infix", node("Infix", {{"operator", Value::str(",")}})},
                      {"operands", list(items)}});
@@ -531,6 +609,11 @@ struct Builder {
     // `( )` or a subscript. Putting the expression straight in dropped a
     // `Statement::Expression` per composer, which `visit-children` then made
     // visible as a missing level of nesting.
+    // `( … )` around one expression
+    Value parenthesized(Value v) {
+        return node("Circumfix::Parentheses", {{"semilist", semiList({v})}});
+    }
+
     Value semiList(ValueList exprs) {
         ValueList sts;
         for (auto& e : exprs)
