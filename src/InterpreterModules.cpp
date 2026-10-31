@@ -5055,6 +5055,46 @@ static bool enumNameIsGlobal(const std::string& name, bool loadingModule, const 
     return !name.empty() && ((loadingModule && pkgPrefix.empty()) || name.find("::") != std::string::npos);
 }
 
+// A role in the PARENT slot (`class C does R` with no `is`) is walked, not
+// copied — so a class's own `multi method m` group shadowed R's candidates for
+// `m` instead of joining them, and the narrower role candidate never competed.
+// Red's SQLite driver declares `multi method default-type-for-type($) is
+// default` beside the `(Str)`, `(Numeric)`, … candidates its CommonSQL role
+// supplies, and every Str column came out varchar(255) rather than text. Merge
+// them, own candidates first; a same-signature role candidate stays overridden,
+// as it does for a role composed by copy.
+// A ROLE's parent slot is walked the same way (`role S does B`), so its own
+// group joins B's too: otherwise a class doing S found S's group and stopped
+// there, and Red's SQLMapping `(Str $value)` took 'int' from the BaseMapping
+// `('int' --> 'integer')` it composes. (`sigKeyParams` is execDeclStmt's.)
+template <class SigKey>
+static void mergeParentRoleMultis(ClassInfo* ci, const SigKey& sigKeyParams) {
+    std::vector<ClassInfo*> parentRoles;
+    for (ClassInfo* r = ci->parent && ci->parent->isRole ? ci->parent.get() : nullptr;
+         r && r->isRole; r = r->parent.get())
+        parentRoles.push_back(r);
+    for (auto& p : ci->extraParents)
+        if (p && p->isRole) parentRoles.push_back(p.get());
+    for (ClassInfo* role : parentRoles)
+        for (auto& kv : role->methods) {
+            const Value& rv = kv.second;
+            if (rv.t != VT::Code || !rv.code() || !rv.code()->ci().isMultiDispatcher) continue;
+            auto it = ci->methods.find(kv.first);
+            if (it == ci->methods.end() || it->second.t != VT::Code || !it->second.code() ||
+                !it->second.code()->ci().isMultiDispatcher) continue;
+            auto& cands = it->second.code()->coldM().candidates;
+            for (auto& rc : rv.code()->cold().candidates) {
+                if (!rc.code() || rc.code()->ci().isStub || rc.code()->ci().isProto) continue;
+                std::string sk = sigKeyParams(rc.code()->ci().params, rc.code());
+                bool have = false;
+                for (auto& c : cands)
+                    if (c.code() == rc.code() ||
+                        (c.code() && sigKeyParams(c.code()->ci().params, c.code()) == sk)) { have = true; break; }
+                if (!have) cands.push_back(rc);
+            }
+        }
+}
+
 // The declaration statements exec dispatches here, kept out of its frame.
 //
 // exec is one switch over every statement kind, and a switch's stack frame is
@@ -7652,41 +7692,8 @@ static bool enumNameIsGlobal(const std::string& name, bool loadingModule, const 
                 if (key == "POPULATE") ci->hasPopulate = true;
                 ci->roleSubmethods.erase(key); // the class declares it ITSELF now
             }
-            // A role in the PARENT slot (`class C does R` with no `is`) is walked,
-            // not copied — so a class's own `multi method m` group shadowed R's
-            // candidates for `m` instead of joining them, and the narrower role
-            // candidate never competed. Red's SQLite driver declares
-            // `multi method default-type-for-type($) is default` beside the
-            // `(Str)`, `(Numeric)`, … candidates its CommonSQL role supplies, and
-            // every Str column came out varchar(255) rather than text. Merge them
-            // here, own candidates first; a same-signature role candidate stays
-            // overridden, as it does for a role composed by copy.
-            if (!cd->isRole) {
-                std::vector<ClassInfo*> parentRoles;
-                for (ClassInfo* r = ci->parent && ci->parent->isRole ? ci->parent.get() : nullptr;
-                     r && r->isRole; r = r->parent.get())
-                    parentRoles.push_back(r);
-                for (auto& p : ci->extraParents)
-                    if (p && p->isRole) parentRoles.push_back(p.get());
-                for (ClassInfo* role : parentRoles)
-                    for (auto& kv : role->methods) {
-                        const Value& rv = kv.second;
-                        if (rv.t != VT::Code || !rv.code() || !rv.code()->ci().isMultiDispatcher) continue;
-                        auto it = ci->methods.find(kv.first);
-                        if (it == ci->methods.end() || it->second.t != VT::Code || !it->second.code() ||
-                            !it->second.code()->ci().isMultiDispatcher) continue;
-                        auto& cands = it->second.code()->coldM().candidates;
-                        for (auto& rc : rv.code()->cold().candidates) {
-                            if (!rc.code() || rc.code()->ci().isStub || rc.code()->ci().isProto) continue;
-                            std::string sk = sigKeyParams(rc.code()->ci().params, rc.code());
-                            bool have = false;
-                            for (auto& c : cands)
-                                if (c.code() == rc.code() ||
-                                    (c.code() && sigKeyParams(c.code()->ci().params, c.code()) == sk)) { have = true; break; }
-                            if (!have) cands.push_back(rc);
-                        }
-                    }
-            }
+            // (a class's or a role's own multi groups join its parent roles')
+            mergeParentRoleMultis(ci.get(), sigKeyParams);
             // aggregate role requirements (composed roles already carry the ones
             // they inherited from roles they compose, so this is transitive) and
             // record this role's own stub methods as requirements
