@@ -5083,13 +5083,18 @@ static void mergeParentRoleMultis(ClassInfo* ci, const SigKey& sigKeyParams) {
             if (it == ci->methods.end() || it->second.t != VT::Code || !it->second.code() ||
                 !it->second.code()->ci().isMultiDispatcher) continue;
             auto& cands = it->second.code()->coldM().candidates;
+            // a role candidate is overridden by one the group had BEFORE this
+            // role's, never by its own siblings: the key leaves the nameds out,
+            // so Red's Infix `new($l, $r, :$cast!)` took the place of
+            // `new($l, $r)` and a positional `.new` fell through to Mu.new
+            const size_t before = cands.size();
             for (auto& rc : rv.code()->cold().candidates) {
                 if (!rc.code() || rc.code()->ci().isStub || rc.code()->ci().isProto) continue;
                 std::string sk = sigKeyParams(rc.code()->ci().params, rc.code());
                 bool have = false;
-                for (auto& c : cands)
-                    if (c.code() == rc.code() ||
-                        (c.code() && sigKeyParams(c.code()->ci().params, c.code()) == sk)) { have = true; break; }
+                for (size_t i = 0; i < cands.size() && !have; i++)
+                    have = cands[i].code() == rc.code() ||
+                           (i < before && cands[i].code() && sigKeyParams(cands[i].code()->ci().params, cands[i].code()) == sk);
                 if (!have) cands.push_back(rc);
             }
         }
@@ -6969,6 +6974,7 @@ static void mergeParentRoleMultis(ClassInfo* ci, const SigKey& sigKeyParams) {
             // pointer identity exempts them)
             std::map<std::string, std::map<std::string, std::set<const Callable*>>> provided;
             std::map<std::string, std::set<std::string>> providerRoles;
+            std::map<std::string, std::map<std::string, std::set<std::string>>> keyProviders;   // …per signature
             for (ClassInfo* role : composedRoles) {
                 // (two parameterizations of one role are two providers: R[Str], R[Int])
                 auto ca = concArgv.find(role);
@@ -6981,9 +6987,18 @@ static void mergeParentRoleMultis(ClassInfo* ci, const SigKey& sigKeyParams) {
                     if ((langRev_ >= 2 || role->langRev >= 2) && kv.second.code()->ci().isSubmethod) continue;
                     if (kv.second.code()->ci().isMultiDispatcher) {
                         for (auto& c : kv.second.code()->cold().candidates)
-                            if (c.code() && !c.code()->ci().isStub) { provided[kv.first][sigKeyParams(c.code()->ci().params, c.code())].insert(c.code()); providerRoles[kv.first].insert(provider); }
+                            if (c.code() && !c.code()->ci().isStub) {
+                                const std::string sk = sigKeyParams(c.code()->ci().params, c.code());
+                                provided[kv.first][sk].insert(c.code());
+                                keyProviders[kv.first][sk].insert(provider);
+                                providerRoles[kv.first].insert(provider);
+                            }
                     }
-                    else if (!kv.second.code()->ci().isStub) { provided[kv.first][""].insert(kv.second.code()); providerRoles[kv.first].insert(provider); }
+                    else if (!kv.second.code()->ci().isStub) {
+                        provided[kv.first][""].insert(kv.second.code());
+                        keyProviders[kv.first][""].insert(provider);
+                        providerRoles[kv.first].insert(provider);
+                    }
                 }
             }
             // `state` in a role method is per-COMPOSITION: two classes doing one
@@ -7021,10 +7036,13 @@ static void mergeParentRoleMultis(ClassInfo* ci, const SigKey& sigKeyParams) {
             // a conflict needs providers from TWO DIFFERENT roles: one role's own
             // multi candidates can collide on our sig key (invocant-only sigs like
             // `(::?CLASS:U:)` vs `(::?CLASS:D:)` both key as "") without being a
-            // conflict at all — JSON::Class's Descriptor tripped this on itself
+            // conflict at all — JSON::Class's Descriptor tripped this on itself.
+            // Two roles ON THAT KEY, too: Red's Infix `new($l, $r, :$cast!)` and
+            // `new($l, $r)` share one (it leaves the nameds out), and a second
+            // role with any `new` at all made that a conflict.
             for (auto& kv : provided)
                 for (auto& sk : kv.second)
-                    if (sk.second.size() > 1 && providerRoles[kv.first].size() > 1)
+                    if (sk.second.size() > 1 && keyProviders[kv.first][sk.first].size() > 1)
                         conflicted.insert(kv.first);
             // compose additional `does Role`s: flatten their methods/attrs in (the
             // class's own methods, registered below, override by key). Multi
@@ -7146,11 +7164,15 @@ static void mergeParentRoleMultis(ClassInfo* ci, const SigKey& sigKeyParams) {
                     if (e.code() == kv.second.code()) continue; // identical method (diamond)
                     bool exDisp = e.t == VT::Code && e.code() && e.code()->ci().isMultiDispatcher;
                     if (exDisp && newDisp) {
+                        // (against the candidates the group had before this role's
+                        // only: two of its own that share a key are both kept)
+                        const size_t before = e.code()->cold().candidates.size();
                         for (auto& c : kv.second.code()->cold().candidates) {
                             std::string sk = sigKeyParams(c.code() ? c.code()->ci().params : nullptr, c.code());
                             bool cStub = c.code() && c.code()->ci().isStub;
                             bool placed = false;
-                            for (auto& e2 : e.code()->coldM().candidates) {
+                            for (size_t ei = 0; ei < before; ei++) {
+                                Value& e2 = e.code()->coldM().candidates[ei];
                                 if (sigKeyParams(e2.code() ? e2.code()->ci().params : nullptr, e2.code()) != sk) continue;
                                 bool eStub = e2.code() && e2.code()->ci().isStub;
                                 if (eStub && !cStub) e2 = c; // implementation replaces stub
