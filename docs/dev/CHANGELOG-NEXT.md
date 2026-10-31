@@ -35,7 +35,8 @@ c9560e0d; d1c84b6b (issue #199); a1bb0e7b (issue #191); 55565059 (issue
 bd8936e7; 0938078e; 858a037e; 21c37405; 0b29ef00; 9b3fbb8a; de0d04e5;
 3e15da85; 2df02ed1; 2adfaa34; c91a94fb; 1676fc8a; 5b70d2e1; d54cc3ba;
 d4ed6cac (issue #60); 480f6850; a92d9cfd; 0d089427; 9cac10e4; f3ffb5c3;
-c067446c; a11aa7ab; 594d4aac (Template::Mustache); 5d4de331 (Pod::Load).*
+c067446c; a11aa7ab; 594d4aac (Template::Mustache); 5d4de331 (Pod::Load);
+21cd03cd (L10N::BG and L10N::RU).*
 
 ---
 
@@ -1420,6 +1421,18 @@ does not.
   and Pod::To::HTML, which needs it, comes next (not re-run yet).
   t/regression/pod-block-gist-is-rakudos.raku agrees with Rakudo 2026.09
   byte for byte.
+- **`.DEPARSE` ends an `enum` or `subset` declaration with `;`** (21cd03cd), so
+  `.AST.EVAL` of a program with a statement after one runs. Both rendered as
+  if they were block statements, with no `;`, and the next statement was a
+  second term: `subset Pos of Int where * > 0` then `my Pos $p = 5;` died
+  with "Two terms in a row across lines". L10N::BG, L10N::LV, L10N::RU and
+  L10N::UK 0.0.2 compile each fragment of their suites with
+  `.AST("RU").EVAL`, failed at the subset case, and `rakupp install` refused
+  all four; BG and RU were reported, and all four install now. A
+  `my subset` and a `my enum` keep their `my`, and `enum C (a => 1)` no
+  longer comes back as `enum C ((a => 1))`.
+  t/regression/rakuast-declaration-terminator.raku agrees with Rakudo
+  2026.08 and 2026.09.
 
 ### Left open
 
@@ -1428,6 +1441,12 @@ does not.
   Pod block's `.Str` and `.raku` are still its text, where Rakudo's are its
   class with an address (`Pod::Heading<…>`) and a `.new(…)` (5d4de331). TODO-FOLLOW-UPS.md has
   both.
+
+- `.DEPARSE("RU")` renders English whatever language it is handed, and one
+  that is not installed is no error; the L10N suites ask for it under a
+  `todo`. `.DEPARSE` also drops the parentheses in `(0 max 5) min 3`, which
+  then does not parse, as in showcase/eclipse and showcase/fourier (21cd03cd,
+  and on 23e143f2 too). TODO-FOLLOW-UPS.md has both.
 
 - A `token` the packrat memo answers fires its action once, where Rakudo,
   which has no memo, fires it on every call: `<a> 'x' || <a> 'y'` on "12y"

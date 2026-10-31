@@ -187,6 +187,35 @@ moves to [TODO.md](TODO.md).
   `-> \s, |q { $cap = q; callsame };` read as a quote to the `;` before
   `|q` counted as one. Done when a declared term wins over the quote however
   it was declared, and these three then follow Rakudo.
+- [ ] **`.DEPARSE($lang)` ignores the language it is handed** (found
+  2026-10-31 making L10N::RU and L10N::BG install, 21cd03cd):
+
+  ```raku
+  print Q[my $x = 1; say $x].AST.DEPARSE("RU");   # my $x = 1; say $x
+  print Q[my $x = 1].AST.DEPARSE("XX");           # my $x = 1, no error
+  ```
+
+  With L10N::RU installed Rakudo prints `мой $x = 1;` and `скажи $x`, and a
+  language that is not installed is an error, as `.AST("XX")` already is
+  here. Every L10N dist's suite asks for it under a `todo`, so they install
+  without it. The table is the dist's `RakuAST::Deparse::L10N::<lang>` role,
+  read the other way from how `.AST($lang)` reads `L10N::<lang>`
+  (src/RakuAstDeparse.cpp renders only English). Done when both lines match
+  Rakudo 2026.09 and the L10N::RU suite passes its test 15 without the
+  `todo`.
+- [ ] **`.DEPARSE` drops the parentheses around a non-associative chain**
+  (found 2026-10-31 running tools/rakuast-roundtrip.raku beside 21cd03cd; on
+  23e143f2 too):
+
+  ```raku
+  print Q[my $x = (0 max 5) min 3].AST.DEPARSE;   # my $x = 0 max 5 min 3
+  ```
+
+  which does not parse ("Operators 'max' and 'min' are non-associative and
+  require parentheses"). Rakudo 2026.08 keeps them, as `(0max 5)min 3`.
+  showcase/eclipse and showcase/fourier both have the shape, and are the
+  round-trip harness's two `reparse` failures, the outcome it is meant to
+  hold at zero. Done when the harness reports `reparse 0`.
 
 ## Operators and types
 
