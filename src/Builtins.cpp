@@ -8929,12 +8929,8 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
             else if (tn == "NumStr" || tn == "num" || tn == "num32" || tn == "num64") tn = "Num";
             else if (tn == "StrStr") tn = "Str";
             if (inv.t == VT::Type && !classes_.count(inv.s)) {
-                if (tn == "Str") probeInv = Value::str("");
-                else if (tn == "Int") probeInv = Value::integer(0);
-                else if (tn == "Num") probeInv = Value::number(0);
-                else if (tn == "Bool") probeInv = Value::boolean(false);
-                else if (tn == "Array" || tn == "List" || tn == "Positional") probeInv = Value::array();
-                else if (tn == "Hash" || tn == "Map" || tn == "Associative") probeInv = Value::makeHash();
+                if (tn == "Positional") probeInv = Value::array();
+                else if (tn == "Associative") probeInv = Value::makeHash();
                 // Date/DateTime answer their own methods and nothing else's, so the
                 // sentinel has to be one of them — built through the ordinary
                 // constructor, which reads a clock and touches nothing else.
@@ -8942,6 +8938,7 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
                     try { ValueList none; probeInv = methodCall(Value::typeObj(tn), "now", none); }
                     catch (...) { probeInv = inv; }
                 }
+                else probeInv = probeSentinel(tn);
             }
             if (!mn.empty() && probeInv.t != VT::Object && probeInv.t != VT::Type &&
                 probeInv.t != VT::Any && probeInv.t != VT::Nil &&
@@ -8954,6 +8951,16 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
             if (!mn.empty() && inv.t == VT::Type && (inv.s == "Mu" || inv.s == "Any") &&
                 probeMethodExists(Value::integer(0), mn, "/nonexistent/rakupp-lookup-probe") == -1)
                 return Value::typeObj("Mu");
+            // …and a ROLE the same way, against a type that does it: whatever
+            // Cool, Real or Numeric has, an Int has; whatever Stringy has, a Str
+            if (!mn.empty() && inv.t == VT::Type && !classes_.count(inv.s)) {
+                const std::string& r = inv.s;
+                Value rep = r == "Cool" || r == "Real" || r == "Numeric" ? Value::integer(0)
+                          : r == "Stringy" ? Value::str("")
+                          : r == "Iterable" ? Value::list({}) : Value::any();
+                if (rep.t != VT::Any && probeMethodExists(rep, mn, "/nonexistent/rakupp-lookup-probe") == -1)
+                    return Value::typeObj("Mu");
+            }
             Value code; code.t = VT::Code; code.setCode(makePayload<Callable>());
             code.code()->ciM().name = mn; code.code()->ciM().isMethod = true;
             code.code()->ciM().pkg = inv.t == VT::Type ? (tn.empty() ? std::string(inv.s) : tn) : inv.typeName(); // (wrapBuiltinMethod)

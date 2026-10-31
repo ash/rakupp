@@ -5109,6 +5109,9 @@ public:
     // (it lived as two verbatim copies that had already drifted on guards).
     // Answers: 0 = not probeable (side-effectful name), 1 = found, -1 = not found.
     int probeMethodExists(const Value& inv, const std::string& mn, const char* ioProbePath);
+    // …and the value it probes a built-in TYPE object on (`Set.^find_method`):
+    // an empty instance of the type, or the type object itself when none is safe.
+    Value probeSentinel(const std::string& type);
     // A bare regex literal as a value, through RegexLit::closedPat (skips the
     // splice copy, the $/@ scans and the obsolete-check memo probe once the
     // node has published its closed pattern).
