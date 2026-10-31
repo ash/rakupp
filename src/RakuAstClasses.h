@@ -93,8 +93,11 @@ Value rakuAstNew(Interpreter& I, const std::string& qualifiedName, ValueList& ar
 // so its contract is correct Raku first and Rakudo's exact spelling second; the
 // measured spellings are in docs/dev/findings/rakuast/deparse-2026.08.tsv.
 // Throws X::NYI, naming the class, for anything not covered — never a wrong
-// rendering.
-std::string rakuAstDeparse(Interpreter& I, const Value& node);
+// rendering. `xsyn` is the localization `.DEPARSE("DE")` asks for: null for
+// English, and the role's `xsyn` asked at every keyword otherwise
+// (Interpreter::l10nDeparseXsyn).
+std::string rakuAstDeparse(Interpreter& I, const Value& node,
+                           const DeparseXsyn* xsyn = nullptr);
 
 // `'source'.AST` — build the VIEW over our own parse of `source`. With
 // `compUnit` it is wrapped in a `RakuAST::CompUnit`, which is what

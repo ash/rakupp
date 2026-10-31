@@ -2278,6 +2278,42 @@ program. Verified to fail three separate ways when the fixture is broken.
 round-trip harness (**44 of 59, 0 files rendering unparseable text**), and the
 fourteen L10N dists' own suites through `rakupp test`.
 
+### `.DEPARSE($lang)`, the other direction (landed 2026-10-31)
+
+`Q[my $x = 1].AST.DEPARSE("RU")` is `мой $x = 1`. It ignored its argument
+until then, and every L10N::BG, LV, RU and UK suite asks for it in its test 15,
+under a `todo` for this engine.
+
+A dist ships the rendering side as a second role, `RakuAST::Deparse::L10N::RU`:
+one method, `xsyn($prefix, $key)`, over a generated table, answering the
+localized spelling of `$key` in category `$prefix` or `$key` itself. Rakudo
+mixes it into its deparser, which asks `xsyn` at every keyword it writes. So
+this reads no table either: `Interpreter::l10nDeparseXsyn` (beside
+`l10nTokenXform`) loads the role and hands the renderer its `xsyn`, and
+src/RakuAstDeparse.cpp asks it, through one helper, at the places Rakudo's
+deparser does, with the same category. Which places those are is measured,
+not read off Rakudo's source, which was wrong once (a subset's `of` is asked
+as `traitmod`, not `trait`): `tools/rakuast-deparse-l10n-spec.raku` deparses
+23 cases with a role that answers each question with the question itself,
+`<block:for>`, and docs/dev/findings/rakuast/deparse-l10n-2026.09.tsv is
+Rakudo's output. Three things it shows a real table hides: `for` before a
+block is `block` and after a statement `modifier`; a method call's dot is
+asked as `routine` as well as its name as `core`; a list's comma is asked and
+the answer thrown away.
+
+Where our VIEW differs from Rakudo's tree, the category follows Rakudo's
+tree: `try` and `gather` are an ApplyPrefix here and `start`, `lazy`, `react`
+calls without parentheses, all of them `stmt-prefix` upstream; `not $x` is a
+call here and a `prefix` there; a bare `exit` is a Term::Name here and a call
+(`core`) there; `R-` and `[max]` are one operator here and a meta letter
+(`meta`) and an infix there.
+
+What it does not do says so: a role with `hsyn` (highlighting) is X::NYI, and
+a deparser class in place of Rakudo's fails as it does upstream.
+`t/regression/rakuast-deparse-l10n.raku` holds the spec to the TSV, renders a
+fixture language by name and reads it back with `.AST("ZZ")` as the same
+program, and checks the arguments that are not a language.
+
 ## P4 — traversal, and what the acceptance corpus actually said (landed 2026-09-12)
 
 `visit-children` and the vocabulary growth are in, gated cross-engine. The

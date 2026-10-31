@@ -144,6 +144,40 @@ bool prefixNeedsSpace(const std::string& op) {
     return op.front() == '[' && op.back() == ']';
 }
 
+// The words Rakudo parses as a STATEMENT PREFIX. Our view makes them an
+// ApplyPrefix (`try`, `do`, `gather`, `quietly`, `once`) or a call without
+// parentheses (`start`, `lazy`, `react`, …), and a localization has to tell
+// them from an operator or a sub: upstream `try` is `stmt-prefix-try`, never
+// `prefix-try`, and `lazy` is `stmt-prefix-lazy`, never `core-lazy`.
+bool isStatementPrefixWord(const std::string& w) {
+    static const std::set<std::string> t = {
+        "do", "eager", "gather", "hyper", "lazy", "once", "quietly", "race",
+        "react", "sink", "start", "supply", "try"};
+    return t.count(w) > 0;
+}
+
+// The `use` targets that are a RakuAST::Pragma upstream, whose name is a
+// `pragma` keyword (`use strict` is `используй строго`): Rakudo's
+// KNOWN-PRAGMAS, src/Raku/ast/pragma.rakumod.
+bool isPragmaName(const std::string& w) {
+    static const std::set<std::string> t = {
+        "attributes", "dynamic-scope", "fatal", "internals", "invocant", "isms",
+        "lib", "MONKEY", "MONKEY-GUTS", "MONKEY-SEE-NO-EVAL", "MONKEY-TYPING",
+        "nqp", "parameters", "precompilation", "soft", "strict", "trace",
+        "variables", "worries"};
+    return t.count(w) > 0;
+}
+
+// The method names a localization may translate (`system` keywords): the
+// ones the metamodel calls, Rakudo's `%system-names`.
+bool isSystemMethodName(const std::string& w) {
+    static const std::set<std::string> t = {
+        "ACCEPTS", "ASSIGN-KEY", "ASSIGN-POS", "AT-KEY", "AT-POS", "BIND-KEY",
+        "BIND-POS", "BUILD", "CALL-ME", "DELETE-KEY", "DELETE-POS", "DESTROY",
+        "EXISTS-KEY", "EXISTS-POS", "STORE", "TWEAK", "UPGRADE-RAT", "WHICH", "WHY"};
+    return t.count(w) > 0;
+}
+
 struct Deparser {
     Interpreter& I;
     // The side table: a live value with no source behind it renders as a
@@ -152,7 +186,44 @@ struct Deparser {
     // `.DEPARSE` and the one `.EVAL` makes produce the same text.
     ValueList* side = nullptr;
     int litCount = 0;
+    // The localization `.DEPARSE("DE")` asked for, null for English. Every
+    // keyword below goes through `xs` with the category and key Rakudo's
+    // deparser hands its `xsyn`, at the place it hands them over: `for` is
+    // `xs("block", "for")`, but `for` after a statement is
+    // `xs("modifier", "for")`, and the dist's table has both. Measured against
+    // Rakudo 2026.09 by tools/rakuast-deparse-l10n-spec.raku, whose role
+    // answers every question with the question; the gate is
+    // t/regression/rakuast-deparse-l10n.raku.
+    const DeparseXsyn* xsyn = nullptr;
     explicit Deparser(Interpreter& i) : I(i) {}
+
+    std::string xs(const char* prefix, const std::string& key) {
+        return xsyn && *xsyn ? (*xsyn)(prefix, key) : key;
+    }
+
+    // An infix, which our tree spells whole: `R-` and `X~` are a META letter
+    // and the infix it modifies upstream, each asked on its own (`meta-R`,
+    // then `infix--`), and `!eq` is `!` and `eq`. `!=` is an infix of its own,
+    // and so are a bare `X` and `Z`.
+    std::string infixOp(const std::string& op) {
+        if (!xsyn || !*xsyn || op.size() < 2) return xs("infix", op);
+        if (op[0] == 'R' || op[0] == 'X' || op[0] == 'Z')
+            return xs("meta", std::string(1, op[0])) + infixOp(op.substr(1));
+        if (op[0] == '!' && op != "!=") return "!" + infixOp(op.substr(1));
+        return xs("infix", op);
+    }
+
+    // `:k`, `:!k`, `:by(1)`. A NAMED ARGUMENT's key is a keyword upstream
+    // (`:k` is `:к` in Russian, `named-k`); a colonpair anywhere else keeps its
+    // key, and so does a fat arrow, even as an argument.
+    std::string colonPair(const Value& node, const std::string& c, bool named, int indent) {
+        const Value* k = attr(node, "key");
+        std::string key = k ? k->toStr() : "";
+        if (named) key = xs("named", key);
+        if (c == "ColonPair::True")  return ":" + key;
+        if (c == "ColonPair::False") return ":!" + key;
+        return ":" + key + "(" + opt(attr(node, "value"), indent) + ")";
+    }
 
     [[noreturn]] void notImplemented(const std::string& cls) {
         // Never a wrong rendering: a class the renderer does not cover says so,
@@ -320,8 +391,21 @@ struct Deparser {
             const Value* v = attr(node, "name");
             return v ? v->toStr() : "";
         }
-        if (c == "Term::Name" || c == "Term::Enum") return opt(attr(node, "name"), indent);
-        if (c == "Term::Self")     return "self";
+        if (c == "Term::Name") {
+            // `now`, `time` and `nano` are Term::Named upstream and `rand` is
+            // Term::Rand, all four `term` keywords. A constant (`pi`) is a
+            // Term::Name there too, and no keyword. Any other bare lower-case
+            // word is a sub called with no arguments — `exit`, `done`, `next` —
+            // which Rakudo resolves to a call and we cannot tell from a term, so
+            // it is the `core` keyword a call is; a type name is no keyword.
+            std::string n = opt(attr(node, "name"), indent);
+            if (n == "now" || n == "time" || n == "nano" || n == "rand") return xs("term", n);
+            if (n == "pi" || n == "e" || n == "i" || n == "tau") return n;
+            if (!n.empty() && n[0] >= 'a' && n[0] <= 'z') return xs("core", n);
+            return n;
+        }
+        if (c == "Term::Enum")     return xs("enum", opt(attr(node, "name"), indent));
+        if (c == "Term::Self")     return xs("term", "self");
         if (c == "Term::Whatever") return "*";
         // `enum` and `subset` are EXPRESSIONS upstream, not block statements:
         // no trailing newline, so the statement list puts the `;` after them.
@@ -333,15 +417,15 @@ struct Deparser {
         if (c == "Type::Enum" || c == "Type::Subset") {
             std::string out;
             if (const Value* s = attr(node, "scope"))
-                if (s->toStr() == "my") out = "my ";
+                if (s->toStr() == "my") out = xs("scope", "my") + " ";
             if (c == "Type::Enum")
-                return out + "enum " + opt(attr(node, "name"), indent) + " " +
+                return out + xs("typer", "enum") + " " + opt(attr(node, "name"), indent) + " " +
                        opt(attr(node, "term"), indent);
-            out += "subset " + opt(attr(node, "name"), indent);
+            out += xs("typer", "subset") + " " + opt(attr(node, "name"), indent);
             if (const Value* b = attr(node, "base-type"))
-                if (isNode(*b)) out += " of " + render(*b, indent);
+                if (isNode(*b)) out += " " + xs("traitmod", "of") + " " + render(*b, indent);
             if (const Value* w = attr(node, "where"))
-                if (isNode(*w)) out += " where " + render(*w, indent);
+                if (isNode(*w)) out += " " + xs("constraint", "where") + " " + render(*w, indent);
             return out;
         }
         if (c == "QuotedString") {
@@ -387,12 +471,8 @@ struct Deparser {
                     }
             return out + "\"";
         }
-        if (c == "ColonPair::True")  { const Value* k = attr(node, "key"); return ":" + (k ? k->toStr() : ""); }
-        if (c == "ColonPair::False") { const Value* k = attr(node, "key"); return ":!" + (k ? k->toStr() : ""); }
-        if (c == "ColonPair::Value") {
-            const Value* k = attr(node, "key");
-            return ":" + (k ? k->toStr() : "") + "(" + opt(attr(node, "value"), indent) + ")";
-        }
+        if (c == "ColonPair::True" || c == "ColonPair::False" || c == "ColonPair::Value")
+            return colonPair(node, c, /*named=*/false, indent);
         if (c == "FatArrow") {
             const Value* k = attr(node, "key");
             return (k ? k->toStr() : "") + " => " + opt(attr(node, "value"), indent);
@@ -402,9 +482,24 @@ struct Deparser {
         if (c == "Infix" || c == "Prefix" || c == "Postfix" || c == "Assignment") {
             const Value* o = attr(node, "operator");
             std::string op = o ? o->toStr() : "";
+            // An assignment is an infix like any other; a postfix is no
+            // keyword upstream, whatever it is spelled.
+            if (c == "Infix" || c == "Assignment") return infixOp(op);
             // A word prefix carries its own separating space; an infix gets
             // spaces from its application, so only the prefix does it here.
-            if (c == "Prefix" && prefixNeedsSpace(op)) op += " ";
+            // The test is on the ENGLISH word, as Rakudo's is: `не` begins
+            // with no ASCII letter and still needs it.
+            if (c == "Prefix") {
+                bool space = prefixNeedsSpace(op);
+                // a REDUCTION is its infix in brackets, and that is what is asked
+                if (op.size() > 2 && op.front() == '[' && op.back() == ']') {
+                    bool tri = op[1] == '\\';
+                    op = std::string("[") + (tri ? "\\" : "") +
+                         infixOp(op.substr(tri ? 2 : 1, op.size() - (tri ? 3 : 2))) + "]";
+                }
+                else op = xs(isStatementPrefixWord(op) ? "stmt-prefix" : "prefix", op);
+                if (space) op += " ";
+            }
             return op;
         }
         // `+=` is the ASSIGN METAOP over `+`, not an operator spelled `+=`.
@@ -425,6 +520,13 @@ struct Deparser {
                    opt(attr(node, "right"), indent);
         }
         if (c == "ApplyListInfix") {
+            // A list's comma is written as a comma, whatever a localization
+            // makes of `infix-,` — Rakudo asks and throws the answer away.
+            if (const Value* ix = attr(node, "infix"))
+                if (isNode(*ix) && shortName(*ix) == "Infix")
+                    if (const Value* o = attr(*ix, "operator"))
+                        if (o->toStr() == ",")
+                            return joinList(attr(node, "operands"), ", ", indent);
             std::string op = opt(attr(node, "infix"), indent);
             std::string sep = op + " ";
             return joinList(attr(node, "operands"), sep.c_str(), indent);
@@ -449,14 +551,36 @@ struct Deparser {
                    opt(attr(node, "then"), indent) + " !! " + opt(attr(node, "else"), indent);
 
         // ---- calls -------------------------------------------------------
-        if (c == "ArgList") return joinList(attr(node, "args"), ", ", indent);
+        if (c == "ArgList") {
+            const Value* v = attr(node, "args");
+            std::string out;
+            if (!v || v->t != VT::Array || !v->arr()) return out;
+            bool first = true;
+            for (auto& e : *v->arr()) {
+                if (!first) out += ", ";
+                first = false;
+                const std::string ec = isNode(e) ? shortName(e) : std::string();
+                if (ec == "ColonPair::True" || ec == "ColonPair::False" || ec == "ColonPair::Value")
+                    out += colonPair(e, ec, /*named=*/true, indent);
+                else out += isNode(e) ? render(e, indent) : e.toStr();
+            }
+            return out;
+        }
+        // A sub's name is a `core` keyword (`say` is `скажи`); a name the table
+        // does not have comes back as itself, which is every user's sub.
         if (c == "Call::Name") {
             // A named call always shows its parens, empty or not: `foo()`.
-            return opt(attr(node, "name"), indent) + "(" + opt(attr(node, "args"), indent) + ")";
+            return xs("core", opt(attr(node, "name"), indent)) + "(" +
+                   opt(attr(node, "args"), indent) + ")";
         }
         if (c == "Call::Name::WithoutParentheses") {
             std::string a = opt(attr(node, "args"), indent);
-            return opt(attr(node, "name"), indent) + (a.empty() ? "" : " " + a);
+            std::string n = opt(attr(node, "name"), indent);
+            // `not $x` and `so $x` are prefix operators upstream, which our
+            // view builds as calls
+            n = xs(isStatementPrefixWord(n) ? "stmt-prefix"
+                 : n == "not" || n == "so"  ? "prefix" : "core", n);
+            return n + (a.empty() ? "" : " " + a);
         }
         // `.^name` — the META-method call. Upstream the name is a plain Str
         // and the `dispatcher` (`^`, `?`, `!`) is its own attribute; ours keeps
@@ -467,7 +591,7 @@ struct Deparser {
             bool hasArgs = a && isNode(*a) && !args.empty();
             const Value* d = attr(node, "dispatcher");
             std::string disp = d && !d->toStr().empty() ? d->toStr() : "^";
-            return "." + disp + opt(attr(node, "name"), indent) +
+            return xs("routine", "." + disp) + opt(attr(node, "name"), indent) +
                    (hasArgs ? "(" + args + ")" : "");
         }
         if (c == "Call::Method" || c == "Call::MaybeMethod" || c == "Call::PrivateMethod") {
@@ -476,7 +600,13 @@ struct Deparser {
             std::string args = opt(a, indent);
             // No arguments, no parens — measured `.fc` against `.match("foo")`.
             bool hasArgs = a && isNode(*a) && !args.empty();
-            return dot + opt(attr(node, "name"), indent) + (hasArgs ? "(" + args + ")" : "");
+            // a method's name is a `core` keyword like a sub's (`.push` is
+            // `.втолкни`), a private one's is not
+            std::string nm = opt(attr(node, "name"), indent);
+            if (c != "Call::PrivateMethod") nm = xs("core", nm);
+            // …and so is the DOT, `routine-.`: no dist's table has one, but a
+            // role of a user's own is asked what Rakudo asks it
+            return xs("routine", dot) + nm + (hasArgs ? "(" + args + ")" : "");
         }
         if (c == "Term::TopicCall") return opt(attr(node, "call"), indent);
         if (c == "Postcircumfix::ArrayIndex")
@@ -522,9 +652,13 @@ struct Deparser {
         }
         if (c == "StatementList") return statements(node, indent);
         if (c == "Statement::Empty") return "";
-        if (c == "Statement::Use")    return "use "    + opt(attr(node, "module-name"), indent);
-        if (c == "Statement::Import") return "import " + opt(attr(node, "module-name"), indent);
-        if (c == "Statement::Need")   return "need "   + opt(attr(node, "module-name"), indent);
+        if (c == "Statement::Use") {
+            // a PRAGMA's name is a keyword as well as the `use`
+            std::string m = opt(attr(node, "module-name"), indent);
+            return xs("use", "use") + " " + (isPragmaName(m) ? xs("pragma", m) : m);
+        }
+        if (c == "Statement::Import") return xs("use", "import") + " " + opt(attr(node, "module-name"), indent);
+        if (c == "Statement::Need")   return xs("use", "need") + " " + opt(attr(node, "module-name"), indent);
         if (c == "Statement::Expression") {
             std::string out = opt(attr(node, "expression"), indent);
             // A statement whose expression IS a block — a routine declaration,
@@ -544,14 +678,14 @@ struct Deparser {
                 if (isNode(*m)) out += " " + render(*m, indent);
             return out;
         }
-        if (c == "StatementModifier::If")     return "if "     + opt(attr(node, "expression"), indent);
-        if (c == "StatementModifier::Unless") return "unless " + opt(attr(node, "expression"), indent);
-        if (c == "StatementModifier::While")  return "while "  + opt(attr(node, "expression"), indent);
-        if (c == "StatementModifier::Until")  return "until "  + opt(attr(node, "expression"), indent);
-        if (c == "StatementModifier::For")    return "for "    + opt(attr(node, "expression"), indent);
-        if (c == "StatementModifier::Given")  return "given "  + opt(attr(node, "expression"), indent);
-        if (c == "StatementModifier::With")   return "with "   + opt(attr(node, "expression"), indent);
-        if (c == "StatementModifier::Without") return "without " + opt(attr(node, "expression"), indent);
+        if (c == "StatementModifier::If")     return xs("modifier", "if")     + " " + opt(attr(node, "expression"), indent);
+        if (c == "StatementModifier::Unless") return xs("modifier", "unless") + " " + opt(attr(node, "expression"), indent);
+        if (c == "StatementModifier::While")  return xs("modifier", "while")  + " " + opt(attr(node, "expression"), indent);
+        if (c == "StatementModifier::Until")  return xs("modifier", "until")  + " " + opt(attr(node, "expression"), indent);
+        if (c == "StatementModifier::For")    return xs("modifier", "for")    + " " + opt(attr(node, "expression"), indent);
+        if (c == "StatementModifier::Given")  return xs("modifier", "given")  + " " + opt(attr(node, "expression"), indent);
+        if (c == "StatementModifier::With")   return xs("modifier", "with")   + " " + opt(attr(node, "expression"), indent);
+        if (c == "StatementModifier::Without") return xs("modifier", "without") + " " + opt(attr(node, "expression"), indent);
         if (c == "Blockoid") {
             const Value* sl = attr(node, "statement-list");
             std::string inner = (sl && isNode(*sl)) ? statements(*sl, indent + 1) : std::string();
@@ -563,13 +697,15 @@ struct Deparser {
             return "-> " + (sig.empty() ? "" : sig + " ") + blockoid(attr(node, "body"), indent);
         }
         if (c == "Sub" || c == "Method" || c == "Submethod") {
-            std::string kw = c == "Sub" ? "sub " : c == "Method" ? "method " : "submethod ";
+            std::string kw = xs("routine", c == "Sub" ? "sub" : c == "Method" ? "method" : "submethod") + " ";
             // `multi` is part of the declarator, not decoration: dropping it made
             // two `multi` candidates render as two `sub`s of the same name, which
             // is a redeclaration error rather than a program.
             if (const Value* mn = attr(node, "multiness"))
-                if (!mn->toStr().empty()) kw = mn->toStr() + " " + kw;
+                if (!mn->toStr().empty()) kw = xs("multi", mn->toStr()) + " " + kw;
             std::string nm = opt(attr(node, "name"), indent);
+            // a submethod is a Method upstream, so `BUILD` is a keyword in both
+            if (c != "Sub" && isSystemMethodName(nm)) nm = xs("system", nm);
             std::string sig = opt(attr(node, "signature"), indent);
             return kw + nm + (sig.empty() ? "" : "(" + sig + ")") + " " +
                    blockoid(attr(node, "body"), indent);
@@ -578,8 +714,8 @@ struct Deparser {
             // `opt`, never `*attr(...)`: a node built by `.new` with a required
             // child left unset is a real shape — `.raku` round-trip tests
             // construct exactly that — and dereferencing the miss segfaulted.
-            std::string out = (c == "Statement::If" ? "if " : c == "Statement::Unless" ? "unless " : "elsif ") +
-                              opt(attr(node, "condition"), indent) + " " +
+            std::string out = xs("block", c == "Statement::If" ? "if" : c == "Statement::Unless" ? "unless" : "elsif") +
+                              " " + opt(attr(node, "condition"), indent) + " " +
                               opt(attr(node, "then"), indent);
             // The elsif CHAIN. Dropping it rendered valid Raku that means
             // something else — `if a {1} else {4}` for a three-branch
@@ -589,38 +725,38 @@ struct Deparser {
                     for (auto& e : *es->arr())
                         if (isNode(e)) out += "\n" + pad(indent) + render(e, indent);
             if (const Value* e = attr(node, "else"))
-                if (isNode(*e)) out += "\n" + pad(indent) + "else " + render(*e, indent);
+                if (isNode(*e)) out += "\n" + pad(indent) + xs("block", "else") + " " + render(*e, indent);
             return c == "Statement::Elsif" ? out : out + "\n";
         }
         // No trailing newline on `for` or `while`: measured on a lone
         // constructed node, Rakudo's `Statement::If` renders one and these do
         // not. The statement list is what separates them — see `statements()`.
         if (c == "Statement::For")
-            return "for " + opt(attr(node, "source"), indent) + " " +
+            return xs("block", "for") + " " + opt(attr(node, "source"), indent) + " " +
                    opt(attr(node, "body"), indent);
         // `with`/`without` are the `if` family's shape with their own keyword;
         // `repeat` puts its condition AFTER the block and takes no `;`.
         if (c == "Statement::With" || c == "Statement::Without") {
-            std::string out = (c == "Statement::With" ? "with " : "without ") +
+            std::string out = xs("block", c == "Statement::With" ? "with" : "without") + " " +
                               opt(attr(node, "condition"), indent) + " " +
                               opt(attr(node, c == "Statement::With" ? "then" : "body"), indent);
             if (const Value* e = attr(node, "else"))
-                if (isNode(*e)) out += "\n" + pad(indent) + "else " + render(*e, indent);
+                if (isNode(*e)) out += "\n" + pad(indent) + xs("block", "else") + " " + render(*e, indent);
             return out + "\n";
         }
         // …and NO trailing newline on `repeat`: it does not end in `}`, it ends
         // in the condition, so it is an ordinary statement and takes the `;`
         // the statement list gives it. Measured on both engines.
         if (c == "Statement::Loop::RepeatWhile" || c == "Statement::Loop::RepeatUntil")
-            return "repeat " + opt(attr(node, "body"), indent) +
-                   (c == "Statement::Loop::RepeatWhile" ? " while " : " until ") +
+            return xs("block", "repeat") + " " + opt(attr(node, "body"), indent) + " " +
+                   xs("modifier", c == "Statement::Loop::RepeatWhile" ? "while" : "until") + " " +
                    opt(attr(node, "condition"), indent);
         // `BEGIN { … }` — the class name IS the keyword, title-cased, so the
         // renderer upper-cases it back rather than carrying a second table.
         if (c.compare(0, 25, "StatementPrefix::Phaser::") == 0) {
             std::string kw = c.substr(25);
             for (char& ch : kw) ch = (char)ascii::toupper((unsigned char)ch);
-            return kw + " " + opt(attr(node, "blorst"), indent) + "\n";
+            return xs("phaser", kw) + " " + opt(attr(node, "blorst"), indent) + "\n";
         }
         // ---- the `Doc::` subtree (P5) -----------------------------------
         // Pod renders back as pod. Rakudo re-emits the block's own source; we
@@ -664,7 +800,7 @@ struct Deparser {
         if (c == "RuleDeclaration" || c == "TokenDeclaration" || c == "RegexDeclaration") {
             const std::string kw = c == "TokenDeclaration" ? "token"
                                  : c == "RegexDeclaration" ? "regex" : "rule";
-            return kw + " " + opt(attr(node, "name"), indent) + " { " +
+            return xs("routine", kw) + " " + opt(attr(node, "name"), indent) + " { " +
                    opt(attr(node, "body"), indent) + " }\n";
         }
         if (c == "Regex::WithWhitespace") return opt(attr(node, "regex"), indent);
@@ -682,23 +818,23 @@ struct Deparser {
             return out;
         }
         if (c == "Statement::Whenever")
-            return "whenever " + opt(attr(node, "trigger"), indent) + " " +
+            return xs("block", "whenever") + " " + opt(attr(node, "trigger"), indent) + " " +
                    opt(attr(node, "body"), indent) + "\n";
         if (c == "Statement::Given")
-            return "given " + opt(attr(node, "source"), indent) + " " +
+            return xs("block", "given") + " " + opt(attr(node, "source"), indent) + " " +
                    opt(attr(node, "body"), indent) + "\n";
         if (c == "Statement::When")
-            return "when " + opt(attr(node, "condition"), indent) + " " +
+            return xs("block", "when") + " " + opt(attr(node, "condition"), indent) + " " +
                    opt(attr(node, "body"), indent) + "\n";
         if (c == "Statement::Default")
-            return "default " + opt(attr(node, "body"), indent) + "\n";
+            return xs("block", "default") + " " + opt(attr(node, "body"), indent) + "\n";
         if (c == "Statement::Loop") {
             // `loop (setup; condition; increment) BLOCK`, and the bare `loop`
             // when it has none of the three.
             std::string setup = opt(attr(node, "setup"), indent);
             std::string cond  = opt(attr(node, "condition"), indent);
             std::string incr  = opt(attr(node, "increment"), indent);
-            std::string head  = "loop ";
+            std::string head  = xs("block", "loop") + " ";
             if (!setup.empty() || !cond.empty() || !incr.empty())
                 head += "(" + setup + "; " + cond + "; " + incr + ") ";
             return head + opt(attr(node, "body"), indent) + "\n";
@@ -710,19 +846,19 @@ struct Deparser {
             for (char ch : c) kw += (char)ascii::tolower((unsigned char)ch);
             std::string sc;
             if (const Value* s = attr(node, "scope"))
-                if (s->toStr() == "my") sc = "my ";
-            return sc + kw + " " + opt(attr(node, "name"), indent) + " " +
+                if (s->toStr() == "my") sc = xs("scope", "my") + " ";
+            return sc + xs("package", kw) + " " + opt(attr(node, "name"), indent) + " " +
                    opt(attr(node, "body"), indent) + "\n";
         }
         if (c == "Statement::Loop::While" || c == "Statement::Loop::Until")
-            return (c == "Statement::Loop::While" ? "while " : "until ") +
+            return xs("block", c == "Statement::Loop::While" ? "while" : "until") + " " +
                    opt(attr(node, "condition"), indent) + " " +
                    opt(attr(node, "body"), indent);
 
         // ---- declarations, signatures, types -----------------------------
         if (c == "VarDeclaration::Simple") {
             const Value* sc = attr(node, "scope");
-            std::string scope = sc ? sc->toStr() : "my";
+            std::string scope = xs("scope", sc ? sc->toStr() : "my");
             const Value* sig = attr(node, "sigil");
             std::string out = scope + " " + opt(attr(node, "type"), indent);
             if (out.size() > scope.size() + 1) out += " ";
@@ -737,8 +873,8 @@ struct Deparser {
                 if (isNode(*i)) out += render(*i, indent);
             return out;
         }
-        if (c == "Initializer::Assign") return " = "  + opt(attr(node, "expression"), indent);
-        if (c == "Initializer::Bind")   return " := " + opt(attr(node, "expression"), indent);
+        if (c == "Initializer::Assign") return " " + xs("infix", "=")  + " " + opt(attr(node, "expression"), indent);
+        if (c == "Initializer::Bind")   return " " + xs("infix", ":=") + " " + opt(attr(node, "expression"), indent);
         if (c == "Signature")  return joinList(attr(node, "parameters"), ", ", indent);
         if (c == "Parameter") {
             std::string out;
@@ -771,7 +907,7 @@ struct Deparser {
             if (const Value* o = attr(node, "optional")) if (o->truthy()) out += "?";
             if (const Value* r = attr(node, "required")) if (r->truthy()) out += "!";
             if (const Value* d = attr(node, "default"))
-                if (isNode(*d)) out += " = " + render(*d, indent);
+                if (isNode(*d)) out += " " + xs("infix", "=") + " " + render(*d, indent);
             return out;
         }
         if (c == "ParameterTarget::Var")  { const Value* n = attr(node, "name"); return n ? n->toStr() : ""; }
@@ -790,9 +926,9 @@ struct Deparser {
         if (c == "Type::Parameterized")
             return opt(attr(node, "base-type"), indent) + "[" +
                    opt(attr(node, "args"), indent) + "]";
-        if (c == "Trait::Is")  return "is "  + opt(attr(node, "name"), indent);
-        if (c == "Trait::Of")  return "of "  + opt(attr(node, "type"), indent);
-        if (c == "Trait::Does") return "does " + opt(attr(node, "type"), indent);
+        if (c == "Trait::Is")  return xs("traitmod", "is")   + " " + opt(attr(node, "name"), indent);
+        if (c == "Trait::Of")  return xs("traitmod", "of")   + " " + opt(attr(node, "type"), indent);
+        if (c == "Trait::Does") return xs("traitmod", "does") + " " + opt(attr(node, "type"), indent);
 
         // ---- whole units --------------------------------------------------
         if (c == "CompUnit") {
@@ -879,8 +1015,9 @@ Value rakuAstNew(Interpreter& I, const std::string& qualifiedName, ValueList& ar
     return Value::object(od);
 }
 
-std::string rakuAstDeparse(Interpreter& I, const Value& node) {
+std::string rakuAstDeparse(Interpreter& I, const Value& node, const DeparseXsyn* xsyn) {
     Deparser d{I};
+    d.xsyn = xsyn;
     return d.render(node, 0);
 }
 
