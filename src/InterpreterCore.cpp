@@ -9823,6 +9823,7 @@ unsigned Interpreter::retFastDecide(const Callable& c) {
 // Enforce a routine's declared nominal return type on its result value.
 Value Interpreter::checkRetType(const Callable& c, Value v) {
     if (c.cold().retType.empty()) return v;
+    if (v.t == VT::Hash && v.hashKind == proxyKind() && v.hash()) return checkRetTypeOfProxy(c, std::move(v));
     // The shortcut (Callable::retFastKey): `--> HeapNode` / `--> Bool:D` resolved
     // once per symbol generation instead of from its name on every return —
     // LeftistHeap's four typed private methods made this a quarter of a call.

@@ -2354,6 +2354,20 @@ Value Interpreter::deproxy(Value v) {
     return v;
 }
 
+// A return type check judges what a PROXY holds, as Rakudo deconts it: an
+// attribute bound to a variable (`$!model := $type`) reads back as the shared
+// cell's Proxy, and Red's `method model(--> Mu:U) { …; $!model }` died
+// "expected Mu:U but got Proxy". The container itself goes back unless the
+// check changed the value (a coercion, a constant return), so `is rw` writes.
+Value Interpreter::checkRetTypeOfProxy(const Callable& c, Value v) {
+    Value inner = deproxy(v);
+    for (int hop = 0; hop < 8 && inner.t == VT::Hash && inner.hashKind == proxyKind() && inner.hash(); hop++)
+        inner = deproxy(inner);   // (a FETCH answering a Proxy)
+    if (inner.t == VT::Hash && inner.hashKind == proxyKind()) return v;
+    Value r = checkRetType(c, inner);
+    return valueEqv(r, inner) ? v : r;
+}
+
 // `$proxy = v` runs STORE. Rakudo hands the container in as well, so a
 // `sub ($, $v)` STORE — the spelling every module uses — takes the value in its
 // SECOND parameter; a one-parameter STORE still gets just the value.

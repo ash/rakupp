@@ -3416,6 +3416,7 @@ public:
                     std::vector<std::pair<std::string, Value>> attrs,
                     const std::string& message); // same, attribute values as Values
     Value checkRetType(const Callable& c, Value v); // enforce declared return type
+    Value checkRetTypeOfProxy(const Callable& c, Value v); // …on what a Proxy holds (InterpreterCalls.cpp)
     unsigned retFastDecide(const Callable& c);       // …and its accepting shortcut (InterpreterCore.cpp)
     // the default constructor's build: attributes, argument checks, BUILD/TWEAK
     // (MethodCallPart2.cpp)
