@@ -1291,7 +1291,9 @@ void Interpreter::loadModuleImpl(const std::string& name, const std::vector<std:
         // what lets Test::Util's `our sub run` coexist with the built-in `run`:
         // Test::Util's own `is_run` still resolves `run` (via its module closure),
         // while an importer's bare `run(...)` reaches the built-in.
-        auto moduleEnv = makeSlabShared<Env>(); moduleEnv->parent = global_;
+        // (through the scope that keeps the program's own operators out: hideProgramOperator)
+        if (!moduleRoot_) { moduleRoot_ = makeSlabShared<Env>(); moduleRoot_->parent = global_; }
+        auto moduleEnv = makeSlabShared<Env>(); moduleEnv->parent = moduleRoot_;
         moduleEnv->unitFrame = true;
         unitOfEnv_[moduleEnv.get()] = name;
         unitStash_[name];
@@ -8882,8 +8884,29 @@ bool Interpreter::bindConstantEarly(Stmt* s, std::set<std::string>& bound) {
 // The program's mainline: everything from adopting the unit's revision to the
 // END phasers and the exit code. Runs once per program, so it lives here and
 // not with the evaluator's hot paths in InterpreterCore.cpp.
+// The main program's top scope IS global_, which every module's scope hangs
+// from, so an operator the program declared or imported there answered a
+// module's operator too: `use Red;` brings Red::Operators' `multi
+// infix:<eqv>(Red::AST, Red::AST)`, and Red's Case optimizer — a file that
+// imports no operators — found `[eqv] |%when.values, $else` an AST, truthy,
+// and kept a CASE with no WHEN. In Rakudo a module sees its own imports and
+// CORE's. Each such name gets a hole in moduleRoot_, the scope between the
+// modules and global_: a cell with no target, which Env::find answers as
+// "not here", so a module finds its own import or the built-in operator.
+void hideProgramOperator(const std::string& name) {
+    static const char* const kKinds[] = {
+        "&infix:<", "&prefix:<", "&postfix:<", "&circumfix:<", "&postcircumfix:<", "&term:<"};
+    bool op = false;
+    for (const char* k : kKinds) if (name.compare(0, std::strlen(k), k) == 0) { op = true; break; }
+    if (!op || !g_revInterp) return;
+    auto& root = g_revInterp->moduleRoot_;
+    if (!root) { root = makeSlabShared<Env>(); root->parent = g_revInterp->global_; }
+    root->vars[name] = Value::cellHolder(PRef<Value>());
+}
+
 int Interpreter::run(Program& prog) {
     int code = 0;
+    global_->programRoot = true;   // what the program defines from here on is its own
     bool exited = false; // the status is an `exit`'s, which Test's END does not override
     // The unit's revision is known from its text, so adopt it before a single
     // statement runs. Waiting for the `use v6.e.PREVIEW` statement to execute

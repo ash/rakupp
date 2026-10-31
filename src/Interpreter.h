@@ -875,6 +875,7 @@ inline bool boundInfixPossible(const std::string& op) {
 // (`×` and `*` are told apart by the name a node was written with, never by
 // asking for one when the other finds nothing: see uniOpWritten in Ast.h.)
 
+void hideProgramOperator(const std::string& name);   // (InterpreterModules.cpp)
 struct Env {
     EnvVars vars;
     EnvParent parent;
@@ -901,6 +902,8 @@ struct Env {
     // scope returns is thrown on the spot (see Interpreter::fatalHere)
     signed char fatalPragma = 0;
     bool unitFrame = false;    // a loaded module's FILE scope: what `UNIT::` names inside it
+    bool programRoot = false;  // the main program's top scope (global_, once it runs): an operator
+                               // defined here is the program's own (hideProgramOperator)
     bool packageFrame = false; // a class/role/module BODY scope: the home a `no strict`
                                // auto-vivification inside it belongs to (see laxVarRef)
     bool evalFrame = false;    // a user-level EVAL's own scope (evalOwnScope): lexical, so
@@ -1089,6 +1092,7 @@ struct Env {
     // Layout names land in the pad; the map-twin erase covers a lenient-mode
     // write that happened before the declaration executed.
     Value& define(const std::string& name, Value v) {
+        if (RAKUPP_UNLIKELY(programRoot) && name.size() > 4 && name[0] == '&') hideProgramOperator(name);
         // `&infix:<op>` entering a scope arms the filter for THAT spelling, and
         // only for an anonymous binding — see g_lexShadowMask. Gated on the first
         // two characters, so every other define pays two loads.
@@ -3838,6 +3842,7 @@ public:
     // every module's top-level env, kept for the program's life: code a module
     // declared sees the packages it loaded, whoever loaded the module itself
     std::vector<std::shared_ptr<Env>> loadedModuleEnvs_;
+    std::shared_ptr<Env> moduleRoot_;   // between global_ and every module's scope (hideProgramOperator)
     std::unordered_set<const Env*> loadedModuleEnvSet_;
     bool requireHidden(const std::string& n) {
         if (!needHidden_.empty() && needHidden_.count(n)) {
