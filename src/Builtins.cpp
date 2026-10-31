@@ -4198,7 +4198,7 @@ static bool hashIsIdentity(const Value& v) {
     if (v.t != VT::Hash || !v.hash()) return false;
     static const char* const kinds[] = {
         "Promise", "Channel", "Supplier", "Supply", "Tap", "Lock", "Lock::Async",
-        "LockCondition", "Semaphore", "Thread", "Cancellation", "Proc", "Proc::Async",
+        "Lock::ConditionVariable", "Semaphore", "Thread", "Cancellation", "Proc", "Proc::Async",
         "Failure",
         // the handles: IO::Handle and IO::Pipe, IO::Socket::INET, IO::Socket::Async
         "FileHandle", "ProcIn", "Socket", "AsyncSocket"};

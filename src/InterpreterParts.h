@@ -1083,7 +1083,7 @@ static inline const std::string& aliasType(const std::string& type) {
 static inline bool hashKindIsAssociative(const std::string& kind) {
     if (kind.empty()) return true;
     static const std::unordered_set<std::string> notAssoc = {
-        "DateTime", "Date", "Promise", "Vow", "Lock", "LockCondition", "Semaphore", "Signature",
+        "DateTime", "Date", "Promise", "Vow", "Lock", "Lock::ConditionVariable", "Semaphore", "Signature",
         "Parameter", "Attribute", "IO", "FileHandle", "CatHandle", "Socket", "AsyncSocket", "Tap",
         "Supply", "Supplier", "Channel", "Thread", "Scheduler", "Cancellation", "Proc",
         "Proc::Async", "Duration", "Instant", "Failure", "Version", "Iterator", "Encoding",

@@ -5977,7 +5977,7 @@ static bool isCoolValue(const Value& v) {
                 "Any", "Mu", "Junction", "Pair", "Code", "Block", "Routine", "Sub", "Method",
                 "Submethod", "WhateverCode", "Regex", "Whatever", "HyperWhatever", "Exception",
                 "Promise", "Channel", "Supply", "Supplier", "Tap", "Thread",
-                "Scheduler", "Lock", "Lock::Async", "Semaphore", "Proc", "Proc::Async",
+                "Scheduler", "Lock", "Lock::Async", "Lock::ConditionVariable", "Semaphore", "Proc", "Proc::Async",
                 "Date", "DateTime", "Set", "SetHash", "Bag", "BagHash", "Mix", "MixHash",
                 "Capture", "Signature", "Parameter", "Attribute", "Version", "Label",
                 "Uni", "NFC", "NFD", "NFKC", "NFKD", "ObjAt", "ValueObjAt",

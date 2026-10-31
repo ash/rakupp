@@ -3995,7 +3995,7 @@ const std::set<std::string>& coreTypeNames() {
         // real Raku entity rakupp serves by NAME (a stub type object, an enum
         // registered elsewhere, a methodCall-handled namespace, a sentinel) —
         // the old always-lenient fallback had been quietly covering them.
-        "Dateish", "Format", "Formatter", "Formatter::Syntax", "IterationEnd", "Lock::Async", "Lock::Soft", "Signal",
+        "Dateish", "Format", "Formatter", "Formatter::Syntax", "IterationEnd", "Lock::Async", "Lock::ConditionVariable", "Lock::Soft", "Signal",
         "Systemic", "Endian", "SeekType", "FileChangeEvent","ProtocolFamily", "ProtocolType", "PromiseStatus", "Encoding", "Encoding::Builtin", "ValueObjAt", "Telemetry", "RaceSeq",
         // REPL — Rakudo's read-eval-print object, which the sandbox pattern
         // drives directly (methodCallInner answers it; see the REPL block there)

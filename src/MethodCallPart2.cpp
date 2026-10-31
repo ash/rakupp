@@ -4718,7 +4718,7 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
         if (m == "lock" || m == "acquire") { if (st) { if (!st->m.try_lock()) { bool parked = gilPark(); st->m.lock(); gilUnpark(parked); } } raceAcquire(raceKey, RaceEdge::Lock); return Value::boolean(true); }
         if (m == "unlock" || m == "release") { raceRelease(raceKey, RaceEdge::Lock); if (st) st->m.unlock(); return Value::boolean(true); }
         if (m == "condition") {
-            Value v = Value::makeHash(); v.hashKind = "LockCondition";
+            Value v = Value::makeHash(); v.hashKind = "Lock::ConditionVariable";
             if (st) { auto cs = std::make_shared<LockCondState>(); cs->lock = st; v.extM() = cs; }
             return v;
         }
@@ -4726,7 +4726,7 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
     // A Lock's condition variable: `.wait` releases the lock while it waits
     // (and holds it again after), `.wait(&cond)` until the condition is true,
     // `.signal` / `.signal_all` wake one / every waiter.
-    if (inv.t == VT::Hash && inv.hashKind == "LockCondition") {
+    if (inv.t == VT::Hash && inv.hashKind == "Lock::ConditionVariable") {
         auto cs = inv.ext() ? std::static_pointer_cast<LockCondState>(inv.ext()) : nullptr;
         if (m == "signal")     { if (cs) cs->cv.notify_one(); return Value::nil(); }
         if (m == "signal_all") { if (cs) cs->cv.notify_all(); return Value::nil(); }
