@@ -37,7 +37,7 @@ bd8936e7; 0938078e; 858a037e; 21c37405; 0b29ef00; 9b3fbb8a; de0d04e5;
 d4ed6cac (issue #60); 480f6850; a92d9cfd; 0d089427; 9cac10e4; f3ffb5c3;
 c067446c; a11aa7ab; 594d4aac (Template::Mustache); 5d4de331 (Pod::Load);
 21cd03cd (L10N::BG and L10N::RU); 3431c375 (localized DEPARSE);
-acf27e4b (the view keeps declaration details).*
+acf27e4b (the view keeps declaration details); 586c5160 (written parentheses).*
 
 ---
 
@@ -752,6 +752,21 @@ plain before 500c29e2 and native from it, unless they say otherwise.
   parse again, had passed all of them, and counted examples/dirstat/dirstat.raku and
   examples/factorize.raku as round-tripping while a pointy block in each lost
   its destructuring binder.
+- **`.AST.EVAL` keeps the parentheses a program writes** (586c5160):
+  `Q[(1 + 2) * 3].AST.EVAL` was 7, where Rakudo answers 9. The view built a
+  Circumfix::Parentheses only for a list, so `(-$y) ** 2` was -9, `($t ?? 10
+  !! 20) + 1` was 10, `(1 .. 4).sum` a Range and `(1 + 2; 3 + 4)` 7; every
+  parenthesized expression now renders and runs as written. The parse
+  records the parentheses on every expression for this (in spare bytes, so no
+  node grows); the AST cache format moves to version 56, and a cached module
+  is parsed once more after an upgrade. With them, `%h<a>` no longer renders
+  as `%h<"a">`, a lookup of the key with its quotes, nor `%h<a b>` as `%h<["a",
+  "b"]>`, and a subscript keeps its adverbs: `%h{"a"}:delete` deleted
+  nothing, `@a[0]:exists` read the element, `%h<>:k` came back as `%h<*>`.
+  tools/rakuast-roundtrip.raku reports `reparse 0`: showcase/eclipse and
+  showcase/fourier rendered `(0 max 5) min 3` without its parentheses, which
+  does not parse. t/regression/rakuast-view-parentheses.raku agrees with
+  Rakudo 2026.09's rendering of 17 shapes and runs 13 of them both ways.
 
 ### Fixed: crashes
 
@@ -1477,12 +1492,11 @@ does not.
   class with an address (`Pod::Heading<…>`) and a `.new(…)` (5d4de331). TODO-FOLLOW-UPS.md has
   both.
 
-- `.AST` drops the parentheses a program writes, so `Q[(1 + 2) * 3].AST.EVAL`
-  is 7 where Rakudo answers 9, and `(0 max 5) min 3` renders text that does
-  not parse, as in showcase/eclipse and showcase/fourier (21cd03cd, acf27e4b;
-  on 23e143f2 too). It still drops `is export`, `is default`, `handles` and a
-  `use`'s import list (`<foo>`, `:tag`), each into valid Raku meaning
-  something else (acf27e4b). `1 or 0 xor 1` runs, where Rakudo refuses it as
+- `.AST` still drops `is export`, `is default`, `handles` and a `use`'s
+  import list (`<foo>`, `:tag`), each into valid Raku meaning something else
+  (acf27e4b), and a `start` block renders the `$!` and `$/` its parse
+  declares, one more pair each time the text goes round (586c5160; both on
+  23e143f2 too). `1 or 0 xor 1` runs, where Rakudo refuses it as
   non-associative (3431c375; on 23e143f2 too). TODO-FOLLOW-UPS.md has each.
 
 - A `token` the packrat memo answers fires its action once, where Rakudo,

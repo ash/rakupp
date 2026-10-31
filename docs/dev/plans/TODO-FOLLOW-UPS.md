@@ -211,26 +211,22 @@ moves to [TODO.md](TODO.md).
   all, so it needs the spelling recorded (an Ast.h field and a
   kAstSerialVersion bump). Done when each line matches Rakudo 2026.09, and
   t/regression/rakuast-view-declarations.raku carries them.
-- [ ] **`.AST` drops the parentheses a program writes, so `.AST.EVAL` of
-  `(1 + 2) * 3` is 7** (found 2026-10-31 running tools/rakuast-roundtrip.raku
-  beside 21cd03cd, and its reach while checking acf27e4b; on 23e143f2 too):
+- [ ] **`.AST.DEPARSE` of a `start` block writes the `$/` and `$!` the parse
+  gave it, one more pair each round** (found 2026-10-31 checking that the
+  rendering is a fixed point, 586c5160; on 23e143f2 too):
 
   ```raku
-  say Q[(1 + 2) * 3].AST.EVAL;                     # 7, Rakudo 9
-  print Q[(1 + 2) * 3].AST.DEPARSE;                # 1 + 2 * 3
-  print Q[my $b = 1; say 1 ~ ($b ~~ Int)].AST.DEPARSE; # say 1 ~ $b ~~ Int
-  print Q[my $x = (0 max 5) min 3].AST.DEPARSE;    # 0 max 5 min 3, which does not parse
+  print Q[my $p = start { 1 }].AST.DEPARSE;               # start { my $!; my $/; 1 }
+  print Q[my $p = start { 1 }].AST.DEPARSE.AST.DEPARSE;   # …two of each
   ```
 
-  The silent wrong answer is the first line; the last is merely the one the
-  round-trip harness can see, as its two `reparse` failures (showcase/eclipse
-  and showcase/fourier), the outcome it is meant to hold at zero. Rakudo
-  keeps a written `( … )` as a Circumfix::Parentheses node, and so can the
-  view: the parse marks a parenthesized Binary (`Binary::parenned`,
-  src/Parser.cpp's primary-expression arm, and serialized), but the view's
-  NK::Binary case in src/RakuAstView.cpp never reads it, where its
-  NK::ListExpr case reads the list's. Done when all four lines match Rakudo
-  2026.09 and the harness reports `reparse 0`.
+  Rakudo 2026.09 writes `start { 1 }`. The parser inserts the two
+  declarations at the front of the body (src/Parser.cpp, the `start` arm of
+  the term parser), which is what a `start` block gets implicitly upstream,
+  and the view renders them as written statements. Same program, but the text
+  grows each round, and it is the only thing keeping five of the examples
+  from being a fixed point of `.AST.DEPARSE`. Done when the view leaves out
+  the two the parse put there and both lines render as Rakudo's.
 
 ## Operators and types
 
@@ -1428,6 +1424,22 @@ moves to [TODO.md](TODO.md).
 
 ## Gates
 
+- [ ] **t/regression/promise-whenever-fires-later-and-in-turn.raku fails now
+  and then** (found 2026-10-31 in a full t/run.raku beside 586c5160; 2 runs in
+  20 alone on 23e143f2):
+
+  ```bash
+  for i in $(seq 20); do build/rakupp t/regression/promise-whenever-fires-later-and-in-turn.raku | tail -1; done | sort | uniq -c
+  ```
+
+  It is always the react case: `FAIL: …and a react's — $("react body", "after
+  keep 2")`, where the whenever's body is to run after `keep` returns, and
+  ran first. The body is queued to the pool when the promise is kept (the
+  "fires later" half of the fix the file guards), so a worker can reach it
+  before the keeping thread prints its next line; the supply case beside it
+  has not failed. Start with what orders the two in the passing runs, and
+  whether Rakudo's ordering is a guarantee or the same race it wins every
+  time. Done when it passes 50 of 50 runs alone and inside a full suite.
 - [ ] **t/jit/run.raku: 5 of its 21 tier-up cases enter no kernel** (found
   2026-10-22 gating the FLOAT-HEAVY-ISSUES work; on v5.5.0 too, on macOS
   arm64): the gate ends `not ok - only 16 of the 21 tier-up cases actually
