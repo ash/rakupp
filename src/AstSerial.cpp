@@ -532,7 +532,12 @@ template <class IO> void visit(IO& io, UseStmt& n)  { F(io, n.module); F(io, n.a
                                                       F(io, n.authReq);
                                                       ioExpr(io, n.ifCond); } // :if(EXPR) — same lesson
 template <class IO> void visit(IO&, EmptyStmt&)     {}
-template <class IO> void visit(IO& io, SubsetDecl& n) { F(io, n.name); F(io, n.baseType); F(io, n.defConstraint); F(io, n.coerceBase); ioExpr(io, n.where); F(io, n.isMy); F(io, n.isExport); ioVec(io, n.exportTags); }
+template <class IO> void visit(IO& io, SubsetDecl& n) {
+    F(io, n.name); F(io, n.baseType); F(io, n.defConstraint); F(io, n.coerceBase); ioExpr(io, n.where); F(io, n.isMy); F(io, n.isExport); ioVec(io, n.exportTags);
+    if constexpr (IO::reading) { size_t k = io.count(); n.traits.clear(); n.traits.resize(k); }
+    else io.uvar(n.traits.size());
+    for (auto& t : n.traits) ioTrait(io, t);
+}
 template <class IO> void visit(IO& io, GivenStmt& n){ ioExpr(io, n.topic); F(io, n.var); F(io, n.modifier);
                                                       ioBlock(io, n.body); F(io, n.defGuard); F(io, n.hasElse);
                                                       ioBlock(io, n.elseBody); F(io, n.elseVar);

@@ -9668,7 +9668,16 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
              inv.obj()->cls->name == "Metamodel::CurriedRoleHOW" ||
              inv.obj()->cls->name == "Metamodel::ConcreteRoleHOW") ? &inv.obj()->cls->name : nullptr;
         bool howInv = (inv.t == VT::Type && inv.s.rfind("Metamodel::", 0) == 0) || howObjName;
+        // (a subset's own metaobject answers as Metamodel::SubsetHOW does,
+        // but for what a role mixed into it declares)
+        if (inv.t == VT::Object && inv.obj() && isSubsetHow(inv) &&
+            (m == "archetypes" || m == "refinee" || m == "refinement" ||
+             ((m == "isa" || m == "does" || m == "can") && args.size() == 2)))
+            return methodCall(Value::typeObj("Metamodel::SubsetHOW"), m, std::move(args), rwArgs);
         if (howInv) {
+            // `S.HOW.refinee(S)` is `S.^refinee`
+            if ((m == "refinee" || m == "refinement") && args.size() == 1 && args[0].t == VT::Type)
+                return methodCall(args[0], "^" + m, ValueList{});
             // the meta-object protocol's two-argument forms: `T.HOW.isa(T, U)` is `T.isa(U)`
             if ((m == "isa" || m == "does" || m == "can") && args.size() == 2)
                 return methodCall(args[0], m, ValueList{args[1]});
@@ -10591,6 +10600,8 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
         }
         return inv; // Int/Num/Rat/Str/Bool/… are immutable — clone is the value itself
     }
+    // `Metamodel::SubsetHOW.new_type(:name, :refinee, :refinement)` (subsetNewType)
+    if (m == "new_type" && isSubsetHow(inv)) return subsetNewType(inv, args);
     // `Metamodel::ClassHOW.new_type(:name, :ver, :auth)` — a class created at
     // RUNTIME. It registers like a declared one, so `.^add_method` and `.new`
     // then work on it exactly as they do on `class Foo { }`.
@@ -10820,9 +10831,9 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
                 return h;
             }
         }
-        // a SUBSET (UInt among them) is made by SubsetHOW
+        // a SUBSET (UInt among them) is made by SubsetHOW — one of its own (subsetsHow)
         if (inv.t == VT::Type && !classes_.count(inv.s) && (subsets_.count(inv.s) || inv.s == "UInt"))
-            return Value::typeObj("Metamodel::SubsetHOW");
+            return subsetsHow(inv.s);
         ClassInfo* hci = nullptr;
         if (inv.t == VT::Type) { auto it = classes_.find(inv.s); if (it != classes_.end()) hci = it->second.get(); }
         else if (inv.t == VT::Object && inv.obj() && inv.obj()->cls) hci = inv.obj()->cls.get();

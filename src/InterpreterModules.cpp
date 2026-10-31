@@ -5172,6 +5172,19 @@ static void mergeParentRoleMultis(ClassInfo* ci, const SigKey& sigKeyParams) {
                 // (not a `my subset`, which stays inside its package: `module M
                 // { my subset F … }; my M::F $f` is "Type 'M::F' is not declared")
                 if (!tctx().pkgPrefix.empty() && !sd->isMy) subsets_[tctx().pkgPrefix + sd->name] = info;
+                // …and its user traits run on it, as on a class (Red's `is sub-model`),
+                // with ONE metaobject under both names for what they mix into it
+                Value* tm = sd->traits.empty() ? nullptr : tctx().cur->find("&trait_mod:<is>");
+                const Value self = Value::typeObj(shadowsCore ? tctx().pkgPrefix + sd->name : sd->name);
+                if (tm && tm->t == VT::Code && !tctx().pkgPrefix.empty() && !sd->isMy && !shadowsCore)
+                    subsets_[tctx().pkgPrefix + sd->name].howObj = methodCall(self, "HOW", ValueList{});
+                for (auto& tr : sd->traits) {
+                    if (!tm || tm->t != VT::Code) break;
+                    Value p = Value::pair(tr.name, tr.arg ? eval(tr.arg.get()) : Value::boolean(true));
+                    p.namedArg = true;
+                    try { callCallable(*tm, ValueList{self, p}); }
+                    catch (RakuError& te) { if (te.message.rfind("Cannot resolve caller", 0) != 0) throw; }
+                }
             }
             return Value::any();
         }

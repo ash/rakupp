@@ -1438,6 +1438,7 @@ struct SubsetDecl : Stmt {
     bool isAnon = false;   // `anon subset F` — its name redeclares nothing
     bool isExport = false; // `is export` — its module has an EXPORT package
     std::vector<std::string> exportTags; // …`is export(:a :b)`: its tags (none = DEFAULT)
+    std::vector<SubTraitSpec> traits;    // any other `is NAME(…)`, for a user trait_mod:<is>
     SubsetDecl(): Stmt(NK::SubsetDecl) {}
 };
 

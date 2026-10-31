@@ -8635,6 +8635,13 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
     }
     if (!m.empty() && m[0] == '^') {
         std::string mm = m.substr(1);
+        // what a SUBSET refines and how: Red's sub-models read both
+        // (`model.^refinee.^all(|c).grep: model.^refinement`)
+        if ((mm == "refinee" || mm == "refinement") && inv.t == VT::Type &&
+            !classes_.count(inv.s) && (subsets_.count(inv.s) || inv.s == "UInt")) {
+            if (inv.s == "UInt" && !subsets_.count(inv.s)) return Value::typeObj(mm == "refinee" ? "Int" : "Mu");
+            return subsetRefinee(inv.s, mm == "refinement");
+        }
         // A COERCION type object (`Foo(Str)`) carries both halves in its name,
         // which is the only place they fit — a type object IS a name here.
         // Getopt::Long picks an option's conversion through exactly this
@@ -9105,6 +9112,8 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
             if (!how) {
                 auto hit = classes_.find(tobj.s);
                 if (hit != classes_.end() && hit->second) how = &hit->second->howObj;
+                // (a subset's metaobject, its role's methods: Red's `Admin.^all`)
+                else if (auto sit = subsets_.find(tobj.s); sit != subsets_.end()) how = &sit->second.howObj;
             }
             if (how && how->t == VT::Object && how->obj() && how->obj()->cls &&
                 how->obj()->cls->findMethod(mm)) {

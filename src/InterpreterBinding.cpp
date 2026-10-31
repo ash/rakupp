@@ -1165,7 +1165,7 @@ bool Interpreter::subsetMatches(const std::string& name, const Value& v, int dep
         if (!cacheKey.empty()) typeSubsetCache[cacheKey] = false;
         return false;
     }
-    if (si.where) {
+    if (si.where || std::atomic_load(&si.whereBlock)) {   // (a runtime subset has only the block)
         auto env = makeSlabShared<Env>(); env->parent = si.declEnv ? si.declEnv : tctx().cur;
         env->define("$_", sv);
         // `where /…/` sets the `$/` of the scope the subset was declared in, as
@@ -1224,6 +1224,95 @@ bool Interpreter::subsetMatches(const std::string& name, const Value& v, int dep
     }
     if (!cacheKey.empty()) typeSubsetCache[cacheKey] = true;
     return true;
+}
+
+// Metamodel::SubsetHOW itself, a metaclass made from it (`Metamodel::SubsetHOW but
+// R`, a class or role that `is Metamodel::SubsetHOW`), or a subset's metaobject.
+bool Interpreter::isSubsetHow(const Value& v) {
+    const ClassInfo* c = nullptr;
+    if (v.t == VT::Type) {
+        if (v.s == "Metamodel::SubsetHOW") return true;
+        auto it = classes_.find(v.s);
+        if (it != classes_.end()) c = it->second.get();
+    }
+    else if (v.t == VT::Object && v.obj()) c = v.obj()->cls.get();
+    for (; c; c = c->parent.get()) {
+        if (c->name == "Metamodel::SubsetHOW" || c->nativeParent == "Metamodel::SubsetHOW") return true;
+        for (auto& p : c->extraParents) if (p && isSubsetHow(Value::typeObj(p->name))) return true;
+    }
+    return false;
+}
+
+// `Metamodel::SubsetHOW.new_type(:name, :refinee, :refinement)` — a subset made
+// at RUNTIME. Red's sub-models ask it of a SubsetHOW mixed with their own role
+// (`(Metamodel::SubsetHOW but SubModelHOW).new_type(…)`); a fresh one of that
+// metaclass is the subset's .HOW, so `.^all` reaches the role.
+Value Interpreter::subsetNewType(const Value& inv, const ValueList& args) {
+    std::string name = "<anon>";
+    SubsetInfo si;
+    si.base = "Any";
+    for (auto& a : args) {
+        if (a.t != VT::Pair || !a.pairVal()) continue;
+        const Value& pv = *a.pairVal();
+        if (a.s == "name") name = pv.toStr();
+        else if (a.s == "refinee") si.base = pv.t == VT::Type ? std::string(pv.s) : pv.typeName();
+        else if (a.s == "refinement") si.whereBlock = std::make_shared<Value>(pv);
+    }
+    // a name already taken keeps its type (a sub-model is named after its model)
+    std::string key = name;
+    for (int n = 1; classes_.count(key) || subsets_.count(key); n++) key = name + "+" + std::to_string(n);
+    si.langRev = langRev_;
+    if (!(inv.t == VT::Type && inv.s == "Metamodel::SubsetHOW")) {
+        try { si.howObj = methodCall(inv.t == VT::Object ? Value::typeObj(inv.obj()->cls->name) : inv, "new", ValueList{}); }
+        catch (RakuError&) { si.howObj = Value::any(); }
+        if (si.howObj.t == VT::Object && si.howObj.obj()) si.howObj.obj()->attrs["__type"] = Value::typeObj(key);
+        else si.howObj = Value::any();
+    }
+    subsets_[key] = std::move(si);
+    noteSymbolMutation("runtime SubsetHOW.new_type");
+    return Value::typeObj(key);
+}
+
+// A subset's .HOW: one metaobject per subset, as a class has, so Red's
+// `is sub-model` trait can mix `$subset.HOW does MetamodelX::Red::SubModelHOW`
+// into it and have it stick (UInt, which is no `subset` here, keeps the type).
+Value Interpreter::subsetsHow(const std::string& name) {
+    auto sit = subsets_.find(name);
+    if (sit == subsets_.end()) return Value::typeObj("Metamodel::SubsetHOW");
+    if (sit->second.howObj.t != VT::Object) {
+        if (!howSubsetClsInfo_) {
+            howSubsetClsInfo_ = std::make_shared<ClassInfo>();
+            howSubsetClsInfo_->name = "Metamodel::SubsetHOW";
+        }
+        Value h; h.t = VT::Object; h.setObj(makePayload<ObjectData>());
+        h.obj()->cls = howSubsetClsInfo_;
+        h.obj()->attrs["__type"] = Value::typeObj(name);
+        sit->second.howObj = std::move(h);
+    }
+    return sit->second.howObj;
+}
+
+// `S.^refinee` is the type S narrows, `S.^refinement` what narrows it: the
+// `where` block or WhateverCode itself, Mu for none, and for any other `where
+// EXPR` — which is a thunk smartmatching against EXPR — a block asking S.
+Value Interpreter::subsetRefinee(const std::string& name, bool refinement) {
+    auto it = subsets_.find(name);
+    if (it == subsets_.end()) return Value::typeObj("Mu");
+    const SubsetInfo& si = it->second;
+    if (!refinement) return Value::typeObj(si.base.empty() ? "Any" : resolveClassAlias(si.base));
+    if (auto wb = std::atomic_load(&si.whereBlock)) return *wb;
+    if (!si.where) return Value::typeObj("Mu");
+    if (si.where->kind == NK::BlockExpr || exprHasWhateverLit(si.where)) {
+        auto env = makeSlabShared<Env>(); env->parent = si.declEnv ? si.declEnv : tctx().cur;
+        auto saved = tctx().cur; tctx().cur = env;
+        Value cv;
+        try { cv = eval(const_cast<Expr*>(si.where)); } catch (...) { tctx().cur = saved; throw; }
+        tctx().cur = saved;
+        if (cv.t == VT::Code) return cv;
+    }
+    return Value::closure([this, name](ValueList& a) -> Value {
+        return Value::boolean(!a.empty() && subsetMatches(name, a[0], 0));
+    });
 }
 
 // A parameter typed by a COERCION SUBSET (`subset CC of Str() where …`) binds

@@ -3268,7 +3268,8 @@ public:
                         std::shared_ptr<Env> declEnv;      // the where-clause CLOSES over its declaration scope
                         // a literal `where { … }` block, evaluated ONCE: one closure,
                         // so a `state` inside it persists across checks, as in Rakudo
-                        std::shared_ptr<Value> whereBlock; };
+                        std::shared_ptr<Value> whereBlock;
+                        Value howObj; };                   // its own .HOW, made on first ask (or by new_type)
     std::unordered_map<std::string, SubsetInfo> subsets_;
     // per-site `ff`/`fff` flip-flop latch + how many elements since it fired
     // (the result while on is that count, not a Bool)
@@ -3812,6 +3813,7 @@ public:
     // package's qualified globals in, so `our`-scoped symbols show up too.
     std::map<std::string, PRef<ValueMap>> pkgStashes_;
     std::shared_ptr<ClassInfo> howClsInfo_; // shared class of persistent .HOW metaobjects (see m == "HOW")
+    std::shared_ptr<ClassInfo> howSubsetClsInfo_; // …and of a subset's (Metamodel::SubsetHOW)
     std::shared_ptr<ClassInfo> howGrammarClsInfo_;   // …a grammar's: Metamodel::GrammarHOW, a ClassHOW
     std::unordered_map<std::string, std::string> classAliases_;
     // …the ones the PROGRAM's own declarations made (not a module's): those
@@ -5112,6 +5114,10 @@ public:
     // …and the value it probes a built-in TYPE object on (`Set.^find_method`):
     // an empty instance of the type, or the type object itself when none is safe.
     Value probeSentinel(const std::string& type);
+    bool isSubsetHow(const Value& v);   // Metamodel::SubsetHOW, a metaclass made from it, or a subset's .HOW
+    Value subsetRefinee(const std::string& subset, bool refinement);   // `.^refinee` / `.^refinement`
+    Value subsetNewType(const Value& how, const ValueList& args);      // `Metamodel::SubsetHOW.new_type`
+    Value subsetsHow(const std::string& subset);                       // a subset's own .HOW
     // A bare regex literal as a value, through RegexLit::closedPat (skips the
     // splice copy, the $/@ scans and the obsolete-check memo probe once the
     // node has published its closed pattern).

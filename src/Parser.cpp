@@ -14007,13 +14007,15 @@ StmtPtr Parser::parseSubset() {
             advance();
             const bool exp = isIdent("export");
             if (exp) sd->isExport = true;
-            if (isKind(Tok::Ident)) advance();
+            SubTraitSpec st;   // any other trait is a user trait_mod:<is>'s (Red's `is sub-model`)
+            if (isKind(Tok::Ident)) st.name = advance().text;
             if (exp) sd->exportTags = readExportTags();
             else if (isKind(Tok::LParen) && !cur().spaceBefore) {
-                int d = 0;
-                do { if (isKind(Tok::LParen)) d++; else if (isKind(Tok::RParen)) d--; advance(); }
-                while (d > 0 && !isKind(Tok::End));
+                advance();
+                if (!isKind(Tok::RParen)) st.arg = parseExpression();
+                expectKind(Tok::RParen, ")");
             }
+            if (!exp && !st.name.empty()) sd->traits.push_back(std::move(st));
             continue;
         }
         break;
