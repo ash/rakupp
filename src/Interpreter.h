@@ -2705,6 +2705,7 @@ public:
     // no handler, or it finished without resuming (default behaviour stands).
     bool runControlWarn(const std::string& msg);
     bool runControlException(const Value& ex);
+    Value nqpThrow(const Value& bootException);   // `nqp::throw` (BuiltinsNqp.cpp)
     bool pairAccepts(const Value& topic, const Value& pair); // Pair.ACCEPTS (sheet HM-20)
     // The one-liner behind every "Use of uninitialized value …" that is raised
     // outside strOf: run the CONTROL handler, else print, unless `quietly`.

@@ -766,6 +766,10 @@ enum class NqpOpc : uint16_t {
     // appended: the rest of the Unicode property family, on MoarVM's numbers
     // (unipropcode answers an Int since 2026-10-10 — String::Utils' `my int`)
     UniPvalCode, MatchUniProp, HasUniProp,
+    // appended: a BOOTException and its accessors, the op that throws one, and
+    // an object's identity as an Int — Red raises its resumable warning
+    // through the first, and compares shared ASTs through `where`
+    NewException, SetMessage, SetExType, SetPayload, GetMessage, GetExType, GetPayload, ThrowOp, Where,
 };
 struct NqpOp : Expr {
     NqpOpc op;

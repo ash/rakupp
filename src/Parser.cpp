@@ -18133,6 +18133,11 @@ bool Parser::nqpConstValue(const std::string& name, long long& out) {
         {"STAT_PLATFORM_MODE", -3}, {"STAT_PLATFORM_NLINKS", -4},
         {"STAT_PLATFORM_DEVTYPE", -5}, {"STAT_PLATFORM_BLOCKSIZE", -6},
         {"STAT_PLATFORM_BLOCKS", -7},
+        // an exception's category (nqp::setextype), as MoarVM numbers them
+        {"CONTROL_ANY", 2}, {"CONTROL_NEXT", 4}, {"CONTROL_REDO", 8}, {"CONTROL_LAST", 16},
+        {"CONTROL_RETURN", 32}, {"CONTROL_TAKE", 128}, {"CONTROL_WARN", 256},
+        {"CONTROL_SUCCEED", 512}, {"CONTROL_PROCEED", 1024}, {"CONTROL_EMIT", 16384},
+        {"CONTROL_DONE", 32768},
     };
     auto it = k.find(name);
     if (it == k.end()) return false;
@@ -18212,6 +18217,11 @@ ExprPtr Parser::makeNqpOp(const std::string& op, std::vector<ExprPtr>& args) {
         {"unipropcode", NqpOpc::UniPropCode}, {"getuniprop_str", NqpOpc::GetUniPropStr},
         {"getuniprop_bool", NqpOpc::GetUniPropBool}, {"getuniprop_int", NqpOpc::GetUniPropInt},
         {"unipvalcode", NqpOpc::UniPvalCode}, {"matchuniprop", NqpOpc::MatchUniProp},
+        // Red's resumable warning: build a BOOTException, mark it CONTROL_WARN, throw
+        {"newexception", NqpOpc::NewException}, {"setmessage", NqpOpc::SetMessage},
+        {"setextype", NqpOpc::SetExType}, {"setpayload", NqpOpc::SetPayload},
+        {"getmessage", NqpOpc::GetMessage}, {"getextype", NqpOpc::GetExType},
+        {"getpayload", NqpOpc::GetPayload}, {"throw", NqpOpc::ThrowOp}, {"where", NqpOpc::Where},
         {"hasuniprop", NqpOpc::HasUniProp},
         // the AttrX::Mooish surface
         {"hllize", NqpOpc::Decont}, {"box_s", NqpOpc::P6BoxS},
