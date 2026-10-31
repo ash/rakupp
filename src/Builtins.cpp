@@ -4869,6 +4869,13 @@ Value makeSignature(const Callable* c) {
         (*pv.hash())["rw"] = Value::boolean(false);
         (*pv.hash())["suffix"] = Value::str("?");
         (*pv.hash())["multi-invocant"] = Value::boolean(false);
+        // …and what every other Parameter answers: Red reads `.named_names` of a
+        // transaction callback's parameters, and `{ … }`'s died NotFound
+        Value nn = Value::array(); nn.isList = true;
+        (*pv.hash())["named_names"] = std::move(nn);
+        for (const char* k : {"copy", "capture", "invocant"}) (*pv.hash())[k] = Value::boolean(false);
+        for (const char* k : {"prefix", "modifier"}) (*pv.hash())[k] = Value::str("");
+        (*pv.hash())["sub_signature"] = Value::typeObj("Signature");
         params.arr()->push_back(std::move(pv));
         (*s.hash())["params"] = std::move(params);
         return s;
