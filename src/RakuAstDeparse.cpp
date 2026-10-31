@@ -323,17 +323,26 @@ struct Deparser {
         if (c == "Term::Name" || c == "Term::Enum") return opt(attr(node, "name"), indent);
         if (c == "Term::Self")     return "self";
         if (c == "Term::Whatever") return "*";
-        if (c == "Type::Enum") {
-            return "enum " + opt(attr(node, "name"), indent) + " " +
-                   opt(attr(node, "term"), indent) + "\n";
-        }
-        if (c == "Type::Subset") {
-            std::string out = "subset " + opt(attr(node, "name"), indent);
+        // `enum` and `subset` are EXPRESSIONS upstream, not block statements:
+        // no trailing newline, so the statement list puts the `;` after them.
+        // Ending them in "\n" made the list take them for an `if`, and
+        // `subset P of Int\n5` is two terms in a row — `.AST.EVAL` of any
+        // program with a statement after one failed to parse what it rendered.
+        // The scope is written only when it is not the default `our`, as with
+        // a package.
+        if (c == "Type::Enum" || c == "Type::Subset") {
+            std::string out;
+            if (const Value* s = attr(node, "scope"))
+                if (s->toStr() == "my") out = "my ";
+            if (c == "Type::Enum")
+                return out + "enum " + opt(attr(node, "name"), indent) + " " +
+                       opt(attr(node, "term"), indent);
+            out += "subset " + opt(attr(node, "name"), indent);
             if (const Value* b = attr(node, "base-type"))
                 if (isNode(*b)) out += " of " + render(*b, indent);
             if (const Value* w = attr(node, "where"))
                 if (isNode(*w)) out += " where " + render(*w, indent);
-            return out + "\n";
+            return out;
         }
         if (c == "QuotedString") {
             // A `words` processor means the angle form: `<a b c>`, not a string.

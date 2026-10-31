@@ -863,6 +863,12 @@ struct Builder {
                         {{"segments",   list({node("StrLiteral", {{"value", Value::str(words)}})})},
                          {"processors", list(procs)}});
                 }
+                else if (d->values && d->values->kind == NK::ListExpr &&
+                         static_cast<ListExpr*>(d->values.get())->parenned) {
+                    // `enum C (a => 1, b => 2)`: the list brings its own
+                    // parentheses, and wrapping it again rendered `((…))`.
+                    term = buildExpr(d->values.get());
+                }
                 else if (d->values) {
                     term = node("Circumfix::Parentheses",
                                 {{"semilist", semiList({buildExpr(d->values.get())})}});
@@ -870,14 +876,14 @@ struct Builder {
                 else unmapped("an enum with no values");
                 return node("Statement::Expression", {{"expression",
                     node("Type::Enum", {{"name",  name(d->name)},
-                                        {"scope", Value::str("our")},
+                                        {"scope", Value::str(d->isMy ? "my" : "our")},
                                         {"term",  term}})}});
             }
             case NK::SubsetDecl: {
                 auto* d = static_cast<SubsetDecl*>(s);
                 if (d->name.empty()) unmapped("an anonymous subset");
                 Value n = node("Type::Subset", {{"name",  name(d->name)},
-                                                {"scope", Value::str("our")}});
+                                                {"scope", Value::str(d->isMy ? "my" : "our")}});
                 if (!d->baseType.empty())
                     n.obj()->attrs["base-type"] = node("Type::Simple", {{"name", name(d->baseType)}});
                 if (d->where) n.obj()->attrs["where"] = buildExpr(d->where.get());
