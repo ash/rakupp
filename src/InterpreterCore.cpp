@@ -7305,14 +7305,13 @@ int Interpreter::scoreCandidate(const Value& cand, const ValueList& args,
             // Associative constraint the positional arm applies to a bare `@a`.
             // Without it `k => 2` bound `:offset(:@k)!` (as a one-element list),
             // so Math::NumberTheory's next-prime($x, k => 2) reached the
-            // list-of-offsets candidate and recursed into itself forever.
-            if ((p.sigil == '@' || p.sigil == '%') && isDefined(sval) &&
+            // list-of-offsets candidate and recursed into itself forever. A TYPE
+            // OBJECT, Nil and Any are checked too: `:to(Array)` binds, `:to(Str)`
+            // and `values => Nil` pass over it (Red's `inflate(Str, :@to!)`, and
+            // Math::SparseMatrix::Native's targets falling through to Mu.new)
+            if ((p.sigil == '@' || p.sigil == '%') &&
                 !(p.sigil == '@' ? (typeMatchesArg(sval, "Positional") || sval.t == VT::Range)
                                  : typeMatchesArg(sval, "Associative"))) return -1;
-            // Nil and Any are no Positional either: `new(values => Nil, …)`
-            // must pass over a `:@values!` candidate (Rakudo falls through to
-            // Mu.new — Math::SparseMatrix::Native builds its targets that way)
-            if (p.sigil == '@' && (sval.t == VT::Nil || sval.t == VT::Any)) return -1;
             if (p.defConstraint == 1 && !isDefinite(sval)) return -1;
             if (p.defConstraint == 2 && isDefinite(sval)) return -1;
             // A named with a SUB-SIGNATURE (`:$referencing! (&code, Str
