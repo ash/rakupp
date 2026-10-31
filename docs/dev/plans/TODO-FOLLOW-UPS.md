@@ -187,43 +187,50 @@ moves to [TODO.md](TODO.md).
   `-> \s, |q { $cap = q; callsame };` read as a quote to the `;` before
   `|q` counted as one. Done when a declared term wins over the quote however
   it was declared, and these three then follow Rakudo.
-- [ ] **`.AST.DEPARSE` drops what a declaration says beyond its name**, and
-  each rendering is valid Raku meaning a different program, so `.AST.EVAL`
-  runs it without a word (found 2026-10-31 comparing localized `.DEPARSE`
-  against Rakudo, 3431c375; on 23e143f2 too):
+- [ ] **`.AST` still drops `is export`, the attribute traits it has no flag
+  for, and a `use`'s import list** (found 2026-10-31 making the view keep the
+  rest, acf27e4b; on 23e143f2 too). Each renders valid Raku that means
+  something else, so `.AST.EVAL` runs it silently:
 
   ```raku
-  print Q[class P { has $.x is rw }].AST.DEPARSE;           # has $.x
-  print Q[sub f($a is rw) { }].AST.DEPARSE;                 # sub f($a) { }
-  print Q[class C is Int does Positional { }].AST.DEPARSE;  # class C { }
-  print Q[module M { our sub f { 1 } }].AST.DEPARSE;        # sub f { 1 }
-  print Q[my $x; if $x -> $y { say $y }].AST.DEPARSE;       # if $x { say $y }
-  print Q[no strict; 1].AST.DEPARSE;                        # use strict;
-  print Q[use lib "x"; 1].AST.DEPARSE;                      # use lib;
-  print Q[my $x; $x.=abs].AST.DEPARSE;                      # $x.abs
+  print Q[class G is export { has $.a }].AST.DEPARSE;     # class G {
+  print Q[sub f is export { 1 }].AST.DEPARSE;             # sub f {
+  print Q[class H { has $.x is default(3) }].AST.DEPARSE; # has $.x
+  print Q[class K { has @.l handles <elems> }].AST.DEPARSE; # has @.l
+  print Q[use Test <foo>; 1].AST.DEPARSE;                 # use Test;
+  print Q[use Test :DEFAULT; 1].AST.DEPARSE;              # use Test;
   ```
 
-  Rakudo 2026.09 renders each as written. The renderer is not the cause:
-  the view (src/RakuAstView.cpp) builds the node without the trait, the
-  scope, the `if` binder, `no`, the `use` argument or the `.=`, and
-  src/RakuAstDeparse.cpp renders what it is given; it has arms for
-  Trait::Is, Trait::Does and a package scope already. Done when each line
-  matches Rakudo 2026.09, with a localized rendering then following by
-  itself (tools/rakuast-deparse-l10n-spec.raku leaves these shapes out
-  today).
-- [ ] **`.DEPARSE` drops the parentheses around a non-associative chain**
-  (found 2026-10-31 running tools/rakuast-roundtrip.raku beside 21cd03cd; on
-  23e143f2 too):
+  Rakudo 2026.09 writes each as given. `is export` is a flag plus tags on
+  every declaration kind (ClassDecl, SubDecl, EnumDecl, SubsetDecl), and
+  the view has a Trait::Is builder now (`traitIs` in src/RakuAstView.cpp);
+  `is default`, `handles`, `is DEPRECATED` and user traits sit on AttrDecl
+  and ClassDecl in their own fields. The import list cannot be rendered from
+  what the parse keeps: `<foo>` and `:foo` both land in
+  `UseStmt::importArgs` as the word `foo`, and `:!foo` and `:foo<v>` not at
+  all, so it needs the spelling recorded (an Ast.h field and a
+  kAstSerialVersion bump). Done when each line matches Rakudo 2026.09, and
+  t/regression/rakuast-view-declarations.raku carries them.
+- [ ] **`.AST` drops the parentheses a program writes, so `.AST.EVAL` of
+  `(1 + 2) * 3` is 7** (found 2026-10-31 running tools/rakuast-roundtrip.raku
+  beside 21cd03cd, and its reach while checking acf27e4b; on 23e143f2 too):
 
   ```raku
-  print Q[my $x = (0 max 5) min 3].AST.DEPARSE;   # my $x = 0 max 5 min 3
+  say Q[(1 + 2) * 3].AST.EVAL;                     # 7, Rakudo 9
+  print Q[(1 + 2) * 3].AST.DEPARSE;                # 1 + 2 * 3
+  print Q[my $b = 1; say 1 ~ ($b ~~ Int)].AST.DEPARSE; # say 1 ~ $b ~~ Int
+  print Q[my $x = (0 max 5) min 3].AST.DEPARSE;    # 0 max 5 min 3, which does not parse
   ```
 
-  which does not parse ("Operators 'max' and 'min' are non-associative and
-  require parentheses"). Rakudo 2026.08 keeps them, as `(0max 5)min 3`.
-  showcase/eclipse and showcase/fourier both have the shape, and are the
-  round-trip harness's two `reparse` failures, the outcome it is meant to
-  hold at zero. Done when the harness reports `reparse 0`.
+  The silent wrong answer is the first line; the last is merely the one the
+  round-trip harness can see, as its two `reparse` failures (showcase/eclipse
+  and showcase/fourier), the outcome it is meant to hold at zero. Rakudo
+  keeps a written `( … )` as a Circumfix::Parentheses node, and so can the
+  view: the parse marks a parenthesized Binary (`Binary::parenned`,
+  src/Parser.cpp's primary-expression arm, and serialized), but the view's
+  NK::Binary case in src/RakuAstView.cpp never reads it, where its
+  NK::ListExpr case reads the list's. Done when all four lines match Rakudo
+  2026.09 and the harness reports `reparse 0`.
 
 ## Operators and types
 

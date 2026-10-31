@@ -36,7 +36,8 @@ bd8936e7; 0938078e; 858a037e; 21c37405; 0b29ef00; 9b3fbb8a; de0d04e5;
 3e15da85; 2df02ed1; 2adfaa34; c91a94fb; 1676fc8a; 5b70d2e1; d54cc3ba;
 d4ed6cac (issue #60); 480f6850; a92d9cfd; 0d089427; 9cac10e4; f3ffb5c3;
 c067446c; a11aa7ab; 594d4aac (Template::Mustache); 5d4de331 (Pod::Load);
-21cd03cd (L10N::BG and L10N::RU); 3431c375 (localized DEPARSE).*
+21cd03cd (L10N::BG and L10N::RU); 3431c375 (localized DEPARSE);
+acf27e4b (the view keeps declaration details).*
 
 ---
 
@@ -732,6 +733,25 @@ plain before 500c29e2 and native from it, unless they say otherwise.
   way. Template::Mustache's spec runner planned 3 tests for each file of 11.
   t/regression/bound-element-reads-through-proxy.raku agrees with Rakudo
   2026.09.
+- **`.AST.EVAL` runs the declarations a program wrote** (acf27e4b): the view
+  built them without what they say beyond their name, and rendered valid
+  Raku meaning something else. `has $.x is rw` came back as `has $.x`, whose
+  accessor does not assign; `sub f($a is rw)` as `sub f($a)`; `class C is Int
+  does R` as `class C`; `our sub f` as `sub f`, unreachable from its package;
+  `if $x -> $y { … }` (and `elsif`, `else`, `with`, `given`) with no binder;
+  `for @a -> Int $i` and `for @a -> ($p, $q)` with no signature at all; `no
+  strict` as `use strict`; `use lib "x"` with no path; `$x.=abs` as `$x.abs`,
+  which leaves `$x` alone. Each now renders as Rakudo 2026.09 writes it, and
+  in a localization too. A `<->` block renders `-> $x is rw`, the same block,
+  as the parse records no more than that. `sub f(Int)` no longer renders
+  `sub f(Int )`. `no` with a module, a `.=` through `>>.`, `.?`, `!` or `.^`,
+  and a sub-signature with `-->` are refused by name, as before for anything
+  without a view. t/regression/rakuast-view-declarations.raku runs each shape
+  both as `EVAL $src` and as `$src.AST.EVAL` and agrees with Rakudo 2026.09's
+  rendering of each. The round-trip harness, which asks only that the text
+  parse again, had passed all of them, and counted examples/dirstat/dirstat.raku and
+  examples/factorize.raku as round-tripping while a pointy block in each lost
+  its destructuring binder.
 
 ### Fixed: crashes
 
@@ -1457,14 +1477,13 @@ does not.
   class with an address (`Pod::Heading<…>`) and a `.new(…)` (5d4de331). TODO-FOLLOW-UPS.md has
   both.
 
-- `.DEPARSE` drops the parentheses in `(0 max 5) min 3`, which then does not
-  parse, as in showcase/eclipse and showcase/fourier (21cd03cd, and on
-  23e143f2 too). It also drops what a declaration says beyond its name — an
-  `is rw`, a class's `is`/`does`, `our` on a sub, an `if`'s `-> $y`, `no`,
-  `use lib`'s path, the `=` of `.=` — so `.AST.EVAL` runs a different
-  program; and `1 or 0 xor 1` runs, where Rakudo refuses it as
-  non-associative (3431c375, all three on 23e143f2 too). TODO-FOLLOW-UPS.md has
-  each.
+- `.AST` drops the parentheses a program writes, so `Q[(1 + 2) * 3].AST.EVAL`
+  is 7 where Rakudo answers 9, and `(0 max 5) min 3` renders text that does
+  not parse, as in showcase/eclipse and showcase/fourier (21cd03cd, acf27e4b;
+  on 23e143f2 too). It still drops `is export`, `is default`, `handles` and a
+  `use`'s import list (`<foo>`, `:tag`), each into valid Raku meaning
+  something else (acf27e4b). `1 or 0 xor 1` runs, where Rakudo refuses it as
+  non-associative (3431c375; on 23e143f2 too). TODO-FOLLOW-UPS.md has each.
 
 - A `token` the packrat memo answers fires its action once, where Rakudo,
   which has no memo, fires it on every call: `<a> 'x' || <a> 'y'` on "12y"
