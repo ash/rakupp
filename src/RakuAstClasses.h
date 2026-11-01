@@ -55,6 +55,20 @@ inline bool isRakuAstNode(const Value& v) {
     return v.t == VT::Object && v.obj() && v.obj()->cls && isRakuAstName(v.obj()->cls->name);
 }
 
+// The `use` targets that are a RakuAST::Pragma upstream rather than a
+// Statement::Use: Rakudo's KNOWN-PRAGMAS, src/Raku/ast/pragma.rakumod. The view
+// builds the one and the renderer writes its name as a `pragma` keyword, so
+// both read this one list.
+inline bool isRakuAstPragmaName(const std::string& w) {
+    static const char* const t[] = {
+        "attributes", "dynamic-scope", "fatal", "internals", "invocant", "isms",
+        "lib", "MONKEY", "MONKEY-GUTS", "MONKEY-SEE-NO-EVAL", "MONKEY-TYPING",
+        "nqp", "parameters", "precompilation", "soft", "strict", "trace",
+        "variables", "worries"};
+    for (const char* p : t) if (w == p) return true;
+    return false;
+}
+
 // The classes whose positionals are a LIST — every positional goes into one
 // array slot (`RakuAST::ArgList.new($a, $b)`). Header-inline because both the
 // deparser and the node methods need it and either TU can be cut from a
@@ -93,8 +107,11 @@ Value rakuAstNew(Interpreter& I, const std::string& qualifiedName, ValueList& ar
 // so its contract is correct Raku first and Rakudo's exact spelling second; the
 // measured spellings are in docs/dev/findings/rakuast/deparse-2026.08.tsv.
 // Throws X::NYI, naming the class, for anything not covered — never a wrong
-// rendering.
-std::string rakuAstDeparse(Interpreter& I, const Value& node);
+// rendering. `xsyn` is the localization `.DEPARSE("DE")` asks for: null for
+// English, and the role's `xsyn` asked at every keyword otherwise
+// (Interpreter::l10nDeparseXsyn).
+std::string rakuAstDeparse(Interpreter& I, const Value& node,
+                           const DeparseXsyn* xsyn = nullptr);
 
 // `'source'.AST` — build the VIEW over our own parse of `source`. With
 // `compUnit` it is wrapped in a `RakuAST::CompUnit`, which is what

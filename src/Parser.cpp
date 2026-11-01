@@ -8323,7 +8323,7 @@ ExprPtr Parser::parsePrimary() {
                 else if (e->kind == NK::MethodCall) static_cast<MethodCall*>(e.get())->curryClosed = true;
                 else if (e->kind == NK::Whatever) static_cast<WhateverExpr*>(e.get())->curryClosed = true;
             }
-            if (e) parenned_.insert(e.get());
+            if (e) { parenned_.insert(e.get()); e->inParens = true; }
             if (e && e->kind == NK::Binary) static_cast<Binary*>(e.get())->parenned = true;
             if (e && e->kind == NK::ListExpr) static_cast<ListExpr*>(e.get())->parenned = true;
             // A pair in parens is a positional Pair VALUE, not a named argument:

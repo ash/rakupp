@@ -66,7 +66,7 @@ Value rakuAstEval(Interpreter&, const Value&) {
 Value rakuAstNew(Interpreter&, const std::string&, ValueList&) {
     featureMissing("eval", "constructing a RakuAST:: node");
 }
-std::string rakuAstDeparse(Interpreter&, const Value&) {
+std::string rakuAstDeparse(Interpreter&, const Value&, const DeparseXsyn*) {
     featureMissing("eval", "RakuAST .DEPARSE");
 }
 Value rakuAstNameFrom(Interpreter&, const ValueList&) {

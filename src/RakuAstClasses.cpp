@@ -117,8 +117,12 @@ const Registry* build() {
     for (auto& kv : reg->byName) kv.second->methods["new"] = newMethod;
 
     ClassInfo* node = reg->byName["RakuAST::Node"].get();
-    node->methods["DEPARSE"] = method([](Interpreter& I, ValueList& a) -> Value {
-        return Value::str(a.empty() ? std::string() : rakuAstDeparse(I, a[0]));
+    // `.DEPARSE("DE")`, `.DEPARSE(SomeRole)`: the arguments choose the
+    // language. They were ignored, so every language came back as English.
+    node->methods["DEPARSE"] = method([rest](Interpreter& I, ValueList& a) -> Value {
+        if (a.empty()) return Value::str(std::string());
+        DeparseXsyn xs = I.l10nDeparseXsyn(rest(a));
+        return Value::str(rakuAstDeparse(I, a[0], xs ? &xs : nullptr));
     });
     node->methods["EVAL"] = method([](Interpreter& I, ValueList& a) -> Value {
         return a.empty() ? Value::any() : rakuAstEval(I, a[0]);
