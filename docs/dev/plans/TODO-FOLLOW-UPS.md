@@ -1,6 +1,6 @@
 # Follow-ups
 
-*Collected 2026-10-20; added to 2026-10-31.*
+*Collected 2026-10-20; added to 2026-11-01.*
 
 Findings that sessions on 2026-10-19 and 2026-10-20 proposed as follow-up
 work and nobody started: gaps found in passing while doing something else.
@@ -267,6 +267,33 @@ moves to [TODO.md](TODO.md).
   the two the parse put there and both lines render as Rakudo's.
 
 ## Operators and types
+
+- [ ] **`* ~~ T` does not curry when T is a user class with an ACCEPTS**
+  (found 2026-11-01 writing t/regression/core-type-shortcuts.raku for #217;
+  dcdf14ba too):
+
+  ```raku
+  class D { method ACCEPTS($x) { $x eq 'long' } }
+  my &m = * ~~ D; say &m.^name;      # Bool, Rakudo WhateverCode
+  say <long short>.map(* ~~ D);      # dies "Cannot map a List using 'Bool::False'"
+  ```
+
+  applyArithGeneral asks typeObjectUserAccepts (the `C's ACCEPTS` arm)
+  ahead of its Whatever curry, so D.ACCEPTS gets the `*` and answers. A
+  core type (`* ~~ Int`) curries. Done when the user class curries too and
+  `$w ~~ D` with a Whatever VALUE still asks ACCEPTS.
+- [ ] **`--> Buf` accepts a Blob, `--> Hash` a Map and `--> Rat` a FatRat**
+  (found 2026-11-01 checking 608774f1's return shortcut, which accepts none
+  of them itself; dcdf14ba too):
+
+  ```raku
+  sub a(--> Buf) { Blob.new(1) }; sub b(--> Hash) { Map.new }; sub c(--> Rat) { FatRat.new(1, 2) }
+  .say for (&a, &b, &c).map({ (try .()) // $!.^name });   # Blob:0x<01>, Map.new(()), 0.5
+                                                          # Rakudo: X::TypeCheck::Return ×3
+  ```
+
+  checkRetType's full check (typeOrSubsetMatches for Buf and Hash,
+  rtTypeMatch's VT::Rat case for Rat) is wider than the nominal check.
 
 - [ ] **`or` and `xor` chain, where Rakudo refuses them** (found 2026-10-31
   writing tools/rakuast-deparse-l10n-spec.raku, 3431c375):
@@ -1400,6 +1427,30 @@ moves to [TODO.md](TODO.md).
   when it is under its 34d064ca ceiling again.
 
 ## Performance
+
+- [ ] **A method-heavy encoder is still 1.3 times Rakudo** (found 2026-11-01
+  fixing issue #217, 608774f1, which took it from 1.9): Mathematica::
+  Serializer's two encoders over the R datasets' metadata (1,745 hashes of
+  twelve fields), interpreted, WL 0.114 s against Rakudo's 0.087 and WXF
+  0.294 against 0.228. What `sample` puts on top now, none of it one line:
+
+  ```raku
+  class C { method !p(Str:D $s --> Str) { $s }; method m(Str $x --> Str) { self!p($x) } }
+  my $c = C.new; my $t = now; $c.m('x') for ^1_000_000; say now - $t;   # 0.55 s, Rakudo 0.08
+  ```
+
+  - a user method call is ~270 ns against Rakudo's ~40: invokeMethod,
+    bindParams, setupRwLinks and typeCheckBind, spread thin;
+  - evalMethodCallExpr's own frame is a tenth of WXF: its entry and exit
+    are a quarter of that (a large frame), and some thirty per-call arms
+    (`map`/`grep` over `.values`, `append`/`push`, `write-*`, `splice`,
+    `VAR`, `BIND-*`, `&name`) test every call's name before methodCall;
+  - a type name outside evalRareExpr's `types` list (`WhateverCode`,
+    `HyperWhatever`, `UInt`, `FatRat`, `DateTime`) walks the scope chain for
+    `n` and `&n` and makes ~15 more tests at each mention, ~100 ns;
+  - a fresh Buf costs a StrBody and two allocations for its identity
+    (`identify`: a ValueExt and a `make_shared<char>`), ~310 ns a `Buf.new`
+    against Rakudo's 56.
 
 - [ ] **A composed curry like `* cmp * == More` is about 2.2x Rakudo per
   call** (found 2026-10-20 after the Order-path work, b35718ba, which gained
