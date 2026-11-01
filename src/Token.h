@@ -75,5 +75,9 @@ struct Token {
 // and lets the parser decide, which is exactly why a whole localized language
 // is a rewrite of some token texts and nothing else.
 using TokenXform = std::function<void(std::vector<Token>&)>;
+// …and the other direction, `.DEPARSE("DE")`: the localized spelling of one
+// keyword, asked as Rakudo's deparser asks its `xsyn` method — a category
+// (`block`, `scope`, `core`, …) and the English word.
+using DeparseXsyn = std::function<std::string(const std::string& prefix, const std::string& key)>;
 
 } // namespace rakupp

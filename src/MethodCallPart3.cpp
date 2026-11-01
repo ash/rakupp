@@ -7541,6 +7541,79 @@ TokenXform Interpreter::l10nTokenXform(const std::string& lang) {
     };
 }
 
+// `.DEPARSE("DE")` — the localized RENDERING, `.AST("DE")` the other way round.
+//
+// The dist ships it as a second role, `RakuAST::Deparse::L10N::DE`: one method,
+// `xsyn($prefix, $key)`, over a generated table, answering the German spelling
+// of `$key` in the category `$prefix` (`xsyn('block', 'for')` is `für`) or
+// `$key` itself. Rakudo mixes that role into its deparser, which asks `xsyn` at
+// every keyword it writes. Ours asks the same method at the same places
+// (src/RakuAstDeparse.cpp), so the table is never read here, and a role written
+// by hand — `role { method xsyn($p, $k) { … } }` — works as the dist's does.
+//
+// The arguments are Rakudo's: a language name loads its role, a role is used as
+// it is, and the LAST one wins, as the last mixin does. What this engine cannot
+// do is an error, never English passed off as the language asked for: a role
+// that highlights (`hsyn`), and a deparser class in place of Rakudo's.
+DeparseXsyn Interpreter::l10nDeparseXsyn(const ValueList& args) {
+    Value role;
+    for (const Value& a : args) {
+        if (a.t == VT::Str) {
+            // `"DE:ver<0.0.4>"` names the same role; Rakudo cuts at the colon too
+            std::string lang = a.s.substr(0, a.s.find(':'));
+            const std::string mod = "RakuAST::Deparse::L10N::" + lang;
+            // asked BEFORE the load, for the reason l10nTokenXform gives: a
+            // failed speculative load would leave the name marked as loaded
+            if (!loadedModules_.count(mod)) {
+                std::string mpath, msrc;
+                if (!rakuppFindModuleSource(mod, libPaths_, mpath, msrc, false))
+                    throw RakuError{Value::typeObj("X::CompUnit::UnsatisfiedDependency"),
+                        "Could not find " + mod + " in the module search path "
+                        "(the L10N::" + lang + " distribution ships it)"};
+            }
+            loadModule(mod, {}, /*doImport=*/false, /*quiet=*/true);
+            auto it = classes_.find(mod);
+            if (it == classes_.end() || !it->second || !it->second->isRole)
+                throw RakuError{Value::typeObj("X::NYI"),
+                    "`.DEPARSE(\"" + lang + "\")`: " + mod + " declares no `role " + mod + "`"};
+            role = Value::typeObj(mod);
+            continue;
+        }
+        auto it = a.t == VT::Type ? classes_.find(a.s) : classes_.end();
+        ClassInfo* ci = it != classes_.end() ? it->second.get() : nullptr;
+        if (ci && ci->isRole) {
+            if (ci->methods.count("hsyn"))
+                throw RakuError{Value::typeObj("X::NYI"),
+                    "`.DEPARSE(" + a.s + ")`: a role with an `hsyn` method highlights, "
+                    "and this engine's DEPARSE does not apply highlighting yet"};
+            // a role without `xsyn` changes no keyword, upstream as here
+            if (ci->methods.count("xsyn")) role = a;
+            continue;
+        }
+        // Rakudo takes anything else as the deparser CLASS, and calls its
+        // `deparse`: one that has it is a deparser this engine cannot run,
+        // and one that does not fails as it does there
+        if (ci && ci->methods.count("deparse"))
+            throw RakuError{Value::typeObj("X::NYI"),
+                "`.DEPARSE(" + a.s + ")`: a deparser class in place of RakuAST::Deparse "
+                "is not supported by this engine yet"};
+        throw RakuError{Value::typeObj("X::Method::NotFound"),
+            "No such method 'deparse' for invocant of type '" + a.typeName() + "'"};
+    }
+    if (role.t != VT::Type) return nullptr;
+
+    // A deparse asks for `my` once per declaration; each answer is asked once.
+    auto cache = std::make_shared<std::map<std::string, std::string>>();
+    Interpreter* I = this;
+    return [role, cache, I](const std::string& prefix, const std::string& key) {
+        std::string k = prefix + '\0' + key;
+        auto c = cache->find(k);
+        if (c != cache->end()) return c->second;
+        Value r = I->methodCall(role, "xsyn", ValueList{Value::str(prefix), Value::str(key)});
+        return cache->emplace(k, r.toStr()).first->second;
+    };
+}
+
 // ---- SLANG-PLAN §A: activating a slang -----------------------------------
 // `use Slang::X` inside a unit being parsed. The parser met it, saw the module
 // registers a slang (rakuppIsSlangSource), and asks here what that registration

@@ -225,9 +225,61 @@ moves to [TODO.md](TODO.md).
   unless it shadows a built-in a module calls (`say`, `dd`). Done when the
   program's lexicals live in a scope of their own, under global_, and the
   holes go.
+- [ ] **`.AST` still drops `is export`, the attribute traits it has no flag
+  for, and a `use`'s import list** (found 2026-10-31 making the view keep the
+  rest, acf27e4b; on 23e143f2 too). Each renders valid Raku that means
+  something else, so `.AST.EVAL` runs it silently:
+
+  ```raku
+  print Q[class G is export { has $.a }].AST.DEPARSE;     # class G {
+  print Q[sub f is export { 1 }].AST.DEPARSE;             # sub f {
+  print Q[class H { has $.x is default(3) }].AST.DEPARSE; # has $.x
+  print Q[class K { has @.l handles <elems> }].AST.DEPARSE; # has @.l
+  print Q[use Test <foo>; 1].AST.DEPARSE;                 # use Test;
+  print Q[use Test :DEFAULT; 1].AST.DEPARSE;              # use Test;
+  ```
+
+  Rakudo 2026.09 writes each as given. `is export` is a flag plus tags on
+  every declaration kind (ClassDecl, SubDecl, EnumDecl, SubsetDecl), and
+  the view has a Trait::Is builder now (`traitIs` in src/RakuAstView.cpp);
+  `is default`, `handles`, `is DEPRECATED` and user traits sit on AttrDecl
+  and ClassDecl in their own fields. The import list cannot be rendered from
+  what the parse keeps: `<foo>` and `:foo` both land in
+  `UseStmt::importArgs` as the word `foo`, and `:!foo` and `:foo<v>` not at
+  all, so it needs the spelling recorded (an Ast.h field and a
+  kAstSerialVersion bump). Done when each line matches Rakudo 2026.09, and
+  t/regression/rakuast-view-declarations.raku carries them.
+- [ ] **`.AST.DEPARSE` of a `start` block writes the `$/` and `$!` the parse
+  gave it, one more pair each round** (found 2026-10-31 checking that the
+  rendering is a fixed point, 586c5160; on 23e143f2 too):
+
+  ```raku
+  print Q[my $p = start { 1 }].AST.DEPARSE;               # start { my $!; my $/; 1 }
+  print Q[my $p = start { 1 }].AST.DEPARSE.AST.DEPARSE;   # …two of each
+  ```
+
+  Rakudo 2026.09 writes `start { 1 }`. The parser inserts the two
+  declarations at the front of the body (src/Parser.cpp, the `start` arm of
+  the term parser), which is what a `start` block gets implicitly upstream,
+  and the view renders them as written statements. Same program, but the text
+  grows each round, and it is the only thing keeping five of the examples
+  from being a fixed point of `.AST.DEPARSE`. Done when the view leaves out
+  the two the parse put there and both lines render as Rakudo's.
 
 ## Operators and types
 
+- [ ] **`or` and `xor` chain, where Rakudo refuses them** (found 2026-10-31
+  writing tools/rakuast-deparse-l10n-spec.raku, 3431c375):
+
+  ```raku
+  say (1 or 0 xor 1);   # Nil, Rakudo: "Only identical operators may be list
+                        # associative; since 'or' and 'xor' differ, they are
+                        # non-associative and you need to clarify with parentheses"
+  ```
+
+  The loose-or level is list-associative upstream, so mixing two of its
+  operators is a compile error, as `max` and `min` are at theirs. Done when
+  the line is refused with Rakudo's message, and `1 or 0 or 1` still runs.
 - [ ] **Built-in prefix and postfix operators fail when called by name**
   (found 2026-10-19 while fixing undeclared operator names, 145cddbf):
 
@@ -570,6 +622,45 @@ moves to [TODO.md](TODO.md).
   evalBinary (src/InterpreterCore.cpp) curries whenever an operand IS a
   Whatever (`isWhateverish`), not only when the operand was a written `*`.
   Done when, as for methods, only a written star curries.
+- [ ] **`=for para` and `=begin para` are a Pod::Block::Para, not a
+  Pod::Block::Named** (found 2026-10-31 checking Pod gists against Rakudo,
+  5d4de331):
+
+  ```raku
+  =for para
+  y
+
+  =begin para
+  x
+  =end para
+
+  say $=pod.map(*.^name);   # (Pod::Block::Para Pod::Block::Para),
+                            # Rakudo (Pod::Block::Named Pod::Block::Named)
+  ```
+
+  Rakudo makes a Named block called "para" with the Para inside it, as
+  rakupp already does for the abbreviated `=para`; the Para inside is right
+  in both, only the outer block's class and name differ, so `.gist` shows
+  `Pod::Block::Para` where Rakudo shows `Pod::Block::Named{:name("para")}`.
+  The blocks are built in src/Pod.cpp. Done when both lines' names and
+  `$=pod.gist` match Rakudo 2026.09.
+- [ ] **A Pod block's `.Str` and `.raku` are its text** (found 2026-10-31
+  making its `.gist` Rakudo's, 5d4de331):
+
+  ```raku
+  =para Some B<bold> text
+
+  say $=pod[0].Str;    # Some bold text, Rakudo Pod::Block::Named<3797218828536>
+  say $=pod[0].raku;   # Some bold text, Rakudo Pod::Block::Named.new(name => "para", config => {}, contents => [Pod::Block::Para.new(…)])
+  ```
+
+  The `m == "Str" || m == "gist" || m == "raku"` branch for a "Pod" hash in
+  src/MethodCallPart2.cpp flattens the contents for all three; 5d4de331 took
+  `.gist` out of it. A declarator block's `.Str` is its text in Rakudo too
+  (`~&f.WHY` is "doc"), so it stays. Whatever else in rakupp reads a
+  block's text through `.Str` has to move to the contents first. Done when
+  both lines match Rakudo 2026.09 (an address aside) and the suite still
+  passes.
 
 ## Control flow and containers
 
@@ -1447,6 +1538,22 @@ moves to [TODO.md](TODO.md).
 
 ## Gates
 
+- [ ] **t/regression/promise-whenever-fires-later-and-in-turn.raku fails now
+  and then** (found 2026-10-31 in a full t/run.raku beside 586c5160; 2 runs in
+  20 alone on 23e143f2):
+
+  ```bash
+  for i in $(seq 20); do build/rakupp t/regression/promise-whenever-fires-later-and-in-turn.raku | tail -1; done | sort | uniq -c
+  ```
+
+  It is always the react case: `FAIL: …and a react's — $("react body", "after
+  keep 2")`, where the whenever's body is to run after `keep` returns, and
+  ran first. The body is queued to the pool when the promise is kept (the
+  "fires later" half of the fix the file guards), so a worker can reach it
+  before the keeping thread prints its next line; the supply case beside it
+  has not failed. Start with what orders the two in the passing runs, and
+  whether Rakudo's ordering is a guarantee or the same race it wins every
+  time. Done when it passes 50 of 50 runs alone and inside a full suite.
 - [ ] **t/jit/run.raku: 5 of its 21 tier-up cases enter no kernel** (found
   2026-10-22 gating the FLOAT-HEAVY-ISSUES work; on v5.5.0 too, on macOS
   arm64): the gate ends `not ok - only 16 of the 21 tier-up cases actually

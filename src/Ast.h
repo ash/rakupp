@@ -77,7 +77,7 @@ namespace rakupp {
 
 struct PadLayout; // Interpreter.h — a pad owner's slot table
 
-enum class NK {
+enum class NK : uint16_t {   // 16 bits leave Node room for inParens below
     // expressions
     IntLit, NumLit, StrLit, InterpStr, BoolLit, VarExpr, ListExpr,
     Assign, Binary, Unary, Call, MethodCall, Index, Ternary, Range,
@@ -91,6 +91,12 @@ enum class NK {
 
 struct Node {
     NK kind;
+    // Written inside `( … )`. Nothing that RUNS the tree reads it — the parser
+    // keeps its own set for the semantics parentheses have — but the RakuAST
+    // view has to: a written `(1 + 2) * 3` is a Circumfix::Parentheses
+    // upstream, and without it the rendering was `1 + 2 * 3`. It sits in the
+    // two bytes a 16-bit NK leaves before `line`, so no node grows.
+    bool inParens = false;
     int line = 0;
     explicit Node(NK k) : kind(k) {}
     virtual ~Node() = default;

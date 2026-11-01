@@ -3673,6 +3673,11 @@ public:
     // `L10N::<lang>` and turns the role it ships into a rewrite over the token
     // stream. Defined beside the `.AST` arm in MethodCallPart3.cpp.
     TokenXform l10nTokenXform(const std::string& lang);
+    // `.DEPARSE("DE")` — the localized rendering. Reads `.DEPARSE`'s arguments
+    // as Rakudo does (a language loads `RakuAST::Deparse::L10N::<lang>`, a role
+    // is used as it is) and answers the role's `xsyn`, or null for English.
+    // Defined beside l10nTokenXform.
+    DeparseXsyn l10nDeparseXsyn(const ValueList& args);
     // `use L10N::XX;` — the program itself is written in that language. Scans a
     // freshly lexed token stream for the pragma and rewrites everything after
     // it, which is the same table `.AST("XX")` uses. Call it between the Lexer

@@ -746,6 +746,14 @@ static void fillPodTable(Value& block, const std::vector<std::string>& lines) {
     }
     (*block.hash())["headers"] = headers;
     (*block.hash())["contents"] = body;
+    // a table with a header row says so in its config, as Rakudo's does:
+    // `:header-row(0)` (the row above the divider; Pod::Block's gist shows it)
+    if (hs.size() == 1) {
+        auto hc = block.hash()->find("config");
+        if (hc == block.hash()->end() || hc->second.t != VT::Hash || !hc->second.hash())
+            (*block.hash())["config"] = Value::makeHash();
+        (*(*block.hash())["config"].hash())["header-row"] = Value::integer(0);
+    }
     auto cfg = block.hash()->find("config");
     Value cap = Value::str("");
     if (cfg != block.hash()->end() && cfg->second.t == VT::Hash && cfg->second.hash()) {

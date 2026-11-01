@@ -4913,6 +4913,13 @@ bool rtMulAssignBig(Value& dst, const Value& r) {
     return true;
 }
 bool objMethodStrHook(const Value& v, const char* method, std::string& out) {
+    // a Pod block (a tagged hash) gists as Rakudo's pod-gist, inside a list too
+    // (`@pod.gist`, Pod::Load's suite)
+    if (g_revInterp && v.t == VT::Hash && v.hashKind == "Pod" && v.hash() && std::strcmp(method, "gist") == 0) {
+        try { out = g_revInterp->methodCall(v, "gist", ValueList{}).toStr(); }
+        catch (...) { return false; }
+        return true;
+    }
     // a user class's TYPE OBJECT gists by the class's own method too
     if (g_revInterp && v.t == VT::Type && !v.s.empty() && std::strcmp(method, "gist") == 0) {
         auto ci = g_revInterp->classes_.find(v.s);

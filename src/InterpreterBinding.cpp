@@ -768,6 +768,42 @@ bool failureOwnMethod(const std::string& n) {
         "list", "mess", "new", "raku", "self", "sink"};
     return kOwn.count(n) > 0;
 }
+// A built-in type object cannot itself be probed (the instance dispatch the name
+// reaches cannot run on the type), so `.can` and `.^find_method` probe an empty
+// instance of it. Only types whose empty instance no probed method can block on
+// or act through: a Promise's `.result` waits, a Channel's `.receive` too, and a
+// Thread or a Supply would start something.
+Value Interpreter::probeSentinel(const std::string& tn) {
+    if (tn == "Str") return Value::str("");
+    if (tn == "Int") return Value::integer(0);
+    if (tn == "Num") return Value::number(0);
+    if (tn == "Bool") return Value::boolean(false);
+    // (the rest of the built-in types a program asks about, too: with only the
+    // four above `Rat.can('precise')` answered [] for a method `(0.5).precise`
+    // plainly runs, the one assertion Rat::Precise's suite failed — can-ok is
+    // Test's .^can)
+    if (tn == "Rat" || tn == "FatRat") return Value::rat(BigInt(0), BigInt(1));
+    if (tn == "Complex") return Value::complex(0, 0);
+    if (tn == "Array") return Value::array();
+    if (tn == "List" || tn == "Seq") return Value::list({});
+    if (tn == "Hash" || tn == "Map") return Value::makeHash();
+    if (tn == "Pair") return Value::pair("k", Value::integer(0));
+    if (tn == "Range") return Value::range(0, 0, false, false);
+    // …and the ones built through their own constructor (Set.^find_method
+    // answered every name — Red then called the "red-type-db-methods" it found)
+    static const std::map<std::string, std::pair<const char*, int>> kBuilt = {
+        {"Set", {"new", 0}}, {"SetHash", {"new", 0}}, {"Bag", {"new", 0}}, {"BagHash", {"new", 0}},
+        {"Mix", {"new", 0}}, {"MixHash", {"new", 0}}, {"Buf", {"new", 0}}, {"Blob", {"new", 0}},
+        {"Uni", {"new", 0}}, {"Version", {"new", 1}}, {"Duration", {"new", 2}},
+        {"Instant", {"from-posix", 2}}, {"IO::Path", {"new", 1}}};
+    auto it = kBuilt.find(tn);
+    if (it == kBuilt.end()) return Value::typeObj(tn);
+    ValueList as;
+    if (it->second.second == 1) as.push_back(Value::str("0"));
+    else if (it->second.second == 2) as.push_back(Value::integer(0));
+    try { return methodCall(Value::typeObj(tn), it->second.first, as); }
+    catch (...) { return Value::typeObj(tn); }
+}
 // Rakudo gives each X::TypeCheck class a `method message` that renders its
 // attributes, so one built by hand reports like one the engine threw — Red
 // constructs X::TypeCheck::Assignment with `symbol`, `got` and `expected` for
