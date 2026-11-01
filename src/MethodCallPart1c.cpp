@@ -38,7 +38,8 @@ void Interpreter::loadIoNotification() {
 }
 
 // `Buf.new(…)` / `Blob.new(…)` and `.allocate(…)`, out of methodCallPart1c
-static Value bufNewOrAllocate(const Value& inv, bool allocate, const ValueList& args) {
+// (methodCallEntry takes it for machine-Int arguments too)
+Value bufNewOrAllocate(const Value& inv, bool allocate, const ValueList& args) {
     // (the tags interned once: assigning the text took the intern lock per buffer)
     static const IStr kBuf("Buf"), kBlob("Blob");
     const IStr& kind = inv.s == "Buf" ? kBuf : kBlob;

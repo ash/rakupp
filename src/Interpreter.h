@@ -660,6 +660,12 @@ inline bool isDynName(const std::string& n) { return n.size() > 1 && n[1] == '*'
 //
 // Never cleared: a program that binds such a name once keeps the walk.
 extern std::atomic<bool> g_coreEnumNameBound;
+// …and g_boundTypeMask: which core type names some scope bound, alone or
+// after `&` (`my \WhateverCode`, `sub DateTime`), as the same filter over
+// lexShadowSlot, its hits confirmed against the spellings recorded. A bare
+// type name no scope has bound, which answered its type object, keeps
+// answering it (NameTerm::typeMemo). The setting binds a few (`Cursor`).
+extern std::atomic<uint64_t> g_boundTypeMask;
 extern std::atomic<uint64_t> g_boundInfixMask;
 void noteNameBoundSlow(const std::string& k);
 // A name of 4+ characters starting A–Z (every core enum member's spelling,
@@ -667,7 +673,9 @@ void noteNameBoundSlow(const std::string& k);
 // sigilled variable stops at one compare, a type capture's `T` at two.
 inline void noteNameBound(const std::string& k) {
     const unsigned c = k.empty() ? 0u : (unsigned char)k[0];
-    if ((c - 'A' < 26u && k.size() >= 4) || (c == '&' && k.size() > 9 && k[1] == 'i')) noteNameBoundSlow(k);
+    if ((c - 'A' < 26u && k.size() >= 4) ||
+        (c == '&' && ((k.size() > 9 && k[1] == 'i') || (k.size() >= 5 && (unsigned char)k[1] - 'A' < 26u))))
+        noteNameBoundSlow(k);
 }
 
 // Env::vars: a VarMap whose every way to ADD a name is seen, so a `$*x`
@@ -855,6 +863,18 @@ extern std::atomic<bool> g_userPrefixShadow;
 inline unsigned lexShadowSlot(const char* p, size_t n) {
     return (unsigned)((p[0] * 31u + p[n - 1] * 7u + n) & 63u);
 }
+// (g_boundTypeMask: the core type names some scope bound)
+bool boundTypeArmed(const char* p, size_t n);   // (Interpreter.cpp)
+inline bool typeNameBoundPossible(const std::string& n) {
+    const uint64_t m = g_boundTypeMask.load(std::memory_order_acquire);
+    return m && !n.empty() && ((m >> lexShadowSlot(n.data(), n.size())) & 1) && boundTypeArmed(n.data(), n.size());
+}
+extern std::atomic<uint64_t> g_symbolGen;   // (Interpreter.cpp)
+inline bool nameTypeMemoHit(const NameTerm* nt) {
+    const uint64_t m = nt->typeMemo;
+    return m && m == g_symbolGen.load(std::memory_order_relaxed) + 1 && !typeNameBoundPossible(nt->name);
+}
+Value typeObjNoted(const NameTerm* nt, const std::string& rn, uint64_t gen);   // …and where it is kept (Interpreter.cpp)
 // The one way to arm the filter: sets the spelling's bit and records it.
 void lexShadowArm(const char* p, size_t n);
 // Whether exactly this spelling was armed (Interpreter.cpp).
@@ -2093,7 +2113,7 @@ public:
     [[gnu::noinline]] Value execGivenStmt(Stmt* s, bool sink);   // …and its `given` arm
     // eval's MethodCall arm and its VarExpr arm past the common read, out of
     // eval's frame the same way
-    [[gnu::noinline]] Value evalMethodCallExpr(Expr* e);
+    [[gnu::noinline]] Value evalMethodCallExpr(Expr* e, Value* handedInv = nullptr);
     [[gnu::noinline]] Value evalVarExpr(Expr* e);
     // callCallableRaw's lean half, for a plain sub called plainly (see
     // plainSubShape and the entry test in callCallableRaw)
@@ -2262,11 +2282,13 @@ public:
     Value smartmatchValue(const std::string& op, const Value& l, const Value& r);
     // `$x ~~ Int` / `when Pair` with a plain built-in value against a CORE type
     // object: the answer depends on the value's kind and the type's name alone,
-    // so it is kept per symbol generation (InterpreterRegex.cpp). True when
+    // so it is kept per symbol generation (MethodCallEntry.cpp). True when
     // `out` holds the answer; false leaves the match to the caller.
     bool typeMatchMemo(const std::string& op, const Value& l, const Value& r, Value& out);
     std::atomic<uint64_t> typeMatchMemo_[64][22] = {};
     // …and `.isa(Int)` on such a value, from methodCall's first arms (Builtins.cpp)
+    std::optional<Value> methodCallEntry(const Value& inv, const std::string& m, ValueList& args,
+                                         const std::vector<ExprPtr>* rwArgs);   // (MethodCallEntry.cpp)
     bool isaMemo(const Value& inv, const std::string& m, const ValueList& args,
                  const std::vector<ExprPtr>* rwArgs, Value& out);
     std::atomic<uint64_t> isaMemo_[64][22] = {};
@@ -3532,6 +3554,7 @@ public:
                           const std::map<const ClassInfo*, ValueList>& roleArgs);
     void refuseValueMixin(const Value& v, const Value& base);            // `5 but Any`
     Value fatalCheckedMethodCall(Expr* e);                                // a method call under `use fatal`
+    Value leanMethodCall(struct MethodCall* mc);                            // …its plain shape (InterpreterBinding.cpp)
     Value inlineBlockValue();                                             // `&?BLOCK` in an inline block
     bool tryBodySaysNoFatal(const Expr* operand);                         // `try { no fatal; … }`
     Value byCallableMinMaxPairs(const std::vector<std::pair<Value, Value>>& kvs, const Value& fn, bool wantMax);

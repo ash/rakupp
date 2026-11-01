@@ -4,7 +4,7 @@
 # `when Pair` / `$x ~~ Int` against a core type object is answered for a plain
 # value from what its kind and the type's name gave the first time, until a
 # declaration moves the symbol generation (Interpreter::typeMatchMemo, in
-# src/InterpreterRegex.cpp); an Int is two kinds, by sign, for UInt. A name the
+# src/MethodCallEntry.cpp); an Int is two kinds, by sign, for UInt. A name the
 # program declares — a subset or a class taking a core type's name — is never
 # kept, since its `where` or ACCEPTS asks the value. `--> Str` and the other
 # core return types accept a plain value of the type without resolving the name

@@ -263,6 +263,7 @@ static inline ValueList flattenArgs(ValueList& args) {
 }
 
 Value makeAsyncSocket(int fd); // defined with the supply-wiring block below
+Value bufNewOrAllocate(const Value& inv, bool allocate, const ValueList& args);   // (MethodCallPart1c.cpp)
 // A UDP IO::Socket::Async (bind-udp / udp): the descriptor and the read
 // workers polling it, shared by the socket value and every worker. A worker
 // never touches the socket hash, only this; and the fd is released under `m`

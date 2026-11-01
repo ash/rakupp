@@ -115,6 +115,7 @@ This is the heart. Key pieces:
 | `BuiltinsRegister*.cpp` | `registerBuiltins`, in pieces that each call the next: the named built-ins and the `Test` module (TAP). |
 | `BuiltinsSupply.cpp`, `BuiltinsNqp.cpp` | Supplies (taps, delivery, timers, signals, async sockets) and the `--exe` built-in natives (`rtB*`); the `nqp::` ops. |
 | `BuiltinsParts.h` | What the `Builtins*.cpp` files share. Internal to `src/`. |
+| `MethodCallEntry.cpp` | What a plain core value answers before the chain — `methodCall`'s first arms for the commonest zero-argument queries, `.isa`, `Buf.new` and a `.subst` that finds nothing — and the type-question memos `~~` and `.isa` share. |
 | `MethodCallPart1b/1c/2/3/Tail.cpp` | The rest of that dispatch chain, in that order. **Ordered segments, not categories** — the chain is order-sensitive, so an arm belongs where its priority is, not where it reads nicely. Each returns `std::optional<Value>`; `nullopt` means "not handled here". |
 | `MethodCallSegment.h` | The common include prologue of `MethodCallPart2/3/Tail`, so one cannot drift from its siblings (`MethodCallPart1b/1c` share `BuiltinsParts.h` with the head). |
 | `BuiltinsShared.h` | Helpers that were file-static in `Builtins.cpp` until the split needed them in more than one translation unit. Internal to `src/`. |

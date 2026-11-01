@@ -3,14 +3,10 @@
 // One of the parts InterpreterParts.h lists; what they share is declared there.
 #include "InterpreterParts.h"
 #include "IntOps.h"           // add_ovf & co.: the hyper kernels' Int arithmetic
-#include <array>
 #include <atomic>
 #include <condition_variable>
-#include <string_view>
 
 namespace rakupp {
-
-extern std::atomic<uint64_t> g_symbolGen;   // Interpreter.cpp: moves on every structural symbol change
 
 // A rule argument's value in the matcher's tagged string form (Regex.h,
 // rxArgTagged), and back. Bool, Int and Num keep their type on the way to the
@@ -4244,120 +4240,6 @@ ValueList smartmatchCallArgs(const Value& r, const Value& topic) {
         }
     }
     return ValueList{topic};
-}
-
-// `$x ~~ Int`, `when Pair`, `where Str` — a CORE type object against a plain
-// built-in value. applyArithGeneral answers it at the bottom of two thousand
-// lines of operator tests, so each `when` of a type-dispatching `given` cost a
-// few hundred nanoseconds: a third of Mathematica::Serializer's encoder (#217).
-// For the values below the answer depends on the value's kind and the type's
-// name alone, so it is asked once per kind, type and symbol generation (every
-// class, role, subset or augment declared moves it) and kept.
-//
-// The kinds: untagged (no allomorph, Instant, Buf, IO, Failure, Map …), no enum,
-// no native width, and for a Hash or a list no cold block (element or key type,
-// laziness, shape) — doubled for an itemized one. An Int is two kinds, by its
-// sign, which is all UInt asks. 0: none of them.
-static unsigned typeMatchShape(const Value& v) {
-    if (!v.hashKind.empty() || !v.enumName.empty() || !v.enumType.empty() || v.natBits || v.natFloat) return 0;
-    unsigned k;
-    switch (v.t) {
-        case VT::Str:   k = 1; break;
-        case VT::Int:   k = (v.big() ? v.big()->sign < 0 : v.i < 0) ? 10 : 2; break;
-        case VT::Num:   k = 3; break;
-        case VT::Rat:   k = v.fatRat() ? 5 : 4; break;
-        case VT::Pair:  k = 6; break;
-        case VT::Hash:  if (v.x_.get() || v.objKeyed) return 0; k = 7; break;
-        case VT::Array: if (v.x_.get() || !v.s.empty()) return 0; k = v.isList ? 9 : 8; break;
-        default: return 0;
-    }
-    return k * 2 + v.itemized;   // (below typeMatchMemo_'s 22)
-}
-// The core types it keeps answers for — never one a user subset or class has
-// taken the name of (its `where` or ACCEPTS asks the value), and nothing
-// parameterized or coercing (the caller refuses a type object with a cold
-// block or a smiley).
-static constexpr std::string_view kTypeMatchNames[] = {
-    "Pair", "Str", "Int", "Rat", "FatRat", "Num", "Complex", "Numeric", "Real", "Rational", "Cool",
-    "Bool", "Seq", "Positional", "Associative", "Map", "Hash", "Array", "List", "Iterable", "Stringy",
-    "Blob", "Buf", "DateTime", "Date", "Dateish", "Callable", "Code", "Block", "Routine", "Sub",
-    "Method", "Range", "Whatever", "WhateverCode", "HyperWhatever", "Junction", "Any", "Mu", "Nil",
-    "Failure", "Exception", "Match", "Regex", "Set", "Bag", "Mix", "QuantHash", "Setty", "Baggy",
-    "Mixy", "Capture", "Version", "Instant", "Duration", "Slip", "Enumeration", "IO::Path", "Uni",
-    "UInt"};
-static_assert(std::size(kTypeMatchNames) < 64, "typeMatchMemo_ has a row per name, and row 0 is none");
-static unsigned typeMatchHash(const char* p, size_t n) {
-    return (unsigned(n) * 31u + (unsigned char)p[0] * 7u + (unsigned char)p[n / 2] * 3u +
-            (unsigned char)p[n - 1]) & 255u;
-}
-static unsigned typeMatchCode(const std::string& n) {
-    static const std::array<uint8_t, 256> table = [] {
-        std::array<uint8_t, 256> t{};
-        for (unsigned i = 0; i < std::size(kTypeMatchNames); i++) {
-            unsigned h = typeMatchHash(kTypeMatchNames[i].data(), kTypeMatchNames[i].size());
-            while (t[h]) h = (h + 1) & 255u;
-            t[h] = uint8_t(i + 1);
-        }
-        return t;
-    }();
-    if (n.empty() || n.size() > 13) return 0;
-    for (unsigned h = typeMatchHash(n.data(), n.size()); table[h]; h = (h + 1) & 255u)
-        if (kTypeMatchNames[table[h] - 1] == n) return table[h];
-    return 0;
-}
-// One memo slot: gen << 2 | 1 False, 2 True, 3 a name the program declared
-// (not kept). `fill` asks the general path, whose Bool is kept.
-template <class Fill>
-static bool typeMemoRead(Interpreter& I, std::atomic<uint64_t>& slot, const Value& type, Value& out, Fill fill) {
-    const uint64_t gen = g_symbolGen.load(std::memory_order_relaxed) + 1;
-    const uint64_t seen = slot.load(std::memory_order_relaxed);
-    if ((seen >> 2) == gen) {
-        if ((seen & 3) == 3) return false;
-        out = Value::boolean((seen & 3) == 2);
-        return true;
-    }
-    if (I.subsets_.count(type.s) || I.classes_.count(type.s)) {
-        slot.store(gen << 2 | 3, std::memory_order_relaxed);
-        return false;
-    }
-    out = fill();
-    if (out.t == VT::Bool) slot.store(gen << 2 | (out.b ? 2 : 1), std::memory_order_relaxed);
-    return true;
-}
-// …and the type object itself: a plain core one, no smiley, parameter or coercion
-static bool typeMemoType(const Value& r) {
-    return r.t == VT::Type && !r.i && !r.x_.get() && r.hashKind.empty() && r.enumType.empty();
-}
-bool Interpreter::typeMatchMemo(const std::string& op, const Value& l, const Value& r, Value& out) {
-    if (r.t != VT::Type || op.size() != 2 || op[0] != '~' || op[1] != '~') return false;
-    const unsigned k = typeMatchShape(l);
-    // (a user metaobject, a one-shot value match pending and a user `infix:<~~>`
-    // all change who answers; the memo stays out of their way)
-    if (!k || !typeMemoType(r) || valueSmartmatch_ || haveCustomHows_.load(std::memory_order_relaxed) ||
-        boundInfixPossible(op))
-        return false;
-    const unsigned t = typeMatchCode(r.s);
-    return t && typeMemoRead(*this, typeMatchMemo_[t][k], r, out, [&] {
-        return applyArith(op, l, r);   // (applyBinOp's own arms are for other shapes)
-    });
-}
-// `$x.isa(Whatever)` — Mathematica::Serializer asks three of these of every
-// value it encodes, and each walked the whole method dispatch to Part3's arm.
-// The arm answers from the value's type name, so a plain value's kind decides
-// it as it decides `~~`. Not a list (methodCall has container arms for those),
-// and not while a built-in type has a method added or wrapped, a user
-// metaobject is about, or --race watches the reads.
-bool Interpreter::isaMemo(const Value& inv, const std::string& m, const ValueList& args,
-                          const std::vector<ExprPtr>* rwArgs, Value& out) {
-    if (!opEq(m, "isa") || args.size() != 1 || inv.t == VT::Array) return false;
-    const unsigned k = typeMatchShape(inv);
-    if (!k || !typeMemoType(args[0]) || !builtinExt_.empty() ||
-        haveCustomHows_.load(std::memory_order_relaxed) || RAKUPP_RACE_ON())
-        return false;
-    const unsigned t = typeMatchCode(args[0].s);
-    return t && typeMemoRead(*this, isaMemo_[t][k], args[0], out, [&] {
-        return methodCallInner(inv, m, ValueList(args), rwArgs, false);
-    });
 }
 
 Value Interpreter::smartmatchValue(const std::string& op, const Value& l, const Value& r) {

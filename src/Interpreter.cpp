@@ -4476,15 +4476,35 @@ bool boundInfixArmed(const char* p, size_t n) { return g_boundInfixNames.has(p, 
 std::atomic<uint64_t> g_dynEpoch{1};
 std::atomic<bool> g_userPrefixShadow{false};
 std::atomic<bool> g_coreEnumNameBound{false};
-// noteNameBound's out-of-line half: a name starting A–Z or `&i`.
+std::atomic<uint64_t> g_boundTypeMask{0};
+ArmedSpellings g_boundTypeNames;
+bool boundTypeArmed(const char* p, size_t n) { return g_boundTypeNames.has(p, n); }
+// the names typeMemo serves, and so the bindings g_boundTypeMask records:
+// a core type's unqualified name (an `X::…` or `IO::…` one is no bare term)
+static bool simpleCoreTypeName(const std::string& n) {
+    return n.size() >= 4 && n.find_first_of(":[") == std::string::npos && isKnownTypeName(n);
+}
+// evalRareExpr's answer for a bare name that came out as a type object: kept on
+// the node (NameTerm::typeMemo) when it is a core type's own simple name, long
+// enough that noteNameBound sees every binding of it, and not one 6.e gates
+// (Format, Formatter). Under `gen`, read before the answer was worked out.
+Value typeObjNoted(const NameTerm* nt, const std::string& rn, uint64_t gen) {
+    const std::string& n = nt->name;
+    if (rn == n && n.rfind("Format", 0) != 0 && simpleCoreTypeName(n) && !typeNameBoundPossible(n))
+        nt->typeMemo = gen + 1;
+    return Value::typeObj(rn);
+}
+// noteNameBound's out-of-line half: a name starting A–Z, `&i` or `&` and A–Z.
 void noteNameBoundSlow(const std::string& k) {
     if (k[0] == '&') {
         if (k.size() > 9 && k.compare(0, 8, "&infix:<") == 0 && k.back() == '>')
             g_boundInfixNames.arm(g_boundInfixMask, k.data() + 8, k.size() - 9);
+        else if (simpleCoreTypeName(k.substr(1))) g_boundTypeNames.arm(g_boundTypeMask, k.data() + 1, k.size() - 1);
         return;
     }
     if (!g_coreEnumNameBound.load(std::memory_order_relaxed) && isCoreEnumMemberName(k))
         g_coreEnumNameBound.store(true, std::memory_order_relaxed);
+    if (simpleCoreTypeName(k)) g_boundTypeNames.arm(g_boundTypeMask, k.data(), k.size());
 }
 // applyArith is a free function, but the Whatever-curry it builds has to resolve
 // a shadowing `&infix:<op>` in the scope it is being written in — same shape as

@@ -4871,10 +4871,9 @@ void Interpreter::bindParams(const std::vector<Param>& params, ValueList& args,
         signed char simple = params[0].sigSimple;
         if (simple < 0) {
             simple = 1;
-            for (auto& p : params)
+            for (auto& p : params)   // (a smiley and `is copy` bind below too: typeCheckBind enforces the smiley)
                 if (p.sigil != '$' || p.named || p.slurpy || p.optional || p.invocant ||
-                    p.isCopy || p.defaultVal || p.subSig || p.litVal ||
-                    p.whereExpr || p.defConstraint || p.coerce ||
+                    p.defaultVal || p.subSig || p.litVal || p.whereExpr || p.coerce ||
                     p.typeCapture ||   // `::T $x` binds the NAME T as well as $x
                     p.type == "Positional" ||  // a Seq binds as the List it caches into
                     !p.captureName.empty() ||  // …and so does `Int ::T $x`, which is typed
@@ -4901,8 +4900,9 @@ void Interpreter::bindParams(const std::vector<Param>& params, ValueList& args,
                     // (only a native parameter, or a value carrying native tags,
                     // has anything for it to do: the common call skips the call)
                     if (v.natBits || paramIsNative(params[i])) bindNativeParam(params[i], v);
-                    // `is raw` binds the caller's container and IS writable, same as `is rw`
-                    v.readonly = !params[i].isRw && !params[i].isRaw;
+                    // `is raw`/`is rw` bind a writable container; `is copy` keeps what came, typed as the slow path's varDefault
+                    if (!params[i].isCopy) v.readonly = !params[i].isRw && !params[i].isRaw;
+                    else if (!params[i].type.empty() && typeNameLead(params[i].type[0])) env->x().varDefault[params[i].name] = Value::typeObj(params[i].type);
                     // and a `$` parameter ITEMIZES what it binds (see the slow path)
                     if (!params[i].isRaw) itemizeScalar(v);
                     // TARG C2: an annotated param writes its slot directly —
@@ -24297,8 +24297,7 @@ Value Interpreter::evalBinary(Binary* b) {
         // generic smartmatch on the already-evaluated operands — the Whatever a
         // VARIABLE holds is a value here (`my $w = *; $w ~~ Pair` is False on
         // Rakudo); only a written `*` curries. (A core type: typeMatchMemo.)
-        if (lTopic.t == VT::Whatever && !exprHasWhateverLit(b->lhs.get()))
-            return smartmatchValue(op, lTopic, r);
+        if (lTopic.t == VT::Whatever && !exprHasWhateverLit(b->lhs.get())) return smartmatchValue(op, lTopic, r);
         Value tm;
         return r.t == VT::Type && typeMatchMemo(op, lTopic, r, tm) ? tm : applyArith(op, lTopic, r);
     }
@@ -29509,6 +29508,7 @@ struct RatLitParts {
             }
             auto* nt = static_cast<NameTerm*>(e);
             const std::string& n = nt->name;
+            const uint64_t gen0 = g_symbolGen.load(std::memory_order_relaxed);   // (what typeMemo is kept under)
             // `GLOBALish` — the unit's view of GLOBAL, which the program's is
             if (opEq(n, "GLOBALish") && !classes_.count(n) && !(tctx().cur && tctx().cur->find(n)))
                 return Value::typeObj("GLOBAL");
@@ -29981,7 +29981,7 @@ struct RatLitParts {
                                 + n + "'"};
                     }
                 }
-                return Value::typeObj(rn);
+                return typeObjNoted(nt, rn, gen0);   // (kept on the node for a core type's own name: typeMemo)
             }
         }
         case NK::Range: {
@@ -30285,12 +30285,12 @@ Value Interpreter::eval(Expr* e) {
         // a Range, a Pair — and none of them is the arithmetic and variable
         // reading a hot loop is made of. Whole, and not inlinable back.
         case NK::NameTerm:
-            // …except a CORE enum member (`Less`) that no scope can shadow yet, and a
-            // core type name (`Pair`, `Buf`): every test evalRareExpr makes first is
-            // a question of the name, which this node already answered (coreVal, coreType)
+            // …except a CORE enum member (`Less`) no scope can shadow yet, and a core type name (`Pair`;
+            // `DateTime` while none is bound): evalRareExpr's tests ask the name, as this node has answered
             if (const void* c = static_cast<NameTerm*>(e)->coreVal.get())
                 if (!g_coreEnumNameBound.load(std::memory_order_relaxed)) return *static_cast<const Value*>(c);
-            if (static_cast<NameTerm*>(e)->coreType == 1) return Value::typeObj(static_cast<NameTerm*>(e)->name);
+            if (static_cast<NameTerm*>(e)->coreType == 1 || nameTypeMemoHit(static_cast<NameTerm*>(e)))
+                return Value::typeObj(static_cast<NameTerm*>(e)->name);
             return evalRareExpr(e);
         case NK::AllomorphLit:
         case NK::RegexLit:
@@ -31905,15 +31905,15 @@ bool Interpreter::uninitMethodShape(const MethodCall* mc, const Value& inv) {
 
 Value elemScalarRecord(Interpreter& I, const Value& guard, const Value& value);   // InterpreterBinding.cpp
 
-Value Interpreter::evalMethodCallExpr(Expr* e) {
+Value Interpreter::evalMethodCallExpr(Expr* e, Value* handedInv) {
     auto* mc = static_cast<MethodCall*>(e);
     LazyChainMark lazyMark(mc);   // `.first` over map/grep reads lazily (InterpreterCalls.cpp)
-    // `$node.left` — an attribute ACCESSOR on a plain user object is answered
-    // here, before the special arms below, none of which a call of this shape
-    // can meet (plainShape; `.value` only while a binding's raw tail is
-    // pending). A miss keeps the evaluated invocant: the arms read it below.
+    // `$node.left` — an attribute ACCESSOR on a plain user object is answered here, before the special
+    // arms below, none of which a call of this shape can meet (plainShape; `.value` only while a binding's
+    // raw tail is pending). A miss keeps the invocant, as fatalCheckedMethodCall's lean path hands its own.
     std::optional<Value> preInv;
-    if (mc->plainShape != 0) {
+    if (handedInv) preInv.emplace(std::move(*handedInv));
+    else if (mc->plainShape != 0) {
         if (mc->plainShape < 0) {
             const std::string& mn = mc->method;
             mc->plainShape = mc->inv && mc->inv->kind != NK::RegexLit && mc->args.empty() &&

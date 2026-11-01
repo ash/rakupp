@@ -393,6 +393,11 @@ struct NameTerm : Expr {
     // while no scope has bound a core enum member's name
     // (g_coreEnumNameBound); otherwise the scope is asked first, as before.
     mutable PublishedOnce<const void*> coreVal{nullptr};
+    // …and for a core type name past that list (`WhateverCode`, `DateTime`):
+    // the symbol generation + 1 under which evalRareExpr answered its type
+    // object, which eval answers again while no scope has bound such a name
+    // (g_boundTypeMask). 0: not yet, or not a name answered that way.
+    mutable DecidedOnce<uint64_t> typeMemo{0};
     explicit NameTerm(std::string n): Expr(NK::NameTerm), name(std::move(n)) {}
 };
 
@@ -658,6 +663,11 @@ struct MethodCall : Expr {
     // -1 undecided, 0 no, 1 yes (decided once, from the syntax)
     mutable DecidedOnce<signed char> lazyChain{-1};
     bool lazyTail = false; // a routine's or closure's VALUE: read lazily too (Parser's markLazyTail)
+    // A call none of evalMethodCallExpr's special arms is written for — no
+    // `.^`/`».`/`.?`/`.+`/`.=`, no computed or qualified name, none of the names
+    // they test — which fatalCheckedMethodCall takes without them (leanCallShape).
+    // -1 undecided, 0 no, 1 yes (decided once, from the syntax)
+    mutable DecidedOnce<signed char> leanCall{-1};
     MethodCall(): Expr(NK::MethodCall) {}
 };
 
