@@ -57,13 +57,19 @@ A Range, a Seq or a Complex at either end throws `X::Range::InvalidArg`
 at construction, `.got` holding the offending endpoint (for a Seq, the
 type object `Seq`). `Range.new` refuses the same. A `*` with an
 operation attached (`1..*+1`) is not a Range at all but a WhateverCode
-that returns one when called; `^*` likewise. `1..2..3` is a compile-time
-`X::Syntax::NonAssociative`.
+that returns one when called; `^*` likewise. Parentheses do not end a
+Whatever expression: in `(1..*+1).^name` the `.^name` becomes part of the
+curried code, so that field is itself a WhateverCode and `say` prints its
+gist, `WhateverCode.new`; called with 4 it answers `Range`. The same holds
+for `(^*).^name`. Assigned to a variable first, `.^name` is `WhateverCode`.
+`1..2..3` is a compile-time `X::Syntax::NonAssociative`.
 ```
 say (try 10 .. ^20) // $!.^name ~ ":" ~ $!.got.raku, " ", (try ^10 .. 20) // $!.^name ~ ":" ~ $!.got.raku, " ", (try * .. 42i) // $!.^name ~ ":" ~ $!.got.raku, " ", (try 42.map({$_}) .. *) // $!.^name ~ ":" ~ $!.got.raku, " ", (try Range.new(1..2, 3)) // $!.^name, " ", (try 1 .. (1, 2).Seq) // $!.^name ~ ":" ~ $!.got.raku, " ", (try 1i .. 5) // $!.^name, " ", (try 1 .. 5i) // $!.^name, " ", (try (1..2) .. 3) // $!.^name
 # rakudo 2026.08: X::Range::InvalidArg:^20 X::Range::InvalidArg:^10 X::Range::InvalidArg:<0+42i> X::Range::InvalidArg:Seq X::Range::InvalidArg X::Range::InvalidArg:Seq X::Range::InvalidArg X::Range::InvalidArg X::Range::InvalidArg
 say (1..5).^name, " ", (1..*+1).^name, " ", (1..*+1)(4).raku, " ", (^*).^name, " ", (try EVAL('1..2..3')) // $!.^name, " ", (try EVAL('(1..5 xx 2).elems')) // $!.^name, " ", EVAL('(1..5 Z 1..5).elems'), " ", (1..5, 7).elems, " ", (1 .. 5 == 5).raku, " ", (1 .. 5 || 6).raku, " ", (2 ** 2 .. 5).raku, " ", (1 .. 5 + 1).raku, " ", (1..5).WHAT.gist, " ", (1e0..2e0).raku, " ", (1.5e0..*).raku, " ", (1.5..*).raku, " ", ("a"..*).raku, " ", (*.."z").raku
 # rakudo 2026.08: Range WhateverCode.new 1..5 WhateverCode.new X::Syntax::NonAssociative X::Range::InvalidArg 5 2 Bool::True 1..5 4..5 1..6 (Range) 1e0..2e0 1.5e0..Inf 1.5..Inf "a"..Inf -Inf.."z"
+my $w = 1..*+1; my $c = ^*; my $n = (1..*+1).^name; say $w.^name, " ", $c.^name, " ", $n.^name, " ", $n(4), " ", $w.gist
+# rakudo 2026.08: WhateverCode WhateverCode WhateverCode Range WhateverCode.new
 ```
 The docs describe the WhateverCode case; the refusals have no docs page.
 rakupp 4.0.1-118: differs in three fields — the `.got` of a Seq endpoint is
@@ -71,6 +77,9 @@ the Seq itself where Rakudo reports the type object, `Range.new(1..2, 3)`
 refuses with no `.got` at all, and a WhateverCode gists as `WhateverCode`
 rather than `WhateverCode.new`. Every refusal itself now happens, and
 `1..2..3` still parses where Rakudo makes it `X::Syntax::NonAssociative`.
+(this rakupp line predates the correction; re-measure before relying on it)
+
+Corrected 2026-11-01 from Raku Behind the Docs, ch 11 (findings/BEHIND-THE-DOCS.md §1).
 
 ### RG-03  Endpoint coercion: only a Real left end coerces the right      D:partial R:yes V:spec
 When the left endpoint is Real, the right one is coerced to Real: a
@@ -92,7 +101,9 @@ for an unparsable right endpoint, matches.
 
 ### RG-04  is-int, infinite, is-lazy, excludes-min/max, bounds, min, max   D:partial R:yes V:spec
 `is-int` is True only when both endpoints are Int objects (`1..5.0`,
-`1..1e0` and `1..Inf` are not, `1..2**70` is). `infinite` is True when
+`1..1e0` and `1..Inf` are not, `1..2**70` is). The endpoints are judged
+after coercion: an Int left end coerces a Str right end to Int (RG-03),
+so `(1 .. "5").is-int` is True, while `1..Any` is not. `infinite` is True when
 either endpoint is `Inf`, `-Inf` or NaN as a Num, but `Inf..1` is not
 infinite and neither is `1..-Inf`. `is-lazy` follows `infinite`. `min`,
 `max` and `bounds` return the raw endpoints, exclusions ignored, so
@@ -114,6 +125,9 @@ The NaN rules and `Inf..1` are undocumented. rakupp 4.0.1-118: differs —
 endless range is a Failure whose `.raku` renders the carrier hash rather
 than detonating, which is what makes the third line diverge after its
 eleventh field. `Range.new` and the `is-int`/`infinite` surface now exist.
+(this rakupp line predates the correction; re-measure before relying on it)
+
+Corrected 2026-11-01 from Raku Behind the Docs, ch 11 (findings/BEHIND-THE-DOCS.md §1).
 
 ### RG-05  Truth, WHICH, `===`, `eqv`                                        D:partial R:yes V:quirk
 Every instantiated Range is True, even an empty one (`1..0`, `1^..1`,
@@ -375,13 +389,17 @@ string that does not parse is simply False (no exception); `Inf`,
 `-Inf` and big Ints match the open ends; NaN never matches; `True` is 1.
 When only one endpoint is Numeric (`*.."5"`), comparison is the generic
 `before`/`after`, so 42 ~~ *.."5" is True (string order) but
-42 ~~ *..5 is False. The docs' claims that `'raku'` matches `1..*` and
-`-∞..∞` are false in 2026.08.
+42 ~~ *..5 is False. `*..10` has two Numeric endpoints (`-Inf` and 10),
+so `'5' ~~ *..10` numifies the topic and is True. The docs' claims that
+`'raku'` matches `1..*` and `-∞..∞`, and that `'5' ~~ *..10` is False,
+are false in 2026.08.
 ```
 say 3 ~~ 1..5, " ", 2.5 ~~ 1..5, " ", 5.0e0 ~~ 1..5, " ", 5 ~~ 1..^5, " ", 1 ~~ 1^..5, " ", 5.001 ~~ 1..5, " ", "42" ~~ 20..50, " ", "13" ~~ 20..50, " ", "abc" ~~ 1..10, " ", "5" ~~ *..10, " ", "raku" ~~ 1..*, " ", "raku" ~~ -Inf..Inf, " ", "raku" ~~ -Inf^..^Inf, " ", 1..10 ~~ "5", " ", 42 ~~ *.."5", " ", 42 ~~ *..5, " ", 42 ~~ *.."3", " ", 1.5 ~~ 1^..^2, " ", 4.5 ~~ 0..^5, " ", 5 ~~ ^5, " ", -0.1 ~~ ^5, " ", 0 ~~ ^5, " ", 4.9999999999999999999999 ~~ 0..^5, " ", 3 ~~ 1.5..3.5, " ", 3 ~~ 1.5^..^3, " ", Inf ~~ 1..*, " ", -Inf ~~ *..1, " ", NaN ~~ 1..5, " ", NaN ~~ *..*, " ", 3 ~~ Range, " ", 2**70 ~~ 1..*, " ", 1.5 ~~ 1..2, " ", "1.5" ~~ 1..2, " ", " 3 " ~~ 1..5, " ", "0x10" ~~ 10..20, " ", True ~~ 0..1, " ", 3 ~~ 3..3, " ", 3 ~~ 3^..3
 # rakudo 2026.08: True True True False False False True False False True False False False False True False False True True False False True True True False True True False False False True True True True True True True False
 ```
 rakupp 4.0.1-118: matches.
+
+Corrected 2026-11-01 from Raku Behind the Docs, ch 11 (findings/BEHIND-THE-DOCS.md §1).
 
 ### RG-20  A string against a string range                                D:yes R:yes V:spec
 With a Str endpoint the comparison is string order (`before`/`after`),
@@ -404,14 +422,17 @@ a string range uses `gt`/`lt` the same way; mixed string and number
 compare as strings on a string range and never match on a numeric one;
 an infinite outer range accepts everything; an empty range with
 in-range endpoints (`5..1 ~~ 1..5`) still matches; the types are not
-compared (`1..2 ~~ 1e0..2e0`), but a mixin on the outer range is a
-different type for `~~` too.
+compared (`1..2 ~~ 1e0..2e0`), and a role mixed into the outer range
+does not change the answer: `(1..2) ~~ ((1..2) but role {})` is True.
 ```
 say 2..3 ~~ 1..12, " ", 1..10 ~~ -∞..∞, " ", 1..10 ~~ -∞^..^∞, " ", 1..2 ~~ *..10, " ", 2..5 ~~ 1..*, " ", 'a'..'j' ~~ 'b'..'c', " ", 'b'..'c' ~~ 'a'..'j', " ", 1^..5 ~~ 1..5, " ", 1..5 ~~ 1^..5, " ", 1..5 ~~ 1..5, " ", 1..^5 ~~ 1..^5, " ", 1..5 ~~ 1..^5, " ", 1..^5 ~~ 1..5, " ", 0..5 ~~ 1..5, " ", 1.5..2.5 ~~ 1..3, " ", 1..3 ~~ 1.5..2.5, " ", "a".."c" ~~ 1..5, " ", 1..5 ~~ "a".."c", " ", (1..5).ACCEPTS(2..3), " ", ^5 ~~ 0..4, " ", 0..4 ~~ ^5, " ", (1..*) ~~ (1..*), " ", (1..2) ~~ ((1..2) but role {}), " ", (5..1) ~~ (1..5), " ", (1..5) ~~ (5..1), " ", (2..2) ~~ (1..3), " ", ("b".."b") ~~ ("a".."c"), " ", (1..3) ~~ (1..*), " ", (1..*) ~~ (1..3), " ", (1.5..2) ~~ (1..2), " ", (1..2) ~~ (1.5..2), " ", (1..2) ~~ (1e0..2e0), " ", ("1".."2") ~~ (1..2), " ", (1..2) ~~ ("1".."2"), " ", (1..2) ~~ ("a".."z"), " ", ("1".."2") ~~ ("a".."z"), " ", (*..*) ~~ (1..2), " ", (1..2) ~~ (*..*)
 # rakudo 2026.08: True True True True True False True True False True True False True False True False False False True False True True True True False True True True False True False True True True False False False True
 ```
 rakupp 4.0.1-118: differs in one field — a mixin on the outer range is not a
 different type for `~~`, so `(1..2) ~~ ((1..2) but role {})` is True.
+(this rakupp line predates the correction; re-measure before relying on it)
+
+Corrected 2026-11-01 from Raku Behind the Docs, ch 11 (findings/BEHIND-THE-DOCS.md §1).
 
 ### RG-22  Other topics, junctions, in-range                               D:partial R:partial V:spec
 A Junction threads; a Complex matches when its imaginary part rounds
@@ -461,7 +482,9 @@ reverse of excludes-max; a Real on one side is treated as the range
 `$n..$n`; a Positional is compared with the range's list; `<=>` and
 `leg` coerce (Numeric and Str). So `(1..2) cmp 1` is More,
 `(1^..2) cmp (1..2)` is More, `(0..^1)` sorts before `(0..1)`, and
-`(1..2) cmp [1,2]` is Same.
+`(1..2) cmp [1,2]` is Same. Both `(1..2) cmp (1,2,3)` (the shorter list
+is first) and `(1..2) cmp 2` (compared as `2..2`, the smaller min is
+first) are Less.
 ```
 say (1..2) cmp (1..2), " ", (1..2) cmp (1..3), " ", (1..4) cmp (1..3), " ", (1..2) cmp 3, " ", (1..2) cmp 1, " ", 3 cmp (1..2), " ", (1..2) cmp [1,2], " ", [1,2] cmp (1..2), " ", (1..2) cmp [1,3], " ", (1^..2) cmp (1..2), " ", (1..^2) cmp (1..2), " ", (1..2) cmp (1..^2), " ", (1..2) cmp 1.5, " ", ("a".."c") cmp ("a".."d"), " ", ((1..2) <=> (1..3)), " ", (1..2) eqv (2..1), " ", (1..2) cmp (1..2.0), " ", (1..3).sort.raku, " ", ((1..3), (1..2), (0..5)).sort.raku, " ", ((1..3) leg (1..3)), " ", (1..3) before (2..3), " ", (try ((1..2) cmp "1 2")) // $!.^name, " ", ((0..1), (0..^1), (0^..1)).sort.raku, " ", ((1..3) cmp (1..3).list), " ", ((1..2) cmp (1,2,3)), " ", ((1..2) cmp 2), " ", (1..2) cmp (1..*), " ", (1..*) cmp (1..2), " ", ((1..2) cmp (1..2)).^name, " ", ((1..3), (1..2)).min.raku, " ", ("a".."c") cmp ("b".."c"), " ", (1..2) cmp (0..2), " ", (1..3) cmp 3, " ", (3..3) cmp 3, " ", 1 cmp (1..2), " ", (1..2) cmp (1..2).Str, " ", ((1..2) leg (1..3)), " ", (try ((1..2) cmp "a")) // $!.^name, " ", ((1..2) cmp (1..2)) === Same
 # rakudo 2026.08: Same Less More Less More More Same Same Less More Less More Less Less Less False Same (1, 2, 3).Seq (0..5, 1..2, 1..3).Seq Same True Same (^1, 0..1, 0^..1).Seq Same Less Less Less More Order 1..2 Less More Less Same Less Same Less Less True
@@ -469,6 +492,9 @@ say (1..2) cmp (1..2), " ", (1..2) cmp (1..3), " ", (1..4) cmp (1..3), " ", (1..
 rakupp 4.0.1-118: differs in two fields — `(1..2) cmp (1,2,3)` and `(1..2)
 cmp 2` read Less where Rakudo says Less and More; every other comparison,
 the sort orders and the Positional cases match.
+(this rakupp line predates the correction; re-measure before relying on it)
+
+Corrected 2026-11-01 from Raku Behind the Docs, ch 11 (findings/BEHIND-THE-DOCS.md §1).
 
 ### RG-25  sum                                                            D:partial R:no V:spec
 When integer bounds exist (RG-26), `sum` is the closed form, so

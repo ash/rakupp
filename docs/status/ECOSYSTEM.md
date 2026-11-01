@@ -445,11 +445,13 @@ before adding a point; the two traps it records are worth repeating:
   anything inside a ~40-assertion band as unchanged and gate on the **per-file**
   diff, not on that column.
 
-The file's header calls itself the series behind a spec dashboard chart. It is
-wired: `sites/grid/src/site.raku` reads this very path at build time and the
-[/grid](https://raku.online/grid/) home charts it, so a row appended here
-reaches the site at the next build. Keep appending: the series is the point, and
-a gap in the rows is a gap in the chart.
+Two charts draw this file. `sites/grid/src/site.raku` reads this very path at
+build time and the [/grid](https://raku.online/grid/) home charts it, so a row
+appended here reaches that page at the next build. The spec dashboard's
+Rakugrid chart takes it at the release-time run of
+`sites/spec/tools/gen-dashboard.raku`, which draws each stretch of one `ran`
+as a line of its own. Keep appending: the series is the point, and a gap in
+the rows is a gap in both charts.
 
 ### F. Explore with Rakumap
 

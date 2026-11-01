@@ -385,9 +385,11 @@ rakupp 4.0.1-84: matches on every field but the quirk one, where the absent slot
 
 ### GM-22  Captures in alternations; absent captures; no captures            D:yes R:yes V:spec
 Each alternative of `|` and `||` numbers its captures from the group's
-first index, so `(a)|(b)` has one slot and `(a)|(b)(c)` two (`$1` Nil and
-`:exists` False when the first alternative won); a quantified group of
-alternatives gathers into one Array (`[(a)|(b)]+` is an Array of 2).
+first index, and the number of slots follows the winning alternative:
+`(a)|(b)` has one slot, and `(a)|(b)(c)` has two when `(b)(c)` wins but
+one when `(a)` wins (`.elems` 1, `$1` Nil, `[1]:exists` False); a
+quantified group of alternatives gathers into one Array (`[(a)|(b)]+` is
+an Array of 2).
 With no captures at all `$0`, `$/[0]` and `$/[5]` are Nil, `.elems` and
 `.list.elems` 0, `:exists` False; a negative index is a Failure.
 ```
@@ -395,6 +397,8 @@ With no captures at all `$0`, `$/[0]` and `$/[5]` are Nil, `.elems` and
 # rakudo 2026.08: b 1 Nil | b c 2 | a Nil 1 1 False True | b 2 | c | Nil Nil 0 0 False Nil Failure | a | b 1 | Array 2 a,b 1 | 2 b | 1 Nil (Match.new(:orig("c"), :from(0), :pos(1)),) | c 2 1a2 1Nil1
 ```
 rakupp 4.0.1-84: differs — an absent capture reads Any instead of Nil, and `:exists` on it answers Nil (with a warning) instead of False.
+
+Corrected 2026-11-01 from Raku Behind the Docs, ch 17 (findings/BEHIND-THE-DOCS.md §1).
 
 ### GM-23  Named captures                                                   D:partial R:yes V:spec
 `<a>` once is a Match; `<a>+`, and two separate calls `<a> <a>`, give an
@@ -594,7 +598,9 @@ rakupp 4.0.1-84: differs — a `:nth` past the end is `()` instead of Nil, `:nth
 `:c(n)` (`:continue`) starts scanning at n, `:p(n)` (`:pos`) anchors the
 match at n (Nil unless the regex matches exactly there); both accept a
 position equal to the length for a zero-width regex (`$`); past the end is
-Nil; a negative `:c` is Nil; `:c(Nil)` and `:p(Nil)` mean 0. `:ov`
+Nil; a negative `:c` is Nil. `:c(Nil)` anchors the match at 0, like
+`:p(0)`, while `:p(Nil)` searches as if absent (GM-35: `"aXbXc"` gives
+Nil for `:c(Nil)` and finds the X at 1 for `:p(Nil)`). `:ov`
 (`:overlap`) lists one match per start position, `:ex` (`:exhaustive`)
 every match at every position, both eager Lists and `()` when nothing
 matches. `:as(Str)` returns the matched text instead of the Match (Nil on
@@ -609,6 +615,8 @@ say "aXbXc".match(/X/, :c(2)).from, " ", "aXbXc".match(/X/, :c(5)).raku, " ", "a
 ```
 rakupp 4.0.1-84: differs — `:ov` and `:ex` return a single Match (`.elems` 0), `:as(Str)` returns the Match, the long names `:overlap`/`:exhaustive` count 0, `.match(1)` is `X::Method::NotFound`, and `:x(Nil)` is `X::Str::Match::x`.
 
+Corrected 2026-11-01 from Raku Behind the Docs, ch 17 (findings/BEHIND-THE-DOCS.md §1).
+
 ### GM-35  Adverb combinations                                              D:no R:no V:spec
 `:c`/`:p` combine with `:g` (matches from that point; `:p(2), :g` is `()`
 when nothing matches at 2), with `:x` (a List) and with each other (`:p`
@@ -616,13 +624,21 @@ wins over `:c`). `:ov, :x(2)` takes two overlapping matches; `:ex, :nth(2)`
 is the second exhaustive match; `:ov, :g` and `:ex, :ov` are the overlap
 and exhaustive lists (`:ex` wins); `:as(Str)` combines with `:g` (a List of
 Strs) and `:nth` (a Str); `:g, :nth(2)` is the single second match;
-`:x(2), :c(2)` counts from position 2. `:c(Nil)`/`:p(Nil)` are 0;
-`:ov(False)`, `:g(False)`, `:!g` and `:nth(Nil)` are absent.
+`:x(2), :c(2)` counts from position 2. `:c(Nil)` alone anchors at 0,
+like `:p(0)`: `"aXbXc"` is Nil and `"Xab"` matches at 0; with `:g` it
+scans from 0 and finds both X's. `:p(Nil)` searches as if absent (it
+finds the X at 1); `:ov(False)`, `:g(False)`, `:!g` and `:nth(Nil)` are
+absent too.
 ```
 say "aXbXc".match(/X/, :c(2), :g).elems, " ", "aXbXc".match(/X/, :p(1), :g).elems, " ", "aXbXc".match(/X/, :p(2), :g).raku, " ", "aaa".match(/a+/, :ov, :x(2)).elems, " ", "aaa".match(/a+/, :ex, :nth(2)).Str, " ", "a1b2".match(/\d/, :as(Str), :g).raku, " ", "a1b2".match(/\d/, :c(1), :p(1)).raku, " ", "aXbXc".match(/X/, :c(2), :p(1)).from, " ", "aXbXc".match(/X/, :p(3), :c(1)).from, " ", "aaa".match(/a+/, :ov, :g).elems, " ", "aaa".match(/a+/, :ex, :ov).elems, " ", "aXbXc".match(/X/, :c(2), :x(1)).raku, " ", "a1b2".match(/\d/, :as(Str), :nth(2)).raku, " ", "a1b2c3".match(/\d/, :g, :nth(2)).raku, " ", "a1b2c3".match(/\d/, :x(2), :c(2)).elems, " ", "a1b2c3".match(/\d/, :ov, :ex).elems, " ", "aXbXc".match(/X/, :c(Nil)).from, " ", "aXbXc".match(/X/, :p(Nil)).from, " ", "aXbXc".match(/X/, :ov(False)).^name, " ", (try "aXbXc".match(/X/, :g(False)).^name) // $!.^name, " ", (try "aXbXc".match(/X/, :!g).^name) // $!.^name, " ", (try "aXbXc".match(/X/, :nth(Nil)).^name) // $!.^name
 # rakudo 2026.08: 1 2 () 2 aa ("1", "2") Match.new(:orig("a1b2"), :from(1), :pos(2)) 1 3 3 6 (Match.new(:orig("aXbXc"), :from(3), :pos(4)),) "2" Match.new(:orig("a1b2c3"), :from(3), :pos(4)) 2 3 Nil 1 Match Match Match Match
+say "aXbXc".match(/X/, :c(Nil)).raku, " ", "Xab".match(/X/, :c(Nil)).from, " ", "aXbXc".match(/X/, :p(0)).raku, " ", "aXbXc".match(/X/, :c(0)).from, " ", "aXbXc".match(/X/, :p(Nil)).from, " ", "aXbXc".match(/X/, :c(Nil), :g).elems, " ", "aXbXc".match(/X/, :p(Nil), :g).elems
+# rakudo 2026.08: Nil 0 Nil 1 1 2 2
 ```
 rakupp 4.0.1-84: differs — `:ov, :x(2)` is 0, `:ex, :nth(2)` "aaa", `:as(Str), :g` a Match, `:p`+`:c` and `:ov, :g`/`:ex, :ov` wrong, `:as(Str), :nth(2)` a Match, `:ov, :ex` 0, and `:g(False)`/`:!g` are refused with `X::Syntax::Regex::Adverb`.
+(this rakupp line predates the correction; re-measure before relying on it)
+
+Corrected 2026-11-01 from Raku Behind the Docs, ch 17 (findings/BEHIND-THE-DOCS.md §1).
 
 ### GM-36  The m// form and its adverbs; list context                        D:yes R:yes V:spec
 `m:g/…/` against `$_` is a List of Matches (`()` and False when none), so
@@ -719,9 +735,15 @@ rakupp 4.0.1-84: differs — a `:v` Match's `.orig` is the delimiter text, not t
 `.trans(/re/ => $s)` replaces every match with `$s` (any length, "" to
 delete); with a Callable value the callable is called per match with `$/`
 set (and the caller's `$/` is left on the last match); a List of Regex keys
-pairs with a List of values; `:d` has no effect on regex keys; a non-Str,
-non-Regex key (`[1,2]`, the `Regex` type object) is silently ignored, and
-a Cool value is stringified. `.contains(/re/)` is a Bool; `.contains(/re/,
+pairs with a List of values; `:d` has no effect on regex keys. A List
+key such as `[1,2]` is not ignored: its elements are stringified and
+replaced like characters (`"a1b2".trans([1,2] => "x")` is `axbx`,
+`=> ["x", "y"]` gives `axby`; the first probe's `"abc".trans([1,2] =>
+"x")` is `abc` only because "abc" has no digits). Only a `Regex`
+type-object key is really skipped (`a1b2` unchanged), and only as the
+sole pair: next to another pair it dies with `X::Str::Trans::IllegalKey`
+("got illegal substitution key of type Any"). A Cool value is
+stringified. `.contains(/re/)` is a Bool; `.contains(/re/,
 $pos)` starts at `$pos`, is False when `$pos` is not below the length even
 for `^`/`$`, and a negative `$pos` is a Failure `X::OutOfRange`. `.index`,
 `.rindex`, `.indices`, `.starts-with`, `.ends-with` and `.contains(Regex)`
@@ -733,8 +755,13 @@ Match, being a Cool, answers `.index("b")` on its text.
 ```
 say "a1b2".trans(/\d/ => "#"), " ", "a1b2".trans(/\d/ => "##"), " ", "a1b2".trans(/\d/ => { $/.Str * 2 }), " ", "a1b2".trans(/\d/ => { "<" ~ $/ ~ ">" }), " ", "a1b2".trans([/\d/, /a/] => ["#", "A"]), " ", "a1b2".trans((/\d/ => "#", "a" => "A")), " ", "a1b2".trans(/(\d)/ => { $0 + 1 }), " ", "a1b2".trans(/\d/ => ""), " ", "abc".trans(/x/ => "y"), " ", "a1b2".trans(/\d+/ => "#"), " ", "a11b2".trans(/\d/ => "#", :d), " ", (try "abc".trans([1,2] => "x")) // $!.^name, " ", (try "abc".trans((Regex) => "x")) // $!.^name, " ", "abc".contains(/b/), " ", "abc".contains(/x/), " ", "abc".contains(/b/, 1), " ", "abc".contains(/b/, 2), " ", "abc".contains(/b/, 3), " ", "abc".contains(/b/, 99), " ", do { my $f = "abc".contains(/b/, -1); $f.so; $f.^name ~ ":" ~ $f.exception.^name }, " ", "abc".contains(/^/, 3), " ", "abc".contains(/$/, 3), " ", "abc".contains(/./, 3), " ", "abc".contains(/b/, 0), " ", ("abc" ~~ /b/).index("b"), " ", "abc".contains(rx/b/), " ", "abc".contains(/B/), " ", "abc".contains(/:i B/), " ", ("abc".contains(/b/)).^name, " ", "a1b2".trans(/\d/ => "#", "a" => "A"), " ", "aaa".trans(/a/ => "bc"), " ", "a1b2".trans(/\d/ => 9), " ", "a1b2".trans(/\d/ => ["x", "y"]), " ", do { "q" ~~ /q/; "abc".trans(/b/ => { $/.Str }); $/.Str }, " ", (try "abc".index(/b/)) // $!.^name, " ", (try "abc".rindex(/b/)) // $!.^name, " ", (try "abc".indices(/b/)) // $!.^name, " ", (try "abc".starts-with(/a/)) // $!.^name, " ", (try "abc".ends-with(/c/)) // $!.^name, " ", (try "abc".substr(/b/, 1)) // $!.^name ~ ":" ~ $!.message.substr(0, 24), " ", (try "abc".substr(/b/)) // $!.^name, " ", (try "abc".index(/b/, 0)) // $!.^name, " ", (try "abc".contains(Regex)) // $!.^name
 # rakudo 2026.08: a#b# a##b## a2b4 a<1>b<2> A#b# A#b# a2b3 ab abc a#b# a##b# abc abc True False True False False False Failure:X::OutOfRange False False False True 0 True False True Bool A#b# bcbcbc a9b9 axbx b X::Multi::NoMatch X::Multi::NoMatch X::Multi::NoMatch X::Multi::NoMatch X::Multi::NoMatch X::Method::NotFound:No such method '!cursor_ X::Method::NotFound X::Multi::NoMatch X::Multi::NoMatch
+say "a1b2".trans([1,2] => "x"), " ", "a1b2".trans([1,2] => ["x", "y"]), " ", "a1b2".trans((Regex) => "x"), " ", (try "a1b2".trans((Regex) => "x", /\d/ => "#")) // $!.^name ~ ":" ~ $!.message
+# rakudo 2026.08: axbx axby a1b2 X::Str::Trans::IllegalKey:in Str.trans, got illegal substitution key of type Any (should be a Regex or Str)
 ```
 rakupp 4.0.1-84: differs — a Callable value in `trans` is inserted as text, a List of Regex keys is not applied, `.contains(/^/, 3)` is True, `.index`/`.rindex`/`.indices`/`.starts-with`/`.ends-with`/`.substr` accept a Regex (1, 1, `(1)`, True, True, "a"), and `.contains(Regex)` is `X::TypeCheck::Binding::Parameter`.
+(this rakupp line predates the correction; re-measure before relying on it)
+
+Corrected 2026-11-01 from Raku Behind the Docs, ch 17 (findings/BEHIND-THE-DOCS.md §1).
 
 ## Counts
 

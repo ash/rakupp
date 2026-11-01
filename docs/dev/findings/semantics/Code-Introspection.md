@@ -66,9 +66,10 @@ Block or Routine are its return constraint, `Mu` when none was given;
 `--> Int` and print as `--> Int` in `.raku`. `Block.of` and `Code.of`
 on the type objects are `Mu`; `Routine.returns` on the type object is
 `X::Parameter::InvalidConcreteness`. `.signature.params` is a `List` of
-`Parameter`. A constant return (`--> 42`) makes `.returns` that value,
-prints as `:( --> 42)`, and the call returns the constant whatever the
-body does; `--> Nil` makes every call return `Nil`. `-> () --> Int {}`
+`Parameter`. A constant return (`--> 42`) makes `.signature.returns`
+that value, while `&f.returns` and `&f.of` are its type, `Int`; the
+signature prints as `:( --> 42)`, and the call returns the constant
+whatever the body does; `--> Nil` makes every call return `Nil`. `-> () --> Int {}`
 has one anonymous parameter with an empty sub-signature, spelled
 `:($ () --> Int)`. `&say.signature` is `:(|)`, `Str.^lookup("comb")`'s is
 the proto's `:(Cool $:: |)` (the `$::` spelling is CO-19's bug).
@@ -80,8 +81,13 @@ as `Sub+{Callable[Str]}`; one without matches `Callable[Str]` False.
 ```
 say do { sub a(Int $x, Str $y --> Str) { $y }; sub b($x) { $x }; sub c($x) returns Int { $x }; sub d($x) of Int { $x }; (&a.signature.raku, &a.signature.gist, &a.returns.^name, &a.of.^name, &b.returns.^name, &b.of.^name, &c.returns.^name, &c.signature.raku, &d.of.^name, &d.signature.raku, { $_ }.of.^name, { $_ }.returns.^name, {;}.signature.raku, { $_ }.signature.raku, -> $a { }.signature.gist, Block.of.^name, (try Code.of.^name) // $!.^name, (try Routine.returns.^name) // $!.^name, &a.signature.params.elems, &a.signature.params.^name, &a.signature.params[0].^name, &a.signature.^name, Sub.of.^name, (-> --> Int {}).of.^name, (-> () --> Int {}).signature.raku, sub (--> 42) {}.returns.raku, sub (--> 42) {}.signature.raku, sub (--> 42) { my $x = 1 }(), sub (--> Nil) { my $x = 1 }().raku, &say.signature.raku, &say.gist, Str.^lookup("comb").signature.raku, (try EVAL 'sub z(--> Int) returns Str { }') // $!.^name, (try EVAL 'sub z2() returns Int of Str { }') // $!.^name, (&a ~~ Callable[Str]), (&b ~~ Callable[Str]), &a.^name, &a.WHAT.gist, (&a ~~ Callable), &a.signature.returns.^name, (try &a.signature.has_returns) // $!.^name, (try &b.signature.has_returns) // $!.^name).join(" ") }
 # rakudo 2026.08: :(Int $x, Str $y --> Str) (Int $x, Str $y --> Str) Str Str Mu Mu Int :($x --> Int) Int :($x --> Int) Mu Mu :(;; $_? is raw = OUTER::<$_>) :(;; $_? is raw = OUTER::<$_>) ($a) Mu Mu X::Parameter::InvalidConcreteness 2 List Parameter Signature Mu Int :($ () --> Int) Int :( --> 42) 42 Nil :(|) &say :(Cool $:: |) X::Redeclaration X::NotParametric+{X::Comp} True False Sub+{Callable[Str]} (Sub+{Callable[Str]}) True Str True False
+say do { sub f(--> 42) { }; (&f.returns.raku, &f.of.raku, &f.signature.returns.raku, f()).join(" ") }
+# rakudo 2026.08: Int Int 42 42
 ```
 rakupp 4.0.1-84: differs — `Routine.returns` on the type object is `X::Method::NotFound`; `-> () --> Int` prints `:($ --> Int)`; `--> 42` is lost (`.returns` `Mu`, `.raku` `:()`, the call returns the body's value) and `--> Nil` returns the body's value too; `&say.signature.raku` and the proto's are `:()`; the two redeclarations compile silently; there is no `Callable[T]` mixin (`&a.^name` is `Sub`, `~~ Callable[Str]` False); `has_returns` is missing. The two "Sub object coerced to string" warnings are the two EVAL fields returning their routine instead of failing.
+(this rakupp line predates the correction; re-measure before relying on it)
+
+Corrected 2026-11-01 from Raku Behind the Docs, ch 15 (findings/BEHIND-THE-DOCS.md §1).
 
 ### CO-03  The return type check: X::TypeCheck::Return                D:partial R:yes V:spec
 A value that fails `-->`/`returns` throws `X::TypeCheck::Return` (an
@@ -408,12 +414,20 @@ given; a plain sub has no such method. Calls work; at process exit a
 report is printed to standard error: "Saw N occurrences of deprecated
 code.", a rule of `=`, then per routine "Sub old (from GLOBAL) seen at:"
 with file and line and "Please use new instead." (the probe shows the
-report's first lines).
+report's first lines). N counts deprecated routines, not calls: the first
+probe calls `old` twice and `old2` once and reports 2, and two calls of
+one routine report "Saw 1 occurrence of deprecated code."; the routine's
+entry lists every line it was called from (`-e, lines 2,3`).
 ```
 say do { sub old() is DEPRECATED("new") { 42 }; sub old2() is DEPRECATED { 1 }; (old(), &old.^name, &old.has-phasers, &old.phasers('ENTER').elems, old2(), old(), (try &old.DEPRECATED) // $!.^name, (try &old2.DEPRECATED) // $!.^name, (try (sub () { }).DEPRECATED) // $!.^name).join(" ") }
 # rakudo 2026.08: 42 Sub+{is-DEPRECATED} True 1 1 42 new something else X::Method::NotFound|Saw 2 occurrences of deprecated code.|================================================================================|Sub old (from GLOBAL) seen at:|  -e, line 1|Please use new instead.
+say do { my $p = run($*EXECUTABLE, "-e", Q:b[sub old() is DEPRECATED("new") { 42 }\nold();\nold();], :err); $p.err.slurp(:close).lines.grep(/^Saw|seen\sat|line/).map(*.trim).join("|") }
+# rakudo 2026.08: Saw 1 occurrence of deprecated code.|Sub old (from GLOBAL) seen at:|-e, lines 2,3
 ```
 rakupp 4.0.1-84: differs — the line died at `.has-phasers`; no report is printed and `.DEPRECATED` is missing.
+(this rakupp line predates the correction; re-measure before relying on it)
+
+Corrected 2026-11-01 from Raku Behind the Docs, ch 15 (findings/BEHIND-THE-DOCS.md §1).
 
 ### CO-18  is export                                                     D:partial R:partial V:spec
 `is export` on a routine, `our sub`, `our` variable, constant, class,
@@ -424,18 +438,25 @@ role or enum installs the symbol in the package's `EXPORT::DEFAULT` and
 `my` sub is still not reachable as `M::a`. An enum exports its values
 too; a role exports as its short name. A non-Pair argument (`is
 export(42)`) is a compile-time `X::AdHoc`. Two exported subs of one name
-in a module are `X::Redeclaration`; importing the same name from two
-modules is `X::Export::NameClash`; `import M` takes `DEFAULT` only (a
-`:t`-tagged sub is then undeclared), `import M :t` and `:ALL` take it, a
-tag the module does not define is a compile-time `X::Import::NoSuchTag`
+in a module are `X::Redeclaration`. Two modules in one file that export
+the same name fail at compile time, before any `import`:
+`X::Export::NameClash`, "A symbol '&z4' has already been exported" (the
+`M4`/`M5` field below, which also imports, fails the same way).
+`import M` takes `DEFAULT` only (a `:t`-tagged sub is then undeclared),
+`import M :t` and `:ALL` take it, a tag the module does not define is a compile-time `X::Import::NoSuchTag`
 (also for `:MANDATORY` exports asked by another tag).
 ```
 say do { my @o; module M { sub a() is export { "a" }; sub b() is export(:tag) { "b" }; sub c() is export(:DEFAULT, :other) { "c" }; sub d() { "d" }; our sub e() is export { "e" }; sub f() is export(:ALL) { "f" }; sub g() is export(:tag, :tag2) { "g" }; multi mm(Int) is export { "mmInt" }; multi mm(Str) is export { "mmStr" } }; @o.push(M::EXPORT::DEFAULT::.keys.sort.raku, M::EXPORT::ALL::.keys.sort.raku, M::EXPORT::tag::.keys.sort.raku, M::EXPORT::other::.keys.sort.raku, M::EXPORT::tag2::.keys.sort.raku, M::EXPORT::.keys.sort.raku, (try EVAL 'M::a()') // $!.^name, M::e(), M::EXPORT::DEFAULT::<&a>(), (try EVAL 'module M2 { sub z() is export(42) { } }') // $!.^name, M::EXPORT::DEFAULT::<&mm>.is_dispatcher, M::EXPORT::DEFAULT::<&mm>(1), M::EXPORT::DEFAULT::<&mm>.candidates.elems, M::EXPORT::DEFAULT::<&mm>.package.^name, M::EXPORT::DEFAULT::<&a>.package.^name, M::EXPORT::DEFAULT::<&a> === M::EXPORT::ALL::<&a>, (try EVAL 'module M3 { sub z3() is export { 1 }; sub z3() is export { 2 } }; 1') // $!.^name, (try EVAL 'module M4 { sub z4() is export { 1 } }; module M5 { sub z4() is export { 2 } }; import M4; import M5; z4()') // $!.^name, (try EVAL 'module M6 { sub z6() is export { 6 } }; import M6; z6()') // $!.^name, (try EVAL 'module M7 { sub z7() is export(:t) { 7 } }; import M7; z7()') // $!.^name, (try EVAL 'module M8 { sub z8() is export(:t) { 8 } }; import M8 :t; z8()') // $!.^name, (try EVAL 'module M9 { sub z9() is export(:t) { 9 } }; import M9 :ALL; z9()') // $!.^name, (try EVAL 'module M10 { sub z10() is export(:MANDATORY) { 10 } }; import M10 :t; z10()') // $!.^name, (try EVAL 'module M11 { sub z11() is export(:DEFAULT) { 11 } }; import M11 :DEFAULT; z11()') // $!.^name, (try EVAL 'module M12 { sub z12() is export { 12 } }; import M12 :nope; z12()') // $!.^name); @o.join(" ") }
 # rakudo 2026.08: ("\&a", "\&c", "\&e", "\&mm").Seq ("\&a", "\&b", "\&c", "\&e", "\&f", "\&g", "\&mm").Seq ("\&b", "\&g").Seq ("\&c",).Seq ("\&g",).Seq ("ALL", "DEFAULT", "other", "tag", "tag2").Seq X::AdHoc e a X::AdHoc+{X::Comp} True mmInt 2 M M True X::Redeclaration X::Export::NameClash 6 X::Undeclared::Symbols 8 9 X::Import::NoSuchTag+{X::Comp} 11 X::Import::NoSuchTag+{X::Comp}
 say do { my @o; @o.push((try EVAL 'module N { our $v is export = 5; constant K is export = 7; class KL is export { }; enum EN is export <e1 e2>; role RO is export { }; our sub s() is export { "s" } }; (N::EXPORT::DEFAULT::.keys.sort.raku, N::EXPORT::DEFAULT::<EN>.raku, N::EXPORT::DEFAULT::<e1>.raku, N::EXPORT::DEFAULT::<KL>.raku, N::EXPORT::DEFAULT::<RO>.raku, N::EXPORT::DEFAULT::<K>, N::EXPORT::DEFAULT::<$v>, N::EXPORT::DEFAULT::<&s>()).join(" ")') // $!.^name); @o.join(" ") }
 # rakudo 2026.08: ("\$v", "\&s", "EN", "K", "KL", "RO", "e1", "e2").Seq EN EN::e1 N::KL N::RO 7 5 s
+say (try EVAL q[module Q4 { sub z4() is export { 1 } }; module Q5 { sub z4() is export { 2 } }; 1]) // $!.^name ~ ":" ~ $!.message, " | ", do { my $p = run($*EXECUTABLE, "-e", q[say "run"; module Q4 { sub z4() is export { 1 } }; module Q5 { sub z4() is export { 2 } }], :out, :err); ($p.out.slurp(:close).trim || "-") ~ "/" ~ $p.err.slurp(:close).lines[0,1].join("|") }
+# rakudo 2026.08: X::Export::NameClash:A symbol '&z4' has already been exported | -/===SORRY!=== Error while compiling -e|A symbol '&z4' has already been exported
 ```
 rakupp 4.0.1-84: differs — the first line died at `M::EXPORT::DEFAULT::<&a>()` ("Cannot invoke non-Callable value of type Any": the EXPORT packages are not populated), and in the second `N::EXPORT::DEFAULT::<EN>` is parsed as a placeholder (`X::Placeholder::Mainline`); measured separately, every import succeeds regardless of tag and no clash is detected.
+(this rakupp line predates the correction; re-measure before relying on it)
+
+Corrected 2026-11-01 from Raku Behind the Docs, ch 15 (findings/BEHIND-THE-DOCS.md §1).
 
 ### CO-19  Methods: invocant, `*%_`, gist, and how their signatures print   D:partial R:partial V:bug
 A method's signature has the invocant as its first parameter
@@ -474,17 +495,25 @@ looser` make a level just above or below (`t@=`, `t:=`; `1 pp 2 * 3` is
 `(1+6)`, `1 ll 2 + 3` is `[1 5]`), `is assoc<right|non>` sets
 associativity (`non` makes `1 nn 2 nn 3` a compile-time
 `X::Syntax::NonAssociative`); `[rr]` reduces right. Mixing two
-operators of one level takes the left one's associativity. `is
-tighter<+>` on a non-operator is a compile-time `X::AdHoc`; `is
-equiv(&say)` is accepted. A non-operator sub and a block answer
+operators of one level takes the left one's associativity. On a sub
+that is not an operator, `is tighter(&infix:<+>)` compiles without
+complaint (the sub's `.precedence` becomes `t@=`); only the string form
+`is tighter<+>` is refused, a compile-time `X::AdHoc` ("Operator given
+to 'is tighter' does not appear to be an operator"). `is equiv(&say)`
+is accepted. A non-operator sub and a block answer
 `precedence` `""` and `prec` `{}`. Bug: `.prec("prec")` throws
 `X::TypeCheck::Return` (the one-argument form returns a Str against
 its own `Hash:D` constraint).
 ```
 say do { sub infix:<mm>($a, $b) is equiv(&infix:<*>) { "$a*$b" }; sub infix:<pp>($a, $b) is tighter(&infix:<+>) { "($a+$b)" }; sub infix:<ll>($a, $b) is looser(&infix:<+>) { "[$a $b]" }; sub infix:<rr>($a, $b) is assoc<right> { "($a r $b)" }; sub infix:<nn>($a, $b) is assoc<non> { }; sub infix:<zz>($a, $b) { "($a z $b)" }; sub infix:<ee>($a, $b) is equiv<+> { "$a e $b" }; (EVAL('1 pp 2 * 3'), EVAL('1 ll 2 + 3'), EVAL('1 rr 2 rr 3'), EVAL('1 zz 2 zz 3'), EVAL('2 mm 3 ~ "!"'), (try EVAL('1 nn 2 nn 3')) // $!.^name, EVAL('1 ee 2 * 3'), (try EVAL 'sub infix:<qq>($a, $b) is equiv(&say) { }; 1') // $!.^name, (try EVAL 'sub notop($a, $b) is tighter<+> { }; 1') // $!.^name, EVAL('[rr] 1, 2, 3'), EVAL('[zz] 1, 2, 3'), EVAL('[mm] 2, 3'), EVAL('1 rr 2 zz 3'), EVAL('1 zz 2 rr 3'), (try EVAL('1 pp 2 ll 3')) // $!.^name, (try &infix:<+>.precedence) // $!.^name, (try &infix:<+>.associative) // $!.^name, (try &infix:<*>.precedence) // $!.^name, (try &infix:<mm>.precedence) // $!.^name, (try &infix:<pp>.precedence) // $!.^name, (try &infix:<ll>.precedence) // $!.^name, (try &infix:<ee>.precedence) // $!.^name, (try &infix:<+>.thunky.raku) // $!.^name, (try &infix:<&&>.thunky) // $!.^name, (try &infix:<+>.iffy) // $!.^name, (try &infix:<==>.iffy) // $!.^name, (try &infix:<||>.iffy) // $!.^name, (try &infix:<+>.prec.^name) // $!.^name, (try &infix:<+>.prec<prec>) // $!.^name, (try &infix:<+>.prec<assoc>) // $!.^name, (try &infix:<+>.prec("prec")) // $!.^name, (try &infix:<rr>.associative) // $!.^name, (try &infix:<zz>.associative.raku) // $!.^name, (try &infix:<zz>.precedence) // $!.^name, (try &infix:<+>.reducer.name) // $!.^name, (try &infix:<,>.reducer.name) // $!.^name, (try &infix:<==>.reducer.name) // $!.^name, (try &infix:<rr>.reducer.name) // $!.^name, (try &infix:<**>.associative) // $!.^name, (try (sub () {}).precedence.raku) // $!.^name, (try ({;}).precedence.raku) // $!.^name, (try ({;}).prec.raku) // $!.^name, (try &say.prec.raku) // $!.^name, (try &say.iffy.raku) // $!.^name, (try &prefix:<->.precedence) // $!.^name, (try &postfix:<++>.precedence) // $!.^name, (try &infix:<~~>.iffy) // $!.^name, (try &infix:<nn>.associative) // $!.^name, (try &infix:<,>.associative) // $!.^name, (try &infix:<cmp>.associative) // $!.^name, (try &infix:<..>.associative) // $!.^name, (try &infix:<=>.associative) // $!.^name, (try &infix:<x>.associative) // $!.^name, (try &infix:<+>.prec.keys.sort.raku) // $!.^name, (try &infix:<+>.prec<iffy>.raku) // $!.^name, (try &infix:<==>.prec<iffy>.raku) // $!.^name, (try &infix:<+>.prec<thunky>.raku) // $!.^name, (try &infix:<&&>.prec<thunky>.raku) // $!.^name, (try &infix:<+>.prec<dba>.raku) // $!.^name, (try &infix:<+>.precedence.^name) // $!.^name, (try &infix:<mm>.reducer.name) // $!.^name, (try &infix:<rr>.prec<assoc>) // $!.^name, (try &infix:<ll>.prec<prec>) // $!.^name, (try &infix:<+>.prec("prec")) // $!.message.substr(0, 55)).join(" ") }
 # rakudo 2026.08: (1+6) [1 5] (1 r (2 r 3)) ((1 z 2) z 3) 2*3! X::Syntax::NonAssociative 1 e 6 1 X::AdHoc+{X::Comp} (1 r (2 r 3)) ((1 z 2) z 3) 2*3 ((1 r 2) z 3) (1 z (2 r 3)) [(1+2) 3] t= left u= u= t@= t:= t= "" .t False True True Hash t= left X::TypeCheck::Return right "" t= METAOP_REDUCE_LEFT METAOP_REDUCE_LIST METAOP_REDUCE_CHAIN METAOP_REDUCE_RIGHT right "" "" {} {} Bool::False v= x= True non list non non right left ("assoc", "dba", "prec").Seq Any 1 Any ".t" "additive" Str METAOP_REDUCE_LEFT right t:= Type check failed for return value; expected Hash:D but
+say (try EVAL q[sub notop($a, $b) is tighter(&infix:<+>) { "n" }; notop(1, 2) ~ " " ~ &notop.precedence]) // $!.^name, " | ", (try EVAL q[sub notop2($a, $b) is tighter<+> { }; 1]) // $!.^name ~ ":" ~ $!.message
+# rakudo 2026.08: n t@= | X::AdHoc+{X::Comp}:Operator given to 'is tighter' does not appear to be an operator
 ```
 rakupp 4.0.1-84: differs — `is looser` is ignored (`1 ll 2 + 3` parses as `(1 ll 2) + 3` and the line died numifying `[1 2]`); none of the property methods exist.
+(this rakupp line predates the correction; re-measure before relying on it)
+
+Corrected 2026-11-01 from Raku Behind the Docs, ch 15 (findings/BEHIND-THE-DOCS.md §1).
 
 ## C. Signature
 
@@ -679,7 +708,7 @@ block on either side is never accepted, even against itself. `eqv`
 needs identical type, flags, named names and, for constraints, equal
 literals; `$x` is not `eqv` `\x`. `.default` is the `Code` type object
 when none, else a `Block` returning the value (`{ 1 + 1 }` computed at
-each call). `.named_names` lists aliases outermost first (`:a(:b($c))`
+each call). `.named_names` lists aliases innermost first (`:a(:b($c))`
 gives `("b", "a")`, name `$c`). Quirk: `where 1..3` and `where 42`
 are stored as a wrapping `Block`, so two parameters written `where 42`
 neither `~~` nor `eqv` each other, while the bare literal `:(42)` stores
@@ -695,6 +724,8 @@ say do { sub P($s) { $s.params[0] }; (P(:(Int $x)) ~~ P(:(Int $y)), P(:(Int $x))
 ```
 rakupp 4.0.1-84: differs — the line died at `.constraint_list` (`X::Method::NotFound`).
 
+Corrected 2026-11-01 from Raku Behind the Docs, ch 15 (findings/BEHIND-THE-DOCS.md §1).
+
 ### CO-29  Binding traits at run time: is rw, is copy, is raw, `\`, slurpies   D:yes R:yes V:spec
 `is rw` needs a writable container: a variable, an anonymous `my Int
 $`, an Array, a typed container of the right type; a literal, `Nil`, a
@@ -705,8 +736,8 @@ behaves the same. Through a typed `is rw`, `is copy` or `is raw`
 parameter an assignment is re-checked against the parameter's type.
 `is copy` gives a fresh `Scalar`; a plain `$x` bound to a variable
 keeps that variable's `Scalar` (`.VAR` Scalar) and is read-only
-(`X::Assignment::RO`); bound to a literal it is the bare value; `\x` and
-`is raw` pass the argument as is (assigning through a literal is
+(`X::Assignment::RO`); bound to a literal it still shows `.VAR` as
+`Scalar`; `\x` and `is raw` pass the argument as is (assigning through a literal is
 `X::AdHoc`). Type failures are `X::TypeCheck::Binding::Parameter`
 (`.got`, `.expected`, `.symbol`, `.operation` "binding", `.parameter`,
 `.constraint` True for a `where`, then `.expected` is the where block);
@@ -718,17 +749,26 @@ here); arity and named mistakes on a sub are `X::AdHoc`. Slurpies:
 `*@a` flattens (`[1, 2], 3` gives 3 elements, a Range 3), `**@a` keeps
 each argument as one (`[1, 2]` gives 1), `+@a` flattens a single
 Iterable argument only (`(1, 2)` 2, `(1, 2), 3` 2, `1` 1); `*@a`,
-`**@a`, `+@a` are `Array`s, `*@a is raw` and `+a` a `List` (an Array
-argument stays an Array for `+a`); elements of a slurpy are `Scalar`s,
-`*%h` a `Hash`, `|c` a `Capture`. `@a` bound to a List is read-only,
+`**@a`, `+@a` are `Array`s, `*@a is raw` and `+a` a `List` (`+a` given
+an Array argument also produces a List, not an Array). The elements of a
+`*@a` slurpy are `Scalar`s only when at least one argument is a
+variable: with all literals, `*@a` holds bare values (`.VAR` `Int`) and
+assigning to an element dies (`X::AdHoc`); `+@a` and `**@a` do not do
+this, their elements are assignable `Scalar`s either way. `*%h` is a
+`Hash`, `|c` a `Capture`. `@a` bound to a List is read-only,
 bound to an Array writes through, `is copy` copies.
 ```
 say do { sub rw($x is rw) { $x++ }; sub cp($x is copy) { $x++; $x }; sub rw2(\x) { x = 9 }; sub ro($x) { $x = 1 }; sub raw($x is raw) { $x = 7 }; sub ty(Int $x) { }; sub wh($x where * > 5) { }; sub df(Int:D $x) { }; sub du(Int:U $x) { }; sub op(Int $x? where { $_ > 5 }) { }; my $v = 1; my $str = "s"; my $one = 1; my $it = Int; my $five = 5; my \nl = (Nil,); my @o; rw($v); @o.push($v); @o.push((try rw(5)) // $!.^name); @o.push((try rw(my Int $)) // "ok"); @o.push(cp($v), $v); rw2($v); @o.push($v); @o.push((try rw2(1)) // $!.^name); @o.push((try ro($v)) // $!.^name); raw($v); @o.push($v); @o.push((try raw(1)) // $!.^name); @o.push((try ty($str)) // $!.^name); @o.push((try wh($one)) // $!.^name); @o.push((try df($it)) // $!.^name); @o.push((try du($five)) // $!.^name); @o.push((try op()) // $!.^name); @o.push((try ty(Int)) // "typeobj-ok"); @o.push((try ty(|nl)) // $!.^name); @o.push((try rw(Nil)) // $!.^name); @o.push((try (sub (Int $x is rw) { $x = "s" })($v)) // $!.^name); @o.push((try (sub (Int $x is copy) { $x = "s" })($v)) // $!.^name); @o.push((try (sub (Int $x is raw) { $x = "s" })($v)) // $!.^name); @o.push((try (sub ($x is rw) { })(my @a)) // "arr-ok"); @o.push((try (sub ($x is rw) { })((1, 2))) // $!.^name); @o.push((try (sub ($x is rw) { })(Any)) // $!.^name); @o.push((try (sub ($x is rw) { })(my $u)) // "undef-ok"); @o.push((try (sub ($x is rw) { $x = 5 })(my %h)) // $!.^name); @o.push((try (sub ($x is rw) { })(my Int $ti = 1)) // "typed-ok"); @o.push((try (sub (Int $x is rw) { })(my $any = 1)) // "any-cont-ok"); @o.push((try (sub (Int $x is rw) { })(my Str $s = "a")) // $!.^name); @o.push((try (sub (:$n! is rw) { $n = 2 })(:n(my $nn = 1)) // $nn) // $!.^name); @o.push((try (sub (:$n! is rw) { $n = 2 })(:n(1))) // $!.^name); @o.push((try (sub (*@a is raw) { @a[0].VAR.^name })(my $q2 = 1)) // $!.^name); @o.push((try (sub (*@a) { @a[0].VAR.^name })(my $q3 = 1)) // $!.^name); @o.push((try (sub (+@a) { @a.^name })(1, 2)) // $!.^name); @o.push((try (sub (+a) { a.^name })(1, 2)) // $!.^name); @o.push((try (sub (+a) { a.^name })([1, 2])) // $!.^name); @o.push((try (sub (+@a) { @a.elems })([1, 2])) // $!.^name); @o.push((try (sub (*@a) { @a.elems })([1, 2])) // $!.^name); @o.push((try (sub (**@a) { @a.elems })([1, 2])) // $!.^name); @o.push((try (sub (**@a) { @a.elems })([1, 2], 3)) // $!.^name); @o.push((try (sub (*@a) { @a.elems })([1, 2], 3)) // $!.^name); @o.push((try (sub (*@a) { @a.elems })((1, 2), 3)) // $!.^name); @o.push((try (sub (+@a) { @a.elems })((1, 2), 3)) // $!.^name); @o.push((try (sub (+@a) { @a.elems })((1, 2))) // $!.^name); @o.push((try (sub (+@a) { @a.elems })(1)) // $!.^name); @o.push((try (sub (+@a) { @a.elems })()) // $!.^name); @o.push((try (sub (*@a) { @a.elems })(1..3)) // $!.^name); @o.push((try (sub (**@a) { @a.elems })(1..3)) // $!.^name); @o.push((try (sub (+@a) { @a.elems })(1..3)) // $!.^name); @o.push((try (sub (*@a) { @a.^name })(1)) // $!.^name); @o.push((try (sub (**@a) { @a.^name })(1)) // $!.^name); @o.push((try (sub (+@a) { @a.^name })(1)) // $!.^name); @o.push((try (sub (*@a is raw) { @a.^name })(1)) // $!.^name); @o.push((try (sub (*%h) { %h.^name })(:a)) // $!.^name); @o.push((try (sub (|c) { c.^name })(1)) // $!.^name); @o.push((try (sub (*@a) { @a[0].VAR.^name })((my $q4 = 1,)) ) // $!.^name); @o.push((try (sub ($x is copy) { $x.VAR.^name })(1)) // $!.^name); @o.push((try (sub ($x) { $x.VAR.^name })(1)) // $!.^name); @o.push((try (sub ($x) { $x.VAR.^name })(my $q5 = 1)) // $!.^name); @o.push((try (sub (\x) { x.VAR.^name })(1)) // $!.^name); @o.push((try (sub (\x) { x.VAR.^name })(my $q6 = 1)) // $!.^name); @o.push((try (sub ($x is raw) { $x.VAR.^name })(1)) // $!.^name); @o.push((try (sub (@a) { @a.VAR.^name })([1])) // $!.^name); @o.push((try (sub (@a) { @a[0] = 9 })((1,))) // $!.^name); @o.push((try (sub (@a) { @a[0] = 9; @a.raku })([1])) // $!.^name); @o.push((try (sub (@a is copy) { @a[0] = 9; @a.raku })((1,))) // $!.^name); @o.push((try (sub (%h) { %h<a> = 9; %h.raku })({a => 1})) // $!.^name); @o.join(" ") }
 # rakudo 2026.08: 2 X::Parameter::RW 0 3 2 9 X::Assignment::RO X::AdHoc 7 X::AdHoc X::TypeCheck::Binding::Parameter X::TypeCheck::Binding::Parameter X::Parameter::InvalidConcreteness X::Parameter::InvalidConcreteness X::Numeric::Uninitialized typeobj-ok X::TypeCheck::Binding::Parameter X::Parameter::RW s X::TypeCheck::Binding::Parameter X::TypeCheck::Binding::Parameter arr-ok X::Parameter::RW X::Parameter::RW undef-ok X::Parameter::RW typed-ok any-cont-ok X::TypeCheck::Binding::Parameter 2 X::Parameter::RW Scalar Scalar Array List List 2 2 1 2 3 3 2 2 1 0 3 1 3 Array Array Array List Hash Capture Scalar Scalar Scalar Scalar Int Scalar Int Array X::Assignment::RO [9] [9] {:a(9)}
 say do { sub ty(Int $x) { }; sub wh($x where * > 5) { }; sub df(Int:D $x) { }; sub du(Int:U $x) { }; sub op(Int $x? where { $_ > 5 }) { }; sub rw($x is rw) { }; class C { method m(C:D:) { } }; my $str = "s"; my $one = 1; my $it = Int; my $five = 5; my $ty = Str; my @o; try rw(5); my $e1 = $!; @o.push($e1.^name, (try $e1.got.raku) // "NA", (try $e1.symbol) // "NA"); try ty($str); my $e2 = $!; @o.push($e2.^name, $e2.got.raku, $e2.expected.^name, (try $e2.symbol) // "NA", ($e2 ~~ X::TypeCheck::Binding), ($e2 ~~ X::TypeCheck), (try $e2.operation) // "NA", (try $e2.parameter.name) // "NA", (try $e2.constraint.raku) // "NA", (try $e2.what.raku) // "NA"); try wh($one); my $e3 = $!; @o.push($e3.^name, (try $e3.constraint) // "NA", $e3.expected.^name, $e3.got); try df($it); my $e4 = $!; @o.push($e4.^name, (try $e4.expected.^name) // "NA", (try $e4.got.^name) // "NA", (try $e4.routine) // "NA", (try $e4.param) // "NA", (try $e4.should-be-concrete) // "NA", (try $e4.param-is-invocant) // "NA"); try du($five); my $e5 = $!; @o.push($e5.^name, (try $e5.should-be-concrete) // "NA"); try op(); my $e6 = $!; @o.push($e6.^name, (try $e6.omitted.raku) // "NA"); try C.m; my $e7 = $!; @o.push($e7.^name, (try $e7.param-is-invocant) // "NA", (try $e7.routine) // "NA", (try $e7.param.raku) // "NA"); try (sub (Int $x) { })($ty); @o.push($!.^name, $!.got.raku); @o.push((try (sub ($x) { })()) // $!.^name, (try (sub ($x) { })(1, 2)) // $!.^name, (try (sub (:$n!) { })()) // $!.^name, (try (sub ($x) { })(1, :n)) // $!.^name, (try (sub ($x) { })(:n)) // $!.^name, (try (sub ($x, $y) { })(1)) // $!.^name); @o.join(" ") }
 # rakudo 2026.08: X::Parameter::RW 5 $x X::TypeCheck::Binding::Parameter "s" Int $x True True binding $x Bool Str X::TypeCheck::Binding::Parameter True WhateverCode 1 X::Parameter::InvalidConcreteness Str Str df $x True False X::Parameter::InvalidConcreteness False X::Numeric::Uninitialized NA X::Parameter::InvalidConcreteness True m "<anon>" X::TypeCheck::Binding::Parameter Str X::AdHoc X::AdHoc X::AdHoc X::AdHoc X::AdHoc X::AdHoc
+say do { my $v = 5; my &e = -> @a { @a[0].VAR.^name ~ ":" ~ ((try { @a[0] = 9; "assigned" }) // $!.^name) }; ((sub (*@a) { e(@a) })(1, 2), (sub (*@a) { e(@a) })(1), (sub (*@a) { e(@a) })(1, $v), (sub (+@a) { e(@a) })(1, 2), (sub (**@a) { e(@a) })(1, 2), $v, (sub ($x) { $x.VAR.^name })(1), (sub (+a) { a.^name })([1, 2])).join(" ") }
+# rakudo 2026.08: Int:X::AdHoc Int:X::AdHoc Scalar:assigned Scalar:assigned Scalar:assigned 5 Scalar List
 ```
 rakupp 4.0.1-84: differs — `Nil`, a List, `Any`, a Hash and a literal named all bind to `is rw` (no `X::Parameter::RW`), a plain `$x` bound to a variable is `X::AdHoc` on assignment instead of `X::Assignment::RO` and shows `.VAR` `Int`, the omitted-optional `where` is `X::TypeCheck::Binding::Parameter`, slurpy elements are `Int` not `Scalar`, `+@a`/`+a` give `Array` not `List`, `@a` bound to a List is writable, and the exception attributes are missing (the second line died at `.got`).
+(this rakupp line predates the correction; re-measure before relying on it)
+
+Corrected 2026-11-01 from Raku Behind the Docs, ch 15 (findings/BEHIND-THE-DOCS.md §1).
 
 ### CO-30  Coercion types `Int()`, `Int(Str)`, `Int:D()`                 D:partial R:partial V:quirk
 `Int() $x` accepts any argument whose type is not already Int and

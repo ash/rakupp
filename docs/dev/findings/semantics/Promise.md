@@ -139,13 +139,20 @@ that variable after the keep changes what `.result` and `await` return
 afterwards (6, 8, 10 in the probe: the variables were 5, 7, 9 when kept). A
 value already read from `.result` is unaffected (11); assigning to
 `.result` is `X::Assignment::RO`; a `.then` result, `$v.clone`, `+$v` or
-`$v + 0` is a plain value. Roast never assigns after keeping and nothing
-depends on this; keep values.
+`$v + 0` is a plain value. Only the scalar fields show the quirk. The
+`@a.push` field (`[1, 2, 3]`) cannot: an Array is held as an object
+anyway, so a plain `my $copy = @a` sees the push just as `.result` does,
+and only a promise kept with `@a.clone` keeps `[1, 2]`. Roast never
+assigns after keeping and nothing depends on this; keep values.
 ```
 my $x = 5; my $p = Promise.new; $p.keep($x); $x = 6; my @a = 1,2; my $q = Promise.new; $q.keep(@a); @a.push(3); my $y = 7; my $s = start { $y }; await $s; $y = 8; my $z = 9; my $t = Promise.kept($z); $z = 10; my $w = 11; my $u = Promise.new; $u.keep($w); my $got = $u.result; $w = 12; say $p.result, " ", $q.result.raku, " ", $s.result, " ", $t.result, " ", $got, " ", (await $p), " ", (try { $p.result = 1; "assigned" }) // $!.^name, " ", (try { $s.result = 1; "assigned" }) // $!.^name, " ", do { my $v = 1; my $r = Promise.new; $r.keep($v); my $t2 = $r.then({ .result }); await $t2; $v = 2; $t2.result }, " ", do { my $v = 1; my $r = Promise.new; $r.keep($v.clone); $v = 2; $r.result }, " ", do { my $v = 1; my $r = Promise.new; $r.keep(+$v); $v = 2; $r.result }, " ", do { my $v = 1; my $r = start { $v + 0 }; await $r; $v = 2; $r.result }
 # rakudo 2026.08: 6 [1, 2, 3] 8 10 11 6 X::Assignment::RO X::Assignment::RO 1 1 1 1
+my @a = 1, 2; my $q = Promise.new; $q.keep(@a); my $copy = @a; my $p2 = Promise.new; $p2.keep(@a.clone); @a.push(3); my $x = 5; my $p = Promise.new; $p.keep($x); $x = 6; say $q.result.raku, " ", $copy.raku, " ", $p2.result.raku, " ", $p.result
+# rakudo 2026.08: [1, 2, 3] $[1, 2, 3] [1, 2] 6
 ```
 rakupp 4.0.1-84: differs, by decision — copies the value at keep time (5, 7, 9), the saner behaviour; keep it.
+
+Corrected 2026-11-01 from Raku Behind the Docs, ch 21 (findings/BEHIND-THE-DOCS.md §1).
 
 ### PR-08  vow                                                            D:yes R:yes V:spec
 `.vow` returns a `Promise::Vow` — a lexical class, not reachable by name
@@ -346,9 +353,12 @@ A `start` block used as a statement (sunk) whose code dies prints
 exception's message to stderr and terminates the program with exit code 1
 at the moment of the death (0.3 s later here; nothing after that runs).
 This belongs to the `start` prefix in v6.d and later (`use v6.c` turns it
-off), applies when the start is sunk inside a sub, and to
-`Promise.start(&code, :report-broken-if-sunk)`; a plain `Promise.start(…)`
-sunk, a start assigned to a variable (even `my $ =`), a start with a
+off) and to `Promise.start(&code, :report-broken-if-sunk)`. What arms the
+report is sinking the Promise itself, wherever that happens: for a sub
+that returns a start's Promise, it happens at the call, so `f();` is
+reported, even when the sub held the start in a variable before
+returning it, while `my $p = f()` and `my $ = f()` are silent. A plain
+`Promise.start(…)` sunk, a start assigned to a variable (even `my $ =`), a start with a
 `CATCH` that handles, a successful start, and a start whose promise had a
 `.then` attached are silent, and a bare `$p;` statement is a compile-time
 "Useless use" warning that never sinks the promise. With
@@ -360,8 +370,12 @@ my sub Rn($code) { my $r = run($*EXECUTABLE, "-e", $code, :out, :err); $r.exitco
 # rakudo 2026.08: 1:"":"Unhandled exception in code scheduled on thread N/boom" 0:"after\n":"" 0:"after\n":"" 0:"after\n":"" 1:"":"Unhandled exception in code scheduled on thread N/boom"
 my sub Rn($code) { my $r = run($*EXECUTABLE, "-e", $code, :out, :err); $r.exitcode ~ ":" ~ $r.out.slurp(:close).raku ~ ":" ~ $r.err.slurp(:close).lines.head(2).join("/").subst(/"thread " \d+/, "thread N").raku }; say Rn('start { die "boom"; CATCH { default { say "caught" } } }; sleep 0.3; say "after"'), " ", Rn('$*SCHEDULER.uncaught_handler = -> $ex { say "H:" ~ $ex.message }; start { die "boom" }; sleep 0.3; say "after"'), " ", Rn('sub f { start { die "far" } }; f(); sleep 0.3; say "after"'), " ", Rn('my $p = start { die "x" }; $p.then({ 1 }); $p; sleep 0.3; say "after"'), " ", Rn('start { 1 }; sleep 0.1; say "ok"'), " ", Rn('my $p = start { die "y" }; sleep 0.3; $p; say "after"')
 # rakudo 2026.08: 0:"caught\nafter\n":"" 0:"H:boom\nafter\n":"" 1:"":"Unhandled exception in code scheduled on thread N/far" 0:"after\n":"WARNINGS for -e:/Useless use of \$p in sink context (line 1)" 0:"ok\n":"" 0:"after\n":"WARNINGS for -e:/Useless use of \$p in sink context (line 1)"
+my sub Rn($code) { my $r = run($*EXECUTABLE, "-e", $code, :out, :err); $r.exitcode ~ ":" ~ $r.out.slurp(:close).raku ~ ":" ~ $r.err.slurp(:close).lines.head(2).join("/").subst(/"thread " \d+/, "thread N").raku }; say Rn('sub f { start { die "far" } }; my $p = f(); sleep 0.3; say "after"'), " ", Rn('sub f { start { die "far" } }; my $ = f(); sleep 0.3; say "after"'), " ", Rn('sub f { my $p = start { die "far" }; $p }; f(); sleep 0.3; say "after"'), " ", Rn('sub f { my $p = start { die "far" }; $p }; my $q = f(); sleep 0.3; say "after"')
+# rakudo 2026.08: 0:"after\n":"" 0:"after\n":"" 1:"":"Unhandled exception in code scheduled on thread N/far" 0:"after\n":""
 ```
 rakupp 4.0.1-84: differs — no report and exit 0 in every case, `:report-broken-if-sunk` and the uncaught handler included (the handler is honoured for `cue`, PR-35, but not here).
+
+Corrected 2026-11-01 from Raku Behind the Docs, ch 21 (findings/BEHIND-THE-DOCS.md §1).
 
 ## D. await
 
@@ -384,8 +398,9 @@ rakupp 4.0.1-84: differs — the line died at `$!.message`, the error naming `$!
 
 ### PR-21  await on lists, empty lists and non-awaitables                 D:partial R:yes V:spec
 `await $p1, $p2, …` (or an array, or a nested list) waits for ALL of them
-and returns a List of the results in argument order (a nested list gives a
-nested List; Slips among the results are flattened out — 4 elements); the
+and returns a List of the results in argument order (a nested list is
+flattened: `await ($p1, ($p2, $p3))` gives `(1, 2, 3)`, not a nested List;
+Slips among the results are flattened out — 4 elements); the
 wait is honoured in sink context too (two 0.3 s starts take ≥ 0.25 s).
 `await ()`, `await []` and an empty array return `()`. `await()` with
 nothing is `X::AdHoc` ("Must specify an Awaitable to await (got an empty
@@ -400,6 +415,8 @@ my $p1 = Promise.kept(1); my $p2 = start { sleep 0.1; 2 }; my $p3 = Promise.in(0
 # rakudo 2026.08: (1, 2, 3) List (3, 2, 1) (1, 2, 3) () () () X::AdHoc Must specify an Awaitable to await (got an empty list) X::AdHoc:Must specify a defined Awaitable to await (got an undefined Nil) X::AdHoc+{X::Await::Died}:Can only specify Awaitable objects to await (got a Int) X::AdHoc:Must specify a defined Awaitable to await (got an undefined Promise) X::AdHoc+{X::Await::Died} X::AdHoc+{X::Await::Died} X::AdHoc+{X::Await::Died}:bk (1, 2, 3, 4) 4 True 2 (1,) Int List X::AdHoc+{X::Await::Died}
 ```
 rakupp 4.0.1-84: differs — the line died at `$!.message` (the PR-20 fault: `$!` is a Str); the rest is unmeasured.
+
+Corrected 2026-11-01 from Raku Behind the Docs, ch 21 (findings/BEHIND-THE-DOCS.md §1).
 
 ### PR-22  await on a Channel; a Nil value hangs it                       D:partial R:partial V:bug
 `await $channel` returns the next value sent, waiting for it if needed (a
@@ -512,9 +529,15 @@ rakupp 4.0.1-84: differs — `lock`/`unlock` return True, `unlock` never throws 
 
 ### PR-28  Lock::ConditionVariable                                        D:partial R:yes V:quirk
 `$lock.condition` returns a `Lock::ConditionVariable` — a NEW object on
-every call (`===` False: the quirk; waiting and signalling still work
-across the copies) — and `X::Parameter::InvalidConcreteness` on the type
-object; `Lock::ConditionVariable.new` is `X::Lock::ConditionVariable::New`.
+every call (`===` False: the quirk) — and `X::Parameter::InvalidConcreteness`
+on the type object; `Lock::ConditionVariable.new` is
+`X::Lock::ConditionVariable::New`. Signalling does NOT work across those
+separate objects: a `signal` or `signal_all` on a fresh `$lock.condition`
+never wakes a thread waiting on another one, even with the predicate
+already true; only a signal on the waiter's own object does. So this is a
+trap rather than a harmless quirk: take the condition variable once and
+share it (unlike `Lock::Soft`, PR-29, whose `.condition` is always the
+same object).
 `wait` must be called with the lock held (otherwise `X::AdHoc`); it
 releases the lock, blocks until `signal` (wakes one waiter) or
 `signal_all` (all), and holds the lock again on return; `wait(&predicate)`
@@ -527,8 +550,16 @@ signaller 0.3 s later; three waiters on a predicate released by one
 ```
 my $l = Lock.new; my $c = $l.condition; say $c.^name, " ", ($c === $l.condition), " ", (try Lock::ConditionVariable.new) // $!.^name, " ", $c.signal.raku, " ", $c.signal_all.raku, " ", do { my $w = start { try $c.wait; $!.^name }; await Promise.anyof($w, Promise.in(0.5)); $w.status ~ ":" ~ ($w.status == Kept ?? $w.result !! "-") }, " ", do { $l.protect({ $c.wait({ True }); "immediate" }) }, " ", do { my @log; my $t = start { $l.protect({ @log.push("a"); $c.wait; @log.push("c") }) }; sleep 0.3; $l.protect({ @log.push("b"); $c.signal }); await Promise.anyof($t, Promise.in(2)); @log.join(",") ~ ":" ~ $t.status }, " ", do { my $flag = False; my $t = start { $l.protect({ $c.wait({ $flag }); "woke" }) }; sleep 0.2; $l.protect({ $flag = True; $c.signal_all }); await Promise.anyof($t, Promise.in(2)); $t.status ~ ":" ~ $t.result }, " ", do { my $n = 0; my @t = (^3).map({ start { $l.protect({ $c.wait({ $n > 0 }); $n }) } }); sleep 0.2; $l.protect({ $n = 7; $c.signal_all }); await Promise.anyof(Promise.allof(@t), Promise.in(2)); @t».status.join(",") ~ ":" ~ @t».result.join(",") }, " ", (try $c.wait(42)) // $!.^name, " ", $l.protect({ $c.wait({ True }).raku }), " ", (try Lock.condition) // $!.^name
 # rakudo 2026.08: Lock::ConditionVariable False X::Lock::ConditionVariable::New Lock::ConditionVariable.new Lock::ConditionVariable.new Kept:X::AdHoc immediate a,b,c:Kept Kept:woke Kept,Kept,Kept:7,7,7 X::Multi::NoMatch Nil X::Parameter::InvalidConcreteness
+my $l = Lock.new; my $c = $l.condition; say do { my $flag = False; my $t = start { $l.protect({ $c.wait({ $flag }); "woke" }) }; sleep 0.2; $l.protect({ $flag = True; $l.condition.signal_all }); await Promise.anyof($t, Promise.in(1)); my $s1 = $t.status; $l.protect({ $c.signal_all }); await Promise.anyof($t, Promise.in(1)); $s1 ~ ":" ~ $t.status }, " ", do { my $u = start { $l.protect({ $c.wait; "woke" }) }; sleep 0.2; $l.protect({ $l.condition.signal }); await Promise.anyof($u, Promise.in(1)); my $s1 = $u.status; $l.protect({ $c.signal }); await Promise.anyof($u, Promise.in(1)); $s1 ~ ":" ~ $u.status }
+# rakudo 2026.08: Planned:Kept Planned:Kept
 ```
+Each field of the second line is the waiter's status after a signal on a
+fresh `$l.condition` (still Planned after 1 s), then after the same
+signal on `$c` (Kept); timing-dependent, the same in three runs.
 rakupp 4.0.1-84: differs — `.condition` returns the Lock itself, which has no `signal`; the line died there and the rest is unmeasured.
+(this rakupp line predates the correction; re-measure before relying on it)
+
+Corrected 2026-11-01 from Raku Behind the Docs, ch 21 (findings/BEHIND-THE-DOCS.md §1).
 
 ### PR-29  Lock::Soft                                                      D:no R:yes V:spec
 The same shape as `Lock` (`lock`, `unlock`, `protect`, `condition`,

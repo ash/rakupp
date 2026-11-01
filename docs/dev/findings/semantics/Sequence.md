@@ -51,14 +51,19 @@ The first element of the right-hand list is the endpoint; every further
 element is appended after the sequence as it is, whatever its type. A
 scalar holding a list is iterated the same way (`$l = (3, 9)` gives the
 endpoint 3 and the tail 9). A bare parenthesised list on the right is
-**one** endpoint, a List, which never smartmatches a number, so the
-sequence runs on; likewise a List on the left is the seeds, one per
-element.
+read the same way, not as one List endpoint: `1 ... (3, 9)` gives
+`(1, 2, 3, 9)`, like the scalar form, and the Seq is not lazy. Likewise a
+List on the left is the seeds, one per element, so `(1, 2) ... (5, 6)`
+gives 1 to 6.
 ```
 say (1 ... 3, 10, 20).raku, " ", (1 ... 3, 'x').raku, " ", (1 ... 10, 4).raku, " ", (1 ... "3", "z").raku, " ", ('aa' ... 'cc', 'zz').raku, " ", (1 ... 3..5, 8).raku, " ", do { my $e = 4; (1 ... $e).raku }, " ", do { my $l = (3, 9); (1 ... $l).raku }, " ", (1 ... (3, 9)).head(5).List.raku, " ", ((1, 2) ... (5, 6)).head(4).List.raku, " ", (1 ... 5 ... 1, 10).raku
 # rakudo 2026.08: (1, 2, 3, 10, 20).Seq (1, 2, 3, "x").Seq (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 4).Seq (1, 2, 3, "z").Seq ("aa", "ab", "ac", "ba", "bb", "bc", "ca", "cb", "cc", "zz").Seq (1, 2, 3, 8).Seq (1, 2, 3, 4).Seq (1, 2, 3, 9).Seq (1, 2, 3, 9) (1, 2, 3, 4) (1, 2, 3, 4, 5, 4, 3, 2, 1, 10).Seq
+say (1 ... (3, 9)).raku, " ", (1 ... (3, 9)).is-lazy, " ", ((1, 2) ... (5, 6)).raku
+# rakudo 2026.08: (1, 2, 3, 9).Seq False (1, 2, 3, 4, 5, 6).Seq
 ```
 rakupp 4.0.1-84: differs — `'aa' ... 'cc', 'zz'` walks every two-letter string instead of the cross product; a Range endpoint counts down to 0 (`1 ... 3..5, 8` gives `(1, 0, 8)`); a scalar holding `(3, 9)` and a bare `(3, 9)` both stop at 2.
+
+Corrected 2026-11-01 from Raku Behind the Docs, ch 12 (findings/BEHIND-THE-DOCS.md §1).
 
 ### SQ-04  Empty sides and a Failure endpoint                          D:no R:partial V:spec
 An empty right-hand list throws `X::Cannot::Empty` (action "get sequence
@@ -74,17 +79,31 @@ rakupp 4.0.1-84: differs — `1 ... ()` gives `(1, 0)`, `() ... 5` gives `()`, a
 ### SQ-05  The endpoint is smartmatched                                D:partial R:partial V:spec
 A non-code endpoint stops the sequence at the first value it `ACCEPTS`:
 a Str matches by string equality (`1 ... "3"` stops at 3, `'1' ... 3`
-walks strings), a Regex by match, a Range by containment, `any` by
-autothreading. A type object, `Nil`, `True` and `False` all accept the
-first value, so the result is the first seed alone; `Str` as the endpoint
-of an Int sequence never matches. A non-integral numeric endpoint is a
+walks strings), a Regex by match, `any` by autothreading. A Range that
+is the whole right side is a list like any other (SQ-03) and is
+flattened: `1 ... 3..5` has the endpoint 3 and appends 4 and 5, so
+`1 ... 5..7` is 1 to 7 and `10 ... 3..5` counts down to 3 and then
+appends 4 and 5. Only inside a longer right-hand list is a Range one
+element, matched by containment: `1 ... 5..7, 8` stops at 5 and appends
+8. With a numeric seed, an endpoint that is not a number gives no
+direction and the sequence always walks upwards: `5 ... "7"` stops at
+7, `5 ... /3/` runs to 13, and `5 ... "3"` never ends (and is not lazy).
+A type object, `Nil` and `True` accept the first value, so the result is
+the first seed alone; `Str` as the endpoint of an Int sequence never
+matches. `False` matches nothing, so `1 ... False` never ends, and its
+Seq is not lazy. A non-integral numeric endpoint is a
 bound only: `1 ... 3.5` gives 1, 2, 3 and `1 ... 0.5` gives `(1,)`. The
 endpoint's type never changes the element types (`1, 2 ... 4e0` is Ints).
 ```
 say (1 ... "3").raku, " ", ('1' ... 3).raku, " ", (1 ... /3/).raku, " ", ("aa" ... /ac/).raku, " ", (1 ... 3..5).raku, " ", (1 ... any(3, 5)).raku, " ", (1 ... any(1, 2)).is-lazy, " ", (1 ... all(1, 2)).head(3).List.raku, " ", (1 ... Int).raku, " ", (1 ... Str).head(4).List.raku, " ", (try ('a' ... Str).head(3).List.raku) // $!.^name, " ", (1 ... Any).head(4).List.raku, " ", (1 ... Nil).head(4).List.raku, " ", (1 ... True).head(4).List.raku, " ", (1 ... False).head(4).List.raku, " ", (1 ... 3.5).raku, " ", (1 ... 2.5).raku, " ", (1 ... 1.5).raku, " ", (1 ... 0.5).raku, " ", (1, 2, 4 ... 4.5).raku, " ", (1, 2, 4 ... 4.0).raku, " ", (1, 2, 4 ... 4.0).map(*.^name).raku, " ", (1, 2 ... 4e0).raku, " ", (1, 2 ... 4e0).map(*.^name).raku
 # rakudo 2026.08: (1, 2, 3).Seq ("1", "2", "3").Seq (1, 2, 3).Seq ("aa", "ab", "ac").Seq (1, 2, 3, 4, 5).Seq (1, 2, 3).Seq False (1, 2, 3) (1,).Seq (1, 2, 3, 4) ("a",) (1,) (1,) (1,) (1, 2, 3, 4) (1, 2, 3).Seq (1, 2).Seq (1,).Seq (1,).Seq (1, 2, 4).Seq (1, 2, 4).Seq ("Int", "Int", "Int").Seq (1, 2, 3, 4).Seq ("Int", "Int", "Int", "Int").Seq
+say (1 ... 5..7).raku, " ", (1 ... 5..7, 8).raku, " ", (10 ... 3..5).raku, " ", (5 ... "3").head(6).List.raku, " ", (5 ... "3").is-lazy, " ", (5 ... "7").raku, " ", (5 ... /3/).raku, " ", (1 ... False).head(6).List.raku, " ", (1 ... False).is-lazy
+# rakudo 2026.08: (1, 2, 3, 4, 5, 6, 7).Seq (1, 2, 3, 4, 5, 8).Seq (10, 9, 8, 7, 6, 5, 4, 3, 4, 5).Seq (5, 6, 7, 8, 9, 10) False (5, 6, 7).Seq (5, 6, 7, 8, 9, 10, 11, 12, 13).Seq (1, 2, 3, 4, 5, 6) False
 ```
 rakupp 4.0.1-84: differs — a non-numeric, non-string endpoint is treated as 0 (`1 ... /3/`, `1 ... Int`, `1 ... Any`, `1 ... Nil`, `1 ... False` all give `(1, 0)`), `1 ... any(3, 5)` stops at 2, `'1' ... 3` produces Nums after the first string.
+(this rakupp line predates the correction; re-measure before relying on it)
+
+Corrected 2026-11-01 from Raku Behind the Docs, ch 12 (findings/BEHIND-THE-DOCS.md §1).
 
 ### SQ-06  A `none` junction endpoint is taken for infinity            D:no R:no V:bug
 `1 ... none(1, 2)` is a lazy, endless sequence: the endpoint is compared
@@ -139,13 +158,21 @@ When neither rule fits, the sequence throws `X::Sequence::Deduction` at
 the point of reification, not at construction: the Seq is created and
 even reports `is-lazy`. Its `.from` is the three seeds joined by commas;
 `.new` without `:from` has a different message. A zero seed rules out the
-geometric rule (`0, 2, 8` and `1, 0, 0` fail). Seeds already emitted
-before the failure are lost with the exception.
+geometric rule (`0, 2, 8` and `1, 0, 0` fail). The seeds before the last
+three are emitted before the deduction is tried, so they are not lost: a
+`for` over `1, 2, 4, 7 ... *` sees 1 before the exception, an iterator's
+first `pull-one` returns 1 and only the second throws. Only a whole-list
+read such as `.head(5).List` throws without giving them up.
 ```
 say (try (1, 2, 4, 7 ... *).head(5).List.raku) // $!.^name ~ ":" ~ $!.from ~ ":" ~ $!.message, " ", (try (2, 4, 7 ... *).head(5).List.raku) // $!.^name ~ ":" ~ $!.from, " ", (try (0, 2, 8 ... *).head(5).List.raku) // $!.^name ~ ":" ~ $!.from, " ", (try (1, 0, 0 ... *).head(5).List.raku) // $!.^name ~ ":" ~ $!.from, " ", (try (0, 1, 3 ... *).head(5).List.raku) // $!.^name ~ ":" ~ $!.from, " ", (try (1, 2, 3, 5 ... 9).raku) // $!.^name ~ ":" ~ $!.from, " ", (try (1, 1, 2 ... *).head(5).List.raku) // $!.^name ~ ":" ~ $!.from, " ", (try (1, 2, 4, 7 ... 8).raku) // $!.^name ~ ":" ~ $!.from, " ", (1, 2, 4, 7 ... *).is-lazy, " ", ((1, 2, 4, 7 ... *) ~~ Seq), " ", X::Sequence::Deduction.new(:from("1,2,7")).message, " ", X::Sequence::Deduction.new.message, " ", X::Sequence::Deduction.^mro.map(*.^name).raku, " ", X::Sequence::Deduction.new(:from("a")).from.raku
 # rakudo 2026.08: X::Sequence::Deduction:2,4,7:Unable to deduce arithmetic or geometric sequence from: 2,4,7|Did you really mean '..'? X::Sequence::Deduction:2,4,7 X::Sequence::Deduction:0,2,8 X::Sequence::Deduction:1,0,0 X::Sequence::Deduction:0,1,3 X::Sequence::Deduction:2,3,5 X::Sequence::Deduction:1,1,2 X::Sequence::Deduction:2,4,7 True True Unable to deduce arithmetic or geometric sequence from: 1,2,7|Did you really mean '..'? Unable to deduce sequence for some unfathomable reason ("X::Sequence::Deduction", "Exception", "Any", "Mu").Seq "a"
+my @g; try { for 1, 2, 4, 7 ... * { @g.push($_) } }; my @h; try { for 9, 8, 1, 2, 4, 7 ... * { @h.push($_) } }; my $it = (1, 2, 4, 7 ... *).iterator; say @g.raku, " ", @h.raku, " ", $it.pull-one, " ", (try $it.pull-one) // $!.^name ~ ":" ~ $!.from
+# rakudo 2026.08: [1] [9, 8, 1] 1 X::Sequence::Deduction:2,4,7
 ```
 rakupp 4.0.1-84: differs — `.from` lists every seed rather than the last three, and `.message` of a hand-built exception is undefined.
+(this rakupp line predates the correction; re-measure before relying on it)
+
+Corrected 2026-11-01 from Raku Behind the Docs, ch 12 (findings/BEHIND-THE-DOCS.md §1).
 
 ### SQ-11  Two numeric seeds                                          D:yes R:yes V:spec
 Two Real seeds give an arithmetic sequence with their difference, a zero
@@ -265,20 +292,29 @@ say (1, { $_ * 2 } ... { $_ > 10 }).raku, " ", (1, { $_ * 2 } ...^ { $_ > 10 }).
 ```
 rakupp 4.0.1-84: differs — a two-parameter endpoint block and a slurpy one stop late (`1, { $_ + 1 } ... { $^a + $^b > 8 }` runs to 9 instead of 5, `-> *@a { @a.sum > 10 }` to 11 instead of 5).
 
-### SQ-21  Exceptions raised while producing                           D:no R:no V:quirk
-A deduction failure raised while a sequence is iterated is caught by a
-`try` only when the sequence was **created** inside that `try`; a
-sequence created outside and iterated inside a `try` block escapes it and
+### SQ-21  Exceptions raised while producing                           D:no R:no V:spec
+A deduction failure raised while a sequence is iterated is caught by the
+`try` around the iteration, wherever the sequence was created: with the
+Seq in `$s`, `try { for @$s { … } }` catches it, after the loop has seen
+the seeds emitted before it (SQ-10). `for $s` does not iterate a
+scalar-held Seq: the `$` container makes it one item, so the loop runs
+once with the Seq itself as `$_` and nothing throws inside the `try`.
+The first probe below pushes that Seq into `@got`, and `@got.raku`,
+outside the `try`, reifies it; that is where the exception escapes and
 ends the program. A generator whose step fails (here `Str.pred` past
-"a") emits the Failure as an element. Recorded as observed; step two
-should catch at the point of iteration.
+"a") emits the Failure as an element.
 ```
 say do { my $s = (1, 2, 4, 7 ... *); my @got; try { for $s { @got.push($_); } }; @got.raku ~ " " ~ $!.^name }
 # rakudo 2026.08: Unable to deduce arithmetic or geometric sequence from: 2,4,7|Did you really mean '..'?|  in block <unit> at -e line 1|
+say do { my $s = (1, 2, 4, 7 ... *); my @got; try { for @$s { @got.push($_); } }; @got.raku ~ " " ~ $!.^name }, " ", do { my $s = (1, 2, 4, 7 ... *); my @got; try { for $s { @got.push($_); } }; @got.elems ~ " " ~ @got[0].^name ~ " " ~ $!.^name }
+# rakudo 2026.08: [1] X::Sequence::Deduction 1 Seq Any
 say do { my $s = (1, 2, 4, 7 ... *); my $r = try { $s.head(5).List.raku }; ($r // "caught") ~ " " ~ $!.^name ~ " " ~ do { my $t = (1, 2, 4, 7 ... *); my $u = (try $t.eager) // "caught2"; $u } ~ " " ~ do { my $v = try { (1, 2, 4, 7 ... *).eager }; $v // "caught3" } }, " ", (try ('c', 'b', 'a' ... *).head(4).List.raku) // 'caught4', " ", ('c', 'b', 'a' ... *).head(3).List.raku
 # rakudo 2026.08: caught X::Sequence::Deduction caught2 caught3 ("c", "b", "a", Failure.new(exception => X::AdHoc.new(payload => "Decrement out of range"), backtrace => Backtrace.new)) ("c", "b", "a")
 ```
 rakupp 4.0.1-84: differs — the `for` loop over a scalar-held lazy Seq iterated it as one item, and the underflow stops the sequence silently after "a".
+(this rakupp line predates the correction; re-measure before relying on it)
+
+Corrected 2026-11-01 from Raku Behind the Docs, ch 12 (findings/BEHIND-THE-DOCS.md §1).
 
 ## D. Strings and other types
 
@@ -358,15 +394,22 @@ say (1 ... 5 ... 1).raku, " ", (1 ... 3 ... 6 ... 4).raku, " ", (1 ... 5 ... 10)
 rakupp 4.0.1-84: differs — `1 ... 5 ... *` stops at 5, `1 ... 3 ... 'e'` turns back, `1, 2 ... 4, 8 ... 32` steps by 1 after 8, `1 ... (3 ... 5)` stops at 3.
 
 ### SQ-28  `...^` does not chain; `^...^` chains without excluding       D:no R:no V:bug
-`1 ...^ 5 ...^ 1` is a compile-time `X::Syntax::NonListAssociative`; the
-same with `…^`. `^...` chains and drops the first element; `^...^` chains
+`1 ...^ 5 ...^ 1` is a compile-time `X::TypeCheck::Argument` (with
+`X::Comp` mixed in): the chain becomes one call `infix:<...^>(Int, Int,
+Int)`, which "will never work with signature of the proto ($, Mu, *%)";
+the same with `…^`. `X::Syntax::NonListAssociative` is what mixing `...`
+with `...^`, in either order, gives. `^...` chains and drops the first element; `^...^` chains
 but only drops the first element, keeping the final 1 — the source marks
 this unfinished, and the operator's own meaning says the end is excluded.
 ```
 say (try EVAL q{(1 ...^ 5 ...^ 1).raku}) // $!.^name, " ", (try EVAL q{(1 …^ 5 …^ 1).raku}) // $!.^name, " ", (try EVAL q{(1 ^... 5 ^... 1).raku}) // $!.^name, " ", (try EVAL q{(1 ^...^ 5 ^...^ 1).raku}) // $!.^name, " ", (try EVAL q{(1 ...^ 5).raku}) // $!.^name, " ", (try EVAL q{(1 ... 5 ...^ 1).raku}) // $!.^name, " ", (try EVAL q{(1 ...^ 5 ... 1).raku}) // $!.^name
 # rakudo 2026.08: X::TypeCheck::Argument+{X::Comp} X::TypeCheck::Argument+{X::Comp} (2, 3, 4, 5, 4, 3, 2, 1).Seq (2, 3, 4, 5, 4, 3, 2, 1).Seq (1, 2, 3, 4).Seq X::Syntax::NonListAssociative X::Syntax::NonListAssociative
+say (try EVAL q{(1 ...^ 5 ...^ 1).raku}) // $!.message
+# rakudo 2026.08: Calling infix:<...^>(Int, Int, Int) will never work with signature of the proto ($, Mu, *%)
 ```
 rakupp 4.0.1-84: differs — `...^` chains (giving 1 2 3 4 3 2) and chained `^...^` excludes the end, which is the intended reading, not Rakudo's.
+
+Corrected 2026-11-01 from Raku Behind the Docs, ch 12 (findings/BEHIND-THE-DOCS.md §1).
 
 ### SQ-29  The result object and precedence                            D:partial R:partial V:spec
 A sequence is a Seq whose `.elems` caches (a second `.elems` works),
@@ -390,7 +433,7 @@ rakupp 4.0.1-84: differs — `eager 1 ... 3` is still a Seq.
 | total | 29 |
 | not fully stated by docs (D:yes) nor asserted by Roast (R:yes) | 13 |
 | Rakudo bugs (do not imitate) | 2 — SQ-06 `none` endpoint taken for Inf, SQ-28 chained `^...^` keeps its end |
-| quirks (recorded, step two decides) | 3 — SQ-13 seeds dropped when already beyond the endpoint, SQ-21 exception escapes the iterating `try`, SQ-25 two string seeds walk backwards |
+| quirks (recorded, step two decides) | 2 — SQ-13 seeds dropped when already beyond the endpoint, SQ-25 two string seeds walk backwards |
 | rakupp 4.0.1-84 differs | 28 |
 | rakupp 4.0.1-84 matches | 1 |
 
@@ -412,8 +455,9 @@ closer to the language than Rakudo is the chained `^...^` (SQ-28).
 As for [IO.md](IO.md): one probe line per item, both engines, `alarm 20`,
 outputs assembled from one file per probe per engine. Traps met here: a
 deduction failure is thrown at reification, so it must be provoked inside
-the `try` (`.head(n).List.raku`), and a `try` around the iteration alone
-does not catch it (SQ-21); `Str.pred` past "a" returns a Failure that ends
+the `try` (`.head(n).List.raku`), and `for $s` over a Seq held in a
+scalar runs once with the Seq itself, so the error surfaces later,
+outside the `try`; iterate `@$s` (SQ-21); `Str.pred` past "a" returns a Failure that ends
 the line when used, so those probes carry `try`; `{ $_ > 3 ?? last !! … }`
 is a parse error ("!! gobbled"), write `last if`; `$_` inside a `sub` is
 not the argument; `my $s = 1 ... 3` assigns 1 (SQ-29); and a chained

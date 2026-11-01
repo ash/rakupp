@@ -258,16 +258,29 @@ container it empties that Buf in place and returns it, now empty. An
 offset past the end pads the buffer with zeros up to the offset (`splice(20,
 0, 5)` on 8 elements gives 21). The bugs: an offset past the end with a
 positive count fails with `X::OutOfRange` AND STILL GROWS the buffer with
-zeros to that offset; `splice(-1, 1)` and `splice(0, -1)` fail with
-`X::OutOfRange` and leave a spurious leading 0; an infinite list as the
-replacement never returns.
+zeros to that offset; a negative offset counts from the end and still
+returns an `X::OutOfRange` Failure: `splice(-1, 1)` removes the last
+element and `splice(-n, k)` the k elements from n places before the end
+(`splice(-2, 1)` on `1,2,3,4,5` leaves `1,2,3,5`), while an offset below
+-elems throws `X::AdHoc` and changes nothing; a negative count is an
+`X::OutOfRange` Failure that still inserts an element: at offset 0
+`splice(0, -1)` adds a leading 0, at any other offset `splice(o, -1)`
+duplicates the element before the offset (`splice(3, -1)` gives
+`1,2,3,3,4,5`); an infinite list as the replacement never returns.
 ```
 sub E(&c) { my $o; { my \r = c(); $o = r ~~ Failure ?? do { r.so; "F:" ~ r.exception.^name } !! "ok:" ~ r.raku; CATCH { default { $o = "T:" ~ .^name } } }; $o }; my $b = Buf.new(1,2,3,4,5); say E({ $b.splice(1, 2).raku }), " ", $b.raku, " ", E({ $b.splice(1, 1, 9).raku }), " ", $b.raku, " ", E({ $b.splice(0, 0, 7).raku }), " ", $b.raku, " ", E({ $b.splice(1, 2, Buf.new(8, 8, 8)).raku }), " ", $b.raku, " ", E({ $b.splice(1, 1, (6, 6)).raku }), " ", $b.raku, " ", E({ $b.splice(0, 1, [5]).raku }), " ", $b.raku, " ", E({ $b.splice(1, 1, "x") }), " ", $b.raku, " ", E({ $b.splice(1, 1, (1, "x")) }), " ", $b.raku, " ", E({ $b.splice(2).raku }), " ", $b.raku, " ", E({ $b.splice(0, *).raku }), " ", $b.raku, " ", E({ $b.push(1,2,3); $b.splice.raku }), " ", $b.raku, " ", E({ $b.push(1,2,3); $b.splice(9, 1) }), " ", $b.raku, " ", E({ $b.splice(1, 0).raku }), " ", E({ $b.splice(1, 1.9).raku }), " ", $b.raku, " ", E({ $b.splice(1, 1, 300); $b.raku }), " ", E({ $b.splice(0, 1, array[int].new(4, 4)).raku }), " ", $b.raku, " ", E({ $b.splice(1, 5).raku }), " ", $b.raku, " ", E({ Buf.new(1).splice.raku }), " ", E({ $b.splice(1, 2).^name }), " ", E({ $b.splice(0, 0, Blob.new(1, 2)).raku }), " ", $b.raku, " ", E({ $b.splice(-1, 1) }), " ", E({ $b.splice(0, -1) }), " ", E({ $b.splice(5, 0, 9).raku }), " ", $b.raku, " ", E({ $b.splice(3, 0, 1..2); $b.raku }), " ", E({ $b.splice("1", 1).raku }), " ", E({ $b.splice(9, 1) }), " ", $b.raku, " ", E({ $b.splice(20, 0, 5).raku }), " ", $b.raku
 # rakudo 2026.08: ok:"Buf.new(2,3)" Buf.new(1,4,5) ok:"Buf.new(4)" Buf.new(1,9,5) ok:"Buf.new()" Buf.new(7,1,9,5) ok:"Buf.new(1,9)" Buf.new(7,8,8,8,5) ok:"Buf.new(8)" Buf.new(7,6,6,8,8,5) ok:"Buf.new(7)" Buf.new(5,6,6,8,8,5) F:X::TypeCheck Buf.new(5,6,6,8,8,5) T:X::TypeCheck Buf.new(5,6,6,8,8,5) ok:"Buf.new(6,8,8,5)" Buf.new(5,6) ok:"Buf.new(5,6)" Buf.new() ok:"Buf.new(1,2,3)" Buf.new() F:X::OutOfRange Buf.new(1,2,3,0,0,0,0,0,0) ok:"Buf.new()" ok:"Buf.new(2)" Buf.new(1,3,0,0,0,0,0,0) ok:"Buf.new(1,44,0,0,0,0,0,0)" ok:"Buf.new(1)" Buf.new(4,4,44,0,0,0,0,0,0) ok:"Buf.new(4,44,0,0,0)" Buf.new(4,0,0,0) ok:"Buf.new()" ok:"Buf" ok:"Buf.new()" Buf.new(1,2,4,0) F:X::OutOfRange F:X::OutOfRange ok:"Buf.new()" Buf.new(0,1,2,4,0,9) ok:"Buf.new(0,1,2,1,2,4,0,9)" T:X::Multi::NoMatch F:X::OutOfRange Buf.new(0,1,2,1,2,4,0,9,0) ok:"Buf.new()" Buf.new(0,1,2,1,2,4,0,9,0,0,0,0,0,0,0,0,0,0,0,0,5)
 my $b = Buf.new(1,2,3); say $b.splice(0, 2, 1..*).raku
 # rakudo 2026.08: (no output: killed by the 10-second alarm)
+sub E(&c) { my $o; { my \r = c(); $o = r ~~ Failure ?? do { r.so; "F:" ~ r.exception.^name } !! "ok:" ~ r.raku; CATCH { default { $o = "T:" ~ .^name } } }; $o }; sub S($o, $n) { my $b = Buf.new(1,2,3,4,5); my $k = E({ $b.splice($o, $n) }); "($o,$n) $k " ~ $b.raku }; say S(-1, 1), " ", S(-2, 1), " ", S(-2, 2), " ", S(-5, 1), " ", S(-6, 1), " ", S(0, -1), " ", S(1, -1), " ", S(3, -1), " ", S(5, -1)
+# rakudo 2026.08: (-1,1) F:X::OutOfRange Buf.new(1,2,3,4) (-2,1) F:X::OutOfRange Buf.new(1,2,3,5) (-2,2) F:X::OutOfRange Buf.new(1,2,3) (-5,1) F:X::OutOfRange Buf.new(2,3,4,5) (-6,1) T:X::AdHoc Buf.new(1,2,3,4,5) (0,-1) F:X::OutOfRange Buf.new(0,1,2,3,4,5) (1,-1) F:X::OutOfRange Buf.new(1,1,2,3,4,5) (3,-1) F:X::OutOfRange Buf.new(1,2,3,3,4,5) (5,-1) F:X::OutOfRange Buf.new(1,2,3,4,5,5)
 ```
+(In the first probe line, `splice(-1, 1)` drops the trailing 0 of
+`Buf.new(1,2,4,0)` and `splice(0, -1)` adds the leading 0 of
+`Buf.new(0,1,2,4,…)`.)
 rakupp 4.0.1-84: differs — a Str replacement is stored as 0, `splice(9, 1)` past the end is an empty Buf with no growth (right), `splice(-1, 1)` removes the LAST element, `splice(0, -1)` removes nothing, a Str offset is accepted, `Buf.new(1).splice` does not empty the buffer, and the infinite replacement returns.
+(this rakupp line predates the correction; re-measure before relying on it)
+Corrected 2026-11-01 from Raku Behind the Docs, ch 14 (findings/BEHIND-THE-DOCS.md §1).
 
 ### BB-13  Typed variables and `is buf8`                            D:no R:yes V:spec
 `my @a is buf8 = ^5` makes the variable a `Buf[uint8]`; assignment
@@ -306,18 +319,26 @@ rakupp 4.0.1-84: differs — `Blob ~ Blob` is a `Buf`, a mixed-width `~` stringi
 
 ### BB-15  x, xx, X, Z, hypers and reductions                        D:no R:no V:quirk
 `$blob x $n` stringifies and so throws `X::Buf::AsStr` (a `utf8` repeats
-its text); `xx` repeats the same object. `X` treats a buffer as ONE item
-(`Blob.new(1,2) X 3` is `((Blob, 3),)`, `X~` throws), while `Z`, `Z+`
-and the hypers iterate its elements (`Z 3` is `((1, 3),)`, `>>+>> 1`
+its text); `xx` repeats the same object. `X` treats a buffer as ONE item,
+a buffer value and a buffer in a `$` variable alike (`Blob.new(1,2) X 3`
+is `((Blob, 3),)`, `X~` throws), while `Z`, `Z+` and the hypers iterate
+the elements of a buffer value (`Z 3` is `((1, 3),)`, `>>+>> 1`
 gives a `Blob` of the sums, `-<<` a Blob of wrapped negations, `<<+>>`
-between two buffers is `X::Multi::Ambiguous`). A reduction sees the
+between two buffers is `X::Multi::Ambiguous`). A buffer held in a `$`
+variable is itemized, and `Z` takes it whole: `$b Z 3, 4` is
+`((Blob.new(1,2), 3),)` and `$b Z+ (10, 20)` is `(12,)`, the count plus
+10; `$b<>` and a buffer bound to an `@` variable are iterated again. A reduction sees the
 buffer as one operand: `[+] Blob.new(1,2,3)` is 3 (the count), `[max]`
 and `[~]` are the buffer itself. `xx *` is lazy and `.elems` on it fails.
 ```
 say (try Blob.new(1) x 2) // $!.^name, " ", (utf8.new(97) x 3), " ", (Blob.new(1) xx 2).elems, " ", (Blob.new(1) xx 2).raku, " ", (try Blob.new(1) x 0) // $!.^name, " ", (utf8.new(97,98) x 2).raku, " ", (try Buf.new(1) x 1) // $!.^name, " ", (Blob.new(1,2) X 3).raku, " ", (Blob.new(1,2) Z 3).raku, " ", ((1, 2) Z Blob.new(5, 6)).raku, " ", (Blob.new(1,2) xx 2)[0] === (Blob.new(1,2) xx 2)[1], " ", (try (Blob.new(1,2) X~ "a").raku) // $!.^name, " ", (try (Blob.new(1,2) Z+ (10, 20)).raku) // $!.^name, " ", (try (Blob.new(1,2) >>+>> 1).raku) // $!.^name, " ", (try (Blob.new(1,2) <<+>> Blob.new(3,4)).raku) // $!.^name, " ", (try (-<< Blob.new(1,2)).raku) // $!.^name, " ", (try [+] Blob.new(1,2,3)) // $!.^name, " ", (try [max] Blob.new(1,2,3)) // $!.^name, " ", (try [~] Blob.new(1,2,3)) // $!.^name, " ", (try (Blob.new(1,2) xx *).elems) // $!.^name, " ", (try (utf8.new(97) x -1).raku) // $!.^name, " ", (utf8.new(97) x 2).^name
 # rakudo 2026.08: X::Buf::AsStr aaa 2 (Blob.new(1), Blob.new(1)).Seq X::Buf::AsStr "abab" X::Buf::AsStr ((Blob.new(1,2), 3),).Seq ((1, 3),).Seq ((1, 5), (2, 6)).Seq True X::Buf::AsStr (11, 22).Seq Blob.new(2,3) X::Multi::Ambiguous Blob.new(255,254) 3 Blob:0x<01 02 03> Blob:0x<01 02 03> X::Cannot::Lazy "" Str
+my $b = Blob.new(1,2); my @a := Blob.new(1,2); say (Blob.new(1,2) Z 3, 4).raku, " ", ($b Z 3, 4).raku, " ", ($b<> Z 3, 4).raku, " ", (@a Z 3, 4).raku, " ", (Blob.new(1,2) X 3).raku, " ", ($b X 3).raku, " ", ($b<> X 3).raku, " ", ((1, 2) Z Blob.new(5, 6)).raku, " ", ((1, 2) Z $b).raku, " ", ($b Z+ (10, 20)).raku, " ", (Blob.new(1,2) Z+ (10, 20)).raku
+# rakudo 2026.08: ((1, 3), (2, 4)).Seq ((Blob.new(1,2), 3),).Seq ((1, 3), (2, 4)).Seq ((1, 3), (2, 4)).Seq ((Blob.new(1,2), 3),).Seq ((Blob.new(1,2), 3),).Seq ((Blob.new(1,2), 3),).Seq ((1, 5), (2, 6)).Seq ((1, Blob.new(1,2)),).Seq (12,).Seq (11, 22).Seq
 ```
 rakupp 4.0.1-84: differs — `x` gives `""` instead of throwing, `X` iterates the elements, `>>+>>`/`<<+>>`/`-<<` numify the buffer to its count, and `[+]` is the buffer itself.
+(this rakupp line predates the correction; re-measure before relying on it)
+Corrected 2026-11-01 from Raku Behind the Docs, ch 14 (findings/BEHIND-THE-DOCS.md §1).
 
 ### BB-16  Bitwise `~&`, `~|`, `~^`, prefix `~^`                     D:no R:yes V:bug
 Element-wise on the raw values; the result has the LEFT operand's type
@@ -506,14 +527,21 @@ or bare `:replacement` means `?` (`\x[FFFD]` for a utf encoding), a Str
 is used as given (may be empty or several characters), any other value
 is stringified. `:strict` refuses a codepoint the encoding leaves
 unmapped (U+0081 in windows-1252) that is otherwise passed through as
-its byte, and `:strict` WINS over `:replacement`; `:replacement(False)`
-is no replacement. `:translate-nl` changes nothing on a non-Windows
-host.
+its byte. The two combine: `:strict` decides what counts as unencodable,
+`:replacement` what it becomes (`"\x[263A]".encode("ascii", :replacement,
+:strict)` is `(63,)`, and `"a\x[81]".encode("windows-1252", :strict,
+:replacement)` is `(97, 63)`, where `:replacement` alone passes the byte
+129 through); `:replacement(False)` is no replacement. `:translate-nl`
+changes nothing on a non-Windows host.
 ```
 say "\x[e9]".encode.list.raku, " ", "\x[e9]".encode.elems, " ", "\x[e9]".encode("latin1").list.raku, " ", "\x[1F600]".encode.list.raku, " ", "\x[1F600]".encode("utf16").list.raku, " ", "\x[1F600]".encode("utf16").elems, " ", "\x[1F600]".encode("utf16le").list.raku, " ", "\x[1F600]".encode("utf16be").list.raku, " ", "a\x[FEFF]".encode("utf16").list.raku, " ", "\x[20AC]".encode("windows-1252").list.raku, " ", "\x[416]".encode("windows-1251").list.raku, " ", (try "\x[263A]".encode("ascii")) // $!.^name, " ", (try "\x[263A]".encode("latin1")) // $!.^name, " ", (try "\x[263A]".encode("windows-1252")) // $!.^name, " ", "\x[263A]".encode("ascii", :replacement).list.raku, " ", "\x[263A]".encode("ascii", :replacement("XYZ")).list.raku, " ", "\x[263A]".encode("ascii", :replacement("")).list.raku, " ", "\x[263A]".encode("latin1", :replacement).list.raku, " ", "a\x[81]".encode("windows-1252").list.raku, " ", (try "a\x[81]".encode("windows-1252", :strict).list.raku) // $!.^name, " ", "a\x[81]".encode("windows-1252", :!strict).list.raku, " ", "a\nb".encode("utf8", :translate-nl).list.raku, " ", "a\r\nb".encode(:translate-nl).elems, " ", "a".encode("utf8", :replacement("?")).raku, " ", (try "\x[FFFE]".encode.list.raku) // $!.^name, " ", "\x[10FFFF]".encode.list.raku, " ", "e\x[301]".encode.list.raku, " ", "e\x[301]".encode("utf8-c8").list.raku, " ", "\x[e9]".encode("utf8-c8").list.raku, " ", "ab".encode("utf16", :replacement).list.raku, " ", (try "\x[263A]".encode("ascii", :strict)) // $!.^name, " ", (try "\x[263A]".encode("ascii", :replacement, :strict).list.raku) // $!.^name, " ", "\x[263A]".encode("utf8", :replacement("?")).list.raku, " ", "\x[FFFD]".encode("ascii", :replacement).list.raku, " ", "\x[263A]".encode("windows-1252", :replacement).list.raku, " ", "\x[263A]".encode("windows-1251", :replacement("*")).list.raku, " ", (try "\x[263A]".encode("ascii", :replacement(42)).list.raku) // $!.^name, " ", (try "\x[263A]".encode("ascii", :replacement(False)).list.raku) // $!.^name, " ", "\x[263A]".encode("ascii", :replacement(True)).list.raku, " ", "\x[FFFF]".encode.list.raku, " ", "\x[0]".encode.list.raku, " ", "\x[7F]".encode("ascii").list.raku, " ", (try "\x[80]".encode("ascii")) // $!.^name, " ", "\x[FF]".encode("latin1").list.raku, " ", (try "\x[100]".encode("latin1")) // $!.^name, " ", "\x[1F600]".encode("utf8-c8").list.raku, " ", "a".encode("utf16", :translate-nl).list.raku, " ", "\x[e9]".encode("utf16").bytes, " ", "\x[e9]".encode("utf8").^name
 # rakudo 2026.08: (195, 169) 2 (233,) (240, 159, 152, 128) (55357, 56832) 2 (61, 216, 0, 222) (216, 61, 222, 0) (97, 65279) (128,) (198,) X::AdHoc X::AdHoc X::AdHoc (63,) (88, 89, 90) () (63,) (97, 129) X::AdHoc (97, 129) (97, 10, 98) 4 utf8.new(97) (239, 191, 190) (244, 143, 191, 191) (195, 169) (195, 169) (195, 169) (97, 98) X::AdHoc (63,) (226, 152, 186) (63,) (63,) (42,) (52, 50) X::AdHoc (63,) (239, 191, 191) (0,) (127,) X::AdHoc (255,) X::AdHoc (240, 159, 152, 128) (97,) 2 utf8
+say (try "\x[263A]".encode("ascii", :replacement, :strict).list.raku) // $!.^name, " ", (try "a\x[81]".encode("windows-1252", :strict, :replacement).list.raku) // $!.^name, " ", (try "a\x[81]".encode("windows-1252", :replacement).list.raku) // $!.^name, " ", (try "a\x[81]".encode("windows-1252", :strict, :replacement("*")).list.raku) // $!.^name, " ", (try "a\x[81]".encode("windows-1252", :strict).list.raku) // $!.^name
+# rakudo 2026.08: (63,) (97, 63) (97, 129) (97, 42) X::AdHoc
 ```
 rakupp 4.0.1-84: differs — utf16le/be give code units, windows-1251 and gb2312 produce utf8 bytes, an unencodable character is emitted as its utf8 bytes under ascii (also `\x[80]`) and silently replaced by `?` under latin1 and windows-1252 (also `\x[100]`), `:replacement("")`, `:replacement("*")` and `:replacement(False)` are ignored (a `?` or the utf8 bytes come out), and `:strict` never refuses.
+(this rakupp line predates the correction; re-measure before relying on it)
+Corrected 2026-11-01 from Raku Behind the Docs, ch 14 (findings/BEHIND-THE-DOCS.md §1).
 
 ### BB-26  Blob.decode                                                D:partial R:partial V:quirk
 `decode` defaults to the buffer's own encoding (`utf8`, `utf16` — a
@@ -591,21 +619,33 @@ rakupp 4.0.1-84: differs — `.Str`, `.Stringy`, `.Str.ords`, `(utf8 ~ utf8).Str
 
 ### BB-29  read-int8 … read-uint128 with an Endian                    D:yes R:yes V:quirk
 `read-{int,uint}{8,16,32,64,128}($offset, $endian = NativeEndian)`
-read that many bytes at a BYTE offset and return an `Int` (signed
+read that many bytes at an offset and return an `Int` (signed
 two's complement or unsigned; 64-bit unsigned and the 128-bit forms are
 big Ints). `Endian` is an enum `NativeEndian` 0, `LittleEndian` 1,
 `BigEndian` 2; this host is little-endian. An offset past the end
 (`elems - width + 1`), a negative offset, a Rat or Str offset, or the
 `Endian` type object throw `X::AdHoc`; an Int or Str where an `Endian`
 is expected is `X::TypeCheck::Binding::Parameter`; on a type object it
-is `X::Parameter::InvalidConcreteness`. The quirk: the methods exist on
+is `X::Parameter::InvalidConcreteness`. On a buf8 or blob8 the offset is
+a byte offset. The quirk: the methods exist on
 EVERY Blob and read the raw storage bytes, so `blob16.new(1,2).read-
-uint16(0, BigEndian)` is 256.
+uint16(0, BigEndian)` is 256. On a 16/32/64-bit buffer the offset counts
+ELEMENTS, not bytes, while the width is still in bytes, read from the
+raw storage starting at that element: on `blob16.new(0x0102, 0x0304,
+0x0506)`, `read-uint16(1, LittleEndian)` is 772 (0x0304), `read-uint8(1)`
+4 and `read-uint32(1, LittleEndian)` 0x05060304; a read that runs past
+the storage (`read-uint16(3)`, `read-uint32(2)`) is `X::AdHoc`.
 ```
 my $b = blob8.new(1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,255); say $b.read-uint8(0), " ", $b.read-uint8(16), " ", $b.read-int8(16), " ", $b.read-uint16(0, BigEndian), " ", $b.read-uint16(0, LittleEndian), " ", $b.read-uint16(15, BigEndian), " ", $b.read-int16(15, BigEndian), " ", $b.read-int16(15, LittleEndian), " ", $b.read-uint32(0, BigEndian), " ", $b.read-uint32(0, LittleEndian), " ", $b.read-int32(13, LittleEndian), " ", $b.read-uint64(0, BigEndian), " ", $b.read-uint64(0, LittleEndian), " ", $b.read-int64(9, LittleEndian), " ", $b.read-uint128(0, BigEndian), " ", $b.read-uint128(0, LittleEndian), " ", $b.read-int128(1, LittleEndian), " ", blob8.new(255 xx 8).read-uint64(0), " ", blob8.new(255 xx 8).read-int64(0), " ", blob8.new(255 xx 16).read-uint128(0), " ", blob8.new(255 xx 16).read-int128(0), " ", $b.read-uint8(0).^name, " ", $b.read-uint64(0).^name, " ", $b.read-uint16(0) == $b.read-uint16(0, NativeEndian), " ", Kernel.endian, " ", (try $b.read-uint8(17)) // $!.^name, " ", (try $b.read-uint16(16)) // $!.^name, " ", (try $b.read-uint8(-1)) // $!.^name, " ", (try blob8.read-uint8(0)) // $!.^name, " ", (try $b.read-uint128(2)) // $!.^name, " ", buf8.new(1,2).read-uint16(0, BigEndian), " ", Buf.new(1,2).read-uint16(0, BigEndian), " ", Blob.new(1,2).read-uint16(0, BigEndian), " ", (try blob16.new(1,2).read-uint16(0, BigEndian)) // $!.^name, " ", (try $b.read-uint16(0, 2)) // $!.^name, " ", +NativeEndian, " ", +LittleEndian, " ", +BigEndian, " ", Endian.^name, " ", NativeEndian.^name, " ", (try $b.read-uint16(1.9, BigEndian)) // $!.^name, " ", (try $b.read-uint16("1", BigEndian)) // $!.^name, " ", (try $b.read-uint64(10)) // $!.^name, " ", $b.read-uint64(9, BigEndian), " ", (try $b.read-int128(2)) // $!.^name, " ", $b.read-int128(1, BigEndian), " ", $b.read-int8(0).^name, " ", $b.read-uint128(0).^name, " ", $b.read-int16(0, BigEndian).^name, " ", "a".encode.read-uint8(0), " ", (try Blob[int8].new(-1).read-uint8(0)) // $!.^name, " ", (try blob8.new(1,2,3,4).read-int32(0, Endian)) // $!.^name, " ", (try $b.read-uint16(0, "BigEndian")) // $!.^name, " ", (try Endian.enums.raku) // $!.^name
 # rakudo 2026.08: 1 255 -1 258 513 4351 4351 -240 16909060 67305985 -15724786 72623859790382856 578437695752307201 -67537441387705590 1339673755198158349044581307228491536 21345817372864405881847059188222722561 -1245845896672164287427841985326349566 18446744073709551615 -1 340282366920938463463374607431768211455 -1 Int Int True LittleEndian X::AdHoc X::AdHoc X::AdHoc X::Parameter::InvalidConcreteness X::AdHoc 258 258 258 256 X::TypeCheck::Binding::Parameter 0 1 2 Endian Endian X::AdHoc X::AdHoc X::AdHoc 723685415333073151 X::AdHoc 2674114409790073892038207218725622015 Int Int Int 97 255 X::AdHoc X::TypeCheck::Binding::Parameter Map.new((:BigEndian(2),:LittleEndian(1),:NativeEndian(0)))
+my $b = blob16.new(0x0102, 0x0304, 0x0506); say $b.read-uint16(0, LittleEndian), " ", $b.read-uint16(1, LittleEndian), " ", $b.read-uint16(2, LittleEndian), " ", $b.read-uint8(1), " ", $b.read-uint32(1, LittleEndian), " ", $b.read-uint16(1, BigEndian), " ", (try $b.read-uint16(3)) // $!.^name, " ", (try $b.read-uint32(2)) // $!.^name
+# rakudo 2026.08: 258 772 1286 4 84280068 1027 X::AdHoc X::AdHoc
+my $b = blob32.new(0x01020304, 0x05060708); say $b.read-uint8(1), " ", $b.read-uint32(1, LittleEndian), " ", $b.read-uint16(1, LittleEndian), " ", $b.read-uint64(0, LittleEndian), " ", (try $b.read-uint64(1)) // $!.^name
+# rakudo 2026.08: 8 84281096 1800 361984551007945476 X::AdHoc
 ```
 rakupp 4.0.1-84: differs — the refusals are `X::OutOfRange` and `X::Method::NotFound` instead of `X::AdHoc`/`X::Parameter::InvalidConcreteness`, an Int, Str or the type object is accepted as the Endian (513, 258), a Rat or Str offset is accepted (515), and `Endian.enums` is missing.
+(this rakupp line predates the correction; re-measure before relying on it)
+Corrected 2026-11-01 from Raku Behind the Docs, ch 14 (findings/BEHIND-THE-DOCS.md §1).
 
 ### BB-30  read-num32 and read-num64                                  D:yes R:yes V:spec
 IEEE single/double at a byte offset with the same Endian rules; a
@@ -641,8 +681,8 @@ rakupp 4.0.1-84: differs — every refusal is `X::OutOfRange` (including the zer
 
 ### BB-32  write-int8 … write-int128, write-num32/64                   D:yes R:yes V:spec
 `write-{int,uint}N($offset, $value, $endian = NativeEndian)` and
-`write-num32/64` write at a BYTE offset, GROW the buffer with zeros as
-needed, and return the buffer; called on the `buf8` type object they
+`write-num32/64` write at an offset (a byte offset on a buf8), GROW the
+buffer with zeros as needed, and return the buffer; called on the `buf8` type object they
 return a new `Buf[uint8]` (on `Buf` a plain `Buf`). The value is
 narrowed to the width (`write-uint8(0, 256)` writes 0, `write-int8(0,
 200)` the byte 200, `write-uint16(0, 70000)` the low 16 bits,
@@ -652,13 +692,24 @@ narrowed to the width (`write-uint8(0, 256)` writes 0, `write-int8(0,
 than 64 bits `X::AdHoc`). A negative offset, a Rat/Str offset or value,
 `Nil`, an Int where a `num32`/`num64` is wanted (`write-num32(0, 1)`, a
 Rat too) and an Int where an `Endian` is wanted throw `X::AdHoc`; a Blob
-has no `write-*` (`X::Method::NotFound`). On a 16-bit buffer the bytes
-land one per ELEMENT (`buf16.new.write-uint16(0, 1)` is `(1, 0)`).
+has no `write-*` (`X::Method::NotFound`). On a 16/32/64-bit buffer the
+offset counts ELEMENTS, the bytes go into the raw storage from that
+element on, and the buffer grows to offset + width elements, one element
+per byte written: `buf16.new.write-uint16(0, 0x0102, LittleEndian)` is
+`(258, 0)`, `buf16.new.write-uint32(0, 0x01020304, LittleEndian)`
+`(772, 258, 0, 0)`, `buf16.new(0, 0, 0).write-uint16(1, 0x0102,
+LittleEndian)` `(0, 258, 0)` and `buf16.new.write-uint8(3, 5)`
+`(0, 0, 0, 5)`. (`buf16.new.write-uint16(0, 1)` is `(1, 0)` for the
+same reason.)
 ```
 sub E(&c) { my $o; { my \r = c(); $o = r ~~ Failure ?? do { r.so; "F:" ~ r.exception.^name } !! "ok:" ~ r.raku; CATCH { default { $o = "T:" ~ .^name } } }; $o }; say E({ buf8.new.write-uint8(0, 255).raku }), " ", E({ buf8.new.write-uint8(0, 256).raku }), " ", E({ buf8.new.write-int8(0, 200).raku }), " ", E({ buf8.new.write-int8(0, -1).raku }), " ", E({ buf8.new.write-uint16(0, 0x1234, BigEndian).raku }), " ", E({ buf8.new.write-uint16(0, 0x1234, LittleEndian).raku }), " ", E({ buf8.new.write-uint16(3, 1, BigEndian).raku }), " ", E({ buf8.new.write-int16(0, -2, BigEndian).raku }), " ", E({ buf8.new.write-uint32(0, 0x01020304, BigEndian).raku }), " ", E({ buf8.new.write-int32(0, -1).raku }), " ", E({ buf8.new.write-uint64(0, 2**64 - 1).raku }), " ", E({ buf8.new.write-int64(0, -1, BigEndian).raku }), " ", E({ buf8.new.write-int64(0, 2**62, BigEndian).raku }), " ", E({ buf8.new.write-uint128(0, 2**64 + 1, BigEndian).raku }), " ", E({ buf8.new.write-int128(0, -1).elems }), " ", E({ buf8.new.write-int128(0, -2, LittleEndian).list.head(2).raku }), " ", E({ buf8.new(9,9,9).write-uint8(1, 1).raku }), " ", E({ buf8.new(9,9,9).write-uint16(2, 1, BigEndian).raku }), " ", E({ buf8.write-uint16(0, 258, BigEndian).raku }), " ", E({ buf8.write-uint8(2, 1).raku }), " ", E({ Buf.new.write-uint8(0, 1).raku }), " ", E({ Buf.write-uint8(0, 1).raku }), " ", E({ buf8.new.write-uint8(-1, 1) }), " ", E({ buf8.write-uint8(-1, 1) }), " ", E({ blob8.new(1).write-uint8(0, 1) }), " ", E({ buf16.new.write-uint16(0, 1).raku }), " ", E({ buf8.new.write-uint8(0, "x") }), " ", E({ buf8.new.write-uint8(0, 1.5).raku }), " ", E({ buf8.new.write-uint16(0, 70000, BigEndian).raku }), " ", E({ buf8.new.write-uint64(0, -1) }), " ", E({ buf8.new.write-uint64(0, 2**64).raku }), " ", E({ buf8.new.write-int64(0, 2**64).raku }), " ", E({ my $b = buf8.new; $b.write-uint8(0, 1) === $b }), " ", E({ buf8.new.write-uint8(0, 1, 5) }), " ", E({ buf8.new.write-num32(0, 1e0, LittleEndian).raku }), " ", E({ buf8.new.write-num64(0, 1e0, BigEndian).raku }), " ", E({ buf8.new.write-num32(2, 1e0, BigEndian).raku }), " ", E({ buf8.new.write-num32(0, 1).raku }), " ", E({ buf8.new.write-num32(0, "1e0") }), " ", E({ buf8.write-num64(0, -0e0).raku }), " ", E({ buf8.new.write-num32(0, 1/3, LittleEndian).read-num32(0, LittleEndian) }), " ", E({ buf8.new.write-num64(0, 1/3, LittleEndian).read-num64(0, LittleEndian) == 1/3 }), " ", E({ buf8.new.write-uint8("0", 1).raku }), " ", E({ buf8.new.write-uint8(0.5, 1).raku }), " ", E({ buf8.new.write-int8(0, -129).raku }), " ", E({ buf8.new.write-int8(0, 128).raku }), " ", E({ buf8.new.write-uint32(0, -1) }), " ", E({ buf8.new.write-int32(0, 2**32).raku }), " ", E({ buf8.new.write-uint8(0, Nil) }), " ", E({ buf8.new.write-uint16(0, 1).elems }), " ", E({ buf8.new.write-num32(0, Inf, BigEndian).raku }), " ", E({ buf8.new.write-num32(0, NaN, BigEndian).read-num32(0, BigEndian).raku }), " ", E({ buf8.new.write-int8(1, 1).raku })
 # rakudo 2026.08: ok:"Buf[uint8].new(255)" ok:"Buf[uint8].new(0)" ok:"Buf[uint8].new(200)" ok:"Buf[uint8].new(255)" ok:"Buf[uint8].new(18,52)" ok:"Buf[uint8].new(52,18)" ok:"Buf[uint8].new(0,0,0,0,1)" ok:"Buf[uint8].new(255,254)" ok:"Buf[uint8].new(1,2,3,4)" ok:"Buf[uint8].new(255,255,255,255)" ok:"Buf[uint8].new(255,255,255,255,255,255,255,255)" ok:"Buf[uint8].new(255,255,255,255,255,255,255,255)" ok:"Buf[uint8].new(64,0,0,0,0,0,0,0)" ok:"Buf[uint8].new(0,0,0,0,0,0,0,1,0,0,0,0,0,0,0,1)" ok:16 ok:"(254, 255).Seq" ok:"Buf[uint8].new(9,1,9)" ok:"Buf[uint8].new(9,9,0,1)" ok:"Buf[uint8].new(1,2)" ok:"Buf[uint8].new(0,0,1)" ok:"Buf.new(1)" ok:"Buf.new(1)" T:X::AdHoc T:X::AdHoc T:X::Method::NotFound ok:"Buf[uint16].new(1,0)" T:X::AdHoc T:X::AdHoc ok:"Buf[uint8].new(17,112)" T:X::TypeCheck::Binding::Parameter T:X::AdHoc T:X::AdHoc ok:Bool::True T:X::AdHoc ok:"Buf[uint8].new(0,0,128,63)" ok:"Buf[uint8].new(63,240,0,0,0,0,0,0)" ok:"Buf[uint8].new(0,0,63,128,0,0)" T:X::AdHoc T:X::AdHoc ok:"Buf[uint8].new(0,0,0,0,0,0,0,128)" T:X::AdHoc T:X::AdHoc T:X::AdHoc T:X::AdHoc ok:"Buf[uint8].new(127)" ok:"Buf[uint8].new(128)" ok:Buf[uint8].new(255,255,255,255) ok:"Buf[uint8].new(0,0,0,0)" T:X::AdHoc ok:2 ok:"Buf[uint8].new(127,128,0,0)" ok:"NaN" ok:"Buf[uint8].new(0,1)"
+say buf16.new.write-uint16(0, 0x0102, LittleEndian).raku, " ", buf16.new.write-uint16(0, 1).raku, " ", buf16.new.write-uint32(0, 0x01020304, LittleEndian).raku, " ", buf16.new(0, 0, 0).write-uint16(1, 0x0102, LittleEndian).raku, " ", buf16.new(9, 9).write-uint16(2, 0x0102, LittleEndian).raku, " ", buf16.new.write-uint8(0, 5).raku, " ", buf16.new.write-uint8(3, 5).raku, " ", buf32.new.write-uint16(0, 0x0102, LittleEndian).raku, " ", buf16.new.write-uint16(0, 0x0102, BigEndian).raku, " ", buf16.new(7,7,7).write-uint8(1, 5).raku
+# rakudo 2026.08: Buf[uint16].new(258,0) Buf[uint16].new(1,0) Buf[uint16].new(772,258,0,0) Buf[uint16].new(0,258,0) Buf[uint16].new(9,9,258,0) Buf[uint16].new(5) Buf[uint16].new(0,0,0,5) Buf[uint32].new(258,0) Buf[uint16].new(513,0) Buf[uint16].new(7,5,7)
 ```
 rakupp 4.0.1-84: differs — the type-object calls return a plain `Buf` (or `X::Method::NotFound` for `Buf.write-uint8`), a Blob accepts the writes, a negative offset is `X::OutOfRange`, and every other refusal is accepted: a Str/Rat/Nil value or offset, `-1` into `write-uint64`, `2**64`, an Int/Rat/Str into `write-num32`, and an Int as the Endian.
+(this rakupp line predates the correction; re-measure before relying on it)
+Corrected 2026-11-01 from Raku Behind the Docs, ch 14 (findings/BEHIND-THE-DOCS.md §1).
 
 ### BB-33  write-ubits and write-bits                                 D:partial R:partial V:bug
 `write-ubits($pos, $bits, $value)` writes the low `$bits` bits of the
@@ -669,15 +720,23 @@ type object; a zero bit count writes nothing. A negative position throws
 `X::AdHoc`; a negative value to `write-ubits`, a Str value or a Rat bit
 count is `X::TypeCheck::Binding::Parameter`; a Rat position `X::AdHoc`;
 a Blob has no `write-ubits`. THE BUG: when the run ends inside a byte,
-the bits of that byte to the RIGHT of the run are not preserved:
-`buf8.new(0xFF, 0xFF).write-ubits(4, 8, 0)` gives `(240, 8)` and
-`buf8.new(0xFF).write-ubits(2, 4, 0)` gives `194`, where `(240, 15)`
-and `195` are correct; do not imitate.
+the bits of that byte to the RIGHT of the run are not preserved, and the
+clobbering is regular: of those bits only the first keeps its value, and
+the rest become 0. `buf8.new(0xFF).write-ubits(0, 4, 0)` gives 8,
+`buf8.new(0xFF, 0xFF).write-ubits(4, 8, 0)` `(240, 8)` and
+`buf8.new(0xFF).write-ubits(2, 4, 0)` `194`, where 15, `(240, 15)`
+and `195` are correct; `buf8.new(0b10111111).write-ubits(0, 1, 1)` is
+128, the surviving bit being a 0. Bits left of the run and later bytes
+are untouched (`buf8.new(0xFF, 0xFF, 0xFF).write-ubits(4, 8, 0)` is
+`(240, 8, 255)`); do not imitate.
 ```
 sub E(&c) { my $o; { my \r = c(); $o = r ~~ Failure ?? do { r.so; "F:" ~ r.exception.^name } !! "ok:" ~ r.raku; CATCH { default { $o = "T:" ~ .^name } } }; $o }; say E({ buf8.new.write-ubits(4, 8, 0xAB).raku }), " ", E({ buf8.new.write-ubits(0, 8, 0x1FF).raku }), " ", E({ buf8.new.write-ubits(0, 4, 0xF).raku }), " ", E({ buf8.new.write-ubits(0, 12, 0xABC).raku }), " ", E({ buf8.new.write-ubits(3, 13, 0x1FFF).raku }), " ", E({ buf8.new(0xFF, 0xFF).write-ubits(4, 8, 0).raku }), " ", E({ buf8.new.write-bits(0, 8, -1).raku }), " ", E({ buf8.new.write-bits(0, 4, -1).raku }), " ", E({ buf8.new.write-bits(0, 8, 300).raku }), " ", E({ buf8.new.write-ubits(0, 65, 2**65 - 1).elems }), " ", E({ buf8.new.write-ubits(0, 65, 2**65 - 1).read-ubits(0, 65) }), " ", E({ buf8.write-ubits(4, 8, 0xAB).raku }), " ", E({ buf8.write-bits(0, 8, -2).raku }), " ", E({ buf8.new.write-ubits(-1, 1, 1) }), " ", E({ buf8.new.write-ubits(0, 1, -1) }), " ", E({ buf8.new.write-ubits(0, 0, 0).raku }), " ", E({ blob8.new.write-ubits(0, 1, 1) }), " ", E({ my $b = buf8.new; $b.write-ubits(0, 1, 1) === $b }), " ", E({ buf8.new.write-ubits(0, 8, "x") }), " ", E({ buf8.new.write-ubits(16, 8, 1).raku }), " ", E({ buf8.new(1,2,3).write-bits(8, 8, -1).raku }), " ", E({ buf8.new.write-ubits(0, 8, 2**70).raku }), " ", E({ buf8.new.write-bits(0, 8, 2**70).raku }), " ", E({ buf8.new(0xFF).write-ubits(2, 4, 0).raku }), " ", E({ buf8.new.write-ubits(1, 8, 0xFF).raku }), " ", E({ buf8.new.write-ubits(0, 8, 1).write-ubits(8, 8, 2).raku }), " ", E({ buf8.new.write-ubits(0.5, 4, 1) }), " ", E({ buf8.new.write-bits(0, 4, 8).raku }), " ", E({ buf8.new.write-bits(0, 4, 8).read-bits(0, 4) }), " ", E({ buf8.new.write-ubits(0, 1, 1).raku }), " ", E({ buf8.new.write-ubits(7, 1, 1).raku }), " ", E({ buf8.new.write-ubits(0, 1.5, 1).raku })
 # rakudo 2026.08: ok:"Buf[uint8].new(10,176)" ok:"Buf[uint8].new(255)" ok:"Buf[uint8].new(240)" ok:"Buf[uint8].new(171,192)" ok:"Buf[uint8].new(31,255)" ok:"Buf[uint8].new(240,8)" ok:"Buf[uint8].new(255)" ok:"Buf[uint8].new(240)" ok:"Buf[uint8].new(44)" ok:9 ok:36893488147419103231 ok:"Buf[uint8].new(10,176)" ok:"Buf[uint8].new(254)" T:X::AdHoc T:X::TypeCheck::Binding::Parameter ok:"Buf[uint8].new()" T:X::Method::NotFound ok:Bool::True T:X::TypeCheck::Binding::Parameter ok:"Buf[uint8].new(0,0,1)" ok:"Buf[uint8].new(1,255,3)" ok:"Buf[uint8].new(0)" ok:"Buf[uint8].new(0)" ok:"Buf[uint8].new(194)" ok:"Buf[uint8].new(127,128)" ok:"Buf[uint8].new(1,2)" T:X::AdHoc ok:"Buf[uint8].new(128)" ok:-8 ok:"Buf[uint8].new(128)" ok:"Buf[uint8].new(1)" T:X::TypeCheck::Binding::Parameter
+say buf8.new(0xFF).write-ubits(0, 4, 0).raku, " ", buf8.new(0xFF).write-ubits(0, 1, 0).raku, " ", buf8.new(0xFF).write-ubits(0, 6, 0).raku, " ", buf8.new(0xFF).write-ubits(0, 7, 0).raku, " ", buf8.new(0xFF).write-ubits(0, 8, 0).raku, " ", buf8.new(0xFF).write-ubits(2, 4, 0).raku, " ", buf8.new(0xFF, 0xFF).write-ubits(4, 8, 0).raku, " ", buf8.new(0xFF, 0xFF, 0xFF).write-ubits(4, 8, 0).raku, " ", buf8.new(0xFF).write-ubits(3, 2, 0).raku, " ", buf8.new(0b10101010).write-ubits(0, 2, 0).raku, " ", buf8.new(0b10100101).write-ubits(0, 2, 0).raku, " ", buf8.new(0xFF).write-bits(0, 4, 0).raku, " ", buf8.new(0b10111111).write-ubits(0, 1, 1).raku
+# rakudo 2026.08: Buf[uint8].new(8) Buf[uint8].new(64) Buf[uint8].new(2) Buf[uint8].new(1) Buf[uint8].new(0) Buf[uint8].new(194) Buf[uint8].new(240,8) Buf[uint8].new(240,8,255) Buf[uint8].new(228) Buf[uint8].new(32) Buf[uint8].new(32) Buf[uint8].new(8) Buf[uint8].new(128)
 ```
 rakupp 4.0.1-84: differs — the neighbouring bits ARE preserved (`(240, 15)`, `195`: the right answers), the type-object form returns a plain `Buf`, a Blob accepts the write, a negative position or a zero bit count is `X::OutOfRange`, and a negative value, Str value, Rat position or Rat count are accepted.
+Corrected 2026-11-01 from Raku Behind the Docs, ch 14 (findings/BEHIND-THE-DOCS.md §1).
 
 ## H. Odds and ends
 

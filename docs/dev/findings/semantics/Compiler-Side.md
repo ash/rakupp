@@ -40,7 +40,7 @@ neighbouring operators takes the operand, what a same-level mix is allowed
 to mean, what a quote construct's adverbs and delimiters do to its text,
 and what happens to a value nobody uses. 8 of the 34 items are neither
 fully documented nor fully asserted by Roast. One Rakudo behaviour is
-recorded as a bug and eight as quirks; step two should not imitate the
+recorded as a bug and six as quirks; step two should not imitate the
 bug.
 
 Every probe is one line, run with `alarm 25` and standard input closed, in
@@ -357,7 +357,7 @@ say (-1.abs), " ", (2.Str x 2), " ", (try EVAL 'my @a = 1,2; @a .[0]') // $!.^na
 ```
 rakupp 4.0.1-84: differs in eight fields — `@a .[0]` and `%h .<a>` are accepted, the four `X::Syntax::Missing` cases and `say(1) (2)` are `X::Syntax::Confused`, `$x.abs++` is `X::Assignment::RO`, and `f [1]` with a no-argument `f` gives 1.
 
-### CP-15  Binding, `=:=`, `temp` and `let`                               D:partial R:partial V:quirk
+### CP-15  Binding, `=:=`, `temp` and `let`                               D:partial R:partial V:spec
 `:=` aliases containers (`$a =:= $b` True after `my $b := $a`, writes
 through; `=:=` chains) while `=` copies; `my $y := $x + 1` binds a bare
 Int (`.VAR.^name` is `Int`) and assigning to it is `X::AdHoc`; `my ($x,
@@ -367,19 +367,23 @@ assigns; `temp 42` is `X::Localizer::NoContainer`; `(temp $x)` yields the
 container. `temp` restores at scope exit, also after `die`, also for an
 Array, a hash element and a double `temp`. Because the do block returns
 its last expression's container, `do { temp $x = 2; $x }` is already
-restored when read (`1 1`). `let` restores when the routine leaves by
-`die`, `fail` or with an undefined value (`Nil`, `Any`, a Failure) and
-keeps the change for a defined value that the caller uses (`my $r = t11`
-keeps 2 for a routine ending in `1`). The quirk: when the call is sunk,
-a routine ending in `1` or `0` restores (`t2; $x` is 1) while one ending
-in `""`, `False`, `"0"`, `()`, `Nil` or an explicit `return 0`/`return 1`
-keeps the change; Roast (`let.t`) asserts only the used-value cases, and
-step two should follow those.
+restored when read (`1 1`). `let` restores only when the block is left
+by an exception (`die`) or ends with an undefined value (`Nil`, `Any`, a
+Failure, as from `fail`), whether the caller uses that value or the call
+is sunk. Every defined value keeps the change, used or sunk: `my $r = t11`
+keeps 2 for a routine ending in `1`, and so do a sunk `t2` ending in `1`,
+a sunk `t4` ending in `0`, and sunk routines ending in `""`, `False`,
+`"0"`, `()` or an explicit `return 0`/`return 1`. A sunk routine ending in
+`Nil` or `Any` restores. Roast (`let.t`) asserts only the used-value
+cases.
 ```
 say do { my $a = 1; my $b := $a; my $c = $a; my $r1 = $a =:= $b; my $r2 = $a =:= $c; $b = 2; my $r3 = $a; $c = 3; "$r1 $r2 $r3 $a" }, " ", do { my $x = 1; my $in = do { temp $x = 2; $x }; "$in $x" }, " ", do { my $x = 1; sub t1 { temp $x; $x = 5; Nil }; t1; $x }, " ", do { my $x = 1; try { let $x = 2; die }; $x }, " ", do { my $x = 1; sub t2 { let $x = 2; 1 }; t2; $x }, " ", do { my $x = 1; try { let $x = 2; fail "x" }; $x }, " ", do { my $x = 1; sub t3 { let $x = 2; Nil }; t3; $x }, " ", do { my $x = 1; sub t4 { let $x = 2; 0 }; t4; $x }, " ", do { my $a = 1; my $b := $a; my $c := $b; ($a =:= $b =:= $c) }, " ", do { my @a = 1,2; my @b := @a; @b.push(3); @a.raku }, " ", do { my ($x, $y) := (1, 2); "$x $y" }, " ", do { my $x = 5; my $y := $x + 1; $y.VAR.^name }, " ", (try EVAL 'my $x := 1; $x = 2') // $!.^name, " ", do { my $x = 1; temp $x = 2 ~ "z"; $x }, " ", do { my $x = 1; my $in = do { temp $x = 2; temp $x = 3; $x }; "$in $x" }, " ", do { my @a = 1,2; my $in = do { temp @a; @a.push(3); @a.elems }; "$in " ~ @a.elems }, " ", do { my %h = a => 1; my $in = do { temp %h<a> = 9; %h<a> }; "$in " ~ %h<a> }, " ", do { my $x = 1; my $r = (temp $x); $x = 7; $r }, " ", (try EVAL 'temp 42') // $!.^name, " ", do { my $x = 1; sub t5 { temp $x; temp $x; $x = 3; Nil }; t5; $x }, " ", do { my $x = 1; my $y = 1; my $in = do { temp $x = temp $y = 2; "$x$y" }; "$in $x$y" }, " ", do { my $x = 1; sub t6 { let $x = 2; "" }; t6; $x }, " ", do { my $x = 1; sub t7 { let $x = 2; False }; t7; $x }, " ", do { my $x = 1; sub t8 { let $x = 2; (0, 1) }; t8; $x }, " ", do { my $x = 1; sub t9 { let $x = 2; Failure.new }; my $f = t9; $f.so; $x }, " ", do { my $x = 1; sub t10 { let $x = 2; Any }; t10; $x }, " ", do { my $x = 1; sub f { let $x = 2; return 0 }; f; $x }, " ", do { my $x = 1; sub g { let $x = 2; return 1 }; g; $x }, " ", do { my $x = 1; try { temp $x = 2; die }; $x }, " ", do { my $x = 1; sub t11 { let $x = 2; 1 }; my $r = t11; "$r $x" }, " ", do { my $x = 1; sub t12 { let $x = 2; "0" }; t12; $x }, " ", do { my $x = 1; sub t13 { let $x = 2; () }; t13; $x }, " ", do { my $x = 1; sub t14 { let $x = 2; Nil }; my $r = t14; $x }, " ", do { my $x = 1; sub t15 { let $x = 2; $x }; my $r = t15; "$r $x" }, " ", do { my @a = 1; sub t16 { let @a = 5, 6; 0 }; t16; @a.raku }, " ", do { my $x = 1; my $y := $x; $y = 9; $x }, " ", do { my $x = 1; my $y = $x; $y = 9; $x }, " ", do { my @a = 1; my @b = @a; @b[0] = 9; @a.raku }, " ", do { my @a = 1; my @b := @a; @b[0] = 9; @a.raku }, " ", do { my $x = 1; { temp $x = 2; }; $x }
 # rakudo 2026.08: True False 2 2 1 1 1 1 2 1 1 2 True [1, 2, 3] 1 2 Int X::AdHoc 1 1 1 3 2 1 1 1 X::Localizer::NoContainer 1 22 11 2 2 2 1 1 2 2 1 1 2 2 2 1 2 2 [5, 6] 9 1 [1] [9] 1
 ```
 rakupp 4.0.1-84: differs in nineteen fields — `=:=` is False for bound aliases (also chained), a do block returns the value not the container (`2 1`, `3 1`, `9 1`, `2z`), `my $y := $x + 1` reports `Scalar` and accepts assignment, `temp 42` is `X::Assignment::RO`, and `let` never restores except after `die` (a `fail`, `Nil`, `Any`, a Failure and every sunk case keep 2).
+(this rakupp line predates the correction; re-measure before relying on it)
+
+Corrected 2026-11-01 from Raku Behind the Docs, ch 5 (findings/BEHIND-THE-DOCS.md §1).
 
 ### CP-16  Flip-flop and feeds                                             D:yes R:yes V:spec
 `ff` starts when its left side is true for the current `$_`, tests the
@@ -409,7 +413,7 @@ rakupp 4.0.1-84: differs in seven fields and three warnings — `* ff $_ == 3` a
 ### CP-17  `=~=` and the comparison-with-Order family                     D:yes R:partial V:spec
 `=~=` is relative to the larger magnitude with `$*TOLERANCE` (1e-15 by
 default, dynamically rebindable): `1 =~= 1 + 1e-16` True, `1 =~= 1.1`
-False, `1e10 =~= 1e10 + 1` True, `1e-20 =~= 2e-20` False; when one side
+False, `1e10 =~= 1e10 + 1` False, `1e-20 =~= 2e-20` False; when one side
 is 0 the difference is compared with the tolerance directly (`0 =~= 1e-16`
 True, `1e-15 =~= 0` False); `Inf =~= Inf` True, `NaN =~= NaN` False; it
 chains. `cmp` compares numerically when both sides are numeric, as
@@ -427,6 +431,8 @@ say (1 =~= 1 + 1e-16), " ", (1 =~= 1.1), " ", $*TOLERANCE, " ", do { my $*TOLERA
 ```
 rakupp 4.0.1-84: matches.
 
+Corrected 2026-11-01 from Raku Behind the Docs, ch 7 (findings/BEHIND-THE-DOCS.md §1).
+
 ### CP-18  `x` and `xx`: laziness, thunking, edge counts                  D:yes R:yes V:spec
 `xx` returns a Seq (`(1 xx 3).raku` is `(1, 1, 1).Seq`), infinite and
 lazy with `*` or `Inf` (`is-lazy` True, indexable, `head`); a finite one
@@ -435,7 +441,8 @@ side is re-evaluated per element (`$n++ xx 3` is `(0, 1, 2)`, `[1] xx 2`
 gives two distinct arrays, `rand xx 2` two different Nums, `{ … } xx 2`
 two blocks not called). A count of 0 or a negative one gives an empty
 Seq, 2.7 gives 2, `"2"` gives 2, `"b"` is `X::Str::Numeric`, NaN is
-`X::Numeric::CannotConvert`. `x` gives a Str: `1 x 3` is `111`,
+`X::Numeric::CannotConvert`; both throw when the Seq is built
+(`my $s = 1 xx NaN` dies), not when it is read. `x` gives a Str: `1 x 3` is `111`,
 `"ab" x 2.7` is `abab`, `"ab" x 0` and `"ab" x -1` are `""`,
 `"a" x Inf` is `X::NYI`, `"a" x NaN` `X::Numeric::CannotConvert`.
 `1 xx 2 xx 2` is `((1, 1), (1, 1))`, `(1..3).map(…) xx 2` two Seqs.
@@ -444,8 +451,13 @@ say (1 xx 3).^name, " ", (1 xx 3).raku, " ", (1 xx *).^name, " ", (1 xx *).is-la
 # rakudo 2026.08: Seq (1, 1, 1).Seq Seq True 1 False (0, 1, 2).Seq 0 1 2 3 ().Seq ().Seq ((1, 2), (1, 2)).Seq ([1], [1]).Seq [[1, 9], [1]] a,a Seq True (1, 1).Seq abab "" "" (1,).Seq (Nil, Nil).Seq (1, 1).Seq ((1, 2, 3), (1, 2, 3)).Seq 111 Str aa (1, 1).Seq 20 ("Num", "Num").Seq False 3 Nil ((1, 1), (1, 1)).Seq ((1, 1), (1, 1)).Seq X::NYI X::Numeric::CannotConvert aa X::Str::Numeric X::Str::Numeric X::Numeric::CannotConvert
 say (try (1 xx *).elems) // $!.^name
 # rakudo 2026.08: X::Cannot::Lazy
+say (try { my $s = 1 xx NaN; "built" }) // $!.^name, " ", (try { my $s = 1 xx "b"; "built" }) // $!.^name, " ", (try { my $s = 1 xx *; "built" }) // $!.^name
+# rakudo 2026.08: X::Numeric::CannotConvert X::Str::Numeric built
 ```
 rakupp 4.0.1-84: differs in two fields — `"a" x Inf` is `X::Numeric::CannotConvert` and `(1 xx NaN).elems` is 0.
+(this rakupp line predates the correction; re-measure before relying on it)
+
+Corrected 2026-11-01 from Raku Behind the Docs, ch 9 (findings/BEHIND-THE-DOCS.md §1).
 
 ## B. Quote constructs and their adverbs
 
@@ -462,15 +474,22 @@ it. `qq` (and `"…"`) knows `\n \t \e \0 \a \b \f \r`, `\xHH`, `\x[HH,…]`,
 character (`\\ \" \$ \@ \{ \} \% \& \ `); a backslash before a word
 character is a compile-time `X::Backslash::UnrecognizedSequence` (`\y`,
 `\C`, `\d`, `\s`; `\1` carries `.suggestion` `$0`), `\x{…}`, `\o{…}` and
-`\N{…}` are `X::Obsolete`, an unknown `\c[NAME]` is `X::Comp::AdHoc`,
-`\x[110000]` is a run-time `X::AdHoc`. `Q:b` turns the backslashes on
+`\N{…}` are `X::Obsolete`, an unknown `\c[NAME]` is `X::Comp::AdHoc`.
+`\x[110000]` in a source file is a compile-time error (`===SORRY!===`,
+"chr codepoint 1114112 (0x110000) is out of bounds"; nothing in the file
+runs); only under `EVAL` is it `X::AdHoc`. `Q:b` turns the backslashes on
 alone. `"\c[LATIN SMALL LETTER E, COMBINING ACUTE ACCENT]"` is one
 character; `"\r\n"` two.
 ```
 say Q[\n].chars, " ", q[a\tb].chars, " ", (try EVAL Q[q 'it\'s']) // $!.^name, " ", q[a\\b], " ", q{a\}b}, " ", do { my $x = 42; q[a\qq[$x]b] ~ " " ~ ((try EVAL Q[my $x = 42; 'c\qq{$x}d']) // $!.^name) ~ " " ~ Q[e\qq[$x]f] ~ " " ~ 'g\qq[$x.Str()]h' ~ " " ~ q[\q[\n]].chars }, " ", "\n\t\e\0\a\b\f\r".ords.raku, " ", "\x41\x[42]\c[LATIN CAPITAL LETTER C]\c68\o[105]\o106\x[47,48]\c[69,70]", " ", "\\\"\$\@\{\}\%\&", " ", Q:b[\n].chars, " ", (try EVAL '"\y"') // $!.^name, " ", ((try EVAL '"\1"') // $!.^name) ~ ":" ~ ((try EVAL '"\1"') // $!.suggestion), " ", (try EVAL 'q:b"\y"') // $!.^name, " ", "a\ b", " ", (try EVAL 'Q[\].chars') // $!.^name, " ", (try EVAL 'q[\\].chars') // $!.^name, " ", (try EVAL 'q[\ ].chars') // $!.^name, " ", "\cI".ord, " ", "\c?".ord, " ", "\c@".ord, " ", "\x[1F600]".chars, " ", "\x[1F600]".codes, " ", "\c[LATIN SMALL LETTER E WITH ACUTE]".chars, " ", "\c[LATIN SMALL LETTER E, COMBINING ACUTE ACCENT]".chars, " ", (try EVAL '"\c[NO SUCH NAME X]"') // $!.^name, " ", (try EVAL '"\x[110000]"') // $!.^name, " ", "\x0041", " ", "\o101\o[101]", " ", (try EVAL Q["\o{101}"]) // $!.^name, " ", (try EVAL Q["\x{41}"]) // $!.^name, " ", (try EVAL Q["\N{LATIN SMALL LETTER A}"]) // $!.^name, " ", (try EVAL Q[q 'x\'y'.chars]) // $!.^name, " ", q<a\>b>, " ", q<a\<b\>c>, " ", 'a\qq[]b', " ", "\"", " ", (try EVAL Q{'\qq[$nope]'}) // $!.^name, " ", "\r\n".ords.raku, " ", "a\\nb".chars, " ", 'a\'b', " ", 'a\\b', " ", 'a\nb'.chars, " ", 'a\tb'.chars, " ", '\\\\'.chars, " ", 'a\\'.chars, " ", "\x[41]\x[42]".chars, " ", "\c[SPACE]".ord, " ", "\c[LATIN CAPITAL LETTER A]\c[LATIN SMALL LETTER B]", " ", "\x00041".chars, " ", "\e[0m".ords.raku, " ", "\b".ord, " ", (try EVAL '"\C"') // $!.^name, " ", (try EVAL '"\d"') // $!.^name, " ", (try EVAL '"\s"') // $!.^name
 # rakudo 2026.08: 2 4 it's a\b a}b a42b c42d e\qq[$x]f g42h 2 (10, 9, 27, 0, 7, 8, 12, 13).Seq ABCDEFGHEF \"$@{}%& 1 X::Backslash::UnrecognizedSequence X::Backslash::UnrecognizedSequence:$0 X::Backslash::UnrecognizedSequence a b 1 X::Comp::AdHoc 2 9 127 0 1 1 1 1 X::Comp::AdHoc X::AdHoc A AA X::Obsolete X::Obsolete X::Obsolete 3 a>b a<b>c ab " X::Undeclared (13, 10).Seq 4 a'b a\b 4 4 2 2 2 32 Ab 1 (27, 91, 48, 109).Seq 8 X::Backslash::UnrecognizedSequence X::Backslash::UnrecognizedSequence X::Backslash::UnrecognizedSequence
+say do { my $p = run($*EXECUTABLE, "-e", Q[say "start"; say "\x[110000]"], :out, :err); my $o = $p.out.slurp(:close); my $e = $p.err.slurp(:close); ($o.trim || "-") ~ "/" ~ $e.lines.join("|") ~ "/" ~ $p.exitcode }, " ", (try EVAL Q{"\x[110000]"}) // $!.^name
+# rakudo 2026.08: -/===SORRY!===|chr codepoint 1114112 (0x110000) is out of bounds/1 X::AdHoc
 ```
 rakupp 4.0.1-84: differs in eleven fields — the space forms `q 'it\'s'` are `X::Undeclared::Symbols`, `\qq[…]` and `\q[…]` inside `q` are not recognised, `"\1"` is accepted as `1`, `Q[\]`/`q[\\]` are `X::Syntax::Confused`, an unknown `\c[NAME]` is `X::Syntax::Confused`, `\x[110000]` prints four garbage bytes, and `\x{…}`/`\o{…}`/`\N{…}` are `X::Backslash::UnrecognizedSequence` instead of `X::Obsolete`.
+(this rakupp line predates the correction; re-measure before relying on it)
+
+Corrected 2026-11-01 from Raku Behind the Docs, ch 2 (findings/BEHIND-THE-DOCS.md §1).
 
 ### CP-20  What interpolates in qq                                        D:yes R:yes V:spec
 A `$` variable always interpolates; a method call on it only with
@@ -562,9 +581,10 @@ rest, `qq:!c` turns closures off, `qq:!b` keeps a `\n` literal;
 `Q:s:!s` ends with scalars off, `qq:c:!c` off and `qq:!c:c` on (the last
 setting wins). A postprocessor adverb cannot be turned off again
 (`q:w:!w`, `qq:x:!x` still split and run); `:x(0)`, `:s(1)` and `:1x`
-are the boolean forms. `q:q`, `qq:qq`, `q:qq`, `qq:q`, `q:!q` are
-compile-time `X::Comp::AdHoc` ("Too late for", "Cannot negate"), as are
-an unknown adverb (`q:zz`, `q:o`, `Q:o`, `q:p`, `q:path`, `q:format`)
+are the boolean forms. `q:q`, `qq:qq`, `q:qq`, `qq:q` and `q:!q` are
+compile-time `X::Comp::AdHoc` with the message "Too late for :q" (or
+`:qq`); only `Q:!q` and `Q:!qq` say "Cannot negate :q adverb". Also
+compile-time `X::Comp::AdHoc` are an unknown adverb (`q:zz`, `q:o`, `Q:o`, `q:p`, `q:path`, `q:format`)
 and `q:!to`; `q:to{a}`/`Q:heredoc{a}` with the body on the same line are
 `X::AdHoc`; `q:regex{a}` is `X::AdHoc`; `q:cc{a}` is `a`. With brace
 delimiters a nested `{…}` is never a closure, even under `:c`
@@ -575,8 +595,13 @@ IntStr/RatStr for a numeric string and Str otherwise (`Q:v{1 2}` is Str,
 ```
 say do { my $x = 1; my @a = 2,3; my %h = k => 4; sub f { "F" }; (q:s[$x @a[] %h<k> &f() {1+1} \n], qq:!s[$x @a[] %h<k> &f() {1+1}], qq:!c[$x {1+1}], qq:!a{$x @a[]}, qq:!h{%h<k>}, qq:!f{&f()}, qq:!b{\n$x}, Q:c[{1+1} $x], Q:s:a:h:f:c:b[$x @a[] %h<k> &f() {1+1} \t].chars, q:a{$x @a[]}, q:h{%h<k> $x}, q:f{&f() $x}, q:b{a\nb}.chars, Q:q{a\'b}, Q:qq{$x\n}.chars, q :w /a b/.raku, q:c[{$x + 1}], Q:v{42}.^name, q:v{42}.^name, qq:v{4$x}.^name, Q:s{$x\n}.chars, Q:b{$x\n}.chars, qq:s:!b{$x\n}.chars, q:s:b{$x\n}.chars, Q:a{@a[] $x}, Q:h{%h<k> $x}, Q:f{&f() $x}, Q:c{$x {$x}}, Q:c[$x {$x}], Q:q:s{$x}, Q:s:q{$x}, Q:x:w{echo a b}.raku, q:w:x{echo a b}.raku, qq:c:!c[{1}], qq:!c:c[{1}], Q:single{$x\n}.chars, Q:double{$x\n}.chars, q:backslash{\n}.chars, Q:scalar{$x @a[]}, Q:array{$x @a[]}, Q:hash{%h<k>}, Q:function{&f()}, Q:closure[{1}], q:words{a b}.raku, q:quotewords{"a b" c}.raku, q:val{1}.^name, Q:exec{echo e}.raku, qq{a{1+1}b}, qq[a{1+1}b], qq{a\{1+1\}b}, "a{1+1}b", qq:c{a{1+1}b}, Q:c:s{$x {$x}}, Q:s:c[$x {$x}], Q:b{\{}, qq{\{}, Q:v{1}.^name, Q:v{1.5}.^name, Q:v{a}.^name, Q:v{1 2}.^name, Q:w:v{1 2}.map(*.^name).raku).join("|") }, "|", (try EVAL 'q:q{a}') // $!.^name, "|", (try EVAL 'qq:qq{a}') // $!.^name, "|", (try EVAL 'q:qq{a}') // $!.^name, "|", (try EVAL 'qq:q{a}') // $!.^name, "|", (try EVAL 'q:!q{a}') // $!.^name, "|", (try EVAL 'q:o{a}') // $!.^name, "|", (try EVAL 'Q:o{a}') // $!.^name, "|", (try EVAL 'q:zz{a}') // $!.^name, "|", (try EVAL 'q:!to{a}') // $!.^name, "|", (try EVAL 'Q:s:!s{$x}') // $!.^name, "|", (try EVAL 'q:regex{a}') // $!.^name, "|", (try EVAL 'q:w:!w{a b}.raku') // $!.^name, "|", (try EVAL 'q:x(0){echo a}.raku') // $!.^name, "|", (try EVAL 'q:s(1){$x}') // $!.^name, "|", (try EVAL 'q:v:v{1}.^name') // $!.^name, "|", (try EVAL 'Q:c:x[echo {1+1}].raku') // $!.^name, "|", (try EVAL 'qq:x:!x{echo a}.raku') // $!.^name, "|", (try EVAL 'q:1x{echo n}') // $!.^name, "|", (try EVAL 'q:cc{a}') // $!.^name, "|", (try EVAL 'q:to{a}') // $!.^name, "|", (try EVAL 'Q:heredoc{a}') // $!.^name, "|", (try EVAL 'q:p{a}') // $!.^name, "|", (try EVAL 'q:path{a}') // $!.^name, "|", (try EVAL 'q:format{a}') // $!.^name
 # rakudo 2026.08: 1 @a[] %h<k> &f() {1+1} \n|$x 2 3 4 F 2|1 {1+1}|1 @a[]|%h<k>|&f()|\n1|2 $x|13|$x 2 3|4 $x|F $x|3|a\'b|2|("a", "b")|2|IntStr|IntStr|IntStr|3|3|3|2|2 3 $x|4 $x|F $x|$x {$x}|$x 1|1|1|("a", "b")|"a b\n"|{1}|1|4|2|1|1 @a[]|$x 2 3|4|F|1|("a", "b")|("a b", "c")|IntStr|"e\n"|a{1+1}b|a2b|a{1+1}b|a2b|a{1+1}b|1 {1}|1 1|{|{|IntStr|RatStr|Str|Str|("IntStr", "IntStr").Seq|X::Comp::AdHoc|X::Comp::AdHoc|X::Comp::AdHoc|X::Comp::AdHoc|X::Comp::AdHoc|X::Comp::AdHoc|X::Comp::AdHoc|X::Comp::AdHoc|X::Comp::AdHoc|$x|X::AdHoc|("a", "b")|"echo a"|X::Undeclared|IntStr|"2\n"|"a\n"|n||a|X::AdHoc|X::AdHoc|X::Comp::AdHoc|X::Comp::AdHoc|X::Comp::AdHoc
+say (try EVAL q[q:q{a}]) // $!.message, "|", (try EVAL q[qq:q{a}]) // $!.message, "|", (try EVAL q[q:qq{a}]) // $!.message, "|", (try EVAL q[q:!q{a}]) // $!.message, "|", (try EVAL q[Q:!q{a}]) // $!.message, "|", (try EVAL q[Q:!qq{a}]) // $!.message
+# rakudo 2026.08: Too late for :q|Too late for :q|Too late for :qq|Too late for :q|Cannot negate :q adverb|Cannot negate :qq adverb
 ```
 rakupp 4.0.1-84: differs in 31 of the 85 fields — `:v` never makes an allomorph, `Q:c{$x {$x}}` interpolates the nested closure, `:x` in a combination does not run, `qq:!c:c` stays off, `Q:double{$x\n}` counts 4, `q:quotewords` returns one Str, the "Too late for"/negation errors and `q:zz`/`q:!to`/`q:p`/`q:path` are accepted, `:o` is `X::Syntax::Confused`, `q:regex{a}` is `a`, and `q:s(1){$x}` does not interpolate.
+(this rakupp line predates the correction; re-measure before relying on it)
+
+Corrected 2026-11-01 from Raku Behind the Docs, ch 2 (findings/BEHIND-THE-DOCS.md §1).
 
 ### CP-24  Delimiters                                                     D:yes R:yes V:spec
 Any paired bracket nests to its own depth (`Q{ { } }`, `q{a{b}c}`,
@@ -587,8 +612,10 @@ doubled closer (`Q{{a}}` and `Q[[a]]` are `a`, `Q｢｢a｣b｣｣` is `a｣b`,
 `Q{{a}b}` is `X::Comp::AdHoc`, `Q:c{{1+1} a}` likewise). An unpaired
 character is its own closer (`q/a\/b/`, `q!a!`, `q.a.`, `q,a,`, `q=a=`,
 `q$a$`, `q@a@`, `q%a%`, `q&a&`, `q^a^`, `q*a*`, `q+a+`, `q~a~`, `q?a?`,
-`q;a;`, `q\a\`, `q"a"`, `` q`a` ``, `q😀a😀`; `q|a|b|` and `Q/a\/b/`
-are unterminated). Not allowed directly after `q`/`Q`: an identifier
+`q;a;`, `q\a\`, `q"a"`, `` q`a` ``, `q😀a😀`). `q|a|b|` is not an
+unterminated string: the quote ends at the second `|`, and the `b|` after
+it is `X::Syntax::Confused`, "Two terms in a row"; `Q/a\/b/` likewise
+ends at the second `/`, since `Q` has no escapes. Not allowed directly after `q`/`Q`: an identifier
 character (`q'a'`, `Q'a'` are `X::Syntax::Confused`, `q1a1`, `q_a_` and
 `q(a)`/`Q(a)` are calls, `X::Undeclared::Symbols`), `#`
 (`X::Comp::AdHoc`), `:` (an adverb), `-` (joins the name), a bare space
@@ -602,8 +629,13 @@ say Q{ { } }.raku, " ", q{a{b}c}, " ", q/a\/b/, " ", q!a!, " ", q<<a b>>.raku, "
 # rakudo 2026.08: " \{ } " a{b}c a/b a "a b" "a b" ("a", "b") X::Syntax::Confused X::Undeclared::Symbols a x a " " "" a<b>c X::Comp::AdHoc a]b X::Syntax::Confused a\\b a\b a\b a\ X::Comp::AdHoc a 1 1+1  a}{b a}b 3 X::Comp::AdHoc (a b) (a b) X::Syntax::Confused a<<b>>c a{b X::Comp::AdHoc X::Syntax::Confused X::Syntax::Confused a/b X::Syntax::Confused X::Syntax::Confused a  X::Undeclared::Symbols a X::Comp::AdHoc X::Undeclared::Symbols 1 4 X::Comp::AdHoc a a X::Comp::AdHoc X::Syntax::Confused a a] [b a a>b 1 1 1 a a X::Comp::AdHoc a X::Comp::AdHoc a a a a a a X::Comp::AdHoc a a a a a a a X::Undeclared::Symbols X::Undeclared::Symbols X::Syntax::Confused a<b
 say (try EVAL 'Q ‘a’') // $!.^name, " ", (try EVAL 'Q“a”') // $!.^name, " ", (try EVAL "Q‘a’") // $!.^name, " ", (try EVAL "‘a’") // $!.^name, " ", (try EVAL "“a”") // $!.^name, " ", (try EVAL "q‘a’") // $!.^name, " ", (try EVAL 'Q｢｢a｣｣') // $!.^name, " ", (try EVAL 'Q｢｢a｣b｣｣') // $!.^name, " ", (try EVAL 'q«a b».elems') // $!.^name, " ", (try EVAL 'q«a«b»c»') // $!.^name, " ", (try EVAL "Q«a»") // $!.^name, " ", (try EVAL "q「a」") // $!.^name, " ", (try EVAL "q⟨a⟩") // $!.^name, " ", (try EVAL 'q{a⟨b⟩c}') // $!.^name, " ", (try EVAL "q😀a😀") // $!.^name, " ", (try EVAL "q「a」b") // $!.^name, " ", (try EVAL 'q ｢a｣') // $!.^name, " ", (try EVAL 'q{a｢b｣c}') // $!.^name
 # rakudo 2026.08: a a a a a a a a｣b 1 a«b»c a a a a⟨b⟩c a X::Syntax::Confused a a｢b｣c
+say (try EVAL q[q|a|b|]) // $!.^name ~ ":" ~ $!.message, " / ", (try EVAL Q[Q/a\/b/]) // $!.^name ~ ":" ~ $!.message, " / ", (try EVAL q[q{a{b}]) // $!.^name ~ ":" ~ $!.message
+# rakudo 2026.08: X::Syntax::Confused:Two terms in a row / X::Syntax::Confused:Two terms in a row / X::Comp::AdHoc:Couldn't find terminator } (corresponding { was at line 1)
 ```
 rakupp 4.0.1-84: differs in 55 of the 103 fields — `q'a'`/`Q'a'` are accepted, the space forms `Q (a)`, `q 'x'`, `q ‘a’`, `q ｢a｣` and `q a a` are `X::Undeclared::Symbols`, most non-bracket delimiters (`. , = $ @ % & ^ * ? ; \ `` ` `` `+` and `q\a\`) are `X::Syntax::Confused` or `X::Comp::AdHoc`, `Q` unescapes backslashes (`Q[a\\b]` is `a\b`, `Q[a\]b]` and `Q{a\}b}` keep the backslash and parse, `Q<a\>` fails), `q#a#` is `X::Undeclared::Symbols`, `q{a{b}` and `Q{{a}b}` are `X::Syntax::Confused`, `q{a} {b}` is `X::Syntax::Confused`, `q::<a>` is `X::Placeholder::Mainline`, and `Q“a”`, `Q‘a’`, `q‘a’`, `Q｢｢a｣｣`, `q«a«b»c»` fail.
+(this rakupp line predates the correction; re-measure before relying on it)
+
+Corrected 2026-11-01 from Raku Behind the Docs, ch 2 (findings/BEHIND-THE-DOCS.md §1).
 
 ### CP-25  Heredocs: the terminator's indentation is removed              D:yes R:yes V:spec
 The body starts on the next line and ends before a line holding only
@@ -612,11 +644,15 @@ that indentation is removed from every body line, counting a tab as
 reaching the next multiple of 8 columns (`$?TABSTOP`) — a tab-indented
 terminator removes eight spaces or one tab, an eight-space one removes a
 tab, a two-space one turns a following tab into six spaces, and a
-partially consumed tab is expanded. A line with less indentation is
-left as is, a blank line stays blank, a whitespace-only line keeps what is
-beyond the indentation. The final newline is kept; an empty body is `""`;
-`\r\n` in the body or the source becomes `\n`. A backslash before the
-newline stays in `q:to` and is a line-continuation-free newline in
+partially consumed tab is expanded. A line indented less than the
+terminator loses all its leading whitespace, and the compiler warns
+"Asked to remove 4 spaces, but the shortest indent is 2 spaces" (one
+compile-time "Potential difficulties" warning, however many lines are
+short); a blank line stays blank, a whitespace-only line keeps what is
+beyond the indentation. The final newline is kept; an empty body is `""`.
+A source file saved with CRLF line endings gets `\n` in the body; source
+text given as a string, to `EVAL` or to `-e`, keeps each `\r\n` as
+`\r\n`. A backslash before the newline stays in `q:to` and is a line-continuation-free newline in
 `qq:to`. `q:to` is a Str; `qq:to` interpolates with the dedent applied to
 the template only (an interpolated `"  1"` keeps its spaces, a
 multi-line value is inserted as is). Several heredocs on one line follow
@@ -624,8 +660,13 @@ each other in order.
 ```
 say EVAL("my \$x = 42; my \$s = qq:to/END/;\n    a \$x\n      b\n    END\n\$s").raku, " ", EVAL("q:to/END/;\n  a\n b\nEND\n").raku, " ", EVAL("q:to/END/;\nEND\n").raku, " ", EVAL("q:to/END/;\n\nEND\n").raku, " ", EVAL("q:to/END/;\n    a\n  END\n").raku, " ", EVAL("Q:to/END/;\n  \\n \$x\n  END\n").raku, " ", EVAL("my \$s = q:to<END>;\n\ta\n\t\tb\n\tEND\n\$s").raku, " ", EVAL("my \$s = q:to<END>;\n\ta\n        b\n\tEND\n\$s").raku, " ", EVAL("my \$s = q:to<END>;\n        a\n\tb\n        END\n\$s").raku, " ", EVAL("q:to/A/, q:to/B/;\n  a1\n  A\n    b1\n    B\n").raku, " ", EVAL("my \$s = q:to/END/;\n  a\n\n  b\n  END\n\$s").raku, " ", EVAL("my \$s = q:to/END/;\n  a\n   b\n  END\n\$s").raku, " ", EVAL("my \$s = q:to<END>;\n  \ta\n  END\n\$s").raku, " ", EVAL("my \$s = q:to<END>;\n\t  a\n\tEND\n\$s").raku, " ", EVAL("my \$s = q:to<END>;\n    \ta\n\tEND\n\$s").raku, " ", EVAL("my \$s = q:to<END>;\n\t\ta\n        END\n\$s").raku, " ", EVAL("my \$s = q:to/END/;\n  a\\tb\n  END\n\$s").raku, " ", EVAL("my \$s = q:to/END/;\n  a\n  END\n\$s").^name, " ", EVAL("my \$s = q:to/END/;\n  a \\\n  b\n  END\n\$s").raku, " ", EVAL("my \$s = q:to/END/;\n    a\n    \\\n    END\n\$s").raku, " ", EVAL("my \$s = q:to/END/;\n\n\n  END\n\$s").raku, " ", EVAL("my \$s = q:to/END/;\n  a\n\n  END\n\$s").raku, " ", EVAL("my \$s = q:to/END/;\n     a\n   b\n  END\n\$s").raku, " ", EVAL("my \$s = q:to/END/;\n  a\n   \n  END\n\$s").raku, " ", EVAL("my \$s = q:to/END/;\n  END\n\$s").raku, " ", EVAL("my \$s = q:to/END/;\n    \n  END\n\$s").raku, " ", EVAL("my \$s = q:to/END/;\n  a\r\n  END\n\$s").raku, " ", EVAL("my \$s = q:to/END/;\r\n  a\r\n  END\r\n\$s").raku
 # rakudo 2026.08: "a 42\n  b\n" "  a\n b\n" "" "\n" "  a\n" "\\n \$x\n" "a\n\tb\n" "a\nb\n" "a\nb\n" ("a1\n", "b1\n") "a\n\nb\n" "a\n b\n" "      a\n" "  a\n" "a\n" "\ta\n" "a\\tb\n" Str "a \\\nb\n" "a\n\\\n" "\n\n" "a\n\n" "   a\n b\n" "a\n \n" "" "  \n" "a\r\n" "a\r\n"
+say do { my $p = run($*EXECUTABLE, "-e", "my \$s = q:to/END/;\n    a\n  b\n   c\n    END\nprint \$s.raku", :out, :err); my $o = $p.out.slurp(:close); my $e = $p.err.slurp(:close); $o ~ " / " ~ $e.lines.map(*.trim).grep(/^Asked/).join }, " | ", do { my $f = "crlf-heredoc.raku".IO; $f.spurt("my \$s = q:to/END/;\r\n  a\r\n  END\r\nprint \$s.raku"); LEAVE $f.unlink; run($*EXECUTABLE, $f, :out).out.slurp(:close) }, " ", EVAL("my \$s = q:to/END/;\r\n  a\r\n  END\r\n\$s").raku
+# rakudo 2026.08: "a\nb\nc\n" / Asked to remove 4 spaces, but the shortest indent is 2 spaces | "a\n" "a\r\n"
 ```
 rakupp 4.0.1-84: differs in five fields — a tab in the indentation counts as one column, so a tab-terminated heredoc removes one tab and not eight spaces, and a partially consumed tab is not expanded.
+(this rakupp line predates the correction; re-measure before relying on it)
+
+Corrected 2026-11-01 from Raku Behind the Docs, ch 2 (findings/BEHIND-THE-DOCS.md §1).
 
 ### CP-26  Heredoc rules: what may follow on the line, errors, adverbs    D:partial R:partial V:spec
 The rest of the line after the quote is ordinary code that runs with the
@@ -669,16 +710,28 @@ sunk `?? !!`, `||` or the right side of a sunk `andthen`; every element
 of a sunk list `(a, b)` is sunk too, and a sunk `xx` does not sink its
 elements. Not sunk: anything assigned or bound (`my $v =`, `my ($z) =`,
 `my @l =`, `my $y = do …`, `my $t = try …`), a method's invocant, the
-condition of `andthen`, `&&`, `?? !!` and `given`, and (the quirk) the
-left side of a sunk `//` and the last statement of a sunk block `for` when
-that value is a Proc (CP-31) — Rakudo's `for` sinks a Failure and an
-object with a `sink` method there (Roast `sink.t`, `for.t`) but lets a
-Proc through.
+condition of `andthen`, `&&`, `?? !!` and `given`, and (the quirks) the
+left side of a sunk `//` and, in two cases, the last statement of a `for`
+body. A plain block `for` sinks its last statement whatever the value:
+an object with a `sink` method and a Failure (Roast `sink.t`, `for.t`)
+and a Proc alike (`for 1 { run "false" }` throws at top level, CP-31).
+Under `use fatal`, which every `try` turns on, the last statement of a
+`for` body is not sunk, whatever the value. With a pointy block
+(`-> $x { … }`) a method call at the end is sunk but a sub call is not,
+so `for @cmds -> $c { run $c }` ignores failures. The first probe runs
+outside any `try`; the second counts the sinks for a sub call and a
+method call at the end of a plain and a pointy `for` body, then the same
+inside `try` and under `use fatal`.
 ```
 say do { my @log; sub one { 1 }; my class S { has $.n; method sink { @log.push("s$!n") } }; S.new(:n(1)); my $v = S.new(:n(2)); S.new(:n(3)) if one(); (S.new(:n(4))); sub f { S.new(:n(5)) }; f(); my $r = f(); sub g { S.new(:n(6)); one() }; g(); do { S.new(:n(7)) }; my $d = do { S.new(:n(8)) }; sink S.new(:n(9)); for 1 { S.new(:n(10)) }; S.new(:n(11)) for 1; { S.new(:n(12)) }; my $x = { S.new(:n(13)) }(); if one() { S.new(:n(14)) }; my $y = do if one() { S.new(:n(15)) }; my ($z) = S.new(:n(16)); (S.new(:n(17)), one()); S.new(:n(18)).n; my @l = S.new(:n(19)); S.new(:n(20)) xx 2; sub h { return S.new(:n(21)) }; h(); my $w = h(); S.new(:n(22)) andthen one(); one() andthen S.new(:n(23)); S.new(:n(24)) && one(); sub k { S.new(:n(25)); }; k(); f; my $i = 0; while $i < 1 { $i++; S.new(:n(26)) }; loop (my $j = 0; $j < 1; $j++) { S.new(:n(27)) }; try { S.new(:n(28)) }; { S.new(:n(29)); one() }; -> { S.new(:n(30)) }(); S.new(:n(31)).sink; S.new(:n(32)).?sink; my $q = S.new(:n(33)) andthen one(); S.new(:n(34)) || one(); S.new(:n(35)) // one(); S.new(:n(36)) ?? one() !! one(); one() ?? S.new(:n(37)) !! one(); my @m = (S.new(:n(38)), one()); (S.new(:n(39)) for 1); my $t = try { S.new(:n(40)) }; S.new(:n(41)) andthen S.new(:n(42)); given S.new(:n(43)) { one() }; given one() { S.new(:n(44)) }; my $u = S.new(:n(45)).n; S.new(:n(46)).?n; sub p { S.new(:n(47)); return }; p(); sub q { S.new(:n(48)); Nil }; q(); my $sq = S.new(:n(49)); $sq = S.new(:n(50)); @log.raku }
 # rakudo 2026.08: ["s1", "s3", "s4", "s5", "s6", "s7", "s9", "s10", "s11", "s12", "s14", "s17", "s21", "s23", "s25", "s5", "s26", "s27", "s28", "s29", "s30", "s31", "s32", "s34", "s37", "s39", "s42", "s44", "s47", "s48"]
+say do { my @l; my class S { method sink { @l.push("s") } }; sub mk { S.new }; my @o; for 1 { mk() }; @o.push(@l.elems); @l = (); for 1 { S.new }; @o.push(@l.elems); @l = (); for 1 -> $x { mk() }; @o.push(@l.elems); @l = (); for 1 -> $x { S.new }; @o.push(@l.elems); @l = (); try { for 1 { S.new } }; @o.push(@l.elems); @l = (); try { for 1 { mk() } }; @o.push(@l.elems); @l = (); { use fatal; for 1 { S.new } }; @o.push(@l.elems); @l = (); { use fatal; for 1 { mk() } }; @o.push(@l.elems); @o.join(" ") }
+# rakudo 2026.08: 1 1 0 1 0 0 0 0
 ```
 rakupp 4.0.1-84: differs — 17 of the 30 sinks are missing: a statement-modifier `if`, a sub call, a `do` block, the `sink` prefix, an `if` block, a sunk list, an explicit `return`, the right side of `andthen`, a `;`-terminated last statement, a `try` block, a called pointy block, a sunk `||`, a chosen ternary branch, a `for` modifier, a `given` body; only bare statements, bare blocks, loop bodies, `.sink`/`.?sink` and `return`-less trailing statements sink.
+(this rakupp line predates the correction; re-measure before relying on it)
+
+Corrected 2026-11-01 from Raku Behind the Docs, ch 4 (findings/BEHIND-THE-DOCS.md §1).
 
 ### CP-28  Compile-time "Useless use" warnings                             D:partial R:partial V:spec
 A sunk literal (`constant integer 1`, `rational 1.5`, `string "a"`,
@@ -729,23 +782,32 @@ rakupp 4.0.1-84: differs in twelve fields — `my $y = @a = 2, 3` list-assigns `
 A Failure that is sunk throws its exception (`X::AdHoc` for `fail "F"`):
 as a sunk sub call (`f();`, `f;`, `f() for 1`), under the `sink` prefix,
 via `.sink`, via `.self`; also when used as a number, string, list or in
-`==`, `.Str`, `.gist`, `.list`, `.Slip`, `.elems`, `.chars`, `.Int`
-(even after `.defined`), and — inside a `try` block, where `use fatal` is
+`==`, `.Str`, `.gist`, `.list`, `.Slip`, `.elems`, `.chars`, `.Int`,
+and — inside a `try` block, where `use fatal` is
 in effect — the moment it is assigned (`try { my $y = f; 1 }` throws).
 Not thrown: `.^name`, `.exception`, `.raku`, `.WHAT`, `.handled`, `~~`,
 storing it in a scalar or array (`my @a = $x` has one element), `$x // 1`,
 `$x || 7`, `$x orelse 1`, `$x andthen 1` (yields the Failure), `1 if $x`.
 Testing it (`.so`, `.Bool`, `.defined`, `?? !!`, `//`, `orelse`) marks it
 handled — through an alias too — and a handled Failure no longer throws
-when sunk; a Failure that has thrown once is handled afterwards. A sunk
+when sunk; a Failure that has thrown once is handled afterwards. A handled
+Failure does not throw on the numeric and string coercions either: after
+`.defined`, `.Int` gives the `Int` type object, `+$x` gives NaN, and
+`.Str` and `.gist` give "(HANDLED) F" followed by the backtrace. Only
+`.chars`, `.elems`, `.list`, `.Slip` and the like still throw. A sunk
 statement that throws stops the rest of its block (`try { w(); $c++ }`
 leaves `$c` 0 and the try Nil). `.handled` reads False before and True
 after.
 ```
 say do { sub f { fail "F" }; my @o; my $r = f; @o.push($r.^name ~ ":" ~ $r.so); @o.push((try { f(); 1 }) // "threw:" ~ $!.^name); @o.push((try { f; 1 }) // "threw:" ~ $!.^name); @o.push(do { my $x = f; sub v1 { $x }; $x.so; try { v1(); 1 } // "threw" }); @o.push(do { my $x = f; sub v2 { $x }; try { v2(); 1 } // "threw" }); @o.push(do { my $x = f; try { sink $x; 1 } // "threw:" ~ $!.^name }); @o.push(do { my $x = f; $x.defined; try { sink $x; 1 } // "threw" }); @o.push(do { try { sink Failure.new; 1 } // "threw:" ~ $!.^name }); @o.push((try { f().sink; 1 }) // "threw:" ~ $!.message); @o.push(do { my $x = f; $x.handled ~ ":" ~ ($x.defined) ~ ":" ~ $x.handled }); @o.push(do { use fatal; (try { my $y = f; 1 }) // "threw:" ~ $!.^name }); @o.push(do { (try { my $y = f; 1 }) // "threw" }); @o.push(do { my $x = f; try { $x ?? 1 !! 2 } // "threw" }); @o.push(do { my $x = f; try { my $n = +$x; 1 } // "threw:" ~ $!.^name }); @o.push(do { try { my $n = f() + 1; 1 } // "threw:" ~ $!.^name }); @o.push(do { try { my $s = "" ~ f(); 1 } // "threw:" ~ $!.^name }); @o.push(do { try { f() for 1; 1 } // "threw:" ~ $!.^name }); @o.push(do { my $x = f; try { my $r = 1 if $x; 2 } // "threw" }); @o.push(do { my $x = f; my $y = $x; $y.so; $x.handled }); @o.push(do { my $x = f; try { my @a = $x; 1 } // "threw" }); @o.push(do { my $x = f; try { my @a = $x; @a.elems } // "threw" }); @o.push(do { my $x = f; try { $x.^name; 1 } // "threw" }); @o.push(do { my $x = f; try { $x.exception.^name; 1 } // "threw" }); @o.push(do { my $x = f; sub v3 { $x }; try { $x.Bool; v3(); 1 } // "threw" }); @o.push(do { my $x = f; try { $x.self; 1 } // "threw:" ~ $!.^name }); @o.push(do { my $x = f; try { $x.sink; 1 } // "threw" }); @o.push(do { my $x = f; try { $x // 1 } // "threw" }); @o.push(do { my $x = f; try { $x andthen 1.Int } // "threw" }); @o.push(do { my $x = f; try { $x orelse 1.Int } // "threw" }); @o.push(do { my $x = f; try { $x || 7 } // "threw" }); @o.push(do { my $x = f; try { $x.raku.chars > 0 } // "threw" }); @o.push(do { my $x = f; try { $x.Str; 1 } // "threw:" ~ $!.^name }); @o.push(do { my $x = f; try { $x.gist; 1 } // "threw" }); @o.push(do { my $x = f; try { my $b = $x == 1; 1 } // "threw:" ~ $!.^name }); @o.push(do { sub g { fail "G" }; my $q = g(); sub v4 { $q }; (try { v4(); 1 }) // "threw:" ~ $!.message }); @o.push(do { my $x = f; try { my $h = $x.handled; 1 } // "threw" }); @o.push(do { my $x = f; my $c = 0; try { $x.so; $c++; $x.so; $c++ }; $c }); @o.push(do { my $x = f; my $first = (try { $x.sink; 1 }) // "threw"; try { $x.sink; 1 } // "threw" }); @o.push(do { sub w { fail "W" }; my $c = 0; my $ok = try { w(); $c++ }; ($ok // "nil") ~ $c }); @o.push(do { my $x = f; try { $x.exception.message; 1 } // "threw" }); @o.push(do { my $x = f; try { $x.WHAT.raku; 1 } // "threw" }); @o.push(do { my $x = f; try { $x ~~ Failure; 1 } // "threw" }); @o.push(do { my $x = f; try { $x ~~ Str; 1 } // "threw" }); @o.push(do { my $x = f; try { $x.list; 1 } // "threw:" ~ $!.^name }); @o.push(do { my $x = f; try { $x.Slip; 1 } // "threw:" ~ $!.^name }); @o.push(do { my $x = f; try { $x.elems; 1 } // "threw:" ~ $!.^name }); @o.push(do { my $x = f; try { $x.chars; 1 } // "threw:" ~ $!.^name }); @o.push(do { my $x = f; try { $x.defined; $x.Int; 1 } // "threw:" ~ $!.^name }); @o.join(" ") }
 # rakudo 2026.08: Failure:False threw:X::AdHoc threw:X::AdHoc 1 threw threw:X::AdHoc 1 threw:X::AdHoc threw:F False:False:True threw:X::AdHoc threw 2 threw:X::AdHoc threw:X::AdHoc threw:X::AdHoc threw:X::AdHoc 2 True 1 1 1 1 1 threw:X::AdHoc threw 1 threw 1 7 True threw:X::AdHoc threw threw:X::AdHoc threw:G 1 2 1 nil0 1 1 1 1 threw:X::AdHoc threw:X::AdHoc threw:X::AdHoc threw:X::AdHoc 1
+say do { sub f { fail "F" }; my @o; my $x = f; $x.defined; @o.push($x.Int.raku, (+$x).raku, $x.Str.lines[0], $x.Str.lines[1].trim, $x.gist.lines[0]); for <chars elems list Slip> -> $m { @o.push((try { $x."$m"(); "ok" }) // $m ~ ":" ~ $!.^name) }; my $u = f; @o.push((try { $u.Int; "ok" }) // "unhandled-Int:" ~ $!.^name); @o.join(" | ") }
+# rakudo 2026.08: Int | NaN | (HANDLED) F | in sub f at -e line 1 | (HANDLED) F | chars:X::AdHoc | elems:X::AdHoc | list:X::AdHoc | Slip:X::AdHoc | unhandled-Int:X::AdHoc
 ```
 rakupp 4.0.1-84: differs in fourteen fields — a sunk `f()` call, `sink $x`, `sink Failure.new`, `+$x` and `$x.Int` after `.defined` do not throw, neither does the assignment inside `try`; `.so`/`.Bool`/`.defined` do not mark it handled (the aliased test and the later `sink` still throw); a throw does not mark it handled; and a sub declared after its use inside a `do` block is "Undefined routine".
+(this rakupp line predates the correction; re-measure before relying on it)
+
+Corrected 2026-11-01 from Raku Behind the Docs, ch 4 (findings/BEHIND-THE-DOCS.md §1).
 
 ### CP-31  A sunk Proc throws `X::Proc::Unsuccessful`                       D:yes R:yes V:quirk
 A Proc sunk after a non-zero exit or a signal throws
@@ -759,20 +821,33 @@ list, tested with `.so` (False for a failure) or `.exitcode`, `&&`/`||`
 when the other operand is chosen (`run("false") && one()` sinks the
 Proc since it is the result; `run("false") || one()` does not), or the
 condition of `andthen`. Reading `.exitcode`, `.so` or a first throw does
-not mark it: every later sink throws again. The quirk: as the last
-statement of a block `for` body the Proc is not sunk (`for 1 {
-run("false") }` is silent) while a Failure there throws and a `run` in a
-non-last position throws.
+not mark it: every later sink throws again. The quirk is in how a `for`
+body's last statement is sunk (CP-27), which the first probe measures
+only inside `try`. At top level a plain block `for 1 { run("false") }`
+throws. Under `use fatal`, which every `try` turns on, the last statement
+of a `for` body is not sunk, whatever the value: `for 1 { run("false") }`
+inside `try` is silent (a sub that `fail`s still throws there, because
+`use fatal` turns its Failure into an exception at the call). With a
+pointy block a method call at the end is sunk
+(`for 1 -> $c { run("false").self }` throws) but a sub call is not, so
+`for @cmds -> $c { run $c }` ignores failures. A `run` in a non-last
+position throws. The second probe runs each form in a child process,
+outside any `try`.
 ```
 say do { my @o; sub one { 1 }; @o.push((try { run("false"); 1 }) // "threw:" ~ $!.^name ~ ":" ~ ((try $!.proc.exitcode) // "-")); @o.push((try { run("true"); 1 }) // "threw"); @o.push(do { my $p = run("false"); $p.exitcode }); @o.push((try { shell("exit 7"); 1 }) // "threw:" ~ ((try $!.proc.exitcode) // "-")); @o.push((try { run("false").sink; 1 }) // "threw:" ~ $!.^name); @o.push(do { my $p = run("false"); sub v1 { $p }; (try { v1(); 1 }) // "threw" }); @o.push(do { my $p = run("false"); (try { sink $p; 1 }) // "threw" }); @o.push(run("true").sink.raku); @o.push((try { run("false") for 1; 1 }) // "threw"); @o.push(do { sub f { run("false") }; (try { f(); 1 }) // "threw" }); @o.push(do { sub f { run("false") }; my $q = f(); $q.^name }); @o.push((try { run("sh", "-c", "kill -9 \$\$"); 1 }) // "threw:" ~ ((try $!.proc.signal) // "-")); @o.push(do { my $p = run("false"); sub v2 { $p }; (try { $p.exitcode; v2(); 1 }) // "threw" }); @o.push(do { (try { run("false", :out); 1 }) // "threw" }); @o.push(do { (try { my $p = run("false", :out); $p.out.close; 1 }) // "threw:" ~ $!.^name }); @o.push(do { (try { run("false").exitcode; 1 }) // "threw" }); @o.push(do { (try { run("false") && one(); 1 }) // "threw" }); @o.push(do { (try { run("false") andthen one(); 1 }) // "threw" }); @o.push(do { (try { my @a = run("false"); 1 }) // "threw" }); @o.push(do { (try { run("false").so; 1 }) // "threw" }); @o.push(run("false").so); @o.push(run("true").so); @o.push((try { run("nonexistent-zz-cmd"); 1 }) // "threw:" ~ $!.^name); @o.push(do { my $p = run("nonexistent-zz-cmd"); $p.exitcode }); @o.push(do { (try { shell("exit 0"); 1 }) // "threw" }); @o.push(do { (try { my $e = run("false").exitcode + 0; 1 }) // "threw" }); @o.push(do { (try { run("true") || one(); 1 }) // "threw" }); @o.push(do { (try { run("false") || one(); 1 }) // "threw" }); @o.push(do { my $p = run("false"); (try { $p.so; sub v3 { $p }; v3(); 1 }) // "threw" }); @o.push(do { my $p = run("false"); (try { $p.sink; 1 }) // "threw:" ~ $!.^name }); @o.push(do { my $p = run("true"); (try { $p.sink; 1 }) // "threw" }); @o.push(do { my $p = run("sh", "-c", "kill -9 \$\$"); "$p.exitcode() $p.signal()" }); @o.push(do { my $p = run("false"); sub v4 { $p }; my $first = (try { v4(); 1 }) // "threw"; (try { v4(); 1 }) // "threw" }); @o.push(do { my $p = run("false"); (try { $p.exitcode; $p.so; 1 }) // "threw" }); @o.push(do { (try { for 1 { run("false") }; 1 }) // "threw" }); @o.push(do { (try { if one() { run("false") }; 1 }) // "threw" }); @o.push(do { (try { my $q = do { run("false") }; 1 }) // "threw" }); @o.push(do { (try { do { run("false") }; 1 }) // "threw" }); @o.join(" ") }
 # rakudo 2026.08: threw:X::Proc::Unsuccessful:1 1 1 threw:7 threw:X::Proc::Unsuccessful threw threw Nil threw threw Proc threw:9 threw threw threw:X::Proc::Unsuccessful 1 threw 1 1 1 False True threw:X::Proc::Unsuccessful -1 1 1 1 1 threw threw:X::Proc::Unsuccessful 1 0 9 threw 1 1 threw 1 threw
+say ('for 1 { run "false" }', 'for 1 -> $c { run "false" }', 'for 1 -> $c { run("false").self }', 'for "false" -> $c { run $c }', 'try { for 1 { run "false" } }', 'use fatal; for 1 { run "false" }', 'for 1 { shell "exit 3" }').map({ my $p = run($*EXECUTABLE, "-e", $_ ~ '; print "silent"', :out, :err); my $o = $p.out.slurp(:close); my $e = $p.err.slurp(:close); $o || "threw" }).join(" ")
+# rakudo 2026.08: threw silent threw silent silent silent threw
 ```
 rakupp 4.0.1-84: differs in nine fields — a sunk `run("false")` statement, `sink $p` and `run("false") for 1` do not throw at the top of a `try` while the sub-returned and `.sink` forms do, `X::Proc::Unsuccessful` has no `.proc`, `run("true").sink` returns a hash of the Proc's fields instead of Nil, a missing command has exit code 127, `for 1 { run("false") }` throws where Rakudo is silent, and `if one() { run("false") }` does not throw.
+(this rakupp line predates the correction; re-measure before relying on it)
 
-### CP-32  A sunk Seq is iterated, a stored one is not — lazy or not       D:partial R:partial V:quirk
+Corrected 2026-11-01 from Raku Behind the Docs, ch 4 (findings/BEHIND-THE-DOCS.md §1).
+
+### CP-32  A sunk Seq is iterated, a stored one is not — lazy or not       D:partial R:partial V:spec
 A `map`, `gather`, `.lazy`, `lazy (…)`, `eager`, `.Seq`, `.Array`,
-`.grep`, `.elems`, `.head(1)`, `Seq.new(iterator)` or a `for`-loop value
-that is sunk runs to the end (side effects happen: `$n` is 3), whether or
+`.grep`, `.elems`, `Seq.new(iterator)` or a `for`-loop value that is
+sunk runs to the end (side effects happen: `$n` is 3), whether or
 not it is lazy — `lazy (1..3).map` sunk still counts 3, a sunk infinite
 `(1..*).map` never returns (measured inside `start` with a 2 s timeout:
 the Promise stays Planned and the counter passes 100). `.sink` and
@@ -780,10 +855,11 @@ the Promise stays Planned and the counter passes 100). `.sink` and
 times. Stored, passed to `.list`, `.List`, `.cache`, `.Slip`,
 `.iterator`, `.is-lazy`, or used as an `andthen` condition, it stays
 unrun (0); `&&` reifies one element (1); a `last` inside the map stops it
-(2); a sunk `xx` of Seqs does not run them (0); an assigned lazy Seq
-throws `X::Cannot::Lazy` on `.elems` without running. The quirk: a Seq
-handed back with an explicit `return` and then sunk at the call site is
-not iterated (0), while the same Seq as the sub's implicit value is (3).
+(2); a sunk `.head(1)` runs one element (1), not to the end; a sunk
+`xx` of Seqs does not run them (0); an assigned lazy Seq throws
+`X::Cannot::Lazy` on `.elems` without running. A Seq handed back from a
+sub and sunk at the call site is iterated (3), whether the sub returns it
+with an explicit `return` or as its implicit value.
 ```
 say do { my @o; my $n = 0; (1..3).map({ $n++ }); @o.push($n); $n = 0; my $s = (1..3).map({ $n++ }); @o.push($n); $n = 0; (1..3).map({ $n++ }).sink; @o.push($n); $n = 0; lazy (1..3).map({ $n++ }); @o.push($n); $n = 0; (lazy (1..3).map({ $n++ })); @o.push($n); $n = 0; gather { $n++; take 1 }; @o.push($n); $n = 0; my $g = gather { $n++; take 1 }; @o.push($n); $n = 0; (1..3).map({ $n++ }) xx 2; @o.push($n); $n = 0; my $v = (1..3).map({ $n++ }).sink; @o.push($v.raku ~ $n); $n = 0; sub f { (1..3).map({ $n++ }) }; f(); @o.push($n); $n = 0; my $r = f(); @o.push($n); $r.elems; @o.push($n); $n = 0; eager (1..3).map({ $n++ }); @o.push($n); $n = 0; (1..3).map({ $n++ }).lazy; @o.push($n); $n = 0; { (1..3).map({ $n++ }) }; @o.push($n); $n = 0; do { (1..3).map({ $n++ }) }; @o.push($n); $n = 0; $n++ xx 3; @o.push($n); $n = 0; my @a = $n++ xx 3; @o.push($n); $n = 0; (1..3).map({ $n++ }).Seq; @o.push($n); $n = 0; (1..3).map({ $n++ }).list; @o.push($n); $n = 0; (1..3).map({ $n++ }).List; @o.push($n); $n = 0; (1..3).map({ $n++ }).Array; @o.push($n); $n = 0; (1..3).map({ $n++ }).cache; @o.push($n); $n = 0; (1..3).map({ $n++ }).head(1); @o.push($n); $n = 0; (1..3).map({ $n++ }).grep(*.so); @o.push($n); $n = 0; (1..3).map({ $n++ }).elems; @o.push($n); $n = 0; my $l = lazy (1..3).map({ $n++ }); @o.push($n); try { $l.elems }; @o.push($n); $n = 0; (1..3).map({ $n++ }) if 1; @o.push($n); $n = 0; if 1 { (1..3).map({ $n++ }) }; @o.push($n); $n = 0; for 1 { (1..3).map({ $n++ }) }; @o.push($n); $n = 0; (1..3).map({ $n++ }) for 1; @o.push($n); $n = 0; my @s = (1..3).map({ $n++ }).sink; @o.push($n ~ @s.elems); $n = 0; (1..3).map({ $n++ }).lazy.sink; @o.push($n); $n = 0; (1..3).lazy.map({ $n++ }); @o.push($n); $n = 0; Seq.new((1..3).map({ $n++ }).iterator); @o.push($n); $n = 0; (1..3).map({ $n++ }).Slip; @o.push($n); $n = 0; (1..3).map({ $n++; last if $n == 2 }); @o.push($n); $n = 0; ((1..3).map({ $n++ }), $n.Str); @o.push($n); $n = 0; sub h { (1..3).map({ $n++ }); Nil }; h(); @o.push($n); $n = 0; sub i { return (1..3).map({ $n++ }) }; i(); @o.push($n); $n = 0; (1..3).map({ $n++ }).iterator; @o.push($n); $n = 0; my $it = (1..3).map({ $n++ }).iterator; @o.push($n); $it.sink-all; @o.push($n); $n = 0; (1..3).map({ $n++ }).lazy.eager; @o.push($n); $n = 0; my $lz = (1..3).map({ $n++ }).lazy; @o.push($n ~ $lz.is-lazy); $n = 0; (1..3).map({ $n++ }).is-lazy; @o.push($n); $n = 0; (1..3).map({ $n++ }) andthen $n.Str; @o.push($n); $n = 0; (1..3).map({ $n++ }) && $n.Str; @o.push($n); $n = 0; @o.join(" ") }
 # rakudo 2026.08: 3 0 3 3 3 1 0 0 Any3 3 0 3 3 3 3 3 3 3 3 0 0 3 0 1 3 3 0 0 3 3 3 3 31 3 3 3 0 2 3 3 3 0 0 3 3 0True 0 0 1
@@ -791,6 +867,9 @@ say do { my $n = 0; my $p = start { (1..*).map({ $n++ }); 1 }; await Promise.any
 # rakudo 2026.08: PromiseStatus::Planned True
 ```
 rakupp 4.0.1-84: differs in 22 of the 49 counts and in the infinite case — a stored map, gather, `.list`, `.List`, `.cache`, `.Slip`, `.iterator`, `.is-lazy`, a stored lazy Seq and the `andthen`/`&&` operands all run to the end (map is eager), a sunk `xx` of Seqs runs them (6), and the infinite sunk map is not iterated (Kept, False).
+(this rakupp line predates the correction; re-measure before relying on it)
+
+Corrected 2026-11-01 from Raku Behind the Docs, ch 4 (findings/BEHIND-THE-DOCS.md §1).
 
 ### CP-33  The value of a block, a routine, a loop and a conditional       D:partial R:yes V:quirk
 A routine's value is its last statement's value, also with a trailing `;`
@@ -840,7 +919,7 @@ rakupp 4.0.1-84: differs in seven fields — `sink for ^5 {…}` and `sink for 1
 | total | 34 |
 | not fully stated by docs (D:yes) nor asserted by Roast (R:yes) | 8 |
 | Rakudo bugs (do not imitate) | 1 — CP-22 brace-delimited `qx{…}` runs a nested `{…}` as a separate command |
-| quirks (recorded, step two decides) | 8 — CP-05 chained `~~`, CP-13 `>>.^name`, CP-15 sunk `let`, CP-27/CP-31 a Proc escapes a block `for` and a sunk `//`, CP-29 `no worries` and the sunk bare block, CP-32 a returned Seq sunk at the call, CP-33 `return $x` keeps the container |
+| quirks (recorded, step two decides) | 6 — CP-05 chained `~~`, CP-13 `>>.^name`, CP-27/CP-31 a `for` body's last statement is not sunk under `try`/`use fatal` or as a sub call in a pointy block, and a sunk `//`, CP-29 `no worries` and the sunk bare block, CP-33 `return $x` keeps the container |
 | rakupp 4.0.1-84 differs | 32 |
 | rakupp 4.0.1-84 matches | 2 — CP-04, CP-17 |
 

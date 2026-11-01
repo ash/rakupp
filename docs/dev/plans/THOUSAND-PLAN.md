@@ -1,8 +1,30 @@
 # The 1000-module line
 
-The v4 line in `VERSIONS.md` is 1,000 ecosystem distributions passing their own
-test suites. This plan is the revision of 2026-09-12 and the order the rest of
-the work is taken in.
+**Status: done 2026-09-16, confirmed by a fresh sweep on 2026-09-29.**
+Geo::Hash was the thousandth distribution on the warm-store board: 1,000 of
+2,529 (d11767e8). Re-measured the same day, the count was 1,007 (d3e75a51).
+v4.0.0 shipped on 2026-09-17 at 1,006 of 2,529
+(`ecosweep/board-v4.0.0-2026-09-17.tsv`). The first fresh whole-ecosystem
+sweep past the line ran on the v5.0.0 binary on 2026-09-29: 1,019 of 2,547
+(`ecosweep/sweep-2548.tsv`, d4d2bc0a). No sweep has run since; v5.3.0 to
+v5.5.0 each say so.
+
+Of the order of work below, steps 1 and 5 are done, except probe row R7.
+LibraryCheck, IO::Path::ChildSecure, IO::Capture::Simple and HTTP::UserAgent
+are green. The `.cache` and `add_attribute` gaps are fixed, and Testo and
+Method::Protected still fail on what came after them. Timeouts went from 46
+to 34. IO::Socket::Async::SSL's suite passes under `rakupp install` since
+2026-10-30 (be510e3a), and no sweep has run it since. Log::Timeline and
+Cro::HTTP still fail their own suites.
+
+The fresh sweep is a different instrument from the board: 93 distributions
+green on the v4.0.0 board do not pass in it, CBOR::Simple, Needle::Compile,
+App::Rak and Hash::int among them. The open work is in [TODO.md](TODO.md) §5.
+The rest of this file is the plan as revised on 2026-09-12.
+
+The target, set in `VERSIONS.md` ("Then: 1000 of 2,524"), is 1,000 ecosystem
+distributions passing their own test suites. This plan is the revision of
+2026-09-12 and the order the rest of the work is taken in.
 
 ## Where the count stands
 

@@ -58,16 +58,23 @@ rakupp 4.0.2: matches.
 
 ### HM-04  Object hashes                                           D:yes R:yes V:spec
 `my %h{Int}` keeps keys as objects, typed: a Str or Rat key is
-`X::TypeCheck::Binding::Parameter`, and `%h<1>` (a Str) does not find the
-Int key 1. `my %h{Any}` and `:{ }` (`Hash[Mu,Mu,Any]`) keep `1` and `"1"`
-distinct. To use an aggregate as one key it must be itemized, otherwise
-the subscript is a slice.
+`X::TypeCheck::Binding::Parameter`. The key in `%h<1>` is the allomorph
+`IntStr`, not a Str: it passes the Int key check (`%h<1> = "x"` stores
+the key `IntStr.new(1, "1")`), but it is a different key from the Int 1,
+so `%h<1>` does not find the Int key 1, nor `%h{1}` the IntStr one.
+`my %h{Any}` and `:{ }` (`Hash[Mu,Mu,Any]`) keep `1` and `"1"` distinct,
+and `<1>` is a third key beside them. To use an aggregate as one key it
+must be itemized, otherwise the subscript is a slice.
 ```
 say do { my %h{Int}; ((try { %h<x> = 1; "no" }) // $!.^name) ~ " " ~ ((try { %h{1.5} = 1; "no" }) // $!.^name) ~ " " ~ %h.raku }, " ", do { my %h{Any}; %h{1} = "a"; %h{"1"} = "b"; %h.elems ~ " " ~ %h.keys.map(*.^name).sort.raku }, " ", do { my %h{Int} = 1 => "a", 2 => "b"; %h.keys.sort.raku ~ " " ~ (%h{1}:exists) ~ " " ~ (%h<1>:exists) }, " ", do { my %h{Int}; %h{1} = "a"; %h.raku }, " ", do { my %h{Any}; %h{[1, 2]} = "a"; %h{[1, 2]}.raku ~ " " ~ %h.elems }, " ", :{ 1 => "a" }.raku, " ", :{ 1 => "a" }.^name, " ", :{ }.keyof.raku, " ", do { my %h{Int}; %h.keyof.raku ~ " " ~ %h.^name }
 # rakudo 2026.08: X::TypeCheck::Binding::Parameter X::TypeCheck::Binding::Parameter (my Any %{Int}) 2 ("Int", "Str").Seq (1, 2).Seq True False (my Any %{Int} = 1 => "a") ("a", Any) 2 (my Mu %{Mu} = 1 => "a") Hash[Mu,Mu,Any] Mu Int Hash[Any,Int]
+say <1>.^name, " ", do { my %h{Int}; %h<1> = "x"; %h.keys.map(*.^name).raku ~ " " ~ (%h{1}:exists) ~ " " ~ (%h<1>:exists) ~ " " ~ %h.raku }, " ", do { my %h{Any}; %h{1} = "a"; %h{"1"} = "b"; %h<1> = "c"; %h.elems ~ " " ~ %h.keys.map(*.^name).sort.raku ~ " " ~ %h<1> ~ %h{1} ~ %h{"1"} }, " ", do { my %h{Int} = 1 => "a"; (%h<1>:exists) ~ " " ~ (%h{1}:exists) }, " ", do { my %h{Str}; (try { %h<1> = 1; %h.keys.map(*.^name).raku }) // $!.^name }, " ", do { my %h; %h<1> = 1; %h.keys.map(*.^name).raku }
+# rakudo 2026.08: IntStr ("IntStr",).Seq False True (my Any %{Int} = IntStr.new(1, "1") => "x") 3 ("Int", "IntStr", "Str").Seq cab False True ("IntStr",).Seq ("Str",).Seq
 ```
 rakupp 4.0.2: matches. An object hash now indexes by `.WHICH`; the key object travels
 beside the entry, which is what `.keys`, `.pairs` and `.raku` hand back.
+(this rakupp line predates the correction; re-measure before relying on it)
+Corrected 2026-11-01 from Raku Behind the Docs, ch 10 (findings/BEHIND-THE-DOCS.md §1).
 
 ## C. Access and autovivification
 
@@ -208,13 +215,24 @@ Set, Bag and Mix use the values as weights: Set keeps truthy values, Bag
 positive ones, Mix any non-zero including negatives. `.Capture` turns the
 hash into named arguments; `.Supply` emits pairs; `.roll`/`.pick` return a
 Pair; `.fmt` formats the pairs, or only the keys when the format has one
-directive.
+directive. It does so in the hash's own order, which is random and changes
+from run to run: the sorted `"a\t1\nb\t2"`, `"a=1,b=2"` and `"a\nb"`
+recorded below are one run's luck. `.keys`, `.values` and `.map` follow
+the same order as `.fmt`; the gist, `.Str` and `.raku` of a Hash or a Map
+are sorted by key string.
 ```
 say do { my %h = a => 2, b => 1; %h.Bag.raku ~ " " ~ %h.Mix.raku }, " ", do { my %h = a => 0, b => 1; %h.Set.raku ~ " " ~ %h.Bag.raku }, " ", do { my %h = a => -1, b => 2; %h.Mix.raku ~ " " ~ %h.Bag.raku }, " ", do { my %h = a => 1; %h.Capture.raku ~ " " ~ %h.Supply.list.raku ~ " " ~ %h.roll.^name ~ " " ~ %h.pick.^name ~ " " ~ %h.roll(2).elems ~ " " ~ %().roll.raku ~ " " ~ %().pick.raku }, " ", do { my %h = a => 1, b => 2; %h.fmt.raku ~ " " ~ %h.fmt("%s=%s", ",").raku ~ " " ~ %h.fmt("%s").raku }
 # rakudo 2026.08: ("a"=>2,"b"=>1).Bag ("a"=>2,"b"=>1).Mix Set.new("b") ("b"=>1).Bag ("b"=>2,"a"=>-1).Mix ("b"=>2).Bag \(:a(1)) (:a(1),) Pair Pair 2 Nil Nil "a\t1\nb\t2" "a=1,b=2" "a\nb"
+my %h = ("a".."h") Z=> 1..8; my $m = Map.new(("a".."h") Z=> 1..8); say %h.fmt("%s", ""), " ", %h.fmt("%s", "") eq %h.keys.join, " ", %h.map(*.key).join eq %h.keys.join, " ", %h.values.join eq %h.keys.map({ %h{$_} }).join, " ", %h.gist.comb(/<[a..h]>/).join, " ", %h.Str.lines.map(*.substr(0,1)).join, " ", %h.raku.comb(/<[a..h]>/).join, " ", $m.fmt("%s", "") eq $m.keys.join, " ", $m.gist.comb(/<[a..h]>/).join.substr(2), " ", $m.Str.lines.map(*.substr(0,1)).join, " ", $m.raku.comb(/<[a..h]>/).join.substr(2)
+# rakudo 2026.08: abhfdegc True True True abcdefgh abcdefgh abcdefgh True abcdefgh abcdefgh abcdefgh
 ```
+(The first field of the last line was `fdbheacg` and `fbdcghae` on two
+more runs; the rest is the same every time. A two-key `%h.fmt` printed
+`"b\t2\na\t1"` on two of four runs.)
 rakupp 4.0.2: matches. (The `.Bag`/`.Mix` probe prints in HASH ORDER, which the two
 engines do not share and Rakudo does not repeat between runs — the weights agree.)
+(this rakupp line predates the correction; re-measure before relying on it)
+Corrected 2026-11-01 from Raku Behind the Docs, ch 10 (findings/BEHIND-THE-DOCS.md §1).
 
 ## G. Pair
 
@@ -222,15 +240,24 @@ engines do not share and Rakudo does not repeat between runs — the weights agr
 `.raku` uses the colon form when the key is a Str that looks like an
 identifier (letters, digits, `-` or `'` between word characters, Unicode
 letters), otherwise `"key" => value`; a True or False value with such a
-key prints as `:a` / `:!a`; a Pair key is parenthesised; a type-object or
-Nil key prints by name (`:Int(1)`, `:Nil(1)`); `:arglist` forces the arrow
-form. `.gist` is `a => 1`, `.Str` is `a\t1`.
+key prints as `:a` / `:!a`; a Pair key is parenthesised; `:arglist`
+forces the arrow form. `Int => 1`, `Nil => 1` and `NaN => 1` have the
+STRING keys "Int", "Nil" and "NaN" (a bareword before `=>` is quoted), so
+they print in the colon form (`:Int(1)`, `:Nil(1)`); a real type-object
+key prints in parentheses with the arrow (`Pair.new(Int, 1)` and
+`(Int) => 1` are `(Int) => 1` in both `.raku` and `.gist`, `Pair.new(Nil,
+1)` is `(Nil) => 1`), and a parenthesised `(NaN) => 1` is the Num key,
+`NaN => 1`. `.gist` is `a => 1`, `.Str` is `a\t1`.
 ```
 say (a => 1).raku, " ", (a => 1).gist, " ", (a => 1).Str.raku, " ", ("a b" => 1).raku, " ", ("1" => 1).raku, " ", (1 => "a").raku, " ", ("a-b" => 1).raku, " ", ("-a" => 1).raku, " ", ("a-" => 1).raku, " ", ("a'b" => 1).raku, " ", ("" => 1).raku, " ", (a => True).raku, " ", (a => False).raku, " ", ("a b" => True).raku, " ", ((a => 1) => 2).raku, " ", ((a => 1) => 2).gist, " ", (Int => 1).raku, " ", (Any => 1).raku, " ", (Nil => 1).raku, " ", (NaN => 1).raku, " ", (1.5 => 1).raku, " ", ("é" => 1).raku, " ", ("a" => 1).raku(:arglist)
 # rakudo 2026.08: :a(1) a => 1 "a\t1" "a b" => 1 "1" => 1 1 => "a" :a-b(1) "-a" => 1 "a-" => 1 :a'b(1) "" => 1 :a :!a "a b" => Bool::True (:a(1)) => 2 (a => 1) => 2 :Int(1) :Any(1) :Nil(1) :NaN(1) 1.5 => 1 :é(1) "a" => 1
+say (Int => 1).key.^name, " ", (Nil => 1).key.^name, " ", (NaN => 1).key.^name, " ", Pair.new(Int, 1).raku, " ", Pair.new(Int, 1).gist, " ", ((Int) => 1).raku, " ", ((Int) => 1).key.^name, " ", Pair.new(Nil, 1).raku, " ", Pair.new(Nil, 1).key.raku, " ", Pair.new(Any, 1).raku, " ", ((NaN) => 1).raku, " ", ((NaN) => 1).key.^name, " ", (Int.WHAT => 1).raku, " ", Pair.new(Str, 1).raku
+# rakudo 2026.08: Str Str Str (Int) => 1 (Int) => 1 (Int) => 1 Int (Nil) => 1 Nil (Any) => 1 NaN => 1 Num (Int) => 1 (Str) => 1
 ```
 Note `Int => 1` is the pair with the **string** key `"Int"`: a bareword before `=>` is quoted.
 rakupp 4.0.2: matches.
+(this rakupp line predates the correction; re-measure before relying on it)
+Corrected 2026-11-01 from Raku Behind the Docs, ch 10 (findings/BEHIND-THE-DOCS.md §1).
 
 ### HM-17  Pair as a one-element Associative                        D:yes R:yes V:spec
 ```

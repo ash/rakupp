@@ -349,8 +349,9 @@ Exit: number 3. `regex-cap` through `.race` at ≥ 3× the serial loop.
 
 ### T5 — Grammars at 10 MB/s
 
-[GRAMMAR-SPEED-PLAN.md](GRAMMAR-SPEED-PLAN.md) owns the details. This pillar
-sets its number (number 4) and adds what T3 brings:
+[GRAMMAR-SPEED-PLAN.md](GRAMMAR-SPEED-PLAN.md), closed 2026-11-01, holds
+the workload, the corpus and the findings of 2026-08-13; its open grammar work
+is here now. This pillar sets the number (number 4) and adds what T3 brings:
 
 - **ASCII stepping and lazy captures** apply to grammars unchanged. A token's
   Match is built only when an action or `$<name>` reads it.
@@ -361,6 +362,11 @@ sets its number (number 4) and adds what T3 brings:
     automaton's machinery, not only its declarative prefix.
   - **What that covers:** most of a JSON grammar's tokens (strings, numbers,
     whitespace).
+- **`|` over subrules as cheap as a proto:** a plain alternation of subrules
+  cost 18–46% more than the same choice written as a proto on 2026-08-13,
+  because the NFA ranker rescans long subrule-expanded prefixes at every
+  position, where a proto's union NFA is cached and short (GRAMMAR-SPEED-PLAN,
+  "Grammar-shape experiments"). Most real grammars use `|`.
 - **Action dispatch** costs are measured with `jg.raku --raw`, which leaves
   out the actions, and go to the dispatch work of V6 if they dominate.
 - **The comparison that matters to users:** a grammar written plainly in Raku

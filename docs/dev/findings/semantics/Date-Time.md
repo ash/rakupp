@@ -297,13 +297,21 @@ by `.Str` (DT-12), a Str topic matches a Date range (`"2019-05-03" ~~
 $r` True) and a mixed `Date .. "2019-05-03"` has three elements — and,
 the bug, a formatter on one endpoint breaks the range: a start formatted
 as `~.day` against a plain end yields only `1,2` (iteration stops when
-`"3"` sorts after `"2019-05-03"`). A second bug: `.sum` of a Date range
-is a Date (the Ints re-add to a Date). Do not imitate either.
+`"3"` sorts after `"2019-05-03"`). Do not imitate it. `.sum` of a Date
+range is a Date only when the count is odd; an even count gives an Int.
+It follows from DT-11's fallback: Date + Date is an Int and Int + Date a
+Date, so the running sum alternates, and a plain list of Dates does the
+same. That is a quirk, not a bug.
 ```
 say do { my $r = Date.new("2019-05-01") .. Date.new("2019-05-05"); ($r.^name, $r.elems, $r.list.map(*.Str).raku, $r.min.Str, (Date.new("2019-05-03") ~~ $r), (Date.new("2019-05-06") ~~ $r), (Date.new("2019-05-05") ~~ Date.new("2019-05-01")..^Date.new("2019-05-05")), (Date.new("2019-05-01")..^Date.new("2019-05-05")).elems, (Date.new("2019-05-05") .. Date.new("2019-05-01")).elems, $r.reverse.map(*.Str).raku, (Date.new("2019-05-01") .. *).is-lazy, (Date.new("2019-05-01") .. *).head(2).map(*.Str).raku, (Date.new("2019-05-01") .. *)[3].Str, $r[1].Str, $r.tail.Str, (Date.new("2019-05-01", :formatter({ ~.day })) .. Date.new("2019-05-03")).join(","), $r.sum.^name, +$r, (Date.new("2019-05-01") ..^ Date.new("2019-05-01")).elems, (Date.new("2020-02-27") .. Date.new("2020-03-02")).map(*.day).raku, do { my $n = 0; for Date.new("2020-01-30") .. Date.new("2020-02-02") { $n++ }; $n }, (Date.new("2020-01-01")..Date.new("2020-12-31")).elems, $r.pick.^name, $r.roll.^name, $r.Str, $r.raku, (Date.new("2019-05-01") ^..^ Date.new("2019-05-05")).elems, $r.elems.^name, ($r.list.head ~~ Date), (Date.new("2019-05-03") ~~ Date.new("2019-05-01")..*), (Date.new("2018-05-03") ~~ Date.new("2019-05-01")..*), ("2019-05-03" ~~ $r), (Date.new("2019-05-01") .. "2019-05-03").elems, ($r.list.head === Date.new("2019-05-01")), $r.minmax.map(*.Str).raku, $r.bounds.map(*.Str).raku, $r.is-int, $r.infinite).join(" ") }
 # rakudo 2026.08: Range 5 ("2019-05-01", "2019-05-02", "2019-05-03", "2019-05-04", "2019-05-05").Seq 2019-05-01 True False False 4 0 ("2019-05-05", "2019-05-04", "2019-05-03", "2019-05-02", "2019-05-01").Seq True ("2019-05-01", "2019-05-02").Seq 2019-05-04 2019-05-02 2019-05-05 1,2 Date 5 0 (27, 28, 29, 1, 2).Seq 4 366 Date Date 2019-05-01 2019-05-02 2019-05-03 2019-05-04 2019-05-05 Date.new(2019,5,1)..Date.new(2019,5,5) 3 Int True True False True 3 True ("2019-05-01", "2019-05-05").Seq ("2019-05-01", "2019-05-05").Seq False False
+say do { my $d = Date.new("2019-05-01"); ((1..6).map({ ($d .. $d + $_ - 1).sum.^name }).join(","), (Date.new("2019-05-01"), Date.new("2019-05-02")).sum.^name, (Date.new("2019-05-01"), Date.new("2019-05-02"), Date.new("2019-05-03")).sum.^name, ($d + $d).^name, (1 + $d).^name).join(" ") }
+# rakudo 2026.08: Date,Int,Date,Int,Date,Int Int Date Int Date
 ```
 rakupp 4.0.1-84: differs — `Date .. Date` is a List (its `.raku` is a list of hashes), `Date ~~ $r` is False, `Date .. *` yields Ints (`58604`), `.sum` is a Num, `.is-int`/`.bounds` are missing (the line died at `.bounds`); it iterates by value, so the formatter case gives `1,2,3`.
+(this rakupp line predates the correction; re-measure before relying on it)
+
+Corrected 2026-11-01 from Raku Behind the Docs, ch 18 (findings/BEHIND-THE-DOCS.md §1).
 
 ### DT-14  later and earlier on a Date                                    D:yes R:yes V:quirk
 `.later(unit => n)` / `.earlier` take exactly ONE named unit: `day`/
@@ -329,15 +337,23 @@ rakupp 4.0.1-84: differs — every valid move agrees, but nothing is refused: tw
 ### DT-15  truncated-to on a Date                                         D:yes R:yes V:quirk
 `year` gives January 1, `month` day 1, `week` the Monday on or before
 (across months, years and 29 February); the formatter is kept, and a
-date already at the boundary comes back equal. The unit is matched by
-its first characters, so `months`, `yearly` and `weeks` work (the quirk);
-`day`, `hour`, `fortnight`, the empty string, `Year` (case) and a
-non-Str (1) throw `X::AdHoc` — a Date has no `day` truncation.
+date already at the boundary comes back equal. The unit is not matched by
+its first characters: the word must BEGIN WITH the whole unit name, so
+`months`, `yearly` and `weeks` work, and so do `weekend` and `yearning`
+(the quirk), while `mon`, `y` and `daily` are refused. `day`, `hour`,
+`fortnight`, the empty string, `Year` (case) and a non-Str (1) throw
+`X::AdHoc` too — a Date has no `day` truncation. On a DateTime (DT-28) the
+same rule lets `hourglass` truncate to the hour.
 ```
 say Date.new("2012-12-24").truncated-to("year").Str, " ", Date.new("2012-12-24").truncated-to("month").Str, " ", Date.new("2012-12-24").truncated-to("week").Str, " ", Date.new("1999-01-17").truncated-to("week").Str, " ", Date.new("1999-01-03").truncated-to("week").Str, " ", Date.new("2000-03-01").truncated-to("week").Str, " ", Date.new("1988-03-03").truncated-to("week").Str, " ", (try Date.new("2012-12-24").truncated-to("day").Str) // $!.^name, " ", (try Date.new("2012-12-24").truncated-to("hour").Str) // $!.^name, " ", (try Date.new("2012-12-24").truncated-to("fortnight").Str) // $!.^name, " ", Date.new("2012-12-24").truncated-to("months").Str, " ", Date.new("2012-12-24").truncated-to("yearly").Str, " ", Date.new("2012-12-24").truncated-to("weeks").Str, " ", (try Date.new("2012-12-24").truncated-to("").Str) // $!.^name, " ", Date.new("2012-12-24", :formatter({"F"})).truncated-to("year").Str, " ", Date.new("2012-12-24").truncated-to("week").day-of-week, " ", Date.new("2012-12-24").truncated-to("year").daycount, " ", Date.new("2012-12-01").truncated-to("month").Str, " ", (Date.new("2012-12-01").truncated-to("month") === Date.new("2012-12-01")), " ", Date.new("2012-12-24").truncated-to("week").^name, " ", (try Date.new("2012-12-24").truncated-to("Year").Str) // $!.^name, " ", Date.new("2012-12-24").truncated-to("month").raku, " ", (try Date.new("2012-12-24").truncated-to(1).Str) // $!.^name
 # rakudo 2026.08: 2012-01-01 2012-12-01 2012-12-24 1999-01-11 1998-12-28 2000-02-28 1988-02-29 X::AdHoc X::AdHoc X::AdHoc 2012-12-01 2012-01-01 2012-12-24 X::AdHoc F 1 55927 2012-12-01 True Date X::AdHoc Date.new(2012,12,1) X::AdHoc
+say do { my $d = Date.new("2012-12-24"); <weekend yearning mon y daily>.map({ (try $d.truncated-to($_).Str) // $!.^name }).join(" ") ~ " " ~ DateTime.new("2012-12-24T15:30:45Z").truncated-to("hourglass").Str }
+# rakudo 2026.08: 2012-12-24 2012-01-01 X::AdHoc X::AdHoc X::AdHoc 2012-12-24T15:00:00Z
 ```
 rakupp 4.0.1-84: differs — the valid truncations agree, but every refused unit returns the date unchanged.
+(this rakupp line predates the correction; re-measure before relying on it)
+
+Corrected 2026-11-01 from Raku Behind the Docs, ch 18 (findings/BEHIND-THE-DOCS.md §1).
 
 ### DT-16  clone, first/last-date-in-month, new-from-daycount            D:yes R:yes V:spec
 `.clone(:year, :month, :day, :formatter)` replaces fields and
@@ -365,9 +381,12 @@ rakupp 4.0.1-84: differs — `*-1` gives the last day (2015-11-30), `Date.first-
 formatter; `.Date` is the invocant; `DateTime(Date)` coerces the same
 way; `DateTime.new(Date)` as a positional throws `X::Multi::NoMatch`,
 the named `DateTime.new(:date(Date), :hour, :minute, :second,
-:timezone)` works (a `:year` beside `:date` throws `X::AdHoc`, an
-out-of-range `:minute(60)` `X::Temporal::OutOfRange`, the Date's
-formatter is not used). On the type object `Date.DateTime` and
+:timezone)` works (an out-of-range `:minute(60)` throws
+`X::Temporal::OutOfRange`, the Date's formatter is not used). A `:year`
+beside `:date` does not throw: the date is thrown away, so
+`:date(2015-12-24), :year(2000)` is `2000-01-01T00:00:00Z`, and a `:month`
+given with that `:year` lands on the first of that month. `:month` or
+`:day` beside `:date` alone replace just that part of the date. On the type object `Date.DateTime` and
 `Date.Date` are the type objects, `.gist` is `(Date)`, `.raku` `Date`,
 `.Str` `""` with a warning, `.defined` and `?` False; `.year`,
 `.daycount`, `.yyyy-mm-dd` throw `X::AdHoc`, `.succ` and `.is-leap-year`
@@ -379,8 +398,13 @@ or `.formatter` throws `X::Assignment::RO`.
 ```
 say Date.new("2015-12-24").DateTime.Str, " ", Date.new("2015-12-24").DateTime.timezone, " ", Date.new("2015-12-24").DateTime.^name, " ", Date.new("2015-12-24").Date.Str, " ", (Date.new("2015-12-24").Date === Date.new("2015-12-24")), " ", Date.DateTime.^name, " ", Date.DateTime.defined, " ", Date.Date.^name, " ", Date.Date.defined, " ", Date.gist, " ", Date.raku, " ", (quietly Date.Str).raku, " ", Date.defined, " ", ?Date, " ", (try Date.year) // $!.^name, " ", (try Date.daycount) // $!.^name, " ", (try Date.succ) // $!.^name, " ", (try Date.yyyy-mm-dd) // $!.^name, " ", (try Date.is-leap-year) // $!.^name, " ", (Date ~~ Dateish), " ", (Date ~~ Cool), " ", (Date ~~ Any), " ", Date.^mro.map(*.^name).raku, " ", (try Date.new("2015-12-24").year = 2000) // $!.^name, " ", Date.new("2015-12-24").DateTime.hh-mm-ss, " ", Date.new("2015-12-24", :formatter({"F"})).DateTime.Str, " ", DateTime(Date.new("2015-12-24")).Str, " ", (try DateTime.new(Date.new("2015-12-24")).Str) // $!.^name, " ", DateTime.new(:date(Date.new("2015-12-24"))).Str, " ", DateTime.new(:date(Date.new("2015-12-24")), :hour(5), :timezone(3600)).Str, " ", DateTime.new(date => Date.new("2015-12-24"), minute => 59).Str, " ", (try DateTime.new(date => Date.new(1999, 1, 1), minute => 60)) // $!.^name, " ", Date.new("2015-12-24").DateTime.Date.Str, " ", (Date.new("2015-12-24").DateTime.Date === Date.new("2015-12-24")), " ", (try DateTime.new(:date(Date.new("2015-12-24")), :year(2000)).Str) // $!.^name, " ", DateTime.new(:date(Date.new("2015-12-24", :formatter({"F"})))).Str, " ", (try Date.is-leap-year(2024)) // $!.^name, " ", (try Date.new("2015-12-24").day = 1) // $!.^name, " ", (try Date.new("2015-12-24").formatter = { 1 }) // $!.^name, " ", (try Date.days-in-month) // $!.^name, " ", Date.days-in-month(2023, 2), " ", Date.^roles.map(*.^name).raku
 # rakudo 2026.08: 2015-12-24T00:00:00Z 0 DateTime 2015-12-24 True DateTime False Date False (Date) Date "" False False X::AdHoc X::AdHoc X::Parameter::InvalidConcreteness X::AdHoc X::Parameter::InvalidConcreteness True False True ("Date", "Any", "Mu").Seq X::Assignment::RO 00:00:00 2015-12-24T00:00:00Z 2015-12-24T00:00:00Z X::Multi::NoMatch 2015-12-24T00:00:00Z 2015-12-24T05:00:00+01:00 2015-12-24T00:59:00Z X::Temporal::OutOfRange 2015-12-24 True 2000-01-01T00:00:00Z 2015-12-24T00:00:00Z X::AdHoc X::Assignment::RO X::Assignment::RO X::Multi::NoMatch 28 ("Dateish",).Seq
+say do { my $d = Date.new("2015-12-24"); (DateTime.new(:date($d), :year(2000)).Str, DateTime.new(:date($d), :month(3)).Str, DateTime.new(:date($d), :day(5)).Str, DateTime.new(:date($d), :year(2000), :month(3)).Str).join(" ") }
+# rakudo 2026.08: 2000-01-01T00:00:00Z 2015-03-24T00:00:00Z 2015-12-05T00:00:00Z 2000-03-01T00:00:00Z
 ```
 rakupp 4.0.1-84: differs — on the type object `.year`/`.daycount` are `X::Method::NotFound` and `.succ` answers 1; `Date ~~ Cool` True; `DateTime.new(Date)` positional is accepted; `:date` with `:year(2000)` gives 2000-12-24 instead of `X::AdHoc`; `Date.days-in-month` is missing, so the line died there.
+(this rakupp line predates the correction; re-measure before relying on it)
+
+Corrected 2026-11-01 from Raku Behind the Docs, ch 18 (findings/BEHIND-THE-DOCS.md §1).
 
 ## D. DateTime construction and validation
 
@@ -523,9 +547,10 @@ half-up (0.0000005 is `.000001`, 0.0000004 `.000000`, 0.1234565
 prints like a Rat (`05`, `05.250000`); a leap second prints `23:59:60Z`
 or `23:59:60.500000Z`. The bugs: rounding may overflow into a second
 that does not exist (59.9999999 prints `00:00:60.000000`); a second in
-[0.9999995, 1) makes `.Str` throw `X::AdHoc`; a Num second below 5e-7
-prints seven decimals (`00.0000000`). `.raku` interpolates the second
-and adds `,:timezone(-59)` when non-zero. `WHICH` is `DateTime|` plus
+[0.9999995, 1) makes `.Str` throw `X::AdHoc`. A Num second below 5e-7 is
+not whole, so it prints six decimals that round to zero (`00.000000`),
+as a Rat does; that holds from 1e-7 down to 1e-20. `.raku` interpolates
+the second and adds `,:timezone(-59)` when non-zero. `WHICH` is `DateTime|` plus
 the `.Str` — a ValueObjAt — so `===` holds for equal fields in the same
 zone and fails across zones; and, the third bug, it is the FORMATTED
 string: two DateTimes with the same constant formatter are `===` and
@@ -535,8 +560,12 @@ a pointy block or a sub); a non-Callable formatter throws `X::AdHoc` at
 ```
 say DateTime.new(:2000year, :timezone(3661)).Str, " ", DateTime.new(:2000year, :timezone(-30)).Str, " ", DateTime.new(:2000year, :timezone(-30)).raku, " ", DateTime.new(:2000year, :timezone(1)).Str, " ", DateTime.new(:2000year, :timezone(-3600)).Str, " ", DateTime.new(:2000year, :timezone(-1800)).Str, " ", DateTime.new(:2000year, :timezone(360000)).Str, " ", DateTime.new(:2000year, :second(0.5)).Str, " ", DateTime.new(:2000year, :second(0.0000005)).Str, " ", DateTime.new(:2000year, :second(0.0000004)).Str, " ", DateTime.new(:2000year, :second(0.000001)).Str, " ", DateTime.new(:2000year, :second(1.0000005)).Str, " ", DateTime.new(:2000year, :second(59.9999999)).Str, " ", (try DateTime.new(:2000year, :second(0.9999999)).Str) // $!.^name, " ", DateTime.new(:2000year, :second(9.5)).Str, " ", DateTime.new(:2000year, :second(1/3)).Str, " ", DateTime.new(:2000year, :second(5e0)).Str, " ", DateTime.new(:2000year, :second(5.25e0)).Str, " ", DateTime.new(:2000year, :second(<5.5>)).Str, " ", DateTime.new(:2016year, :12month, :31day, :23hour, :59minute, :second(60)).Str, " ", DateTime.new(:2016year, :12month, :31day, :23hour, :59minute, :second(60.5)).Str, " ", DateTime.new(:2000year, :second(0.5)).raku, " ", DateTime.new(:2000year, :second(5e0)).raku, " ", DateTime.new(:2000year, :formatter({ "F" })).Str, " ", DateTime.new(:2000year, :formatter({ "F" })).gist, " ", DateTime.new(:2000year, :formatter({ "F" })).raku, " ", DateTime.new(:2000year).WHICH, " ", DateTime.new(:2000year).WHICH.^name, " ", DateTime.new(:2000year, :timezone(3600)).WHICH, " ", DateTime.new(:2000year, :formatter({ "F" })).WHICH, " ", (DateTime.new(:2000year, :formatter({ "F" })) === DateTime.new(:2001year, :formatter({ "F" }))), " ", (DateTime.new(:2000year) === DateTime.new(:2000year)), " ", (DateTime.new(:2000year) === DateTime.new(:2000year, :timezone(3600))), " ", (DateTime.new(:2000year, :timezone(3600)) === DateTime.new(:2000year, :timezone(3600))), " ", ((DateTime.new(:2000year, :formatter({ "F" })), DateTime.new(:2001year, :formatter({ "F" }))).unique.elems), " ", DateTime.new(:2000year, :second(10.987654321)).Str, " ", DateTime.new(:2000year, :second(10.9999996)).Str, " ", (try DateTime.new(:2000year, :second(0.99999951)).Str) // $!.^name, " ", DateTime.new(:2000year, :second(59.5)).Str, " ", DateTime.new(:2000year, :second(1e-7)).Str, " ", DateTime.new(:2000year, :second(0.1234565)).Str, " ", DateTime.new(:2000year, :timezone(-3661)).Str, " ", DateTime.new(:2000year, :timezone(59)).Str, " ", DateTime.new(:2000year, :timezone(-59)).raku, " ", DateTime.new(:2000year, :formatter(-> $dt { $dt.year ~ "!" })).Str, " ", DateTime.new(:2000year, :formatter(sub ($x) { "S" })).Str, " ", (try DateTime.new(:2000year, :formatter(42)).Str) // $!.^name, " ", (try DateTime.new(:2000year, :formatter({ die "boom" })).Str) // $!.^name, " ", DateTime.new(:2000year, :second(0.9999994)).Str, " ", DateTime.new(:2000year, :second(59.9999994)).Str, " ", (try DateTime.new(:2000year, :second(0.9999996e0)).Str) // $!.^name
 # rakudo 2026.08: 2000-01-01T00:00:00+01:01 2000-01-01T00:00:00-00:00 DateTime.new(2000,1,1,0,0,0,:timezone(-30)) 2000-01-01T00:00:00+00:00 2000-01-01T00:00:00-01:00 2000-01-01T00:00:00-00:30 2000-01-01T00:00:00+100:00 2000-01-01T00:00:00.500000Z 2000-01-01T00:00:00.000001Z 2000-01-01T00:00:00.000000Z 2000-01-01T00:00:00.000001Z 2000-01-01T00:00:01.000001Z 2000-01-01T00:00:60.000000Z X::AdHoc 2000-01-01T00:00:09.500000Z 2000-01-01T00:00:00.333333Z 2000-01-01T00:00:05Z 2000-01-01T00:00:05.250000Z 2000-01-01T00:00:05.500000Z 2016-12-31T23:59:60Z 2016-12-31T23:59:60.500000Z DateTime.new(2000,1,1,0,0,0.5) DateTime.new(2000,1,1,0,0,5) F F DateTime.new(2000,1,1,0,0,0) DateTime|2000-01-01T00:00:00Z ValueObjAt DateTime|2000-01-01T00:00:00+01:00 DateTime|F True True False True 1 2000-01-01T00:00:10.987654Z 2000-01-01T00:00:11.000000Z X::AdHoc 2000-01-01T00:00:59.500000Z 2000-01-01T00:00:00.000000Z 2000-01-01T00:00:00.123457Z 2000-01-01T00:00:00-01:01 2000-01-01T00:00:00+00:00 DateTime.new(2000,1,1,0,0,0,:timezone(-59)) 2000! S X::AdHoc X::AdHoc 2000-01-01T00:00:00.999999Z 2000-01-01T00:00:59.999999Z X::AdHoc
+say (1e-7, 4.9e-7, 1e-10, 1e-20, 5e-7).map({ DateTime.new(:2000year, :second($_)).Str }).join(" ")
+# rakudo 2026.08: 2000-01-01T00:00:00.000000Z 2000-01-01T00:00:00.000000Z 2000-01-01T00:00:00.000000Z 2000-01-01T00:00:00.000000Z 2000-01-01T00:00:00.000001Z
 ```
 rakupp 4.0.1-84: differs — it rounds half-down (0.0000005 prints `.000000`, 0.1234565 `.123456`), prints `01.000000` where Rakudo throws, prints the default for a non-Callable formatter, and reproduces the `00:00:60.000000` overflow and the formatter-based `WHICH`; the offsets and the leap seconds agree.
+
+Corrected 2026-11-01 from Raku Behind the Docs, ch 18 (findings/BEHIND-THE-DOCS.md §1).
 
 ### DT-24  in-timezone, utc, local, $*TZ                                   D:yes R:yes V:spec
 `.in-timezone($seconds)` re-expresses the same instant with the new
@@ -747,8 +776,8 @@ rakupp 4.0.1-84: differs — `"x".Date` and `"x".DateTime` give 0000-01-01 inste
 |---|---|
 | total | 33 |
 | not fully stated by docs (D:yes) nor asserted by Roast (R:yes) | 4 |
-| Rakudo bugs (do not imitate) | 4 — DT-13 a Date range iterates by Str and `.sum` is a Date, DT-19 date-only `2012-13-22` throws `X::AdHoc`, DT-23 `.Str` overflows to `:60` / throws / prints seven decimals and `WHICH` is the formatted string, DT-26 `cmp`/`leg`/`sort` by Str |
-| quirks (recorded, step two decides) | 13 — DT-04 Instant `===` False, DT-05 `Duration.new(Inf)` is a Rat, DT-07 a Date inherits a DateTime's formatter, DT-11 the Numeric fallback, DT-12 `cmp` by Str, DT-14 unknown unit `X::TypeCheck::Return`, DT-15 prefix-matched units, DT-20 the second throws a plain `X::OutOfRange`, DT-21 a positional Str second stays a Str, DT-25 Num vs Rat seconds, DT-27 unknown unit is a no-op, DT-29 `± Duration` drops the formatter and `± Int` is an Instant, DT-31 a leap second's Date is the next day |
+| Rakudo bugs (do not imitate) | 4 — DT-13 a Date range iterates by Str, DT-19 date-only `2012-13-22` throws `X::AdHoc`, DT-23 `.Str` overflows to `:60` / throws and `WHICH` is the formatted string, DT-26 `cmp`/`leg`/`sort` by Str |
+| quirks (recorded, step two decides) | 14 — DT-04 Instant `===` False, DT-05 `Duration.new(Inf)` is a Rat, DT-07 a Date inherits a DateTime's formatter, DT-11 the Numeric fallback, DT-12 `cmp` by Str, DT-13 `.sum` of a Date range alternates Date and Int, DT-14 unknown unit `X::TypeCheck::Return`, DT-15 any word that begins with a unit name is that unit, DT-20 the second throws a plain `X::OutOfRange`, DT-21 a positional Str second stays a Str, DT-25 Num vs Rat seconds, DT-27 unknown unit is a no-op, DT-29 `± Duration` drops the formatter and `± Int` is an Instant, DT-31 a leap second's Date is the next day |
 | rakupp 4.0.1-84 differs | 31 |
 | rakupp 4.0.1-84 matches (all but one edge field each) | 2 — DT-18, DT-30 |
 

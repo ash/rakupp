@@ -15,7 +15,7 @@ this sheet adds is the rules inside the methods — ordering, what an empty or
 misused input yields, which exception type — 38 of the 69 items below are neither fully
 stated by docs nor fully asserted by Roast.
 
-The two Rakudo bugs and the quirks flagged below are recorded so that step two
+The four Rakudo bugs and the quirks flagged below are recorded so that step two
 does not imitate them. Rakudo's mechanism is deliberately absent from this
 document.
 
@@ -167,20 +167,26 @@ rakupp 4.0.2: matches.
 
 ### S-14  No event may follow a quit — Rakudo leaks here          D:no R:no V:bug
 The intended rule is emit* [done|quit], S-06. Rakudo violates it when a
-one-source operator (`.map`) quits while a synchronous source is still
-producing: the later values reach `.tap` and even `.act`. A supply-block
-operator (`.do`) does not leak.
+one-source operator (`.map`, `.grep`) quits while a synchronous source is
+still producing: the later values reach `.tap` and even `.act`, and so does
+the source's done, which arrives after the quit. A supply-block operator
+(`.do`) does not leak.
 ```
-say do { my @o; Supply.from-list(1,2,3).map({ die "bad" if $_ == 2; $_ }).act({ @o.push($_) }, quit => { @o.push("quit:" ~ .message) }); @o }
-# rakudo 2026.08: [1 quit:bad 3]        <- the 3 is the bug
-say do { my @o; Supply.from-list(1,2,3).do({ die "d" if $_ == 2 }).tap({ @o.push($_) }, quit => { @o.push("quit:" ~ .message) }); @o }
+say do { my @o; Supply.from-list(1,2,3).map({ die "bad" if $_ == 2; $_ }).act({ @o.push($_) }, quit => { @o.push("quit:" ~ .message) }, done => { @o.push("done") }); @o }
+# rakudo 2026.08: [1 quit:bad 3 done]        <- the 3 and the done are the bug
+say do { my @o; Supply.from-list(1,2,3).grep({ die "bad" if $_ == 2; True }).tap({ @o.push($_) }, quit => { @o.push("quit:" ~ .message) }, done => { @o.push("done") }); @o }
+# rakudo 2026.08: [1 quit:bad 3 done]
+say do { my @o; Supply.from-list(1,2,3).do({ die "d" if $_ == 2 }).tap({ @o.push($_) }, quit => { @o.push("quit:" ~ .message) }, done => { @o.push("done") }); @o }
 # rakudo 2026.08: [1 quit:d]
 ```
-Step two: deliver `1`, then the quit, and nothing after, in both cases.
+Step two: deliver `1`, then the quit, and nothing after, in every case.
 rakupp 4.0.2: **deliberately differs from Rakudo** — `[1 quit:bad]` in both cases.
 The bug is not imitated: a one-source operator whose user code dies records the
 death as the supply's quit and stops there, so the grammar of S-06 holds on
 every path.
+(this rakupp line predates the correction; re-measure before relying on it)
+
+Corrected 2026-11-01 from Raku Behind the Docs, ch 22 (findings/BEHIND-THE-DOCS.md §1).
 
 ## B. Factories
 
@@ -255,22 +261,32 @@ say Supply.from-list(1,2,3,4).first(* > 1).list, " ", Supply.from-list(1,2,3,4).
 ```
 rakupp 4.0.2: matches.
 
-### S-21  stable: debounce; a pending value is lost on done  D:partial R:partial V:quirk
+### S-21  stable: debounce; a pending value is emitted after done  D:partial R:partial V:bug
 `stable($t)` emits a value only if no newer value arrives within `$t`
 seconds; a newer value cancels the pending one. Falsy `$t` returns the
-invocant (Roast). Done and quit pass through **immediately**, so a value
-still pending when the source completes is never emitted.
+invocant (Roast). Done and quit pass through **immediately**, but a value
+still pending when the source completes is not lost: its timer still fires,
+and the value is emitted AFTER the done, to `.tap` and even to `.act`. That
+breaks the emit* [done|quit] rule of S-06. A collector that stops at the
+done, such as `.list`, never sees the value, so the list-backed probe gives
+`()`. The probes bucket on the wall clock; each sleep outlasts the window.
 ```
 say Supply.from-list(1,2,3).stable(0).list, " ", Supply.from-list(1,2,3).stable(0.01).list
 # rakudo 2026.08: (1 2 3) ()
 say do { my $s = Supplier.new; my @o; $s.Supply.stable(0.05).tap({ @o.push($_) }); $s.emit(1); $s.emit(2); sleep 0.15; $s.emit(3); sleep 0.15; @o }
 # rakudo 2026.08: [2 3]
+say do { my $s = Supplier.new; my @o; $s.Supply.stable(0.05).tap({ @o.push($_) }, done => { @o.push("done") }); $s.emit(1); $s.emit(2); $s.done; sleep 0.2; @o }, " ", do { my $s = Supplier.new; my @o; $s.Supply.stable(0.05).act({ @o.push($_) }, done => { @o.push("done") }); $s.emit(1); $s.emit(2); $s.done; sleep 0.2; @o }
+# rakudo 2026.08: [done 2] [done 2]
 ```
-Roast's live test of `stable` is skipped in Rakudo itself. Step two may
-choose to flush the pending value on done; the sheet records that Rakudo does not.
+Roast's live test of `stable` is skipped in Rakudo itself. Step two: nothing
+may follow the done; whether the pending value is flushed before it or
+dropped is open.
 rakupp 4.0.2: still differs — no debounce. `stable` on a list-backed supply is
 the invocant (every value is already older than any window), and on a live one it
 is a scheduling combinator that is not built. NOT DONE.
+(this rakupp line predates the correction; re-measure before relying on it)
+
+Corrected 2026-11-01 from Raku Behind the Docs, ch 22 (findings/BEHIND-THE-DOCS.md §1).
 
 ### S-22  delayed                                                  D:yes R:yes V:spec
 Falsy time returns the invocant; otherwise every event, including done and quit, is delivered `$t` seconds later, order preserved.
@@ -341,12 +357,20 @@ list-backed answer a SPEC that each tap subscribes for itself, so a merge of liv
 supplies delivers as the values arrive.
 
 ### S-28  reduce: one value at the end, Nil for an empty source    D:partial R:no V:spec
+An empty source emits one Nil and never calls the function, whatever it is.
 ```
-say Supply.from-list().reduce(&[+]).list.raku, " ", Supply.from-list(1,2,3).reduce(&[+]).list
-# rakudo 2026.08: (Nil,) (6)
+say Supply.from-list().reduce(&[+]).list.raku, " ", Supply.from-list(1,2,3).reduce(&[+]).list, " ", Supply.from-list().reduce(-> $a, $b { $a + $b }).list.raku
+# rakudo 2026.08: (Nil,) (6) (Nil,)
+say Supply.from-list().reduce({ "called:" ~ @_.elems }).list.raku, " ", ().reduce(&[+]).raku, " ", ().reduce({ "called:" ~ @_.elems }).raku, " ", (try ().reduce(-> $a, $b { $a + $b })) // $!.^name
+# rakudo 2026.08: (Nil,) 0 "called:0" X::AdHoc
 ```
-Docs say "same semantics as List.reduce", which does yield Nil for an empty list; the Supply case is not asserted anywhere.
+Docs say "same semantics as List.reduce", but the two differ on an empty
+input. A List's reduce of nothing is not Nil: it calls the function with no
+arguments, so `&[+]` gives 0 and a two-parameter block dies ("Too few
+positionals passed"). The Supply case is not asserted anywhere.
 rakupp 4.0.2: matches.
+
+Corrected 2026-11-01 from Raku Behind the Docs, ch 22 (findings/BEHIND-THE-DOCS.md §1).
 
 ### S-29  produce                                                  D:yes R:yes V:spec
 Every running value; the first value is emitted as-is; an empty source emits nothing.
@@ -359,9 +383,13 @@ rakupp 4.0.2: matches.
 ### S-30  migrate  D:partial R:partial V:spec
 Values must be Supplies, else `X::Supply::Migrate::Needs`. Each new inner
 supply replaces the previous one, whose subscription is closed; values of the
-current inner are emitted.
+current inner are emitted. The exception comes when the values are read, not
+when `.list` is called: `.list` is read lazily, so a `try` around
+`.migrate.list` alone misses it, and the program dies uncaught (".migrate
+needs Supplies to be emitted") when `say` reads the list. The probe reads it
+eagerly inside the `try`.
 ```
-say (try Supply.from-list(1,2,3).migrate.list) // $!.^name
+say (try Supply.from-list(1,2,3).migrate.list.eager) // $!.^name
 # rakudo 2026.08: X::Supply::Migrate::Needs
 say Supply.from-list(Supply.from-list(1,2), Supply.from-list(3)).migrate.list
 # rakudo 2026.08: (1 2 3)
@@ -369,6 +397,9 @@ say Supply.from-list(Supply.from-list(1,2), Supply.from-list(3)).migrate.list
 rakupp 4.0.2: matches — on a live source too, where each new inner supply closes
 the previous subscription, and a value that is not a Supply raises
 X::Supply::Migrate::Needs AT THE EMITTER (Roast `migrate.t` asserts that).
+(this rakupp line predates the correction; re-measure before relying on it)
+
+Corrected 2026-11-01 from Raku Behind the Docs, ch 22 (findings/BEHIND-THE-DOCS.md §1).
 
 ### S-31  classify and categorize emit Pairs of preserving supplies  D:no R:partial V:spec
 For each key seen for the first time, a `key => Supply` Pair is emitted, in
@@ -397,7 +428,7 @@ names its own missing key.
 - `.comb(Int $n)`: `$n`-character pieces across chunk boundaries; the leftover is emitted at the end.
 - `.comb(Str "")`: characters. `.comb(Str $needle)`: the needle once per occurrence; a partial needle at a chunk end is completed by the next chunk.
 - `.comb(Regex)`: the regex is applied to the carried text plus the new chunk; matches are emitted as Str; the text **after the last match** is carried forward, so a match never extends into the next chunk (quirk: `"a1b22"` then `"3c"` gives `"22"` and `"3"`, not `"223"`).
-- `.comb(Regex, :match)`: all chunks are collected first, then combed; values are Str.
+- `.comb(Regex, :match)`: the same as plain `.comb(Regex)`. The chunks are not collected first; the regex runs per chunk with the same carry rule, and the values are Str, not Match: `"a1b2"` then `"2c"` gives `"1"`, `"2"`, `"2"`, not `"1"`, `"22"`.
 - `.comb(thing, $limit)`: the first `$limit` results.
 ```
 say Supply.from-list("ab","c").comb.list.raku, " ", Supply.from-list("abc","de").comb(2).list.raku, " ", Supply.from-list("abc").comb(0).list.raku
@@ -411,6 +442,8 @@ Roast `comb.t` asserts the carry rule with `<old dog jumpso>.comb(/../)` → `<o
 rakupp 4.0.2: matches, including the carry quirk: comb works PER CHUNK, joining
 only what the previous chunk left over, so a match never grows across a boundary.
 Decision on the quirk: KEPT — it is what makes a stream comb streamable.
+
+Corrected 2026-11-01 from Raku Behind the Docs, ch 22 (findings/BEHIND-THE-DOCS.md §1).
 
 ### S-33  split  D:partial R:partial V:spec
 The carried remainder is joined with the new chunk and split; the last piece
@@ -455,12 +488,20 @@ rakupp 4.0.2: matches.
 
 ### S-36  squish: :with receives (previous, current)  D:partial R:partial V:spec
 Consecutive duplicates are dropped; `:as` maps to the key; `:with` is
-called with the previously **kept** value first and the new value second.
+called with the previous **element** first and the new value second, whether
+or not the previous element was kept (as `List.squish`, NA-26). In
+`(1,2,3,5)` the 3 is compared with the squished 2, not with the kept 1, so it
+is squished too.
 ```
 say Supply.from-list(1,1,2,2,1).squish.list, " ", Supply.from-list(<a A b>).squish(:as(&lc)).list, " ", Supply.from-list(1,2,4,5).squish(:with(-> $last, $v { $v == $last + 1 })).list
 # rakudo 2026.08: (1 2 1) (a b) (1 4)
+say Supply.from-list(1,2,3,5).squish(:with(-> $last, $v { $v == $last + 1 })).list, " ", do { my @c; Supply.from-list(1,2,3,5).squish(:with(-> $a, $b { @c.push("$a,$b"); $b == $a + 1 })).list.eager; @c.raku }
+# rakudo 2026.08: (1 5) ["1,2", "2,3", "3,5"]
 ```
 rakupp 4.0.2: matches.
+(this rakupp line predates the correction; re-measure before relying on it)
+
+Corrected 2026-11-01 from Raku Behind the Docs, ch 22 (findings/BEHIND-THE-DOCS.md §1).
 
 ### S-37  repeated                                                 D:yes R:yes V:spec
 Emits a value on its second and every later occurrence; `:as` and `:with` as in unique.
@@ -914,12 +955,20 @@ say do { my @o; my $s = supply { whenever Supply.from-list(1,2) { emit $_ } }; $
 ```
 rakupp 4.0.2: matches.
 
-### S-66  emit after done inside the body is ignored               D:yes R:yes V:spec
+### S-66  code after done inside the body never runs               D:yes R:yes V:spec
+`done` in a supply body ends the body there: the statements after it never
+run, so an `emit` after `done` is never reached, rather than reached and
+ignored.
 ```
 say (supply { emit 1; emit 2; done; emit 3 }).list
 # rakudo 2026.08: (1 2)
+say do { my @o; (supply { emit 1; done; @o.push("after-done"); emit 3 }).tap({ @o.push($_) }, done => { @o.push("done") }); @o }
+# rakudo 2026.08: [1 done]
 ```
 rakupp 4.0.2: matches.
+(this rakupp line predates the correction; re-measure before relying on it)
+
+Corrected 2026-11-01 from Raku Behind the Docs, ch 22 (findings/BEHIND-THE-DOCS.md §1).
 
 ### S-67  A supply block completes when the body and every whenever are done   D:yes R:yes V:spec
 ```
@@ -963,8 +1012,8 @@ rakupp 4.0.2: matches — all five types are thrown where the table says, with
 |---|---|
 | total | 69 |
 | not fully stated by docs (D:yes) nor asserted by Roast (R:yes) | 38 |
-| Rakudo bugs (do not imitate) | 3 — S-14, S-41, S-52 |
-| quirks (recorded, step two decides) | 7 — S-12, S-21, S-32 regex carry, S-34 hold-back, S-42 tail-empty, S-59 order, S-64 |
+| Rakudo bugs (do not imitate) | 4 — S-14, S-21, S-41, S-52 |
+| quirks (recorded, step two decides) | 6 — S-12, S-32 regex carry, S-34 hold-back, S-42 tail-empty, S-59 order, S-64 |
 | rakupp 4.0.1 differs (before implementation) | 45 |
 | rakupp 4.0.1 matches (before implementation) | 17 |
 | **rakupp 4.0.2 matches** | **62** |

@@ -100,11 +100,13 @@ theme the rows are sorted by complexity, largest first.
 |---|---|---|---|
 | 34 | V6 P0: steady-state kernels, `tools/bench/memory.raku`, the malloc census | S–M | Everything else is judged against these — V6 P0 |
 | — | A quiet-machine `perf-guard --check`, owed by APPEND, KERNEL, SANDBOX, the phaser work and the V6 P1 batch | S | The batch's interleaved A/B was within ±4%, on a loaded machine |
-| — | Close [GRAMMAR-SPEED-PLAN.md](GRAMMAR-SPEED-PLAN.md), or fold what is left into INTERP-SPEED | S | The maintainer's decision |
 
 ---
 
 ## Closed since the first list (2026-10-14)
+
+- **GRAMMAR-SPEED-PLAN** (2026-11-01): closed, re-measured at the close. Its
+  open targets are [TEXT-PLAN.md](TEXT-PLAN.md) T5's and row 16's.
 
 - **43 and 47, two of the float report's** (d7c6d9d5;
   [FLOAT-HEAVY-ISSUES-2026-10-22](../findings/FLOAT-HEAVY-ISSUES-2026-10-22.md)

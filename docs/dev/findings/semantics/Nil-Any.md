@@ -91,30 +91,44 @@ say (try Nil.minmax.raku) // $!.^name, " ", (try Nil.min.raku) // $!.^name, " ",
 rakupp 4.0.2: matches.
 
 ### NA-06  Mutating Nil                                              D:partial R:partial V:spec
-`STORE` throws `X::Assignment::RO`. `push`, `append`, `unshift`, `prepend`,
-`ASSIGN-POS`, `ASSIGN-KEY` throw `X::AdHoc` ("Use of Nil.push not allowed").
-`BIND-POS`/`BIND-KEY` return a Failure wrapping `X::Bind` with target `Nil`.
+`STORE`, `ASSIGN-POS` and `ASSIGN-KEY` throw `X::Assignment::RO` ("Cannot
+modify an immutable Nil value"). `push`, `append`, `unshift` and `prepend`
+throw `X::AdHoc` ("Use of Nil.push not allowed"). `BIND-POS` returns a
+Failure wrapping `X::Bind` with target `Nil`. `BIND-KEY` returns a Failure
+wrapping `X::Parameter::RW`, whose message names `'(Any)'`, not Nil.
 Roast asserts that all of them throw, not which type.
 ```
 say (try { Nil.STORE(1); "no" }) // $!.^name, " ", (try { Nil.STORE; "no" }) // $!.^name
 # rakudo 2026.08: X::Assignment::RO X::Assignment::RO
 say (try { Nil.push(1); "no" }) // $!.^name ~ ":" ~ $!.message, " | ", (try { Nil.ASSIGN-POS(0, 1); "no" }) // $!.^name, " ", (try { Nil.unshift(1); "no" }) // $!.^name, " ", (try { Nil.append(1); "no" }) // $!.^name, " ", (try { Nil.prepend(1); "no" }) // $!.^name, " ", (try { Nil.ASSIGN-KEY("a", 1); "no" }) // $!.^name
 # rakudo 2026.08: X::AdHoc:Use of Nil.push not allowed | X::Assignment::RO X::AdHoc X::AdHoc X::AdHoc X::Assignment::RO
-say do { my $f = Nil.BIND-POS(0, 1); $f.^name ~ ":" ~ $f.exception.^name ~ ":" ~ $f.exception.target }, " ", do { my $f = Nil.BIND-KEY("a", 1); $f.^name }
-# rakudo 2026.08: Failure:X::Bind:Nil Failure
+say do { my $f = Nil.BIND-POS(0, 1); $f.^name ~ ":" ~ $f.exception.^name ~ ":" ~ $f.exception.target }, " ", do { my $f = Nil.BIND-KEY("a", 1); $f.^name ~ ":" ~ $f.exception.^name ~ ":" ~ $f.exception.message.words.join(" ") }
+# rakudo 2026.08: Failure:X::Bind:Nil Failure:X::Parameter::RW:Parameter 'self' expects a writable container (variable) as an argument, but got '(Any)' (Any) as a value without a container.
 ```
 rakupp 4.0.2: matches.
+(this rakupp line predates the correction; re-measure before relying on it)
 
-### NA-07  String methods on Nil return an empty Str and warn        D:no R:no V:spec
+Corrected 2026-11-01 from Raku Behind the Docs, ch 6 (findings/BEHIND-THE-DOCS.md §1).
+
+### NA-07  Most string methods on Nil return an empty Str and warn   D:no R:no V:spec
 `chars chomp chop codes comb contains ends-with flip indent index indices lc
 lines tc tclc rindex starts-with trans substr subst substr-eq substr-rw
 wordcase words uc` each return `''` — a Str, even for `chars` and
 `contains` — and warn "Use of Nil.<method> coerced to empty string".
+Not every string method is in that list. `trim`, `samecase`, `NFC` and
+`encode` have no candidate for Nil and die with `X::Multi::NoMatch`.
+`split` goes through string context: it warns "Use of Nil in string
+context" and returns `("",).Seq`.
 ```
 say do { my @w; CONTROL { when CX::Warn { @w.push(.message); .resume } }; my $r = Nil.chars; $r.raku ~ " " ~ Nil.lc.raku ~ " " ~ Nil.substr(1).raku ~ " " ~ Nil.contains("a").raku ~ " " ~ Nil.index("a").raku ~ " " ~ Nil.words.raku ~ " " ~ Nil.comb.raku ~ " " ~ Nil.flip.raku ~ " | " ~ @w.elems ~ " " ~ @w[0] }
 # rakudo 2026.08: "" "" "" "" "" "" "" "" | 8 Use of Nil.chars coerced to empty string
+say do { my @w; CONTROL { when CX::Warn { @w.push(.message); .resume } }; my $s = Nil.split(",").raku; ((try { Nil.trim; "ok" }) // $!.^name) ~ " " ~ ((try { Nil.samecase("a"); "ok" }) // $!.^name) ~ " " ~ ((try { Nil.NFC; "ok" }) // $!.^name) ~ " " ~ ((try { Nil.encode; "ok" }) // $!.^name) ~ " " ~ $s ~ " | " ~ @w.elems ~ " " ~ @w[0] }
+# rakudo 2026.08: X::Multi::NoMatch X::Multi::NoMatch X::Multi::NoMatch X::Multi::NoMatch ("",).Seq | 1 Use of Nil in string context
 ```
 rakupp 4.0.2: matches — including the per-method warning.
+(this rakupp line predates the correction; re-measure before relying on it)
+
+Corrected 2026-11-01 from Raku Behind the Docs, ch 6 (findings/BEHIND-THE-DOCS.md §1).
 
 ### NA-08  Numeric and string coercion of Nil                        D:yes R:partial V:spec
 `.Int` and `.Numeric` give 0, arithmetic treats Nil as 0, each with the
@@ -187,10 +201,16 @@ an out-of-range array read. Return-type constraints, including `:D`, do
 not apply to Nil. A false `if` with no else yields `Empty`, not Nil.
 ```
 say do { sub a(--> Int:D) { return Nil }; a().raku }, " ", do { sub b(--> Str) { Nil }; b().raku }, " ", do { sub c { }; c().raku }, " ", do { sub d { return }; d().raku }, " ", (if 1 { }).raku, " ", ({ ; }()).raku, " ", (EVAL "").raku, " ", (my @e; @e[5]).raku, " ", (if 0 { 1 }).raku
-# rakudo 2026.08: Nil Nil Nil Nil Nil Nil Nil Any Empty
+# rakudo 2026.08: Nil Nil Nil Nil Nil Nil Nil ([], Any) Empty
+say do { my @e; @e[5].raku }
+# rakudo 2026.08: Any
 ```
-Note `@e[5]` is Any (the element default), not Nil.
+Note `@e[5]` is Any (the element default), not Nil. In the first probe the
+field `(my @e; @e[5])` is a two-element list, the declaration's value and
+the read, so it prints `([], Any)`; the second probe reads the element alone.
 rakupp 4.0.2: matches — the `(my @e; @e[5])` field reads `([], Any)` on both engines; the `Any` above is from a differently-parenthesised probe.
+
+Corrected 2026-11-01 from Raku Behind the Docs, ch 6 (findings/BEHIND-THE-DOCS.md §1).
 
 ### NA-14  Nil as a classification key                               D:no R:no V:spec
 `Nil.classify({ $_ })` yields an object hash with the key Nil and the value
@@ -233,16 +253,29 @@ rakupp 4.0.2: matches.
 A type object gives `()` for all six. A value gives them over `(value,)`:
 keys `(0,)`, values `(42,)`, kv `(0, 42)`, pairs `(0 => 42,)`, antipairs
 `(42 => 0,)`; `invert` needs Pairs and fails with `X::TypeCheck` at
-reification. `Bool` and every `Enumeration` override the six with their
-enum table: keys are the names, values the numbers.
+reification. An enum type (`Bool`, `Order`, a user enum) answers all six
+with its enum table: keys are the names, values the numbers. An enum value
+answers `keys`, `values`, `pairs`, `antipairs` and `invert` with the whole
+table too, but not every enum value overrides `.kv`: a user enum value and
+`Less` give their own name and number (`("red", 0)`, `("Less", -1)`, a
+List), and only a Bool value such as `True` gives the whole table.
 ```
 say 42.keys.raku, " ", 42.values.raku, " ", 42.kv.raku, " ", 42.pairs.raku, " ", 42.antipairs.raku, " ", Any.keys.raku, " ", Any.values.raku, " ", Any.kv.raku, " ", Any.pairs.raku, " ", Any.antipairs.raku, " ", Any.invert.raku, " ", (try 42.invert.eager) // $!.^name, " ", (a => 1).invert.raku
 # rakudo 2026.08: (0,).Seq (42,) (0, 42).Seq (0 => 42,).Seq (42 => 0,).Seq () () () () () () X::TypeCheck (1 => "a",).Seq
 say Bool.keys.raku, " ", True.keys.raku, " ", True.values.raku, " ", Bool.pairs.raku, " ", True.kv.raku, " ", True.antipairs.raku, " ", True.elems, " ", True.list.raku, " ", True.invert.raku
 # rakudo 2026.08: ("False", "True").Seq ("True", "False").Seq (1, 0).Seq (:False(0), :True(1)).Seq ("True", 1, "False", 0).Seq (0 => "False", 1 => "True").Seq 1 (Bool::True,) (1 => "True", 0 => "False").Seq
+enum Colour <red green>; say red.kv.raku, " ", Less.kv.raku, " ", True.kv.elems, " ", Colour.kv.elems, " ", red.keys.elems, " ", red.pairs.elems, " ", Less.values.elems
+# rakudo 2026.08: ("red", 0) ("Less", -1) 4 4 2 2 3
 ```
-The enum order from an instance (`True.keys`) differs from the type's (`Bool.keys`); both are hash order.
+The recorded Bool line is one run of a hash-order probe: every field that
+lists both enum entries (`Bool.keys`, `True.keys`, `True.values`,
+`Bool.pairs`, `True.kv`, `True.antipairs`, `True.invert`) comes out in
+either order, and the order changes from run to run, for the type and the
+instance alike. Only `True.elems` and `True.list` are fixed.
 rakupp 4.0.2: differs — the six answer the right shapes for a value and for a type object (`.values` is a List, the rest Seqs), but `42.invert` is `X::Method::NotFound` where Rakudo fails the type check at reification, and the ENUM table is not implemented: `Bool.keys` is `()`, not the two names.
+(this rakupp line predates the correction; re-measure before relying on it)
+
+Corrected 2026-11-01 from Raku Behind the Docs, ch 6 (findings/BEHIND-THE-DOCS.md §1).
 
 ### NA-19  hash, Hash, Map                                           D:no R:no V:spec
 A type object: `.hash` and `.Hash` are `{}`, `.Map` is an odd-element store
@@ -358,21 +391,39 @@ rakupp 4.0.2: matches.
 ```
 say 42.unique.raku, " ", 42.repeated.raku, " ", 42.squish.raku, " ", Any.unique.raku, " ", Any.squish.raku, " ", (1,"1",1.0).unique.raku, " ", (1,2,4,5).squish(:with(-> $prev, $cur { $cur == $prev + 1 })).raku, " ", <a A b>.unique(:as(&lc)).raku, " ", (1,2,3,4).unique(:with(-> $a, $b { $a %% 2 == $b %% 2 })).raku
 # rakudo 2026.08: (42,).Seq ().Seq (42,).Seq (Any,).Seq (Any,).Seq (1, "1", 1.0).Seq (1, 4).Seq ("a", "b").Seq (1, 2).Seq
+say (1,2,3).squish(:with(-> $a, $b { $b == $a + 1 })).raku, " ", do { my @c; (1,2,3).squish(:with(-> $a, $b { @c.push("$a,$b"); $b == $a + 1 })).eager; @c.raku }, " ", do { my @u; (1,2,3,4).unique(:with(-> $a, $b { @u.push("$a,$b"); $a %% 2 == $b %% 2 })).eager; @u.raku }
+# rakudo 2026.08: (1,).Seq ["1,2", "2,3"] ["2,1", "3,1", "4,1", "4,2"]
 ```
-`squish`'s `:with` receives (previous kept, current). rakupp 4.0.1: differs — `squish(:with)` is ignored: `(1, 2, 4, 5)`.
+`squish`'s `:with` receives (previous element, current), whether or not the
+previous element was kept: in `(1,2,3)` the 3 is compared with the squished
+2, not with the kept 1. `unique`'s `:with` passes the new element first and
+compares it only with the elements it has kept so far: the dropped 3 is
+never compared with 4. rakupp 4.0.1: differs — `squish(:with)` is ignored: `(1, 2, 4, 5)`.
+(this rakupp line predates the correction; re-measure before relying on it)
+
+Corrected 2026-11-01 from Raku Behind the Docs, ch 9 (findings/BEHIND-THE-DOCS.md §1).
 
 ### NA-27  pairup                                                    D:yes R:no V:spec
 A type object gives `().Seq`. Consecutive elements pair up; an element
 that is already a Pair is kept; a non-itemized Map contributes its pairs;
 an odd count throws `X::Pairup::OddNumber` when the Seq is reified.
 ```
-say (1,2,3,4).pairup.raku, " ", Any.pairup.raku, " ", (a => 1, 2, 3).pairup.raku, " ", ({a => 1}, 2, 3).pairup.raku, " ", ($(a => 1, b => 2), 3, 4).pairup.raku, " ", ().pairup.raku, " ", ((a => 1), (b => 2)).pairup.raku
-# rakudo 2026.08: (1 => 2, 3 => 4).Seq ().Seq (:a(1), 2 => 3).Seq (:a(1), 2 => 3).Seq (${:a(1), :b(2)} => 3, 4 => Nil).Seq ().Seq (:a(1), :b(2)).Seq
+say (1,2,3,4).pairup.raku, " ", Any.pairup.raku, " ", (a => 1, 2, 3).pairup.raku, " ", ({a => 1}, 2, 3).pairup.raku, " ", ($(a => 1, b => 2), 3).pairup.raku, " ", ().pairup.raku, " ", ((a => 1), (b => 2)).pairup.raku
+# rakudo 2026.08: (1 => 2, 3 => 4).Seq ().Seq (:a(1), 2 => 3).Seq (:a(1), 2 => 3).Seq ((:a(1), :b(2)) => 3,).Seq ().Seq (:a(1), :b(2)).Seq
+say (try { ($(a => 1, b => 2), 3, 4).pairup.raku }) // $!.^name
+# rakudo 2026.08: X::Pairup::OddNumber
 say (try { my @a = 42.pairup; "no-throw" }) // "caught:" ~ $!.^name, " ", (try { (1,2,3).pairup.List; "no-throw" }) // "caught:" ~ $!.^name
 # rakudo 2026.08: caught:X::Pairup::OddNumber no-throw
 ```
-Note the itemized Map `$(…)` is a key, and the trailing 4 pairs with Nil in this reified-by-`.raku` view; `.List` on the odd list does not reify and so does not throw yet.
+Note an itemized `$(…)` is one element and becomes a key: `($(a => 1, b => 2), 3)`
+gives one Pair. With a trailing 4, `($(a => 1, b => 2), 3, 4)` is an odd
+count, and reifying it with `.raku` dies with `X::Pairup::OddNumber`; the 4
+is not paired with Nil. `.List` on the odd list does not reify and so does
+not throw yet.
 rakupp 4.0.2: differs only in WHEN the odd count is noticed — `.pairup` is eager here, so `X::Pairup::OddNumber` is raised as the Seq is built rather than as it reifies. The type, the Map spread and the shapes match.
+(this rakupp line predates the correction; re-measure before relying on it)
+
+Corrected 2026-11-01 from Raku Behind the Docs, ch 6 and ch 9 (findings/BEHIND-THE-DOCS.md §1).
 
 ### NA-28  toggle                                                    D:yes R:yes V:spec
 ```

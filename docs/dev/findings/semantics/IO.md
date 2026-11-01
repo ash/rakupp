@@ -76,13 +76,20 @@ The extension is the text after the last dot of the basename; `:parts(n)`
 takes n dot-parts, a Range the longest available within it, too many parts
 gives `""`. A replacement keeps the dirname; `:parts(0)` appends; `""`
 removes; `:joiner` replaces the dot. A dotfile's extension is its whole
-name after the dot. `succ`/`pred` increment the part before the first dot
-as a string. `.Numeric` numifies the basename.
+name after the dot. `succ`/`pred` are `Str.succ`/`Str.pred` on the whole
+path string, not on the basename: they step the part before the first dot
+of the string, so a dot in a directory name catches them, and
+`"v1.2/notes".IO.succ` gives `v2.2/notes`. `.Numeric` numifies the basename.
 ```
 say "a.tar.gz".IO.extension, " ", "a.tar.gz".IO.extension(:parts(2)), " ", "a.tar.gz".IO.extension(:parts(0..2)), " ", "a.tar.gz".IO.extension(:parts(3)).raku, " ", "a.tar.gz".IO.extension("txt").Str, " ", "a.tar.gz".IO.extension("").Str, " ", "a.tar.gz".IO.extension("txt", :parts(2)).Str, " ", "a.tar.gz".IO.extension("txt", :parts(0)).Str, " ", "noext".IO.extension.raku, " ", "noext".IO.extension("x").Str, " ", ".hidden".IO.extension, " ", "a.".IO.extension.raku, " ", "a.".IO.extension("x").Str, " ", "d/a.b".IO.extension("c").Str, " ", "a.tar.gz".IO.extension("x", :joiner("-")).Str, " ", "file1.txt".IO.succ.Str, " ", "file1.txt".IO.pred.Str, " ", "file9".IO.succ.Str, " ", "42".IO.Numeric, " ", ("x".IO.Numeric.^name)
 # rakudo 2026.08: gz tar.gz tar.gz "" a.tar.txt a.tar a.txt a.tar.gz.txt "" noext.x hidden "" a.x d/a.c a.tar-x file2.txt file0.txt filf0 42 Failure
+say "v1.2/notes".IO.succ.Str, " ", "v1.2/notes".IO.pred.Str, " ", "v1.2/notes".succ, " ", "d9/f1.txt".IO.succ.Str
+# rakudo 2026.08: v2.2/notes v0.2/notes v2.2/notes d9/f2.txt
 ```
 rakupp 4.0.1-84: matches — too few dot-parts takes none off and still appends.
+(this rakupp line predates the correction; re-measure before relying on it)
+
+Corrected 2026-11-01 from Raku Behind the Docs, ch 19 (findings/BEHIND-THE-DOCS.md §1).
 
 ### IO-06  Comparing paths                                          D:yes R:yes V:spec
 With an IO::Path on the right, smartmatch compares the two `.absolute`
@@ -171,8 +178,11 @@ rakupp 4.0.1-88: matches.
 
 ### IO-12  symlink, link, readlink, chmod                           D:yes R:yes V:spec
 `symlink` and `link` return True and fail (`X::IO::Symlink`, `X::IO::Link`)
-when the name exists or the target is missing. A symlink answers `.l`
-True and, if the target exists, `.e`/`.f` and reads through; `.readlink`
+when the name exists. Only `link` needs the target: `link` to a missing
+target fails with `X::IO::Link`, while `symlink` to a missing target
+succeeds and leaves a dangling link (the `"m08".IO.symlink("dang08")` field
+is True). A symlink answers `.l` True and, if the target exists, `.e`/`.f`
+and reads through; `.readlink`
 gives the stored target, `.resolve` follows it. A dangling symlink is
 `.l` True, `.e` False and `.f` a Failure. `chmod` returns True and fails
 with `X::IO::Chmod` on a missing path; the sub form returns the names it changed.
@@ -182,18 +192,28 @@ say do { "t08".IO.spurt("target"); ("t08".IO.symlink("l08"), "l08".IO.l, "l08".I
 ```
 rakupp 4.0.1: differs — a symlink whose name exists throws instead of failing, so the line died there.
 
+Corrected 2026-11-01 from Raku Behind the Docs, ch 19 (findings/BEHIND-THE-DOCS.md §1).
+
 ### IO-13  dir                                                      D:yes R:yes V:spec
 Entries are IO::Paths whose Str is the directory as given plus the name
 (`d09/a`; a trailing slash or a leading `./` is kept; inside the directory
 itself the names are bare). `.` and `..` are excluded, dotfiles included,
 the order is the filesystem's. `:test` smartmatches the bare name as a Str,
 and a test that matches `.` and `..` brings them back. A missing directory
-throws `X::IO::Dir`.
+throws `X::IO::Dir`, as sub and as method.
+A `try` cannot tell a throw from a Failure, since it disarms a returned
+Failure and sets `$!` just as it does for a throw, so the first probe does
+not show the throw on its own. The second probe checks it with CATCH on a
+value that is not sunk; `how` reports `threw:` only for a real throw.
 ```
 say do { "d09".IO.mkdir; "d09/b".IO.spurt("b"); "d09/a".IO.spurt("a"); "d09/.h".IO.spurt("h"); "d09/sub".IO.mkdir; (dir("d09").sort.map(*.Str).raku, dir("d09").head.^name, "d09".IO.dir.sort.map(*.Str).raku, "d09/".IO.dir.sort.map(*.Str).raku, "./d09".IO.dir.sort.map(*.Str).raku, dir("d09", :test(/^a/)).map(*.Str).raku, dir("d09", :test(*.starts-with("s"))).map(*.Str).raku, dir("d09", :test({ $_ eq "b" })).map(*.basename).raku, (try dir("m09")) // $!.^name, dir("d09").head.parent.Str, do { indir "d09", { dir.sort.map(*.Str).raku } }, dir("d09/sub").elems, "d09".IO.dir(:test(none <. ..>)).elems, dir("d09", :test(/./)).sort.map(*.Str).raku).join(" ") }
 # rakudo 2026.08: ("d09/.h", "d09/a", "d09/b", "d09/sub").Seq IO::Path ("d09/.h", "d09/a", "d09/b", "d09/sub").Seq ("d09/.h", "d09/a", "d09/b", "d09/sub").Seq ("./d09/.h", "./d09/a", "./d09/b", "./d09/sub").Seq ("d09/a",).Seq ("d09/sub",).Seq ("b",).Seq X::IO::Dir d09 (".h", "a", "b", "sub").Seq 0 4 ("d09/.", "d09/..", "d09/.h", "d09/a", "d09/b", "d09/sub").Seq
+say do { sub how(&c) { my $v = c(); CATCH { default { return "threw:" ~ .^name } }; $v.^name eq "Failure" ?? "failed:" ~ $v.exception.^name !! "returned" }; (how({ dir("m09") }), how({ "m09".IO.dir })).join(" ") }
+# rakudo 2026.08: threw:X::IO::Dir threw:X::IO::Dir
 ```
 rakupp 4.0.1: matches.
+
+Corrected 2026-11-01 from Raku Behind the Docs, ch 19 (findings/BEHIND-THE-DOCS.md §1).
 
 ## D. Reading and writing whole files
 
@@ -205,11 +225,20 @@ is stringified, a Blob written raw. `slurp` gives a Str, or a `Buf[uint8]`
 with `:bin`. `slurp` on a missing path or a directory **throws** `X::AdHoc`
 ("Failed to open file …"), as sub and as method. The docs say it fails;
 Roast's `dies-ok` accepts either. Recorded as observed.
+A `try` cannot tell a throw from a Failure, since it disarms a returned
+Failure and sets `$!` just as it does for a throw, so the first probe does
+not show the throw on its own. The second probe checks it with CATCH on a
+value that is not sunk; `how` reports `threw:` only for a real throw, and
+`failed:` for the `:createonly` Failure.
 ```
 say do { (spurt("f10", "x"), slurp("f10").raku, spurt("f10", "y", :append), slurp("f10").raku, spurt("f10", "z"), slurp("f10").raku, spurt("f10", "q", :createonly).^name, spurt("f10", "q", :createonly).exception.^name, spurt("f10", "q", :createonly).exception.message, "n10".IO.spurt, "n10".IO.s, "n10".IO.slurp.raku, slurp("f10", :bin).^name, slurp("f10", :bin).raku, spurt("b10", Blob.new(65, 66)), slurp("b10").raku, spurt("c10", 42), slurp("c10").raku, (try slurp("m10")) // $!.^name, (try "m10".IO.slurp) // $!.^name ~ ":" ~ $!.message.substr(0, 19), (try slurp("d10dir".IO.mkdir)) // $!.^name).join(" ") }
 # rakudo 2026.08: True "x" True "xy" True "z" Failure X::AdHoc Failed to open file …/f10: File exists True 0 "" Buf[uint8] Buf[uint8].new(122) True "AB" True "42" X::AdHoc X::AdHoc:Failed to open file X::AdHoc
+say do { sub how(&c) { my $v = c(); CATCH { default { return "threw:" ~ .^name } }; $v.^name eq "Failure" ?? "failed:" ~ $v.exception.^name !! "returned" }; spurt("f10", "z"); "d10dir".IO.mkdir; (how({ slurp("m10") }), how({ "m10".IO.slurp }), how({ slurp("d10dir") }), how({ spurt("f10", "q", :createonly) })).join(" ") }
+# rakudo 2026.08: threw:X::AdHoc threw:X::AdHoc threw:X::AdHoc failed:X::AdHoc
 ```
 rakupp 4.0.1-84: differs — a missing path throws `X::AdHoc` now; `:createonly` still fails with `X::IO::Exists`, `:bin` gives a `Blob`, and slurping a directory returns "".
+
+Corrected 2026-11-01 from Raku Behind the Docs, ch 19 (findings/BEHIND-THE-DOCS.md §1).
 
 ### IO-15  Newlines and encodings                                   D:partial R:partial V:spec
 Reading translates `\r\n` to `\n` (`\r` alone is kept); `:bin` and
@@ -218,12 +247,22 @@ Reading translates `\r\n` to `\n` (`\r` alone is kept); `:bin` and
 keeps the terminator, `:nl-in` overrides. `.words`, `.comb`, `.split` on an
 IO::Path read the **file**; `.split("\n")` keeps a trailing empty piece.
 A utf16 spurt writes a BOM (`FF FE`) and slurp `:enc<utf16>` reads it back;
-latin1 round-trips; slurping non-UTF-8 bytes as utf8 throws.
+latin1 round-trips; slurping non-UTF-8 bytes as utf8 throws `X::AdHoc`, and
+so does `.lines` on them. `.lines` and `.words` on a missing path throw
+`X::AdHoc`.
+A `try` cannot tell a throw from a Failure, since it disarms a returned
+Failure and sets `$!` just as it does for a throw, so the first probe does
+not show the throw on its own. The second probe checks it with CATCH on a
+value that is not sunk; `how` reports `threw:` only for a real throw.
 ```
 say do { spurt("nl11", "a\r\nb\rc\n"); (slurp("nl11").raku, slurp("nl11", :bin).elems, "nl11".IO.slurp(:!translate-nl).raku, "nl11".IO.lines.raku, "nl11".IO.lines(:!chomp).raku, "nl11".IO.lines(:nl-in("\r")).raku, "nl11".IO.words.raku, "nl11".IO.comb(2).raku, "nl11".IO.split("\n").raku, "nl11".IO.comb(/\w/).raku, spurt("u11", "é", :enc<utf16>), slurp("u11", :bin).list.raku, slurp("u11", :enc<utf16>).raku, spurt("l11", "é", :enc<latin1>).Bool, slurp("l11", :bin).elems, slurp("l11", :enc<latin1>).raku, (try slurp("l11")).^name).join(" ") }
 # rakudo 2026.08: "a\nb\rc\n" 7 "a\r\nb\rc\n" ("a", "b\rc").Seq ("a\n", "b\rc\n").Seq ("a\nb", "c\n").Seq ("a", "b", "c").Seq ("a\n", "b\r", "c\n").Seq ("a", "b\rc", "").Seq ("a", "b", "c").Seq True (255, 254, 233, 0) "é" True 1 "é" Nil
+say do { sub how(&c) { my $v = c(); CATCH { default { return "threw:" ~ .^name } }; $v.^name eq "Failure" ?? "failed:" ~ $v.exception.^name !! "returned" }; spurt("l11", "é", :enc<latin1>); (how({ slurp("l11") }), how({ "l11".IO.lines.eager }), how({ "m11".IO.lines }), how({ "m11".IO.words })).join(" ") }
+# rakudo 2026.08: threw:X::AdHoc threw:X::AdHoc threw:X::AdHoc threw:X::AdHoc
 ```
 rakupp 4.0.1: differs — `:!translate-nl`, `:!chomp` and `:nl-in` are ignored; `.words`, `.comb` and `.split` on an IO::Path operate on the path string, not the file; no BOM for utf16; invalid utf8 decodes silently.
+
+Corrected 2026-11-01 from Raku Behind the Docs, ch 19 (findings/BEHIND-THE-DOCS.md §1).
 
 ## E. IO::Handle
 
@@ -234,26 +273,42 @@ counts bytes written; `.gist` names the path and whether it is opened;
 `close` is True and idempotent. On a closed handle `print` and `get`
 throw `X::IO::Closed`, `native-descriptor` and `tell` throw `X::AdHoc`, and
 `eof` is True.
+A `try` cannot tell a throw from a Failure, since it disarms a returned
+Failure and sets `$!` just as it does for a throw, so the first probe does
+not show the throw on its own. The second probe checks it with CATCH on a
+value that is not sunk; `how` reports `threw:` only for a real throw.
 ```
 say do { my $fh = open("w12", :w); ($fh.^name, $fh.opened, $fh.print("a"), $fh.say("b", "c"), $fh.put(1, 2), $fh.printf("%03d", 7), $fh.print-nl, $fh.write(Blob.new(88)), $fh.nl-out.raku, $fh.encoding, $fh.path.^name, $fh.Str, $fh.gist, $fh.t, $fh.native-descriptor.^name, $fh.tell, $fh.close, $fh.opened, $fh.close, $fh.gist, slurp("w12").raku, (try $fh.print("x")) // $!.^name, (try $fh.get) // $!.^name, (try $fh.native-descriptor) // $!.^name, (try $fh.tell) // $!.^name, $fh.eof).join(" ") }
 # rakudo 2026.08: IO::Handle True True True True True True True "\n" utf8 IO::Path w12 IO::Handle<"w12".IO>(opened) False Int 12 True False True IO::Handle<"w12".IO>(closed) "abc\n12\n007\nX" X::IO::Closed X::IO::Closed X::AdHoc X::AdHoc True
+say do { sub how(&c) { my $v = c(); CATCH { default { return "threw:" ~ .^name } }; $v.^name eq "Failure" ?? "failed:" ~ $v.exception.^name !! "returned" }; my $fh = open("w12", :w); $fh.close; (how({ $fh.print("x") }), how({ $fh.get }), how({ $fh.native-descriptor }), how({ $fh.tell })).join(" ") }
+# rakudo 2026.08: threw:X::IO::Closed threw:X::IO::Closed threw:X::AdHoc threw:X::AdHoc
 ```
 rakupp 4.0.1-84: matches — all 25 fields, including the closed-handle `X::IO::Closed`/`X::AdHoc` split.
+
+Corrected 2026-11-01 from Raku Behind the Docs, ch 19 (findings/BEHIND-THE-DOCS.md §1).
 
 ### IO-17  Reading lines                                            D:yes R:yes V:spec
 `get` returns the next line chomped and Nil at the end; `.tell` after a
 `get` is the byte offset consumed; `getc` reads one character; `.eof`
 turns True once the last line is consumed. `lines(n)` leaves the handle
-open and positioned after the n-th line unless `:close`. `lines(:!chomp)`
-keeps terminators as translated (`"l2\n"` for an original `\r\n`), and
-`:nl-in("\r")` finds nothing because `\r\n` was already translated on
-decoding. The `lines` sub applied to a **Str** splits the string; only an
+open and positioned after the n-th line unless `:close`. On a handle
+opened with the default chomp, `.lines(:!chomp)` still chomps the FIRST
+line and keeps the terminators of the rest, as translated (`"l2\n"` for an
+original `\r\n`): the field reads `("l1", "l2\n", "l3")`, a quirk. A handle
+opened with `:!chomp`, or `.lines(:!chomp)` on the IO::Path, keeps every
+terminator. `:nl-in("\r")` finds nothing because `\r\n` was already
+translated on decoding. The `lines` sub applied to a **Str** splits the string; only an
 IO::Path or a handle reads a file.
 ```
 say do { spurt("r13", "l1\nl2\r\nl3"); my $fh = open("r13"); ($fh.get.raku, $fh.tell, $fh.getc.raku, $fh.get.raku, $fh.eof, $fh.get.raku, $fh.eof, $fh.get.raku, $fh.close, open("r13").lines.raku, open("r13").lines(2).raku, do { my $h = open("r13"); my @l = $h.lines(2); @l.raku ~ " " ~ $h.opened ~ " " ~ $h.get.raku }, do { my $h = open("r13"); my @l = $h.lines(2, :close); $h.opened }, open("r13").lines(:!chomp).raku, open("r13", :!chomp).lines.raku, open("r13", :nl-in("\r")).lines.raku, open("r13").words.raku, open("r13").comb(3).raku, open("r13").split("\n").raku, open("r13").slurp.raku, lines("r13".IO).raku, lines("a\nb").raku, words("a b").raku, "r13".IO.lines(1).raku).join(" ") }
 # rakudo 2026.08: "l1" 3 "l" "2" False "l3" True Nil True ("l1", "l2", "l3").Seq ("l1", "l2").Seq ["l1", "l2"] True "l3" False ("l1", "l2\n", "l3").Seq ("l1\n", "l2\n", "l3").Seq ("l1\nl2\nl3",).Seq ("l1", "l2", "l3").Seq ("l1\n", "l2\n", "l3").Seq ("l1", "l2", "l3").Seq "l1\nl2\nl3" ("l1", "l2", "l3").Seq ("a", "b").Seq ("a", "b").Seq ("l1",).Seq
+say do { spurt("r4", "a\nb\nc\nd\n"); (open("r4").lines(:!chomp).raku, open("r4", :!chomp).lines.raku, "r4".IO.lines(:!chomp).raku).join(" ") }
+# rakudo 2026.08: ("a", "b\n", "c\n", "d\n").Seq ("a\n", "b\n", "c\n", "d\n").Seq ("a\n", "b\n", "c\n", "d\n").Seq
 ```
 rakupp 4.0.1-84: differs — measured now: `.lines` answers a List where Rakudo answers a Seq, `lines($n)` ignores the limit, `:!chomp`/`:nl-in` are ignored, and `.words`/`.comb`/`.split` on a handle read the path string.
+(this rakupp line predates the correction; re-measure before relying on it)
+
+Corrected 2026-11-01 from Raku Behind the Docs, ch 19 (findings/BEHIND-THE-DOCS.md §1).
 
 ### IO-18  Binary reads, seek, tell, Supply                          D:yes R:yes V:spec
 `read(n)` gives a `Buf[uint8]` of at most n bytes and an empty one at the
@@ -313,12 +368,17 @@ exist"), a file "is not a directory". `chdir` returns the new `$*CWD`, an
 absolute IO::Path, and relative paths resolve against it from then on;
 `chdir()` with no argument is `X::Multi::NoMatch`. `IO::Path.chdir($rel)`
 is textual concatenation with a `:d` existence test by default (`:!d`
-skips it); `..` and absolute arguments are resolved textually.
+skips it); `..` and absolute arguments are resolved textually, so
+`"d15".IO.chdir("..")` is the absolute `$*CWD` itself. The probe compares
+that field with `$*CWD`; it used to test `.ends-with("rakudo")`, a result
+that depends on the name of the directory the probe runs in, not on Rakudo.
 ```
-say do { "d15".IO.mkdir; (indir("d15", { $*CWD.basename }), indir("d15", { "f".IO.absolute.ends-with("d15/f") }), $*CWD.basename ne "d15", indir("m15", {;}).^name, indir("m15", {;}).exception.^name, indir("m15", {;}).exception.os-error, do { spurt("f15", "x"); indir("f15", {;}).exception.os-error }, indir("d15", { 42 }), chdir("d15").^name, $*CWD.basename, $*CWD.is-absolute, "q".IO.absolute.ends-with("d15/q"), chdir("..").basename ne "d15", chdir("m15").^name, chdir("m15").exception.^name, (try chdir()) // $!.^name, "d15".IO.chdir("sub").^name, "d15".IO.chdir("sub").exception.os-error, "d15".IO.chdir("sub", :!d).^name, "d15".IO.chdir("sub", :!d).Str.ends-with("d15/sub"), "d15".IO.chdir("..").Str.ends-with("rakudo") || "d15".IO.chdir("..").Str.ends-with("rakupp"), "/a/b".IO.chdir("../c", :!d).Str, "/a/b".IO.chdir("/x", :!d).Str, $*CWD.^name, $*TMPDIR.^name, $*TMPDIR.d, $*HOME.^name, $*SPEC.^name, $*SPEC.tmpdir.^name, $*SPEC.path.^name, $*SPEC.path.elems > 0).join(" ") }
+say do { "d15".IO.mkdir; (indir("d15", { $*CWD.basename }), indir("d15", { "f".IO.absolute.ends-with("d15/f") }), $*CWD.basename ne "d15", indir("m15", {;}).^name, indir("m15", {;}).exception.^name, indir("m15", {;}).exception.os-error, do { spurt("f15", "x"); indir("f15", {;}).exception.os-error }, indir("d15", { 42 }), chdir("d15").^name, $*CWD.basename, $*CWD.is-absolute, "q".IO.absolute.ends-with("d15/q"), chdir("..").basename ne "d15", chdir("m15").^name, chdir("m15").exception.^name, (try chdir()) // $!.^name, "d15".IO.chdir("sub").^name, "d15".IO.chdir("sub").exception.os-error, "d15".IO.chdir("sub", :!d).^name, "d15".IO.chdir("sub", :!d).Str.ends-with("d15/sub"), "d15".IO.chdir("..").Str eq $*CWD.Str, "/a/b".IO.chdir("../c", :!d).Str, "/a/b".IO.chdir("/x", :!d).Str, $*CWD.^name, $*TMPDIR.^name, $*TMPDIR.d, $*HOME.^name, $*SPEC.^name, $*SPEC.tmpdir.^name, $*SPEC.path.^name, $*SPEC.path.elems > 0).join(" ") }
 # rakudo 2026.08: d15 True True Failure X::IO::Chdir does not exist is not a directory 42 IO::Path d15 True True True Failure X::IO::Chdir X::Multi::NoMatch Failure does not exist IO::Path True True /a/c /x IO::Path IO::Path True IO::Path IO::Spec::Unix IO::Path Seq True
 ```
 rakupp 4.0.1: differs — `indir` on a missing directory throws instead of failing, so the line died there.
+
+Corrected 2026-11-01 from Raku Behind the Docs, ch 19 (findings/BEHIND-THE-DOCS.md §1).
 
 ### IO-22  IO::Spec::Unix                                           D:yes R:yes V:spec
 `canonpath(:parent)` also removes `x/..` pairs; `catdir("a/", "/b")`
@@ -373,17 +433,25 @@ rakupp 4.0.1-84: differs — the pipe is an `IO::Pipe` with `.proc` now; `$p.out
 ### IO-26  IO::CatHandle                                            D:yes R:yes V:spec
 Reads its sources in turn as one stream: `lines`, `get`, `slurp`, `words`,
 `read`, `readchars` cross the file boundary; `.path` is the current
-source's IO::Path and Nil before the first read and after the last;
-`.Str` is the current path; `.eof` is True at the end; an empty CatHandle
-gives Nil and eof True; `next-handle` skips to the next source and returns
-its IO::Handle; `:on-switch` runs for every source and once more with an
-undefined argument at the end; a missing source makes `.lines` a Seq that
+source's IO::Path. `new` opens the first source, so `.path` is already the
+first file's path before any read, and `:on-switch` first fires there,
+inside `.new`; `.path` is Nil after the last source and on an empty
+CatHandle. `.Str` is the current path; `.eof` is True at the end; an empty
+CatHandle gives Nil and eof True; `next-handle` skips to the next source and
+returns its IO::Handle; `:on-switch` runs for every source and once more
+with an undefined argument at the end. A missing FIRST source throws
+`X::AdHoc` at `.new`; a missing later source makes `.lines` a Seq that
 throws `X::AdHoc` on reification.
 ```
 say do { spurt("c18a", "a1\na2\n"); spurt("c18b", "b1"); my $c = IO::CatHandle.new("c18a", "c18b"); ($c.^name, $c.lines.raku, do { my $d = IO::CatHandle.new("c18a", "c18b"); ($d.get, $d.path.^name, $d.get, $d.get, $d.path.Str, $d.get.raku, $d.eof, $d.path.raku).raku }, IO::CatHandle.new("c18a", "c18b").slurp.raku, IO::CatHandle.new("c18a", "c18b").words.raku, IO::CatHandle.new().get.raku, IO::CatHandle.new().eof, IO::CatHandle.new("c18a", "c18b").Str, do { my $n = IO::CatHandle.new("c18a", "c18b"); $n.next-handle.^name ~ " " ~ $n.get }, do { my @sw; my $e = IO::CatHandle.new("c18a", "c18b", :on-switch({ @sw.push(.defined ?? .path.Str !! "end") })); $e.slurp; @sw.raku }, IO::CatHandle.new("c18a", "m18").lines.^name, (try IO::CatHandle.new("c18a", "m18").lines.eager) // $!.^name, IO::CatHandle.new("c18a").opened, IO::CatHandle.new("c18a", "c18b").lines(2).raku, IO::CatHandle.new("c18a", "c18b").read(3).raku, IO::CatHandle.new("c18a", "c18b").readchars(4).raku, IO::CatHandle.new("c18a", "c18b").encoding).join(" ") }
 # rakudo 2026.08: IO::CatHandle ("a1", "a2", "b1").Seq ("a1", "IO::Path", "a2", "b1", "c18b", "Nil", Bool::True, "Nil") "a1\na2\nb1" ("a1", "a2", "b1").Seq Nil True c18a IO::Handle b1 ["c18a", "c18b", "end"] Seq X::AdHoc True ("a1", "a2").Seq Buf[uint8].new(97,49,10) "a1\na" utf8
+say do { sub how(&c) { my $v = c(); CATCH { default { return "threw:" ~ .^name } }; $v.^name eq "Failure" ?? "failed:" ~ $v.exception.^name !! "returned" }; spurt("c18a", "a1\na2\n"); spurt("c18b", "b1"); my @sw; my $c = IO::CatHandle.new("c18a", "c18b", :on-switch({ @sw.push(.defined ?? .path.Str !! "end") })); ($c.path.Str, @sw.raku, IO::CatHandle.new().path.raku, how({ IO::CatHandle.new("m18", "c18a") }), how({ IO::CatHandle.new("c18a", "m18") })).join(" ") }
+# rakudo 2026.08: c18a ["c18a"] Nil threw:X::AdHoc returned
 ```
 rakupp 4.0.1: differs — its `CatHandle` has no `get`, so the line died there.
+(this rakupp line predates the correction; re-measure before relying on it)
+
+Corrected 2026-11-01 from Raku Behind the Docs, ch 19 (findings/BEHIND-THE-DOCS.md §1).
 
 ## Counts
 

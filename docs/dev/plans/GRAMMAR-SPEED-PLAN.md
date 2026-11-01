@@ -1,6 +1,34 @@
 # Plan: grammar speed via a real workload — the pure-Raku JSON grammar
 
-**Status: started 2026-08-13 (user-set).** Method, set by the user: (1) write
+**Status: closed 2026-11-01.** The campaign ran for one day, 2026-08-13: the
+workload, batch 1 and the findings below. Its open targets went to
+[TEXT-PLAN.md](TEXT-PLAN.md) T5, "Grammars at 10 MB/s", written 2026-10-15:
+lazy captures (target 2 below), scan-only tokens (part of target 3), and the
+cost of `|` over subrules (the engine target under "Grammar-shape
+experiments"). Target 1, the cost of an interpreted method call, belongs to
+[INTERP-SPEED-PLAN.md](INTERP-SPEED-PLAN.md) and
+[SPEED-BACKLOG.md](SPEED-BACKLOG.md) row 16. This file stays the record of
+the workload, the corpus, the gates and the findings.
+
+Re-measured at the close, 2026-11-01, on an Apple M4 (rakupp
+5.5.0-342-gdcdf14ba, Rakudo 2026.09), with the corpus generated at
+`--scale=2` as for the baseline. Best of 5, ms per parse; `canon` output is
+byte-identical between the engines on all four files:
+
+| file | rakupp | Rakudo | ratio | baseline ratio |
+|---|---:|---:|---:|---:|
+| api.json | 227 | 410 | 1.81× | 1.61× |
+| deep.json | 342 | 453 | 1.32× | 1.50× |
+| strings.json | 137 | 298 | 2.18× | 2.20× |
+| numbers.json | 119 | 191 | 1.61× | 1.52× |
+
+The baseline ran on the M3, so compare the ratios, not the milliseconds.
+strings.json generates at 241 KB now, against the 243 KB given below. The
+action layer is still the larger part: `--raw` parses api.json in 105 ms and
+deep.json in 138 ms, so the actions take 54% and 60% of a parse, as in
+batch 1.
+
+*Started 2026-08-13 (user-set).* Method, set by the user: (1) write
 a brand-new full-scale JSON parser as a pure Raku grammar — not the native
 codec, not a port; (2) profile it on mid/high-difficulty documents; (3) make
 the most of the speed, fixing BOTH the engine and the grammar, each finding

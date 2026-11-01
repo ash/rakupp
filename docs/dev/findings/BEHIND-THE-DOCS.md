@@ -47,6 +47,18 @@ Rakudo v2026.08 actually does. "The sheet's own output" means the Rakudo
 output recorded in the sheet already shows the correct behaviour and only
 the prose misreads it.
 
+**Applied to the sheets on 2026-11-01.** Every entry below was re-probed on
+Rakudo v2026.08 and reproduced. The 111 sheet items they name now state the
+corrected behaviour, carry the new probes with their output, and end with a
+`Corrected 2026-11-01` line naming the chapter. Where a correction moved the
+behaviour an item's rakupp line was judged against, that line says to
+re-measure it. Five verdicts changed, and each sheet's counts table follows:
+S-21 quirk → bug; CP-15, CP-32, SQ-21 and EX-13 quirk → spec (EX-13 because
+the quirk the table named, "Nil or Any", is always Nil). DT-13 stays a bug,
+and its `.sum` parity moved to the quirks. PR-28 stays a quirk, though the
+corrected item describes a trap rather than something harmless; that verdict
+is open.
+
 ### Compiler-Side.md
 
 - **CP-15** (ch 5): a sunk call ending in `1` or `0` KEEPS a `let` change;
