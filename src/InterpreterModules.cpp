@@ -1291,7 +1291,9 @@ void Interpreter::loadModuleImpl(const std::string& name, const std::vector<std:
         // what lets Test::Util's `our sub run` coexist with the built-in `run`:
         // Test::Util's own `is_run` still resolves `run` (via its module closure),
         // while an importer's bare `run(...)` reaches the built-in.
-        auto moduleEnv = makeSlabShared<Env>(); moduleEnv->parent = global_;
+        // (through the scope that keeps the program's own operators out: hideProgramOperator)
+        if (!moduleRoot_) { moduleRoot_ = makeSlabShared<Env>(); moduleRoot_->parent = global_; }
+        auto moduleEnv = makeSlabShared<Env>(); moduleEnv->parent = moduleRoot_;
         moduleEnv->unitFrame = true;
         unitOfEnv_[moduleEnv.get()] = name;
         unitStash_[name];
@@ -3995,7 +3997,7 @@ const std::set<std::string>& coreTypeNames() {
         // real Raku entity rakupp serves by NAME (a stub type object, an enum
         // registered elsewhere, a methodCall-handled namespace, a sentinel) —
         // the old always-lenient fallback had been quietly covering them.
-        "Dateish", "Format", "Formatter", "Formatter::Syntax", "IterationEnd", "Lock::Async", "Lock::Soft", "Signal",
+        "Dateish", "Format", "Formatter", "Formatter::Syntax", "IterationEnd", "Lock::Async", "Lock::ConditionVariable", "Lock::Soft", "Signal",
         "Systemic", "Endian", "SeekType", "FileChangeEvent","ProtocolFamily", "ProtocolType", "PromiseStatus", "Encoding", "Encoding::Builtin", "ValueObjAt", "Telemetry", "RaceSeq",
         // REPL — Rakudo's read-eval-print object, which the sandbox pattern
         // drives directly (methodCallInner answers it; see the REPL block there)
@@ -5055,6 +5057,51 @@ static bool enumNameIsGlobal(const std::string& name, bool loadingModule, const 
     return !name.empty() && ((loadingModule && pkgPrefix.empty()) || name.find("::") != std::string::npos);
 }
 
+// A role in the PARENT slot (`class C does R` with no `is`) is walked, not
+// copied — so a class's own `multi method m` group shadowed R's candidates for
+// `m` instead of joining them, and the narrower role candidate never competed.
+// Red's SQLite driver declares `multi method default-type-for-type($) is
+// default` beside the `(Str)`, `(Numeric)`, … candidates its CommonSQL role
+// supplies, and every Str column came out varchar(255) rather than text. Merge
+// them, own candidates first; a same-signature role candidate stays overridden,
+// as it does for a role composed by copy.
+// A ROLE's parent slot is walked the same way (`role S does B`), so its own
+// group joins B's too: otherwise a class doing S found S's group and stopped
+// there, and Red's SQLMapping `(Str $value)` took 'int' from the BaseMapping
+// `('int' --> 'integer')` it composes. (`sigKeyParams` is execDeclStmt's.)
+template <class SigKey>
+static void mergeParentRoleMultis(ClassInfo* ci, const SigKey& sigKeyParams) {
+    std::vector<ClassInfo*> parentRoles;
+    for (ClassInfo* r = ci->parent && ci->parent->isRole ? ci->parent.get() : nullptr;
+         r && r->isRole; r = r->parent.get())
+        parentRoles.push_back(r);
+    for (auto& p : ci->extraParents)
+        if (p && p->isRole) parentRoles.push_back(p.get());
+    for (ClassInfo* role : parentRoles)
+        for (auto& kv : role->methods) {
+            const Value& rv = kv.second;
+            if (rv.t != VT::Code || !rv.code() || !rv.code()->ci().isMultiDispatcher) continue;
+            auto it = ci->methods.find(kv.first);
+            if (it == ci->methods.end() || it->second.t != VT::Code || !it->second.code() ||
+                !it->second.code()->ci().isMultiDispatcher) continue;
+            auto& cands = it->second.code()->coldM().candidates;
+            // a role candidate is overridden by one the group had BEFORE this
+            // role's, never by its own siblings: the key leaves the nameds out,
+            // so Red's Infix `new($l, $r, :$cast!)` took the place of
+            // `new($l, $r)` and a positional `.new` fell through to Mu.new
+            const size_t before = cands.size();
+            for (auto& rc : rv.code()->cold().candidates) {
+                if (!rc.code() || rc.code()->ci().isStub || rc.code()->ci().isProto) continue;
+                std::string sk = sigKeyParams(rc.code()->ci().params, rc.code());
+                bool have = false;
+                for (size_t i = 0; i < cands.size() && !have; i++)
+                    have = cands[i].code() == rc.code() ||
+                           (i < before && cands[i].code() && sigKeyParams(cands[i].code()->ci().params, cands[i].code()) == sk);
+                if (!have) cands.push_back(rc);
+            }
+        }
+}
+
 // The declaration statements exec dispatches here, kept out of its frame.
 //
 // exec is one switch over every statement kind, and a switch's stack frame is
@@ -5127,6 +5174,19 @@ static bool enumNameIsGlobal(const std::string& name, bool loadingModule, const 
                 // (not a `my subset`, which stays inside its package: `module M
                 // { my subset F … }; my M::F $f` is "Type 'M::F' is not declared")
                 if (!tctx().pkgPrefix.empty() && !sd->isMy) subsets_[tctx().pkgPrefix + sd->name] = info;
+                // …and its user traits run on it, as on a class (Red's `is sub-model`),
+                // with ONE metaobject under both names for what they mix into it
+                Value* tm = sd->traits.empty() ? nullptr : tctx().cur->find("&trait_mod:<is>");
+                const Value self = Value::typeObj(shadowsCore ? tctx().pkgPrefix + sd->name : sd->name);
+                if (tm && tm->t == VT::Code && !tctx().pkgPrefix.empty() && !sd->isMy && !shadowsCore)
+                    subsets_[tctx().pkgPrefix + sd->name].howObj = methodCall(self, "HOW", ValueList{});
+                for (auto& tr : sd->traits) {
+                    if (!tm || tm->t != VT::Code) break;
+                    Value p = Value::pair(tr.name, tr.arg ? eval(tr.arg.get()) : Value::boolean(true));
+                    p.namedArg = true;
+                    try { callCallable(*tm, ValueList{self, p}); }
+                    catch (RakuError& te) { if (te.message.rfind("Cannot resolve caller", 0) != 0) throw; }
+                }
             }
             return Value::any();
         }
@@ -6929,6 +6989,7 @@ static bool enumNameIsGlobal(const std::string& name, bool loadingModule, const 
             // pointer identity exempts them)
             std::map<std::string, std::map<std::string, std::set<const Callable*>>> provided;
             std::map<std::string, std::set<std::string>> providerRoles;
+            std::map<std::string, std::map<std::string, std::set<std::string>>> keyProviders;   // …per signature
             for (ClassInfo* role : composedRoles) {
                 // (two parameterizations of one role are two providers: R[Str], R[Int])
                 auto ca = concArgv.find(role);
@@ -6941,9 +7002,18 @@ static bool enumNameIsGlobal(const std::string& name, bool loadingModule, const 
                     if ((langRev_ >= 2 || role->langRev >= 2) && kv.second.code()->ci().isSubmethod) continue;
                     if (kv.second.code()->ci().isMultiDispatcher) {
                         for (auto& c : kv.second.code()->cold().candidates)
-                            if (c.code() && !c.code()->ci().isStub) { provided[kv.first][sigKeyParams(c.code()->ci().params, c.code())].insert(c.code()); providerRoles[kv.first].insert(provider); }
+                            if (c.code() && !c.code()->ci().isStub) {
+                                const std::string sk = sigKeyParams(c.code()->ci().params, c.code());
+                                provided[kv.first][sk].insert(c.code());
+                                keyProviders[kv.first][sk].insert(provider);
+                                providerRoles[kv.first].insert(provider);
+                            }
                     }
-                    else if (!kv.second.code()->ci().isStub) { provided[kv.first][""].insert(kv.second.code()); providerRoles[kv.first].insert(provider); }
+                    else if (!kv.second.code()->ci().isStub) {
+                        provided[kv.first][""].insert(kv.second.code());
+                        keyProviders[kv.first][""].insert(provider);
+                        providerRoles[kv.first].insert(provider);
+                    }
                 }
             }
             // `state` in a role method is per-COMPOSITION: two classes doing one
@@ -6981,10 +7051,13 @@ static bool enumNameIsGlobal(const std::string& name, bool loadingModule, const 
             // a conflict needs providers from TWO DIFFERENT roles: one role's own
             // multi candidates can collide on our sig key (invocant-only sigs like
             // `(::?CLASS:U:)` vs `(::?CLASS:D:)` both key as "") without being a
-            // conflict at all — JSON::Class's Descriptor tripped this on itself
+            // conflict at all — JSON::Class's Descriptor tripped this on itself.
+            // Two roles ON THAT KEY, too: Red's Infix `new($l, $r, :$cast!)` and
+            // `new($l, $r)` share one (it leaves the nameds out), and a second
+            // role with any `new` at all made that a conflict.
             for (auto& kv : provided)
                 for (auto& sk : kv.second)
-                    if (sk.second.size() > 1 && providerRoles[kv.first].size() > 1)
+                    if (sk.second.size() > 1 && keyProviders[kv.first][sk.first].size() > 1)
                         conflicted.insert(kv.first);
             // compose additional `does Role`s: flatten their methods/attrs in (the
             // class's own methods, registered below, override by key). Multi
@@ -7106,11 +7179,15 @@ static bool enumNameIsGlobal(const std::string& name, bool loadingModule, const 
                     if (e.code() == kv.second.code()) continue; // identical method (diamond)
                     bool exDisp = e.t == VT::Code && e.code() && e.code()->ci().isMultiDispatcher;
                     if (exDisp && newDisp) {
+                        // (against the candidates the group had before this role's
+                        // only: two of its own that share a key are both kept)
+                        const size_t before = e.code()->cold().candidates.size();
                         for (auto& c : kv.second.code()->cold().candidates) {
                             std::string sk = sigKeyParams(c.code() ? c.code()->ci().params : nullptr, c.code());
                             bool cStub = c.code() && c.code()->ci().isStub;
                             bool placed = false;
-                            for (auto& e2 : e.code()->coldM().candidates) {
+                            for (size_t ei = 0; ei < before; ei++) {
+                                Value& e2 = e.code()->coldM().candidates[ei];
                                 if (sigKeyParams(e2.code() ? e2.code()->ci().params : nullptr, e2.code()) != sk) continue;
                                 bool eStub = e2.code() && e2.code()->ci().isStub;
                                 if (eStub && !cStub) e2 = c; // implementation replaces stub
@@ -7652,41 +7729,8 @@ static bool enumNameIsGlobal(const std::string& name, bool loadingModule, const 
                 if (key == "POPULATE") ci->hasPopulate = true;
                 ci->roleSubmethods.erase(key); // the class declares it ITSELF now
             }
-            // A role in the PARENT slot (`class C does R` with no `is`) is walked,
-            // not copied — so a class's own `multi method m` group shadowed R's
-            // candidates for `m` instead of joining them, and the narrower role
-            // candidate never competed. Red's SQLite driver declares
-            // `multi method default-type-for-type($) is default` beside the
-            // `(Str)`, `(Numeric)`, … candidates its CommonSQL role supplies, and
-            // every Str column came out varchar(255) rather than text. Merge them
-            // here, own candidates first; a same-signature role candidate stays
-            // overridden, as it does for a role composed by copy.
-            if (!cd->isRole) {
-                std::vector<ClassInfo*> parentRoles;
-                for (ClassInfo* r = ci->parent && ci->parent->isRole ? ci->parent.get() : nullptr;
-                     r && r->isRole; r = r->parent.get())
-                    parentRoles.push_back(r);
-                for (auto& p : ci->extraParents)
-                    if (p && p->isRole) parentRoles.push_back(p.get());
-                for (ClassInfo* role : parentRoles)
-                    for (auto& kv : role->methods) {
-                        const Value& rv = kv.second;
-                        if (rv.t != VT::Code || !rv.code() || !rv.code()->ci().isMultiDispatcher) continue;
-                        auto it = ci->methods.find(kv.first);
-                        if (it == ci->methods.end() || it->second.t != VT::Code || !it->second.code() ||
-                            !it->second.code()->ci().isMultiDispatcher) continue;
-                        auto& cands = it->second.code()->coldM().candidates;
-                        for (auto& rc : rv.code()->cold().candidates) {
-                            if (!rc.code() || rc.code()->ci().isStub || rc.code()->ci().isProto) continue;
-                            std::string sk = sigKeyParams(rc.code()->ci().params, rc.code());
-                            bool have = false;
-                            for (auto& c : cands)
-                                if (c.code() == rc.code() ||
-                                    (c.code() && sigKeyParams(c.code()->ci().params, c.code()) == sk)) { have = true; break; }
-                            if (!have) cands.push_back(rc);
-                        }
-                    }
-            }
+            // (a class's or a role's own multi groups join its parent roles')
+            mergeParentRoleMultis(ci.get(), sigKeyParams);
             // aggregate role requirements (composed roles already carry the ones
             // they inherited from roles they compose, so this is transitive) and
             // record this role's own stub methods as requirements
@@ -8840,8 +8884,29 @@ bool Interpreter::bindConstantEarly(Stmt* s, std::set<std::string>& bound) {
 // The program's mainline: everything from adopting the unit's revision to the
 // END phasers and the exit code. Runs once per program, so it lives here and
 // not with the evaluator's hot paths in InterpreterCore.cpp.
+// The main program's top scope IS global_, which every module's scope hangs
+// from, so an operator the program declared or imported there answered a
+// module's operator too: `use Red;` brings Red::Operators' `multi
+// infix:<eqv>(Red::AST, Red::AST)`, and Red's Case optimizer — a file that
+// imports no operators — found `[eqv] |%when.values, $else` an AST, truthy,
+// and kept a CASE with no WHEN. In Rakudo a module sees its own imports and
+// CORE's. Each such name gets a hole in moduleRoot_, the scope between the
+// modules and global_: a cell with no target, which Env::find answers as
+// "not here", so a module finds its own import or the built-in operator.
+void hideProgramOperator(const std::string& name) {
+    static const char* const kKinds[] = {
+        "&infix:<", "&prefix:<", "&postfix:<", "&circumfix:<", "&postcircumfix:<", "&term:<"};
+    bool op = false;
+    for (const char* k : kKinds) if (name.compare(0, std::strlen(k), k) == 0) { op = true; break; }
+    if (!op || !g_revInterp) return;
+    auto& root = g_revInterp->moduleRoot_;
+    if (!root) { root = makeSlabShared<Env>(); root->parent = g_revInterp->global_; }
+    root->vars[name] = Value::cellHolder(PRef<Value>());
+}
+
 int Interpreter::run(Program& prog) {
     int code = 0;
+    global_->programRoot = true;   // what the program defines from here on is its own
     bool exited = false; // the status is an `exit`'s, which Test's END does not override
     // The unit's revision is known from its text, so adopt it before a single
     // statement runs. Waiting for the `use v6.e.PREVIEW` statement to execute

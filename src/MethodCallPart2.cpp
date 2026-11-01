@@ -4725,7 +4725,7 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
         if (m == "lock" || m == "acquire") { if (st) { if (!st->m.try_lock()) { bool parked = gilPark(); st->m.lock(); gilUnpark(parked); } } raceAcquire(raceKey, RaceEdge::Lock); return Value::boolean(true); }
         if (m == "unlock" || m == "release") { raceRelease(raceKey, RaceEdge::Lock); if (st) st->m.unlock(); return Value::boolean(true); }
         if (m == "condition") {
-            Value v = Value::makeHash(); v.hashKind = "LockCondition";
+            Value v = Value::makeHash(); v.hashKind = "Lock::ConditionVariable";
             if (st) { auto cs = std::make_shared<LockCondState>(); cs->lock = st; v.extM() = cs; }
             return v;
         }
@@ -4733,7 +4733,7 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
     // A Lock's condition variable: `.wait` releases the lock while it waits
     // (and holds it again after), `.wait(&cond)` until the condition is true,
     // `.signal` / `.signal_all` wake one / every waiter.
-    if (inv.t == VT::Hash && inv.hashKind == "LockCondition") {
+    if (inv.t == VT::Hash && inv.hashKind == "Lock::ConditionVariable") {
         auto cs = inv.ext() ? std::static_pointer_cast<LockCondState>(inv.ext()) : nullptr;
         if (m == "signal")     { if (cs) cs->cv.notify_one(); return Value::nil(); }
         if (m == "signal_all") { if (cs) cs->cv.notify_all(); return Value::nil(); }
@@ -5965,6 +5965,7 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
             }
             else if (t == "X::NYI" && at.count("feature"))
                 syn = at["feature"] + " not yet implemented. Sorry.";
+            else syn = typeCheckMessageFor(t, args);   // X::TypeCheck and its family
             // The rendered message WINS over an explicit `message` argument, as
             // Rakudo's `method message` does — it is a method there, so an
             // attribute of the same name never gets a say.
@@ -8484,9 +8485,11 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
         // else fall through to universal methods (.defined/.WHAT/.gist/...)
     }
 
-    // `*.method` -> a WhateverCode that applies the method to its argument
+    // A Whatever VALUE (`my $w = *; $w.grep(…)`) is an ordinary Any: the call
+    // is on it. Only a `*` WRITTEN as the invocant curries, and the evaluator
+    // has made that WhateverCode before a call gets here — currying a value
+    // too handed Red's AST walk a Sub where Rakudo's `.grep` filtered `(*,)`.
     if (inv.t == VT::Whatever) {
-        // introspection metamethods do NOT autocurry: *.WHAT is (Whatever)
         if (m == "WHAT") return Value::typeObj("Whatever");
         // …and a Whatever VALUE has no Capture to give (`((*)).Capture`)
         if (m == "Capture")
@@ -8495,18 +8498,16 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
                             "To create a Capture, add parentheses: \\(...)\n"
                             "If unpacking in a signature, perhaps you needlessly used parentheses? -> ($x) {} vs. -> $x {}\n"
                             "or missed `:` in signature unpacking? -> &c:(Int) {}"};
-        if (m == "HOW" || m == "WHO" || m == "VAR" || m == "WHICH" || m == "raku")
-            { /* fall through to the generic paths below with the Whatever value */ }
-        else {
-        Value code; code.t = VT::Code; code.setCode(makePayload<Callable>());
-        std::string mc = m; ValueList ar = args;
-        code.code()->ciM().builtin = [mc, ar](Interpreter& I, ValueList& a) -> Value {
-            Value arg = a.empty() ? Value::any() : a[0];
-            ValueList aa = ar;
-            return I.methodCall(arg, mc, aa);
-        };
-        return code;
-        }
+        // Whatever.ACCEPTS takes anything, and the list methods see the
+        // one-element list any Any is: `$w.grep({ True })` is `(*,).Seq`
+        if (m == "ACCEPTS") return Value::boolean(true);
+        static const std::set<std::string> kAsList = {
+            "grep", "map", "first", "list", "List", "Seq", "flat", "eager", "cache", "lazy", "Array",
+            "Slip", "head", "tail", "sort", "reverse", "join", "unique", "squish", "repeated", "pairs",
+            "kv", "keys", "values", "antipairs", "iterator", "rotor", "batch", "pick", "roll", "min",
+            "max", "minmax", "classify", "categorize", "produce", "reduce", "flatmap", "deepmap",
+            "duckmap", "nodemap", "toggle", "first-index", "grep-index", "skip", "snip", "Set", "Bag", "Mix"};
+        if (kAsList.count(m)) return methodCall(Value::list({inv}), m, std::move(args), rwArgs);
     }
 
     // Code introspection / currying
@@ -9675,7 +9676,16 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
              inv.obj()->cls->name == "Metamodel::CurriedRoleHOW" ||
              inv.obj()->cls->name == "Metamodel::ConcreteRoleHOW") ? &inv.obj()->cls->name : nullptr;
         bool howInv = (inv.t == VT::Type && inv.s.rfind("Metamodel::", 0) == 0) || howObjName;
+        // (a subset's own metaobject answers as Metamodel::SubsetHOW does,
+        // but for what a role mixed into it declares)
+        if (inv.t == VT::Object && inv.obj() && isSubsetHow(inv) &&
+            (m == "archetypes" || m == "refinee" || m == "refinement" ||
+             ((m == "isa" || m == "does" || m == "can") && args.size() == 2)))
+            return methodCall(Value::typeObj("Metamodel::SubsetHOW"), m, std::move(args), rwArgs);
         if (howInv) {
+            // `S.HOW.refinee(S)` is `S.^refinee`
+            if ((m == "refinee" || m == "refinement") && args.size() == 1 && args[0].t == VT::Type)
+                return methodCall(args[0], "^" + m, ValueList{});
             // the meta-object protocol's two-argument forms: `T.HOW.isa(T, U)` is `T.isa(U)`
             if ((m == "isa" || m == "does" || m == "can") && args.size() == 2)
                 return methodCall(args[0], m, ValueList{args[1]});
@@ -9838,24 +9848,11 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
         // type: `Str.can('Int')` is True (the .Int conversion method), which is
         // how DBDish::TypeConverter picks `$type($datum)` over `$type.new(...)`
         Value probeInv = inv;
-        if (!ci && inv.t == VT::Type && !classes_.count(inv.s)) {
-            if (inv.s == "Str") probeInv = Value::str("");
-            else if (inv.s == "Int") probeInv = Value::integer(0);
-            else if (inv.s == "Num") probeInv = Value::number(0);
-            else if (inv.s == "Bool") probeInv = Value::boolean(false);
-            // …and the rest of the built-in types a program asks about. Only
-            // four had a sentinel, so `Rat.can('precise')` answered [] for a
-            // method `(0.5).precise` plainly runs — an `augment class Rat` is
-            // invisible to .can without one, which is the single assertion
-            // Rat::Precise's suite fails on (can-ok is Test's .^can).
-            else if (inv.s == "Rat" || inv.s == "FatRat") probeInv = Value::rat(BigInt(0), BigInt(1));
-            else if (inv.s == "Complex") probeInv = Value::complex(0, 0);
-            else if (inv.s == "Array") { probeInv = Value::array(); }
-            else if (inv.s == "List" || inv.s == "Seq") probeInv = Value::list({});
-            else if (inv.s == "Hash" || inv.s == "Map") probeInv = Value::makeHash();
-            else if (inv.s == "Pair") probeInv = Value::pair("k", Value::integer(0));
-            else if (inv.s == "Range") probeInv = Value::range(0, 0, false, false);
-        }
+        if (!ci && inv.t == VT::Type && !classes_.count(inv.s)) probeInv = probeSentinel(inv.s);
+        // (a Failure throws what it holds at any call, which a probe reads as "found":
+        // its own methods are its and the rest an Any's — Red's `try $*RED-DB.^can(…)`)
+        const bool failure = !ci && inv.t == VT::Hash && inv.hashKind == "Failure", failureOwn = failure && failureOwnMethod(mn);
+        if (failure && !failureOwn) { probeInv = Value::makeHash(); probeInv.hashKind = "Any"; }
         if (!ci && out.arr()->empty() && !mn.empty() &&
             probeInv.t != VT::Object && probeInv.t != VT::Type && probeInv.t != VT::Any && probeInv.t != VT::Nil &&
             // Date/DateTime share one dispatch surface here, so a probe cannot
@@ -9865,7 +9862,7 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
                 // one probe (shared with .^lookup): 1 = found, -1 = not found,
                 // 0 = a side-effectful name that must not be probed (no stub —
                 // the permissive answer this fallback has always given)
-                if (probeMethodExists(probeInv, mn, "/nonexistent/rakupp-can-probe") == 1) {
+                if (failureOwn || probeMethodExists(probeInv, mn, "/nonexistent/rakupp-can-probe") == 1) {
                     Value stub; stub.t = VT::Code; stub.setCode(makePayload<Callable>());
                     stub.code()->ciM().name = mn; stub.code()->ciM().isMethod = true;
                     std::string mnc = mn;
@@ -10611,6 +10608,8 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
         }
         return inv; // Int/Num/Rat/Str/Bool/… are immutable — clone is the value itself
     }
+    // `Metamodel::SubsetHOW.new_type(:name, :refinee, :refinement)` (subsetNewType)
+    if (m == "new_type" && isSubsetHow(inv)) return subsetNewType(inv, args);
     // `Metamodel::ClassHOW.new_type(:name, :ver, :auth)` — a class created at
     // RUNTIME. It registers like a declared one, so `.^add_method` and `.new`
     // then work on it exactly as they do on `class Foo { }`.
@@ -10840,9 +10839,9 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
                 return h;
             }
         }
-        // a SUBSET (UInt among them) is made by SubsetHOW
+        // a SUBSET (UInt among them) is made by SubsetHOW — one of its own (subsetsHow)
         if (inv.t == VT::Type && !classes_.count(inv.s) && (subsets_.count(inv.s) || inv.s == "UInt"))
-            return Value::typeObj("Metamodel::SubsetHOW");
+            return subsetsHow(inv.s);
         ClassInfo* hci = nullptr;
         if (inv.t == VT::Type) { auto it = classes_.find(inv.s); if (it != classes_.end()) hci = it->second.get(); }
         else if (inv.t == VT::Object && inv.obj() && inv.obj()->cls) hci = inv.obj()->cls.get();

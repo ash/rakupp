@@ -1272,8 +1272,10 @@ struct Value {
         Value v; v.p_ = c.slot(); v.pk_ = PK::Cell; return v;
     }
     // The container a storage slot stands for: the cell's Value, or the slot.
-    Value* deref() { return pk_ == PK::Cell ? pv<Value>() : this; }
-    const Value* deref() const { return pk_ == PK::Cell ? pv<Value>() : this; }
+    // (a cell with NO target is a hole — moduleRoot_'s, see hideProgramOperator —
+    // and stands for nothing: a lookup that reaches one finds no such name)
+    Value* deref() { return pk_ == PK::Cell ? (p_ ? pv<Value>() : nullptr) : this; }
+    const Value* deref() const { return pk_ == PK::Cell ? (p_ ? pv<Value>() : nullptr) : this; }
     // Promote this storage slot to a cell (a no-op when it already is one) and
     // hand back the shared pointer, for a second name to hold.
     PRef<Value> promoteToCell() {

@@ -757,6 +757,107 @@ std::string typeCheckRepr(const Value& v) {
     if (r.size() > 1 && r[0] == '$' && (r[1] == '(' || r[1] == '[' || r[1] == '{')) r.erase(0, 1);
     return r.size() > 23 ? r.substr(0, 20) + "..." : r;
 }
+// What Failure declares itself (Rakudo 2026.09's `Failure.^methods(:local)`):
+// `.can` on a Failure answers these and Any's, never by calling it — every
+// call on an unhandled one throws the exception it holds.
+bool failureOwnMethod(const std::string& n) {
+    static const std::set<std::string> kOwn = {
+        "AT-KEY", "AT-POS", "Bag", "BagHash", "Bool", "CALL-ME", "Capture", "DESTROY", "FALLBACK",
+        "Failure", "Int", "Mix", "MixHash", "Num", "Numeric", "POPULATE", "STORE", "Set", "SetHash",
+        "Str", "UPGRADE-RAT", "backtrace", "defined", "exception", "gist", "handled", "iterator",
+        "list", "mess", "new", "raku", "self", "sink"};
+    return kOwn.count(n) > 0;
+}
+// A built-in type object cannot itself be probed (the instance dispatch the name
+// reaches cannot run on the type), so `.can` and `.^find_method` probe an empty
+// instance of it. Only types whose empty instance no probed method can block on
+// or act through: a Promise's `.result` waits, a Channel's `.receive` too, and a
+// Thread or a Supply would start something.
+Value Interpreter::probeSentinel(const std::string& tn) {
+    if (tn == "Str") return Value::str("");
+    if (tn == "Int") return Value::integer(0);
+    if (tn == "Num") return Value::number(0);
+    if (tn == "Bool") return Value::boolean(false);
+    // (the rest of the built-in types a program asks about, too: with only the
+    // four above `Rat.can('precise')` answered [] for a method `(0.5).precise`
+    // plainly runs, the one assertion Rat::Precise's suite failed — can-ok is
+    // Test's .^can)
+    if (tn == "Rat" || tn == "FatRat") return Value::rat(BigInt(0), BigInt(1));
+    if (tn == "Complex") return Value::complex(0, 0);
+    if (tn == "Array") return Value::array();
+    if (tn == "List" || tn == "Seq") return Value::list({});
+    if (tn == "Hash" || tn == "Map") return Value::makeHash();
+    if (tn == "Pair") return Value::pair("k", Value::integer(0));
+    if (tn == "Range") return Value::range(0, 0, false, false);
+    // …and the ones built through their own constructor (Set.^find_method
+    // answered every name — Red then called the "red-type-db-methods" it found)
+    static const std::map<std::string, std::pair<const char*, int>> kBuilt = {
+        {"Set", {"new", 0}}, {"SetHash", {"new", 0}}, {"Bag", {"new", 0}}, {"BagHash", {"new", 0}},
+        {"Mix", {"new", 0}}, {"MixHash", {"new", 0}}, {"Buf", {"new", 0}}, {"Blob", {"new", 0}},
+        {"Uni", {"new", 0}}, {"Version", {"new", 1}}, {"Duration", {"new", 2}},
+        {"Instant", {"from-posix", 2}}, {"IO::Path", {"new", 1}}};
+    auto it = kBuilt.find(tn);
+    if (it == kBuilt.end()) return Value::typeObj(tn);
+    ValueList as;
+    if (it->second.second == 1) as.push_back(Value::str("0"));
+    else if (it->second.second == 2) as.push_back(Value::integer(0));
+    try { return methodCall(Value::typeObj(tn), it->second.first, as); }
+    catch (...) { return Value::typeObj(tn); }
+}
+// Rakudo gives each X::TypeCheck class a `method message` that renders its
+// attributes, so one built by hand reports like one the engine threw — Red
+// constructs X::TypeCheck::Assignment with `symbol`, `got` and `expected` for
+// a column that refuses a value, and its `.message` was undefined. The same
+// gotn/expectedn rules: a value of the expected type shows as itself, an
+// Associative constraint names only the type, anything else `Type (value)`.
+std::string typeCheckMessageFor(const std::string& t, const ValueList& args) {
+    static const std::set<std::string> kinds = {
+        "X::TypeCheck", "X::TypeCheck::Binding", "X::TypeCheck::Binding::Parameter",
+        "X::TypeCheck::Return", "X::TypeCheck::Assignment", "X::TypeCheck::Splice", "X::TypeCheck::Argument"};
+    if (!kinds.count(t)) return "";
+    std::map<std::string, Value> a;
+    for (auto& v : args) if (v.t == VT::Pair && v.pairVal()) a[v.s] = *v.pairVal();
+    auto str = [&](const char* k) {
+        auto it = a.find(k);
+        return it != a.end() && isDefined(it->second) ? it->second.toStr() : std::string();
+    };
+    auto truthy = [&](const char* k) { auto it = a.find(k); return it != a.end() && it->second.truthy(); };
+    if (t == "X::TypeCheck::Argument") {
+        std::string sig = str("signature"), as;
+        if (auto it = a.find("arguments"); it != a.end() && it->second.t == VT::Array && it->second.arr())
+            for (auto& e : *it->second.arr()) as += (as.empty() ? "" : ", ") + e.toStr();
+        else as = str("arguments");
+        return "Calling " + str("objname") + "(" + as + ") will never work with " +
+               (truthy("protoguilt") ? "signature of the proto "
+                : sig.find('\n') != std::string::npos ? "any of these multi signatures:" : "declared signature ") + sig;
+    }
+    if (!a.count("got") && !a.count("expected")) return "";
+    const Value got = a.count("got") ? a["got"] : Value::nil();
+    const Value exp = a.count("expected") ? a["expected"] : Value::nil();
+    const char sm = exp.t == VT::Type && exp.i ? (exp.i == 1 ? 'D' : 'U') : 0;   // `Int:D` is no Int
+    const bool same = !sm && got.typeName() == exp.typeName();
+    const bool expAssoc = exp.t == VT::Type && typeNameConforms(exp.s, "Associative", std::string(), std::string());
+    const std::string gotn = same ? typeCheckRepr(got) : expAssoc ? got.typeName() : got.typeName() + " (" + typeCheckRepr(got) + ")";
+    const std::string expn = same ? typeCheckRepr(exp) : exp.typeName() + (sm ? std::string(":") + sm : "");
+    const bool itself = same && got.t == VT::Type && exp.t == VT::Type;   // `expected Int, got Int`
+    const std::string explain = itself ? "expected type " + expn + " cannot be itself" : "expected " + expn + " but got " + gotn;
+    const std::string sym = str("symbol");
+    const bool noSym = sym.empty() || sym == "$";
+    if (t == "X::TypeCheck") return "Type check failed in " + str("operation") + "; " + explain;
+    if (t == "X::TypeCheck::Splice") return "Type check failed in " + str("action") + "; " + explain;
+    if (t == "X::TypeCheck::Return")
+        return "Type check failed for return value; " +
+               (itself ? "expected return type " + expn + " cannot be itself (perhaps returning a :D type object?)" : explain);
+    if (t == "X::TypeCheck::Binding") return "Type check failed in binding" + (noSym ? "" : " to '" + sym + "'") + "; " + explain;
+    if (t == "X::TypeCheck::Binding::Parameter")
+        return (a.count("what") ? str("what") : truthy("constraint") ? "Constraint type" : "Type") + " check failed in binding" +
+               (noSym ? " to anonymous parameter" : " to parameter '" + sym + "'") + "; " + explain;
+    return "Type check failed " + (noSym ? std::string("in assignment")
+                                   : sym[0] == '@' || sym[0] == '%' ? "for an element of " + sym
+                                   : "in assignment to " + sym) + "; " + explain +
+           (itself || (sm == 'D' && got.t == VT::Type && got.typeName() == exp.typeName())
+                ? " (perhaps Nil was assigned to a :D which had no default?)" : "");
+}
 // Value::natWidthOfType, memoised per parameter: it substr()s the type name, so
 // calling it per bind allocated a std::string for every typed parameter of every
 // call. Answer encoded as bits<<1 | signed (0 = not a native-width type).
@@ -1165,7 +1266,7 @@ bool Interpreter::subsetMatches(const std::string& name, const Value& v, int dep
         if (!cacheKey.empty()) typeSubsetCache[cacheKey] = false;
         return false;
     }
-    if (si.where) {
+    if (si.where || std::atomic_load(&si.whereBlock)) {   // (a runtime subset has only the block)
         auto env = makeSlabShared<Env>(); env->parent = si.declEnv ? si.declEnv : tctx().cur;
         env->define("$_", sv);
         // `where /…/` sets the `$/` of the scope the subset was declared in, as
@@ -1224,6 +1325,95 @@ bool Interpreter::subsetMatches(const std::string& name, const Value& v, int dep
     }
     if (!cacheKey.empty()) typeSubsetCache[cacheKey] = true;
     return true;
+}
+
+// Metamodel::SubsetHOW itself, a metaclass made from it (`Metamodel::SubsetHOW but
+// R`, a class or role that `is Metamodel::SubsetHOW`), or a subset's metaobject.
+bool Interpreter::isSubsetHow(const Value& v) {
+    const ClassInfo* c = nullptr;
+    if (v.t == VT::Type) {
+        if (v.s == "Metamodel::SubsetHOW") return true;
+        auto it = classes_.find(v.s);
+        if (it != classes_.end()) c = it->second.get();
+    }
+    else if (v.t == VT::Object && v.obj()) c = v.obj()->cls.get();
+    for (; c; c = c->parent.get()) {
+        if (c->name == "Metamodel::SubsetHOW" || c->nativeParent == "Metamodel::SubsetHOW") return true;
+        for (auto& p : c->extraParents) if (p && isSubsetHow(Value::typeObj(p->name))) return true;
+    }
+    return false;
+}
+
+// `Metamodel::SubsetHOW.new_type(:name, :refinee, :refinement)` — a subset made
+// at RUNTIME. Red's sub-models ask it of a SubsetHOW mixed with their own role
+// (`(Metamodel::SubsetHOW but SubModelHOW).new_type(…)`); a fresh one of that
+// metaclass is the subset's .HOW, so `.^all` reaches the role.
+Value Interpreter::subsetNewType(const Value& inv, const ValueList& args) {
+    std::string name = "<anon>";
+    SubsetInfo si;
+    si.base = "Any";
+    for (auto& a : args) {
+        if (a.t != VT::Pair || !a.pairVal()) continue;
+        const Value& pv = *a.pairVal();
+        if (a.s == "name") name = pv.toStr();
+        else if (a.s == "refinee") si.base = pv.t == VT::Type ? std::string(pv.s) : pv.typeName();
+        else if (a.s == "refinement") si.whereBlock = std::make_shared<Value>(pv);
+    }
+    // a name already taken keeps its type (a sub-model is named after its model)
+    std::string key = name;
+    for (int n = 1; classes_.count(key) || subsets_.count(key); n++) key = name + "+" + std::to_string(n);
+    si.langRev = langRev_;
+    if (!(inv.t == VT::Type && inv.s == "Metamodel::SubsetHOW")) {
+        try { si.howObj = methodCall(inv.t == VT::Object ? Value::typeObj(inv.obj()->cls->name) : inv, "new", ValueList{}); }
+        catch (RakuError&) { si.howObj = Value::any(); }
+        if (si.howObj.t == VT::Object && si.howObj.obj()) si.howObj.obj()->attrs["__type"] = Value::typeObj(key);
+        else si.howObj = Value::any();
+    }
+    subsets_[key] = std::move(si);
+    noteSymbolMutation("runtime SubsetHOW.new_type");
+    return Value::typeObj(key);
+}
+
+// A subset's .HOW: one metaobject per subset, as a class has, so Red's
+// `is sub-model` trait can mix `$subset.HOW does MetamodelX::Red::SubModelHOW`
+// into it and have it stick (UInt, which is no `subset` here, keeps the type).
+Value Interpreter::subsetsHow(const std::string& name) {
+    auto sit = subsets_.find(name);
+    if (sit == subsets_.end()) return Value::typeObj("Metamodel::SubsetHOW");
+    if (sit->second.howObj.t != VT::Object) {
+        if (!howSubsetClsInfo_) {
+            howSubsetClsInfo_ = std::make_shared<ClassInfo>();
+            howSubsetClsInfo_->name = "Metamodel::SubsetHOW";
+        }
+        Value h; h.t = VT::Object; h.setObj(makePayload<ObjectData>());
+        h.obj()->cls = howSubsetClsInfo_;
+        h.obj()->attrs["__type"] = Value::typeObj(name);
+        sit->second.howObj = std::move(h);
+    }
+    return sit->second.howObj;
+}
+
+// `S.^refinee` is the type S narrows, `S.^refinement` what narrows it: the
+// `where` block or WhateverCode itself, Mu for none, and for any other `where
+// EXPR` — which is a thunk smartmatching against EXPR — a block asking S.
+Value Interpreter::subsetRefinee(const std::string& name, bool refinement) {
+    auto it = subsets_.find(name);
+    if (it == subsets_.end()) return Value::typeObj("Mu");
+    const SubsetInfo& si = it->second;
+    if (!refinement) return Value::typeObj(si.base.empty() ? "Any" : resolveClassAlias(si.base));
+    if (auto wb = std::atomic_load(&si.whereBlock)) return *wb;
+    if (!si.where) return Value::typeObj("Mu");
+    if (si.where->kind == NK::BlockExpr || exprHasWhateverLit(si.where)) {
+        auto env = makeSlabShared<Env>(); env->parent = si.declEnv ? si.declEnv : tctx().cur;
+        auto saved = tctx().cur; tctx().cur = env;
+        Value cv;
+        try { cv = eval(const_cast<Expr*>(si.where)); } catch (...) { tctx().cur = saved; throw; }
+        tctx().cur = saved;
+        if (cv.t == VT::Code) return cv;
+    }
+    return Value::closure([this, name](ValueList& a) -> Value {
+        return Value::boolean(!a.empty() && subsetMatches(name, a[0], 0));
+    });
 }
 
 // A parameter typed by a COERCION SUBSET (`subset CC of Str() where …`) binds
@@ -3339,6 +3529,25 @@ Value Interpreter::dynNotFound(const std::string& name) {
 void Interpreter::dynNotFoundThrow(const std::string& name) {
     const std::string msg = "Dynamic variable " + name + " not found";
     throw RakuError{makeTypedEx("X::Dynamic::NotFound", {{"name", Value::str(name)}}, msg), msg};
+}
+// A dynamic no caller declares is GLOBAL's, twigil dropped, before it is an
+// error (S02): `%*RED-DEFAULT-DRIVERS` is the `%GLOBAL::RED-DEFAULT-DRIVERS`
+// Red's `red-defaults` fills, and every model's database lookup reads it that
+// way. Only a name put THERE counts — a `GLOBAL::` write or a top-level `our`
+// (globalPkgVars_) — because global_ is the program's top scope as well, and
+// its `my $DEBUG` is no `$*DEBUG`.
+static Value* globalDynamic(Interpreter& I, const std::string& name) {
+    if (name.size() < 3 || name[1] != '*' || !I.global_) return nullptr;
+    const std::string g = name.substr(0, 1) + name.substr(2);
+    return I.globalPkgVars_.count(g) ? I.global_->local(g) : nullptr;
+}
+Value Interpreter::dynMiss(const std::string& name) {
+    if (Value* p = globalDynamic(*this, name)) return *p;
+    return dynNotFound(name);
+}
+Value* Interpreter::dynMissSlot(const std::string& name) {
+    if (Value* p = globalDynamic(*this, name)) return p;
+    dynNotFoundThrow(name);
 }
 
 // @a[i]:exists / %h<k>:delete / :k / :v / :kv / :p for native codegen — the

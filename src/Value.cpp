@@ -564,7 +564,7 @@ bool Value::truthy() const {
             // `$lock.protect(&next-phaser) if $lock` never ran a NEXT phaser)
             return (hashKind == "Raku" || hashKind == "Compiler" ||
                     hashKind == "Mu" || hashKind == "Any" || hashKind == "Lock" ||
-                    hashKind == "Lock::Async" || hashKind == "LockCondition") // object-like: always defined/true
+                    hashKind == "Lock::Async" || hashKind == "Lock::ConditionVariable") // object-like: always defined/true
                             || (hash() && !hash()->empty());
         case VT::Range: return true;
         case VT::Code:  return true;
@@ -2213,7 +2213,7 @@ static int valueCmpImpl(const Value& a, const Value& b) {
 bool opaqueHashKind(const IStr& k) {
     if (k.empty()) return false;
     static const std::unordered_set<std::string> kOpaque = {
-        "Pod", "DateTime", "Date", "Promise", "Vow", "Channel", "Lock", "LockCondition", "Semaphore",
+        "Pod", "DateTime", "Date", "Promise", "Vow", "Channel", "Lock", "Lock::ConditionVariable", "Semaphore",
         "Supplier", "Supply", "Tap", "Cancellation", "Scheduler", "Thread", "Proc", "Proc::Async", "ProcIn",
         "Socket", "AsyncSocket", "FileHandle", "IO", "IO::Special", "CatHandle", "Failure", "Distribution",
         "VM", "Kernel", "Distro", "Compiler", "Encoding", "Encoder", "Decoder", "Collation", "CompUnit",

@@ -5977,7 +5977,7 @@ static bool isCoolValue(const Value& v) {
                 "Any", "Mu", "Junction", "Pair", "Code", "Block", "Routine", "Sub", "Method",
                 "Submethod", "WhateverCode", "Regex", "Whatever", "HyperWhatever", "Exception",
                 "Promise", "Channel", "Supply", "Supplier", "Tap", "Thread",
-                "Scheduler", "Lock", "Lock::Async", "Semaphore", "Proc", "Proc::Async",
+                "Scheduler", "Lock", "Lock::Async", "Lock::ConditionVariable", "Semaphore", "Proc", "Proc::Async",
                 "Date", "DateTime", "Set", "SetHash", "Bag", "BagHash", "Mix", "MixHash",
                 "Capture", "Signature", "Parameter", "Attribute", "Version", "Label",
                 "Uni", "NFC", "NFD", "NFKC", "NFKD", "ObjAt", "ValueObjAt",
@@ -7305,14 +7305,13 @@ int Interpreter::scoreCandidate(const Value& cand, const ValueList& args,
             // Associative constraint the positional arm applies to a bare `@a`.
             // Without it `k => 2` bound `:offset(:@k)!` (as a one-element list),
             // so Math::NumberTheory's next-prime($x, k => 2) reached the
-            // list-of-offsets candidate and recursed into itself forever.
-            if ((p.sigil == '@' || p.sigil == '%') && isDefined(sval) &&
+            // list-of-offsets candidate and recursed into itself forever. A TYPE
+            // OBJECT, Nil and Any are checked too: `:to(Array)` binds, `:to(Str)`
+            // and `values => Nil` pass over it (Red's `inflate(Str, :@to!)`, and
+            // Math::SparseMatrix::Native's targets falling through to Mu.new)
+            if ((p.sigil == '@' || p.sigil == '%') &&
                 !(p.sigil == '@' ? (typeMatchesArg(sval, "Positional") || sval.t == VT::Range)
                                  : typeMatchesArg(sval, "Associative"))) return -1;
-            // Nil and Any are no Positional either: `new(values => Nil, …)`
-            // must pass over a `:@values!` candidate (Rakudo falls through to
-            // Mu.new — Math::SparseMatrix::Native builds its targets that way)
-            if (p.sigil == '@' && (sval.t == VT::Nil || sval.t == VT::Any)) return -1;
             if (p.defConstraint == 1 && !isDefinite(sval)) return -1;
             if (p.defConstraint == 2 && isDefinite(sval)) return -1;
             // A named with a SUB-SIGNATURE (`:$referencing! (&code, Str
@@ -9824,6 +9823,7 @@ unsigned Interpreter::retFastDecide(const Callable& c) {
 // Enforce a routine's declared nominal return type on its result value.
 Value Interpreter::checkRetType(const Callable& c, Value v) {
     if (c.cold().retType.empty()) return v;
+    if (v.t == VT::Hash && v.hashKind == proxyKind() && v.hash()) return checkRetTypeOfProxy(c, std::move(v));
     // The shortcut (Callable::retFastKey): `--> HeapNode` / `--> Bool:D` resolved
     // once per symbol generation instead of from its name on every return —
     // LeftistHeap's four typed private methods made this a quarter of a call.
@@ -11692,7 +11692,7 @@ Value* Interpreter::lvalue(Expr* e, bool asInvocant) {
             // falls through to lvalue() for the target. Declarations and
             // `PROCESS::<$x>` returned above; the engine's own dynamics are
             // exempt because their slot is synthesized on first write.
-            if (!ve->declare && !isBuiltinDynamic(ve->name)) dynNotFoundThrow(ve->name);
+            if (!ve->declare && !isBuiltinDynamic(ve->name)) return dynMissSlot(ve->name);
         }
         // The three standard handles have no stored container until someone
         // writes one — they are synthesized on read. A write must therefore land
@@ -11730,7 +11730,7 @@ Value* Interpreter::lvalue(Expr* e, bool asInvocant) {
         if (ve->pkgSymbol) {
             auto g = global_ ? global_ : tcx.cur;
             const std::string nm = pkgSymbolName(ve->name);
-            if (!g->vars.count(nm)) g->define(nm, Value::any());
+            if (!g->vars.count(nm)) g->define(nm, Value::any()); if (g == global_) globalPkgVars_.insert(nm);
             return &g->vars[nm];
         }
         if (!isSpecialVar(ve->name)) {
@@ -14068,7 +14068,7 @@ Value Interpreter::evalAssign(Assign* a, bool sink) {
         // already: nothing to publish)
         if (ve->declare && ve->d().declScope == "our" && ve->name.size() > 1 && !ourBoundToCell(ve)) {
             if (Value* p = tctx().cur->find(ve->name)) {
-                std::string qual = ourPublishedName(ve->name, tctx().pkgPrefix);
+                std::string qual = ourPublishedName(ve->name, tctx().pkgPrefix); if (tctx().pkgPrefix.empty()) globalPkgVars_.insert(ve->name);
                 noteSymbolMutation("our-declaration publish");
                 // The qualified name and the module's own name are ONE container:
                 // `$Pkg::VAR = 4` written outside is a write to the very variable
@@ -31557,7 +31557,7 @@ Value Interpreter::evalVarExpr(Expr* e) {
         // stay quiet on a Failure; only actually USING the value
         // detonates, which is the whole distinction Rakudo draws here.
         if (!ve->declare && !isBuiltinDynamic(ve->name))
-            return dynNotFound(ve->name);
+            return dynMiss(ve->name);   // (GLOBAL's, else the Failure)
     }
     Value* p = tctx().cur->find(ve->name);
     if (p) {

@@ -323,6 +323,10 @@ public:
         E().reserve(o.live_);   // one right-sized first chunk for the copy
         for (size_t i = 0; i < oe.size(); i++)
             if (!oe[i].dead) (*this)[oe[i].kv.first] = oe[i].kv.second;
+        // …and the objects its keys were (`my %c{K} = %o` kept "(K)", a Str)
+        objKeys_.clear();
+        for (const auto& kv : o.objKeys_)
+            if (count(kv.first)) objKeys_.insert(kv);
         return *this;
     }
     // A hash that ends while a Pair still holds one of its entries hands the

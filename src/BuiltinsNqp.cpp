@@ -773,10 +773,34 @@ Value Interpreter::evalNqpOp(NqpOp* n) {
     return rtNqpOp(n->op, v); // eager leaf ops — shared with native codegen
 }
 
+// `nqp::throw($e)` of a BOOTException: one marked CONTROL_WARN is a resumable
+// warning — its payload (or a CX::Warn) goes to the innermost CONTROL, and with
+// none to take it the message is printed and execution carries on, as `warn`'s
+// is. Red's X::Red::Transaction::AsyncResult warns this way, and its suite
+// counts them in a CONTROL that `.resume`s. Anything else is thrown: the
+// payload if it is an exception object, else the message as `die` would.
+Value Interpreter::nqpThrow(const Value& e) {
+    if (e.t != VT::Hash || e.hashKind != "BOOTException" || !e.hash()) {
+        if (e.t == VT::Object) return methodCall(e, "throw", ValueList{});
+        throw RakuError{Value::typeObj("X::AdHoc"), e.toStr()};
+    }
+    auto field = [&](const char* k) { auto it = e.hash()->find(k); return it != e.hash()->end() ? it->second : Value::nil(); };
+    const Value payload = field("payload");
+    const std::string msg = field("message").toStr();
+    if (field("extype").toInt() & 256) {   // CONTROL_WARN
+        Value ex = payload.t == VT::Object ? payload : exceptionFor(RakuError{Value::typeObj("CX::Warn"), msg});
+        if (!runControlException(ex) && quietDepth_ == 0) std::cerr << msg << "\n" << warnFrame();
+        return Value::nil();
+    }
+    if (payload.t == VT::Object) return methodCall(payload, "throw", ValueList{});
+    throw RakuError{Value::typeObj("X::AdHoc"), msg};
+}
+
 // The eager (non-control) nqp ops, operating on ALREADY-evaluated arguments.
 // Free function so native `--exe` codegen can call it directly: the lazy control
 // forms (Stmts/While/Until/IfNull) are emitted as native C++ by the codegen and
 // nqp::if/unless are Ternaries, so only these leaf ops need a runtime entry.
+extern Interpreter* g_cbInterp;   // nqp::throw reaches CONTROL through it (InterpreterParts.h)
 Value rtNqpOp(NqpOpc op, ValueList& v) {
     using O = NqpOpc;
     // An IterationBuffer is a tagged HASH here, not an Array, so the list ops
@@ -1254,6 +1278,30 @@ Value rtNqpOp(NqpOpc op, ValueList& v) {
         }
         // Identity, as `===` reads it: reference types by their reference, a type
         // object by its name (IterationEnd is one), everything else by value.
+        // a BOOTException is a tagged hash of its message, category and payload
+        case O::NewException: { Value e = Value::makeHash(); e.hashKind = "BOOTException"; return e; }
+        case O::SetMessage: case O::SetExType: case O::SetPayload: {
+            if (v.size() < 2 || v[0].t != VT::Hash || !v[0].hash()) return v.size() > 1 ? v[1] : Value::nil();
+            const char* k = op == O::SetMessage ? "message" : op == O::SetExType ? "extype" : "payload";
+            return (*v[0].hash())[k] = v[1];
+        }
+        case O::GetMessage: case O::GetExType: case O::GetPayload: {
+            const char* k = op == O::GetMessage ? "message" : op == O::GetExType ? "extype" : "payload";
+            if (v.empty() || v[0].t != VT::Hash || !v[0].hash()) return Value::nil();
+            auto it = v[0].hash()->find(k);
+            return it != v[0].hash()->end() ? it->second
+                 : op == O::GetMessage ? Value::str("") : op == O::GetExType ? Value::integer(0) : Value::nil();
+        }
+        case O::ThrowOp: return g_cbInterp->nqpThrow(v.empty() ? Value::nil() : v[0]);
+        // the object's identity as an Int: the same object answers the same,
+        // two equal ones differ (an immutable value answers by its WHICH)
+        case O::Where: {
+            const Value& x = v.empty() ? Value::nil() : v[0];
+            const void* p = x.t == VT::Object ? (const void*)x.obj() : x.t == VT::Array ? (const void*)x.arr()
+                          : x.t == VT::Hash ? (const void*)x.hash() : x.t == VT::Code ? (const void*)x.code() : nullptr;
+            if (p) return Value::integer((long long)(intptr_t)p);
+            return Value::integer((long long)(std::hash<std::string>{}(whichOf(x)) >> 1));
+        }
         case O::Eqaddr: {
             if (v.size() < 2) return Value::integer(0);
             const Value& l = v[0]; const Value& r = v[1];

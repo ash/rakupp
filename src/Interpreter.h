@@ -69,6 +69,10 @@ using SubResolver = std::function<bool(const std::string& name, const std::strin
 // How a type-check failure renders the offending value (Rakudo: `.raku`, elided
 // past 23 chars). Shared by the five message builders across Interpreter/Builtins.
 std::string typeCheckRepr(const Value& v);
+// …and the whole message a hand-built X::TypeCheck renders from its attributes
+// (InterpreterBinding.cpp); "" for any other type
+std::string typeCheckMessageFor(const std::string& type, const ValueList& namedArgs);
+bool failureOwnMethod(const std::string& name);   // a method Failure itself declares (InterpreterBinding.cpp)
 // The value half of a typed container's `ofType` — the ELEMENT type it
 // constrains its slots to, "" when it constrains nothing (untyped, Any/Mu, or
 // one of the NATIVE lowercase types, which have their own narrower checks).
@@ -872,6 +876,7 @@ inline bool boundInfixPossible(const std::string& op) {
 // (`×` and `*` are told apart by the name a node was written with, never by
 // asking for one when the other finds nothing: see uniOpWritten in Ast.h.)
 
+void hideProgramOperator(const std::string& name);   // (InterpreterModules.cpp)
 struct Env {
     EnvVars vars;
     EnvParent parent;
@@ -898,6 +903,8 @@ struct Env {
     // scope returns is thrown on the spot (see Interpreter::fatalHere)
     signed char fatalPragma = 0;
     bool unitFrame = false;    // a loaded module's FILE scope: what `UNIT::` names inside it
+    bool programRoot = false;  // the main program's top scope (global_, once it runs): an operator
+                               // defined here is the program's own (hideProgramOperator)
     bool packageFrame = false; // a class/role/module BODY scope: the home a `no strict`
                                // auto-vivification inside it belongs to (see laxVarRef)
     bool evalFrame = false;    // a user-level EVAL's own scope (evalOwnScope): lexical, so
@@ -1086,6 +1093,7 @@ struct Env {
     // Layout names land in the pad; the map-twin erase covers a lenient-mode
     // write that happened before the declaration executed.
     Value& define(const std::string& name, Value v) {
+        if (RAKUPP_UNLIKELY(programRoot) && name.size() > 4 && name[0] == '&') hideProgramOperator(name);
         // `&infix:<op>` entering a scope arms the filter for THAT spelling, and
         // only for an anonymous binding — see g_lexShadowMask. Gated on the first
         // two characters, so every other define pays two loads.
@@ -2542,6 +2550,9 @@ public:
     static bool isBuiltinDynamic(const std::string& name);
     Value dynNotFound(const std::string& name);                   // the Failure a read answers
     [[noreturn]] void dynNotFoundThrow(const std::string& name);  // …and what a write does
+    Value dynMiss(const std::string& name);       // …after GLOBAL's: `%*X` reads `%GLOBAL::X`
+    Value* dynMissSlot(const std::string& name);  // (the write's: GLOBAL's slot, else the throw)
+    std::unordered_set<std::string> globalPkgVars_;   // what IS GLOBAL's in global_ (dynMiss)
     // The working directory as the program sees it: an active `my $*CWD`
     // binding wins, then the logical name chdir/indir maintain (symlinks stay
     // as spelled, `..` collapses textually — Rakudo's model), then the
@@ -2702,6 +2713,7 @@ public:
     // no handler, or it finished without resuming (default behaviour stands).
     bool runControlWarn(const std::string& msg);
     bool runControlException(const Value& ex);
+    Value nqpThrow(const Value& bootException);   // `nqp::throw` (BuiltinsNqp.cpp)
     bool pairAccepts(const Value& topic, const Value& pair); // Pair.ACCEPTS (sheet HM-20)
     // The one-liner behind every "Use of uninitialized value …" that is raised
     // outside strOf: run the CONTROL handler, else print, unless `quietly`.
@@ -3268,7 +3280,8 @@ public:
                         std::shared_ptr<Env> declEnv;      // the where-clause CLOSES over its declaration scope
                         // a literal `where { … }` block, evaluated ONCE: one closure,
                         // so a `state` inside it persists across checks, as in Rakudo
-                        std::shared_ptr<Value> whereBlock; };
+                        std::shared_ptr<Value> whereBlock;
+                        Value howObj; };                   // its own .HOW, made on first ask (or by new_type)
     std::unordered_map<std::string, SubsetInfo> subsets_;
     // per-site `ff`/`fff` flip-flop latch + how many elements since it fired
     // (the result while on is that count, not a Bool)
@@ -3416,6 +3429,7 @@ public:
                     std::vector<std::pair<std::string, Value>> attrs,
                     const std::string& message); // same, attribute values as Values
     Value checkRetType(const Callable& c, Value v); // enforce declared return type
+    Value checkRetTypeOfProxy(const Callable& c, Value v); // …on what a Proxy holds (InterpreterCalls.cpp)
     unsigned retFastDecide(const Callable& c);       // …and its accepting shortcut (InterpreterCore.cpp)
     // the default constructor's build: attributes, argument checks, BUILD/TWEAK
     // (MethodCallPart2.cpp)
@@ -3816,6 +3830,7 @@ public:
     // package's qualified globals in, so `our`-scoped symbols show up too.
     std::map<std::string, PRef<ValueMap>> pkgStashes_;
     std::shared_ptr<ClassInfo> howClsInfo_; // shared class of persistent .HOW metaobjects (see m == "HOW")
+    std::shared_ptr<ClassInfo> howSubsetClsInfo_; // …and of a subset's (Metamodel::SubsetHOW)
     std::shared_ptr<ClassInfo> howGrammarClsInfo_;   // …a grammar's: Metamodel::GrammarHOW, a ClassHOW
     std::unordered_map<std::string, std::string> classAliases_;
     // …the ones the PROGRAM's own declarations made (not a module's): those
@@ -3836,6 +3851,7 @@ public:
     // every module's top-level env, kept for the program's life: code a module
     // declared sees the packages it loaded, whoever loaded the module itself
     std::vector<std::shared_ptr<Env>> loadedModuleEnvs_;
+    std::shared_ptr<Env> moduleRoot_;   // between global_ and every module's scope (hideProgramOperator)
     std::unordered_set<const Env*> loadedModuleEnvSet_;
     bool requireHidden(const std::string& n) {
         if (!needHidden_.empty() && needHidden_.count(n)) {
@@ -5113,6 +5129,13 @@ public:
     // (it lived as two verbatim copies that had already drifted on guards).
     // Answers: 0 = not probeable (side-effectful name), 1 = found, -1 = not found.
     int probeMethodExists(const Value& inv, const std::string& mn, const char* ioProbePath);
+    // …and the value it probes a built-in TYPE object on (`Set.^find_method`):
+    // an empty instance of the type, or the type object itself when none is safe.
+    Value probeSentinel(const std::string& type);
+    bool isSubsetHow(const Value& v);   // Metamodel::SubsetHOW, a metaclass made from it, or a subset's .HOW
+    Value subsetRefinee(const std::string& subset, bool refinement);   // `.^refinee` / `.^refinement`
+    Value subsetNewType(const Value& how, const ValueList& args);      // `Metamodel::SubsetHOW.new_type`
+    Value subsetsHow(const std::string& subset);                       // a subset's own .HOW
     // A bare regex literal as a value, through RegexLit::closedPat (skips the
     // splice copy, the $/@ scans and the obsolete-check memo probe once the
     // node has published its closed pattern).

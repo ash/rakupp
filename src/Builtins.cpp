@@ -4198,7 +4198,7 @@ static bool hashIsIdentity(const Value& v) {
     if (v.t != VT::Hash || !v.hash()) return false;
     static const char* const kinds[] = {
         "Promise", "Channel", "Supplier", "Supply", "Tap", "Lock", "Lock::Async",
-        "LockCondition", "Semaphore", "Thread", "Cancellation", "Proc", "Proc::Async",
+        "Lock::ConditionVariable", "Semaphore", "Thread", "Cancellation", "Proc", "Proc::Async",
         "Failure",
         // the handles: IO::Handle and IO::Pipe, IO::Socket::INET, IO::Socket::Async
         "FileHandle", "ProcIn", "Socket", "AsyncSocket"};
@@ -4869,6 +4869,13 @@ Value makeSignature(const Callable* c) {
         (*pv.hash())["rw"] = Value::boolean(false);
         (*pv.hash())["suffix"] = Value::str("?");
         (*pv.hash())["multi-invocant"] = Value::boolean(false);
+        // …and what every other Parameter answers: Red reads `.named_names` of a
+        // transaction callback's parameters, and `{ … }`'s died NotFound
+        Value nn = Value::array(); nn.isList = true;
+        (*pv.hash())["named_names"] = std::move(nn);
+        for (const char* k : {"copy", "capture", "invocant"}) (*pv.hash())[k] = Value::boolean(false);
+        for (const char* k : {"prefix", "modifier"}) (*pv.hash())[k] = Value::str("");
+        (*pv.hash())["sub_signature"] = Value::typeObj("Signature");
         params.arr()->push_back(std::move(pv));
         (*s.hash())["params"] = std::move(params);
         return s;
@@ -8635,6 +8642,13 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
     }
     if (!m.empty() && m[0] == '^') {
         std::string mm = m.substr(1);
+        // what a SUBSET refines and how: Red's sub-models read both
+        // (`model.^refinee.^all(|c).grep: model.^refinement`)
+        if ((mm == "refinee" || mm == "refinement") && inv.t == VT::Type &&
+            !classes_.count(inv.s) && (subsets_.count(inv.s) || inv.s == "UInt")) {
+            if (inv.s == "UInt" && !subsets_.count(inv.s)) return Value::typeObj(mm == "refinee" ? "Int" : "Mu");
+            return subsetRefinee(inv.s, mm == "refinement");
+        }
         // A COERCION type object (`Foo(Str)`) carries both halves in its name,
         // which is the only place they fit — a type object IS a name here.
         // Getopt::Long picks an option's conversion through exactly this
@@ -8929,12 +8943,8 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
             else if (tn == "NumStr" || tn == "num" || tn == "num32" || tn == "num64") tn = "Num";
             else if (tn == "StrStr") tn = "Str";
             if (inv.t == VT::Type && !classes_.count(inv.s)) {
-                if (tn == "Str") probeInv = Value::str("");
-                else if (tn == "Int") probeInv = Value::integer(0);
-                else if (tn == "Num") probeInv = Value::number(0);
-                else if (tn == "Bool") probeInv = Value::boolean(false);
-                else if (tn == "Array" || tn == "List" || tn == "Positional") probeInv = Value::array();
-                else if (tn == "Hash" || tn == "Map" || tn == "Associative") probeInv = Value::makeHash();
+                if (tn == "Positional") probeInv = Value::array();
+                else if (tn == "Associative") probeInv = Value::makeHash();
                 // Date/DateTime answer their own methods and nothing else's, so the
                 // sentinel has to be one of them — built through the ordinary
                 // constructor, which reads a clock and touches nothing else.
@@ -8942,6 +8952,7 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
                     try { ValueList none; probeInv = methodCall(Value::typeObj(tn), "now", none); }
                     catch (...) { probeInv = inv; }
                 }
+                else probeInv = probeSentinel(tn);
             }
             if (!mn.empty() && probeInv.t != VT::Object && probeInv.t != VT::Type &&
                 probeInv.t != VT::Any && probeInv.t != VT::Nil &&
@@ -8954,6 +8965,16 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
             if (!mn.empty() && inv.t == VT::Type && (inv.s == "Mu" || inv.s == "Any") &&
                 probeMethodExists(Value::integer(0), mn, "/nonexistent/rakupp-lookup-probe") == -1)
                 return Value::typeObj("Mu");
+            // …and a ROLE the same way, against a type that does it: whatever
+            // Cool, Real or Numeric has, an Int has; whatever Stringy has, a Str
+            if (!mn.empty() && inv.t == VT::Type && !classes_.count(inv.s)) {
+                const std::string& r = inv.s;
+                Value rep = r == "Cool" || r == "Real" || r == "Numeric" ? Value::integer(0)
+                          : r == "Stringy" ? Value::str("")
+                          : r == "Iterable" ? Value::list({}) : Value::any();
+                if (rep.t != VT::Any && probeMethodExists(rep, mn, "/nonexistent/rakupp-lookup-probe") == -1)
+                    return Value::typeObj("Mu");
+            }
             Value code; code.t = VT::Code; code.setCode(makePayload<Callable>());
             code.code()->ciM().name = mn; code.code()->ciM().isMethod = true;
             code.code()->ciM().pkg = inv.t == VT::Type ? (tn.empty() ? std::string(inv.s) : tn) : inv.typeName(); // (wrapBuiltinMethod)
@@ -9098,6 +9119,8 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
             if (!how) {
                 auto hit = classes_.find(tobj.s);
                 if (hit != classes_.end() && hit->second) how = &hit->second->howObj;
+                // (a subset's metaobject, its role's methods: Red's `Admin.^all`)
+                else if (auto sit = subsets_.find(tobj.s); sit != subsets_.end()) how = &sit->second.howObj;
             }
             if (how && how->t == VT::Object && how->obj() && how->obj()->cls &&
                 how->obj()->cls->findMethod(mm)) {
