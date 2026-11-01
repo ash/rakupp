@@ -320,15 +320,25 @@ replacement array is spread, and so is an itemized one in 6.d. Errors are
 **thrown**: offset past the end is `X::OutOfRange` (what "Offset argument to
 splice", range `0..elems`), a negative size is `X::OutOfRange` ("Size
 argument to splice"), a negative offset likewise, a wrongly typed
-replacement is `X::TypeCheck::Splice`, a lazy replacement or a lazy array is
-`X::Cannot::Lazy`.
+replacement is `X::TypeCheck::Splice`, a lazy replacement is
+`X::Cannot::Lazy`. A lazy array is not an error. `splice(0, 1)` on `1..*`
+works and returns `[1]`. `splice(1)` and `splice(1, *)` remove only the part
+of the array computed so far: on a fresh lazy array they return `[]`, leave
+the array as it was and raise no error; after `@a[^4]` has computed four
+elements, `splice(1)` returns `[2, 3, 4]` and the array goes on `1, 5, 6`.
+*Raku Behind the Docs* tags the silent `[]` "Bug?".
 ```
 say do { my @a = 1..5; my @r = @a.splice(1, 2); @r.raku ~ " " ~ @a.raku }, " ", do { my @a = 1..5; @a.splice(1, 2, <a b c>).raku ~ " " ~ @a.raku }, " ", do { my @a = 1..5; @a.splice(1).raku ~ " " ~ @a.raku }, " ", do { my @a = 1..5; @a.splice.raku ~ " " ~ @a.raku }, " ", do { my @a = 1..3; @a.splice(*, 0, 9).raku ~ " " ~ @a.raku }, " ", do { my @a = 1..3; @a.splice(*-1).raku ~ " " ~ @a.raku }, " ", do { my @a = 1..3; @a.splice(1, *).raku ~ " " ~ @a.raku }, " ", do { my @a = 1..3; @a.splice(0, 2, [7, 8]).raku ~ " " ~ @a.raku }, " ", do { my @a = 1..3; @a.splice(0, 0, $[7, 8]); @a.raku }, " ", do { my @a = 1..3; @a.splice(1, 99).raku ~ " " ~ @a.raku }, " ", do { my @a = 1..3; @a.splice(3, 0, 4).raku ~ " " ~ @a.raku }
 # rakudo 2026.08: [2, 3] [1, 4, 5] [2, 3] [1, "a", "b", "c", 4, 5] [2, 3, 4, 5] [1] [1, 2, 3, 4, 5] [] [] [1, 2, 3, 9] [3] [1, 2] [2, 3] [1] [1, 2] [7, 8, 3] [7, 8, 1, 2, 3] [2, 3] [1] [] [1, 2, 3, 4]
 say do { my @a = 1..3; (try @a.splice(9)) // $!.^name ~ ":" ~ $!.what ~ ":" ~ $!.range }, " ", do { my @a = 1..3; (try @a.splice(1, -1)) // $!.^name ~ ":" ~ $!.what ~ ":" ~ $!.range }, " ", do { my @a = 1..3; my $i = -1; (try @a.splice($i)) // $!.^name }, " ", do { my Int @b = 1, 2; (try @b.splice(0, 1, "x")) // $!.^name }, " ", do { my @a = 1..3; (try @a.splice(0, 1, 1..*)) // $!.^name }, " ", [].splice(0, 1).raku, " ", (try [].splice(1)) // $!.^name, " ", do { my Int @b = 1, 2, 3; @b.splice(1, 1).of.raku ~ " " ~ @b.splice(0, 1).raku }, " ", do { my @a = 1..*; (try @a.splice(0, 1)) // $!.^name }, " ", do { my @a = 1..3; @a.splice(3).raku ~ " " ~ @a.raku }, " ", do { my @a = 1..3; @a.splice(1, 0).raku ~ " " ~ @a.raku }
-# rakudo 2026.08: X::OutOfRange:Offset argument to splice:0..3 X::OutOfRange:Size argument to splice:0..^2 X::OutOfRange X::TypeCheck::Splice X::Cannot::Lazy [] X::OutOfRange Int Array[Int].new(1) X::Cannot::Lazy [] [1, 2, 3] [] [1, 2, 3]
+# rakudo 2026.08: X::OutOfRange:Offset argument to splice:0..3 X::OutOfRange:Size argument to splice:0..^2 X::OutOfRange X::TypeCheck::Splice X::Cannot::Lazy [] X::OutOfRange Int Array[Int].new(1) [1] [] [1, 2, 3] [] [1, 2, 3]
+say do { my @a = 1..*; (try @a.splice(0, 1).raku ~ " " ~ @a[^3].raku) // $!.^name }, " ", do { my @a = 1..*; (try @a.splice(1).raku ~ " " ~ @a[^3].raku) // $!.^name }, " ", do { my @a = 1..*; (try @a.splice(1, *).raku ~ " " ~ @a[^3].raku) // $!.^name }, " ", do { my @a = 1..*; @a[^4]; (try @a.splice(1).raku ~ " " ~ @a[^3].raku) // $!.^name }
+# rakudo 2026.08: [1] (2, 3, 4) [] (1, 2, 3) [] (1, 2, 3) [2, 3, 4] (1, 5, 6)
 ```
 rakupp 4.0.1-50: matches. (The sheet's last case is wrong: the 2026.08 binary ACCEPTS `splice(0, 1)` on a lazy array and answers `[1]`, where the line above records `X::Cannot::Lazy`.)
+(this rakupp line predates the correction; re-measure before relying on it)
+
+Corrected 2026-11-01 from Raku Behind the Docs, ch 9 (findings/BEHIND-THE-DOCS.md §1).
 
 ### LA-25  grab                                                    D:yes R:? V:spec
 Removes and returns random elements: one, `grab(n)` up to n, `grab(*)` all;
@@ -367,7 +377,11 @@ rakupp 4.0.1-50: matches. Which refusals FAIL and which THROW was measured again
 ### LA-28  A Seq can be iterated once, unless cached               D:yes R:yes V:spec
 The second `.iterator`, and `.elems` or `.is-lazy` after the iterator was
 taken, throw `X::Seq::Consumed`. `.cache` keeps the values; `.elems` and
-`.Bool` cache implicitly; assigning the Seq into an array caches it too.
+`.Bool` cache implicitly. Assigning a bare Seq into an array consumes it
+(`my \s = (1, 2).Seq; my @a = s`, or `$s<>`, or a `$s` bound with `:=`).
+A Seq held in a `$` variable goes in as ONE element, the Seq itself, and is
+never iterated, so its `.elems` still works afterwards; that is all the
+first probe's `my @a = $s` field shows.
 `.eager` returns a List but leaves the Seq consumed; `.list` hands the
 iterator to a lazy List and consumes the Seq; `.sink` consumes. A consumed
 Seq prints as `Seq.new()`. `Seq.new` without an iterator is consumed from
@@ -375,8 +389,13 @@ the start.
 ```
 say do { my $s = (1, 2).Seq; $s.iterator; ((try $s.iterator) // $!.^name) }, " ", do { my $s = (1, 2).Seq; my @a = $s; ((try $s.elems) // $!.^name) }, " ", do { my $s = (1, 2).Seq; $s.cache; $s.elems ~ " " ~ $s.list.raku }, " ", do { my $s = (1, 2).Seq; my $e = $s.eager; $e.raku ~ " " ~ ((try $s.elems) // $!.^name) }, " ", do { my $s = (1, 2).Seq; $s.list; ((try $s.elems) // $!.^name) }, " ", do { my $s = (1, 2).Seq; $s.iterator; $s.raku }, " ", do { my $s = (1, 2).Seq; $s.iterator; ((try $s.is-lazy) // $!.^name) }, " ", do { my $s = (1, 2).Seq; for $s { }; ((try $s.elems) // $!.^name) }, " ", do { my $s = (1, 2).Seq; my @a = $s; ((try { my @b = $s; @b.raku }) // $!.^name) }, " ", do { my $s = (1, 2).Seq; $s.sink; ((try $s.elems) // $!.^name) }, " ", (try Seq.new.elems) // $!.^name, " ", do { my $s = (1..3).map({ $_ }); ($s.elems, $s.elems).raku }, " ", do { my $s = (1..3).map({ $_ }); $s.Bool ~ " " ~ $s.elems }, " ", (1, 2).Seq.Str.raku, " ", (1, 2).Seq.gist, " ", (1..*).map({ $_ }).rotate.^name, " ", do { my $s = (1, 2).Seq; my $l = $s.list; $l.elems ~ " " ~ ((try $s.elems) // $!.^name) }
 # rakudo 2026.08: X::Seq::Consumed 2 2 (1, 2) $(1, 2) X::Seq::Consumed X::Seq::Consumed $(Seq.new()) X::Seq::Consumed 2 [(1, 2).Seq,] X::Seq::Consumed X::Seq::Consumed (3, 3) True 3 "1 2" (1 2) Failure 2 X::Seq::Consumed
+say do { my $s = (1, 2).Seq; my @a = $s; @a.elems ~ " " ~ @a[0].^name ~ " " ~ ((try $s.elems) // $!.^name) }, " ", do { my \s = (1, 2).Seq; my @a = s; @a.elems ~ " " ~ ((try s.elems) // $!.^name) }, " ", do { my $s := (1, 2).Seq; my @a = $s; @a.elems ~ " " ~ ((try $s.elems) // $!.^name) }, " ", do { my $s = (1, 2).Seq; my @a = $s<>; @a.elems ~ " " ~ ((try $s.elems) // $!.^name) }
+# rakudo 2026.08: 1 Seq 2 2 X::Seq::Consumed 2 X::Seq::Consumed 2 X::Seq::Consumed
 ```
 rakupp 4.0.1-50: differs — unchanged, and deliberately left: a Seq is never consumed here (`$s.sink; $s.elems` is 2) and `Seq.new.iterator` prints garbage. Consumption needs a shared per-Seq flag that survives copying, and every internal re-read of a Seq would have to be audited against it; that is its own sitting.
+(this rakupp line predates the correction; re-measure before relying on it)
+
+Corrected 2026-11-01 from Raku Behind the Docs, ch 9 (findings/BEHIND-THE-DOCS.md §1).
 
 ### LA-29  Seq methods                                             D:yes R:yes V:spec
 ```
@@ -391,7 +410,11 @@ A lazy `.rotate` is a Failure, `.slice` needs increasing indices and dies at rei
 rakupp 4.0.1-50: differs — `Seq.new.raku` is `()` rather than `Seq.new()` (it needs the consumption flag of LA-28 to tell an unstarted Seq from an empty one), and `.slice(2, 0)` does not refuse decreasing indices. `.rotate`, the lazy `.elems`/`.rotate` Failures and the lazy `.Bool` all match now.
 
 ### LA-30  Seq and List smartmatch                                 D:yes R:yes V:spec
-A Seq matches elementwise with equal length; a lazy side never matches. A
+A Seq matches elementwise with equal length. A lazy list or Seq on either
+side of a list match is False. A Range on the right is not a list pattern:
+`Range.ACCEPTS` given a list compares the list's LENGTH with the Range, so
+`(1, 2).Seq ~~ (1..*)` is True although the right side is endless, and
+`(5, 6) ~~ 1..2` is True too. A
 List pattern matches elementwise with `ACCEPTS`, `*` taking one element
 and `**` any run; a non-Iterable topic against a list of non-Match
 elements is False; `gather` returns a Seq.
@@ -400,8 +423,13 @@ say ((1, 2).Seq ~~ (1, 2)), " ", ((1, 2).Seq ~~ (1, 2, 3)), " ", ((1, 2, 3).Seq 
 # rakudo 2026.08: True False False False True True False True (1, 2).Seq Seq ().Seq False
 say ((1, 2, 3) ~~ (1, 2, 3)), " ", ((1, 2, 3) ~~ (1, 2)), " ", ((1, 2, 3) ~~ (1, **)), " ", ((1, 2, 3) ~~ (**, 3)), " ", ((1, 2, 3) ~~ (1, **, 3)), " ", ((1, 2, 3) ~~ (Int, Int, Int)), " ", ((1, 2, 3) ~~ (Int, Str, Int)), " ", ((1, 2) ~~ (1, 2, 3)), " ", (() ~~ ()), " ", ((1, 2) ~~ List), " ", ((1, 2) ~~ (1, *)), " ", ((1, 2, 3) ~~ (1, *, 3)), " ", (42 ~~ (1, 42)), " ", (42 ~~ ()), " ", (() ~~ 42).raku
 # rakudo 2026.08: True False True True True True False False True True True True False False Bool::False
+say ((5, 6) ~~ 1..2), " ", ((5, 6, 7) ~~ 1..2), " ", ((5, 6).Seq ~~ 1..2), " ", ((1, 2) ~~ (1..*).list), " ", ((1, 2).Seq ~~ (lazy 1, 2)), " ", ((lazy 1, 2) ~~ (1, 2))
+# rakudo 2026.08: True False True False False False
 ```
 rakupp 4.0.1-50: matches.
+(this rakupp line predates the correction; re-measure before relying on it)
+
+Corrected 2026-11-01 from Raku Behind the Docs, ch 9 (findings/BEHIND-THE-DOCS.md §1).
 
 ## E. List assignment
 
@@ -438,16 +466,22 @@ say do { my $n = 0; (++$n xx 3).raku }, " ", ([1] xx 2).map(*.WHICH).unique.elem
 rakupp 4.0.1-50: differs only in `([1] xx 2).map(*.WHICH).unique.elems`, which is 1 — two Arrays with equal elements share an identity here (see LA-36). `++$n xx 3`, `1 xx Inf` and the Seq caching all match.
 
 ### LA-33  X, Z, roundrobin                                        D:yes R:yes V:spec
-`Z` stops at the shortest list; `X` is the cross product, lazy when its
-first operand is; `:with` folds each tuple; `roundrobin` interleaves and
+`Z` stops at the shortest list; `X` is the cross product, lazy when ANY of
+its operands is lazy, not only the first (`(1, 2) X (1..*)` is lazy and
+starts `(1, 1), (1, 2), (1, 3)`); `:with` folds each tuple; `roundrobin` interleaves and
 `:slip` flattens; empty operands give empty results.
 ```
 say (1, 2 X 3, 4).raku, " ", (1, 2 X+ 10, 20).raku, " ", (1, 2 Z 3, 4).raku, " ", ((1, 2, 3) Z (4, 5)).raku, " ", (1, 2 Z+ 10, 20).raku, " ", zip((1, 2), (3, 4)).raku, " ", cross((1, 2), (3,)).raku, " ", roundrobin((1, 2, 3), (4, 5)).raku, " ", roundrobin((1, 2), (3, 4), :slip).raku, " ", (() X (1, 2)).raku, " ", ((1, 2) Z ()).raku
 # rakudo 2026.08: ((1, 3), (1, 4), (2, 3), (2, 4)).Seq (11, 21, 12, 22).Seq ((1, 3), (2, 4)).Seq ((1, 4), (2, 5)).Seq (11, 22).Seq ((1, 3), (2, 4)).Seq ((1, 3), (2, 3)).Seq ((1, 4), (2, 5), (3,)).Seq (1, 3, 2, 4).Seq ().Seq ().Seq
 say zip((1, 2), (3, 4), :with(&[~])).raku, " ", infix:<X>((1, 2), (3, 4), :with(&[+])).raku, " ", (1, 2 X~ 3, 4).raku, " ", ((1, 2) X (3, 4) X (5,)).raku, " ", ((1, 2) Z (3, 4) Z (5, 6)).raku, " ", ((1..*) Z (3, 4)).raku, " ", ((1..*) X (3, 4)).head(2).raku, " ", roundrobin((1, 2), (3,), (4, 5, 6)).raku, " ", roundrobin().raku, " ", ([Z] ((1, 2), (3, 4))).raku, " ", ([X] ((1, 2), (3,))).raku, " ", ((1, 2) Z (3, 4)).^name, " ", ((1, 2) X (3, 4)).is-lazy, " ", ((1..*) X (3, 4)).is-lazy, " ", ((1, 2) Z (1..*)).elems
 # rakudo 2026.08: ("13", "24").Seq (4, 5, 5, 6).Seq ("13", "14", "23", "24").Seq ((1, 3, 5), (1, 4, 5), (2, 3, 5), (2, 4, 5)).Seq ((1, 3, 5), (2, 4, 6)).Seq ((1, 3), (2, 4)).Seq ((1, 3), (1, 4)).Seq ((1, 3, 4), (2, 5), (6,)).Seq ().Seq ((1, 3), (2, 4)).Seq ((1, 3), (2, 3)).Seq Seq False True 2
+say ((1, 2) X (3, 4)).is-lazy, " ", ((1..*) X (3, 4)).is-lazy, " ", ((1, 2) X (1..*)).is-lazy, " ", ((1, 2) X (3, 4) X (1..*)).is-lazy, " ", ((1, 2) X (1..*)).head(3).raku, " ", ((1, 2) X+ (1..*)).is-lazy
+# rakudo 2026.08: False True True True ((1, 1), (1, 2), (1, 3)).Seq True
 ```
 rakupp 4.0.1-50: differs only in `((1..*) X (3, 4)).is-lazy`, which is False — a cross over an endless left operand is built eagerly from its prefix. `zip(:with)` and `infix:<X>(:with)` match.
+(this rakupp line predates the correction; re-measure before relying on it)
+
+Corrected 2026-11-01 from Raku Behind the Docs, ch 9 (findings/BEHIND-THE-DOCS.md §1).
 
 ### LA-34  Where flat stops                                        D:yes R:yes V:spec
 `flat` descends into Iterables that are **not** in a Scalar container. Every

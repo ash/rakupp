@@ -69,16 +69,25 @@ Str, `.command` as given. Requested pipes exist and read as empty
 (`.out.slurp(:close)` is `""`, `.lines` an empty Seq, `.get` Nil), and a
 `print` to a requested `.in` returns True. `shell` of a missing command
 spawns the shell itself successfully, so that is an ordinary exit 127 with
-a pid and no os-error. The 254 is the low byte of the spawn error code
-(-2, PA-20) and carries no meaning; the docs promise the -1 and say
-nothing of the signal, and Roast asserts only the -1 (in the sink message,
-PA-03). Implement the -1, the Nil pid and the os-error; the 254 is
-recorded so nobody reads meaning into it.
+a pid and no os-error. The signal is the low byte of the spawn error code
+(PA-20) and carries no meaning: 254 for the -2 of a missing program or
+`:cwd`, 243 for the -13 (permission denied) of an empty name. A missing
+`:cwd` gives an os-error that blames the program, not the directory
+("Failed to spawn process sh: no such file or directory (error code
+-2)"). The docs promise the -1 and say nothing of the signal, and Roast
+asserts only the -1 (in the sink message, PA-03). Implement the -1, the
+Nil pid and the os-error; the signal byte is recorded so nobody reads
+meaning into it.
 ```
 my $p = run("nonexistent-cmd-zz"); say $p.^name, " ", $p.exitcode, " ", $p.signal, " ", ?$p, " ", $p.pid.raku, " ", $p.command.raku, " ", run("nonexistent-cmd-zz", "a", :out).out.slurp(:close).raku, " ", run("nonexistent-cmd-zz", :err).err.slurp(:close).raku, " ", run("nonexistent-cmd-zz", :merge).out.slurp(:close).raku, " ", shell("nonexistent-cmd-zz 2>/dev/null").exitcode, " ", shell("nonexistent-cmd-zz 2>/dev/null").signal, " ", shell("nonexistent-cmd-zz 2>/dev/null").pid.^name, " ", run("nonexistent-cmd-zz", :out).out.lines.raku, " ", run("nonexistent-cmd-zz", :out).out.get.raku, " ", run("nonexistent-cmd-zz", :in).in.print("x").raku, " ", run("", :out).exitcode, " ", run("", :out).pid.raku, " ", (try $p.os-error.^name) // $!.^name, " ", (try ($p.os-error.chars > 0)) // $!.^name, " ", (try run("true").os-error.raku) // $!.^name
 # rakudo 2026.08: Proc -1 254 False Nil ("nonexistent-cmd-zz",) "" "" "" 127 0 Int ().Seq Nil Bool::True -1 Nil Str True Str
+my $e = run("", :out); my $c = run("sh", "-c", "true", :cwd("nope02")); say $e.exitcode, " ", $e.signal, " ", $e.os-error.contains("error code -13"), " ", $c.exitcode, " ", $c.signal, " ", $c.os-error
+# rakudo 2026.08: -1 243 True -1 254 Failed to spawn process sh: no such file or directory (error code -2)
 ```
 rakupp 4.0.1-84: differs — a program that cannot start is reported as exit 127, signal 0, with a pid, for `run("nonexistent-cmd-zz")` and `run("")` alike; `.out.lines` is a List; `.os-error` does not exist.
+(this rakupp line predates the correction; re-measure before relying on it)
+
+Corrected 2026-11-01 from Raku Behind the Docs, ch 20 (findings/BEHIND-THE-DOCS.md §1).
 
 ### PA-03  Sinking a Proc throws X::Proc::Unsuccessful                  D:yes R:yes V:spec
 A Proc in sink context — a bare `run`/`shell` statement, `sink $proc`,
@@ -123,31 +132,46 @@ process to end. With `:in` that cannot happen before `.in` is closed, so
 `run("cat", :in).exitcode` blocks until `$p.in.close` — forever if the
 program waits for its input. `.out.slurp` blocks until the child closes
 its stdout, and data written to `.in` before the close is delivered.
-Once a pipe is being drained (PA-06) its data is buffered on the parent
-side without bound, so `.exitcode` before reading `.out` returns for
-output of any size and the output is still there afterwards.
-Timing-dependent probe.
+While `.exitcode` waits it reads every captured pipe, `.out` and `.err`
+alike, and buffers their data on the parent side without bound, so
+`.exitcode` before reading `.out` returns for output of any size and the
+output is still there afterwards. Until something reads a pipe (and
+`.exitcode` counts), the child's writes fill the OS pipe and block it:
+after a 2 s sleep the child has not reached its `touch`, and once
+`.exitcode` returns it has. Timing-dependent probe.
 ```
 my $p = run("cat", :in); my $t = start { $p.exitcode }; await Promise.anyof($t, Promise.in(3)); say $t.status; $p.in.close; await Promise.anyof($t, Promise.in(5)); say $t.status, " ", $t.result; my $q = run("cat", :in, :out); my $u = start { $q.out.slurp(:close) }; await Promise.anyof($u, Promise.in(3)); say $u.status; $q.in.print("late"); $q.in.close; await Promise.anyof($u, Promise.in(5)); say $u.status, " ", $u.result.raku, " ", $q.exitcode; my $r = run("sh", "-c", "printf x; exit 5", :out); say $r.exitcode, " ", $r.out.slurp(:close).raku, " ", $r.exitcode; my $s = run("sh", "-c", "yes | head -c 200000; exit 6", :out); say $s.exitcode, " ", $s.out.slurp(:close).chars, " ", $s.out.close.exitcode
 # rakudo 2026.08: Planned|Kept 0|Planned|Kept "late" 0|5 "x" 5|6 200000 6
+my $r = run("sh", "-c", "yes | head -c 200000 >&2; touch mk05", :out, :err); sleep 2; my $before = "mk05".IO.e; my $x = $r.exitcode; say $before, " ", "mk05".IO.e, " ", $x, " ", $r.err.slurp(:close).chars, " ", $r.out.slurp(:close).raku
+# rakudo 2026.08: False True 0 200000 ""
 ```
 rakupp 4.0.1-84: differs — `.exitcode` with an open `:in` returns at once (0) and `.out.slurp(:close)` returns `""` without waiting, so the `"late"` write is lost; `yes | head` also prints `yes: stdout: Broken pipe` on the parent's stderr, because SIGPIPE is ignored process-wide and inherited.
+(this rakupp line predates the correction; re-measure before relying on it)
+
+Corrected 2026-11-01 from Raku Behind the Docs, ch 20 (findings/BEHIND-THE-DOCS.md §1).
 
 ### PA-06  Two captured pipes can deadlock                              D:yes R:no V:quirk
-A requested `.out` or `.err` is drained from the moment it is first read
-or closed, not before; until then the child's writes fill the OS pipe
-(64 KiB here) and block it. So with `:out, :err` a child that writes more
-than that to stderr blocks before the parent, still reading `.out` to
-end of file, ever reaches `.err`, and the parent blocks too; reading
-`.err` first is fine when stdout stays small, `:merge` has one pipe and
-never deadlocks, and closing an unread pipe drains and discards its
-data. The docs describe this hazard under "Potential Deadlocks"; step two
+A requested `.out` or `.err` is drained when it is read or closed, and
+while `.exitcode` waits, which reads both pipes (PA-05); until then the
+child's writes fill the OS pipe (64 KiB here) and block it. So with
+`:out, :err` a child that writes more than that to stderr blocks before
+the parent, still reading `.out` to end of file, ever reaches `.err`, and
+the parent blocks too. Asking for `.exitcode` first avoids the deadlock,
+and both outputs are still there afterwards; reading `.err` first is fine
+when stdout stays small, `:merge` has one pipe and never deadlocks, and
+closing an unread pipe drains and discards its data. The docs describe
+this hazard under "Potential Deadlocks"; step two
 need not reproduce it, and Raku++ does not. Timing-dependent probe.
 ```
 my $r = run("sh", "-c", "i=0; while [ \$i -lt 3000 ]; do echo 0123456789012345678901234567890123456789 >&2; i=\$((i+1)); done; echo done", :out, :err); my $t = start { $r.out.slurp(:close) }; await Promise.anyof($t, Promise.in(3)); say $t.status; my $e = start { $r.err.slurp(:close) }; await Promise.anyof(Promise.allof($t, $e), Promise.in(6)); say $t.status, " ", $t.result.raku, " ", $e.result.lines.elems, " ", $r.exitcode; say run("sh", "-c", "i=0; while [ \$i -lt 3000 ]; do echo 0123456789012345678901234567890123456789 >&2; i=\$((i+1)); done; echo done", :merge).out.slurp(:close).lines.elems; my $s = run("sh", "-c", "i=0; while [ \$i -lt 3000 ]; do echo 0123456789012345678901234567890123456789 >&2; i=\$((i+1)); done; echo done", :out, :err); say $s.err.slurp(:close).lines.elems, " ", $s.out.slurp(:close).raku; my $u = run("sh", "-c", "i=0; while [ \$i -lt 3000 ]; do echo 0123456789012345678901234567890123456789; i=\$((i+1)); done", :out, :err); say $u.out.close.exitcode, " ", $u.err.slurp(:close).raku
 # rakudo 2026.08: Planned|Kept "done\n" 3000 0|3001|3000 "done\n"|0 ""
+my $r = run("sh", "-c", "i=0; while [ \$i -lt 3000 ]; do echo 0123456789012345678901234567890123456789 >&2; echo 0123456789012345678901234567890123456789; i=\$((i+1)); done; echo done", :out, :err); my $t = start { $r.exitcode }; await Promise.anyof($t, Promise.in(5)); say $t.status, " ", ($t.status ~~ Kept ?? $t.result !! "-"), " ", $r.out.slurp(:close).lines.elems, " ", $r.err.slurp(:close).lines.elems
+# rakudo 2026.08: Kept 0 3001 3000
 ```
 rakupp 4.0.1-84: differs, for the better — the first `.out.slurp` completes at once (`Kept`) because both pipes are drained from the spawn; every other field matches.
+(this rakupp line predates the correction; re-measure before relying on it)
+
+Corrected 2026-11-01 from Raku Behind the Docs, ch 20 (findings/BEHIND-THE-DOCS.md §1).
 
 ### PA-07  Proc.new, spawn and shell as methods                         D:yes R:yes V:spec
 `Proc.new` takes `:in`, `:out`, `:err`, `:bin`, `:chomp`, `:merge`,
@@ -220,16 +244,24 @@ rakupp 4.0.1-84: differs — the line dies at `.proc`; measured without it: `.ou
 `:err` gives `.err`, an IO::Pipe that behaves as `.out` does. `:merge`
 sends both streams into `.out` and leaves `.err` the type object, whatever
 `:out` and `:err` say (`:merge, :!out` and `:merge, :err` still capture
-both into `.out`); the interleaving inside is the child's write order,
-not a guarantee. A stream neither requested nor merged is inherited from
+both into `.out`). `:merge` does not keep the child's write order: the two
+streams are joined as their data arrives, so lines written alternately to
+stdout and stderr often come out reordered (the second probe counts the
+reordered runs out of 40; three runs printed 26, 16 and 37, and the first
+probe sorts its merged lines for that reason). Timing-dependent probe.
+A stream neither requested nor merged is inherited from
 the parent, so `:out` alone lets stderr through to the parent's stderr;
 `:!err`/`:err(False)` discards it (PA-13). `.out.close` on a merged pipe
 returns the Proc with its exit code.
 ```
 my $p = run("sh", "-c", "echo out; echo err >&2", :out, :err); say $p.out.slurp(:close).raku, " ", $p.err.slurp(:close).raku, " ", $p.exitcode, " ", run("sh", "-c", "echo out; echo err >&2", :merge).out.slurp(:close).lines.sort.raku, " ", run("sh", "-c", "echo e >&2", :err).err.lines.raku, " ", run("sh", "-c", "echo e >&2", :out, :!err).out.slurp(:close).raku, " ", run("sh", "-c", "echo o", :err, :!out).err.slurp(:close).raku, " ", run("sh", "-c", "echo o; echo e >&2", :merge, :err).out.slurp(:close).lines.sort.raku, " ", run("sh", "-c", "echo o; echo e >&2", :merge, :!out).out.slurp(:close).lines.sort.raku, " ", run("sh", "-c", "echo o; echo e >&2", :merge, :out).out.slurp(:close).lines.sort.raku, " ", run("sh", "-c", "echo o; echo e >&2", :merge, :err).err.raku, " ", run("sh", "-c", "echo out; echo err >&2", :merge).err.raku, " ", run("sh", "-c", "echo out; echo err >&2", :merge).out.^name, " ", run("sh", "-c", "echo o; exit 4", :merge).out.close.exitcode
 # rakudo 2026.08: "out\n" "err\n" 0 ("err", "out").Seq ("e",).Seq "" "" ("e", "o").Seq ("e", "o").Seq ("e", "o").Seq IO::Pipe IO::Pipe IO::Pipe 4
+say (^40).grep({ run("sh", "-c", "echo 1; echo 2 >&2; echo 3; echo 4 >&2", :merge).out.slurp(:close).lines.join(",") ne "1,2,3,4" }).elems
+# rakudo 2026.08: 26
 ```
 rakupp 4.0.1-84: differs — `:!err` still lets the child's stderr through to the parent's, `:merge, :!out` captures nothing, `.err` under `:merge` is a handle dump rather than the type object, and `.lines` is a List.
+
+Corrected 2026-11-01 from Raku Behind the Docs, ch 20 (findings/BEHIND-THE-DOCS.md §1).
 
 ### PA-12  The :in pipe                                                 D:yes R:yes V:spec
 With `:in`, `.in` is a write-only IO::Pipe: `print`, `say`, `put`, `write`
@@ -301,16 +333,22 @@ rakupp 4.0.1-84: differs — `read` always returns an empty Buf, `readchars` `""
 untouched. `:!chomp` keeps the separator on each line and sets `.chomp`
 False. Independently of `:nl`, a `\r\n` arriving on a text pipe is always
 turned into `\n` — so `:nl("\r\n")` never matches and yields one unchomped
-line — while a lone `\r` is kept as data; and `:nl("\r")` never splits on
-a pipe although `lines(:nl-in("\r"))` on a file does (quirk). A binary
-pipe, and `.slurp(:bin)`/`.read` on a text pipe, see the raw `\r\n`.
+line (quirk) — while a lone `\r` is kept as data. `:nl("\r")` does split a
+pipe on a lone `\r`, as `lines(:nl-in("\r"))` does a file. (The second
+probe's `:nl` arguments used to be written `"\\r"`, a literal backslash
+and `r`, which never occurs in the data; that made `:nl("\r")` look as if
+it never split.) A binary pipe, and `.slurp(:bin)`/`.read` on a text pipe,
+see the raw `\r\n`.
 ```
 say run("printf", "a!b!c", :out, :nl("!")).out.lines.raku, " ", run("printf", "a!b!c", :out, :nl("!")).out.get.raku, " ", run("printf", "a\\nb\\n", :out, :!chomp).out.lines.raku, " ", run("printf", "a\\nb\\n", :out, :!chomp).out.get.raku, " ", run("printf", "a\\r\\nb", :out).out.lines.raku, " ", run("printf", "a\\r\\nb", :out).out.slurp(:close).raku, " ", run("printf", "a\\nb\\n", :out, :nl("!")).out.slurp(:close).raku, " ", run("printf", "a\\nb\\n", :out, :nl("!")).out.nl-in.raku, " ", run("printf", "a\\nb\\n", :out, :nl("!")).out.lines.raku, " ", do { my $q = run("cat", :in, :out, :nl("!")); $q.in.say("x"); $q.in.close; $q.out.slurp(:close).raku }, " ", run("cat", :in, :out, :nl("!")).in.nl-out.raku, " ", run("printf", "a!b", :out, :nl("!"), :!chomp).out.lines.raku, " ", run("printf", "a\\nb", :out, :chomp).out.chomp, " ", run("printf", "a\\nb", :out, :!chomp).out.chomp
 # rakudo 2026.08: ("a", "b", "c").Seq "a" ("a\n", "b\n").Seq "a\n" ("a", "b").Seq "a\nb" "a\nb\n" "!" ("a\nb\n",).Seq "x!" "!" ("a!", "b").Seq True False
-say run("printf", "a\\rb\\n", :out).out.slurp(:close).ords.raku, " ", run("printf", "a\\rb", :out).out.get.ords.raku, " ", run("printf", "a\\rb\\r", :out, :nl("\\r")).out.lines.elems, " ", run("printf", "a\\rb\\n", :out, :nl("\\r")).out.lines.raku, " ", run("printf", "a\\r\\nb\\r\\n", :out, :nl("\\r\\n")).out.lines.raku, " ", run("printf", "a\\r\\nb\\r\\n", :out).out.lines.raku, " ", run("printf", "a\\nb\\n", :out, :nl("\\n")).out.lines.raku, " ", run("printf", "a\\r\\nb", :out, :bin).out.slurp(:close).raku, " ", run("printf", "a\\r\\nb", :out).out.slurp(:close, :bin).raku, " ", run("printf", "a\\r\\nb", :out).out.read(10).raku, " ", run("printf", "a\\r\\nb\\r\\n", :out, :nl("\\r\\n")).out.slurp(:close).raku, " ", run("printf", "a\\r\\r\\nb", :out).out.slurp(:close).ords.raku, " ", do { spurt("cr", "a\rb\rc"); "cr".IO.lines(:nl-in("\r")).raku }, " ", run("printf", "a\\rb\\rc", :out, :nl("\\r")).out.lines.raku
-# rakudo 2026.08: (97, 13, 98, 10).Seq (97, 13, 98).Seq 1 ("a\rb\n",).Seq ("a\nb\n",).Seq ("a", "b").Seq ("a\nb\n",).Seq Buf[uint8].new(97,13,10,98) Buf[uint8].new(97,13,10,98) Buf[uint8].new(97,13,10,98) "a\nb\n" (97, 13, 10, 98).Seq ("a", "b", "c").Seq ("a\rb\rc",).Seq
+say run("printf", "a\\rb\\n", :out).out.slurp(:close).ords.raku, " ", run("printf", "a\\rb", :out).out.get.ords.raku, " ", run("printf", "a\\rb\\r", :out, :nl("\r")).out.lines.elems, " ", run("printf", "a\\rb\\n", :out, :nl("\r")).out.lines.raku, " ", run("printf", "a\\r\\nb\\r\\n", :out, :nl("\r\n")).out.lines.raku, " ", run("printf", "a\\r\\nb\\r\\n", :out).out.lines.raku, " ", run("printf", "a\\nb\\n", :out, :nl("\\n")).out.lines.raku, " ", run("printf", "a\\r\\nb", :out, :bin).out.slurp(:close).raku, " ", run("printf", "a\\r\\nb", :out).out.slurp(:close, :bin).raku, " ", run("printf", "a\\r\\nb", :out).out.read(10).raku, " ", run("printf", "a\\r\\nb\\r\\n", :out, :nl("\r\n")).out.slurp(:close).raku, " ", run("printf", "a\\r\\r\\nb", :out).out.slurp(:close).ords.raku, " ", do { spurt("cr", "a\rb\rc"); "cr".IO.lines(:nl-in("\r")).raku }, " ", run("printf", "a\\rb\\rc", :out, :nl("\r")).out.lines.raku
+# rakudo 2026.08: (97, 13, 98, 10).Seq (97, 13, 98).Seq 2 ("a", "b\n").Seq ("a\nb\n",).Seq ("a", "b").Seq ("a\nb\n",).Seq Buf[uint8].new(97,13,10,98) Buf[uint8].new(97,13,10,98) Buf[uint8].new(97,13,10,98) "a\nb\n" (97, 13, 10, 98).Seq ("a", "b", "c").Seq ("a", "b", "c").Seq
 ```
 rakupp 4.0.1-84: differs — `:nl` is ignored (lines split on `\n` only, `nl-in` stays the default, `.in.say` appends `\n`), `:!chomp` is ignored, `\r\n` is translated but `.slurp(:bin)` and `.read` on a text pipe give a Str and an empty Buf, and a file with `:nl-in("\r")` does not split either.
+(this rakupp line predates the correction; re-measure before relying on it)
+
+Corrected 2026-11-01 from Raku Behind the Docs, ch 20 (findings/BEHIND-THE-DOCS.md §1).
 
 ### PA-17  :cwd and :env                                                D:yes R:yes V:quirk
 `:cwd` (a Str or IO::Path, relative to `$*CWD`) is the child's working
@@ -373,10 +411,12 @@ my $p = Proc::Async.new("true"); my $pr = $p.start; await Promise.anyof($pr, Pro
 rakupp 4.0.1-84: differs — both lines die at `.pid`; measured without it: `AlreadyStarted` is thrown, the start Promise is kept with a Proc whose exitcode, signal and command are right (the command an Array, `.pid` the real pid), sinking that Proc does not throw, and `.ready` stays Planned forever (its result is the `Proc` type object).
 
 ### PA-20  A process that cannot be started                             D:partial R:yes V:spec
-When the program is missing (an empty name included) or `:cwd` is
-unusable, the start Promise is broken with an `X::OS` whose `.os-error` is
-a Str and `.error-code` -2 for a missing program or directory and -20 for
-a `:cwd` that is a file; `.ready`/`.pid` is broken with the same exception
+When the program is missing, the name is empty or `:cwd` is unusable, the
+start Promise is broken with an `X::OS` whose `.os-error` is a Str and
+`.error-code` -2 for a missing program or directory, -13 (permission
+denied) for an empty name and -20 for a `:cwd` that is a file. For a missing
+`:cwd` the message blames the program ("Failed to spawn process sh: no
+such file or directory"). `.ready`/`.pid` is broken with the same exception
 object; `.started` is True. A `.write` or `.print` Promise is broken with
 `X::AdHoc`; `.close-stdin` returns True; every stdout, stderr, `:bin` or
 merged Supply obtained before start quits with `X::AdHoc` (a `react` on it
@@ -386,8 +426,13 @@ my $p = Proc::Async.new(:w, "nonexistent-cmd-zz"); my $so = $p.stdout; my $se = 
 # rakudo 2026.08: Broken X::OS True Str -2 Broken True Broken:X::AdHoc Broken True X::AdHoc X::AdHoc X::OS+{X::Await::Died} True killed True
 my $p = Proc::Async.new("nonexistent-cmd-zz"); my $q = ""; $p.stdout.tap(-> $ {}, quit => { $q ~= "O:" ~ .^name }); $p.stderr.tap(-> $ {}, quit => { $q ~= " E:" ~ .^name }); my $pr = $p.start; await Promise.anyof($pr, Promise.in(5)); say $q, " ", $pr.status; my $r = Proc::Async.new("nonexistent-cmd-zz"); my $rr = $r.start; await Promise.anyof($rr, Promise.in(5)); say $rr.status, " ", $rr.cause.^name, " ", $r.ready.status; my $s = Proc::Async.new("nonexistent-cmd-zz"); my $sq = ""; $s.Supply.tap(-> $ {}, quit => { $sq = .^name }); my $sr = $s.start; await Promise.anyof($sr, Promise.in(5)); say $sq, " ", $sr.status; my $t = Proc::Async.new("nonexistent-cmd-zz"); my $tq = ""; $t.stdout(:bin).tap(-> $ {}, quit => { $tq = .^name }); my $tr = $t.start; await Promise.anyof($tr, Promise.in(5)); say $tq, " ", $tr.status; my $u = Proc::Async.new(""); my $ur = $u.start; await Promise.anyof($ur, Promise.in(5)); say $ur.status, " ", $ur.cause.^name; my $v = Proc::Async.new("true"); my $vr = $v.start(:cwd("nope21")); await Promise.anyof($vr, Promise.in(5)); spurt("f21", "x"); my $w = Proc::Async.new("true"); my $wr = $w.start(:cwd("f21")); await Promise.anyof($wr, Promise.in(5)); say $vr.status, " ", $vr.cause.^name, " ", $vr.cause.error-code, " ", $v.ready.status, " ", $wr.status, " ", $wr.cause.error-code
 # rakudo 2026.08: O:X::AdHoc E:X::AdHoc Broken|Broken X::OS Broken|X::AdHoc Broken|X::AdHoc Broken|Broken X::OS|Broken X::OS -2 Broken Broken -20
+my $u = Proc::Async.new(""); my $ur = $u.start; await Promise.anyof($ur, Promise.in(5)); my $v = Proc::Async.new("sh", "-c", "true"); my $vr = $v.start(:cwd("nope21")); await Promise.anyof($vr, Promise.in(5)); say $ur.cause.error-code, " ", $ur.cause.os-error, " | ", $vr.cause.error-code, " ", $vr.cause.os-error
+# rakudo 2026.08: -13 Failed to spawn process : permission denied (error code -13) | -2 Failed to spawn process sh: no such file or directory (error code -2)
 ```
 rakupp 4.0.1-84: differs — the start Promise is kept (with Nil) for a missing program, `""` and a bad `:cwd` alike, `.ready` stays Planned, no Supply quits, and `.started` is `X::Method::NotFound` (the first line dies there, at its last field).
+(this rakupp line predates the correction; re-measure before relying on it)
+
+Corrected 2026-11-01 from Raku Behind the Docs, ch 20 (findings/BEHIND-THE-DOCS.md §1).
 
 ### PA-21  :cwd and :ENV on start                                       D:yes R:no V:spec
 `:cwd` (Str or IO::Path, relative to `$*CWD` or absolute) is the child's
@@ -465,16 +510,25 @@ rakupp 4.0.1-84: differs — `.stdout` returns a plain `Supply`; `.stdout(:bin)`
 
 ### PA-26  Late taps and replay                                         D:no R:partial V:quirk
 The first tap on a stream, whenever it comes, receives every chunk from
-the start and then `done`; a second tap on the same stream — on the same
-or another `Proc::Async::Pipe` object for it — receives nothing, not even
-`done` after the process has ended, so `.list` on it would block forever.
-`.list` on the first tap blocks until the stream is closed and returns
-the chunks. The merged Supply behaves the same. Timing-dependent probe.
+the start and then `done`. Taps added before the start, or while the
+program runs, all receive output: two taps before the start both get every
+chunk, and a tap added after some output gets the chunks from then on and
+the `done`. Only once the stream has ended does a further tap — on the same
+or another `Proc::Async::Pipe` object for it — receive nothing, not even
+`done`, so `.list` on it would block forever. `.list` on the first tap
+blocks until the stream is closed and returns the chunks. The merged
+Supply behaves the same. Timing-dependent probes; the second one sleeps
+0.5 s between chunks.
 ```
 my $p = Proc::Async.new("sh", "-c", "printf o; printf e >&2"); my $so = $p.stdout; my $se = $p.stderr; my $pr = $p.start; await Promise.anyof($pr, Promise.in(3)); print $pr.status, " "; my ($o, $e) = "", ""; $so.tap({ $o ~= $_ }); $se.tap({ $e ~= $_ }); await Promise.anyof($pr, Promise.in(5)); print $pr.status, " ", $o.raku, " ", $e.raku, " "; my ($o2, $e2) = "", ""; my $d2 = ""; $so.tap({ $o2 ~= $_ }, done => { $d2 = "done" }); $se.tap({ $e2 ~= $_ }); sleep 0.5; print $o2.raku, " ", $e2.raku, " ", $d2.raku, " "; my $q = Proc::Async.new("printf", "big"); my $qs = $q.stdout; my $qr = $q.start; my $got = ""; $qs.tap({ $got ~= $_ }); await Promise.anyof($qr, Promise.in(5)); my $done = ""; my $late = ""; $qs.tap({ $late ~= $_ }, done => { $done = "done" }); sleep 0.5; print $got.raku, " ", $late.raku, " ", $done.raku, " ", $qr.result.exitcode, " "; my $r = Proc::Async.new("printf", "z"); my $rs = $r.stdout; my $rr = $r.start; my @l1 = $rs.list; say @l1.join.raku, " ", $rr.status, " ", do { my $rm = Proc::Async.new("printf", "mm"); my $ms = $rm.Supply; my $mr = $rm.start; await Promise.anyof($mr, Promise.in(5)); my $m1 = ""; $ms.tap({ $m1 ~= $_ }); my $m2 = ""; $ms.tap({ $m2 ~= $_ }); sleep 0.5; $m1.raku ~ " " ~ $m2.raku }
 # rakudo 2026.08: Planned Kept "o" "e" "" "" "" "big" "" "" 0 "z" Planned "mm" ""
+my $p = Proc::Async.new("sh", "-c", "printf a; sleep 0.5; printf b"); my $s = $p.stdout; my ($x, $y) = "", ""; $s.tap({ $x ~= $_ }); $s.tap({ $y ~= $_ }); await $p.start; sleep 0.2; my $q = Proc::Async.new("sh", "-c", "sleep 0.5; printf c; sleep 0.5; printf d"); my $qs = $q.stdout; my $qr = $q.start; sleep 0.2; my ($u, $v) = "", ""; $qs.tap({ $u ~= $_ }); $qs.tap({ $v ~= $_ }); await $qr; sleep 0.2; my $w = Proc::Async.new("sh", "-c", "printf e; sleep 1; printf f"); my $ws = $w.stdout; my $wr = $w.start; my $w1 = ""; $ws.tap({ $w1 ~= $_ }); sleep 0.5; my ($w2, $d2) = "", ""; $ws.tap({ $w2 ~= $_ }, done => { $d2 = "done" }); await $wr; sleep 0.2; say ($x, $y, $u, $v, $w1, $w2, $d2).map(*.raku).join(" ")
+# rakudo 2026.08: "ab" "ab" "cd" "cd" "ef" "f" "done"
 ```
 rakupp 4.0.1-84: differs — a late first tap receives nothing (the output went to the parent's stdout), `.list` returns an empty list while the start Promise is still Planned, and the merged Supply's late taps are empty.
+(this rakupp line predates the correction; re-measure before relying on it)
+
+Corrected 2026-11-01 from Raku Behind the Docs, ch 20 (findings/BEHIND-THE-DOCS.md §1).
 
 ### PA-27  Decoding: chunks, encodings, newline translation             D:yes R:yes V:spec
 A character Supply emits Str chunks of whatever size arrived, never lines
@@ -592,17 +646,25 @@ rakupp 4.0.1-84: differs — the first line dies at `.w` and the second at `.met
 value, an Int, or a Str name with or without the `SIG` prefix (`"TERM"`,
 `"SIGKILL"`), and returns the number it sent; before `.start` it is
 `X::Proc::Async::MustBeStarted` (`.method` `kill`); after the process has
-ended it is harmless, as is a second kill. The Proc delivered for a
-killed process has `.signal` set and `.exitcode` 0 (PA-35). A Str that is
-not a signal name is `X::TypeCheck::Return`, because `$*KERNEL.signal`
-answers the Int type object for it — the quirk. `$*KERNEL.signal` maps a
-name, an enum value or an Int to the number (SIGUSR1 is 30 here).
+ended it is harmless, as is a second kill. After a failed spawn (PA-20)
+`.kill` is harmless too and still returns the number: 1 for the default
+SIGHUP, 15 for SIGTERM. The Proc delivered for a killed process has
+`.signal` set and `.exitcode` 0 (PA-35). A Str that is not a signal name
+is `X::TypeCheck::Return`, and it is `$*KERNEL.signal` itself that throws
+it: `$*KERNEL.signal("NOPE")` dies with "Type check failed for return
+value; expected Int:D but got Int (Int)" — the quirk. `$*KERNEL.signal`
+maps a name, an enum value or an Int to the number (SIGUSR1 is 30 here).
 Timing-dependent probe (`sleep 5` children).
 ```
 my $p = Proc::Async.new("sleep", "5"); say (try $p.kill) // $!.^name; my $pr = $p.start; await Promise.anyof($p.ready, Promise.in(5)); my $k = $p.kill; say $k.raku, " ", (try $p.kill(SIGTERM).raku) // $!.^name; await Promise.anyof($pr, Promise.in(5)); say $pr.status, " ", $pr.result.exitcode, " ", $pr.result.signal, " ", ?$pr.result, " ", (try { sink $pr.result; "ok" }) // $!.^name ~ ":" ~ ($!.message ~~ /"exit code: 0, signal: 1"/).so; my @r; for (SIGTERM, "KILL", 2) -> $sig { my $q = Proc::Async.new("sleep", "5"); my $qr = $q.start; await Promise.anyof($q.ready, Promise.in(5)); $q.kill($sig); await Promise.anyof($qr, Promise.in(5)); @r.push($qr.result.signal ~ "/" ~ $qr.result.exitcode) }; say @r.raku, " ", (try $*KERNEL.signal("NOPE").raku) // $!.^name, " ", $*KERNEL.signal("TERM"), " ", $*KERNEL.signal("SIGTERM"), " ", $*KERNEL.signal(SIGTERM), " ", $*KERNEL.signal(9), " ", SIGHUP.value, " ", SIGKILL.value, " ", SIGTERM.value, " ", SIGINT.value; my $z = Proc::Async.new("true"); my $zr = $z.start; await Promise.anyof($zr, Promise.in(5)); say (try { $z.kill; "ok" }) // $!.^name, " ", (try { my $q = Proc::Async.new("sleep", "5"); my $qr = $q.start; await Promise.anyof($q.ready, Promise.in(5)); $q.kill("NOPE"); "no-throw" }) // $!.^name, " ", (try { $z.kill(SIGKILL); "ok" }) // $!.^name
 # rakudo 2026.08: X::Proc::Async::MustBeStarted|1 15|Kept 0 1 False X::Proc::Unsuccessful:True|["15/0", "9/0", "2/0"] X::TypeCheck::Return 15 15 15 9 1 9 15 2|ok X::TypeCheck::Return ok
+my $f = Proc::Async.new("nonexistent-cmd-zz"); my $fr = $f.start; await Promise.anyof($fr, Promise.in(5)); say $fr.status, " ", $f.kill.raku, " ", $f.kill(SIGTERM).raku, " ", do { my $m = "no-throw"; { my $v = $*KERNEL.signal("NOPE"); CATCH { default { $m = .^name ~ ": " ~ .message } } }; $m }
+# rakudo 2026.08: Broken 1 15 X::TypeCheck::Return: Type check failed for return value; expected Int:D but got Int (Int)
 ```
 rakupp 4.0.1-84: differs — `.kill` before start returns True instead of throwing and `.kill` returns True rather than the signal number; the Proc delivered after the default (SIGHUP) kill reported signal 1 in one run and signal 0 with a True Proc in another; a `SIGTERM` or `2` kill is reported as 15/0 and 2/0, but the name `"KILL"` does not kill (the `sleep` runs out, 0/0); and `$*KERNEL.signal` answers the kernel name `darwin` for every argument. Timing varies between runs.
+(this rakupp line predates the correction; re-measure before relying on it)
+
+Corrected 2026-11-01 from Raku Behind the Docs, ch 20 (findings/BEHIND-THE-DOCS.md §1).
 
 ### PA-35  A process that dies by a signal                              D:partial R:yes V:spec
 From `run`, `shell` or `Proc::Async` alike, a process killed by a signal
@@ -652,7 +714,7 @@ rakupp 4.0.1-84: matches.
 | total | 37 |
 | not fully stated by docs (D:yes) nor asserted by Roast (R:yes) | 9 — PA-04, PA-05, PA-08, PA-09, PA-15, PA-16, PA-22, PA-23, PA-26 |
 | Rakudo bugs (do not imitate) | 2 — PA-08 status read before a spawn poisons the Proc and a re-spawn keeps the old status, PA-15 `read(n)` on a pipe ignores n |
-| quirks (recorded, step two decides) | 10 — PA-02 signal 254 on a spawn failure, PA-06 the two-pipe deadlock, PA-14 `X::IO::Closed` for a binary pipe's text methods, PA-16 `:nl("\r")` never splits on a pipe, PA-17 the program is found through the parent's PATH under an empty `:env`, PA-18 `:started` and the documented `:path`/`:args` form, PA-22 an obtained Supply must be tapped before the start Promise can be kept, PA-26 a second tap gets nothing, PA-33 `put` reports method `say`, PA-34 an unknown signal name is `X::TypeCheck::Return` |
+| quirks (recorded, step two decides) | 10 — PA-02 the signal byte (254, 243) on a spawn failure, PA-06 the two-pipe deadlock, PA-14 `X::IO::Closed` for a binary pipe's text methods, PA-16 `:nl("\r\n")` never matches on a text pipe, PA-17 the program is found through the parent's PATH under an empty `:env`, PA-18 `:started` and the documented `:path`/`:args` form, PA-22 an obtained Supply must be tapped before the start Promise can be kept, PA-26 a tap added after the stream has ended gets nothing, not even `done`, PA-33 `put` reports method `say`, PA-34 an unknown signal name is `X::TypeCheck::Return` |
 | rakupp 4.0.1-84 differs | 36 |
 | rakupp 4.0.1-84 matches | 1 — PA-37 |
 

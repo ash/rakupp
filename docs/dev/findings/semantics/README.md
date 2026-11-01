@@ -85,6 +85,13 @@ buckets or thread timing says so.
 The `rakupp differs` column is the CURRENT count: for an implemented sheet it
 is what is still open, and each item's own line says what.
 
+**Corrected 2026-11-01.** Writing *Raku Behind the Docs* re-probed every item
+and found 102 places where a sheet's prose disagreed with Rakudo
+([BEHIND-THE-DOCS.md](../BEHIND-THE-DOCS.md) §1). All are applied, and each
+corrected item ends with a `Corrected 2026-11-01` line. The counts in the
+table above predate the corrections: where an item's rakupp line says to
+re-measure it, its "differs" verdict is not yet known.
+
 **An item is all-or-nothing, and that flatters nothing.** A probe line holds
 dozens of fields; an item counts as differing when ONE of them does, and a
 single field that dies early takes the rest of its line with it. The Range and

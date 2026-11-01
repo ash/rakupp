@@ -28,7 +28,7 @@ exception does to its loop, which value contexts disarm a Failure and
 which detonate it, what a backtrace contains and hides, and which
 exception type with which attributes each misuse produces. 15 of the 36
 items are neither fully documented nor fully asserted by Roast. Three
-Rakudo behaviours are recorded as bugs and five as quirks; step two
+Rakudo behaviours are recorded as bugs and four as quirks; step two
 should not imitate the bugs.
 
 Every probe ran with `alarm 10` and standard input closed, in a fresh
@@ -193,13 +193,21 @@ after that block. A `try` whose block has a CATCH has no implicit
 handler: an exception the CATCH does not match (a `when` of another
 type, an empty CATCH, a CATCH body without `when`/`default`), or one
 thrown inside the CATCH (`die`, `.rethrow`), propagates out of the try.
-Inside the CATCH `$_` is the exception, `$!` is the enclosing scope's
-`$!` (unchanged) and `$/` is Nil.
+Inside the CATCH `$_` is the exception, `$!` is Nil (not the enclosing
+scope's `$!`, even when that holds an earlier exception) and `$/` is
+Nil. A handled exception never becomes `$!`: a `try` whose CATCH handles
+it, like a bare block whose CATCH does, leaves `$!` untouched (an
+earlier exception stays, an `Any` from a successful `try` stays).
 ```
 say do { my @r; { die "one"; @r.push("no"); CATCH { when X::AdHoc { @r.push("adhoc:" ~ .message) } } }; @r.push("after1"); try { try { die "two"; CATCH { when X::NYI { @r.push("nyi") } } }; @r.push("no2") }; @r.push("esc:" ~ $!.message); try { try { die "abc"; CATCH { when /b/ { @r.push("rx") } } }; @r.push("in3") }; @r.push($!.raku); try { try { die "three"; CATCH { when "three" { @r.push("str") } } }; @r.push("in4") }; @r.push($!.raku); try { try { die "four"; CATCH { default { @r.push("def:" ~ $_.^name ~ ":" ~ $!.raku ~ ":" ~ $/.raku) } } }; @r.push("in5") }; try { try { die "five"; CATCH { } }; @r.push("no6") }; @r.push("empty:" ~ $!.message); try { try { die "six"; CATCH { @r.push("body:" ~ .message) } }; @r.push("no7") }; @r.push("six:" ~ $!.message); try { try { die "seven"; CATCH { default { die "re:" ~ .message } } }; @r.push("no8") }; @r.push($!.message); try { try { die "eight"; CATCH { default { .rethrow } } }; @r.push("no9") }; @r.push($!.message); @r.join(" | ") }
 # rakudo 2026.08: adhoc:one | after1 | esc:two | rx | in3 | Any | str | in4 | Any | def:X::AdHoc:Nil:Nil | in5 | empty:five | body:six | six:six | re:seven | eight
+say do { my @r; try die "old"; @r.push($!.message); try { die "new"; CATCH { default { @r.push("in:" ~ $!.raku) } } }; @r.push("after-try:" ~ $!.message); { die "blk"; CATCH { default { @r.push("in2:" ~ $!.raku) } } }; @r.push("after-blk:" ~ $!.message); my $t = try 1; @r.push("ok:" ~ $!.raku); try { die "n2"; CATCH { default { } } }; @r.push("after-ok:" ~ $!.raku); @r.join(" | ") }
+# rakudo 2026.08: old | in:Nil | after-try:old | in2:Nil | after-blk:old | ok:Any | after-ok:Any
 ```
 rakupp 4.0.1-84: differs — inside the CATCH `$!` is the exception and `$/` is the block's Match; `$!` after the outer success is Nil.
+(this rakupp line predates the correction; re-measure before relying on it)
+
+Corrected 2026-11-01 from Raku Behind the Docs, ch 16 (findings/BEHIND-THE-DOCS.md §1).
 
 ### EX-11  What `.resume` resumes                                         D:partial R:partial V:spec
 Everything thrown at the language level resumes: `die`, a typed
@@ -227,10 +235,10 @@ say do { my @r; for 1..3 { CATCH { default { @r.push("c" ~ .message); next } }; 
 ```
 rakupp 4.0.1-84: matches.
 
-### EX-13  A block's value after its CATCH handled                       D:no R:partial V:quirk
-When a CATCH handles the exception the block's value is undefined: Nil
-when the CATCH is the block's last statement, Any otherwise; the
-handler's own value is never the block's value. After `.resume` the
+### EX-13  A block's value after its CATCH handled                       D:no R:partial V:spec
+When a CATCH handles the exception the block's value is Nil, wherever
+the CATCH stands: as the block's last statement or before the throw.
+The handler's own value is never the block's value. After `.resume` the
 block runs to its end and its last value is the result (`"after"`).
 The same holds for a sub body.
 ```
@@ -238,6 +246,8 @@ say do { ((try { 42.self; CATCH { default { } } }).raku, (try { CATCH { default 
 # rakudo 2026.08: Nil | 42 | Nil | Nil | "after" | Nil | Nil | Nil
 ```
 rakupp 4.0.1-84: differs — a trailing CATCH does not change a completed block's value (42), and after `.resume` the value is Nil instead of `"after"`.
+
+Corrected 2026-11-01 from Raku Behind the Docs, ch 16 (findings/BEHIND-THE-DOCS.md §1).
 
 ## C. warn and the control exceptions
 
@@ -284,22 +294,33 @@ say do { my @r; for 1..3 { CONTROL { when CX::Next { @r.push("n") } }; next if $
 rakupp 4.0.1-84: differs — CONTROL never sees CX::Next, CX::Last or CX::Redo (no handler runs, the loops behave normally), and `.resume` on them is accepted.
 
 ### EX-17  return, take, emit, succeed, proceed seen by CONTROL          D:partial R:partial V:bug
-CONTROL sees `CX::Return`, `CX::Take`, `CX::Emit`, `CX::Succeed` and
-`CX::Proceed` (messages `<return control exception>` etc.). The bug:
+CONTROL sees `CX::Return`, `CX::Take` and `CX::Emit` (messages
+`<return control exception>` etc.). It never sees the `CX::Succeed` or
+`CX::Proceed` of a `when` or `default` block, even for an explicit
+`succeed` or `proceed` inside one: the block succeeds or proceeds as if
+there were no CONTROL ("succ" and "proc" are missing from the first
+probe's output, and the `given` whose CONTROL would `.resume` a
+CX::Succeed leaves after its `when`, `["in"]`). It does see a `succeed`
+or `proceed` written outside a `when`, which without a CONTROL is
+`X::ControlFlow` ("succeed without when clause"); `.resume` of that one
+continues after the `succeed` or `proceed`. The bug:
 `.rethrow` of CX::Return, CX::Take or CX::Emit makes the routine return,
 the gather collect, or the supply emit the CX object itself in place of
 the original value (5 becomes `CX::Return.new`, `take 1; take 2` gives
 two `CX::Take.new`, `emit 7` arrives as the CX::Emit's message). Do not
 imitate: the value must survive a rethrow. `.resume` of CX::Take or
 CX::Emit skips the take or emit (nothing is gathered or emitted);
-`.resume` of CX::Return throws `X::AdHoc` (not resumable); `.rethrow`
-of CX::Succeed and CX::Proceed keeps their effect, and `.resume` of
-CX::Succeed leaves the `given` block.
+`.resume` of CX::Return throws `X::AdHoc` (not resumable).
 ```
 say do { my @r; sub f { CONTROL { when CX::Return { @r.push("ret:" ~ .message); .rethrow } }; return 5 }; @r.push(f().raku); my @g = gather { CONTROL { when CX::Take { @r.push("take:" ~ .message); .rethrow } }; take 1; take 2 }; @r.push(@g.raku); my @g2 = gather { CONTROL { when CX::Take { @r.push("tres"); .resume } }; take 1; take 2 }; @r.push(@g2.raku); @r.push((try { sub f2 { CONTROL { when CX::Return { .resume } }; return 5; 7 }; f2() }) // $!.message); given 5 { CONTROL { when CX::Succeed { @r.push("succ"); .rethrow } }; when 5 { @r.push("w5") } }; given 5 { CONTROL { when CX::Proceed { @r.push("proc"); .rethrow } }; when 5 { @r.push("p5"); proceed }; default { @r.push("dflt") } }; my @o; given 5 { CONTROL { when CX::Succeed { .resume } }; when 5 { @o.push("in") }; @o.push("after") }; @r.push(@o.raku); my @e; my $s = supply { CONTROL { when CX::Emit { @e.push("e"); .resume } }; emit 7; done }; react { whenever $s { @e.push("got$_") } }; @r.push(@e.raku); my @e2; my $s2 = supply { CONTROL { when CX::Emit { @e2.push("e"); .rethrow } }; emit 7; done }; react { whenever $s2 { @e2.push("got$_") } }; @r.push(@e2.raku); @r.join(" | ") }
 # rakudo 2026.08: ret:<return control exception> | CX::Return.new | take:<take control exception> | take:<take control exception> | [CX::Take.new, CX::Take.new] | tres | tres | [] | This exception is not resumable | w5 | p5 | dflt | ["in"] | ["e"] | ["e", "got<emit control exception>"]
+say do { my @r; my $v1 = do given 5 { CONTROL { when CX::Succeed { @r.push("s1") } }; when 5 { 1 } }; my $v3 = do given 5 { CONTROL { when CX::Succeed { @r.push("s3") } }; when 5 { succeed 9 } }; my $v4 = do given 5 { CONTROL { when CX::Proceed { @r.push("p4") } }; when 5 { proceed }; default { 8 } }; my $v6 = do given 5 { CONTROL { when CX::Succeed { @r.push("s6:" ~ .message); .resume } }; succeed 3; @r.push("after-s"); 4 }; my $v7 = do given 5 { CONTROL { when CX::Proceed { @r.push("p7"); .resume } }; proceed; @r.push("after-p"); 7 }; ($v1, $v3, $v4, $v6, $v7, @r.join(","), (try { my $y = do given 5 { succeed 3; 4 }; 1 }) // $!.^name ~ ":" ~ $!.message).join(" | ") }
+# rakudo 2026.08: 1 | 9 | 8 | 4 | 7 | s6:<succeed control exception>,after-s,p7,after-p | X::ControlFlow:succeed without when clause
 ```
 rakupp 4.0.1-84: differs — CONTROL sees none of these five; the constructs simply work (5, `[1, 2]`, `got7`).
+(this rakupp line predates the correction; re-measure before relying on it)
+
+Corrected 2026-11-01 from Raku Behind the Docs, ch 16 (findings/BEHIND-THE-DOCS.md §1).
 
 ### EX-18  Control without its construct: X::ControlFlow                  D:yes R:yes V:spec
 `last`, `next`, `redo` outside a loop throw `X::ControlFlow` with
@@ -429,14 +450,23 @@ fatal scope); `use fatal` does the same, and `//` under it still takes
 the default without throwing; `no fatal` inside a try turns it off.
 `try { fail "tf" }` is Nil with `$!` set. `fail` outside any routine
 throws (like `die`). Assigning a Failure to a typed variable that cannot
-hold it throws its exception. Outside a fatal scope an assigned or
-`do`-produced Failure stays a Failure, and only a call in sink context
-throws (a CATCH sees `v`).
+hold it throws: inside a `try` it throws the Failure's own exception
+(`X::AdHoc` "typed"); outside a `try` it throws
+`X::TypeCheck::Assignment`, whose message reads "Earlier failure:", the
+Failure's message and backtrace, then "Final error:" and "Type check
+failed in assignment to $x; expected Int but got Failure". Outside a
+fatal scope an assigned or `do`-produced Failure stays a Failure, and
+only a call in sink context throws (a CATCH sees `v`).
 ```
 say do { my @r; sub mk { (sub { fail "v" })() }; { try { mk(); @r.push("after-sink") }; @r.push("sink:" ~ $!.^name ~ ":" ~ $!.message) }; { try { my $x = mk(); @r.push("assigned"); $x.so }; @r.push("assign:" ~ $!.raku) }; { try { sink mk(); }; @r.push("sinkprefix:" ~ $!.^name) }; { try { use fatal; my $x = mk(); @r.push("fatal-after") }; @r.push("fatal:" ~ $!.^name) }; { try { use fatal; my $x = mk() // 0; @r.push("fatal-dor:$x") }; @r.push("fd:" ~ $!.raku) }; { try { no fatal; my $x = mk(); $x.so; @r.push("nofatal-ok") }; @r.push("nf:" ~ $!.raku) }; { my $v = try { fail "tf" }; @r.push("try-fail:" ~ $v.raku ~ ":" ~ $!.^name) }; { try { my $d = fail "outside"; @r.push("reached") }; @r.push("outside:" ~ $!.^name ~ ":" ~ $!.message) }; { try { sub s { fail "typed" }; my Int $x = s(); @r.push("typed-ok") }; @r.push("typed:" ~ $!.^name) }; { try { my $x := mk(); @r.push("bound"); $x.so }; @r.push("bind:" ~ $!.raku) }; { try { my @a = mk(); @r.push("arr:" ~ @a.elems) }; @r.push("arr:" ~ $!.^name) }; { my $x = mk(); @r.push("plain-assign:" ~ $x.^name); $x.so }; { mk(); @r.push("plain-sink"); CATCH { default { @r.push("plain-sink-threw:" ~ .message) } } }; { my $z = do { mk() }; @r.push("do:" ~ $z.^name); $z.so }; @r.join(" | ") }
 # rakudo 2026.08: sink:X::AdHoc:v | assign:X::AdHoc.new(payload => "v") | sinkprefix:X::AdHoc | fatal:X::AdHoc | fatal-dor:0 | fd:Any | nofatal-ok | nf:Any | try-fail:Any:X::AdHoc | outside:X::AdHoc:outside | typed:X::AdHoc | bind:X::AdHoc.new(payload => "v") | arr:X::AdHoc | plain-assign:Failure | plain-sink-threw:v | do:Failure
+say do { sub s { fail "typed" }; my @r; { my Int $x = s(); CATCH { default { my @l = .message.lines.map(*.trim).grep(/^ [Earlier | typed | Final | Type]/); @r.push(.^name ~ ":" ~ @l.join("/")) } } }; { try { my Int $y = s() }; @r.push($!.^name ~ ":" ~ $!.message) }; @r.join(" | ") }
+# rakudo 2026.08: X::TypeCheck::Assignment:Earlier failure:/typed/Final error:/Type check failed in assignment to $x; expected Int but got Failure (Failure.new(exceptio...) | X::AdHoc:typed
 ```
 rakupp 4.0.1-84: differs — inside a try an assigned, bound or array-assigned Failure does not throw, `use fatal` and the `sink` prefix are ignored, and `try { fail }` / `fail` in a try block are `X::ControlFlow::Return`; the sunk-call, typed-variable and outside-try cases match.
+(this rakupp line predates the correction; re-measure before relying on it)
+
+Corrected 2026-11-01 from Raku Behind the Docs, ch 16 (findings/BEHIND-THE-DOCS.md §1).
 
 ### EX-26  Failure: backtrace, mess, raku round trip, new, handled       D:partial R:yes V:spec
 `.raku` of an unhandled Failure starts `Failure.new(`; `.new` on a
@@ -529,7 +559,12 @@ rakupp 4.0.1-84: differs — `await` throws the bare cause (no `X::Await::Died`,
 On a `die` the LEAVE queue runs in reverse declaration order, UNDO
 included (`UL`); on success KEEP and LEAVE (`KL`); `fail` and `return
 Nil` count as failure (UNDO), `return 0` as success (KEEP). Inside a
-LEAVE run during unwinding `$!` is the exception. A `die` in an ENTER
+LEAVE run during unwinding `$!` is the exception only when the LEAVE
+reads the `$!` that the catching `try` sets: a LEAVE in the `try`'s own
+block, or in a bare block inside it. In a dying sub the LEAVE reads the
+sub's own `$!` (Nil); beside a CATCH that handles the exception it is
+whatever `$!` held before (an earlier exception, or Any after a
+successful `try`). A `die` in an ENTER
 aborts the ENTER queue, still runs LEAVE, and is the exception caught;
 a `die` in a LEAVE does not abort the queue (`b` then `a`) and is
 rethrown afterwards; a LEAVE that dies while an exception is already
@@ -540,8 +575,13 @@ expects NEXT first, `nlnl`, and marks Rakudo todo) — do not imitate.
 ```
 say do { my @r; { my $s = ""; try { LEAVE { $s ~= "L" }; KEEP { $s ~= "K" }; UNDO { $s ~= "U" }; die "d" }; @r.push("die:$s") }; { my $s = ""; { LEAVE { $s ~= "L" }; KEEP { $s ~= "K" }; UNDO { $s ~= "U" }; 1 }; @r.push("ok:$s") }; { my $s = ""; sub f { LEAVE { $s ~= "L" }; KEEP { $s ~= "K" }; UNDO { $s ~= "U" }; fail "ff" }; my $v = f(); $v.so; @r.push("fail:$s") }; { my $s = ""; sub g { KEEP { $s ~= "K" }; UNDO { $s ~= "U" }; return Nil }; g(); @r.push("nil:$s") }; { my $s = ""; sub g2 { KEEP { $s ~= "K" }; UNDO { $s ~= "U" }; return 0 }; g2(); @r.push("zero:$s") }; { my $s = ""; try { LEAVE { $s ~= ($! // "undef") }; die "lv" }; @r.push("leave-bang:$s") }; { my $s = ""; try { ENTER { $s ~= "1"; die "e" }; ENTER { $s ~= "2" }; LEAVE { $s ~= "L" } }; @r.push("enter:$s:" ~ $!.message) }; { my $s = ""; try { LEAVE { $s ~= "a"; die "la" }; LEAVE { $s ~= "b" }; 1 }; @r.push("leave-die:$s:" ~ $!.^name ~ ":" ~ $!.message) }; { try { LEAVE { die "lx" }; die "orig" }; @r.push("both:" ~ $!.message) }; { my $s = ""; try { LEAVE { $s ~= "L" }; CATCH { default { $s ~= "C" } }; die "x" }; @r.push("order:$s") }; { my $s = ""; for 1..2 { NEXT { $s ~= "n" }; LEAVE { $s ~= "l" }; LAST { $s ~= "L" } }; @r.push("loop:$s") }; { try { LEAVE { die "x1" }; LEAVE { die "x2" }; 1 }; @r.push("multi:" ~ $!.^name ~ ":" ~ $!.exceptions.map(*.message).sort.join(",")) }; @r.join(" | ") }
 # rakudo 2026.08: die:UL | ok:KL | fail:UL | nil:U | zero:K | leave-bang:lv | enter:1L:e | leave-die:ba:X::AdHoc:la | both:lx | order:CL | loop:lnlnL | multi:X::PhaserExceptions:x1,x2
+say do { my @r; { my $s = ""; try { LEAVE { $s = ($!.?message // $!.raku) }; die "lv" }; @r.push("try-own:$s") }; { my $s = ""; sub d { LEAVE { $s = ($!.?message // $!.raku) }; die "sd" }; try d(); @r.push("sub:$s") }; { my $s = ""; try die "old"; { LEAVE { $s = ($!.?message // $!.raku) }; CATCH { default { } }; die "new" }; @r.push("catch:$s") }; { my $s = ""; my $ok = try 1; { LEAVE { $s = ($!.?message // $!.raku) }; CATCH { default { } }; die "new2" }; @r.push("catch2:$s") }; { my $s = ""; try { { LEAVE { $s = ($!.?message // $!.raku) }; die "inner" } }; @r.push("nested:$s") }; @r.join(" | ") }
+# rakudo 2026.08: try-own:lv | sub:Nil | catch:old | catch2:Any | nested:inner
 ```
 rakupp 4.0.1-84: differs — `X::PhaserExceptions` does not exist (the line died at `.exceptions`); with that made safe: `fail` and `return Nil` run KEEP instead of UNDO, `$!` is not visible in a LEAVE during unwinding, and the other nine fields match, including the LEAVE-before-NEXT order.
+(this rakupp line predates the correction; re-measure before relying on it)
+
+Corrected 2026-11-01 from Raku Behind the Docs, ch 16 (findings/BEHIND-THE-DOCS.md §1).
 
 ### EX-32  PRE and POST                                                   D:yes R:yes V:spec
 A false PRE or POST throws `X::Phaser::PrePost` with `.phaser` `PRE` or
@@ -654,15 +694,15 @@ rakupp 4.0.1-84: differs — `X::Assignment::RO` has no `.value`/`.typename` (th
 | total | 36 |
 | not fully stated by docs (D:yes) nor asserted by Roast (R:yes) | 15 |
 | Rakudo bugs (do not imitate) | 3 — EX-17 a rethrown CX::Return/Take/Emit replaces the value with the CX object, EX-20 a bare `succeed` yields an engine null, EX-31 LEAVE runs before NEXT |
-| quirks (recorded, step two decides) | 5 — EX-07 a trailing CATCH makes a try Nil, EX-13 Nil or Any after a handled CATCH, EX-16 `.resume` refused for next/last/redo, EX-22 `fail` and `Failure.new` search `$!` differently, EX-27 `nice(:oneline)` skips the first frame |
+| quirks (recorded, step two decides) | 4 — EX-07 a trailing CATCH makes a try Nil, EX-16 `.resume` refused for next/last/redo, EX-22 `fail` and `Failure.new` search `$!` differently, EX-27 `nice(:oneline)` skips the first frame |
 | rakupp 4.0.1-84 differs | 35 |
 | rakupp 4.0.1-84 matches | 1 — EX-12 |
 
 Recurring rakupp gaps, for step two. The `$!` lifecycle is the
 foundation: a successful try must reset `$!` to Any, bare and `do`
 blocks must share the routine's `$!`, a sub must have its own, and
-inside a CATCH `$!` must stay the enclosing one while `$/` is fresh
-(EX-07, 08, 09, 10). A `try` is a fatal scope: Failures returned into
+inside a CATCH `$!` must be Nil and `$/` fresh, while a handled
+exception leaves the enclosing `$!` untouched (EX-07, 08, 09, 10). A `try` is a fatal scope: Failures returned into
 it — assigned, bound, sunk or `sink`ed — must throw, `use fatal` must
 be honoured, and `fail` in a try block must not be a return (EX-07, 22,
 25). `.resume` must continue after the throwing statement (EX-02, 11,

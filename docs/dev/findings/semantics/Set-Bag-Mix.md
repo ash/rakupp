@@ -167,17 +167,27 @@ rakupp 4.0.1-84: differs — `.Set`/`.SetHash`/`.Setty` of a Mix keep the negati
 
 ### SB-07  `.Bag` of a Mix truncates the weights of the source Mix              D:no R:no V:bug
 Calling `.Bag` or `.BagHash` on a Mix or MixHash modifies the SOURCE: every
-weight of 1 or more is replaced in place by its `.Int` (2.7 becomes 2, the
-`.total` changes from 0.5 to 1.4 in the probe), while weights below 1 and
-negative ones are left alone in the source (they are simply absent from the
-result). `.Set`, `.SetHash` and `.MixHash` do not touch the source. Do not
+weight of 1 or more is replaced in place by its `.Int` (2.7 becomes 2),
+while weights below 1 and negative ones are left alone in the source (they
+are simply absent from the result). What the Mix has already computed is
+not recomputed: a `.total` taken before the `.Bag` stays stale (1.2 for
+`a(2.7) b(-1.5)`, still 1.2 once the weights are `a(2) b(-1.5)`), and so
+does the WHICH, so after the truncation the Mix is still `===` to the
+original `("a" => 2.7, "b" => -1.5).Mix` and not to `a(2) b(-1.5)`. Taken
+only afterwards, the total is the truncated one (0.5 in the first probe,
+1.4 in the sixth, where it started at 2.1) and `===` follows the new
+weights. `.Set`, `.SetHash` and `.MixHash` do not touch the source. Do not
 imitate: a conversion must never change its invocant; the result must be
 computed on a copy.
 ```
 say do { my $m = ("a" => 2.7, "b" => -1.5).Mix; my $g1 = $m.gist; my $b = $m.Bag; my $g2 = $m.gist; ($g1, $b.gist, $g2, $m<a>.raku, $m.total).join(" ") }, " | ", do { my $m = ("a" => 2.7).MixHash; my $b = $m.BagHash; ($m.gist, $b.gist).join(" ") }, " | ", do { my $m = ("a" => 2.7).Mix; my $b = $m.BagHash; ($m.gist, $b.gist).join(" ") }, " | ", do { my $m = ("a" => 2.7).MixHash; my $b = $m.Bag; ($m.gist, $b.gist).join(" ") }, " | ", do { my $m = ("a" => 2.7).Mix; my $s = $m.Set; my $h = $m.MixHash; ($m.gist, $s.gist, $h.gist).join(" ") }, " | ", do { my $m = ("a" => 2.7, "b" => -1, "c" => 0.4).Mix; my $g1 = $m.gist; my $b = $m.Bag; ($g1, $b.gist, $m.gist, $m.total).join(" ") }, " | ", do { my $m = ("a" => 0.4).Mix; my $b = $m.Bag; ($b.gist, $m.gist, $m.elems, $m<a>).join(" ") }
 # rakudo 2026.08: Mix(a(2.7) b(-1.5)) Bag(a(2)) Mix(a(2) b(-1.5)) 2 0.5 | MixHash(a(2)) BagHash(a(2)) | Mix(a(2)) BagHash(a(2)) | MixHash(a(2)) Bag(a(2)) | Mix(a(2.7)) Set(a) MixHash(a(2.7)) | Mix(a(2.7) b(-1) c(0.4)) Bag(a(2)) Mix(a(2) b(-1) c(0.4)) 1.4 | Bag() Mix(a(0.4)) 1 0.4
+say do { my $m = ("a" => 2.7, "b" => -1.5).Mix; my $t = $m.total; my $w = $m.WHICH; my $b = $m.Bag; ($t, $m.total, $m.gist, $m.WHICH eqv $w, $m === ("a" => 2.7, "b" => -1.5).Mix, $m === ("a" => 2, "b" => -1.5).Mix).join(" ") }, " | ", do { my $m = ("a" => 2.7, "b" => -1.5).Mix; my $b = $m.Bag; ($m.total, $m === ("a" => 2.7, "b" => -1.5).Mix, $m === ("a" => 2, "b" => -1.5).Mix).join(" ") }
+# rakudo 2026.08: 1.2 1.2 Mix(a(2) b(-1.5)) True True False | 0.5 False True
 ```
 rakupp 4.0.1-84: differs, correctly — the source Mix keeps `a(2.7)` and its total; keep that.
+
+Corrected 2026-11-01 from Raku Behind the Docs, ch 13 (findings/BEHIND-THE-DOCS.md §1).
 
 ### SB-08  Lazy sources: Failures from constructors, throws from operators      D:no R:partial V:quirk
 `Set.new(^Inf)`, `(^Inf).Set`, `Bag.new-from-pairs(1..*)`, `set(*..*)`,
@@ -329,16 +339,25 @@ keys), assigning an out-of-range value to it is `X::TypeCheck::Assignment`
 (-1 or "x" into a Bag's hash), 5 is fine; `.Hash` is `Hash[Any,Mu]` with
 unconstrained values; both are copies (mutating them does not touch a
 SetHash). `.Map` is a plain Map whose keys are the elements' STRINGS, so 1 and
-"1" collide (elems 1; for a Bag the later one wins, no summing) and a
-missing key is Nil. `.Capture` is `\(:a(2), :b(1))`. `.fmt("%s")` formats
+"1" collide (elems 1; for a Bag one of the two weights survives, with no
+summing, and which one varies from run to run, like hash iteration order;
+the order of the arguments does not decide it) and a missing key is Nil. `.Capture` is `\(:a(2), :b(1))`. `.fmt("%s")` formats
 keys, `.fmt("%s=%s", sep)` key and weight, the default format is `%s\t%s`
 joined by newlines. On a type object `.hash` and `.Hash` are `{}`, `.Capture`
 `\()`, `.Map` throws `X::AdHoc`.
 ```
 say do { my $s = set(1, "a"); ($s.hash.^name, $s.hash.keys.map(*.^name).sort.raku, $s.hash<a>.raku, $s.Hash.^name, $s.Map.^name, $s.Map.keys.sort.raku, $s.Map<1>, $s.Capture.^name, $s.fmt("%s").split("\n").sort.raku, $s.fmt("%s=%s", ",").split(",").sort.raku, $s.fmt.split("\n").sort.map(*.subst("\t", "<TAB>")).raku, $s.hash.of.^name, $s.hash.keyof.^name, $s.Hash.of.^name, $s.hash{1}.raku, $s.Map{1}.raku, $s.Map.elems).join(" ") }, " | ", do { my $b = bag <a a b>; ($b.hash.^name, $b.hash.sort.raku, $b.Hash.^name, $b.Map.raku, $b.Capture.raku, $b.fmt("%s:%s", ";").split(";").sort.raku, (try { $b.hash<a> = -1; "ok" }) // $!.^name, (try { $b.hash<a> = "x"; "ok" }) // $!.^name, (try { $b.Hash<a> = "x"; "ok" }) // $!.^name, (try { $b.hash<a> = 5; "ok" }) // $!.^name, $b.hash.of.^name, $b.hash<z>.raku, $b.Map<z>.raku).join(" ") }, " | ", do { my $m = ("a" => 0.5).Mix; ($m.hash.^name, $m.hash.raku, $m.Map.raku, (try { $m.hash<a> = "x"; "ok" }) // $!.^name, ("a" => -2).Mix.hash.raku, set().hash.raku, bag().Hash.raku, mix().Map.raku, $m.hash.of.^name, $m.Hash.of.^name).join(" ") }, " | ", do { my $s = set($[1,2]); ($s.hash.keys[0].^name, $s.Map.keys[0].^name, $s.Map.keys[0], $s.Hash.keys[0][1]).join(" ") }, " | ", do { my $s = SetHash.new(<a>); my $h = $s.hash; $h<b> = True; ($s.gist, $h.sort.raku).join(" ") }, " | ", do { my $s = set(1, "1"); ($s.hash.elems, $s.Map.elems, $s.Hash.elems).join(" ") }, " | ", do { my $b = bag(1, "1"); ($b.Map.elems, $b.Map.raku).join(" ") }, " | ", Set.hash.raku, " ", Bag.hash.raku, " ", Set.Capture.raku, " ", (try Set.Map.raku) // $!.^name, " ", (try Set.Hash.raku) // $!.^name
 # rakudo 2026.08: Hash[Bool,Mu,Any] ("Int", "Str").Seq Bool::True Hash[Any,Mu] Map ("1", "a").Seq True Capture ("1", "a").Seq ("1=True", "a=True").Seq ("1<TAB>True", "a<TAB>True").Seq Bool Mu Any Bool::True Bool::True 2 | Hash[UInt,Mu,Any] (:a(2), :b(1)).Seq Hash[Any,Mu] Map.new((:a(2),:b(1))) \(:a(2), :b(1)) ("a:2", "b:1").Seq X::TypeCheck::Assignment X::TypeCheck::Assignment ok ok UInt Any Nil | Hash[Real,Mu,Any] (my Real %{Mu} = :a(0.5)) Map.new((:a(0.5))) X::TypeCheck::Assignment (my Real %{Mu} = :a(-2)) (my Bool %{Mu}) (my Any %{Mu}) Map.new Real Any | Array Str 1 2 2 | SetHash(a) (:a(Bool::True), :b(Bool::True)).Seq | 2 1 2 | 1 Map.new(("1" => 1)) | {} {} \() X::AdHoc {}
+say bag(1, 1, "1").Map.raku, " ", (1 => 3, "1" => 7).Bag.Map.raku, " ", bag(1, 1, "1").Map.elems
+# rakudo 2026.08: Map.new(("1" => 2)) Map.new(("1" => 7)) 1
 ```
+The second line is one run of a run-dependent probe: in sixteen runs the
+first field was `"1" => 1` nine times and `"1" => 2` seven times, the
+second `"1" => 3` seven times and `"1" => 7` nine times, all four
+combinations occurring; only the `elems` of 1 is fixed.
 rakupp 4.0.1-84: differs — `.hash` is an untyped Hash that conflates `1` and `"1"` (elems 1), value assignment to it is `X::Assignment::RO`, `.Map` sums (`"1" => 2`), and `Set.Map` throws `X::Hash::Store::OddNumber`.
+
+Corrected 2026-11-01 from Raku Behind the Docs, ch 13 (findings/BEHIND-THE-DOCS.md §1).
 
 ### SB-16  WHICH, `===`, `eqv`, `==`, `cmp`                                      D:no R:partial V:spec
 Set, Bag and Mix are value types: `.WHICH` is a `ValueObjAt` of the form
@@ -509,16 +528,27 @@ live, an assignment copy (`my $p = $s<a>`, `my @v = $s.values`) does not. On
 Set/Bag/Mix `$_ = 5 for .values` is `X::AdHoc`, `.value =` and a `kv` value
 `X::Assignment::RO`, `.pairs[0].key =` `X::Assignment::RO`. The hyper `>>`
 on a SetHash/BagHash applies the operation to the live values and returns
-the ORIGINAL contents (`$s>>--` empties `$s` and returns `SetHash(a b c)`);
-on an immutable it returns a new collection with the mapped weights and
+a collection of what the operation returned. Postfix `--` returns the old
+values, so `$s>>--` empties `$s` and returns the original `SetHash(a b c)`;
+prefix `--` returns the new ones, so `--<<$s` empties `$s` and returns
+`SetHash()`, and `--<<$b` on `BagHash(a(2) b)` returns `BagHash(a)`.
+On an immutable the hyper returns a new collection with the mapped weights and
 leaves the invocant alone (`$bag>>.&{ 3 }` is `Bag(a(3) b(3))`, a false result
 drops the key); the quirk: on a Mix the mapped weight is truncated to Int
-(`2.5` gives `Mix(a(2))`) while a MixHash keeps `2.5`.
+(`2.5` gives `Mix(a(2))`) while a MixHash keeps `2.5`. The truncation
+happens for a hyper postfix, a hyper prefix (`-<<` on `a(1.5)` gives
+`Mix(a(-1))`) and a hyper method call alike, but not for an infix hyper:
+`$m >>+>> 1` keeps `Mix(a(2.5))`.
 ```
 say do { my $s = <a b>.SetHash; for $s.values { $_ = 0 }; my $g1 = $s.gist; $s = <a>.SetHash; $_ = -1 for $s.values; my $g2 = $s.gist; $s = <a>.SetHash; for $s.pairs { .value = 0; .value = 1 }; my $g3 = $s.gist; $s = <a b>.SetHash; for $s.kv -> \k, \v { v-- }; ($g1, $g2, $g3, $s.gist).join(" ") }, " | ", do { my $b = <a a a>.BagHash; $_-- for $b.values; my $g1 = $b.gist; .value = 42 for $b.pairs; my $g2 = $b.gist; $_ = -1 for $b.values; my $g3 = $b.gist; $b = <a>.BagHash; my $e = (try { $_ = "x" for $b.values; "ok" }) // $!.^name; my $e2 = (try { .value = 2.9 for $b.pairs; "ok" }) // $!.^name; ($g1, $g2, $g3, $e, $e2, $b.gist).join(" ") }, " | ", do { my $m = <a a>.MixHash; .value = -1.5 for $m.pairs; my $g1 = $m.gist; for $m.kv -> \k, \v { v = 0 }; ($g1, $m.gist).join(" ") }, " | ", do { my $b = bag <a>; ((try { $_ = 5 for $b.values; "ok" }) // $!.^name, (try { .value = 5 for $b.pairs; "ok" }) // $!.^name, (try { for $b.kv -> \k, \v { v = 5 }; "ok" }) // $!.^name, (try { $b.pairs[0].key = "z"; "ok" }) // $!.^name, (try { $_ = 0 for set(<a>).values; "ok" }) // $!.^name, (try { .value = 0 for set(<a>).pairs; "ok" }) // $!.^name, (try { $_ = 5 for mix(<a>).values; "ok" }) // $!.^name).join(" ") }, " | ", do { my $s := <a b c>.SetHash; ($s>>--).gist ~ " " ~ $s.gist }, " | ", do { my $b := <a a b>.BagHash; ($b>>--).gist ~ " " ~ $b.gist }, " | ", do { my $b := <a a b>.Bag; ($b>>.&{ 3 }).gist ~ " " ~ $b.gist }, " | ", do { my $s := <a b>.Set; ($s>>.&{ 0 }).gist ~ " " ~ $s.gist }, " | ", do { my $m := ("a" => 1.5).Mix; ($m>>.&{ 2.5 }).gist ~ " " ~ ($m>>.&{ 0 }).gist ~ " " ~ $m.gist }, " | ", do { my $m := ("a" => 1.5).MixHash; ($m>>.&{ 2.5 }).gist ~ " " ~ $m.gist }, " | ", do { my $s := <a b>.Set; (try $s>>.&{ "x" }.gist) // $!.^name }, " | ", do { my $s = SetHash.new(<a b>); my @v = $s.values; @v[0] = False; $s.elems }, " | ", do { my $s = SetHash.new(<a>); my $v := $s.values[0]; $v = False; my $e = $s.elems; $v = True; $e ~ " " ~ $s.gist }, " | ", do { my $s = SetHash.new(<a>); my $p = $s<a>; $p = False; $s.elems }, " | ", do { my $s = SetHash.new(<a>); my \p = $s<a>; p = False; my $e = $s.elems; p = True; $e ~ " " ~ $s.gist }, " | ", do { my $b = BagHash.new(<a a>); my \p = $b<a>; p = 0; my $e = $b.elems; p = 3; $e ~ " " ~ $b.gist }
 # rakudo 2026.08: SetHash() SetHash(a) SetHash(a) SetHash() | BagHash(a(2)) BagHash(a(42)) BagHash() X::Str::Numeric ok BagHash(a(2)) | MixHash(a(-1.5)) MixHash() | X::AdHoc X::Assignment::RO X::Assignment::RO X::Assignment::RO X::AdHoc X::Assignment::RO X::AdHoc | SetHash(a b c) SetHash() | BagHash(a(2) b) BagHash(a) | Bag(a(3) b(3)) Bag(a(2) b) | Set() Set(a b) | Mix(a(2)) Mix() Mix(a(1.5)) | MixHash(a(2.5)) MixHash(a(1.5)) | Set(a b) | 2 | 0 SetHash(a) | 1 | 0 SetHash(a) | 0 BagHash(a(3))
+say do { my $s := <a b c>.SetHash; (--<<$s).gist ~ " " ~ $s.gist }, " | ", do { my $b := <a a b>.BagHash; (--<<$b).gist ~ " " ~ $b.gist }, " | ", do { sub postfix:<!!>($x) { $x + 1 }; my $m := ("a" => 1.5).Mix; ($m>>!!).gist ~ " " ~ (-<<$m).gist ~ " " ~ ($m>>.&{ $_ + 1 }).gist ~ " " ~ ($m >>+>> 1).gist ~ " " ~ $m.gist }, " | ", do { my $m := ("a" => 1.5).MixHash; (-<<$m).gist ~ " " ~ ($m >>+>> 1).gist }
+# rakudo 2026.08: SetHash() SetHash() | BagHash(a) BagHash(a) | Mix(a(2)) Mix(a(-1)) Mix(a(2)) Mix(a(2.5)) Mix(a(1.5)) | MixHash(a(-1.5)) MixHash(a(2.5))
 ```
 rakupp 4.0.1-84: differs — assigning through the values of a Bag/Set/Mix is accepted, a bound alias of a value or subscript is not live, `$s>>--` leaves the SetHash unchanged, `>>--` on a BagHash leaves `b(0)`, and the hyper on an immutable returns a plain list.
+(this rakupp line predates the correction; re-measure before relying on it)
+
+Corrected 2026-11-01 from Raku Behind the Docs, ch 13 (findings/BEHIND-THE-DOCS.md §1).
 
 ### SB-25  pick, roll, pickpairs                                             D:yes R:yes V:spec
 `pick` with no count returns one element (Nil when empty); `pick(n)` a Seq
@@ -544,7 +574,8 @@ rakupp 4.0.1-84: differs — the NaN count throws `X::AdHoc` instead of `X::Nume
 and `categorize-list` on Bag and Mix (Setty has neither: `X::Method::NotFound`).
 `pick` on a Mix or MixHash, `grab` on a MixHash and `kxxv` on either
 RETURN a Failure whose exception is `X::AdHoc` (the messages name the
-method); `grabpairs`, `roll` and `pickpairs` work on a Mix. `BagHash`/
+method); `roll` and `pickpairs` work on a Mix, but `grabpairs` does not:
+on a Mix it is `X::Immutable` like `grab`, and only a MixHash allows it. `BagHash`/
 `MixHash.classify-list(mapper, list)` and `categorize-list` add 1 per
 classification to the invocant and return it (`=== self`), accept a
 Callable, an Array or a Hash mapper (a missing hash key classifies under
@@ -557,6 +588,8 @@ say (try set(<a>).grab) // $!.^name ~ ":" ~ $!.method ~ ":" ~ $!.typename, " ", 
 # rakudo 2026.08: X::Immutable:grab:Set X::Immutable:grabpairs:Bag X::Immutable:classify-list:Mix
 ```
 rakupp 4.0.1-84: differs — the Mix refusals are thrown, not returned as Failures, `kxxv` is `X::Method::NotFound`, `set(<a>).categorize-list` is `X::Immutable`, a mapper returning an Iterable is accepted, and `X::Immutable` has no `.method`/`.typename` (the second probe died).
+
+Corrected 2026-11-01 from Raku Behind the Docs, ch 13 (findings/BEHIND-THE-DOCS.md §1).
 
 ### SB-27  grab and grabpairs on the hash forms                               D:partial R:yes V:quirk
 `SetHash.grab` removes and returns one element (Nil when empty), `grab(n)`
@@ -843,14 +876,26 @@ rakupp 4.0.1-84: differs — the Boolean operators do not chain (`1 (elem) (1,2)
 ### SB-40  `(<+)`, `(>+)`, `≼`, `≽` were removed in 6.d                          D:yes R:partial V:spec
 The four operators still exist as Subs but throw `X::AdHoc` when called
 ("(<+) was removed in v6.d, please use (<=) operator instead"), for any
-operands including type objects and a Failure, and `use v6.c` inside an
-`EVAL` does not bring them back. Roast keeps their 6.c semantics only under
-`6.c/`.
+operands including type objects and a Failure. A `use v6.c` at the top of
+the program (or of the `-e` code) does bring them back, with their 6.c
+meaning (`(<+)` is `(<=)` on weights), and the program runs; at exit it
+prints a deprecation report on standard error ("Saw 4 occurrences of
+deprecated code.", one entry per operator and line, each "Will be removed
+with release v6.d!" and naming the replacement: `(<=)`, `(>=)`, `⊆`,
+`⊇`). Only `use v6.c` inside an `EVAL` fails: there the operators still
+throw `X::AdHoc`. Roast keeps their 6.c semantics only under `6.c/`.
 ```
 say (try bag(<a>) (<+) bag(<a a>)) // $!.^name ~ ":" ~ $!.message.substr(0, 25), " ", (try bag(<a a>) (>+) bag(<a>)) // $!.^name, " ", (try set(<a>) ≼ bag(<a a>)) // $!.^name, " ", (try bag(<a a>) ≽ set(<a>)) // $!.^name, " ", (try Set (<+) Set) // $!.^name, " ", (try set(1) (<+) Failure.new) // $!.^name, " ", (try EVAL('use v6.c; bag(<a>) (<+) bag(<a a>)')) // $!.^name, " ", &infix:<<(<+)>>.^name, " ", &infix:<≼>.^name
 # rakudo 2026.08: X::AdHoc:(<+) was removed in v6.d, X::AdHoc X::AdHoc X::AdHoc X::AdHoc X::AdHoc X::AdHoc Sub Sub
+use v6.c; say bag(<a>) (<+) bag(<a a>), " ", bag(<a a>) (<+) bag(<a>), " ", set(<a>) ≼ bag(<a a>), " ", bag(<a a>) (>+) bag(<a>), " ", bag(<a>) ≽ bag(<a a>)
+# rakudo 2026.08: True False True True False
 ```
+The second probe's standard output is shown; its standard error is the
+deprecation report quoted above (the two `(<+)` on one line count as one
+occurrence).
 rakupp 4.0.1-84: differs — `(<+)` does not parse at all (the probe died at compile time).
+
+Corrected 2026-11-01 from Raku Behind the Docs, ch 13 (findings/BEHIND-THE-DOCS.md §1).
 
 ### SB-41  A Failure operand throws                                             D:no R:yes V:spec
 A Failure on either side of any set operator (`(|)`, `(&)`, `(-)`, `(^)`,
@@ -902,9 +947,12 @@ say Set.elems, " ", Set.Bool, " ", Set.hash.raku, " ", Set.gist, " ", Set.raku, 
 rakupp 4.0.1-84: differs — the refusals are `X::Method::NotFound` or plain values (`Set.roll` Set, `+Set` 0, `Set.iterator` Iterator, `Set.minpairs` a Pair list, `Set.clone` a path), and `Set.Map` throws `X::Hash::Store::OddNumber`.
 
 ### SB-44  Iteration, sort, cmp, list methods                                  D:partial R:partial V:spec
-A QuantHash is NOT Iterable: `for $bag { }` runs once with the bag itself
-(iterate `.pairs`, `.keys` or `.kv`); assigning it to an array or hash
-gives its Pairs. The list methods act on `.list`, the Seq of `key => weight`
+A QuantHash does not do the `Iterable` role, but `for` and array
+assignment iterate its `.list`, the Pairs, unless it sits in a `$`
+container. With a Bag in `$b`, `for $b { }` runs once with the bag itself
+and `my @a = $b` gives one element, the Bag; `for bag(...)`, `for $b<>`,
+`my @a = $b<>` and `my @a = bag(...)` iterate the Pairs. Assigning to a
+hash gives the Pairs either way (`my %h = $b`). The list methods act on `.list`, the Seq of `key => weight`
 Pairs: `.sort` (by Pair `cmp`: key, then weight), `.sort(&by)`, `.map`,
 `.grep`, `.first`, `.head`, `.max`/`.min` (by Pair `cmp`, or with a key
 function), `.reverse`, `.Seq`, `.List`, `.Array`, `.Slip`, `.cache`, `.end`
@@ -915,8 +963,13 @@ function), `.reverse`, `.Seq`, `.List`, `.Array`, `.Slip`, `.cache`, `.end`
 ```
 say do { my $b = bag <b a a>; my @p; for $b { @p.push($_.^name) }; (@p.raku, $b.sort.raku, $b.sort(*.value).raku, $b.map(*.key).sort.raku, $b.grep(*.value > 1).raku, $b.first(*.value == 1).raku, $b.elems, $b.Seq.^name, $b.List.^name, $b.List.elems, $b.Array.^name, $b.reverse.elems, $b.head.^name, $b.sort.map(*.key).raku, $b.pairs.sort.^name, ((1,2).Set.sort.raku), (set(<a>).sort.^name), $b.antipairs.sort.raku, $b.kv.^name, set(<a>).cache.^name, (set(<a b>) cmp set(<a b c>)), (set(<b>) cmp set(<a b>)), (bag(<a>) cmp mix(<a>)), (set(<a>) cmp 1), ((set(<a b>) cmp set(<a b>)).^name), (set(<a b>) cmp (<a b>).Set), ((<a b>.Set cmp <a b>.Bag).raku), $b.keys.sort.raku, $b.values.sort.raku, $b.sort.reverse.raku, $b.sort({ $^a.value <=> $^b.value || $^a.key cmp $^b.key }).raku, $b.max.raku, $b.min.raku, $b.max(*.value).raku, $b.min(*.value).raku, (try $b.sum) // $!.^name, (try $b.join(",").chars) // $!.^name, set(<a b>).sort.join(",").chars, $b.end, $b[0].^name, (try $b[1].raku) // $!.^name, $b.elems.^name, $b.Slip.elems, $b.Array.elems, $b.List[0].^name, (set(<a>) cmp set(<a>)) === Same, ([<] set(<a>), set(<b>)), (set(<a>) before set(<b>)), (bag(<a a>) leg bag(<a>)), set(<a b>).Str.words.elems, $b.pairs.elems, do { my @a = $b; @a.elems ~ " " ~ @a[0].^name }, do { my %h = $b; %h.sort.raku }, do { my ($x, $y) = $b.sort; $x.raku ~ " " ~ $y.raku }).join(" ") }
 # rakudo 2026.08: ["Bag"] (:a(2), :b(1)).Seq (:b(1), :a(2)).Seq ("a", "b").Seq (:a(2),).Seq :b(1) 2 Seq List 2 Array 2 Pair ("a", "b").Seq Seq (1 => Bool::True, 2 => Bool::True).Seq Seq (1 => "b", 2 => "a").Seq Seq List Less More Same More Order Same Order::Same ("a", "b").Seq (1, 2).Seq (:b(1), :a(2)).Seq (:b(1), :a(2)).Seq :b(1) :a(2) :a(2) :b(1) X::Multi::NoMatch 7 13 1 Bag X::OutOfRange Int 2 2 Pair True False True More 2 2 1 Bag (:a(2), :b(1)).Seq :a(2) :b(1)
+my $b = bag <b a a>; my @q; for $b<> { @q.push($_.^name) }; my @r; for bag(<b a a>) { @r.push($_.^name) }; my @c = $b<>; my @d = bag(<b a a>); my %h = $b; say @q.raku, " ", @r.raku, " ", @c.elems ~ ":" ~ @c[0].^name, " ", @d.elems ~ ":" ~ @d[0].^name, " ", %h.elems, " ", (bag(<a>) ~~ Iterable)
+# rakudo 2026.08: ["Pair", "Pair"] ["Pair", "Pair"] 2:Pair 2:Pair 2 False
 ```
 rakupp 4.0.1-84: differs in three fields — `.sum` is 0, `$b[0]` and `$b[1]` are Any.
+(this rakupp line predates the correction; re-measure before relying on it)
+
+Corrected 2026-11-01 from Raku Behind the Docs, ch 13 (findings/BEHIND-THE-DOCS.md §1).
 
 ## Counts
 

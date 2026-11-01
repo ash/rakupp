@@ -136,10 +136,11 @@ exponent without digits, `Nl`/`No` characters (`"Ⅻ"`), a digit carrying a
 combining mark (pos 1), doubled or leading or trailing underscores, a bare
 prefix (`"0x"`), a digit outside the base (`"0b2"`), a `p` exponent,
 `"inf"` (case matters), `"-NaN"`, a lone `i`, `"1+i"`, `"Infi"` (needs
-`\i`), a space after a sign, a double sign, a lone sign or dot, `"1/"`, a
-signed denominator, two radix points, a radix above 36, `:16` without
-brackets, two vulgar fractions, and `2**3` or `2*3` (the multiplier needs
-`*` and `**`). `:fail-or-nil` turns the Failure into Nil.
+`\i`), a space after a sign, a double sign, a lone sign or dot, `"1/"`,
+two radix points, a radix above 36, `:16` without brackets, two vulgar
+fractions, and `2**3` or `2*3` (the multiplier needs `*` and `**`). A
+signed denominator is accepted: `"1/-2"` numifies to -0.5.
+`:fail-or-nil` turns the Failure into Nil.
 ```
 sub f($s) { my $r = $s.Numeric; $r ~~ Failure ?? "F(" ~ $r.exception.^name ~ "," ~ ($r.exception.?pos // "-") ~ ")" !! $r.raku }; say f("abc"), " ", f("12abc"), " ", f("4 2"), " ", f("1 2"), " ", f("5."), " ", f("1.e3"), " ", f("1e"), " ", f("0.1e"), " ", f("1e5.5"), " ", f("Ⅻ"), " ", f("7\x[308]"), " ", f("1__0"), " ", f("_1"), " ", f("1_"), " ", f("1,000"), " ", f("0x"), " ", f("0b2"), " ", f("0x1p3"), " ", f("inf"), " ", f("-NaN"), " ", f("i"), " ", f("1+i"), " ", f("Infi"), " ", f("- 5"), " ", f("--1"), " ", f("+"), " ", f("."), " ", f("1/"), " ", f("1/-2"), " ", f("1.2.3"), " ", f(":37<1>"), " ", f(":16"), " ", f(":16<>"), " ", f("½½"), " ", f("2**3"), " ", f("2*3")
 # rakudo 2026.08: F(X::Str::Numeric,0) F(X::Str::Numeric,2) F(X::Str::Numeric,1) F(X::Str::Numeric,1) F(X::Str::Numeric,2) F(X::Str::Numeric,2) F(X::Str::Numeric,2) F(X::Str::Numeric,4) F(X::Str::Numeric,3) F(X::Str::Numeric,0) F(X::Str::Numeric,1) F(X::Str::Numeric,1) F(X::Str::Numeric,0) F(X::Str::Numeric,1) F(X::Str::Numeric,1) F(X::Str::Numeric,2) F(X::Str::Numeric,2) F(X::Str::Numeric,3) F(X::Str::Numeric,0) F(X::Str::Numeric,1) F(X::Str::Numeric,0) F(X::Str::Numeric,2) F(X::Str::Numeric,3) F(X::Str::Numeric,1) F(X::Str::Numeric,1) F(X::Str::Numeric,1) F(X::Str::Numeric,1) F(X::Str::Numeric,2) -0.5 F(X::Str::Numeric,3) F(X::Str::Numeric,4) F(X::Str::Numeric,3) F(X::Str::Numeric,4) F(X::Str::Numeric,0) F(X::Str::Numeric,1) F(X::Str::Numeric,3)
@@ -150,6 +151,7 @@ rakupp 4.0.2: differs — the refusals are refusals now, but the exception carri
 `:fail-or-nil` still returns the Failure, and `"1+i"` parses (to `<1+1i>`;
 Roast `numeric.t` marks the lone-`i` forms as a Rakudo skip, so this is
 ahead of the oracle rather than wrong).
+Corrected 2026-11-01 from Raku Behind the Docs, ch 8 (findings/BEHIND-THE-DOCS.md §1).
 
 ### ST-08  Int, Num, Rat, Real, UInt, Complex go through Numeric  D:partial R:partial V:spec
 `.Int` truncates a parsed Rat or Num toward zero (`"-42.7"` is -42,
@@ -376,7 +378,8 @@ A word is a letter followed by word characters, and words are joined
 through `'` and `-` (`don't`, `stop-me`, `o'brien` are single words); the
 default filter is `tclc`. **Quirk:** a run that starts with a digit is not
 a word, so the letters after the digit start one: `"3rd"` → `"3Rd"`,
-`"1x"` → `"1X"`; `_` and `.` split words (`"a.b"` → `"A.B"`). `:filter`
+`"1x"` → `"1X"`; `.` splits words (`"a.b"` → `"A.B"`), but `_` is a word
+character and does not (`"a_b c"` → `"A_b C"`). `:filter`
 replaces `tclc`; `:where` is smartmatched against each word (a regex, a
 string, a type). Roast `capitalize.t` asserts the apostrophe and dash
 cases only.
@@ -390,6 +393,7 @@ rakupp 4.0.1: differs — words are split on whitespace only (`"3rd"`,
 `"-a-"`, `"'ab"` keep their case, `"a.b"` is `"A.b"`), `ǆa` gets the
 uppercase `Ǆ` rather than the titlecase, and `:filter`/`:where` are
 ignored.
+Corrected 2026-11-01 from Raku Behind the Docs, ch 8 (findings/BEHIND-THE-DOCS.md §1).
 
 ### ST-20  samecase is positional                                  D:yes R:yes V:spec
 Character *i* of the result takes the case of character *i* of the
@@ -425,14 +429,21 @@ The inter-word whitespace of the invocant is replaced, run by run, by the
 corresponding whitespace run of the pattern; when the pattern has fewer
 runs the invocant's own remain; when the pattern has more, the extra are
 dropped. Leading whitespace of the invocant counts as its first run (the
-first "word" is empty); trailing whitespace is kept as is. This is the
+first "word" is empty), and trailing whitespace is a run like the others:
+it is replaced when the pattern has a run in that position (`"a b "` with
+`"x\ty\t"` or `"x\ty\tz"` is `"a\tb\t"`) and kept when it has none
+(`"a b "` with `"x y"` stays `"a b "`). This is the
 engine behind `:ss` (ST-53), which Roast `S05-substitution/subst.t`
 asserts.
 ```
 say "a b c".samespace("x\ty\nz").raku, " ", "a b c".samespace("x\ty").raku, " ", "a b c d".samespace("x\ty").raku, " ", "a  b".samespace("x y z").raku, " ", "a   b".samespace("x\t\ty").raku, " ", "abc".samespace("x y").raku, " ", "a b".samespace("xy").raku, " ", "a b".samespace("").raku, " ", "a b".samespace(" x\ty").raku, " ", " a b".samespace("\tx\ty").raku, " ", " a b".samespace("x y").raku, " ", "a b ".samespace("x\ty\t").raku, " ", "a\nb".samespace("x y").raku, " ", "".samespace("x y").raku, " ", 12.samespace("x").raku
 # rakudo 2026.08: "a\tb\nc" "a\tb c" "a\tb c d" "a b" "a\t\tb" "abc" "a b" "a b" "a b" "\ta\tb" " a b" "a\tb\t" "a b" "" "12"
+say "a b ".samespace("x y").raku, " ", "a b  ".samespace("x\ty\tz").raku, " ", "a b ".samespace("x\ty\tz").raku, " ", "a ".samespace("x\t").raku, " ", "a ".samespace("x").raku
+# rakudo 2026.08: "a b " "a\tb\t" "a\tb\t" "a\t" "a "
 ```
 rakupp 4.0.1: matches.
+(this rakupp line predates the correction; re-measure before relying on it)
+Corrected 2026-11-01 from Raku Behind the Docs, ch 8 (findings/BEHIND-THE-DOCS.md §1).
 
 ## D. Trimming
 
@@ -617,10 +628,13 @@ instead of False (four cases), `("bar", "x")` and `("bar", Int)` are False
 and `(Str, 3)` is True instead of throwing.
 
 ### ST-33  :ignorecase and :ignoremark                             D:partial R:yes V:spec
-`:i` (`:ignorecase`) compares under full case folding, so `ß`~`ss`~`ẞ`,
-`ǅ`~`dž`~`Ǆ`, `K`(Kelvin)~`k`, `ﬁ`~`fi`, `İ`~`i̇` (but not `İ`~`i`),
-final and medial sigma, and Roman numerals (`Ⅻ`~`ⅻ`) all match; full-width
-`ａ` does not fold to `a`. `:m` (`:ignoremark`) compares base characters,
+`:i` (`:ignorecase`) compares under case folding, so `ß`~`ss`~`ẞ`,
+`ǅ`~`Ǆ`~`ǆ`, `K`(Kelvin)~`k`, `ﬁ`~`fi`, final and medial sigma, and
+Roman numerals (`Ⅻ`~`ⅻ`) all match; full-width `ａ` does not fold to `a`.
+`ǅ` folds to the single character `ǆ` and does not match `dž` (`d` plus
+`ž`). `İ` contains neither `i̇` (`i` plus U+0307) nor `i` under `:i`,
+although `"İ".fc eq "i\x[307]".fc` is True; the other way round,
+`"i\x[307]".contains("İ", :i)` is True. `:m` (`:ignoremark`) compares base characters,
 in both directions (`"a".contains("a\x[301]", :m)` is True), and `:i:m`
 combines them. Without adverbs, NFG equality holds (`"e\x[301]"` contains
 `"é"`). The empty needle is found with any adverb; `indices("", :i)` lists
@@ -630,11 +644,15 @@ every position. Roast asserts these through table-driven tests in
 ```
 say "STRASSE".contains("ß", :i), " ", "straße".contains("SS", :i), " ", "ss".contains("ß", :i), " ", "ß".contains("ss", :i), " ", "ẞ".contains("ß", :i), " ", "Straße".starts-with("STRASSE", :i), " ", "STRASSE".starts-with("Straße", :i), " ", "ǅ".contains("dž", :i), " ", "ǅ".contains("Ǆ", :i), " ", "ǅ".contains("ǆ"), " ", "ǅ".index("DŽ", :i).raku, " ", "İ".contains("i", :i), " ", "İ".contains("i\x[307]", :i), " ", "K".contains("k", :i), " ", "ﬁ".contains("fi", :i), " ", "ａ".contains("a", :i), " ", "Ⅻ".contains("ⅻ", :i), " ", "ΣΑΣ".contains("σας", :i), " ", "ΣΑΣ".contains("σασ", :i), " ", "σας".contains("ΣΑΣ", :i), " ", "abc".contains("A", :i, :m), " ", "ǟ".contains("a", :m), " ", "ǟ".contains("ä", :m), " ", "\x[1E69]".contains("s", :m), " ", "a".contains("a\x[301]", :m), " ", "a\x[301]".contains("a", :m), " ", "abc".index("ábc", :m).raku, " ", "ábc".index("abc").raku, " ", "ábc".index("abc", :m).raku, " ", "aéb".index("e", :m).raku, " ", "aéb".indices("e", :m).raku, " ", "e\x[301]".contains("é"), " ", "é".contains("e\x[301]"), " ", "abc".contains("", :i), " ", "abc".contains("", :m), " ", "".contains("", :i, :m), " ", "abc".indices("", :i).raku
 # rakudo 2026.08: True True True True True True True False True False Nil False False True True False True True True True True True True True True True 0 Nil 0 1 (1,) True True True True True (0, 1, 2, 3)
+say "\x[1C5]".contains("d\x[17E]", :i), " ", "\x[1C5]".contains("\x[1C4]", :i), " ", "\x[1C5]".contains("\x[1C6]", :i), " ", "\x[130]".contains("i\x[307]", :i), " ", "\x[130]".contains("i", :i), " ", "\x[130]".fc eq "i\x[307]".fc, " ", "\x[1C5]".fc eq "d\x[17E]".fc, " ", "\x[1C5]".fc.ords, " ", "\x[130]".fc.ords, " ", "d\x[17E]".contains("\x[1C5]", :i), " ", "i\x[307]".contains("\x[130]", :i), " ", "ß".contains("ss", :i), " ", "\x[1C5]" ~~ /:i "d\x[17E]"/ ?? "T" !! "F"
+# rakudo 2026.08: False True True False False True False (454) (105 775) False True True F
 ```
 rakupp 4.0.1: differs — `:i` is per-character case insensitivity without
 folding (`ß`/`ss`, `ǅ`/`dž`, `K`/`k`, `ﬁ`/`fi`, `İ`, sigma variants and
 `Ⅻ`/`ⅻ` fail), `"a".contains("a\x[301]", :m)` is False, and
 `indices("", :i)` is `()`.
+(this rakupp line predates the correction; re-measure before relying on it)
+Corrected 2026-11-01 from Raku Behind the Docs, ch 8 (findings/BEHIND-THE-DOCS.md §1).
 
 ## F. Substrings
 
@@ -665,8 +683,12 @@ WhateverCode-range forms return the whole string, and `substr(*)` is `""`.
 A start below 0 or above `chars` (also via `*-10`, a Range, or the sub
 form) is a **returned** `X::OutOfRange` Failure (Roast `substr.t`:
 `fails-like`) with `what` "Start argument to substr", `got`, `range`
-`0..chars`, and a `comment` suggesting `*-N` only when `-N` would be in
-range. A negative length is an `X::OutOfRange` Failure with `what`
+`0..chars`, and a `comment` "use *-N if you want to index relative to
+the end". N is the start without its sign, and the comment appears for a
+negative start from -1 to -chars and for every start past the end
+(`"abc".substr(4)` suggests `*-4`, itself out of range). A start below
+-chars gets an empty comment, and its message ends in a stray "; "
+("… Is: -4, should be in 0..3; "). A negative length is an `X::OutOfRange` Failure with `what`
 "Number of characters argument to substr" and `range` `0..^Inf`; NaN and
 `-Inf` lengths fail the same way. A big-integer start or length throws
 `X::AdHoc`; Inf, NaN, `-Inf` as start throw `X::Numeric::CannotConvert`; a
@@ -676,11 +698,15 @@ throws `X::Method::NotFound`; three positionals are `X::Multi::NoMatch`.
 ```
 sub f(&c) { my \r = try c(); $! ?? "T(" ~ $!.^name ~ ")" !! r ~~ Failure ?? "F(" ~ r.exception.^name ~ ";" ~ (r.exception.?what // "-") ~ ";" ~ (r.exception.?got // "-") ~ ";" ~ (r.exception.?range // "-") ~ ";" ~ (r.exception.?comment // "-") ~ ")" !! r.raku }; say f({"abc".substr(4)}), " ", f({"abc".substr(4, 1)}), " ", f({"abc".substr(-1)}), " ", f({"abc".substr(-3)}), " ", f({"abc".substr(-4)}), " ", f({"abc".substr(-10)}), " ", f({"abc".substr(*-4, 1)}), " ", f({"abc".substr(*-10)}), " ", f({"abc".substr(-1..2)}), " ", f({"abc".substr(5..6)}), " ", f({"abc".substr(1, -1)}), " ", f({"abc".substr(1, *-5)}), " ", f({"abc".substr(1, NaN)}), " ", f({"abc".substr(1, -Inf)}), " ", f({"abc".substr(1, -2**70)}), " ", f({"abc".substr(2**70)}), " ", f({"abc".substr(Inf)}), " ", f({"abc".substr(NaN)}), " ", f({"abc".substr(-Inf)}), " ", f({"abc".substr("x")}), " ", f({"abc".substr(1, "x")}), " ", f({"abc".substr(Str)}), " ", f({"abc".substr(1, Str)}), " ", f({"abc".substr(Nil)}), " ", f({"abc".substr(/b/)}), " ", f({"abc".substr(/b/, 1)}), " ", f({"abc".substr(1, 2, 3)}), " ", f({substr("abc", -1)})
 # rakudo 2026.08: T(X::OutOfRange) T(X::OutOfRange) T(X::OutOfRange) T(X::OutOfRange) T(X::OutOfRange) T(X::OutOfRange) T(X::OutOfRange) T(X::OutOfRange) T(X::OutOfRange) T(X::OutOfRange) T(X::OutOfRange) T(X::OutOfRange) T(X::OutOfRange) T(X::OutOfRange) T(X::AdHoc) T(X::AdHoc) T(X::Numeric::CannotConvert) T(X::Numeric::CannotConvert) T(X::Numeric::CannotConvert) T(X::Str::Numeric) T(X::Str::Numeric) T(X::Parameter::InvalidConcreteness) T(X::Parameter::InvalidConcreteness) "abc" T(X::Method::NotFound) T(X::Method::NotFound) T(X::Multi::NoMatch) T(X::OutOfRange)
+for 4, 10, -1, -3, -4, -10 -> $s { my $r = "abc".substr($s); print $s, ": ", ($r.exception.comment // "-").raku, " | ", $r.exception.message.raku, "  " }; say ""
+# rakudo 2026.08: 4: "use *-4 if you want to index relative to the end" | "Start argument to substr out of range. Is: 4, should be in 0..3; use *-4 if you want to index relative to the end"  10: "use *-10 if you want to index relative to the end" | "Start argument to substr out of range. Is: 10, should be in 0..3; use *-10 if you want to index relative to the end"  -1: "use *-1 if you want to index relative to the end" | "Start argument to substr out of range. Is: -1, should be in 0..3; use *-1 if you want to index relative to the end"  -3: "use *-3 if you want to index relative to the end" | "Start argument to substr out of range. Is: -3, should be in 0..3; use *-3 if you want to index relative to the end"  -4: "" | "Start argument to substr out of range. Is: -4, should be in 0..3; "  -10: "" | "Start argument to substr out of range. Is: -10, should be in 0..3; "
 ```
 rakupp 4.0.2: differs — out-of-range starts and lengths are Failures now (`S32-str/substr.t` passes in full); a NaN/huge/non-numeric/type-object argument still reports `X::OutOfRange` where Rakudo separates `X::AdHoc`, `X::Numeric::CannotConvert`, `X::Str::Numeric` and `X::Parameter::InvalidConcreteness`.
 negative starts fail), a NaN or huge length and a non-numeric or
 type-object argument return `""` or the string, a Regex start is accepted,
 and three positionals give `"a"`.
+(this rakupp line predates the correction; re-measure before relying on it)
+Corrected 2026-11-01 from Raku Behind the Docs, ch 8 (findings/BEHIND-THE-DOCS.md §1).
 
 ### ST-36  substr-rw                                               D:yes R:yes V:spec/quirk
 `substr-rw` returns a Proxy over a variable. Assigning through it splices
@@ -966,7 +992,10 @@ first is missing or the Range is reversed, and stops silently when the
 string runs out (`:nth(2, 5)`); the list must be increasing — a
 non-monotonic sequence throws `X::AdHoc` at reification (`.eager`).
 `:x(n)` with an Iterable `:nth` requires exactly *n* of them to exist,
-else `()`; with a single `:nth` it wraps the one match. `:g`/`:ov` do not
+else `()`. With a single `:nth`, any `:x` gives `()` rather than the one
+match (`:nth(2), :x(1)`, `:nth(1), :x(1)` and `:nth(*-1), :x(1)` are all
+`()`, while `:nth(2..2), :x(1)` is the one-element List); the book tags
+this "Bug?", and Grammar-Match.md records it as the bug GM-33. `:g`/`:ov` do not
 change a single-`nth` result; `:as(Str)` gives strings; `:c`/`:p` count
 from that position. Roast `counted-match.t` asserts the lists, ranges,
 `:x` combinations and the non-monotonic death.
@@ -975,16 +1004,23 @@ sub f(&c) { my \r = try c(); $! ?? "T(" ~ $!.^name ~ ")" !! r ~~ Failure ?? "F("
 # rakudo 2026.08: Match.new(:orig("abcd"), :from(1), :pos(2)) Match.new(:orig("abcd"), :from(1), :pos(2)) Match.new(:orig("abcd"), :from(0), :pos(1)) Match.new(:orig("abcd"), :from(2), :pos(3)) Match.new(:orig("abcd"), :from(3), :pos(4)) Match.new(:orig("abcd"), :from(1), :pos(2)) Match.new(:orig("abcd"), :from(3), :pos(4)) Match.new(:orig("abcd"), :from(2), :pos(3)) Nil "Nil" Match.new(:orig("abcd"), :from(1), :pos(2)) Match.new(:orig("abcd"), :from(1), :pos(2)) Match.new(:orig("abcd"), :from(3), :pos(4)) Match.new(:orig("abcd"), :from(3), :pos(4)) Match.new(:orig("abcd"), :from(3), :pos(4)) Match.new(:orig("abcd"), :from(2), :pos(3)) Match.new(:orig("abcd"), :from(1), :pos(2)) Nil Nil T(X::AdHoc) T(X::AdHoc) (Match.new(:orig("abcd"), :from(1), :pos(2)),) Match.new(:orig("abcd"), :from(0), :pos(1)) T(X::AdHoc) Nil
 sub f(&c) { my \r = try c(); $! ?? "T(" ~ $!.^name ~ ")" !! r ~~ Failure ?? "F(" ~ r.exception.^name ~ ")" !! r.raku }; say f({"abcd".match(/./, :nth(1, 3))}), " ", f({"abcd".match(/./, :nth(1, 3)).^name}), " ", f({"abcd".match(/./, :nth((1, 3, 4)))}), " ", f({"abcd".match(/./, :nth(2..3))}), " ", f({"abcd".match(/./, :nth(2..3)); $/}), " ", f({"abcd".match(/./, :nth(2^..3))}), " ", f({"abcd".match(/./, :nth(2..*)).List}), " ", f({"abcd".match(/./, :nth(1..*)).elems}), " ", f({"abcd".match(/./, :nth(3..9))}), " ", f({"abcd".match(/./, :nth(9..10))}), " ", f({"abcd".match(/./, :nth(9..10)).^name}), " ", f({"abcd".match(/./, :nth(2..1))}), " ", f({"abcd".match(/./, :nth(2, 5))}), " ", f({"abcd".match(/x/, :nth(1..2))}), " ", f({"abcd".match(/./, :nth(0..2)).eager}), " ", f({"abcd".match(/./, :nth(3, 1)).eager}), " ", f({"abcd".match(/./, :nth(3, 3)).eager}), " ", f({"abcd".match(/./, :nth(1, 1)).eager}), " ", f({"abcd".match(/./, :nth(2), :x(1))}), " ", f({"abcd".match(/./, :nth(2), :x(2))}), " ", f({"abcd".match(/./, :nth(2..3), :x(1))}), " ", f({"abcd".match(/./, :nth(2..3), :x(2))}), " ", f({"abcd".match(/./, :nth(2..3), :x(3))}), " ", f({"abcd".match(/./, :nth(1..*), :x(2))}), " ", f({"abcd".match(/./, :nth(*-1), :x(1))}), " ", f({"abcd".match(/./, :nth(2), :g)}), " ", f({"abcd".match(/./, :nth(2..3), :g)}), " ", f({"abcd".match(/./, :nth(2..3), :ov)}), " ", f({"abcd".match(/./, :nth(2), :as(Str))}), " ", f({"abcd".match(/./, :nth(2..3), :as(Str))}), " ", f({"abcd".match(/./, :nth(2), :c(2))}), " ", f({"abcd".match(/./, :nth(2), :p(1))})
 # rakudo 2026.08: (Match.new(:orig("abcd"), :from(0), :pos(1)), Match.new(:orig("abcd"), :from(2), :pos(3))) "List" (Match.new(:orig("abcd"), :from(0), :pos(1)), Match.new(:orig("abcd"), :from(2), :pos(3)), Match.new(:orig("abcd"), :from(3), :pos(4))) (Match.new(:orig("abcd"), :from(1), :pos(2)), Match.new(:orig("abcd"), :from(2), :pos(3))) $(Match.new(:orig("abcd"), :from(1), :pos(2)), Match.new(:orig("abcd"), :from(2), :pos(3))) (Match.new(:orig("abcd"), :from(2), :pos(3)),) (Match.new(:orig("abcd"), :from(1), :pos(2)), Match.new(:orig("abcd"), :from(2), :pos(3)), Match.new(:orig("abcd"), :from(3), :pos(4))) 4 (Match.new(:orig("abcd"), :from(2), :pos(3)), Match.new(:orig("abcd"), :from(3), :pos(4))) () "List" () (Match.new(:orig("abcd"), :from(1), :pos(2)),) () T(X::AdHoc) T(X::AdHoc) T(X::AdHoc) T(X::AdHoc) () () (Match.new(:orig("abcd"), :from(1), :pos(2)),) (Match.new(:orig("abcd"), :from(1), :pos(2)), Match.new(:orig("abcd"), :from(2), :pos(3))) () (Match.new(:orig("abcd"), :from(0), :pos(1)), Match.new(:orig("abcd"), :from(1), :pos(2))) () Match.new(:orig("abcd"), :from(1), :pos(2)) (Match.new(:orig("abcd"), :from(1), :pos(2)), Match.new(:orig("abcd"), :from(2), :pos(3))) (Match.new(:orig("abcd"), :from(1), :pos(2)), Match.new(:orig("abcd"), :from(2), :pos(3))) "b" ("b", "c") Match.new(:orig("abcd"), :from(3), :pos(4)) Match.new(:orig("abcd"), :from(2), :pos(3))
+sub f(&c) { my \r = try c(); $! ?? "T(" ~ $!.^name ~ ")" !! r ~~ Failure ?? "F(" ~ r.exception.^name ~ ")" !! r.raku }; say f({"abcd".match(/./, :nth(2), :x(1))}), " ", f({"abcd".match(/./, :nth(2), :x(2))}), " ", f({"abcd".match(/./, :nth(*-1), :x(1))}), " ", f({"abcd".match(/./, :nth(1), :x(1))}), " ", f({"abcd".match(/./, :nth(2..2), :x(1))}), " ", f({"abcd".match(/./, :nth(2))})
+# rakudo 2026.08: () () () () (Match.new(:orig("abcd"), :from(1), :pos(2)),) Match.new(:orig("abcd"), :from(1), :pos(2))
 ```
 rakupp 4.0.1: differs — a missing *n*-th match is `()` rather than Nil, a
 Rat, Callable, Inf, `*-k`, `*+1` or Str value is `X::AdHoc`, `:nth(Nil)`
 is `()`, a reversed Range still matches, `:nth(2), :g` is a List, and
 `:as(Str)`/`:c`/`:p` are not combined.
+(this rakupp line predates the correction; re-measure before relying on it)
+Corrected 2026-11-01 from Raku Behind the Docs, ch 17 (findings/BEHIND-THE-DOCS.md §1).
 
 ### ST-49  :c, :p and :as                                          D:partial R:partial V:spec/bug
 `:c`/`:continue(n)` searches from *n*; `:p`/`:pos(n)` requires the match to
-start at *n* (Roast `S05-modifier/pos.t`). Either beyond the end is Nil,
-`:c(Nil)` is Nil while `:p(Nil)` means 0, a non-Int position (`1.9`,
+start at *n* (Roast `S05-modifier/pos.t`). Either beyond the end is Nil.
+`:c(Nil)` anchors the match at 0, like `:p(0)` (`"abcdef".match(/a/,
+:c(Nil))` is the match at 0, `/b/` or `/c/` with `:c(Nil)` Nil), while
+`:p(Nil)` searches as if the adverb were absent (`/c/` with `:p(Nil)`
+matches at 2). A non-Int position (`1.9`,
 `"1"`, `1e0`, a big Int) throws `X::AdHoc`, and `:p` wins over `:c`.
 **Bugs:** a negative position produces a Match with `from` −1
 (`"abc".match(/./, :c(-1))`), and the bare adverb `:c` means position 1
@@ -999,18 +1035,23 @@ sub f(&c) { my \r = try c(); $! ?? "T(" ~ $!.^name ~ ")" !! r ~~ Failure ?? "F("
 # rakudo 2026.08: Match.new(:orig("a1xa2"), :from(3), :pos(5)) Match.new(:orig("a1xa2"), :from(3), :pos(5)) Match.new(:orig("abcdef"), :from(2), :pos(6)) Match.new(:orig("abcdef"), :from(2), :pos(3)) Nil Match.new(:orig("abcdef"), :from(2), :pos(3)) Nil Match.new(:orig("abcdef"), :from(2), :pos(3)) Match.new(:orig("abcabc"), :from(0), :pos(1)) Match.new(:orig("abcabc"), :from(0), :pos(1)) T(X::AdHoc) T(X::AdHoc) T(X::AdHoc) Match.new(:orig("abc"), :from(2), :pos(3)) Nil Match.new(:orig("abc"), :from(2), :pos(3)) Match.new(:orig("abc"), :from(3), :pos(3)) Match.new(:orig("abc"), :from(3), :pos(3)) Nil Nil Nil Nil Nil Match.new(:orig("abc"), :from(-1), :pos(0)) Match.new(:orig("abc"), :from(-1), :pos(0)) T(X::AdHoc) Match.new(:orig("abcabc"), :from(1), :pos(2)) Match.new(:orig("abcabc"), :from(1), :pos(2)) Match.new(:orig("abc"), :from(1), :pos(2)) Match.new(:orig("abcabc"), :from(1), :pos(2)) Match.new(:orig("abc"), :from(2), :pos(3))
 sub f(&c) { my \r = try c(); $! ?? "T(" ~ $!.^name ~ ")" !! r ~~ Failure ?? "F(" ~ r.exception.^name ~ ")" !! r.raku }; say f({"a1xa2".match(/a./, :c(2), :g)}), " ", f({"abcabc".match(/b/, :c(2), :g)}), " ", f({"abcabc".match(/b/, :p(2), :g)}), " ", f({"abcabc".match(/b/, :p(4), :g)}), " ", f({"abcabc".match(/b/, :c(2), :ov)}), " ", f({"abcabc".match(/b/, :c(2), :ex)}), " ", f({"abc".match(/./, :c(1), :nth(2))}), " ", f({"abc".match(/./, :p(1), :nth(2))}), " ", f({"abc".match(/./, :c(1), :x(2))}), " ", f({"abc".match(/./, :p(1), :x(2))}), " ", f({"abc".match(/./, :c(1), :g)}), " ", f({"abc".match(/./, :p(1), :ov)}), " ", f({"abc".match(/b/, :as(Str))}), " ", f({"abc".match(/b/, :as(Str)).^name}), " ", f({"abc".match(/b/, :as(Str)); $/.^name}), " ", f({"abc".match(/x/, :as(Str))}), " ", f({"abc".match(/\w/, :g, :as(Str))}), " ", f({"abc".match(/b/, :as(Str), :g)[0].^name}), " ", f({"abc".match(/b/, :as(Str), :g); $/[0].^name}), " ", f({"abc".match(/\w/, :x(2), :as(Str))}), " ", f({"abc".match(/\w/, :nth(2), :as(Str))}), " ", f({"abc".match(/./, :c(1), :as(Str))}), " ", f({"abc".match(/./, :p(1), :as(Str))}), " ", f({"abc".match(/b/, :as("x"))}), " ", f({"abc".match(/\w/, :as(Int)).^name}), " ", f({"abc".match(/b/, :as(Match)).^name}), " ", f({"abc".match(/b/, :as(Nil)).^name}), " ", f({"abc".match(/b/, :!as).^name})
 # rakudo 2026.08: (Match.new(:orig("a1xa2"), :from(3), :pos(5)),) (Match.new(:orig("abcabc"), :from(4), :pos(5)),) () (Match.new(:orig("abcabc"), :from(4), :pos(5)),) (Match.new(:orig("abcabc"), :from(4), :pos(5)),) (Match.new(:orig("abcabc"), :from(4), :pos(5)),) Match.new(:orig("abc"), :from(2), :pos(3)) Match.new(:orig("abc"), :from(2), :pos(3)) (Match.new(:orig("abc"), :from(1), :pos(2)), Match.new(:orig("abc"), :from(2), :pos(3))) (Match.new(:orig("abc"), :from(1), :pos(2)), Match.new(:orig("abc"), :from(2), :pos(3))) (Match.new(:orig("abc"), :from(1), :pos(2)), Match.new(:orig("abc"), :from(2), :pos(3))) (Match.new(:orig("abc"), :from(1), :pos(2)), Match.new(:orig("abc"), :from(2), :pos(3))) "b" "Str" "Str" Nil ("a", "b", "c") "Str" "Str" ("a", "b") "b" Match.new(:orig("abc"), :from(1), :pos(2)) Match.new(:orig("abc"), :from(1), :pos(2)) "b" "Match" "Match" "Match" "Match"
+sub f(&c) { my \r = try c(); $! ?? "T(" ~ $!.^name ~ ")" !! r ~~ Failure ?? "F(" ~ r.exception.^name ~ ")" !! r.raku }; say f({"abcdef".match(/a/, :c(Nil))}), " ", f({"abcdef".match(/b/, :c(Nil))}), " ", f({"abcdef".match(/c/, :c(Nil))}), " ", f({"abcdef".match(/c/, :p(0))}), " ", f({"abcdef".match(/a/, :p(0))}), " ", f({"abcdef".match(/c/, :p(Nil))}), " ", f({"abcdef".match(/c/, :c(0))}), " ", f({"abcdef".match(/c/)})
+# rakudo 2026.08: Match.new(:orig("abcdef"), :from(0), :pos(1)) Nil Nil Nil Match.new(:orig("abcdef"), :from(0), :pos(1)) Match.new(:orig("abcdef"), :from(2), :pos(3)) Match.new(:orig("abcdef"), :from(2), :pos(3)) Match.new(:orig("abcdef"), :from(2), :pos(3))
 ```
 rakupp 4.0.1: differs — `:p(1)` on a match at 2 is Nil but `:c(Nil)` is
 a Match and `:p(Nil)` Nil, non-Int positions are accepted, positions
 beyond the end or negative are Nil, `:c(2), :ov`/`:ex` give a single
 Match, and `:as(Str)` always returns a Match.
+(this rakupp line predates the correction; re-measure before relying on it)
+Corrected 2026-11-01 from Raku Behind the Docs, ch 17 (findings/BEHIND-THE-DOCS.md §1).
 
 ### ST-50  subst: literal matcher, adverbs, no match               D:yes R:yes V:spec/bug
 A Str matcher is literal (`"."` is a dot) and replaces the first
 occurrence; `:g`/`:global` all; the replacement defaults to `""`, a
 non-Str replacement is stringified (42, 1.5, `<42>`, `(1, 2)`), a type
-object or Nil is `""` with a warning; an empty matcher matches at 0 (and
-with `:g` between every character, like `/<?>/`); **bug:** `"".subst("",
+object or Nil is `""` with a warning; an empty matcher matches at 0, and
+with `:g` between the characters only (`"abc".subst("", "-", :g)` is
+`a-b-c`), not also at both ends as `/<?>/` does (`-a-b-c-`); **bug:** `"".subst("",
 "x")` is `"x"` but with `:g` it is `""`. A Cool matcher or invocant is
 stringified; a type object matcher is `X::Multi::NoMatch`; no match
 returns a new Str with the same text. The match adverbs pass through:
@@ -1019,19 +1060,26 @@ changes nothing; `:nth(*)` the last), `:g, :nth(2)` is the second only,
 `:g, :p(0)` needs a match at 0. `:ov` and `:ex` throw
 `X::Str::Subst::Adverb` (`name` "ov"/"ex"; a false value is fine); an
 invalid `:x` is a returned `X::Str::Match::x` Failure. **Bug:**
-`:as(Str)` with a Regex matcher throws `X::Method::NotFound` (the strings
-have no `.from`); with a Str matcher it is harmless. Roast `subst.t`
+`:as(Str)` combined with `:g`, `:nth` or `:x` throws
+`X::Method::NotFound` (the strings have no `.from`), for a Str matcher
+and a Regex alike, `:nth(1)` and `:x(1)` included. With a single match
+either matcher works (`"abc".subst(/b/, "x", :as(Str))` is `axc`, and so
+is the Str form; `:c(2)` is fine too). Roast `subst.t`
 asserts the `:x`, `:nth`, `:p`, `:c` and `:g` tables.
 ```
 sub f(&c) { my \r = try c(); $! ?? "T(" ~ $!.^name ~ ")" !! r ~~ Failure ?? "F(" ~ r.exception.^name ~ ")" !! r.raku }; say f({"a.b.c".subst(".", "-")}), " ", f({"a.b.c".subst(".", "-", :g)}), " ", f({"a.b.c".subst(/./, "-")}), " ", f({"abc".subst("b")}), " ", f({"abc".subst("x", "y")}), " ", f({"abc".subst("x", "y").^name}), " ", f({"abc".subst("b", "x").^name}), " ", f({"abc".subst("", "-")}), " ", f({"abc".subst("", "-", :g)}), " ", f({"abc".subst(/<?>/, "-", :g)}), " ", f({"abc".subst(/x*/, "-", :g)}), " ", f({"".subst("", "x")}), " ", f({"".subst("", "x", :g)}), " ", f({"".subst(/<?>/, "x")}), " ", f({"abc".subst("b", 42)}), " ", f({"abc".subst("b", 1.5)}), " ", f({"abc".subst("b", <42>)}), " ", f({"abc".subst("b", (1,2))}), " ", f({"abc".subst(1, "x")}), " ", f({123.subst(2, "x")}), " ", f({"abc".subst(<b>, "x")}), " ", f({"a.b".subst(<.>, "x", :g)}), " ", f({"abc".subst("b", "x", :global)}), " ", f({"abc".subst("b", "x", :!g)}), " ", f({"aaa".subst("a", "b", :g)}), " ", f({"abc".subst(Str, "x")}), " ", f({"abc".subst(Any, "x")}), " ", f({"abc".subst("b", Str)}), " ", f({"abc".subst("b", Nil)}), " ", f({"abc".subst("b", Any)}), " ", f({"abc".subst(/b/, Nil)})
 # rakudo 2026.08: "a-b.c" "a-b-c" "-.b.c" "ac" "abc" "Str" "Str" "-abc" "a-b-c" "-a-b-c-" "-a-b-c-" "x" "" "x" "a42c" "a1.5c" "a42c" "a1 2c" "abc" "1x3" "axc" "axb" "axc" "axc" "bbb" T(X::Multi::NoMatch) T(X::Multi::NoMatch) "ac" "ac" "ac" "ac"
 sub f(&c) { my \r = try c(); $! ?? "T(" ~ $!.^name ~ ")" !! r ~~ Failure ?? "F(" ~ r.exception.^name ~ ")" !! r.raku }; say f({"abcb".subst("b", "x", :nth(2))}), " ", f({"abcb".subst("b", "x", :2nd)}), " ", f({"abcb".subst("b", "x", :nth(3))}), " ", f({"abcb".subst("b", "x", :nth(*))}), " ", f({"abcbcb".subst("b", "x", :nth(*-1))}), " ", f({"abcbcb".subst("b", "x", :nth(*-2))}), " ", f({"abcb".subst("b", "x", :nth(1, 2))}), " ", f({"abcbcb".subst("b", "x", :nth(2, 3))}), " ", f({"abcbcb".subst("b", "x", :nth(2..3))}), " ", f({"abcb".subst("b", "x", :nth(2..*))}), " ", f({"abcbcb".subst("b", "x", :nth(0))}), " ", f({"abcb".subst("b", "x", :x(0))}), " ", f({"abcb".subst("b", "x", :x(2))}), " ", f({"abcb".subst("b", "x", :x(3))}), " ", f({"abcb".subst("b", "x", :x(1..3))}), " ", f({"abcbcb".subst("b", "x", :x(2..3))}), " ", f({"abcbcb".subst("b", "x", :x(4..5))}), " ", f({"abcb".subst("b", "x", :x(*))}), " ", f({"abcb".subst("b", "x", :nth(2), :x(1))}), " ", f({"abc".subst("b", "x", :nth(2), :x(1))}), " ", f({"abcbcb".subst("b", "x", :nth(2), :x(2))}), " ", f({"abcb".subst("b", "x", :c(2))}), " ", f({"abcb".subst("b", "x", :p(2))}), " ", f({"abcb".subst("b", "x", :p(3))}), " ", f({"abcbcb".subst("b", "x", :c(2), :g)}), " ", f({"abcbcb".subst("b", "x", :p(1), :g)}), " ", f({"abcbcb".subst("b", "x", :p(2), :g)}), " ", f({"abc".subst("b", "x", :g, :nth(1))}), " ", f({"abcb".subst("b", "x", :g, :nth(2))}), " ", f({"abcb".subst("b", "x", :g, :x(1))}), " ", f({"abc".subst("b", "x", :as(Str))}), " ", f({"abc".subst(/b/, "x", :as(Str), :g)}), " ", f({"abc".subst("b", "x", :ov)}), " ", f({"abc".subst("b", "x", :ov); $!.name}), " ", f({"abc".subst("b", "x", :ex)}), " ", f({"abc".subst("b", "x", :!ov)}), " ", f({"abc".subst("b", "x", :x("q"))}), " ", f({"abc".subst("b", "x", :x("q")).^name})
 # rakudo 2026.08: "abcx" "abcx" "abcb" "abcx" "abcxcb" "axcbcb" "axcx" "abcxcx" "abcxcx" "abcx" T(X::AdHoc) "abcb" "axcx" "abcb" "axcx" "axcxcx" "abcbcb" "axcx" "abcb" T(X::AdHoc) "abcbcb" "abcx" "abcb" "abcx" "abcxcx" "axcxcx" "abcbcb" "axc" "abcx" "axcb" "axc" T(X::Method::NotFound) T(X::Str::Subst::Adverb) T(X::Str::Subst::Adverb) T(X::Str::Subst::Adverb) "axc" T(X::Str::Match::x) "Failure"
+sub f(&c) { my \r = try c(); $! ?? "T(" ~ $!.^name ~ ")" !! r ~~ Failure ?? "F(" ~ r.exception.^name ~ ")" !! r.raku }; say f({"abc".subst("", "-", :g)}), " ", f({"abc".subst(/<?>/, "-", :g)}), " ", f({"abc".subst("b", "x", :as(Str))}), " ", f({"abc".subst(/b/, "x", :as(Str))}), " ", f({"abcb".subst("b", "x", :as(Str), :g)}), " ", f({"abcb".subst(/b/, "x", :as(Str), :g)}), " ", f({"abcb".subst("b", "x", :as(Str), :nth(2))}), " ", f({"abcb".subst(/b/, "x", :as(Str), :nth(2))}), " ", f({"abcb".subst("b", "x", :as(Str), :x(2))}), " ", f({"abcb".subst(/b/, "x", :as(Str), :x(2))}), " ", f({"abcb".subst("b", "x", :as(Str), :c(2))}), " ", f({"abcb".subst(/b/, "x", :as(Str), :c(2))}), " ", f({"abcb".subst(/b/, "x", :as(Str), :x(1))}), " ", f({"abcb".subst(/b/, "x", :as(Str), :nth(1))})
+# rakudo 2026.08: "a-b-c" "-a-b-c-" "axc" "axc" T(X::Method::NotFound) T(X::Method::NotFound) T(X::Method::NotFound) T(X::Method::NotFound) T(X::Method::NotFound) T(X::Method::NotFound) "abcx" "abcx" T(X::Method::NotFound) T(X::Method::NotFound)
 ```
 rakupp 4.0.1: differs — the empty matcher never matches, `:!g`, `:!ov`,
 `:ov`, `:ex` and `:as` are `X::Syntax::Regex::Adverb`, `:nth(*)`/`*-k`
 are `X::AdHoc`, a type-object matcher is a no-op, and an invalid `:x`
 throws.
+(this rakupp line predates the correction; re-measure before relying on it)
+Corrected 2026-11-01 from Raku Behind the Docs, ch 8 (findings/BEHIND-THE-DOCS.md §1).
 
 ### ST-51  subst with a Callable replacement                       D:partial R:yes V:spec/quirk
 A replacement Callable with `.count == 0` is called with no arguments,
