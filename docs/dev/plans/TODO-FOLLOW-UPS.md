@@ -1,6 +1,6 @@
 # Follow-ups
 
-*Collected 2026-10-20; added to 2026-11-01.*
+*Collected 2026-10-20; added to 2026-11-02.*
 
 Findings that sessions on 2026-10-19 and 2026-10-20 proposed as follow-up
 work and nobody started: gaps found in passing while doing something else.
@@ -1428,29 +1428,46 @@ moves to [TODO.md](TODO.md).
 
 ## Performance
 
-- [ ] **A method-heavy encoder is still 1.3 times Rakudo** (found 2026-11-01
-  fixing issue #217, 608774f1, which took it from 1.9): Mathematica::
-  Serializer's two encoders over the R datasets' metadata (1,745 hashes of
-  twelve fields), interpreted, WL 0.114 s against Rakudo's 0.087 and WXF
-  0.294 against 0.228. What `sample` puts on top now, none of it one line:
+- [ ] **A user method call is still ~3.5 times Rakudo's** (found 2026-11-01
+  fixing issue #217, 608774f1 and 5321f41c; the encoders that issue timed
+  run faster than Rakudo's now, but not because a call got cheap):
 
   ```raku
   class C { method !p(Str:D $s --> Str) { $s }; method m(Str $x --> Str) { self!p($x) } }
   my $c = C.new; my $t = now; $c.m('x') for ^1_000_000; say now - $t;   # 0.55 s, Rakudo 0.08
   ```
 
-  - a user method call is ~270 ns against Rakudo's ~40: invokeMethod,
-    bindParams, setupRwLinks and typeCheckBind, spread thin;
-  - evalMethodCallExpr's own frame is a tenth of WXF: its entry and exit
-    are a quarter of that (a large frame), and some thirty per-call arms
-    (`map`/`grep` over `.values`, `append`/`push`, `write-*`, `splice`,
-    `VAR`, `BIND-*`, `&name`) test every call's name before methodCall;
-  - a type name outside evalRareExpr's `types` list (`WhateverCode`,
-    `HyperWhatever`, `UInt`, `FatRat`, `DateTime`) walks the scope chain for
-    `n` and `&n` and makes ~15 more tests at each mention, ~100 ns;
+  What `sample` puts on top, none of it one line:
+
+  - a method call is ~240 ns against a sub call's ~130 (Rakudo ~70):
+    invokeMethod, bindRoutineParams, setupRwLinks (run for every call,
+    since evalMethodCallExpr hands `rwInvocantExpr` to all of them), the
+    `self` definition and the frame guards. callPlainSub is the sub
+    path's lean lane; a method has nothing like it;
   - a fresh Buf costs a StrBody and two allocations for its identity
-    (`identify`: a ValueExt and a `make_shared<char>`), ~310 ns a `Buf.new`
-    against Rakudo's 56.
+    (`identify`: a ValueExt and a `make_shared<char>`), and freeing them
+    again in the next loop iteration's scope reset: `my $r = Buf.new` ~310
+    ns in a loop;
+  - a typed `is copy` parameter allocates its frame's EnvExtras for
+    varDefault on every call;
+  - Mathematica::Serializer's varint loop (`repeat { my $byte = $v +&
+    0x7f; $v = $v +> 7; $byte +|= 0x80 if $v; $r.push($byte) } while $v`,
+    in a `(Int:D $v is copy --> Blob)` private method) is ~1.7 µs a call
+    against Rakudo's ~0.6: evalAssignInner's general path, statement by
+    statement.
+
+- [ ] **Two promise-ordering tests fail under load** (found 2026-11-02 in
+  the suite runs for 5321f41c; dcdf14ba fails both too):
+  t/regression/promise-whenever-fires-later-and-in-turn.raku ("…and a
+  react's": `react body` before `after keep 2`) and
+  t/regression/supply-tapper-death-is-not-a-quit.raku ("a whenever over a
+  promise": `second` before `first`). Both pass alone; run beside a build or
+  another suite, dcdf14ba failed the first 2 runs in 6 and the second 4 in
+  48. Each keeps two promises in turn and expects their `whenever`s to run
+  in that order, which a continuation on a pooled worker (a11aa7ab) does
+  not promise. Done when either the tests stop assuming the order or the
+  delivery keeps it, and 48 loaded runs of each pass.
+
 
 - [ ] **A composed curry like `* cmp * == More` is about 2.2x Rakudo per
   call** (found 2026-10-20 after the Order-path work, b35718ba, which gained
