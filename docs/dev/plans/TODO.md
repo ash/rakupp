@@ -1,6 +1,6 @@
 # What is open
 
-*Started 2026-10-03. Last updated 2026-10-23.*
+*Started 2026-10-03. Last updated 2026-11-01.*
 
 This is the one list of work that has been started and is not finished, across
 every plan in this directory. Each line gives the plan that owns the details
@@ -890,16 +890,7 @@ with its tag, after the release run is green.
 
 ## 7. Docs and sites
 
-- [ ] **Plan headers out of date**: PARALLEL-PLAN, NATIVE-MATH-PLAN,
-  NATIVE-MODULES-PLAN, RAKU-EYE-PLAN and THOUSAND-PLAN say less is done than
-  is. VERSIONS.md has no v5.1/v5.2 entries, and its v4 header still says
-  "forming".
-- [ ] **Abandoned-looking plan**: [GRAMMAR-SPEED-PLAN.md](GRAMMAR-SPEED-PLAN.md)
-  (last touched 2026-08-13). Close it, or fold what is left into
-  INTERP-SPEED.
-- [ ] **Rakugrid**: the series is not wired into the dashboard.
-- [ ] **Behind the Docs**: its corrections are not yet applied back to the
-  semantics sheets.
+Nothing open (2026-11-01).
 
 ## Decisions waiting on the maintainer
 
