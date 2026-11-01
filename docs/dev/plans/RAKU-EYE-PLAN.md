@@ -1,5 +1,21 @@
 # raku-eye — the standing watch on fresh Raku code
 
+**Status (2026-11-01): running.** The Eye has run every Monday since
+2026-08-24 in [ash/raku-eye](https://github.com/ash/raku-eye) and publishes at
+[eye.raku.online](https://eye.raku.online). Build items 1–5 below are done:
+the tool flags landed in rakupp adc9230d (2026-08-22), and the driver, the
+report generator and `weekly.yml` opened raku-eye the same day. Item 6 is half
+done: the domain serves the dashboard and `latest.json`, but the raku.online
+card is a plain link and does not read it. The ledgers hold eleven weeks,
+2026-08-22 to 2026-10-26. Two Monday runs failed (2026-08-24 and 2026-09-21),
+and each was re-run within two days. The 2026-10-26 run, at rakupp 8c570a98,
+recorded: Weekly Challenge 354 passing, 34 open mismatches and 3
+regressions; raku-corpus 1,709 of 1,813; ecosystem 22 green of 138 new
+releases; 19 kernels against Rakudo v2026.09. The dashboard has no ecosystem
+trend chart yet. A run starts 5–8 hours after its cron time and has taken 12
+minutes to 3 hours; `timeout-minutes: 300` caps it at five hours, not the six
+given below.
+
 [FRESHNESS-PLAN.md](FRESHNESS-PLAN.md) designed the weekly sweep and deliberately
 left it hand-started: the scarce resource was the fix session, and measurement
 was cheap enough to begin by hand. raku-eye moves the measurement half out of

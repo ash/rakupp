@@ -5,6 +5,37 @@ attached to it: "we should somehow switch to native types automatically — assu
 a variable that started as an integer stays numeric, and in the AST or the
 optimisation step stop using our massive `Value` until something forces us to."*
 
+> **Status 2026-11-01: phases 1 and 4 are landed, and so is the block half of
+> phase 2. Phase 3 was dropped as storage; its goal is met by lanes. The
+> thread-local half of phase 2 is still open, as
+> [INTERP-SPEED-PLAN.md](INTERP-SPEED-PLAN.md) task 4.**
+>
+> - **Phase 1** (39410552, 2026-09-07): described in the next note. `mainnext`
+>   and `mainwhen` are perf-guard kernels since 2026-09-17 (b30eec24). A
+>   control word written as an operand (`f($i) // next`) took the flag on
+>   2026-10-27 (48b76d56, issue #195); five operand shapes still throw
+>   ([TODO-FOLLOW-UPS.md](TODO-FOLLOW-UPS.md), "Performance").
+> - **Phase 2, the block half:** a block does its entry and exit work only
+>   when it has some (c23ec4a8, 2026-09-29), a plain block runs on
+>   `execPlainBlock` (477dac44) and a routine body decides its entry work once
+>   (abbaa3f4), both 2026-09-30. **The thread-local half** is INTERP-SPEED
+>   task 4: `_tlv_get_addr` is 10.1% of `loopsum` with the kernels off since
+>   f9f0cac1 (2026-10-20), against that task's 5%.
+> - **Phase 3:** TYPES-PLAN N0 measured native slots at 1.00× over guarded
+>   typed evaluation on 2026-09-29, so a `my int` is still a `Value` with
+>   `natBits`. Declared natives get lanes instead: `--cnp` kernels and
+>   `--exe -O` lanes (87252930, 2026-09-29), the declaration lane and native
+>   leaves in typed subtrees (2026-10-11), the loop kernels (2026-10-22), and
+>   loop-header natives under `--exe -O` (2026-10-24). §3's 3.6× against
+>   Rakudo has not been re-measured.
+> - **Phase 4** (47775c2a, 2026-10-01, INTERP-SPEED task 9):
+>   `Binary::typedTree` evaluates a numeric subtree as machine numbers, with
+>   the verdict decided once per node: `types/mandel-plain` 0.71 → 0.26 s.
+>   Native and Rat leaves followed on 2026-10-11 (6ac55398). Under `--exe -O`
+>   the same work is UNBOX-PLAN's loop lanes, P0–P2, and since 2026-10-02 the
+>   loop kernels of [KERNEL-PLAN.md](KERNEL-PLAN.md) run whole loops on
+>   machine slots.
+
 > **Revisited 2026-09-06 — phase 1 is landed, and it was all of §1.** The
 > sentinel was flipped and the page re-measured. The diagnosis held exactly:
 > `for ^200000 { next if $_ % 2 }` went 4.60 s → **0.03 s**, landing on the

@@ -41,7 +41,8 @@ The user-facing documentation is one level up, in [../](../README.md).
   complexity estimate for each (2026-10-15).
 - **[plans/VERSIONS.md](plans/VERSIONS.md)** — the single per-version plan
   index: what each major release set out to do, where its plan lived, and
-  what it shipped — v1.0.0 through the **v3.0.0** campaign (2026-08-07).
+  what it shipped — v1.0.0 through v5.0.0 and its minor releases to v5.5.0,
+  with v6.0.0 planned and v7.0.0 forming.
 
 Next up:
 

@@ -1,24 +1,50 @@
 # Plan: real multicore parallelism, on by default
 
-**Status: in progress — P0 and P1 landed 2026-08-07.** The memory model is
-written ([guide/ASYNC.md](../../guide/ASYNC.md), "The memory model");
-`t/stress/` runs a 9-program × 2-mode matrix with a known-bad ratchet (a
-new failure fails the suite; a known-bad that starts passing fails it too,
-so the list only shrinks); the `linux-tsan` CI job arms it with
-ThreadSanitizer. The suite's FIRST RUN found three P4 primitive gaps the
-plan had predicted: `atomicint` loses updates, `Channel` with N producers
-hangs, and `Supplier.emit` drops cross-thread emissions — all in parallel
-mode, all on the known-bad list. Bonus datum: Rakudo itself dies on the
-unguarded-hash race (`t/stress/ub-hash-write.raku` under real `rakudo`
-produced no output), so the no-crash contract aims higher than the
-reference's observed behavior. One of the three **v3.0.0** pillars
+**Status: P0–P5 done. Parallel is the default since 2026-08-08 (7d21e141)
+and shipped in v3.0.0 on 2026-08-09. Three items are open (below).** `start`
+and worker threads run on all cores, and `RAKUPP_GIL=1` selects the
+cooperative GIL. The memory model is written
+([guide/ASYNC.md](../../guide/ASYNC.md), "The memory model"). `t/stress/`
+runs a 30-program × 2-mode matrix (9 programs at P1) with a known-bad ratchet
+(a new failure fails the suite; a known-bad that starts passing fails it too,
+so the list only shrinks), and `%known-bad` is empty. The `linux-tsan` CI job
+arms it with ThreadSanitizer. The suite's first run, on 2026-08-07, found the
+three P4 primitive gaps the plan had predicted: `atomicint` lost updates,
+`Channel` with N producers hung, and `Supplier.emit` dropped cross-thread
+emissions. All three were fixed by 2026-08-08. Bonus datum: Rakudo itself
+dies on the unguarded-hash race (`t/stress/ub-hash-write.raku` under real
+`rakudo` produced no output), so the no-crash contract aims higher than the
+reference's observed behavior.
+
+P3 chose striped locks (`ParStripe`) on 2026-08-08 and has had three
+torn-copy deliveries since: scalars (2026-08-08), all four container kinds
+(2026-09-21) and compound assignment (2026-10-26). The `start` thread pool is
+deferred, since it measured 1.41× CPU inflation; promise continuations run on
+a pool since 2026-10-30 (a11aa7ab). P5 flipped after three consecutive Roast
+runs at 197,186–197,190 assertions with 5 timeouts, against the GIL's 11. The
+battery (47/59) and doc-example (945) gates were judged rather than met, and
+the v3.0.0 CHANGELOG gives the reasons. Scaling continues in
+[PARALLEL-SCALING-PLAN.md](PARALLEL-SCALING-PLAN.md), and
+[RACE-DETECTOR-PLAN.md](RACE-DETECTOR-PLAN.md) adds `--detect-races`.
+
+Open:
+- TSan is not clean in parallel mode: `promise-chain` is skipped,
+  `atomic-counter` and `cas-containers` are tolerated, and so are 12
+  `private-*` programs ([TODO.md](TODO.md) §1).
+- `ub-indexed-grow/parallel` crashes about 1 run in 50: an element pointer
+  outlives the stripe while a sibling's growth moves the buffer
+  (`%known-flaky` in `t/stress/run.raku`, 2026-10-24).
+- `S17-promise/nonblocking-await.t`, ledgered at the flip, still crashes about
+  1 run in 10, because `classes_` is written without a lock (TODO.md §2).
+
+One of the three **v3.0.0** pillars
 ([VERSIONS.md](VERSIONS.md); the others are [CLI-PLAN.md](CLI-PLAN.md) and
 [LTM-PLAN.md](LTM-PLAN.md)). The *design*
 decision was already made in [PLAN-gil-removal.md](PLAN-gil-removal.md) —
 Option 2, "ownership discipline: harden the runtime, not every user
-structure" — and this document is the campaign plan that executes it: the
-phases, the measurements we start from, and the gates that decide when the
-default flips.
+structure" — and this document is the campaign plan that executed it: the
+phases, the measurements it started from, and the gates that decided when the
+default flipped.
 
 Measurements: 2026-08-07, `build-arm64/rakupp` at v2.0.0, macOS arm64,
 8 cores.

@@ -1,10 +1,19 @@
 # Plan: the `**::Native` distributions — our C, fastest on Raku++, portable everywhere
 
-**Status: BUILT 2026-09-05.** `Digest::Native` and `Compress::Zlib::Native`
-exist in `/Users/ash/raku-modules`, and step 4 — the cooperation protocol in
-`JSON::Native` and `CSV::Native` — is done. What is left of the order of work
-is step 1, moving the conformance corpora into this repository beside the
-engine implementations that will read them. Companion to
+**Status: BUILT 2026-09-05; the order of work is complete.**
+`Digest::Native` and `Compress::Zlib::Native` exist in
+`/Users/ash/raku-modules`, and step 4, the cooperation protocol in
+`JSON::Native` and `CSV::Native`, is done. Step 1 was done the same day:
+`digest.vec` moved with DATA-PLAN P3 (874297f3) and `zlib.vec` with P4
+(7cd6700d), both to `t/vectors/`, which holds the master of each. Each
+distribution keeps a byte-identical copy. JSON and CSV have no shared corpus
+file. **Since JSON::Native 0.1.0 (2026-10-13) that distribution has no C and
+no JSON::Fast dependency:** on Raku++ the engine answers `use JSON::Native`,
+and on Rakudo it parses with `Rakudo::Internals::JSON`. Where this file says
+JSON::Native keeps its ext ABI or falls back to JSON::Fast, it describes
+0.0.x. Published as of 2026-11-01: `JSON::Native` 0.1.0, and `CSV::Native`
+0.0.1, which predates step 4. `Digest::Native`, `Compress::Zlib::Native` and
+`Data::Native` are not published. Companion to
 [DATA-PLAN.md](DATA-PLAN.md), which covers the engine primitives and
 `Data::Native`. This file covers the modules. Probes 2026-09-05,
 `build-arm64/rakupp` + Rakudo v2026.08.

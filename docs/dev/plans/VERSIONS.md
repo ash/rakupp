@@ -129,7 +129,11 @@ accepted consequence.
   cluster it proved ours, and `require ::($name)` — broken for a week by the
   v4 arc and found by the release's own battery gate.
 
-## v3.14.0 — only what the program needs (planned 2026-08-09)
+## v3.14.0 — only what the program needs (planned 2026-08-09, shipped 2026-08-11)
+
+**Shipped with the size number met:** `say "Hello"` compiled with `--exe
+--slim` is 4,856,936 bytes, against the 5.5 MB line (`--exe` alone, 8,087,112).
+See the [CHANGELOG](../../../CHANGELOG.md).
 
 A single-subject minor in the shape of v1.1.0, starting after v3.0.1 ships:
 a compiled program should stop carrying the parts of Raku it cannot reach.
@@ -169,7 +173,7 @@ a compiled program should stop carrying the parts of Raku it cannot reach.
   pruning is a stated non-goal: cutting only *data* keeps the entire failure
   surface at one function.
 
-## v3.21.0 → v3.23.0 — the consolidation arc (planned 2026-08-28)
+## v3.21.0 → v3.23.0 — the consolidation arc (planned 2026-08-28, all three shipped 2026-08-29)
 
 Three releases in a row that add no campaign. Language work has the property
 Larry Wall kept pointing at — push the design in one place and something pops
@@ -280,7 +284,23 @@ ratio suggests. Findings drive the work, as they have since v2.0.0 —
 [raku.online/modules/ecosystem](https://raku.online/modules/ecosystem/) for
 what each distribution did.
 
-## v4.0.0 — Raku that travels (forming, 2026-08-08)
+## v4.0.0 — Raku that travels (forming 2026-08-08, shipped 2026-09-17)
+
+**Shipped with all three pillars:** `rakupp install` and binaries that carry
+their modules or refuse to build (`--standalone`, with `%?RESOURCES` the last
+piece), `librakupp` with bindings for C++, Go, JavaScript, Python, Rust and
+Wolfram, and grammars driven from every host. The three candidate numbers
+below each became a gate: `t/standalone` runs binaries with the module store
+hidden, the release wheel runs from a stock CPython in a clean venv
+(`tools/build-wheel.sh`), and `tools/grammar-smoke.raku` compares every
+host's bytes in CI. At the tag, 1,006 ecosystem distributions passed their own
+suites, over the 1,000 line set [above](#then-1000-of-2524), but on a warm
+store and not a fresh sweep; none ran that cycle. The first fresh sweep past
+the line ran on 2026-09-29 with the v5.0.0 binary: 1,019 of 2,547
+([THOUSAND-PLAN.md](THOUSAND-PLAN.md)). Roast stood at 676 of 1,464 files.
+See the [CHANGELOG](../../../CHANGELOG.md).
+
+The rest of this section is the plan as it stood while the campaign formed.
 
 Not yet a settled campaign: the pillars below are decided and written, and the
 rest of the list is open. They are about the same thing from different
@@ -407,6 +427,34 @@ top of it.
 - 0 disagreeing programs in the JavaScript gate. There were 102.
 - Distributions passing, of the 1,791 Rakudo passes, with none that passed at
   v4.0.0 failing.
+
+### After the tag: v5.0.1 to v5.5.0
+
+As in the earlier lines, finished work landed in minor releases: the rest of
+Roast first, then the first v6 speed work. Of the error batches, only B0 (the
+instruments) has landed; B1–B6 are open in [TODO.md](TODO.md).
+
+- **v5.0.1** (2026-09-29): fixes only. YAMLish loads from a fresh store and
+  parses the Raku course's table of contents in 0.46 s (Rakudo 0.86 s).
+- **v5.1.0** (2026-09-30): all 1,424 files of `spectest.data` pass, on Roast
+  `1f749e338`. The last file was Roast's change (the macOS TTY test made todo),
+  not the engine's. The tree-walker got faster on 16 of 18 kernels.
+- **v5.2.0** (2026-10-02): integer and loop kernels
+  ([KERNEL-PLAN.md](KERNEL-PLAN.md)) and a leaner tree-walker. Roast unchanged.
+- **v5.2.1** (2026-10-03): `pip install rakulang`, Cro at full scale, and
+  native module bodies in `--exe`.
+- **v5.3.0** (2026-10-09): Unicode 18, which brought Roast to 1,425 files and
+  219,207 tests (Roast `da425eb92`), all passing; linear string building
+  ([APPEND-PLAN.md](APPEND-PLAN.md)); `--sandbox`; spreadsheets. Shipped with
+  method calls 5.8–9.5% slower, measured and not yet fixed.
+- **v5.4.0** (2026-10-13): `.hyper` and `.race` on worker threads, JSON in
+  the engine, and linear loading again. Shipped with `mainwhen` +11% and
+  `sortby` +8% interpreted, not yet found.
+- **v5.4.1** (2026-10-13): `use Data::Native` inside a routine works again.
+- **v5.5.0** (2026-10-22): reference cycles freed, `rakupp --auto`, Alpine and
+  i386, and decimal literals on the fast tiers. Its benchmarks ran on an Apple
+  M4, because the M3 machine of record was out of reach, so compare ratios
+  with earlier releases, not milliseconds.
 
 ## v6.0.0 — Raku that is even faster (planned 2026-09-26)
 
