@@ -37,6 +37,69 @@ void Interpreter::loadIoNotification() {
     notificationLoading_ = false;
 }
 
+// `Buf.new(…)` / `Blob.new(…)` and `.allocate(…)`, out of methodCallPart1c
+static Value bufNewOrAllocate(const Value& inv, bool allocate, const ValueList& args) {
+    // (the tags interned once: assigning the text took the intern lock per buffer)
+    static const IStr kBuf("Buf"), kBlob("Blob");
+    const IStr& kind = inv.s == "Buf" ? kBuf : kBlob;
+    if (allocate) {
+        for (size_t k = 1; k < args.size(); k++) // fill args must be numeric-ish
+            if (args[k].t == VT::Str && args[k].hashKind.empty())
+                throw RakuError{Value::typeObj("X::TypeCheck"),
+                    "Cannot use a Str as a fill value in " + inv.s + ".allocate"};
+        // allocate(N) → N zero bytes; allocate(N, fill) → N fills;
+        // allocate(N, (list)) → the list repeated cyclically
+        long long an = args.empty() ? 0 : args[0].toInt();
+        if (an < 0) throw RakuError{Value::typeObj("X::AdHoc"), // Rakudo's message for a negative count
+            "Unable to allocate an array of " + std::to_string((unsigned long long)an) + " elements"};
+        std::string fill;
+        if (args.size() > 1) {
+            if (args[1].t == VT::Array || args[1].t == VT::Range)
+                for (auto& e : args[1].flatten()) fill += (char)(unsigned char)(e.toInt() & 0xFF);
+            else if (args[1].t == VT::Str && (args[1].hashKind == "Blob" || args[1].hashKind == "Buf"))
+                fill = args[1].s.str();   // another Blob: its bytes are the pattern
+            else fill += (char)(unsigned char)(args[1].toInt() & 0xFF);
+        }
+        if (fill.empty()) fill.push_back('\0');
+        std::string bytes;
+        for (long long k = 0; k < an; k++) bytes += fill[(size_t)(k % (long long)fill.size())];
+        Value b = Value::str(bytes); b.hashKind = kind;
+        b.s.promote();   // a native buffer needs stable, shared storage
+        if (b.hashKind == "Buf") identify(b);
+        return b;
+    }
+    std::string bytes;
+    // (machine Ints, the common call, without the walk below)
+    bool words = true;
+    for (auto& a : args) if (a.t != VT::Int || a.big()) { words = false; break; }
+    if (words) for (auto& a : args) bytes += (char)(unsigned char)(a.i & 0xFF);
+    else {
+        std::function<void(const Value&)> add = [&](const Value& v) {
+            if (v.t == VT::Array && v.arr()) { for (auto& e : *v.arr()) add(e); }
+            else if (v.t == VT::Range) { for (auto& e : v.flatten()) add(e); } // Buf.new(^10)
+            // Buf.new($blob) — the copy candidate — takes the bytes; numifying the
+            // Blob here would silently store its element COUNT as the one byte.
+            // Rakudo accepts it only as the SOLE argument: anything else goes to
+            // `new(*@codes)`, where each element must be a uint8, and a Blob is not.
+            else if (v.t == VT::Str && (v.hashKind == "Buf" || v.hashKind == "Blob")) {
+                if (args.size() == 1) bytes += v.s;
+                else throw RakuError{Value::typeObj("X::TypeCheck"),
+                    "Type check failed in initializing an element of " + inv.s +
+                    "; expected uint8 but got " + v.hashKind};
+            }
+            else bytes += (char)(unsigned char)(v.toInt() & 0xFF);
+        };
+        for (auto& a : args) add(a);
+    }
+    Value b = Value::str(bytes); b.hashKind = kind; // Buf is mutable
+    // …and shared, as `allocate` above and `buf8.new` are: a SHORT buffer
+    // stayed inline, so `my $c = $b; $c[0] = 9` left `$b` alone, and C
+    // wrote into a copy of it whenever no variable led back (`f(|@args)`).
+    b.s.promote();
+    if (b.hashKind == "Buf") identify(b);
+    return b;
+}
+
 // Segment 1c of the method-dispatch chain, split out of methodCallInner for
 // compile time. The chain is ORDER-SENSITIVE (an earlier arm shadows a later
 // one), so these arms run after the ones above and before methodCallPart2. nullopt = "not handled here".
@@ -317,58 +380,8 @@ std::optional<Value> Interpreter::methodCallPart1c(const Value& inv, const MName
         for (auto& a2 : args) if (a2.t == VT::Pair && a2.pairVal()) (*h.hash())[a2.s] = *a2.pairVal();
         return h;
     }
-    if (inv.t == VT::Type && (inv.s == "Buf" || inv.s == "Blob") && (m == "new" || m == "allocate")) {
-        if (m == "allocate") {
-            for (size_t k = 1; k < args.size(); k++) // fill args must be numeric-ish
-                if (args[k].t == VT::Str && args[k].hashKind.empty())
-                    throw RakuError{Value::typeObj("X::TypeCheck"),
-                        "Cannot use a Str as a fill value in " + inv.s + ".allocate"};
-            // allocate(N) → N zero bytes; allocate(N, fill) → N fills;
-            // allocate(N, (list)) → the list repeated cyclically
-            long long an = args.empty() ? 0 : args[0].toInt();
-            if (an < 0) throw RakuError{Value::typeObj("X::AdHoc"), // Rakudo's message for a negative count
-                "Unable to allocate an array of " + std::to_string((unsigned long long)an) + " elements"};
-            std::string fill;
-            if (args.size() > 1) {
-                if (args[1].t == VT::Array || args[1].t == VT::Range)
-                    for (auto& e : args[1].flatten()) fill += (char)(unsigned char)(e.toInt() & 0xFF);
-                else if (args[1].t == VT::Str && (args[1].hashKind == "Blob" || args[1].hashKind == "Buf"))
-                    fill = args[1].s.str();   // another Blob: its bytes are the pattern
-                else fill += (char)(unsigned char)(args[1].toInt() & 0xFF);
-            }
-            if (fill.empty()) fill.push_back('\0');
-            std::string bytes;
-            for (long long k = 0; k < an; k++) bytes += fill[(size_t)(k % (long long)fill.size())];
-            Value b = Value::str(bytes); b.hashKind = inv.s == "Buf" ? "Buf" : "Blob";
-            b.s.promote();   // a native buffer needs stable, shared storage
-            if (b.hashKind == "Buf") identify(b);
-            return b;
-        }
-        std::string bytes;
-        std::function<void(const Value&)> add = [&](const Value& v) {
-            if (v.t == VT::Array && v.arr()) { for (auto& e : *v.arr()) add(e); }
-            else if (v.t == VT::Range) { for (auto& e : v.flatten()) add(e); } // Buf.new(^10)
-            // Buf.new($blob) — the copy candidate — takes the bytes; numifying the
-            // Blob here would silently store its element COUNT as the one byte.
-            // Rakudo accepts it only as the SOLE argument: anything else goes to
-            // `new(*@codes)`, where each element must be a uint8, and a Blob is not.
-            else if (v.t == VT::Str && (v.hashKind == "Buf" || v.hashKind == "Blob")) {
-                if (args.size() == 1) bytes += v.s;
-                else throw RakuError{Value::typeObj("X::TypeCheck"),
-                    "Type check failed in initializing an element of " + inv.s +
-                    "; expected uint8 but got " + v.hashKind};
-            }
-            else bytes += (char)(unsigned char)(v.toInt() & 0xFF);
-        };
-        for (auto& a : args) add(a);
-        Value b = Value::str(bytes); b.hashKind = inv.s == "Buf" ? "Buf" : "Blob"; // Buf is mutable
-        // …and shared, as `allocate` above and `buf8.new` are: a SHORT buffer
-        // stayed inline, so `my $c = $b; $c[0] = 9` left `$b` alone, and C
-        // wrote into a copy of it whenever no variable led back (`f(|@args)`).
-        b.s.promote();
-        if (b.hashKind == "Buf") identify(b);
-        return b;
-    }
+    if (inv.t == VT::Type && (inv.s == "Buf" || inv.s == "Blob") && (m == "new" || m == "allocate"))
+        return bufNewOrAllocate(inv, m == "allocate", args);
     if (inv.t == VT::Type && inv.s == "Pair" && m == "new") {
         Value key = Value::any(), val = Value::any();
         ValueList pos;

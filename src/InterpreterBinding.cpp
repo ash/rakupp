@@ -4914,6 +4914,43 @@ void rtAttrParam(Interpreter& I, const Value& self, const std::string& pname, co
     I.attrParamRef(self.obj(), pname, nullptr) = std::move(av);
 }
 
+// checkRetType's shortcut for a CORE return type — `--> Str`, `--> Blob` —
+// where the full check resolved the name against the routine's package,
+// aliases, constants and subsets on every return: a tenth of the time of a
+// method-heavy encoder (#217). The code retFastDecide keeps in retFastKey, or 0
+// when a package, alias, subset or type capture of `c` could stand for the name
+// (then the full check runs every time, as before).
+unsigned Interpreter::retFastCore(const Callable& c, const std::string& base) {
+    static const char* const kCore[] = {"Str", "Int", "Num", "Rat", "Blob", "Buf", "Hash", "Array", "List"};
+    unsigned code = 0;
+    for (unsigned i = 0; i < std::size(kCore) && !code; i++) if (base == kCore[i]) code = i + 1;
+    if (!code || subsets_.count(base) || !isKnownTypeName(base) ||
+        resolveClassAlias(qualifyDeclType(base, c.ci().pkg)) != base)
+        return 0;
+    if (c.ci().params)
+        for (auto& p : *c.ci().params)
+            if (p.typeCapture && (p.captureName == base || p.type == base)) return 0;
+    return 3 | code << 3;
+}
+// …and whether `v` is plainly one. Only ACCEPTS, as the class shortcut does:
+// a tagged value (an allomorph, an Instant, a native array, a Map) and every
+// refusal take the full check.
+bool Interpreter::retFastCoreFits(unsigned code, const Value& v) {
+    switch (code) {
+        case 1: return v.t == VT::Str && v.hashKind.empty() && v.enumName.empty();
+        case 2: return v.t == VT::Int && v.hashKind.empty() && v.enumName.empty() && v.enumType.empty();
+        case 3: return v.t == VT::Num && v.hashKind.empty();
+        case 4: return v.t == VT::Rat && v.hashKind.empty() && !v.fatRat();
+        case 5: return v.t == VT::Str && (v.hashKind == "Buf" || v.hashKind == "Blob");
+        case 6: return v.t == VT::Str && v.hashKind == "Buf";
+        case 7: return v.t == VT::Hash && v.hashKind.empty() && v.hash();
+        case 8: case 9:
+            return v.t == VT::Array && v.hashKind.empty() && v.enumName.empty() && v.enumType.empty() &&
+                   v.ofType().empty() && (code == 9 ? !v.isList || v.s.empty() : !v.isList);
+    }
+    return false;
+}
+
 // Nominal type check for native multi-dispatch.
 bool rtTypeMatch(const Value& v, const std::string& type) {
     if (type.empty() || type == "Any" || type == "Mu" || type == "Cool") return true;

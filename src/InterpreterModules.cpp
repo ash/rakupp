@@ -5166,6 +5166,7 @@ static void mergeParentRoleMultis(ClassInfo* ci, const SigKey& sigKeyParams) {
                 // the short name (resolveAttrTypeAlias).
                 const bool shadowsCore = !tctx().pkgPrefix.empty() && !sd->isMy &&
                                          isKnownTypeName(sd->name) && !subsets_.count(sd->name);
+                const size_t hadSubsets = subsets_.size();
                 if (!shadowsCore) subsets_[sd->name] = info;
                 // …and under the PACKAGE-QUALIFIED name, the way a class registers.
                 // Without it an importer writing `URI::Scheme` got a bare type
@@ -5174,6 +5175,9 @@ static void mergeParentRoleMultis(ClassInfo* ci, const SigKey& sigKeyParams) {
                 // (not a `my subset`, which stays inside its package: `module M
                 // { my subset F … }; my M::F $f` is "Type 'M::F' is not declared")
                 if (!tctx().pkgPrefix.empty() && !sd->isMy) subsets_[tctx().pkgPrefix + sd->name] = info;
+                // (what was decided from a name before it named a subset — a
+                // `--> T` shortcut, a type match kept — is decided again)
+                if (subsets_.size() != hadSubsets) noteSymbolMutation("subset declaration");
                 // …and its user traits run on it, as on a class (Red's `is sub-model`),
                 // with ONE metaobject under both names for what they mix into it
                 Value* tm = sd->traits.empty() ? nullptr : tctx().cur->find("&trait_mod:<is>");

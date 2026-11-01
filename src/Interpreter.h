@@ -2260,6 +2260,16 @@ public:
         ~MatchVarGuard() { matchVarSuppressed_ = saved; }
     };
     Value smartmatchValue(const std::string& op, const Value& l, const Value& r);
+    // `$x ~~ Int` / `when Pair` with a plain built-in value against a CORE type
+    // object: the answer depends on the value's kind and the type's name alone,
+    // so it is kept per symbol generation (InterpreterRegex.cpp). True when
+    // `out` holds the answer; false leaves the match to the caller.
+    bool typeMatchMemo(const std::string& op, const Value& l, const Value& r, Value& out);
+    std::atomic<uint64_t> typeMatchMemo_[64][22] = {};
+    // …and `.isa(Int)` on such a value, from methodCall's first arms (Builtins.cpp)
+    bool isaMemo(const Value& inv, const std::string& m, const ValueList& args,
+                 const std::vector<ExprPtr>* rwArgs, Value& out);
+    std::atomic<uint64_t> isaMemo_[64][22] = {};
     // The type a declaration is handing to its metaclass's `new_type` hook, if
     // one is running. That hook reaches its base with `callsame`, and the base
     // is `Metamodel::ClassHOW.new_type`, whose job is to CREATE the type — so
@@ -3431,6 +3441,8 @@ public:
     Value checkRetType(const Callable& c, Value v); // enforce declared return type
     Value checkRetTypeOfProxy(const Callable& c, Value v); // …on what a Proxy holds (InterpreterCalls.cpp)
     unsigned retFastDecide(const Callable& c);       // …and its accepting shortcut (InterpreterCore.cpp)
+    unsigned retFastCore(const Callable& c, const std::string& base);   // …for a CORE type (InterpreterBinding.cpp)
+    static bool retFastCoreFits(unsigned code, const Value& v);
     // the default constructor's build: attributes, argument checks, BUILD/TWEAK
     // (MethodCallPart2.cpp)
     Value constructDefault(const std::shared_ptr<ClassInfo>& ci, ValueList& args, const std::string& nb);

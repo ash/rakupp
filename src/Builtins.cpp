@@ -6353,10 +6353,11 @@ Value Interpreter::methodCall(const Value& inv, const std::string& m, ValueList 
         inv.s.rfind("X::", 0) != 0 && inv.s.rfind("IO::", 0) != 0 && isKnownTypeName(inv.s)) {
         auto cit = classes_.find(inv.s);
         // …only where that declaration is IN SCOPE: the class table is global,
-        // and a `my class Pair` inside a block must not outlive it
-        const Value* lex = tctx().cur ? tctx().cur->find(inv.s) : nullptr;
+        // and a `my class Pair` inside a block must not outlive it (the scope
+        // is walked only for a class that could: every `Buf.new` walked it)
+        const Value* lex = nullptr;
         if (cit != classes_.end() && cit->second && cit->second->decl && !cit->second->isRole &&
-            lex && lex->t == VT::Type) {
+            tctx().cur && (lex = tctx().cur->find(inv.s)) && lex->t == VT::Type) {
             ClassInfo* ci = cit->second.get();
             if (ci->findMethod("new")) return invokeMethodChain("new", ci, inv, args, rwArgs);
             return methodCall(inv, "bless", std::move(args), rwArgs);
@@ -6443,6 +6444,7 @@ Value Interpreter::methodCall(const Value& inv, const std::string& m, ValueList 
     // native, a big Int, and a lazy, packed, shaped or Seq array.
     // (The plain-value test and the `.elems` one are Interpreter.h's, which -O's
     // rtMElems and rtMDefined make too.)
+    if (Value r; m.size() == 3 && !skipOwn && isaMemo(inv, m, args, rwArgs, r)) return r;   // (InterpreterRegex.cpp)
     if (args.empty() && !skipOwn && m.size() >= 2 && m.size() <= 7 && rtQueryPlain(inv) && builtinExt_.empty()) {
         // `.WHICH` of a plain value — the general arm's own answer (whichOf)
         auto which = [&]() {
