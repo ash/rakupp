@@ -421,7 +421,8 @@ emits.
 1. **Seed declared-float slots as F64 whether or not the loop writes them**
    ([Codegen.cpp:8537](../../../src/Codegen.cpp)). numloop native should go
    from 49× to the untyped form's 1.0×, since its lane is the same loop
-   (*estimate*).
+   (*estimate*). **Fixed in b81021ba:** 7.82 → 0.162 s over 200M, against
+   C's 0.158 s (1.0×).
 2. **Native `int` slots in lanes wrap rather than bail.** Fewer side exits,
    and room for clang to vectorize.
 3. **Call `n_*` directly from a call site whose arguments are already native
@@ -511,7 +512,9 @@ emits.
    right, because the guard sends it to the boxed path. It costs 49× on
    numloop. A loop that negates a `num` in FORTRAN-GAP's native-typed
    program may be part of why that program is slower than its untyped twin
-   (not checked).
+   (not checked; its sources are not in this repository). **Fixed in
+   b81021ba:** a slot takes the type the parser resolved its declaration
+   to, so numloop-n runs at 1.0× C.
 2. **Compiled `$obj.attr` takes the general dispatch path and misses the
    interpreter's accessor fast path:** 127 ns compiled against 72 ns
    interpreted (§2.1).

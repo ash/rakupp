@@ -42,7 +42,8 @@ parentheses); 9695e120, 1d5e98c0, 4df715fc, c423e9db, 5ebfc05f, 3f0baa68,
 57a9a792, 0abc0b39, 52426690, 3c62ef44, 34168c0e, aa309270, 8a6c9d9a,
 ad7f05dc and e6777420 (issue #77); 608774f1 and 5321f41c (issue #217); 636f69d0 (a program from a URL);
 56309f17 (--target=arduino); 42618157 (Text::CSV and JSON::Unmarshal);
-89d80faa (a `my token` in a variable).*
+89d80faa (a `my token` in a variable); b81021ba (PERF-REVIEW-2026-11-02
+§6).*
 
 ---
 
@@ -107,6 +108,13 @@ interpreted.
   lane's store-back lost the native's width; it now rebuilds the native, so
   `$i` after the loop still wraps. The findings file's `sub f(int $nn -->
   num)` over 10M, against a87a6b73, best of 3: 240 → 5.1 ms (untyped 5.1).
+- **`--exe -O` gives a `my num` the loop writes, and a `my num` in a sub, a
+  float lane slot** (b81021ba; PERF-REVIEW-2026-11-02 §6 item 1). The lane
+  typed a slot by what reached it inside the loop, so `$g = -$g` left a
+  `my num $g` an Int slot whose guard failed on every entry, and the loop
+  ran boxed. A slot now takes the type the parser resolved its declaration
+  to. The review's numloop-n over 200M, against fe9237a8, best of 3: 7.82 →
+  0.162 s (C at `-O2`: 0.158 s; untyped 0.169 s).
 - **A packed `int` / `num` array keeps its words under a computed key**
   (5e5d80ec). `@a[$i + 1]`, read or stored, unpacked the array for good in
   the interpreter, so a `--cnp` loop entered after it read boxed Values. The
