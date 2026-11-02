@@ -41,7 +41,8 @@ acf27e4b (the view keeps declaration details); 586c5160 (written
 parentheses); 9695e120, 1d5e98c0, 4df715fc, c423e9db, 5ebfc05f, 3f0baa68,
 57a9a792, 0abc0b39, 52426690, 3c62ef44, 34168c0e, aa309270, 8a6c9d9a,
 ad7f05dc and e6777420 (issue #77); 608774f1 and 5321f41c (issue #217); 636f69d0 (a program from a URL);
-56309f17 (--target=arduino); 42618157 (Text::CSV and JSON::Unmarshal).*
+56309f17 (--target=arduino); 42618157 (Text::CSV and JSON::Unmarshal);
+89d80faa (a `my token` in a variable).*
 
 ---
 
@@ -910,6 +911,21 @@ plain before 500c29e2 and native from it, unless they say otherwise.
   showcase/fourier rendered `(0 max 5) min 3` without its parentheses, which
   does not parse. t/regression/rakuast-view-parentheses.raku agrees with
   Rakudo 2026.09's rendering of 17 shapes and runs 13 of them both ways.
+- **A `my token` held in a variable matches in `<$var>`** (89d80faa).
+  `my $p = &NAME` binds the routine the declaration made, not a Regex
+  value, and `<$p>`, a bare `$p` in a regex and `<{ &NAME }>` read its
+  `.Str` as the pattern: `/<$p>/` matched nothing and said nothing, where
+  `<&NAME>` and `~~ $p` matched. Each now matches the declared source as
+  its kind does: a token does not backtrack, a rule's whitespace is
+  significant. URL::Find chooses its tokens that way (`my $base = $ascii ??
+  &baseascii !! &base`), found no URL at all and failed its suite, so
+  Data::ExampleDatasets, which needs it, would not install, and
+  Mathematica::Serializer's examples/Serializer-profiling.raku, run from
+  its GitHub URL, could not start. An install of Data::ExampleDatasets into
+  an empty store now runs and passes all 29 suites, and the script reads
+  the same 1,745 rows and writes the same WL and WXF text as Rakudo
+  2026.09. t/regression/regex-routine-in-a-variable.raku agrees with Rakudo
+  2026.09.
 
 ### Fixed: crashes
 
@@ -1848,3 +1864,6 @@ does not.
 - Found with 42618157, the same before it: inside a nested slice a typed
   array's hole reads Any where Rakudo reads its type (`my Str @t = <a b>;
   @t[0, 1..3]` is `("a", ("b", Str, Str))` there), finite ranges included.
+- Found with 89d80faa, the same before it: an anonymous `rule { a b }`
+  matches "ab" and not "a   b", the other way round from Rakudo; a named
+  `my rule` keeps its whitespace significant.
