@@ -149,7 +149,7 @@ rakupp --exe app.raku -o app     # compile it
 
 | Option | Meaning |
 |---|---|
-| `FILE` / `-e 'CODE'` / `-` *(stdin)* | Run a program from a file, a one-liner, or standard input (`rakupp - ARGS…` gives a stdin program its `@*ARGS`) |
+| `FILE` / `URL` / `-e 'CODE'` / `-` *(stdin)* | Run a program from a file, an `https://` link (fetched with curl; a GitHub file page works as it is — [CLI.md](docs/guide/CLI.md#a-program-at-a-url)), a one-liner, or standard input (`rakupp - ARGS…` gives a stdin program its `@*ARGS`) |
 | `-I <path>` / `-M <module>` | Add a module search directory / load a module first (both repeatable) |
 | `-n` / `-p` / `-a` / `-F<sep>` / `-i[.ext]` | The Perl one-liner family: line loop, autoprint, autosplit, in-place edit (clusters: `-lane`, `-pi.bak`) |
 | `--profile[=FILE]` | Routine-level wall-time profile after the run (`.json` for machine-readable) |

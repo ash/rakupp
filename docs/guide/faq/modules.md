@@ -56,6 +56,7 @@ rakupp install my-dist          # a checkout: the directory with META6.json
 rakupp install ~/src/my-dist    # ./x, /x, ~/x, dists/x, C:\x all work too
 rakupp install -r lib           # module files without a META6.json
 rakupp install app.raku         # the modules a program uses
+rakupp install https://github.com/OWNER/REPO/blob/main/app.raku   # …a program's, by URL
 rakupp install https://github.com/ash/raku-modules/tree/main/Prompt-Hidden
 rakupp install https://host/Foo-1.0.tar.gz
 ```
@@ -70,7 +71,8 @@ reaches into its subdirectories). Inside a checkout's `lib/` that means the
 checkout's distribution, plus any module its `META6.json` does not list — the
 usual reason a module installs and then `use` cannot find part of it. A
 program installs nothing of itself: its `use` lines are read, and what is not
-installed yet is.
+installed yet is. A program's URL works the same way — the program is fetched,
+read and not kept; see the next question.
 
 The github form takes the URL from your address bar, including the
 `/tree/BRANCH/SUBDIR` shape a monorepo of modules produces; without a `/tree/`
@@ -93,6 +95,34 @@ Each command prints its own full usage when you give it no arguments. If you
 want zef itself on such a machine, zef runs under Raku++ too — `rakupp
 /path/to/zef install Foo` — with the caveats in
 [MODULES.md](../MODULES.md#current-status-and-limits).
+
+## Can I run a program straight from a link, modules and all?
+
+Yes. Give the link where the file name would go — the one in your address bar
+works, GitHub's `…/blob/…` page included:
+
+```sh
+rakupp https://github.com/antononcube/Raku-Mathematica-Serializer/blob/main/examples/Serializer-profiling.raku
+```
+
+That program uses two modules. If they are not installed, the run stops with
+the usual "Could not find", and the error offers the two commands that fix it,
+each spelled with the link:
+
+```sh
+# install what it uses
+rakupp install https://github.com/antononcube/Raku-Mathematica-Serializer/blob/main/examples/Serializer-profiling.raku
+# install it all, then run
+rakupp --auto https://github.com/antononcube/Raku-Mathematica-Serializer/blob/main/examples/Serializer-profiling.raku
+```
+
+The program itself is fetched with curl, as the installer fetches, and run as
+a file would be: the arguments after the link reach `@*ARGS`, and errors name
+the link. Only `https://` is accepted — a program fetched over plain `http://`
+could have been changed on its way; `curl -sSL URL | rakupp -` runs one if you
+mean it — and a link to a web page rather than to the file is refused, not
+parsed. As with a local program, nothing beyond the program is fetched without
+`--auto`. [CLI.md](../CLI.md#a-program-at-a-url) has the rest.
 
 ## `rakupp install` says it cannot find install.raku
 
