@@ -32,7 +32,8 @@ only way these can drift.
   engines differ (a missing argument).
 - **[modules.md](modules.md)** — installing and finding modules: `zef install`
   or `rakupp install` and then just `use` it, installing something the ecosystem
-  does not carry (a directory or a URL, and why a URL has no checksum), the
+  does not carry (a directory or a URL, and why a URL has no checksum), running
+  a program straight from a link with the modules it needs, the
   places searched (the failure message is the list), pointing `-I` at a store
   somewhere else, what the SHA-named files are, why "Could not find Foo" is
   usually a distribution name, and running a module you are still writing.
