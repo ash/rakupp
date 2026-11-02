@@ -43,7 +43,7 @@ parentheses); 9695e120, 1d5e98c0, 4df715fc, c423e9db, 5ebfc05f, 3f0baa68,
 ad7f05dc and e6777420 (issue #77); 608774f1 and 5321f41c (issue #217); 636f69d0 (a program from a URL);
 56309f17 (--target=arduino); 42618157 (Text::CSV and JSON::Unmarshal);
 89d80faa (a `my token` in a variable); b81021ba (PERF-REVIEW-2026-11-02
-§6).*
+§6); 6617859d (typed scalar stores).*
 
 ---
 
@@ -440,6 +440,19 @@ plain before 500c29e2 and native from it, unless they say otherwise.
   and so did `$x[0] = 2.5` with `$x` holding one. Such a store asks the array
   at run time; one into an array declared plain never asks, and programs
   storing only into those compile to the same C++ as before.
+- **A compiled `op=`, `++` or int lane into a typed scalar is checked as `=`
+  is** (6617859d). Only `=` checked the declaration: `my Small $x = 5; $x +=
+  100` held 105 under `--exe` and `--exe -O`, where Rakudo dies with
+  X::TypeCheck::Assignment, `my Int $i = 1; $i += 1.5` held 2.5 and `$i ~=
+  "a"` "1a", and a UInt's `--` went below 0. Under `-O` the int lanes did the
+  same: `my Num $g = 5e0; $g = $one` held 1, and a loop's store-back wrote
+  past a subset (`while $y < 300 { $y += 100 }` on a `my Small $y` ended at
+  305). A subset bundles the program, and a bundled program's routines get
+  lanes without `-O`, so plain `--exe` lost the check too. Each of those
+  stores now goes through the check, and a loop lane refuses a slot whose
+  type checks more than its guard does (a subset, UInt, a class), so that
+  loop runs boxed. Untyped, `my Int`, `my Num` and `my Str` slots keep their
+  lanes, and an untyped store compiles to the same C++ as before.
 - **Compiled `try` consumes a live Failure** (42f79e98), as interpreted: a block
   that returned one handed the Failure back and left `$!` unset; now `try`
   answers Nil, sets `$!` and marks the Failure handled.
@@ -1875,3 +1888,11 @@ does not.
 - Found with 89d80faa, the same before it: an anonymous `rule { a b }`
   matches "ab" and not "a   b", the other way round from Rakudo; a named
   `my rule` keeps its whitespace significant.
+- Found with 6617859d, the same before it: the interpreter's `$u -= 5` on a
+  `my UInt` gives -2, its `op=` check running only when the program declares
+  a subset. A `where` on an untyped variable is not checked by the
+  interpreter; a bundled program's compiled routine drops a local's `where`
+  (`my Int $x where * < 10 = 5; $x += 100` holds 105), and its loop lanes,
+  and its `op=` on an untyped one, do not see an outer variable's `where`.
+  `loop (my int $k …)` inside a top-level `try { }` fails to compile under
+  `-O`: the header's `my` is never declared.
