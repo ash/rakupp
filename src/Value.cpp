@@ -1575,6 +1575,10 @@ std::string Value::typeName() const {
                         if (hashKind == "FileHandle")
                             return (hash() && hash()->count("proc-owner")) ? "IO::Pipe" : "IO::Handle";
                         if (hashKind == "ProcIn") return "IO::Pipe";
+                        // a preserving Supplier is a Supplier::Preserving, its own
+                        // (sub)type: Text::CSV's `csv(out => Supply)` makes one and
+                        // hands back its Supply from a `when Supplier::Preserving`
+                        if (hashKind == "Supplier" && hash() && hash()->count("preserving")) return "Supplier::Preserving";
                         // a backtrace frame is Rakudo's `Backtrace::Frame`; the
                         // internal tag has no colons and could not be named in a
                         // signature — Lumberjack declares `has Backtrace::Frame

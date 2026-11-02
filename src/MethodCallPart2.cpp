@@ -8223,9 +8223,8 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
         inv.t == VT::Object && inv.obj() && inv.obj()->cls &&
         !(!m.skipOwn && inv.obj()->cls->findMethod(m))) {
         bool exc = inv.obj()->cls->name.rfind("X::", 0) == 0 ||
-                   inv.obj()->cls->name.rfind("CX::", 0) == 0;
-        for (ClassInfo* c = inv.obj()->cls.get(); c && !exc; c = c->parent.get())
-            if (c->name == "Exception") exc = true;
+                   inv.obj()->cls->name.rfind("CX::", 0) == 0 ||
+                   inv.obj()->cls->anyAncestor([](const ClassInfo* c) { return c->name == "Exception"; });
         // a bare `Exception.new` / `X::AdHoc.new` has its message attribute
         // but nothing in it: those two answer Rakudo's defaults (below)
         const std::string& cn0 = inv.obj()->cls->name;

@@ -3350,6 +3350,7 @@ public:
     uint64_t lexicalRoutineFrame(); // the frame a `return` written here belongs to
     const Value* lexicalRoutineVal();   // …and that routine itself: `&?ROUTINE`, what `samewith` calls
     void recordLexicalRoutine();        // (a block that asks for it, as it is made)
+    Value varContainerName(const std::string& vn);   // `@a.VAR.name`: a parameter's is its container's
     // Nested BEGIN/CHECK/INIT phasers run before the code around them, in a
     // STATIC environment of the scopes that enclose them (the lexicals exist,
     // unset, as they do at Rakudo's compile time). The first run of each such

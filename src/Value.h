@@ -2211,6 +2211,20 @@ struct ClassInfo {
         return false;
     }
 
+    // Does `f` hold for this class or any ancestor — through EVERY parent, not
+    // only the first? `class D does Iterable is Exception` puts the role in the
+    // `parent` slot and Exception among the extras, so a walk up `parent` alone
+    // never met Exception, and `die D.new` came out an X::AdHoc (Text::CSV).
+    template <class F> bool anyAncestor(const F& f) const {
+        if (f(this)) return true;
+        if (parent && parent->anyAncestor(f)) return true;
+        for (auto& p : extraParents) if (p && p->anyAncestor(f)) return true;
+        return false;
+    }
+    bool isException() const {
+        return anyAncestor([](const ClassInfo* c) { return c->name == "Exception" || c->nativeParent == "Exception"; });
+    }
+
     // Ordinary method dispatch: like findMethod, but a SUBMETHOD is visible only
     // on the class that declares it — `class C is P {}` does not get P's
     // submethods. findMethod itself still inherits them, because the object

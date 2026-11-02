@@ -41,7 +41,7 @@ acf27e4b (the view keeps declaration details); 586c5160 (written
 parentheses); 9695e120, 1d5e98c0, 4df715fc, c423e9db, 5ebfc05f, 3f0baa68,
 57a9a792, 0abc0b39, 52426690, 3c62ef44, 34168c0e, aa309270, 8a6c9d9a,
 ad7f05dc and e6777420 (issue #77); 608774f1 and 5321f41c (issue #217); 636f69d0 (a program from a URL);
-56309f17 (--target=arduino).*
+56309f17 (--target=arduino); 42618157 (Text::CSV and JSON::Unmarshal).*
 
 ---
 
@@ -1652,6 +1652,30 @@ does not.
   longer comes back as `enum C ((a => 1))`.
   t/regression/rakuast-declaration-terminator.raku agrees with Rakudo
   2026.08 and 2026.09.
+- **`rakupp install Text::CSV` installs, and JSON::Unmarshal with it**
+  (42618157). Text::CSV 0.022's suite stopped on seven things, one test
+  file after another, and none of them about CSV. `die` of `class D does
+  Iterable is Exception` threw an X::AdHoc carrying D: with the role written
+  first, Exception was a second parent, which `die` never looked at.
+  `open $f, :enc(Str)` died "Unknown string encoding ''"; an undefined
+  encoding is the default one. `@p.VAR.name` on a parameter answered "@p"
+  (since 1e36359f) where Rakudo names what was bound: the caller's "@x", or
+  "element" when nothing, an anonymous array, a default, a copy or a slurpy
+  was; Text::CSV chooses arrays or hashes by it. An `is copy` parameter with
+  a default stayed read-only when its argument came from a slurpy.
+  `@a[1, 4..6, 8..Inf]` padded the endless range with ten thousand (Any)s;
+  it is a sub-slice that stops at the array's end. `Supplier::Preserving.new`
+  is a Supplier::Preserving to `.^name` and `~~`, not only a Supplier. `use
+  Text::CSV; use Slang::Tuxic;` read the file without the slang, because
+  Text::CSV's own `use` of it was scanned first. And `.new(a => f())`, `f`
+  returning a `.map`, left `has @.a` empty: the constructor copied only what
+  the Seq had made so far, which was nothing. That one stopped
+  JSON::Unmarshal 0.18's `is unmarshalled-by(&code)` on an array attribute,
+  a test dependency the installer had been skipping. An install into an
+  empty store now runs and passes all fifteen suites, Text::CSV's 33 files
+  and JSON::Unmarshal's 11 among them. Eight files in t/regression hold the
+  fixes; seven agree with Rakudo 2026.09, and the slang one uses a fixture
+  that does not load there.
 
 ### Left open
 
@@ -1821,3 +1845,6 @@ does not.
   Nil (11 runs in 200 of eight threads reading and refilling) or die: the
   read takes the element's stripe, not the storage's (c9560e0d).
   TODO-FOLLOW-UPS.md has it.
+- Found with 42618157, the same before it: inside a nested slice a typed
+  array's hole reads Any where Rakudo reads its type (`my Str @t = <a b>;
+  @t[0, 1..3]` is `("a", ("b", Str, Str))` there), finite ranges included.
