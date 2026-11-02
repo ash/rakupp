@@ -2708,7 +2708,7 @@ struct Codegen {
                         add = "rtNativeStoreLike(_o, rtNativeAdd(_o, Value::integer(" + delta + ")), " +
                               cesc(nv->name) + ", true)";
                     return viewSyncWrap(u->operand.get(), "([&]()->Value{ Value& _r=" + stepLvalueExpr(u) +
-                           "; Value _o=_r; _r=" + add + "; return rtStepOld(std::move(_o)); }())");
+                           "; Value _o=_r; _r=" + checkedStore(u->operand.get(), add) + "; return rtStepOld(std::move(_o)); }())");
                 }
                 if (u->op == "++" || u->op == "--") { // prefix: yield the new value
                     checkWritable(u->operand.get());
@@ -2722,7 +2722,7 @@ struct Codegen {
                         add = "rtNativeStoreLike(_r, rtNativeAdd(_r, Value::integer(" + delta + ")), " +
                               cesc(nv->name) + ", true)";
                     return viewSyncWrap(u->operand.get(), "([&]()->Value{ Value& _r=" + stepLvalueExpr(u) +
-                           "; _r=" + add + "; return _r; }())");
+                           "; _r=" + checkedStore(u->operand.get(), add) + "; return _r; }())");
                 }
                 if (u->op == "quietly") { // suppress warn() output in the operand
                     std::string body = u->operand->kind == NK::BlockExpr
@@ -4199,7 +4199,7 @@ struct Codegen {
                         if (auto* nv = nativeScalarRef(u->operand.get()))
                             add = "rtNativeStoreLike(_r, rtNativeAdd(_r, Value::integer(" + delta + ")), " +
                                   cesc(nv->name) + ", true)";
-                        line(ind, "{ Value& _r = " + stepLvalueExpr(u) + "; _r = " + add + "; }");
+                        line(ind, "{ Value& _r = " + stepLvalueExpr(u) + "; _r = " + checkedStore(u->operand.get(), add) + "; }");
                         if (std::string w = viewSyncWrap(u->operand.get(), "Value()"); w != "Value()")
                             line(ind, w + ";");
                         return;
@@ -4487,22 +4487,53 @@ struct Codegen {
         return n.size() > 1 && n[0] == '$' && n != "$_" && n != "$/" && n != "$!" &&
                !std::strchr("!.*?^=~<", n[1]);
     }
-    std::string scalarStore(const VarExpr* v, const std::string& rhs) {
+    // Which store that is: 'p' as it is, 'a' Nil to Any, 'o' the interpreter's,
+    // 't' checked against `ty`
+    char storeKind(const VarExpr* v, std::string& ty) const {
         const std::string& n = v->name;
-        if (!plainScalarName(n) || v->viaPseudoPkg || v->pkgSymbol || v->processScoped) return rhs;
+        if (!plainScalarName(n) || v->viaPseudoPkg || v->pkgSymbol || v->processScoped) return 'p';
         // a module routine's store into a variable of the scope around it, which
         // is the interpreter's: by the declaration the interpreter keeps (its
         // `is default`, its constraint), which this routine cannot see
-        if (moduleMode_ && !v->declare && aotFree_.count(n)) return "RT.rtOuterScalarStore(" + rhs + ", " + cesc(n) + ")";
-        std::string ty;
+        if (moduleMode_ && !v->declare && aotFree_.count(n)) return 'o';
         if (v->declare) ty = v->d().declType;
         else if (v->lexResolved) ty = v->d().readType;
         else if (topVars_.count(n)) { auto t = topVarTypes_.find(n); if (t != topVarTypes_.end()) ty = t->second; }
-        else return rhs;
-        if (ty.empty() || ty == "Any") return "rtNilToAny(" + rhs + ")";
-        if (ty[0] >= 'a' && ty[0] <= 'z') return rhs;   // a native: the native store has it
+        else return 'p';
+        if (ty.empty() || ty == "Any") return 'a';
+        return ty[0] >= 'a' && ty[0] <= 'z' ? 'p' : 't';   // (a native: the native store has it)
+    }
+    std::string scalarStore(const VarExpr* v, const std::string& rhs) {
+        std::string ty;
+        switch (storeKind(v, ty)) {
+            case 'p': return rhs;
+            case 'a': return "rtNilToAny(" + rhs + ")";
+            case 'o': return "RT.rtOuterScalarStore(" + rhs + ", " + cesc(v->name) + ")";
+        }
         Param tp; tp.type = ty;
-        return "rtTypedStore(RT, " + rhs + ", " + typedFastCode(tp) + ", " + cesc(ty) + ", " + cesc(n) + ")";
+        return "rtTypedStore(RT, " + rhs + ", " + typedFastCode(tp) + ", " + cesc(ty) + ", " + cesc(v->name) + ")";
+    }
+    // …the store of what an increment or `op=` computes, checked as `=` checks
+    // it: `my Small $x = 5; $x += 100` kept 105, `my Int $i = 1; $i ~= "a"` "1a"
+    // (an outer scalar the parser resolved untyped is stored as it was)
+    std::string checkedStore(const Expr* t, const std::string& rhs) {
+        std::string ty;
+        if (t->kind != NK::VarExpr) return rhs;
+        auto* v = static_cast<const VarExpr*>(t);
+        const char k = storeKind(v, ty);
+        const bool untypedOuter = k == 'o' && v->lexResolved && (v->d().readType.empty() || v->d().readType == "Any");
+        return k == 't' || (k == 'o' && !untypedOuter) ? scalarStore(v, rhs) : rhs;
+    }
+    // …and whether every Int passes the check (every Num and Str too, with
+    // `lane`: a loop lane's guard lets in only the slot's own kind), so a lane
+    // may write `.i` in place. Not under `my Num`, a subset, UInt or a class;
+    // an outer scalar is judged by the type the parser resolved it to.
+    bool storeOpen(const VarExpr* v, bool lane) const {
+        static const std::set<std::string> ints = {"", "Any", "Int", "Cool", "Numeric", "Real", "Mu"};
+        std::string ty;
+        const char k = storeKind(v, ty);
+        if (k == 'o') { if (!v->lexResolved) return false; ty = v->d().readType; }
+        return k == 'p' || ints.count(ty) || (ty[0] >= 'a' && ty[0] <= 'z') || (lane && (ty == "Num" || ty == "Str"));
     }
     // An assignment's native target of exactly full width: 'i' (`int`, `int64`),
     // 'n' (`num`, `num64`), else 0 (a sized one wraps or rounds on the store)
@@ -4918,6 +4949,17 @@ struct Codegen {
                                        : "applyArith(" + cesc(binop) + ", " + lhs + ", " + rhs + ")";
             return lhs + " = rtNativeStoreLike(" + lhs + ", " + val + ", " + cesc(tv->name) + ", " +
                    (nativeOp && binop != "div" && binop != "%" && binop != "mod" ? "true" : "false") + ")";
+        }
+        // …and into a scalar whose declaration checks what it holds, `$x = $x op V`
+        if (tgt->kind == NK::VarExpr) {
+            const std::string fb = fastBin(binop);
+            const std::string nv =
+                binop == "||" ? "(RT.boolify(" + lhs + ") ? " + lhs + " : (" + rhs + "))"
+              : binop == "&&" ? "(RT.boolify(" + lhs + ") ? (" + rhs + ") : " + lhs + ")"
+              : binop == "//" ? "(!rtIsDefined(" + lhs + ") ? (" + rhs + ") : " + lhs + ")"
+              : binop == ","  ? "([&]{ Value __c = " + lhs + "; rtCommaAssign(__c, " + rhs + "); return __c; }())"
+              : !fb.empty()   ? fb + "(" + lhs + ", " + rhs + ")" : "applyArith(" + cesc(binop) + ", " + lhs + ", " + rhs + ")";
+            if (std::string st = checkedStore(tgt, nv); st != nv) return lhs + " = " + st;
         }
         if (binop == "||") return lhs + " = RT.boolify(" + lhs + ") ? " + lhs + " : (" + rhs + ")";
         if (binop == "&&") return lhs + " = RT.boolify(" + lhs + ") ? (" + rhs + ") : " + lhs;
@@ -7362,9 +7404,13 @@ struct Codegen {
         std::string r = laneInt(a->value.get(), L);
         if (r.empty()) return false;
         std::string store;
+        // A declaration that checks the Int (`my Num $g`, a subset, UInt) gets
+        // it through that check, as the boxed `=` does: `$g = $one` stored 1
+        const bool open = storeOpen(tv, false);
         if (plain) {
             // overwrite: reuse the box when it's a plain int slot, else replace it
-            store = "if (rtIntSlot(" + lv + ")) " + lv + ".i = " + r + "; else " + lv + " = Value::integer(" + r + ");";
+            store = (open ? "if (rtIntSlot(" + lv + ")) " + lv + ".i = " + r + "; else " : std::string()) +
+                    lv + " = " + checkedStore(tv, "Value::integer(" + r + ")") + ";";
         } else {
             L.guards.push_back("rtIntSlot(" + lv + ")");
             std::string binop = op.substr(0, op.size() - 1), t = gensym("__ln");
@@ -7376,7 +7422,7 @@ struct Codegen {
                 std::string ovf = binop == "+" ? "add_ovf" : binop == "-" ? "sub_ovf" : "mul_ovf";
                 L.steps.push_back("long long " + t + "; if (rakupp::" + ovf + "(" + lv + ".i, " + r + ", &" + t + ")) break;");
             }
-            store = lv + ".i = " + t + ";";
+            store = open ? lv + ".i = " + t + ";" : lv + " = " + checkedStore(tv, "Value::integer(" + t + ")") + ";";
         }
         std::string ok = gensym("__lok");
         line(ind, "{ bool " + ok + " = false; do { // -O int lane");
@@ -7600,6 +7646,8 @@ struct Codegen {
                         if (U.atTopHeader) U.escapeStore.insert(nm);
                     } else U.local.insert(nm);
                 }
+                // (a slot's store-back is unchecked: `my Small $y` ran boxed)
+                if (!tv->declare && !storeOpen(tv, true)) { U.fail(); return; }
                 U.slots.emplace(nm, tv->declare ? (U.natDecl.count(nm) && U.natDecl[nm] == 'n' ? LT::F64 : LT::I64)
                                                 : uSeed(nm));
                 U.written.insert(nm);
@@ -7629,7 +7677,7 @@ struct Codegen {
                     std::string nm;
                     if (!uScalar(u->operand.get(), nm)) { U.fail(); return; }
                     if (laxVars_.count(nm) || cellVars_.count(nm)) { U.fail(); return; }
-                    if (U.topics.count(nm)) { U.fail(); return; }
+                    if (U.topics.count(nm) || !storeOpen(static_cast<VarExpr*>(u->operand.get()), true)) { U.fail(); return; }
                     U.slots.emplace(nm, uSeed(nm));
                     U.written.insert(nm);
                     return;
@@ -8714,6 +8762,7 @@ struct Codegen {
         if (u->operand->kind != NK::VarExpr) return false;
         noteVarWrite(u->operand.get());   // (a lane writes without lvalueExpr)
         if (readonlyVars_.count(static_cast<VarExpr*>(u->operand.get())->name)) return false;   // ex() refuses it
+        if (!storeOpen(static_cast<VarExpr*>(u->operand.get()), false)) return false;   // (the boxed step checks it)
         std::string lv = laneVar(static_cast<VarExpr*>(u->operand.get()));
         if (lv.empty()) return false;
         std::string ok = gensym("__lok"), t = gensym("__ln");
