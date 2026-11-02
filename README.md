@@ -157,6 +157,7 @@ rakupp --exe app.raku -o app     # compile it
 | `--cnp[=SPEC]` | *(work in progress)* The same, by copy-and-patch: hot loops are stitched from machine-code snippets compiled into rakupp itself, so no C++ compiler is needed and nothing is cached. Off by default. These two are one feature with two backends, and the plan is for `--cnp` to become the default and `--jit` to go; see [JIT.md](docs/guide/JIT.md#--cnp-the-same-thing-without-a-compiler) |
 | `--exe SRC -o OUT` | Native-compile to a standalone binary (also `--bundle`, `--aot`) |
 | `--target=js SRC -o OUT.js` | Transpile to JavaScript for Node, Bun, Deno or a browser (`--verify` checks it against the interpreter; see [JS.md](docs/guide/JS.md), walked through in [JS-TUTORIAL.md](docs/guide/JS-TUTORIAL.md)) |
+| `--target=arduino SRC -o OUT.ino` | Transpile a `use Arduino` program to an Arduino sketch; constants and `BEGIN` run while building. `--sim` builds it for this computer on a simulated board, and `rakupp SRC` runs it on the same board in the interpreter (see [ARDUINO.md](docs/guide/ARDUINO.md)) |
 | `--highlight [SRC]` | Syntax-highlight Raku to HTML (`--html`) or terminal (`--ansi`) |
 | `--mcp` | Serve the interpreter over the Model Context Protocol for AI agent clients |
 | `--jupyter FILE` | Run as a Jupyter kernel (`--jupyter-install` registers it with Jupyter) |

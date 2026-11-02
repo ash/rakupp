@@ -1,0 +1,19 @@
+[0 ms] pin 3 mode OUTPUT
+[0 ms] pin 5 mode OUTPUT
+[0 ms] pin 6 mode OUTPUT
+[0 ms] pin 3 HIGH
+[50 ms] pin 3 LOW
+[50 ms] pin 5 HIGH
+[100 ms] pin 5 LOW
+[100 ms] pin 6 HIGH
+[150 ms] pin 6 LOW
+[150 ms] pin 3 HIGH
+[200 ms] pin 3 LOW
+[200 ms] pin 5 HIGH
+[250 ms] pin 5 LOW
+[250 ms] pin 6 HIGH
+[300 ms] pin 6 LOW
+[300 ms] pin 3 HIGH
+[350 ms] pin 3 LOW
+[350 ms] pin 5 HIGH
+[400 ms] stop

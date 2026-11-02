@@ -1,0 +1,15 @@
+built at compile time: 16
+wrapped: -32768 4 boot=42
+N=16 primes=15 last=47
+hist: 0 2 1 4 0 4 0 4
+wave: 127 217 255 217 127 37 0 37
+collatz(27)=111
+sign: -101
+div/mod: -4 1 -4
+bits: 1024 -4 48 -1
+bool: True False
+int of num: 3 -2 4
+loop 1 at 400
+loop 3 at 650
+loop 5 at 900
+loop 7 at 1150

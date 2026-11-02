@@ -922,6 +922,23 @@ diag("--cnp is not live in this build, so its tier-up checks are skipped: $CNP-W
     }
 }
 
+# ---- the Arduino backend ----------------------------------------------------
+# --target=arduino (ARDUINO-PLAN.md): t/arduino/run.raku holds each case's run
+# on the interpreter's simulated board to its golden, and the case's sketch,
+# built for this computer with --sim, to the interpreter byte for byte; then
+# the refusals. Its own runner, so it can be run alone (and with --arduino15
+# to compile every sketch for a Due); here it is one check, with its failures.
+section('--target=arduino (Arduino backend and the simulated board)');
+{
+    my $p = run($*EXECUTABLE, $ROOT.add('t/arduino/run.raku').Str, :out, :err);
+    my $out = $p.out.slurp(:close);
+    $p.err.slurp(:close);
+    my @failed = $out.lines.grep(*.starts-with('not ok'));
+    my $n = +$out.lines.grep(*.starts-with('ok'));
+    ok($p.exitcode == 0 && $n > 0, "t/arduino/run.raku: all $n checks pass");
+    diag($_) for @failed;
+}
+
 # ---- compile modes carry their modules ---------------------------------
 # All three compile modes must produce a SELF-SUFFICIENT binary: it has to run
 # with its module tree gone from the machine. Each mode reached this differently

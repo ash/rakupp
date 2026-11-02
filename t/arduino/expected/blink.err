@@ -1,0 +1,7 @@
+[0 ms] pin 13 mode OUTPUT
+[0 ms] pin 13 HIGH
+[500 ms] pin 13 LOW
+[1000 ms] pin 13 HIGH
+[1500 ms] pin 13 LOW
+[2000 ms] pin 13 HIGH
+[2200 ms] stop
