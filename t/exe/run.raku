@@ -73,7 +73,9 @@ sub bounded(*@cmd) {
     my $done = $p.start;
     my $killed = False;
     await Promise.anyof($done, Promise.in($LIMIT));
-    unless $done { $killed = True; $p.kill: SIGKILL; try await $done }
+    # Not a bare `try await $done`: the killed Proc it returns is sunk, and a
+    # sunk Proc that died of a signal throws, which ended the whole gate.
+    unless $done { $killed = True; $p.kill: SIGKILL; my $ = try await $done }
     $killed ?? (Nil, $o, $e) !! ((try await $done).exitcode, $o, $e)
 }
 
