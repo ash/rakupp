@@ -7412,6 +7412,9 @@ struct Codegen {
         // does; an int one that ends F64 would need the truncating store, which
         // a lane does not do, so the lane is refused then.
         std::map<std::string, char> natDecl;
+        // Uses the parser resolved to a `num`/`Num` declaration outside the
+        // loop (VarExpr::readType): a sub's `my num $g` as well as a top-level one
+        std::set<std::string> floatDecl;
         std::set<std::string> written;     // the ones the loop assigns
         // Declared INSIDE the loop (`my $t = …`). These have no box outside the
         // lane at all: they are guarded by nothing, stored back nowhere, and
@@ -7521,6 +7524,10 @@ struct Codegen {
         auto it = topVarTypes_.find(nm);
         return it != topVarTypes_.end() && isFloat(it->second);
     }
+    static void uNoteFloatDecl(const VarExpr* v, const std::string& nm, ULoop& U) {
+        const std::string& t = v->d().readType;
+        if (v->lexResolved && (t == "num" || t == "num64" || t == "Num")) U.floatDecl.insert(nm);
+    }
     void uCollectExpr(Expr* e, ULoop& U) {
         if (!U.ok || !e) return;
         switch (e->kind) {
@@ -7552,6 +7559,7 @@ struct Codegen {
                 if (nm == "$_" && !U.topics.count(nm)) { U.fail(); return; }
                 U.slots.emplace(nm, uSeed(nm));
                 U.readNodes[nm].insert(e);
+                uNoteFloatDecl(v, nm, U);
                 return;
             }
             case NK::Assign: {
@@ -7595,6 +7603,7 @@ struct Codegen {
                 U.slots.emplace(nm, tv->declare ? (U.natDecl.count(nm) && U.natDecl[nm] == 'n' ? LT::F64 : LT::I64)
                                                 : uSeed(nm));
                 U.written.insert(nm);
+                if (!tv->declare) uNoteFloatDecl(tv, nm, U);
                 uCollectExpr(a->value.get(), U);
                 return;
             }
@@ -8530,13 +8539,15 @@ struct Codegen {
         if (loop->kind == NK::ForStmt)   // …and so its own read-only variable (forStmt marks it)
             for (auto& v : static_cast<ForStmt*>(loop)->vars) if (U.written.count(v)) return false;
 
-        // A slot the loop only READS gets no type from an assignment, so it sat
-        // at I64 — and a `num` parameter failed its rtIntSlot guard on every
-        // entry, sending the loop to its boxed form. One DECLARED a float (a
-        // `num`/`Num` parameter, a top-level `my num`) is a float slot.
+        // A slot DECLARED a float (a `num`/`Num` parameter, a `my num`) is a
+        // float slot, read or written. Typed only by what reaches it in the
+        // loop, a `num` parameter the loop reads, or a `my num $g` it writes
+        // with `$g = -$g`, sat at I64 and failed its rtIntSlot guard on every
+        // entry, sending the loop to its boxed form. An `=` of an integer into
+        // one is still refused by the type pass, below.
         for (auto& kv : U.slots)
-            if (kv.second == LT::I64 && !U.written.count(kv.first) && !U.pinned.count(kv.first) &&
-                floatDeclared(kv.first))
+            if (kv.second == LT::I64 && !U.pinned.count(kv.first) &&
+                (U.floatDecl.count(kv.first) || floatDeclared(kv.first)))
                 kv.second = LT::F64;
         // Fixpoint: widen a slot to F64 the moment anything float reaches it, and
         // re-run until nothing moves. Bounded by the slot count (a slot can only
