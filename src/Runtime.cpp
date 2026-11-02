@@ -33,7 +33,7 @@ std::string btDisplayPath(const std::string& file, const std::string& srcAbs,
 // $?FILE is the source path as an absolute path: cwd-prefixed when invoked
 // relatively (Rakudo keeps the `./` — no realpath canonicalization).
 static std::string absSrcPath(const std::string& f) {
-    if (f.empty()) return f;
+    if (f.empty() || programUrl(f)) return f;   // `rakupp https://…`: a URL is absolute already
 #if defined(_WIN32)
     if (f[0] == '/' || f[0] == '\\' || (f.size() > 1 && f[1] == ':')) return f;
     char buf[4096]; if (_getcwd(buf, sizeof buf)) return std::string(buf) + "\\" + f;

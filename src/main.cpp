@@ -1106,6 +1106,11 @@ static bool findRuntimeSet(const std::string& rtLib, std::vector<std::string>& l
 // extension, or `a.out` for `-e` code.
 static std::string defaultOut(const std::string& srcName) {
     if (srcName == "-e") return "a.out";
+    if (programUrl(srcName)) {   // a fetched program compiles to its file's name, here
+        std::string path = srcName.substr(0, srcName.find_first_of("?#"));
+        std::string base = path.substr(path.rfind('/') + 1);
+        return base.empty() ? "a.out" : defaultOut(base);
+    }
     for (const char* ext : {".rakumod", ".raku", ".p6", ".pl6"}) {
         size_t n = std::string(ext).size();
         if (srcName.size() > n && srcName.compare(srcName.size() - n, n, ext) == 0)
@@ -2900,6 +2905,33 @@ static bool sandboxStart(bool optI, bool sawJitFlag, const std::string& profileD
     return true;
 }
 
+// The program argument's text: a file's, or — `rakupp https://…/x.raku` — what
+// curl fetched from the URL (InterpreterModules.cpp). -1 when `src` holds it;
+// otherwise the exit status, the reason already on stderr. A file that cannot
+// be read is Rakudo's exit 1 when running, and a usage error (4) in the tool
+// modes; a URL that cannot be fetched follows it.
+static int readProgramArg(const std::string& a, bool run, std::string& src) {
+    if (programUrl(a)) {
+        std::string why;
+        if (fetchProgramUrl(a, src, why)) return -1;
+        std::cerr << why << "\n";
+        return run ? 1 : 4;
+    }
+    if (run) {
+        struct stat st;
+        if (stat(a.c_str(), &st) == 0 && S_ISDIR(st.st_mode)) {
+            std::cerr << "Can not run directory " << a << "\n"; return 1;
+        }
+    }
+    std::ifstream in(a);
+    if (!in) {
+        if (run) { std::cerr << "Could not open " << a << "\n"; return 1; }
+        std::cerr << "Cannot open file: " << a << "\n"; return 4;
+    }
+    std::ostringstream ss; ss << in.rdbuf(); src = ss.str();
+    return -1;
+}
+
 int main(int argc, char** argv) {
     rakupp::setupConsole();  // Windows: UTF-8 output and live escape sequences (no-op elsewhere)
     rakupp::registerShadowModules();  // NativeHelpers::Blob & co. answer from the binary, not a rakulib/ beside it
@@ -3523,19 +3555,8 @@ int main(int argc, char** argv) {
                 g_embeddedTool.clear(); g_embeddedSrc.clear();
                 continue;
             }
-            if (mode == Mode::Run) {
-                struct stat st;
-                if (stat(a.c_str(), &st) == 0 && S_ISDIR(st.st_mode)) {
-                    std::cerr << "Can not run directory " << a << "\n"; return 1;
-                }
-            }
-            std::ifstream in(a);
-            if (!in) {
-                if (mode == Mode::Run) { std::cerr << "Could not open " << a << "\n"; return 1; }
-                std::cerr << "Cannot open file: " << a << "\n"; return 4;
-            }
-            std::ostringstream ss; ss << in.rdbuf(); src = ss.str(); fileName = a;
-            haveSrc = true;
+            if (int rc = readProgramArg(a, mode == Mode::Run, src); rc >= 0) return rc;
+            fileName = a; haveSrc = true;
             continue;
         }
         // tool modes ignore stray extra non-options (as their old scans did)
@@ -3620,8 +3641,8 @@ int main(int argc, char** argv) {
     }
     if (watch) {
         // the loop runs THIS command line, minus --watch, as a child per change
-        if (!haveSrc || fileName == "-e" || fileName == "-") {
-            std::cerr << "--watch needs a program file to watch (not -e code or stdin)\n";
+        if (!haveSrc || fileName == "-e" || fileName == "-" || programUrl(fileName)) {
+            std::cerr << "--watch needs a program file to watch (not -e code, stdin or a URL)\n";
             return 4;
         }
         std::vector<std::string> childArgs;
@@ -3725,6 +3746,8 @@ int main(int argc, char** argv) {
 "\n"
 "Usage:\n"
 "  rakupp FILE [ARGS...]        Run a Raku program from a file\n"
+"  rakupp URL [ARGS...]         …or from an https:// link, fetched with curl (a\n"
+"                               GitHub file page works as it is)\n"
 "  rakupp -e 'CODE' [ARGS...]   Run a one-liner\n"
 "  rakupp                       Start an interactive session (REPL)\n"
 "  rakupp < FILE, ... | rakupp  Read a whole program from standard input\n"
