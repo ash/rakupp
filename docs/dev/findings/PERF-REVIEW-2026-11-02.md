@@ -58,11 +58,33 @@ dropping any of Raku's rules?**
 
 ### 1.1 Fortran-shaped kernels
 
-Each kernel is written twice: untyped, as most Raku is written, and in the
-Fortran form, with `int`/`num` scalars, `num @` arrays and C-style `loop`.
-ns per operation, × C in brackets:
+A kernel here is a small benchmark program built around one inner loop. Each
+is written twice: untyped, as most Raku is written, and in the Fortran form,
+with `int`/`num` scalars, `num @` arrays and C-style `loop`. The six, and
+what the table counts as one operation of each:
 
-| kernel (ops) | C | `--exe -O` untyped | `--exe -O` native | interp untyped | interp native | interp untyped, kernels off | `--cnp` untyped | `--cnp` native |
+- **intloop**: `s = (s + i*i) % 1000003`, 20M times; one iteration.
+- **numloop**: the Leibniz series for π, 20M terms; one iteration.
+- **dot**: the dot product of two 1,000-element float arrays, repeated
+  5,000 times; one multiply-add.
+- **matmul**: a 120×120 float matrix multiply over flat arrays; one
+  multiply-add (120³).
+- **stencil**: 1-D Jacobi relaxation, each point set to the mean of its two
+  neighbours, 2,000 points, 400 rounds of two sweeps; one point update.
+- **fib**: recursive `fib(27)`; one call.
+
+Each column is one way of running the kernel. C is the reference in
+[ref.c](perf-review-2026-11/ref.c). `--exe -O` compiles the program to a
+binary, "interp" runs it in the ordinary interpreter, and `--cnp` runs it
+with the copy-and-patch loop tier. "IntKernel off" is the untyped program
+interpreted with `RAKUPP_NO_KERNELS=1`, which switches off the interpreter's
+`int64`/`double` fast paths in [IntKernel.cpp](../../../src/IntKernel.cpp)
+(no relation to the benchmark kernels) and leaves the plain tree-walker. A
+cell is nanoseconds per operation; the figure in brackets is that cell over
+the C column, so (53×) means 53 times C's time. An empty cell was not
+measured; `--cnp` compiles loops only, so it has nothing to take in fib.
+
+| kernel (ops) | C | `--exe -O` untyped | `--exe -O` native | interp untyped | interp native | interp untyped, IntKernel off | `--cnp` untyped | `--cnp` native |
 |---|--:|--:|--:|--:|--:|--:|--:|--:|
 | intloop (20M iterations) | 3.0 | 3.2 (1.05×) | 3.2 (1.05×) | 5.8 (1.9×) | 5.8 (1.9×) | 76 (25×) | 6.0 | 5.8 |
 | numloop (20M) | 0.80 | 0.80 (1.0×) | **39 (49×)** | 7.1 (9×) | 8.7 (11×) | 93 (116×) | 7.1 | 8.6 |
@@ -71,18 +93,17 @@ ns per operation, × C in brackets:
 | stencil (1.6M updates) | 0.11 | 39 (350×) | 1.0 (9×) | 261 (2,400×) | 485 (4,400×) | 261 | 58 | 94 |
 | fib (calls) | 0.56 | 1.3 (2.3×) | 1.3 (2.3×) | 4.0 (7×) | 4.0 | 122 (218×) | | |
 
-"Kernels off" is `RAKUPP_NO_KERNELS=1`. Those columns show the tree-walker
-underneath: the interpreter is near C on intloop, numloop and fib only
-because [IntKernel.cpp](../../../src/IntKernel.cpp) recognises those shapes
-and runs them on `int64`/`double` instead of `Value`s. The native-compiled
-dot, matmul and stencil figures come from 100× longer runs, since at the
-scale shown they finish inside the start-up time.
+The "IntKernel off" columns show the tree-walker underneath: the interpreter
+is near C on intloop, numloop and fib only because IntKernel recognises
+those shapes and runs them on `int64`/`double` instead of `Value`s. The
+native-compiled dot, matmul and stencil figures come from 100× longer runs,
+since at the scale shown they finish inside the start-up time.
 
 ### 1.2 Calls and objects: Raku as it is usually written
 
 The cost of one iteration of `for ^3_000_000 { $s += EXPR }`, in ns:
 
-| EXPR | `--exe -O` | interp | interp, kernels off |
+| EXPR | `--exe -O` | interp | interp, IntKernel off |
 |---|--:|--:|--:|
 | `3` (the loop alone) | 0.3 | 0.7 | 35 |
 | `sum($_, 2)` with `sub sum($a, $b) { $a + $b }` | 9 | 3.7 | 162 |
@@ -103,10 +124,10 @@ An n-body step written with a class (five bodies, ten pair updates and five
   slower than an untyped one compiled and 52× slower interpreted.
 - **The compiled accessor is slower than the interpreted one:** 127 ns
   against 72.
-- **The engines are islands.** The same loop costs 5.8 ns in a kernel and
-  76 ns outside one. dot's kernel declines with "container @a holds neither
-  a plain Int nor a plain Str", so a loop over `Num` elements gets nothing
-  from a kernel that handles `Num` scalars.
+- **The engines are islands.** The same loop costs 5.8 ns when IntKernel
+  takes it and 76 ns when it does not. IntKernel declines dot's loop with
+  "container @a holds neither a plain Int nor a plain Str", so a loop over
+  `Num` elements gets nothing from a fast path that handles `Num` scalars.
 
 ---
 
@@ -147,7 +168,7 @@ Fortran, `b%x` is one load at a fixed offset.
 ([InterpreterCore.cpp:26620](../../../src/InterpreterCore.cpp)), and
 `Env::find` ([Interpreter.h:1068](../../../src/Interpreter.h)) walks the
 scope chain, probing a string-keyed map and then the pad's names at each
-level. There is no call-site cache on this path. In fib with kernels off it
+level. There is no call-site cache on this path. In fib with IntKernel off it
 is 9% of the time.
 
 **Also by name:**
@@ -201,7 +222,7 @@ Its callers add `callSpecialName`, the by-name `find`,
 and a `tryIntKernel` probe, which is still entered under
 `RAKUPP_NO_KERNELS=1`.
 
-The fib profile with kernels off, by bucket:
+The fib profile with IntKernel off, by bucket:
 
 | | share |
 |---|--:|
@@ -259,7 +280,7 @@ into checks.
   `enforceTypedAssign`, `varWhereCheck`, `wrapNative` and
   `compoundSrcNative`, and each read through the slot and `Env::find`.
   - In the interpreted native dot product those are about 8% of samples.
-  - The kernel declines a sub with `num` parameters, so that sum is 193 ns
+  - IntKernel declines a sub with `num` parameters, so that sum is 193 ns
     against 3.7 ns untyped.
 - **Compiled, a lane bug.** In
   [Codegen.cpp:8537](../../../src/Codegen.cpp), a declared-`num` slot
@@ -341,7 +362,7 @@ The same semantics are implemented by:
 
 Each decides for itself what it understands, so each has its own refusals
 and its own bugs, and every refusal falls all the way back:
-- dot's loop is refused by the kernel, which takes `Num` scalars but not
+- dot's loop is refused by IntKernel, which takes `Num` scalars but not
   `Num` elements, so it runs on the tree-walker at 98 ns an element;
 - the `num` lane bug sends a whole loop to string-dispatched arithmetic;
 - `--cnp` compiles loops, so a program whose time is in method calls inside
