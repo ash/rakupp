@@ -302,6 +302,23 @@ logs and the reviews. This page is the complete list.
   - The lever beyond the plan: a routine declared all-native compiles to a
     plain C++ function with no bail. Native semantics are machine semantics,
     so such a routine may also write to file-scope native tables.
+- **[PERF-REVIEW-2026-11-02.md](PERF-REVIEW-2026-11-02.md)** *(2026-11-02, at
+  5.5.0-346-gfe9237a8)* — an independent review: what run-time work keeps
+  Raku++ from Fortran, and which of it Raku's rules do not require. Kernels
+  and instruments in [`perf-review-2026-11/`](perf-review-2026-11/).
+  - Fortran-shaped native code under `--exe -O` is already 1.0–9× C. Raku as
+    usually written is 25–900×.
+  - The gap is five kinds of work:
+    - names resolved at run time: a 1,800-literal method ladder, attributes
+      in a hash, callees found by a scope-chain walk;
+    - a twenty-step call protocol;
+    - native declarations checked rather than used;
+    - a boxed perimeter around native code;
+    - cliffs between seven evaluators.
+  - Rakudo lowers non-dynamic lexicals away (`LoweredAwayLexical`), which
+    licenses frames without an `Env`.
+  - Two defects: a written `num` compiles to an `int` lane (49× on a float
+    loop), and a compiled `$obj.attr` is slower than an interpreted one.
 
 ## One-off bug reports
 
