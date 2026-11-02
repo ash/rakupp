@@ -84,7 +84,9 @@ cell is nanoseconds per operation; the figure in brackets is that cell over
 the C column, so (53×) means 53 times C's time. An empty cell was not
 measured; `--cnp` compiles loops only, so it has nothing to take in fib.
 
-| kernel (ops) | C | `--exe -O` untyped | `--exe -O` native | interp untyped | interp native | interp untyped, IntKernel off | `--cnp` untyped | `--cnp` native |
+**Nanoseconds per operation; × C in brackets.**
+
+| kernel (ops) | C (ns) | `--exe -O` untyped (ns) | `--exe -O` native (ns) | interp untyped (ns) | interp native (ns) | interp untyped, IntKernel off (ns) | `--cnp` untyped (ns) | `--cnp` native (ns) |
 |---|--:|--:|--:|--:|--:|--:|--:|--:|
 | intloop (20M iterations) | 3.0 | 3.2 (1.05×) | 3.2 (1.05×) | 5.8 (1.9×) | 5.8 (1.9×) | 76 (25×) | 6.0 | 5.8 |
 | numloop (20M) | 0.80 | 0.80 (1.0×) | **39 (49×)** | 7.1 (9×) | 8.7 (11×) | 93 (116×) | 7.1 | 8.6 |
@@ -103,7 +105,7 @@ since at the scale shown they finish inside the start-up time.
 
 The cost of one iteration of `for ^3_000_000 { $s += EXPR }`, in ns:
 
-| EXPR | `--exe -O` | interp | interp, IntKernel off |
+| EXPR | `--exe -O` (ns) | interp (ns) | interp, IntKernel off (ns) |
 |---|--:|--:|--:|
 | `3` (the loop alone) | 0.3 | 0.7 | 35 |
 | `sum($_, 2)` with `sub sum($a, $b) { $a + $b }` | 9 | 3.7 | 162 |
