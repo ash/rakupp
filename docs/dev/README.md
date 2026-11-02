@@ -71,6 +71,11 @@ Next up:
   were chosen from (collecting, 2026-09-17). What it still holds is
   unscheduled: platforms and hosts, the capability sandbox, modules and the
   supply chain, and developer experience.
+- **[plans/IDEAS.md](plans/IDEAS.md)** — new ideas for rakupp, outside any
+  version plan (started 2026-11-02): reproducing and debugging a run, seeing
+  and getting speed, testing and changing code, the supply chain, text and
+  numbers, and where people meet the engine. Each was checked against the
+  repository as neither built nor planned elsewhere.
 - **[plans/TRANSPILE-PLAN.md](plans/TRANSPILE-PLAN.md)** — `--target=js`, a **second
   Codegen with JavaScript as its output** (design draft 2026-09-03, for
   review): why reach rather than speed justifies it, the probes that fixed the
@@ -78,6 +83,15 @@ Next up:
   tables, because `Intl.Segmenter` is 150× apart between hosts), the
   whole-program tiering with the WASM engine as the fallback, `use JS` interop,
   the gates, and the `Backend` seam a Rust target would reuse.
+- **[plans/ARDUINO-PLAN.md](plans/ARDUINO-PLAN.md)** — `--target=arduino`, **a
+  Raku program as firmware** (designed 2026-11-02; A0 landed the same day):
+  where it stands — the sketch, `--sim` and the simulated board agreeing byte
+  for byte, every gate sketch compiling for a Due — and where it departed from
+  the draft; the five ways to program an Arduino in Raku and why the compile
+  target won; Raku while building — `BEGIN`, `CHECK` and constants run in the
+  interpreter and reach the board as C tables; numbers; `use Arduino`,
+  answered by the engine, and the ecosystem stub that tells other
+  implementations the program needs Raku++; the gates, phases A0–A5.
 - **[plans/IDE-PLAN.md](plans/IDE-PLAN.md)** — editor support built into the
   engine (2026-10-07): the language server completed (`--lsp`, phases L0–L6),
   then a debugger over the Debug Adapter Protocol (`--dap`, D0–D6) whose

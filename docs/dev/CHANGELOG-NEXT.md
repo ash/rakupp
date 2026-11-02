@@ -40,8 +40,8 @@ c067446c; a11aa7ab; 594d4aac (Template::Mustache); 5d4de331 (Pod::Load);
 acf27e4b (the view keeps declaration details); 586c5160 (written
 parentheses); 9695e120, 1d5e98c0, 4df715fc, c423e9db, 5ebfc05f, 3f0baa68,
 57a9a792, 0abc0b39, 52426690, 3c62ef44, 34168c0e, aa309270, 8a6c9d9a,
-ad7f05dc and e6777420 (issue #77); 608774f1 and 5321f41c (issue #217);
-42618157 (Text::CSV and JSON::Unmarshal).*
+ad7f05dc and e6777420 (issue #77); 608774f1 and 5321f41c (issue #217); 636f69d0 (a program from a URL);
+56309f17 (--target=arduino); 42618157 (Text::CSV and JSON::Unmarshal).*
 
 ---
 
@@ -278,6 +278,38 @@ plain before 500c29e2 and native from it, unless they say otherwise.
 
 ### New
 
+- **`--target=arduino`: a Raku program as an Arduino sketch** (56309f17,
+  ARDUINO-PLAN.md phase A0). The mainline before the top-level `loop { }` is
+  `setup()`, one iteration of that loop one call of `loop()`, and
+  `use Arduino` names the core's API; the sketch is C++11 that names no
+  runtime, and a construct outside the board's subset is refused with its
+  line. Every `constant` and top-level `BEGIN` runs while building, so
+  `(^32).map: { … sin … }` reaches the board as 32 bytes in flash. A program
+  runs with no board: `rakupp prog.raku` on a simulated board built into the
+  engine (Serial on stdout, one line per pin change on stderr, real or
+  virtual time, fixed inputs), and `--target=arduino --sim` compiles the
+  sketch against the same board in C++. t/arduino/run.raku holds seven
+  programs to their goldens and each sketch to the interpreter byte for byte,
+  and eleven refusals to their messages (27 checks, ~5 s); with
+  `--arduino15=DIR` every sketch also compiles for an Arduino Due under
+  `-Wall -Werror` — blink is 102 bytes of code. Not yet tried on an AVR board
+  or real hardware. See docs/guide/ARDUINO.md.
+- **A program can be run from a URL** (636f69d0): `rakupp
+  https://github.com/antononcube/Raku-Mathematica-Serializer/blob/main/examples/Serializer-profiling.raku`.
+  curl fetches it, as it fetches for `rakupp install`, so the engine still has
+  no HTTP or TLS code; the arguments after the URL reach `@*ARGS`, and
+  `$?FILE`, `$*PROGRAM-NAME` and backtraces name the URL. A GitHub file page
+  is read as the file (`/blob/` → `/raw/`, GitHub's Raw button); any other web
+  page is refused rather than parsed, and so is plain `http://`, and a
+  redirect down to it. `-c`, `--lint` and `--exe` take a URL too (`--exe`
+  names the binary after the file); `--watch` refuses one. The missing-module
+  hint names the URL, and both commands it offers work: `rakupp install URL`
+  reads the program at the URL and installs what it uses, and `rakupp --auto
+  URL` installs all of it on the first miss, in one installer run. Checked
+  offline with `file://` URLs and a stand-in curl: 8 checks in t/run.raku, 5
+  in t/deps/run.raku. That gate had been dying at its RAKUPP_OPT check, which
+  passed a List to a `%env` parameter (Rakudo refuses that too); it now runs
+  to the end.
 - **The subset metamodel** (0abc0b39; issue #77): `Metamodel::SubsetHOW
   .new_type(:name, :refinee, :refinement)`, also asked of a metaclass made
   from SubsetHOW; `.^refinee` and `.^refinement`; a `.HOW` of each subset's

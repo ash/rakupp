@@ -1,0 +1,5 @@
+[0 ms] pin 2 mode INPUT_PULLUP
+[0 ms] pin 3 mode INPUT
+a note goes to the error stream
+[0 ms] pin 9 pwm 128
+[1000 ms] stop

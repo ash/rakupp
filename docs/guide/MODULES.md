@@ -116,6 +116,8 @@ rakupp install my-dist            # a checkout: the directory with META6.json
 rakupp install -r lib             # module files with no META6.json beside them
                                   # (-r: in every directory below, too)
 rakupp install app.raku           # what a program uses — its modules, not it
+rakupp install https://github.com/OWNER/REPO/blob/main/app.raku
+                                  # …and a program at a URL, the same way
 rakupp install https://github.com/ash/raku-modules/tree/main/Prompt-Hidden
                                   # a github page URL, monorepo subdirectory
                                   # and all — the URL from the address bar

@@ -94,3 +94,26 @@ plan, move it to [TODO.md](TODO.md).
   inside subtests); with no plan and no `done-testing`, rakupp prints that
   line and Rakudo prints none. Both go to stderr. Who needs it: tools that
   read the diagnostics; the TAP verdict is the same.
+
+- [ ] **`$*RAT-OVERFLOW` is ignored** (found 2026-11-01).
+
+  ```raku
+  my $r = 1/3; $r /= 2**70; say $r.WHAT;
+  { my $*RAT-OVERFLOW = FatRat;    my $s = 1/3; $s /= 2**70; say $s.WHAT }
+  { my $*RAT-OVERFLOW = Exception; my $s = 1/3; $s /= 2**70; say $s.WHAT }
+  ```
+
+  rakupp prints `(Num)` three times; Rakudo 2026.09 prints `(Num)` and
+  `(FatRat)`, then throws `X::AdHoc` on the third line. The spill is the
+  `mkRat` lambda in applyArithGeneral (src/InterpreterCore.cpp), which turns
+  a Rat into a Num whenever its denominator fails `fitsU64()`; the other
+  `!fitsU64()` spill sites do the same. Who needs it: a program that wants
+  exact answers past 64-bit denominators without writing FatRat everywhere,
+  and the exactness warnings in [IDEAS.md](IDEAS.md) (idea 27).
+
+- [ ] **showcase/perl/README.md says rakupp cannot build a regex from a
+  runtime string** (found 2026-11-01). It can: with `$s = "a+"`,
+  `"caaat" ~~ /<$s>/` gives `｢aaa｣`, and `<{ $s }>` works too. The line dates
+  from 2026-08-02. The Perl interpreter's own backtracking engine can stay;
+  the reason given for it is out of date. Who needs it: readers of the
+  showcase.

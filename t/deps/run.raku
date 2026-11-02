@@ -209,6 +209,31 @@ check store-has($h2, 'Deps::Uses') && store-has($h2, 'Deps::Other') && store-has
       'D2: …all three distributions are in the store';
 check installed-lines(%two<err>).elems == 3, 'D2: …one installed line per distribution';
 
+# ---- a program run from a URL: the hint names the URL, and both commands work --
+# file:// stands in for https:// — curl fetches either — so the gate stays offline.
+my $two-url = "file://{$work.add('two.raku').absolute}";
+my %uplain = rk($two-url, :home(fresh-home));
+check %uplain<exit> != 0
+      && %uplain<err>.contains("$two-url uses 2 modules that are not installed: Deps::Uses, Deps::Other")
+      && %uplain<err>.contains("to install them:          rakupp install $two-url")
+      && %uplain<err>.contains("to install them and run:  rakupp --auto $two-url"),
+      'URL: a program run from a URL is named by it in the hint, and so are both commands';
+my $hui = fresh-home;
+my %uinst = rk('install', $two-url, :home($hui));
+check %uinst<exit> == 0 && store-has($hui, 'Deps::Uses') && store-has($hui, 'Deps::Other')
+      && store-has($hui, 'Deps::Hello'),
+      'URL: `rakupp install URL` installs what the program at it uses';
+my %urun = rk($two-url, :home($hui));
+check %urun<exit> == 0 && %urun<out> eq 'Deps::Uses 0.1|Deps::Other 0.1', 'URL: …and then the program runs';
+my $hua = fresh-home;
+my %uauto = rk('--auto', $two-url, :home($hua));
+check %uauto<exit> == 0 && %uauto<out> eq 'Deps::Uses 0.1|Deps::Other 0.1'
+      && installed-lines(%uauto<err>).elems == 3,
+      'URL: `rakupp --auto URL` installs all three and runs';
+my $utrace = $hua.IO.add('.raku/rakupp-install/trace.log');
+check $utrace.e && $utrace.slurp.comb('==== rakupp install trace').elems == 1,
+      'URL: …in one installer run: the first miss reads the program at the URL for the rest';
+
 # ---- D1/D2: a name in no index fails as it always did ----------------------
 my $hn = fresh-home;
 my %none = rk('--auto', '-e', 'use Deps::Nowhere; print 1', :home($hn));
@@ -235,7 +260,7 @@ check %off<exit> != 0 && %off<err>.lines[0] eq 'Could not find Deps::Hello in:'
       && !store-has($hoff, 'Deps::Hello'),
       'D2: RAKUPP_DEPS=0 makes --auto inert: the miss is fatal, the store untouched';
 check !%off<err>.contains('ecosystem index'), 'D2: …without consulting the index';
-my %offopt = rk('prog.raku', :home($hoff), :env(RAKUPP_OPT => '--auto', RAKUPP_DEPS => '0'));
+my %offopt = rk('prog.raku', :home($hoff), :env(%(RAKUPP_OPT => '--auto', RAKUPP_DEPS => '0')));
 check %offopt<exit> != 0 && !store-has($hoff, 'Deps::Hello'),
       'D2: …also when --auto arrives through RAKUPP_OPT';
 my $hsb = fresh-home;

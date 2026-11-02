@@ -922,6 +922,23 @@ diag("--cnp is not live in this build, so its tier-up checks are skipped: $CNP-W
     }
 }
 
+# ---- the Arduino backend ----------------------------------------------------
+# --target=arduino (ARDUINO-PLAN.md): t/arduino/run.raku holds each case's run
+# on the interpreter's simulated board to its golden, and the case's sketch,
+# built for this computer with --sim, to the interpreter byte for byte; then
+# the refusals. Its own runner, so it can be run alone (and with --arduino15
+# to compile every sketch for a Due); here it is one check, with its failures.
+section('--target=arduino (Arduino backend and the simulated board)');
+{
+    my $p = run($*EXECUTABLE, $ROOT.add('t/arduino/run.raku').Str, :out, :err);
+    my $out = $p.out.slurp(:close);
+    $p.err.slurp(:close);
+    my @failed = $out.lines.grep(*.starts-with('not ok'));
+    my $n = +$out.lines.grep(*.starts-with('ok'));
+    ok($p.exitcode == 0 && $n > 0, "t/arduino/run.raku: all $n checks pass");
+    diag($_) for @failed;
+}
+
 # ---- compile modes carry their modules ---------------------------------
 # All three compile modes must produce a SELF-SUFFICIENT binary: it has to run
 # with its module tree gone from the machine. Each mode reached this differently
@@ -1572,6 +1589,49 @@ section('the CLI surface (goldens for the v3 parser refactor)');
         ok($x == 1 && $e.contains('Could not open'), 'missing file: error, exit 1');
         ($o, $e, $x) = run-rakupp-err('--precomp-modules=bogus');
         ok($x == 4 && $e.contains('Usage'), '--precomp-modules=bogus: usage error, exit 4');
+    }
+
+    # a program named by a URL, fetched with curl — offline: file:// is a URL
+    # curl reads, and a stand-in curl on PATH shows what a GitHub page becomes
+    {
+        sub file-url(IO::Path $p) { 'file://' ~ ($WIN ?? '/' !! '') ~ $p.absolute.subst('\\', '/', :g) }
+        my $prog = $work.add('from-url.raku');
+        $prog.spurt: 'say $?FILE; say @*ARGS.join(",");' ~ "\n";
+        my $url = file-url($prog);
+        my ($o, $e, $x) = run-rakupp-err($url, 'a', 'b');
+        ok($x == 0 && $o eq "$url\na,b\n", 'a file:// URL runs; $?FILE is the URL, the arguments follow it');
+        ok(run-rakupp('-c', $url)[0] eq "Syntax OK\n", '-c checks a program at a URL');
+        ($o, $e, $x) = run-rakupp-err(file-url($work.add('no-such.raku')));
+        ok($x == 1 && $e.starts-with('Could not fetch file://') && $e.contains('curl:'),
+           'a URL curl cannot fetch: its error, exit 1');
+        ($o, $e, $x) = run-rakupp-err('http://example.invalid/x.raku');
+        ok($x == 1 && $e.starts-with('Will not run http://') && $e.contains('https://'),
+           'plain http is refused before anything is fetched');
+        my $page = $work.add('page.html');
+        $page.spurt("\n<!DOCTYPE html>\n<html><body>say 1</body></html>\n");
+        ($o, $e, $x) = run-rakupp-err(file-url($page));
+        ok($x == 1 && $e.contains('a web page, not a program') && $o eq '',
+           'a URL that serves a web page is refused, not parsed');
+        ($o, $e, $x) = run-rakupp-err('--watch', $url);
+        ok($x == 4 && $e.contains('not -e code, stdin or a URL'), '--watch refuses a URL');
+        if $WIN {
+            skip('program URL: a stand-in curl is a /bin/sh script, POSIX-only in this gate');
+            skip('program URL: no curl on PATH — the PATH spelling is POSIX-only in this gate');
+        }
+        else {
+            my $bin = $work.add('fake-curl-bin');
+            $bin.mkdir;
+            $bin.add('curl').spurt: "#!/bin/sh\nfor a; do last=\$a; done\necho \"say '\$last'\"\n";
+            $bin.add('curl').chmod(0o755);
+            my %env = %*ENV;
+            %env<PATH> = "{$bin.absolute}:{%*ENV<PATH>}";
+            my $p = run($*EXECUTABLE, 'https://github.com/o/r/blob/main/ex/x.raku?plain=1#L3', :out, :err, :%env);
+            ok($p.out.slurp(:close) eq "https://github.com/o/r/raw/main/ex/x.raku\n" && $p.err.slurp(:close) eq '',
+               'a GitHub file page is fetched as the file: /blob/ becomes /raw/, no query or fragment');
+            $p = run($*EXECUTABLE, 'https://example.org/x.raku', :out, :err, :env(%(|%env, PATH => '/nonexistent')));
+            $p.out.slurp(:close);
+            ok($p.exitcode == 1 && $p.err.slurp(:close).contains('curl did not run'), 'no curl on PATH: says so');
+        }
     }
 
     # -M / -m — load a module before the program (v3 CLI step 3)

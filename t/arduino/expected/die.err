@@ -1,0 +1,3 @@
+stopped at 3
+  in block <unit> at die.raku line 14
+      14 |     if $d == 3 { die "stopped at $d" }

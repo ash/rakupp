@@ -541,6 +541,12 @@ The same items grouped by theme, with a complexity estimate for each:
 
 ## 3. Compiled backends
 
+- [ ] **`--target=arduino`** ([ARDUINO-PLAN.md](ARDUINO-PLAN.md), started
+  2026-11-02): A0 is in, with constants and `BEGIN` values computed while
+  building, shaped native arrays, and `--sim` — a sketch and its source agree
+  byte for byte on the gate's seven programs, and each compiles for a Due.
+  Next: printing a num the way Raku does, then `if` on a constant emitting
+  one branch, and an AVR compile (the plan's A1–A2 remainder).
 - [ ] **`--exe -O` and `--cnp` answer regressions wrongly** (the t/exe and
   `t/jit/run.raku --cnp` gates, 2026-10-15, the same on 5549bf83):
   - `-O`: t/regression/nfc-join-window.raku's "e + acute" join counts 2

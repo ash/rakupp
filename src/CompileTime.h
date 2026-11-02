@@ -57,8 +57,11 @@ struct CtTable {
 
 // Build time: run SRC's compile-time part and say what it came to. Prints the
 // notes for what stays at run time; an empty table changes nothing.
+// `everyConstant`: substitute a constant whose initializer is already plain
+// literals too (`2 ** 4`), which a binary would compute cheaply itself — a
+// board has nothing to compute it with (--target=arduino).
 CtTable computeCompileTimeValues(const std::string& src, const std::string& srcName,
-                                 const std::vector<std::string>& libPaths);
+                                 const std::vector<std::string>& libPaths, bool everyConstant = false);
 void applyCompileTimeValues(Program& prog, const CtTable& t);
 std::string encodeCtTable(const CtTable& t);
 
