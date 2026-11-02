@@ -4871,10 +4871,9 @@ void Interpreter::bindParams(const std::vector<Param>& params, ValueList& args,
         signed char simple = params[0].sigSimple;
         if (simple < 0) {
             simple = 1;
-            for (auto& p : params)
+            for (auto& p : params)   // (a smiley and `is copy` bind below too: typeCheckBind enforces the smiley)
                 if (p.sigil != '$' || p.named || p.slurpy || p.optional || p.invocant ||
-                    p.isCopy || p.defaultVal || p.subSig || p.litVal ||
-                    p.whereExpr || p.defConstraint || p.coerce ||
+                    p.defaultVal || p.subSig || p.litVal || p.whereExpr || p.coerce ||
                     p.typeCapture ||   // `::T $x` binds the NAME T as well as $x
                     p.type == "Positional" ||  // a Seq binds as the List it caches into
                     !p.captureName.empty() ||  // …and so does `Int ::T $x`, which is typed
@@ -4901,8 +4900,9 @@ void Interpreter::bindParams(const std::vector<Param>& params, ValueList& args,
                     // (only a native parameter, or a value carrying native tags,
                     // has anything for it to do: the common call skips the call)
                     if (v.natBits || paramIsNative(params[i])) bindNativeParam(params[i], v);
-                    // `is raw` binds the caller's container and IS writable, same as `is rw`
-                    v.readonly = !params[i].isRw && !params[i].isRaw;
+                    // `is raw`/`is rw` bind a writable container; `is copy` keeps what came, typed as the slow path's varDefault
+                    if (!params[i].isCopy) v.readonly = !params[i].isRw && !params[i].isRaw;
+                    else if (!params[i].type.empty() && typeNameLead(params[i].type[0])) env->x().varDefault[params[i].name] = Value::typeObj(params[i].type);
                     // and a `$` parameter ITEMIZES what it binds (see the slow path)
                     if (!params[i].isRaw) itemizeScalar(v);
                     // TARG C2: an annotated param writes its slot directly —
@@ -9799,10 +9799,10 @@ resumeBody:
 }
 
 // What checkRetType's shortcut may accept for `c.retType`: 1 a user class
-// (stored in retFastCls), 2 Bool, 0 nothing (coercion, `:U`, a parameterized
-// or captured type — the full check every time); | 4 for a `:D`. The bare name
-// must itself be a registered class (or Bool), so no type capture of the
-// signature can stand for it (capturedType refuses a class name).
+// (stored in retFastCls), 2 Bool, 3 a core type (retFastCore's code), 0 nothing
+// (coercion, `:U`, a parameterized or captured type — the full check every
+// time); | 4 for a `:D`. A class name must be registered, so no type capture
+// of the signature can stand for it (capturedType refuses a class name).
 unsigned Interpreter::retFastDecide(const Callable& c) {
     if (retTypeCoerces(c.cold().retType)) return 0;
     const char sm = retTypeSmiley(c.cold().retType);
@@ -9811,7 +9811,7 @@ unsigned Interpreter::retFastDecide(const Callable& c) {
     if (base.empty() || base.find_first_of("[(\x01") != std::string::npos) return 0;
     const unsigned d = sm == 'D' ? 4 : 0;
     if (base == "Bool") return classes_.count("Bool") || subsets_.count("Bool") ? 0 : 2 | d;
-    if (!classes_.count(base)) return 0;
+    if (!classes_.count(base)) { const unsigned core = retFastCore(c, base); return core ? core | d : 0; }
     const std::string rn = resolveClassAlias(qualifyDeclType(base, c.ci().pkg));
     if (subsets_.count(rn)) return 0;
     auto it = classes_.find(rn);
@@ -9824,15 +9824,14 @@ unsigned Interpreter::retFastDecide(const Callable& c) {
 Value Interpreter::checkRetType(const Callable& c, Value v) {
     if (c.cold().retType.empty()) return v;
     if (v.t == VT::Hash && v.hashKind == proxyKind() && v.hash()) return checkRetTypeOfProxy(c, std::move(v));
-    // The shortcut (Callable::retFastKey): `--> HeapNode` / `--> Bool:D` resolved
-    // once per symbol generation instead of from its name on every return —
-    // LeftistHeap's four typed private methods made this a quarter of a call.
-    // It only ACCEPTS: an instance of the class (or a subclass), a Bool value.
-    // Anything else falls through to the full check, which decides it.
+    // The shortcut (Callable::retFastKey): `--> HeapNode`, `--> Bool:D`, `--> Str`
+    // resolved once per symbol generation, not from the name on every return
+    // (LeftistHeap's typed private methods spent a quarter of a call there). It only
+    // ACCEPTS — a class instance, a Bool, a plain core value; the full check does the rest.
     {
-        const uint64_t gen = (g_symbolGen.load(std::memory_order_relaxed) + 1) << 3;
+        const uint64_t gen = (g_symbolGen.load(std::memory_order_relaxed) + 1) << 7;
         uint64_t k = c.ci().retFastKey;
-        if ((k & ~uint64_t(7)) != gen) {
+        if ((k & ~uint64_t(127)) != gen) {
             k = gen | retFastDecide(c);
             c.ci().retFastKey = k;
         }
@@ -9850,7 +9849,7 @@ Value Interpreter::checkRetType(const Callable& c, Value v) {
                 fits = isa(v.obj()->cls.get());
             }
         }
-        else if (kind == 2) fits = v.t == VT::Bool;
+        else if (kind >= 2) fits = kind == 2 ? v.t == VT::Bool : retFastCoreFits(unsigned(k >> 3) & 15, v);
         if (fits && (!(k & 4) || isDefined(v))) return v;
     }
     // `--> T` where T is a type capture of the signature is the type it bound
@@ -24293,15 +24292,14 @@ Value Interpreter::evalBinary(Binary* b) {
         }
         // The Signature-ACCEPTS, object-ACCEPTS and Numeric-matcher arms that used
         // to sit here now live in applyArith, the bottom every smartmatch path
-        // converges on. All three were invisible to the callers that hold a VALUE
-        // — junction eigenstates, `where` constraints — because those never come
-        // through evalBinary. This arm falls through to them below.
+        // converges on, invisible before to the callers that hold a VALUE —
+        // junction eigenstates, `where` constraints. This arm falls through to them.
         // generic smartmatch on the already-evaluated operands — the Whatever a
         // VARIABLE holds is a value here (`my $w = *; $w ~~ Pair` is False on
-        // Rakudo); only a written `*` curries
-        if (lTopic.t == VT::Whatever && !exprHasWhateverLit(b->lhs.get()))
-            return smartmatchValue(op, lTopic, r);
-        return applyArith(op, lTopic, r);
+        // Rakudo); only a written `*` curries. (A core type: typeMatchMemo.)
+        if (lTopic.t == VT::Whatever && !exprHasWhateverLit(b->lhs.get())) return smartmatchValue(op, lTopic, r);
+        Value tm;
+        return r.t == VT::Type && typeMatchMemo(op, lTopic, r, tm) ? tm : applyArith(op, lTopic, r);
     }
   armFf:
     if (opEq(op, "ff") || opEq(op, "fff") || opEq(op, "ff^") || opEq(op, "fff^") ||
@@ -29510,6 +29508,7 @@ struct RatLitParts {
             }
             auto* nt = static_cast<NameTerm*>(e);
             const std::string& n = nt->name;
+            const uint64_t gen0 = g_symbolGen.load(std::memory_order_relaxed);   // (what typeMemo is kept under)
             // `GLOBALish` — the unit's view of GLOBAL, which the program's is
             if (opEq(n, "GLOBALish") && !classes_.count(n) && !(tctx().cur && tctx().cur->find(n)))
                 return Value::typeObj("GLOBAL");
@@ -29982,7 +29981,7 @@ struct RatLitParts {
                                 + n + "'"};
                     }
                 }
-                return Value::typeObj(rn);
+                return typeObjNoted(nt, rn, gen0);   // (kept on the node for a core type's own name: typeMemo)
             }
         }
         case NK::Range: {
@@ -30286,11 +30285,12 @@ Value Interpreter::eval(Expr* e) {
         // a Range, a Pair — and none of them is the arithmetic and variable
         // reading a hot loop is made of. Whole, and not inlinable back.
         case NK::NameTerm:
-            // …except a CORE enum member (`Less`) that no scope can shadow
-            // yet: every test evalRareExpr makes first is a question of the
-            // name, which this node already answered (see NameTerm::coreVal)
+            // …except a CORE enum member (`Less`) no scope can shadow yet, and a core type name (`Pair`;
+            // `DateTime` while none is bound): evalRareExpr's tests ask the name, as this node has answered
             if (const void* c = static_cast<NameTerm*>(e)->coreVal.get())
                 if (!g_coreEnumNameBound.load(std::memory_order_relaxed)) return *static_cast<const Value*>(c);
+            if (static_cast<NameTerm*>(e)->coreType == 1 || nameTypeMemoHit(static_cast<NameTerm*>(e)))
+                return Value::typeObj(static_cast<NameTerm*>(e)->name);
             return evalRareExpr(e);
         case NK::AllomorphLit:
         case NK::RegexLit:
@@ -31905,15 +31905,15 @@ bool Interpreter::uninitMethodShape(const MethodCall* mc, const Value& inv) {
 
 Value elemScalarRecord(Interpreter& I, const Value& guard, const Value& value);   // InterpreterBinding.cpp
 
-Value Interpreter::evalMethodCallExpr(Expr* e) {
+Value Interpreter::evalMethodCallExpr(Expr* e, Value* handedInv) {
     auto* mc = static_cast<MethodCall*>(e);
     LazyChainMark lazyMark(mc);   // `.first` over map/grep reads lazily (InterpreterCalls.cpp)
-    // `$node.left` — an attribute ACCESSOR on a plain user object is answered
-    // here, before the special arms below, none of which a call of this shape
-    // can meet (plainShape; `.value` only while a binding's raw tail is
-    // pending). A miss keeps the evaluated invocant: the arms read it below.
+    // `$node.left` — an attribute ACCESSOR on a plain user object is answered here, before the special
+    // arms below, none of which a call of this shape can meet (plainShape; `.value` only while a binding's
+    // raw tail is pending). A miss keeps the invocant, as fatalCheckedMethodCall's lean path hands its own.
     std::optional<Value> preInv;
-    if (mc->plainShape != 0) {
+    if (handedInv) preInv.emplace(std::move(*handedInv));
+    else if (mc->plainShape != 0) {
         if (mc->plainShape < 0) {
             const std::string& mn = mc->method;
             mc->plainShape = mc->inv && mc->inv->kind != NK::RegexLit && mc->args.empty() &&

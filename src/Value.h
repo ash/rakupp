@@ -715,8 +715,9 @@ struct CodeInfo : RefCounted {
     mutable DecidedOnce<signed char> dispatchCacheable{-1};
     mutable DecidedOnce<uint32_t> dispatchCacheN{0};
     // checkRetType's ACCEPTING shortcut for `--> T` / `--> T:D`, resolved once
-    // per symbol generation: retFastKey is (generation + 1) << 3 | kind | 'D'
-    // bit — kind 0 none (the full check), 1 a user class (retFastCls), 2 Bool.
+    // per symbol generation: retFastKey is (generation + 1) << 7 | core << 3 |
+    // 'D' bit << 2 | kind — kind 0 none (the full check), 1 a user class
+    // (retFastCls), 2 Bool, 3 a core type (Interpreter::retFastCore's code).
     // Only a value that plainly fits returns early; everything else, every
     // refusal included, takes the full check.
     mutable DecidedOnce<uint64_t> retFastKey{0};

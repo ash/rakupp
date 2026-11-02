@@ -40,7 +40,7 @@ c067446c; a11aa7ab; 594d4aac (Template::Mustache); 5d4de331 (Pod::Load);
 acf27e4b (the view keeps declaration details); 586c5160 (written
 parentheses); 9695e120, 1d5e98c0, 4df715fc, c423e9db, 5ebfc05f, 3f0baa68,
 57a9a792, 0abc0b39, 52426690, 3c62ef44, 34168c0e, aa309270, 8a6c9d9a,
-ad7f05dc and e6777420 (issue #77).*
+ad7f05dc and e6777420 (issue #77); 608774f1 and 5321f41c (issue #217).*
 
 ---
 
@@ -240,6 +240,22 @@ plain before 500c29e2 and native from it, unless they say otherwise.
   MB with é: 0.136 → 0.013 ms a call (Rakudo 2026.09: 0.001). 800 random
   strings over every cluster rule split the same before and after.
   t/regression/grapheme-table-one-walk.raku agrees with Rakudo 2026.09.
+- **Mathematica::Serializer's encoders run faster than Rakudo's** (608774f1,
+  5321f41c; issue #217), where they took twice its time. `when Pair` / `$x ~~
+  Int` against a core type keeps its answer per value kind, type and symbol
+  generation (never for a name a subset or class of the program's has
+  taken), and so does `.isa(Whatever)`; `--> Str` and the other core return
+  types accept a plain value without resolving the name; a bare core type
+  name answers from its node, `WhateverCode` too while no scope binds such a
+  name; `Buf.new` and a `.subst` that finds nothing are answered before the
+  method chain; a plain method call skips evalMethodCallExpr's arms; and an
+  `Int:D` or `is copy` parameter binds on the simple path. The encoders over
+  the R datasets' metadata, s per encode: WL 0.169 → 0.079, WXF 0.416 →
+  0.209 (Rakudo 2026.09: 0.089, 0.232). A nine-arm `given` of type `when`s
+  1,463 → ~330 ns, `5.isa(WhateverCode)` 332 → 70, `Buf.new(1, 2)` 435 →
+  167, `'abc'.subst(:g, '"', '\\"')` 341 → 109, `sub (Int:D $v is copy -->
+  Blob)` 511 → 411. t/regression/core-type-shortcuts.raku and
+  t/regression/method-call-lean-path.raku agree with Rakudo 2026.09.
 
 - **`EXPR.return` as a whole statement is `return EXPR`** (d54cc3ba): about
   1 µs a call instead of about 160 µs, the cost of unwinding an exception out

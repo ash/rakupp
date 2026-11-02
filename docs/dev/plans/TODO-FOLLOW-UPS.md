@@ -1,6 +1,6 @@
 # Follow-ups
 
-*Collected 2026-10-20; added to 2026-10-31.*
+*Collected 2026-10-20; added to 2026-11-02.*
 
 Findings that sessions on 2026-10-19 and 2026-10-20 proposed as follow-up
 work and nobody started: gaps found in passing while doing something else.
@@ -267,6 +267,33 @@ moves to [TODO.md](TODO.md).
   the two the parse put there and both lines render as Rakudo's.
 
 ## Operators and types
+
+- [ ] **`* ~~ T` does not curry when T is a user class with an ACCEPTS**
+  (found 2026-11-01 writing t/regression/core-type-shortcuts.raku for #217;
+  dcdf14ba too):
+
+  ```raku
+  class D { method ACCEPTS($x) { $x eq 'long' } }
+  my &m = * ~~ D; say &m.^name;      # Bool, Rakudo WhateverCode
+  say <long short>.map(* ~~ D);      # dies "Cannot map a List using 'Bool::False'"
+  ```
+
+  applyArithGeneral asks typeObjectUserAccepts (the `C's ACCEPTS` arm)
+  ahead of its Whatever curry, so D.ACCEPTS gets the `*` and answers. A
+  core type (`* ~~ Int`) curries. Done when the user class curries too and
+  `$w ~~ D` with a Whatever VALUE still asks ACCEPTS.
+- [ ] **`--> Buf` accepts a Blob, `--> Hash` a Map and `--> Rat` a FatRat**
+  (found 2026-11-01 checking 608774f1's return shortcut, which accepts none
+  of them itself; dcdf14ba too):
+
+  ```raku
+  sub a(--> Buf) { Blob.new(1) }; sub b(--> Hash) { Map.new }; sub c(--> Rat) { FatRat.new(1, 2) }
+  .say for (&a, &b, &c).map({ (try .()) // $!.^name });   # Blob:0x<01>, Map.new(()), 0.5
+                                                          # Rakudo: X::TypeCheck::Return ×3
+  ```
+
+  checkRetType's full check (typeOrSubsetMatches for Buf and Hash,
+  rtTypeMatch's VT::Rat case for Rat) is wider than the nominal check.
 
 - [ ] **`or` and `xor` chain, where Rakudo refuses them** (found 2026-10-31
   writing tools/rakuast-deparse-l10n-spec.raku, 3431c375):
@@ -1400,6 +1427,47 @@ moves to [TODO.md](TODO.md).
   when it is under its 34d064ca ceiling again.
 
 ## Performance
+
+- [ ] **A user method call is still ~3.5 times Rakudo's** (found 2026-11-01
+  fixing issue #217, 608774f1 and 5321f41c; the encoders that issue timed
+  run faster than Rakudo's now, but not because a call got cheap):
+
+  ```raku
+  class C { method !p(Str:D $s --> Str) { $s }; method m(Str $x --> Str) { self!p($x) } }
+  my $c = C.new; my $t = now; $c.m('x') for ^1_000_000; say now - $t;   # 0.55 s, Rakudo 0.08
+  ```
+
+  What `sample` puts on top, none of it one line:
+
+  - a method call is ~240 ns against a sub call's ~130 (Rakudo ~70):
+    invokeMethod, bindRoutineParams, setupRwLinks (run for every call,
+    since evalMethodCallExpr hands `rwInvocantExpr` to all of them), the
+    `self` definition and the frame guards. callPlainSub is the sub
+    path's lean lane; a method has nothing like it;
+  - a fresh Buf costs a StrBody and two allocations for its identity
+    (`identify`: a ValueExt and a `make_shared<char>`), and freeing them
+    again in the next loop iteration's scope reset: `my $r = Buf.new` ~310
+    ns in a loop;
+  - a typed `is copy` parameter allocates its frame's EnvExtras for
+    varDefault on every call;
+  - Mathematica::Serializer's varint loop (`repeat { my $byte = $v +&
+    0x7f; $v = $v +> 7; $byte +|= 0x80 if $v; $r.push($byte) } while $v`,
+    in a `(Int:D $v is copy --> Blob)` private method) is ~1.7 µs a call
+    against Rakudo's ~0.6: evalAssignInner's general path, statement by
+    statement.
+
+- [ ] **Two promise-ordering tests fail under load** (found 2026-11-02 in
+  the suite runs for 5321f41c; dcdf14ba fails both too):
+  t/regression/promise-whenever-fires-later-and-in-turn.raku ("…and a
+  react's": `react body` before `after keep 2`) and
+  t/regression/supply-tapper-death-is-not-a-quit.raku ("a whenever over a
+  promise": `second` before `first`). Both pass alone; run beside a build or
+  another suite, dcdf14ba failed the first 2 runs in 6 and the second 4 in
+  48. Each keeps two promises in turn and expects their `whenever`s to run
+  in that order, which a continuation on a pooled worker (a11aa7ab) does
+  not promise. Done when either the tests stop assuming the order or the
+  delivery keeps it, and 48 loaded runs of each pass.
+
 
 - [ ] **A composed curry like `* cmp * == More` is about 2.2x Rakudo per
   call** (found 2026-10-20 after the Order-path work, b35718ba, which gained

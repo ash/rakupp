@@ -6353,10 +6353,11 @@ Value Interpreter::methodCall(const Value& inv, const std::string& m, ValueList 
         inv.s.rfind("X::", 0) != 0 && inv.s.rfind("IO::", 0) != 0 && isKnownTypeName(inv.s)) {
         auto cit = classes_.find(inv.s);
         // …only where that declaration is IN SCOPE: the class table is global,
-        // and a `my class Pair` inside a block must not outlive it
-        const Value* lex = tctx().cur ? tctx().cur->find(inv.s) : nullptr;
+        // and a `my class Pair` inside a block must not outlive it (the scope
+        // is walked only for a class that could: every `Buf.new` walked it)
+        const Value* lex = nullptr;
         if (cit != classes_.end() && cit->second && cit->second->decl && !cit->second->isRole &&
-            lex && lex->t == VT::Type) {
+            tctx().cur && (lex = tctx().cur->find(inv.s)) && lex->t == VT::Type) {
             ClassInfo* ci = cit->second.get();
             if (ci->findMethod("new")) return invokeMethodChain("new", ci, inv, args, rwArgs);
             return methodCall(inv, "bless", std::move(args), rwArgs);
@@ -6436,81 +6437,10 @@ Value Interpreter::methodCall(const Value& inv, const std::string& m, ValueList 
     if (inv.t == VT::Object && args.empty() && !skipOwn && inv.obj() && inv.obj()->cls &&
         !inv.obj()->cls->repr.empty())
         if (auto r = ncStructFieldGet(inv, m)) return std::move(*r);
-    // The commonest zero-argument coercions and queries on a PLAIN core value,
-    // answered before the general chain, which spent ~150-250 ns reaching them
-    // in an interpreted loop. Each arm answers what the chain's own arm does.
-    // Anything tagged goes the long way: an enum value or type, an allomorph, a
-    // native, a big Int, and a lazy, packed, shaped or Seq array.
-    // (The plain-value test and the `.elems` one are Interpreter.h's, which -O's
-    // rtMElems and rtMDefined make too.)
-    if (args.empty() && !skipOwn && m.size() >= 2 && m.size() <= 7 && rtQueryPlain(inv) && builtinExt_.empty()) {
-        // `.WHICH` of a plain value — the general arm's own answer (whichOf)
-        auto which = [&]() {
-            Value w = Value::str(whichOf(inv));
-            w.hashKind = whichIsObjAt(inv) ? "ObjAt" : "ValueObjAt";
-            return w;
-        };
-        switch (inv.t) {
-            case VT::Num:
-                if (opEq(m, "Num")) return Value::number(inv.n);
-                if (opEq(m, "defined")) return Value::boolean(true);
-                if (opEq(m, "WHICH")) return which();
-                break;
-            case VT::Int:
-                if (inv.big()) break;
-                if (opEq(m, "Int")) return Value::integer(inv.i);
-                if (opEq(m, "Num")) return Value::number((double)inv.i);
-                if (opEq(m, "defined")) return Value::boolean(true);
-                if (opEq(m, "WHICH")) return which();
-                break;
-            case VT::Str:
-                if (opEq(m, "Str")) return inv;
-                if (opEq(m, "defined")) return Value::boolean(true);
-                if (opEq(m, "WHICH")) return which();
-                break;
-            case VT::Bool:
-                if (opEq(m, "WHICH")) return which();
-                break;
-            case VT::Any:
-            case VT::Nil:
-                if (opEq(m, "defined")) return Value::boolean(false);
-                break;
-            // a CORE type object (a user class may declare its own WHICH)
-            case VT::Type:
-                if (opEq(m, "WHICH") && !classes_.count(inv.s)) return which();
-                break;
-            case VT::Array:
-                if (opEq(m, "elems") && rtElemsPlain(inv)) { raceLen(inv.arr(), RaceAcc::Read); return Value::integer((long long)inv.arr()->size()); }
-                // `.kv` of a plain Array: (0, a, 1, b, …), the Seq the list arm builds
-                if (opEq(m, "kv") && inv.arr() && inv.s.empty() && !inv.ext() &&
-                    inv.pk_ != PK::Packed && !(inv.shape() && !inv.shape()->empty()) &&
-                    !inv.holdsContainers() && !inv.elemDefault() && inv.ofType().empty()) {
-                    Value out = Value::array(); out.isList = true; out.s = "Seq"; raceLen(inv.arr(), RaceAcc::Read);
-                    const ValueList& src = *inv.arr();
-                    out.arr()->reserve(src.size() * 2);
-                    for (size_t i = 0; i < src.size(); i++) {
-                        out.arr()->push_back(Value::integer((long long)i));
-                        out.arr()->push_back(src[i]);
-                        // (a nested Array or Hash of an Array is in a container)
-                        Value& e = out.arr()->back();
-                        if (!inv.isList && (e.t == VT::Array || e.t == VT::Hash)) e.itemized = true;
-                    }
-                    return out;
-                }
-                break;
-            // `.values` of a plain Hash: a Seq of its values, as the hash arm and
-            // methodCall's kv-family step make it
-            case VT::Hash:
-                if (opEq(m, "values") && inv.hash()) {
-                    Value out = Value::array(); out.isList = true; out.s = "Seq"; raceKeys(inv.hash(), RaceAcc::Read);
-                    out.arr()->reserve(inv.hash()->size());
-                    for (auto& kv : *inv.hash()) out.arr()->push_back(kv.second);
-                    return out;
-                }
-                break;
-            default: break;
-        }
-    }
+    // Plain values' shortcuts, answered before the general chain reaches their
+    // arms: `.isa`, the commonest zero-argument coercions and queries, `Buf.new`
+    // (MethodCallEntry.cpp).
+    if (!skipOwn) if (auto r = methodCallEntry(inv, m, args, rwArgs)) return std::move(*r);
     // `.join($sep)` of a plain list of strings (or ObjAts, `@a».WHICH`): the
     // general arm's loop without its snapshot of the list
     if (args.size() == 1 && !skipOwn && inv.t == VT::Array && m.size() == 4 && opEq(m, "join") &&

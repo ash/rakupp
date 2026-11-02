@@ -4914,6 +4914,43 @@ void rtAttrParam(Interpreter& I, const Value& self, const std::string& pname, co
     I.attrParamRef(self.obj(), pname, nullptr) = std::move(av);
 }
 
+// checkRetType's shortcut for a CORE return type — `--> Str`, `--> Blob` —
+// where the full check resolved the name against the routine's package,
+// aliases, constants and subsets on every return: a tenth of the time of a
+// method-heavy encoder (#217). The code retFastDecide keeps in retFastKey, or 0
+// when a package, alias, subset or type capture of `c` could stand for the name
+// (then the full check runs every time, as before).
+unsigned Interpreter::retFastCore(const Callable& c, const std::string& base) {
+    static const char* const kCore[] = {"Str", "Int", "Num", "Rat", "Blob", "Buf", "Hash", "Array", "List"};
+    unsigned code = 0;
+    for (unsigned i = 0; i < std::size(kCore) && !code; i++) if (base == kCore[i]) code = i + 1;
+    if (!code || subsets_.count(base) || !isKnownTypeName(base) ||
+        resolveClassAlias(qualifyDeclType(base, c.ci().pkg)) != base)
+        return 0;
+    if (c.ci().params)
+        for (auto& p : *c.ci().params)
+            if (p.typeCapture && (p.captureName == base || p.type == base)) return 0;
+    return 3 | code << 3;
+}
+// …and whether `v` is plainly one. Only ACCEPTS, as the class shortcut does:
+// a tagged value (an allomorph, an Instant, a native array, a Map) and every
+// refusal take the full check.
+bool Interpreter::retFastCoreFits(unsigned code, const Value& v) {
+    switch (code) {
+        case 1: return v.t == VT::Str && v.hashKind.empty() && v.enumName.empty();
+        case 2: return v.t == VT::Int && v.hashKind.empty() && v.enumName.empty() && v.enumType.empty();
+        case 3: return v.t == VT::Num && v.hashKind.empty();
+        case 4: return v.t == VT::Rat && v.hashKind.empty() && !v.fatRat();
+        case 5: return v.t == VT::Str && (v.hashKind == "Buf" || v.hashKind == "Blob");
+        case 6: return v.t == VT::Str && v.hashKind == "Buf";
+        case 7: return v.t == VT::Hash && v.hashKind.empty() && v.hash();
+        case 8: case 9:
+            return v.t == VT::Array && v.hashKind.empty() && v.enumName.empty() && v.enumType.empty() &&
+                   v.ofType().empty() && (code == 9 ? !v.isList || v.s.empty() : !v.isList);
+    }
+    return false;
+}
+
 // Nominal type check for native multi-dispatch.
 bool rtTypeMatch(const Value& v, const std::string& type) {
     if (type.empty() || type == "Any" || type == "Mu" || type == "Cool") return true;
@@ -8540,10 +8577,72 @@ void Interpreter::refuseValueMixin(const Value& v, const Value& base) {
                     " into object of type " + base.typeName());
 }
 
+// A call none of evalMethodCallExpr's special arms is written for, decided from
+// its syntax once: every arm there tests the call's form (`.^`, `».`, `.?`, `.=`,
+// a computed or qualified name), one of the names below, or the invocant's kind,
+// which leanMethodCall tests after evaluating it. That function's frame is the
+// size of all its arms, and setting it up and tearing it down was a sixth of
+// its cost on every method call in a program (#217).
+static bool leanCallShape(const MethodCall* mc) {
+    if (!mc->inv || mc->inv->kind == NK::RegexLit || mc->methodExpr || !mc->methodQual.empty() || mc->meta ||
+        mc->hyper || mc->allMode || mc->maybe || mc->mutate)
+        return false;
+    const std::string& m = mc->method;
+    if (m.empty() || m[0] == '&' || m.find("::") != std::string::npos || m.rfind("write-", 0) == 0) return false;
+    static const std::unordered_set<std::string> special = {
+        "map", "grep", "name", "dynamic", "make", "freeze", "splice", "subst-mutate", "DEFINITE", "VAR",
+        "WHAT", "WHO", "HOW", "WHERE", "BIND-POS", "BIND-KEY", "ASSIGN-POS", "ASSIGN-KEY",
+        "push", "append", "unshift", "prepend"};
+    return !special.count(m);
+}
+
+// …and the call itself: the steps evalMethodCallExpr takes for one, in its
+// order — the accessor shortcut, the private-call checks, `rwInvocantExpr`,
+// the arguments, methodCall, `seqMint`, a kept list's containers. An
+// invocant an arm there is written for (a Seq, a junction, a Whatever, a Buf,
+// a CArray, an undefined coercion's, a value whose built-in type has a method
+// added) is handed to it, already evaluated, and so is any call while a lazy
+// chain is being built, a CATCH is active, or a binding's raw tail is pending.
+Value Interpreter::leanMethodCall(MethodCall* mc) {
+    if (mc->bang) requirePrivateCallScope(mc->method);
+    Value inv = eval(mc->inv.get());
+    if (mc->args.empty() && !mc->bang && inv.t == VT::Object && inv.obj() && inv.obj()->cls &&
+        !(mc->method[0] >= 'A' && mc->method[0] <= 'Z'))
+        if (const Value* slot = plainAccessorSlot(inv, mc->method)) {
+            Value res = [&] { ParStripe rs(*this, slot); raceAttr(inv.obj(), slot, RaceAcc::Read); return *slot; }();   // torn-copy contract
+            seqMint(res, inv);
+            return res;
+        }
+    const bool special =
+        (inv.t == VT::Array && ((inv.isList && inv.seqTok()) || isJunction(inv))) || inv.t == VT::Whatever ||
+        (inv.t == VT::Code && inv.code() && inv.code()->ci().isWhateverCode) ||
+        (inv.t == VT::Str && (inv.hashKind == "Buf" || inv.hashKind == "Blob" || inv.hashKind == "CArray")) ||
+        (inv.t != VT::Object && !builtinExt_.empty()) || uninitMethodShape(mc, inv);
+    if (special) return evalMethodCallExpr(mc, &inv);
+    struct RwInvG { ExecContext& t; Expr* prev; ~RwInvG() { t.rwInvocantExpr = prev; } }
+        rwInvG{tctx(), tctx().rwInvocantExpr};
+    tctx().rwInvocantExpr = mc->inv.get();
+    ValueList args = evalArgs(mc->args);
+    if (mc->bang) checkPrivatePermission(mc->method);
+    Value res = mc->bang ? methodCall(inv, "!" + mc->method, std::move(args), &mc->args)
+                         : methodCall(inv, mc->method, std::move(args), &mc->args);
+    seqMint(res, inv);
+    if (inv.t == VT::Array && res.t == VT::Array && res.isList && RAKUPP_UNLIKELY(tctx().keepListOf == mc)) {
+        tctx().keepListOf = nullptr;
+        keepEndsContainers(mc, inv, res);
+    }
+    return res;
+}
+
 // A method call — and under `use fatal` (a `try` block's scope is) one handing
 // back a Failure throws it, as a sub call does.
 Value Interpreter::fatalCheckedMethodCall(Expr* e) {
-    Value r = evalMethodCallExpr(e);
+    auto* mc = static_cast<MethodCall*>(e);
+    if (mc->leanCall < 0) mc->leanCall = leanCallShape(mc) ? 1 : 0;
+    ExecContext& t = tctx();
+    const bool lean = mc->leanCall == 1 && !t.lazyChainNode && mc->lazyChain == 0 && !mc->lazyTail &&
+                      t.catchFrames.empty() && !(t.bindRawTails && opEq(mc->method, "value"));
+    Value r = lean ? leanMethodCall(mc) : evalMethodCallExpr(e);
     if (RAKUPP_UNLIKELY(r.t == VT::Hash && r.hashKind == "Failure") &&
         !static_cast<MethodCall*>(e)->fatalExempt && fatalHere())
         failureDetonate(r);
