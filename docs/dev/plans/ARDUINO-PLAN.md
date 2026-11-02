@@ -4,7 +4,65 @@
 ways to program an Arduino in Raku with Raku++, picks one — a compile target
 whose output is a firmware image the board runs on its own — and sets out how
 that target treats the Raku that runs while building (`BEGIN`, `CHECK`,
-`constant`), which is where most of an Arduino program's Raku will live.*
+`constant`), which is where most of an Arduino program's Raku will live.
+Phase A0 landed the same day, with A1's constants and parts of A2 and A3; what
+landed and where it departs from this draft is in "Where it stands".*
+
+## Where it stands (2026-11-02)
+
+`--target=arduino` emits a sketch; `--target=arduino --sim` builds it for the
+host against a simulated board; `rakupp prog.raku` runs a `use Arduino`
+program on the same simulated board. User guide:
+[ARDUINO.md](../../guide/ARDUINO.md). Gate: `t/arduino/run.raku` (34 checks
+with `--arduino15`, ~5 s), one check in `t/run.raku`.
+
+Measured on the gate's seven programs: each one's transcript under the
+interpreter equals its golden, and its `--sim` sketch writes the same bytes on
+stdout and stderr and exits the same way. Every sketch compiles for an Arduino
+Due with the SAM core 1.6.12 and its arm-none-eabi-gcc 4.8.3 under
+`-Wall -Werror`: blink is 102 bytes of code, `features.raku` 1,830 bytes of
+code and 29 of RAM (`-Os`, the sketch's object, the core not linked). Not yet
+tried: an AVR board (no avr-gcc on the machine), real hardware.
+
+| phase | state |
+|---|---|
+| A0 | done |
+| A1 | constants and top-level `BEGIN` values become literals and flash tables, `.elems` folds; not yet: `if` on a constant emitting one branch, board facts |
+| A2 | sized natives in parameters, results, locals, globals and `state`; `die` → message and halt; not yet: the `int` and `num` policy per board, printing a num |
+| A3 | shaped native arrays, global and local; not yet: `repr('CStruct')` classes, enums |
+| A4 | `--sim` (a host build, not in the draft); not yet: `--firmware`, `--upload`, the size report |
+| A5 | not started |
+
+Where the implementation departs from the draft below, and why:
+
+- **A new emitter, not `nrEmit` driven without its boxed side.** `nrEmit`
+  takes full-width `int` and `num` only, and its refusals are woven through
+  hand-offs to the boxed code. `src/codegen/Arduino.cpp` is a focused walk over
+  the AST (~1,300 lines) that keeps `nrEmit`'s arithmetic — 64-bit wrap through
+  `uint64_t`, floored `div` and `%` — and adds the sized types and the board's
+  refusals. Codegen.cpp gained nothing.
+- **The simulated board is Raku.** `rakulib/Arduino.rakumod`, embedded as a
+  shadow module (`cmake/EmbedTools.cmake`, `isShadowedModule`, `SHADOWED` in
+  `tools/install.raku`): built into the binary and found ahead of any path or
+  store, as the draft requires, but written in Raku rather than as C++
+  builtins. The emitter knows the routines by name; a program's own sub of
+  the same name is taken first.
+- **`--sim`.** The draft's host gate compiled the sketch against a fake core
+  in the repository. The core is now `src/codegen/ArduinoSim.h`, embedded, and
+  `--sim` is a user-facing flag: a program and its sketch can be tried with no
+  board, and compared.
+- **Every constant is computed while building.** The #190 pass skipped a
+  constant whose initializer is already literals (`2 ** 4`), which a binary
+  computes cheaply itself; `computeCompileTimeValues` takes `everyConstant`,
+  and the Arduino target sets it.
+- **Any module may be `use`d.** A module's routines run while building, in a
+  constant or `BEGIN`; a call into one from the board's code is refused at the
+  call. `t/arduino/cases/pinmap.raku` reads a JSON file with `JSON::Native`.
+- **Time and inputs.** Real time by default; `RAKUPP_ARDUINO_STOP=MS` makes it
+  virtual (`delay` advances it, every other board call one microsecond, so a
+  loop polling `millis` moves on). `RAKUPP_ARDUINO_PINS` fixes inputs.
+- **One deliberate difference.** A subscript past the end of a constant list
+  is Nil in Raku; the board has no Nil and stops with `Index out of range`.
 
 ## The constraint
 

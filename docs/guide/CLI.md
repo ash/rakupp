@@ -899,10 +899,10 @@ deliverable exists not to need.
 
 ## Choosing a backend
 
-Four things rakupp can emit instead of running your program: an analysis, C++,
-JavaScript, or Raku. Each answers to two spellings — a bare flag and a
-`--target=` key — because the two grew up apart and there was no way to guess
-which was which:
+Five things rakupp can emit instead of running your program: an analysis, C++,
+JavaScript, an Arduino sketch, or Raku. Most answer to two spellings — a bare
+flag and a `--target=` key — because the two grew up apart and there was no way
+to guess which was which:
 
 | emits | bare flag | target key |
 |---|---|---|
@@ -911,6 +911,7 @@ which was which:
 | the RakuAST view | `--rakuast` | `--target=rakuast` |
 | C++, what `--exe` compiles | `--cpp` | `--target=cpp` |
 | JavaScript | `--js` | `--target=js` |
+| an Arduino sketch | | `--target=arduino` |
 | Raku, formatted | `--fmt` | `--target=raku` |
 
 The `--target=` spellings of `parse` and `ast` are there for Rakudo muscle
@@ -928,7 +929,7 @@ rakupp --cpp prog.raku -o prog.cpp      # or --target=cpp
 rakupp --js  prog.raku -o prog.js       # or --target=js
 ```
 
-An unknown target is refused and lists the five that exist.
+An unknown target is refused and lists the seven that exist.
 
 ## Transpiling to JavaScript
 
@@ -941,6 +942,18 @@ program under the interpreter and under the JavaScript host and emits only when
 they agree byte for byte; a program outside the JavaScript core is refused with the
 construct and line, or accepted with `--fallback=wasm` as a wrapper around
 the WebAssembly engine. See [JS.md](JS.md).
+
+## Transpiling to an Arduino sketch
+
+`--target=arduino` emits one Arduino sketch (to stdout, or `-o prog.ino`): the
+mainline before the top-level `loop { }` becomes `setup()`, one iteration of
+that loop is one call of `loop()`, and `use Arduino` names the board's API.
+`BEGIN` blocks and every `constant` run while building, so the board gets only
+their values. `--sim` compiles the sketch for this computer instead, against a
+simulated board (`-o` names the executable), and `rakupp prog.raku` runs the
+same program on the same simulated board in the interpreter. A construct
+outside the board's subset is refused with its line, exit 5. See
+[ARDUINO.md](ARDUINO.md).
 
 ## Compiling
 

@@ -56,6 +56,11 @@ embed_file(BLOB_SH_POINTER kShPointer "${SRC_DIR}/rakulib/NativeHelpers/Pointer.
 # the `use JSON::Native` the engine answers itself, so that answer needs no
 # installed distribution; an installed or -I copy still wins.
 embed_file(BLOB_BD_JSON_RAKU kBdJsonRaku "${SRC_DIR}/rakulib/JSON/Native/Raku.rakumod")
+# `use Arduino` is the engine's (ARDUINO-PLAN.md): the simulated board is a
+# shadow, so no -I path or store can stand in for it, and the host core a
+# `--target=arduino --sim` build compiles a sketch against rides along with it.
+embed_file(BLOB_SH_ARDUINO kShArduino "${SRC_DIR}/rakulib/Arduino.rakumod")
+embed_file(BLOB_ARDUINO_SIM kArduinoSim "${SRC_DIR}/src/codegen/ArduinoSim.h")
 
 # The fixed half of the output. docToolSource() splices the two guides into
 # doc.raku's `my %DOCS;` declaration, so `rakupp doc` answers from a lone
@@ -112,6 +117,12 @@ void registerShadowModules() {
         reinterpret_cast<const char*>(kShPointer), kShPointerLen);
     rakuppRegisterBundledModule(\"JSON::Native::Raku\",
         reinterpret_cast<const char*>(kBdJsonRaku), kBdJsonRakuLen);
+    rakuppRegisterShadowModule(\"Arduino\",
+        reinterpret_cast<const char*>(kShArduino), kShArduinoLen);
+}
+
+std::string arduinoSimCore() {
+    return std::string(reinterpret_cast<const char*>(kArduinoSim), kArduinoSimLen);
 }
 } // namespace rakupp
 ")
@@ -135,6 +146,8 @@ ${BLOB_SH_BLOB}
 ${BLOB_SH_CSTRUCT}
 ${BLOB_SH_POINTER}
 ${BLOB_BD_JSON_RAKU}
+${BLOB_SH_ARDUINO}
+${BLOB_ARDUINO_SIM}
 ${EPILOGUE}")
 
 # copy_if_different, like BuildInfo.cmake: touching a guide without changing it

@@ -506,7 +506,7 @@ void ctAfterCheck(Interpreter& I, Program& prog) {
 }
 
 CtTable computeCompileTimeValues(const std::string& src, const std::string& srcName,
-                                 const std::vector<std::string>& libPaths) {
+                                 const std::vector<std::string>& libPaths, bool everyConstant) {
     CtTable t;
     std::unique_ptr<Interpreter> owner;   // made first, so it outlives the tree, as in rakuppRunOn
     std::unordered_map<const void*, Value> vals;
@@ -516,7 +516,7 @@ CtTable computeCompileTimeValues(const std::string& src, const std::string& srcN
     CtWalk w;
     w.program(prog);
     bool worth = !w.topBegins.empty();
-    for (auto& s : w.sites) if (!s.plain) worth = true;
+    for (auto& s : w.sites) if (!s.plain || everyConstant) worth = true;
     if (!worth) return t;
 
     owner = std::make_unique<Interpreter>();
@@ -552,7 +552,7 @@ CtTable computeCompileTimeValues(const std::string& src, const std::string& srcN
     };
     for (size_t i = 0; i < w.sites.size(); i++) {
         const CtSite& s = w.sites[i];
-        if (s.plain || readsUnitVar(s)) continue;
+        if ((s.plain && !everyConstant) || readsUnitVar(s)) continue;
         const Value* v = nullptr;
         if (auto it = vals.find(s.node); it != vals.end()) v = &it->second;
         else if (s.staticKey)
