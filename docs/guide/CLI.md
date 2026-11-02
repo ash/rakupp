@@ -29,6 +29,7 @@ compatibility.
 | Form | Meaning |
 |---|---|
 | `rakupp FILE ARGS…` | run a file; `ARGS` land in `@*ARGS` |
+| `rakupp URL ARGS…` | run a program from an `https://` link — [below](#a-program-at-a-url) |
 | `rakupp -e 'CODE' ARGS…` | one-liner (`-e'CODE'` glued also works) |
 | `rakupp - ARGS…` | program text from stdin |
 | `… \| rakupp` | same, implicit — for *running*: `-c` and `--lint` want the input named (`rakupp -c -`), and a bare `… \| rakupp -c` is a usage error, exit 4 |
@@ -143,6 +144,32 @@ compatibility.
   either.
   A UTF-8 locale is not a promise that the font holds an astral glyph, which
   is why the default is the cautious one.
+
+### A program at a URL
+
+```sh
+rakupp https://github.com/antononcube/Raku-Mathematica-Serializer/blob/main/examples/Serializer-profiling.raku
+```
+
+The program is fetched with `curl` — the transport `rakupp install` uses, so
+the engine itself has no HTTP or TLS code — and then runs as a file would:
+the arguments after the URL land in `@*ARGS`, and `$?FILE`, `$*PROGRAM-NAME`
+and every backtrace name the URL. Every mode that reads a program takes one
+(`-c`, `--lint`, `--exe`, which names its binary after the file); `--watch`
+does not, having nothing to watch.
+
+- **A GitHub file page works as it is.** The link in the address bar
+  (`…/OWNER/REPO/blob/REF/PATH`) is read as the file it shows, from where
+  GitHub's Raw button points. Any other web page is refused rather than
+  parsed: give the link to the file itself.
+- **`https://` only.** A program fetched over plain `http://` could have been
+  changed on its way, so rakupp will not run one — and curl is told not to
+  follow a redirect down to it. To run one anyway, fetch it yourself:
+  `curl -sSL URL | rakupp -`. `file://` URLs work too.
+- **Modules are not fetched for it.** A program that uses modules that are not
+  installed fails the way a local one does, and the error names the URL in
+  both commands it offers: `rakupp install URL` installs what the program uses,
+  and `rakupp --auto URL` installs it and runs.
 
 ### Quiet mode
 

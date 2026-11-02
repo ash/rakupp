@@ -241,6 +241,10 @@ extern std::string g_depsProgram;   // what a compile mode is compiling, for the
 // installer put something in the store; else `reason` is what it said.
 bool depsAsk(const std::string& name, const std::string& verReq, const std::string& auth,
              const std::string& label, std::string& reason);
+// A program named by a URL (`rakupp https://…`): programUrl says the argument
+// is one, fetchProgramUrl gets its text with curl — or says in `why` why not.
+bool programUrl(const std::string& arg);
+bool fetchProgramUrl(const std::string& url, std::string& src, std::string& why);
 // NFC-normalise a UTF-8 string (Raku's NFG storage); ASCII passes through. (Builtins.cpp)
 std::string nfcNormalize(std::string in);
 // Text decoded from outside — a file, $*IN, a pipe — is NFC, as Rakudo's

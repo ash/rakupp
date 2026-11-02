@@ -2397,6 +2397,66 @@ bool Interpreter::depsFetch(const std::string& name, const std::string& verReq,
     return depsAsk(name, verReq, auth, srcFile_, reason);
 }
 
+// A program named by a URL — `rakupp https://…/x.raku` — fetched the way the
+// installer fetches: curl in a child, so the engine still carries no HTTP
+// client and no TLS stack of its own. The link people have is the one in the
+// address bar, so a GitHub file page (OWNER/REPO/blob/REF/PATH) is read as the
+// file it shows: /raw/ in place of /blob/ is where GitHub's own Raw button
+// points, and curl -L follows it to the bytes. Any other page is refused
+// rather than parsed as Raku. Plain http is refused too — whoever sits between
+// the user and the server could hand over a different program — and so is a
+// redirect from https down to it. file:// is a URL like the rest, and lets the
+// gates run all of this without a network.
+bool programUrl(const std::string& arg) {
+    for (const char* s : {"https://", "http://", "file://"})
+        if (arg.rfind(s, 0) == 0) return true;
+    return false;
+}
+
+bool fetchProgramUrl(const std::string& url, std::string& src, std::string& why) {
+    if (url.rfind("http://", 0) == 0) {
+        why = "Will not run " + url + "\n  a program fetched over plain http can be changed on its way here;"
+              " use its https:// address, or fetch it yourself: curl -sSL URL | " + g_depsCmd + " -";
+        return false;
+    }
+    std::string get = url.substr(0, url.find('#'));
+    static const std::string gh = "https://github.com/";
+    if (get.rfind(gh, 0) == 0) {
+        size_t owner = get.find('/', gh.size());
+        size_t repo = owner == std::string::npos ? owner : get.find('/', owner + 1);
+        if (repo != std::string::npos && get.compare(repo, 6, "/blob/") == 0) {
+            get.replace(repo, 6, "/raw/");
+            get.resize(std::min(get.size(), get.find('?')));   // and no ?plain=1
+        }
+    }
+    std::string err;
+    int rc = -1;
+    spawnWithInput({"curl", "-sSL", "--fail", "--max-time", "120", "--proto-redir", "=https", get},
+                   "", src, rc, nullptr, nullptr, "", &err);
+    while (!err.empty() && (err.back() == '\n' || err.back() == '\r')) err.pop_back();
+    if (rc != 0) {
+        why = "Could not fetch " + url + (get != url ? "\n  (as " + get + ")" : "") + "\n  "
+            + (rc == -1 || rc == 127 ? "curl did not run: a program URL is fetched with curl, and it is not on PATH"
+                                     : !err.empty() ? err : "curl exited " + std::to_string(rc));
+        return false;
+    }
+    size_t i = src.rfind("\xEF\xBB\xBF", 0) == 0 ? 3 : 0;
+    while (i < src.size() && ascii::isspace((unsigned char)src[i])) i++;
+    auto opens = [&](const char* tag) {
+        size_t n = std::strlen(tag);
+        if (src.size() - i < n) return false;
+        for (size_t k = 0; k < n; k++)
+            if (ascii::tolower((unsigned char)src[i + k]) != tag[k]) return false;
+        return true;
+    };
+    if (opens("<!doctype html") || opens("<html")) {
+        why = "Will not run " + url + "\n  it serves a web page, not a program: give the link to the file itself"
+              " (on GitHub and GitLab, the one the Raw button opens)";
+        return false;
+    }
+    return true;
+}
+
 // The scopes EVALs are running in, innermost last: an EVAL's code runs in the
 // scope that called it, and for as long as it runs that scope is its UNIT::.
 thread_local std::vector<std::shared_ptr<Env>> g_evalUnits;

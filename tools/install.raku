@@ -1166,6 +1166,32 @@ sub program-arg(Str $arg --> Bool) {
     ?((try $p.f) && $p.basename ne 'META6.json' && !module-file($p))
 }
 
+# A URL that names a PROGRAM, not a distribution: a file with a program's
+# extension that is not a GitHub repository. It is what the engine runs as
+# `rakupp https://…/x.raku`, and so what its missing-module hint hands back —
+# `rakupp install` that URL, and the program's `use`s are what install.
+sub program-url(Str $arg --> Bool) {
+    ?(url-arg($arg) && !github-tarball($arg)
+      && raw-program-url($arg).subst(/ '?' .* $ /, '').IO.extension eq any(@PROGRAM-EXTS))
+}
+
+# Where a program URL's text is: the engine's rewrite (InterpreterModules.cpp,
+# fetchProgramUrl), so the two read the same bytes. A GitHub file page
+# (OWNER/REPO/blob/REF/PATH) is the file GitHub's Raw button opens.
+sub raw-program-url(Str $url --> Str) {
+    my $u = $url.subst(/ '#' .* $ /, '');
+    $u ~~ m{ ^ 'https://github.com/' <-[/]>+ '/' <-[/]>+ '/blob/' }
+        ?? $u.subst('/blob/', '/raw/').subst(/ '?' .* $ /, '')
+        !! $u
+}
+
+sub fetch-program(Str $url --> Str) {
+    my $text = fetch-text(raw-program-url($url));
+    die "$url: it serves a web page, not a program — give the link to the file itself"
+        if $text ~~ /^ \s* '<' [:i '!doctype html' | 'html'] /;
+    $text
+}
+
 # Every module file in $dir: directly in it, or with :all at any depth.
 # Hidden directories (.git, .precomp) are not looked in, and neither is a
 # symlinked one — a link back up the tree would never end.
@@ -1419,10 +1445,11 @@ sub source-uses(Str $src) {
 # relative to wherever the program is run from; both the program's own
 # directory and the current one are looked in.
 sub program-wants(Str $arg --> List) {
-    my $f = expand-tilde($arg).IO.absolute.IO;
-    my %u = source-uses((try $f.slurp) // die "$arg: cannot read it");
+    my $url = program-url($arg);
+    my $f = $url ?? IO::Path !! expand-tilde($arg).IO.absolute.IO;
+    my %u = source-uses($url ?? fetch-program($arg) !! (try $f.slurp) // die "$arg: cannot read it");
     my @libs = %u<libs>.map(-> $l {
-        $l.IO.is-absolute ?? ($l.IO,) !! ($f.parent.add($l), $*CWD.add($l))
+        $l.IO.is-absolute ?? ($l.IO,) !! $url ?? ($*CWD.add($l),) !! ($f.parent.add($l), $*CWD.add($l))
     }).flat.grep(*.d);
     my @wants;
     for %u<uses>.list -> $id {
@@ -2614,9 +2641,9 @@ sub auto-install(@missed, Str $for, Str $to --> Int) {
     # is its last: each `use` it makes that the store cannot answer and the
     # index can, without a guard objection. A refusal there is silent — the
     # engine asks about that name again if the program really reaches it.
-    if $for ne '-e' && $for ne '-' && $for.IO.f {
+    if program-url($for) || $for ne '-e' && $for ne '-' && $for.IO.f {
         my @installed = installed-entries($to);
-        for program-wants($for) -> $id {
+        for (try program-wants($for)) // () -> $id {
             my %w = parse-identity($id);
             next if @wants.first(* eq $id) || @missed.first(* eq $id);
             next if candidates(@installed, %w);
@@ -2807,6 +2834,7 @@ sub MAIN(
                                                any module its META6.json does not list added
                    rakupp install Foo.rakumod  one module file, the same way
                    rakupp install app.raku     what a program uses: its modules, not the program
+                   rakupp install https://…/app.raku  …a program at a URL, the same way
                    rakupp install https://github.com/OWNER/REPO[/tree/REF[/SUBDIR]]
                    rakupp install https://host/Foo-1.0.tar.gz
                    rakupp install --list | --check | --gc | --refresh
@@ -2844,11 +2872,12 @@ sub MAIN(
     #
     # A URL is fetched and unpacked into a directory FIRST, and is a local dist
     # from there on: same dependency handling, same build hook, same test gate,
-    # same store write. Nothing downstream knows the difference.
+    # same store write. Nothing downstream knows the difference. A URL to a
+    # program is a program: its text is fetched and only its `use`s install.
     my @path-args = @modules.grep({ is-path-arg($_) });
-    my @programs = @path-args.grep({ program-arg($_) });
+    my @programs = |@path-args.grep({ program-arg($_) }), |@modules.grep({ program-url($_) });
     my @local-entries = @path-args.grep({ !program-arg($_) }).map({ local-dist-entry($_) });
-    @local-entries.append(@modules.grep({ url-arg($_) }).map({ url-dist-entry($_) }));
+    @local-entries.append(@modules.grep({ url-arg($_) && !program-url($_) }).map({ url-dist-entry($_) }));
     my @names = @modules.grep({ !is-path-arg($_) && !url-arg($_) });
     my %notes;
     my @wants = @names;
