@@ -599,6 +599,21 @@ static std::string rxSourceOf(const Value& v, bool& p5) {
     return src;
 }
 
+// A declared `my regex/token/rule NAME` bound to a variable (`my $p = &NAME`)
+// is the Callable its declaration made, not a Regex value, and `<$p>` and a
+// bare `$p` read its `.Str` as the pattern: URL::Find's `<$protocol>`
+// matched nothing, and so its finder found no URL. It stands for a Regex of
+// the source it was declared with (regexRoutineSrc_), its kind's adverbs in
+// front, which a subrule call or a splice keeps to the routine's own text.
+bool Interpreter::regexRoutineAsRegex(const Value& v, Value& out) {
+    if (v.t != VT::Code || !v.code() || !v.code()->ci().isRegexRoutine) return false;
+    auto it = regexRoutineSrc_.find(v.code());
+    if (it == regexRoutineSrc_.end()) return false;
+    const std::string& k = it->second.second;
+    out = Value::regex((k == "rule" ? ":r :s " : k == "token" ? ":r " : "") + it->second.first);
+    return true;
+}
+
 // A STRING compiled as a pattern at run time (`<$x>`, `<{ '…' }>`) is data,
 // not code: Rakudo compiles it in restricted mode, where anything that would
 // RUN something — a `{…}` block or assertion, `:my`, `$( … )`, an
@@ -668,6 +683,7 @@ static void rxRestrictedCheck(const std::string& src) {
 // sources a program produces (`(\w+) <{ $0 }>` compiles one per capture), the
 // way an EVAL cache does.
 const Regex* Interpreter::dynRegexFor(const Value& v, const std::string& flags) {
+    if (Value r; regexRoutineAsRegex(v, r)) return dynRegexFor(r, flags);
     auto undefined = [](const Value& x) { return x.t == VT::Nil || x.t == VT::Any || x.t == VT::Type; };
     if (undefined(v))
         throw RakuError{Value::typeObj("X::AdHoc"),
@@ -961,6 +977,8 @@ std::string Interpreter::interpRegexPattern(const std::string& in) {
                 size_t j = uniIdentEnd(pat, i + 1 + tw);
                 Value* v = dynTw ? findDynamicLenient("$*" + pat.substr(i + 2, j - i - 2))
                                  : tctx().cur->find("$" + pat.substr(i + 1 + tw, j - i - 1 - tw));
+                Value vRx;   // (a `my token` held in it: regexRoutineAsRegex)
+                if (v && v->t == VT::Code && regexRoutineAsRegex(*v, vRx)) v = &vRx;
                 // a `$*name` nothing declares — and the pattern does not declare
                 // either (`:my $*name`) — is X::Dynamic::NotFound when the regex
                 // runs, as reading it anywhere else would be

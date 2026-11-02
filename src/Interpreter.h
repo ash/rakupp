@@ -4733,6 +4733,7 @@ public:
     // it imported — so a `<NAME>` subrule could not find the pattern and matched
     // the empty string. Keyed by Callable so nothing is paid per ordinary sub.
     std::unordered_map<const Callable*, std::pair<std::string, std::string>> regexRoutineSrc_;
+    bool regexRoutineAsRegex(const Value& v, Value& out);   // `&NAME` of a `my token` as its Regex
     // `<{ … }>` patterns by (flags, source) — see dynRegexFor. shared_ptr, not
     // unique_ptr: Regex is incomplete in this header and the map dies with the
     // interpreter. Guarded: matches run on worker threads too.
