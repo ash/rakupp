@@ -71,6 +71,11 @@ Next up:
   were chosen from (collecting, 2026-09-17). What it still holds is
   unscheduled: platforms and hosts, the capability sandbox, modules and the
   supply chain, and developer experience.
+- **[plans/IDEAS.md](plans/IDEAS.md)** — new ideas for rakupp, outside any
+  version plan (started 2026-11-02): reproducing and debugging a run, seeing
+  and getting speed, testing and changing code, the supply chain, text and
+  numbers, and where people meet the engine. Each was checked against the
+  repository as neither built nor planned elsewhere.
 - **[plans/TRANSPILE-PLAN.md](plans/TRANSPILE-PLAN.md)** — `--target=js`, a **second
   Codegen with JavaScript as its output** (design draft 2026-09-03, for
   review): why reach rather than speed justifies it, the probes that fixed the
