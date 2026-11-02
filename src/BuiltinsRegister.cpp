@@ -2636,9 +2636,10 @@ void Interpreter::registerBuiltinsPart2() {
         // :enc(...) — the handle's text encoding; every read through it decodes
         // with this instead of assuming the bytes are already UTF-8. The name is
         // canonicalized here (`latin1` is `iso-8859-1`), and an unknown one is
-        // refused at the open rather than at the first odd character.
+        // refused at the open rather than at the first odd character. An UNDEFINED one is
+        // none at all, as in Rakudo (Text::CSV's `:enc($encoding)`, a `Str`, read as '').
         for (auto& x : a) if (x.t == VT::Pair && (x.s == "enc" || x.s == "encoding") &&
-                              x.pairVal() && x.pairVal()->t != VT::Any) {
+                              x.pairVal() && rtIsDefined(*x.pairVal())) {
             if (h.hash()->count("bin"))
                 throw RakuError{Value::typeObj("X::IO::BinaryAndEncoding"),
                     "Cannot open a handle in binary mode with an encoding"};

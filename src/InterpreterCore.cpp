@@ -5622,10 +5622,10 @@ void Interpreter::bindParams(const std::vector<Param>& params, ValueList& args,
                 throw RakuError{Value::typeObj("X::TypeCheck::Binding::Parameter"),
                     "Type check failed in binding to parameter '" + paramShownName(p) + "'; expected " +
                     p.type + " but got " + v.typeName() + " (" + typeCheckRepr(v) + ")"};
-            // a plain scalar param (no `is rw`/`is copy`) is readonly — mutating it (s///) dies
-            // …and `is raw` too: it hands over the container itself, so a write
-            // through it is the point of writing it that way.
+            // a plain scalar param is readonly — mutating it (s///) dies; `is raw` hands over the container
+            // itself, and `is copy` makes a FRESH one, whatever came (a slurpy's element: Text::CSV's `$offset--`)
             if (p.sigil == '$' && !p.isRw && !p.isCopy && !p.isRaw && !p.invocant) v.readonly = true;
+            else if (p.isCopy) v.readonly = v.immutableBind = false;
             // A `$` parameter ITEMIZES a list argument — it is a scalar container,
             // and what it holds is one thing. `sub f($x) { $x.raku }; f((1,2))` is
             // `$(1, 2)` in Rakudo, and `for @pairs -> $a, $b` binds each element
@@ -27208,13 +27208,13 @@ Value Interpreter::evalIndex(Index* idx) {
             return nullptr;
         };
         auto nests = [&](const Expr* it) {
-            if (!it) return false;
-            if (lazyCall(it)) return true;
+            if (!it) return false; if (lazyCall(it)) return true;
             if (it->kind == NK::ListExpr) return static_cast<const ListExpr*>(it)->parenned;
             if (it->kind == NK::ArrayLit) return true;   // `@a[[1, 2], 3]` is (("b", "c"), "d")
-            if (it->kind == NK::Range) {
-                auto* r = static_cast<const RangeExpr*>(it);
-                return r->to && (r->to->kind == NK::IntLit || r->to->kind == NK::VarExpr) &&
+            if (it->kind == NK::Range) {   // …and `8..Inf` / `8..*`, which stop at the end (Text::CSV's `@exp[1,4..6,8..Inf]`)
+                auto* r = static_cast<const RangeExpr*>(it); const Expr* to = r->to.get();
+                return to && (to->kind == NK::IntLit || to->kind == NK::VarExpr || to->kind == NK::NumLit || to->kind == NK::Whatever ||
+                              (to->kind == NK::NameTerm && static_cast<const NameTerm*>(to)->name == "Inf")) &&
                        r->from && (r->from->kind == NK::IntLit || r->from->kind == NK::VarExpr);
             }
             if (it->kind == NK::VarExpr) {
@@ -27265,8 +27265,8 @@ Value Interpreter::evalIndex(Index* idx) {
                         Value k = eval(it.get());
                         if (nests(it.get()) && (k.t == VT::Array || k.t == VT::Range)) {
                             Value inner = Value::array(); inner.isList = true;
-                            for (auto& e : k.flatten()) inner.arr()->push_back(one(e));
-                            out.arr()->push_back(inner);
+                            for (auto& e : !idx->isHash && isEndlessRange(k) ? dimKeysAt(k, size) : k.flatten()) inner.arr()->push_back(one(e));
+                            if (!inner.arr()->empty() || !isEndlessRange(k)) out.arr()->push_back(inner);   // (one wholly past the end is dropped)
                         }
                         else if (k.t == VT::Array || k.t == VT::Range) {
                             bool stop = false;
@@ -32070,11 +32070,11 @@ Value Interpreter::evalMethodCallExpr(Expr* e, Value* handedInv) {
     // `.name` on a DECLARED container is the variable's own name —
     // `my @foo; @foo.name` is "@foo" (sheet LA-21). Only the name knows
     // it: an anonymous `[1, 2].name` is the generic "element", which is
-    // what the value-level arm still answers.
+    // what the value-level arm still answers. A PARAMETER: varContainerName.
     if (mc->inv && mc->inv->kind == NK::VarExpr && mc->args.empty() && !mc->allMode &&
         !mc->meta && !mc->hyper && !mc->methodExpr && opEq(mc->method, "name")) {
         const std::string& vn = static_cast<VarExpr*>(mc->inv.get())->name;
-        if (vn.size() > 1 && (vn[0] == '@' || vn[0] == '%')) return Value::str(vn);
+        if (vn.size() > 1 && (vn[0] == '@' || vn[0] == '%')) return varContainerName(vn);
     }
     // …and `@a.VAR.name` / `%h.VAR.name` / `&c.VAR.name` ask the same
     if (mc->inv && mc->inv->kind == NK::MethodCall && mc->args.empty() && !mc->allMode &&
@@ -32083,7 +32083,7 @@ Value Interpreter::evalMethodCallExpr(Expr* e, Value* handedInv) {
         if (opEq(vm->method, "VAR") && vm->args.empty() && vm->inv && vm->inv->kind == NK::VarExpr) {
             const std::string& vn = static_cast<VarExpr*>(vm->inv.get())->name;
             if (vn.size() > 1 && (vn[0] == '@' || vn[0] == '%' || vn[0] == '&'))
-                return Value::str(vn);
+                return varContainerName(vn);
         }
     }
     {

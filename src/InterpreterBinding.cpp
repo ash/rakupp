@@ -9048,4 +9048,48 @@ Value Interpreter::subsetCoerceCall(const std::string& name, const Value& v) {
         "Impossible coercion from '" + v.typeName() + "' into '" + name + "': " + why);
 }
 
+// `@a.VAR.name` / `@a.name`: the variable's own name (sheet LA-21) — unless
+// `@a` is a PARAMETER. Rakudo names the CONTAINER, and the name travels with
+// the Array or Hash, so a parameter bound to a caller's `my @x` is "@x" and
+// one bound to an anonymous `[]`, a default, a copy or nothing at all is
+// "element". Text::CSV's CSV method tells `csv(…, kh => my @kh)` from a call
+// with no `kh` by exactly that (`@kh.VAR.name ne "element"`), through two
+// `*%args` slurpies. No name rides on the body here, so it is looked for
+// where it was declared: a variable of a calling scope holding the same body,
+// one that is not itself a parameter passing it on.
+Value Interpreter::varContainerName(const std::string& vn) {
+    Env* own = nullptr;
+    const Value* slot = tctx().cur->findRaw(vn, &own);
+    const Value* v = slot ? slot->deref() : nullptr;
+    if (!v || !own || (v->t != VT::Array && v->t != VT::Hash)) return Value::str(vn);
+    const auto& frames = tctx().callFrames;
+    auto frameOf = [&](const Env* e) -> long {
+        for (size_t k = frames.size(); k-- > 0;) if (frames[k].calleeEnv == e) return (long)k;
+        return -1;
+    };
+    auto isParam = [&](const Env* e, const std::string& n) {
+        const long k = frameOf(e);
+        const Value* c = k >= 0 ? frames[(size_t)k].code : nullptr;
+        if (!c || c->t != VT::Code || !c->code() || !c->code()->ci().params) return false;
+        for (auto& p : *c->code()->ci().params) if (p.name == n) return true;
+        return false;
+    };
+    const long k0 = frameOf(own);
+    if (k0 < 0 || !isParam(own, vn)) return Value::str(vn);
+    auto declares = [&](Env* e, const std::string& n, const Value* x) {
+        x = x ? x->deref() : nullptr;
+        return n.size() > 1 && n[0] == vn[0] && x && x->t == v->t &&
+               (v->t == VT::Array ? x->arr() == v->arr() : x->hash() == v->hash()) && !isParam(e, n);
+    };
+    std::unordered_set<const Env*> seen;
+    for (long k = k0; k >= 0; k--)
+        for (Env* e = frames[(size_t)k].callerEnv; e && seen.insert(e).second; e = e->parent.get()) {
+            for (auto& kv : e->vars) if (declares(e, kv.first, &kv.second)) return Value::str(kv.first);
+            if (e->layout)
+                for (size_t i = 0; i < e->layout->names.size(); i++)
+                    if (declares(e, e->layout->names[i], e->padSlotIfLive((int)i))) return Value::str(e->layout->names[i]);
+        }
+    return Value::str("element");
+}
+
 } // namespace rakupp

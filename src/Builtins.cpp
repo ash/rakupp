@@ -243,6 +243,7 @@ const std::vector<std::string>& typeAncestry(const std::string& t) {
         {"Encoding::Builtin", {"Encoding::Builtin","Encoding","Any","Mu"}},
         // the root of the X:: tree, which is not itself an X:: name
         {"Exception", {"Exception","Any","Mu"}},
+        {"Supplier::Preserving", {"Supplier::Preserving","Supplier","Any","Mu"}},
         // IO::Socket is the ROLE a synchronous socket does — every wrapper
         // declares its parameter as that (IO::Socket::SSL takes an IO::Socket).
         // It is not an IO, and IO::Socket::Async does not do it either.
@@ -1877,6 +1878,11 @@ Value coerceToSigil(Value v, char sigil) {
         // caller's array through here let the class's own later
         // `@!pts = @!pts.pairs` rewrite @src under the caller's feet
         // (Algorithm::KDimensionalTree).
+        // A LAZY Seq — a `.map` a sub handed back — is what it has yet to make:
+        // copying its buffer took only what had been pulled, nothing at all, and
+        // JSON::Unmarshal's `is unmarshalled-by(&code)` arrays came out empty.
+        // List assignment's rule decides instead (finite: made; endless: lazy).
+        if (v.t == VT::Array && v.ext()) { Value r = rtArrayVal(v); r.isList = false; r.itemized = false; return r; }
         if (v.t == VT::Array) {
             v.isList = false; v.itemized = false;
             if (v.arr() && !v.payloadUnique()) {
@@ -2668,9 +2674,7 @@ std::string rakuReprImpl(const Value& v, int depth, std::set<const void*>& seen)
             // An exception's `message` is a METHOD in Rakudo, not an attribute
             // it was built with: `X::AdHoc.new(payload => "…")` is the whole of
             // its .raku (ours keeps the text in a slot so .message can answer)
-            bool isEx = false;
-            for (ClassInfo* c = v.obj()->cls.get(); c && !isEx; c = c->parent.get())
-                if (c->name == "Exception" || c->nativeParent == "Exception") isEx = true;
+            const bool isEx = v.obj()->cls->isException();
             // A native struct's fields live in ITS memory, not in attrs — the
             // accessor reads them there, so `.raku` shows what C put in them
             const std::string& repr = v.obj()->cls->repr;
@@ -6625,10 +6629,7 @@ Value Interpreter::methodCall(const Value& inv, const std::string& m, ValueList 
         inv.s != "Exception" && inv.s.rfind("X::", 0) != 0) {
         auto uc = classes_.find(inv.s);
         if (uc != classes_.end() && uc->second && !uc->second->findMethod(m)) {
-            bool isEx = false;
-            for (ClassInfo* c = uc->second.get(); c && !isEx; c = c->parent.get())
-                if (c->nativeParent == "Exception" || c->name == "Exception") isEx = true;
-            if (isEx)
+            if (uc->second->isException())
                 throwTypedV("X::Parameter::InvalidConcreteness",
                     {{"expected", Value::typeObj("Exception")}, {"got", inv},
                      {"routine", Value::str(m)}, {"param", Value::str("self")},

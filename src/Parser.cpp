@@ -843,10 +843,15 @@ bool Parser::isWordInfixName(const std::string& n) {
 
 bool Parser::scanModuleOps(const std::string& module) {
     lastScanSlang_ = false;
-    if (module.empty() || module[0] == 'v' || !scannedMods_.insert(module).second) return false;
+    if (module.empty() || module[0] == 'v') return false;
+    auto [seen, fresh] = scannedMods_.emplace(module, false);
+    // Scanned already — through a module that uses it, which arms nothing — but
+    // a `use` of it HERE is still a slang's (Text::CSV's tests `use Slang::Tuxic`
+    // after `use Text::CSV`, which uses it too, and were read without it)
+    if (!fresh) { lastScanSlang_ = seen->second; return false; }
     // A module compiled into this binary answers before the disk is consulted.
     if (const std::string* emb = rakuppEmbeddedModuleSource(module)) {
-        lastScanSlang_ = module != "Slangify" && module != "if" && module.rfind("L10N::", 0) != 0 && rakuppIsSlangSource(*emb);
+        lastScanSlang_ = seen->second = module != "Slangify" && module != "if" && module.rfind("L10N::", 0) != 0 && rakuppIsSlangSource(*emb);
         return scanOpsIn(*emb, "<embedded:" + module + ">");
     }
     // A module the COMPILER answers is never loaded, so its operators can never
@@ -870,7 +875,7 @@ bool Parser::scanModuleOps(const std::string& module) {
     // (Interpreter::applyL10NSlang) before this parser ever ran
     // `if` is answered by the parser itself (the `:if(EXPR)` pair on a later
     // `use`), so its actions-only slang is never activated — see loadModule.
-    lastScanSlang_ = module != "Slangify" && module != "if" && module.rfind("L10N::", 0) != 0 && rakuppIsSlangSource(src);
+    lastScanSlang_ = seen->second = module != "Slangify" && module != "if" && module.rfind("L10N::", 0) != 0 && rakuppIsSlangSource(src);
     return scanOpsIn(src, srcPath);
 }
 

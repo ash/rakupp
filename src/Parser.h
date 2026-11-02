@@ -523,7 +523,7 @@ private:
     // so `$c ◐ 20` parses in the importing file. True: the LEXER must re-read it.
     bool scanModuleOps(const std::string& module);
     bool scanOpsIn(const std::string& src, const std::string& srcPath); // the scan itself, shared by the disk and embedded paths
-    std::set<std::string> scannedMods_;            // modules already scanned for operators
+    std::map<std::string, bool> scannedMods_;      // modules already scanned for operators → registers a slang
     bool lastScanSlang_ = false;                   // …and whether the one just scanned registers a slang
     void activateSlang(const std::string& module); // run it, arm its seams, re-lex the rest of the unit
     bool slangSpacedCall(const std::string& name) const; // Tuxic: `name (args)` is a call with those args
