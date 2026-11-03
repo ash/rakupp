@@ -9,9 +9,11 @@ board, on a simulated one, under the interpreter or compiled for this computer.
 > constants.** The sketch and both simulators are implemented and checked
 > against each other byte for byte (`t/arduino/run.raku`). Every sketch in that
 > gate compiles for an Arduino Due with its own core and compiler, warning-free
-> under `-Wall -Werror`. Not yet tried: an 8-bit AVR board (no avr-gcc on the
-> machine that built this), and a program running on real hardware. Building
-> and flashing the firmware is still done with the Arduino IDE or arduino-cli.
+> under `-Wall -Werror`, except the LED-matrix one, which needs the Uno R4
+> core. Not yet tried: an 8-bit AVR board (no avr-gcc on the machine that
+> built this), the Uno R4 core's compiler, and a program running on real
+> hardware. Building and flashing the firmware is still done with the Arduino
+> IDE or arduino-cli.
 
 ```raku
 use Arduino;
@@ -99,6 +101,12 @@ The simulated board numbers its pins as an Uno does (`LED_BUILTIN` is 13,
 `A0` is 14). A sketch uses the core's names, so on a real board they mean that
 board's pins.
 
+**None of this costs a program that does not ask for it.** The emitter, the
+`--sim` core and the board modules live in the `rakupp` command alone: an
+`--exe` binary carries the `Arduino` module only when its program `use`s it,
+and at `--slim`'s default level one whose program does not has no trace of
+the backend at all. `t/run.raku` checks both.
+
 **The two simulators agree byte for byte.** `rakupp t/arduino/run.raku` runs
 each case under the interpreter, holds it to its golden, builds its sketch with
 `--sim`, and holds the sketch to the interpreter: stdout, stderr and exit
@@ -157,6 +165,67 @@ bytes. A `use` of any module is allowed for that reason; a call into a module
 from the board's own code is refused where it is made. A constant whose value
 is not a number, a string or a list of numbers is refused, and so is a `BEGIN`
 block whose effect the build could not compute.
+
+## The LED matrix (Uno R4 WiFi)
+
+The Uno R4 WiFi has a 12×8 matrix of red LEDs. `use Arduino::LEDMatrix`,
+built into rakupp as `use Arduino` is, names it:
+
+```raku
+use Arduino;
+use Arduino::LEDMatrix;
+
+constant @HEART = frame q:to/END/;
+    ..##...##...
+    .#..#.#..#..
+    .#...#...#..
+    .#.......#..
+    ..#.....#...
+    ...#...#....
+    ....#.#.....
+    .....#......
+    END
+
+LEDMatrix.begin;
+loop {
+    LEDMatrix.show(@HEART);  delay(500);
+    LEDMatrix.clear;         delay(500);
+}
+```
+
+`frame` runs while building: it turns eight rows of twelve — `#` (or `*`,
+`X`, `O`, `1`) lit, `.` dark — into the three 32-bit words the core's
+Arduino_LED_Matrix library takes, row by row from the top left, the most
+significant bit first. This heart is the one in Arduino's own LED-matrix
+tutorial, and it packs to the tutorial's words, `3184a444 44042081 100a0040`.
+On the board the constant is twelve bytes in flash; `frame` never gets there.
+A picture with a mistake in it stops the build with what is wrong.
+
+| Raku | on the board |
+|---|---|
+| `LEDMatrix.begin` | `matrix.begin()` |
+| `LEDMatrix.show(@frame)` | `matrix.loadFrame(…)`: `@frame` is a constant of three words, or a shaped integer array of three the board computes as it runs (`my uint32 @f[3]`) |
+| `LEDMatrix.clear` | a dark frame |
+
+The sketch includes `Arduino_LED_Matrix.h`, which comes with the Uno R4
+core, so it builds for an Uno R4 WiFi and not for a board without the
+matrix. The simulated board draws each frame that changes the picture on
+stderr, with `#` and `.`, and an all-dark one as `matrix clear`:
+
+```
+[300 ms] matrix
+  ............
+  ...##..##...
+  ...##..##...
+  ............
+  ..#......#..
+  ...#....#...
+  ....####....
+  ............
+```
+
+Not yet: animations (`loadSequence`, `play`) and text. Both would be frames
+computed while building, from a font table in Raku.
 
 ## The subset
 
@@ -218,6 +287,7 @@ interpreter to bundle.
 ## Not yet
 
 Printing a num, strings at run time, hashes, `repr('CStruct')` classes,
-interrupts, `Serial` input, C++ libraries (Servo, Wire), the board's facts as
-constants (`--board`), and `rakupp` building and flashing the firmware itself.
+interrupts, `Serial` input, C++ libraries beyond the LED matrix (Servo,
+Wire), the board's facts as constants (`--board`), and `rakupp` building and
+flashing the firmware itself.
 The plan has them in order: [ARDUINO-PLAN.md](../dev/plans/ARDUINO-PLAN.md).

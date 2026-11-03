@@ -139,6 +139,34 @@ inline void delayMicroseconds(unsigned int us) {
 inline unsigned long millis() { rk_sim::advance(1); return (unsigned long)(rk_sim::clock_us() / 1000); }
 inline unsigned long micros() { rk_sim::advance(1); return (unsigned long)rk_sim::clock_us(); }
 
+// The Uno R4 WiFi's 12x8 matrix, as Arduino_LED_Matrix.h declares it (the
+// --sim build writes that header as an include of this one). A frame is 96
+// bits in three words, row by row from the top left, most significant bit
+// first; one that changes the picture is drawn, as rakulib/Arduino/
+// LEDMatrix.rakumod draws it.
+class ArduinoLEDMatrix {
+public:
+    void begin() { rk_sim::advance(1); }
+    void loadFrame(const uint32_t f[3]) {
+        rk_sim::advance(1);
+        if (f[0] == shown[0] && f[1] == shown[1] && f[2] == shown[2]) return;
+        for (int w = 0; w < 3; w++) shown[w] = f[w];
+        rk_sim::stamp();
+        if (!(f[0] | f[1] | f[2])) { fputs("matrix clear\n", stderr); return; }
+        fputs("matrix\n", stderr);
+        for (int r = 0; r < 8; r++) {
+            fputs("  ", stderr);
+            for (int c = 0; c < 12; c++) {
+                int i = r * 12 + c;
+                fputc((f[i / 32] >> (31 - i % 32)) & 1 ? '#' : '.', stderr);
+            }
+            fputc('\n', stderr);
+        }
+    }
+private:
+    uint32_t shown[3] = {0, 0, 0};
+};
+
 void setup();
 void loop();
 int main() {

@@ -108,12 +108,22 @@ sub MAIN(Bool :$record = False, Str :$arduino15) {
         'for 1..3 -> $k { $k = 5 }'                        => 'is read-only',
         'my %h; say 1'                                     => 'the board has no hashes',
         'class C { }'                                      => 'a class',
+        'use Arduino; LEDMatrix.begin'                     => 'did you mean to `use Arduino::LEDMatrix`',
+        'use Arduino::LEDMatrix; my uint32 @f[2]; LEDMatrix.show(@f)' => 'three 32-bit words',
+        'use Arduino::LEDMatrix; LEDMatrix.blink'          => 'the matrix has begin, show(@frame) and clear',
     ) -> (:key($code), :value($why)) {
         my %r = run-in([$*EXECUTABLE.Str, '--target=arduino', '-e', $code], {});
         ok(%r<exit> == 5 && %r<err>.starts-with('rakupp --target=arduino: -e, line 1: ') && %r<err>.contains($why),
            "refused: $code");
         diag(%r<err>) unless %r<exit> == 5 && %r<err>.contains($why);
     }
+    # A frame picture with a mistake dies while building, and the build stops
+    # there: a board has no start to put the computation off to.
+    my %bad = run-in([$*EXECUTABLE.Str, '--target=arduino', '-e',
+                      'use Arduino::LEDMatrix; constant @F = frame "##"; LEDMatrix.show(@F)'], {});
+    ok(%bad<exit> == 5 && %bad<err>.contains('a frame is 8 rows of 12') && %bad<err>.contains('compile-time code died')
+       && !%bad<err>.contains('when the binary starts'),
+       'a frame that dies while building stops the build, saying why');
     my %s = run-in([$*EXECUTABLE.Str, '--sim', '-e', 'say 1'], {});
     ok((%s<out> ~ %s<err>).contains('Illegal option --sim') && !%s<out>.contains("1\n"),
        '--sim without --target=arduino is an illegal option, and runs nothing');
@@ -128,6 +138,10 @@ sub MAIN(Bool :$record = False, Str :$arduino15) {
         else {
             my $sys = $core.add('system');
             for $cases.dir.grep(*.extension eq 'raku').sort -> $case {
+                if $case.slurp.contains('use Arduino::LEDMatrix') {
+                    skip("{$case.basename}: the Due has no LED matrix (an Uno R4 WiFi sketch)");
+                    next;
+                }
                 my $sketch = $tmp.add($case.basename ~ '.cpp');
                 my %e = run-in([$*EXECUTABLE.Str, '-q', '--target=arduino', $case.basename, '-o', $sketch.Str], {});
                 my $p = run $gcc.Str, '-c', '-Os', '-Wall', '-Werror', '-std=gnu++11', '-ffunction-sections', '-fdata-sections',
