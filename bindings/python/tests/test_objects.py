@@ -128,6 +128,14 @@ class ModuleTest(unittest.TestCase):
         for n in ("Point", "origin", "area", "perimeter", "PI-ISH", "Color"):
             self.assertIn(n, names)
 
+    def test_dotted_name(self):
+        box = raku.use("Shelf.Box")                # Shelf::Box, as Python spells it
+        self.assertEqual(repr(box), "<rakulang.Module Shelf::Box>")
+        self.assertEqual(box.cube(2), 8)
+        self.assertEqual(raku.use("Shelf::Box").volume(1, 2, 3), 6)
+        # the package Shelf, which only Shelf::Box declares, leads to it too
+        self.assertEqual(raku.main.Shelf.Box.volume(2, 3, 4), 24)
+
     def test_mainline_sees_the_import(self):
         self.assertEqual(raku.eval("area(5)"), 25)
 
@@ -239,6 +247,10 @@ class MainTest(unittest.TestCase):
         d = raku.main.Date.new(2026, 10, 5)
         self.assertEqual(d.year, 2026)
         self.assertEqual(str(d.later(days=3)), "2026-10-08")
+
+    def test_missing_names_main(self):
+        with self.assertRaisesRegex(AttributeError, "Raku MAIN has no 'no_such_name'"):
+            raku.main.no_such_name
 
     def test_call_with_named_arguments(self):
         raku.eval('sub tgreet($greeting, :$name, :$age = 0) { "$greeting, $name! ($age)" }')

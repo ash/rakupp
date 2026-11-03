@@ -8964,10 +8964,12 @@ ExprPtr Parser::parsePrimary() {
                                  {{"reason", "Use of non-subscript brackets after \"" + name +
                                    "\" where postfix is expected; please use whitespace before any arguments"}});
             // a type used before this unit declares it (`GrammarUserClass`'s
-            // method naming a grammar declared below) — judged at the end
+            // method naming a grammar declared below) — judged at the end; `A`
+            // after `class A::B` is not one, A::B having declared the package
             if (!t.flag && !name.empty() && ascii::isupper((unsigned char)name[0]) &&
                 name.find("::") == std::string::npos && peek().kind != Tok::FatArrow &&
-                !declClassDecls_.count(name) && !earlyTypeUse_.count(name))
+                !declClassDecls_.count(name) && !earlyTypeUse_.count(name) &&
+                [&] { auto it = declTypeNames_.lower_bound(name + "::"); return it == declTypeNames_.end() || it->rfind(name + "::", 0) != 0; }())
                 earlyTypeUse_[name] = t.line;
             // A slang's sigilless variable (Slang::Emoji's 👍, flagged by the lexer's
             // seam): a TERM — never a call, and never auto-quoted before `=>`.

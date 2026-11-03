@@ -1,6 +1,6 @@
 # Follow-ups
 
-*Collected 2026-10-20; added to 2026-11-02.*
+*Collected 2026-10-20; added to 2026-11-03.*
 
 Findings that sessions on 2026-10-19 and 2026-10-20 proposed as follow-up
 work and nobody started: gaps found in passing while doing something else.
@@ -265,6 +265,21 @@ moves to [TODO.md](TODO.md).
   grows each round, and it is the only thing keeping five of the examples
   from being a fixed point of `.AST.DEPARSE`. Done when the view leaves out
   the two the parse put there and both lines render as Rakudo's.
+- [ ] **A package's three gaps beside Rakudo's** (found 2026-11-03 making the
+  packages a qualified name implies, 3072c3a5; each on main before it):
+
+  ```raku
+  class Z2 {}; module Z4 {}; class Z3::Q {}; say GLOBAL::.keys.grep(/Z/).sort;   # (), Rakudo (Z2 Z3 Z4)
+  module A {}; module A {};          # runs, Rakudo: Redeclaration of symbol 'A'
+  package P {}; P.new;               # No such method 'new' for invocant of type 'P'
+                                     # Rakudo: You cannot create an instance of this type (P)
+  ```
+
+  `GLOBAL::` comes back empty though `MY::` lists the same names, and the
+  per-unit stash tree (stashDeclare in src/Interpreter.cpp) knows each one
+  as package-scoped. A package's redeclaration goes unchecked where a
+  class's is caught at parse time (checkRedeclarations in src/Parser.cpp).
+  Done when each line matches Rakudo 2026.09.
 
 ## Operators and types
 
@@ -1277,6 +1292,21 @@ moves to [TODO.md](TODO.md).
   `uncaught_handler` is honoured, and those arms hand the tapper's error on.
 
 ## Backends
+
+- [ ] **Python: `dir()` of a package that comes back as an Object lists
+  Python's attributes** (found 2026-11-03 with 992c75cf; the same for any
+  nested package before it):
+
+  ```python
+  raku.use("Outer::Inner")
+  dir(raku.main.Outer)       # ['__bool__', '__call__', …, 'close'], not ['Inner']
+  ```
+
+  A Module has `__dir__` (rk-py-module-names in
+  bindings/python/rakulang/object_shim.raku); an Object has none, and a
+  package reached through an attribute is an Object. Done when `dir()` of a
+  type object or package lists its stash's names as a Module's does, with a
+  test in bindings/python/tests.
 
 - [ ] **A binary computes at start a constant in a module, a routine or a
   class body** (found 2026-10-30 fixing issue #190, 946d29e4). The build

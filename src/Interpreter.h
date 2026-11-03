@@ -3719,6 +3719,8 @@ public:
     std::unordered_map<const void*, std::string> globalishUnits_;   // a globalish-package Stash → its unit
     std::string stashUnitHere();
     void stashDeclare(const std::string& fq, bool stubPkg);
+    std::unordered_set<std::string> impliedPkgs_;   // `A` of `class A::B`: a stub until A is declared
+    void declareImpliedPackages(const std::string& fq);
     void stashImport(const std::string& importer, const std::string& mod);
     StashNode* stashResolve(const std::string& unit, const std::string& pkg);
     static void stashMergeNodes(StashNode* t, StashNode* s, std::set<StashNode*>& seen);

@@ -561,11 +561,12 @@ whenever that saturates.
 ### More about modules and objects
 
 `raku.use(spec)` takes what follows `use` in Raku, import arguments
-included: `raku.use("Geo :ALL")`, `raku.use("JSON::Fast:ver<0.19+>")`. It
-runs the `use` in the mainline scope, so `eval` sees the exports afterwards,
-and again inside a scope of the module handle's own, so the handle answers
-for exactly what that import brought in. Loading the same module twice is
-cheap: the module compiles once.
+included: `raku.use("Geo :ALL")`, `raku.use("JSON::Fast:ver<0.19+>")`. A
+dot may join the parts of the name, as in Python: `raku.use("JSON.Fast")`
+loads JSON::Fast. It runs the `use` in the mainline scope, so `eval` sees
+the exports afterwards, and again inside a scope of the module handle's own,
+so the handle answers for exactly what that import brought in. Loading the
+same module twice is cheap: the module compiles once.
 
 A module handle's attributes are looked up in this order: the symbols the
 import brought in (exported subs, classes, constants, enum values), then the
@@ -574,7 +575,10 @@ when the module is itself a class, that class's methods
 (`raku.use("Cro::HTTP::Client").new()`). `dir(geo)` lists the names, and a
 name that is none of them raises `AttributeError`. `raku.main` looks names
 up in the mainline scope instead, where the core's subs and types are
-visible too: `raku.main.Date.new(2026, 10, 5)`.
+visible too: `raku.main.Date.new(2026, 10, 5)`. A package's attributes are
+what it holds, so a dot walks a long name a part at a time: after
+`raku.use("Outer::Inner")`, `raku.main.Outer.Inner.hi()` calls
+`Outer::Inner::hi`.
 
 On a `rakulang.Object`:
 
