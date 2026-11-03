@@ -4627,6 +4627,7 @@ public:
     bool userTypeRefuses(const Value& rhs, const std::string& want);
     bool lexicalAliasAccepts(Env* scope, const std::string& ty, const Value& v);
     void varWhereCheck(const std::string& nm, const Value& rhs);
+    void varSmileyCheck(const std::string& nm, const Value& rhs);   // `my Int:D $x` / `:U`
     std::shared_ptr<Env> curPkgEnv_; // package scope `our` installs into (global_, or a module's env during load)
     // True when the code being executed was written for 6.e or later. Every
     // 6.e-only routine, method and behaviour is gated on this, so a 6.d program
