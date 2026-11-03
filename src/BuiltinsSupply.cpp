@@ -115,9 +115,13 @@ void Interpreter::maybeFinishSupply(const std::shared_ptr<SupplyTapCtx>& ctx) {
 // delivery, and waiting kept a pooled worker from the next continuation
 // (Rakudo's waits on the supply's lock with an `await`, which gives its
 // pool thread back).
+// `placed` hears when the delivery has its place, outside ctx->m: a promise's
+// whenever passes the turn to the next one then, not after its body.
 Value Interpreter::supplyDelivery(const std::shared_ptr<SupplyTapCtx>& ctx, long long sub,
-                                  std::function<void(Interpreter&, ValueList&)> fn, bool waitIfBusy) {
-    return ctxCallable(ctx, [ctx, sub, fn, waitIfBusy](Interpreter& I2, ValueList& args) -> Value {
+                                  std::function<void(Interpreter&, ValueList&)> fn, bool waitIfBusy,
+                                  std::function<void()> placed) {
+    return ctxCallable(ctx, [ctx, sub, fn, waitIfBusy, placed](Interpreter& I2, ValueList& args) -> Value {
+        auto place = [&placed] { if (placed) placed(); };
         // (queued, it runs on whichever thread drains the queue: that thread
         // holds the activation, so the entry leaves `running` alone)
         Interpreter* ip = &I2;
@@ -136,29 +140,38 @@ Value Interpreter::supplyDelivery(const std::shared_ptr<SupplyTapCtx>& ctx, long
         const auto me = std::this_thread::get_id();
         const auto until = std::chrono::steady_clock::now() + std::chrono::milliseconds(25);
         for (;;) {
+            bool settled = false;
             {
                 std::lock_guard<std::mutex> lk(ctx->m);
-                if (ctx->done || (sub && ctx->closedSubs.count(sub))) return Value::any();
-                if (ctx->running <= 0) break;
-                if (ctx->runner == me || !waitIfBusy || std::chrono::steady_clock::now() >= until) {
+                if (ctx->done || (sub && ctx->closedSubs.count(sub))) settled = true;
+                else if (ctx->running <= 0) break;
+                else if (ctx->runner == me || !waitIfBusy || std::chrono::steady_clock::now() >= until) {
                     ctx->queue.push_back(deferred());
-                    return Value::any();
+                    settled = true;
                 }
             }
+            if (settled) { place(); return Value::any(); }
             if (I2.gilHeld_ && !I2.parallelMode_) I2.yieldToWorkerFor(0.0002);
             else std::this_thread::sleep_for(std::chrono::microseconds(20));
         }
         {
-            std::lock_guard<std::mutex> lk(ctx->m);
-            if (ctx->done || (sub && ctx->closedSubs.count(sub))) return Value::any();
-            if (ctx->running > 0) { ctx->queue.push_back(deferred()); return Value::any(); }
-            ctx->running++;                  // the activation is this thread's now
-            ctx->runner = me;
-            raceAcquire(ctx->race, RaceEdge::Supply);
-            // …but older deliveries still waiting go first: this one joins the
-            // back of the line (a holder that died on an exception left them)
-            now = ctx->queue.empty();
-            if (!now) ctx->queue.push_back(deferred());
+            bool settled = false;
+            {
+                std::lock_guard<std::mutex> lk(ctx->m);
+                if (ctx->done || (sub && ctx->closedSubs.count(sub))) settled = true;
+                else if (ctx->running > 0) { ctx->queue.push_back(deferred()); settled = true; }
+                else {
+                    ctx->running++;                  // the activation is this thread's now
+                    ctx->runner = me;
+                    raceAcquire(ctx->race, RaceEdge::Supply);
+                    // …but older deliveries still waiting go first: this one joins the
+                    // back of the line (a holder that died on an exception left them)
+                    now = ctx->queue.empty();
+                    if (!now) ctx->queue.push_back(deferred());
+                }
+            }
+            place();
+            if (settled) return Value::any();
         }
         if (now) {
             try { fn(I2, args); }

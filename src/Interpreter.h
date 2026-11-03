@@ -1519,6 +1519,18 @@ struct SupplyTapCtx {
     std::mutex timerM;
     std::set<std::pair<double, long long>> timerOrder;
     long long timerSeq = 0;
+    // …and a `whenever $promise` kept later delivers in the order the
+    // promises were kept, as Rakudo's pool queue cues their `.then`s: the keep
+    // hands each a turn, and its pooled worker waits until every earlier one
+    // has placed its delivery (Interpreter::supplyPromiseInTurn)
+    std::mutex promM;
+    std::condition_variable promCv;
+    long long promNext = 0, promTurn = 0;
+    void promPlaced(long long turn) {   // that turn's delivery is queued or running
+        if (turn < 0) return;
+        { std::lock_guard<std::mutex> lk(promM); if (promTurn <= turn) promTurn = turn + 1; }
+        promCv.notify_all();
+    }
 };
 
 // Per-thread execution "registers": the state that belongs to a single thread
@@ -4484,6 +4496,9 @@ public:
     // Push react `c` once no other body of it runs (a `whenever $promise` body
     // fired later, on a worker of its own)
     void reactPushInTurn(const std::shared_ptr<ReactCtx>& c);
+    // …and a supply block's, its delivery once every promise kept before its
+    // own has placed theirs (SupplyTapCtx::promTurn)
+    void supplyPromiseInTurn(const std::shared_ptr<SupplyTapCtx>& ctx, long long turn);
     // Spawn a worker running `code` (no args); returns a Promise Value backed by
     // a PromiseState. awaitPromise blocks the caller until `ps` completes, dropping
     // the GIL so the worker can run. drainWorkers joins everything at program end.
@@ -4543,8 +4558,10 @@ public:
     // no body is running, and otherwise joins the queue behind the body that
     // is. `sub` tags the entry with its subscription. `waitIfBusy` false: a
     // body another thread is running is not waited for, just queued behind.
+    // `placed`, if given, runs once the delivery is queued, running or dropped.
     Value supplyDelivery(const std::shared_ptr<SupplyTapCtx>& ctx, long long sub,
-                         std::function<void(Interpreter&, ValueList&)> fn, bool waitIfBusy = true);
+                         std::function<void(Interpreter&, ValueList&)> fn, bool waitIfBusy = true,
+                         std::function<void()> placed = {});
     std::atomic<int> noCycleBreak_{0}; // >0: breakSelfClosures suspended (supply-block wiring; env outlives frame; any thread)
     std::atomic<long> cuedLoads_{0}; // outstanding cued jobs ($*SCHEDULER.loads)
     void awaitPromise(const std::shared_ptr<struct PromiseState>& ps);

@@ -1288,6 +1288,9 @@ void Interpreter::registerBuiltinsPart4() {
                 // and as a DELIVERY to it (S-53), like the Supply arm's: one body at
                 // a time, and running while it runs (closeTapHandle waits on that)
                 const long long promSub = ++ctx->subSeq;
+                // its turn among the activation's promises, taken when it is kept
+                // (later, below), and passed on once its delivery has its place
+                auto turn = std::make_shared<long long>(-1);
                 Value fireW = I.supplyDelivery(ctx, promSub, [blk, lastP, quitP, ps, ctx](Interpreter& I2, ValueList&) {
                     if (ps->broken) {
                         // S-57, the same rule the Supply path's quitW follows: a QUIT
@@ -1351,7 +1354,7 @@ void Interpreter::registerBuiltinsPart4() {
                     }
                     ctx->pending--;
                     I2.maybeFinishSupply(ctx);
-                }, /*waitIfBusy=*/false);
+                }, /*waitIfBusy=*/false, [ctx, turn] { ctx->promPlaced(*turn); });
                 Interpreter* self = &I;
                 std::function<void()> run = [self, fireW]() { ValueList na; try { self->callCallable(fireW, na); } catch (...) {} };
                 // A promise that settles LATER fires the body on a worker (a pooled
@@ -1361,10 +1364,16 @@ void Interpreter::registerBuiltinsPart4() {
                 // mid-stream, ran Cro::RPC::JSON's `whenever $close { …; done }`
                 // before it passed on the input's end, so the actor's supply was
                 // done before its `whenever $in` could see a LAST.
-                std::function<void()> later = [self, fireW]() {
+                // Two kept one after the other deliver in that order, as Rakudo's
+                // pool queue cues their `.then`s: this runs on the keeper's
+                // thread, so the turn follows the keeps, and the worker waits for it.
+                std::function<void()> later = [self, fireW, ctx, turn]() {
+                    { std::lock_guard<std::mutex> lk(ctx->promM); *turn = ctx->promNext++; }
                     Value body; body.t = VT::Code; body.setCode(makePayload<Callable>());
-                    body.code()->ciM().builtin = [fireW](Interpreter& I3, ValueList&) -> Value {
+                    body.code()->ciM().builtin = [fireW, ctx, turn](Interpreter& I3, ValueList&) -> Value {
+                        I3.supplyPromiseInTurn(ctx, *turn);
                         ValueList na; try { I3.callCallable(fireW, na); } catch (...) {}
+                        ctx->promPlaced(*turn);   // (one that never reached its place)
                         return Value::any();
                     };
                     self->spawnContinuation(body);

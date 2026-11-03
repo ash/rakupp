@@ -6699,6 +6699,27 @@ void Interpreter::reactPushInTurn(const std::shared_ptr<ReactCtx>& c) {
     }
 }
 
+// A supply block's `whenever $promise` kept later fires on a worker of its
+// own, and two kept one after the other raced to the activation: the second
+// promise's body could run first. Rakudo cues their `.then`s on its pool's
+// queue in the order of the keeps (ten kept in a row come out in order there),
+// so each worker waits for the turn its keep handed it.
+// A turn passes once the delivery before it is queued or running
+// (supplyDelivery's `placed`), not when its body ends, and every earlier
+// turn's job has a worker (runPooled), so the wait is short; `done`, a close
+// or a shutdown ends it too. The GIL, when there is one, is released meanwhile.
+void Interpreter::supplyPromiseInTurn(const std::shared_ptr<SupplyTapCtx>& ctx, long long turn) {
+    auto mine = [&] { return ctx->promTurn >= turn || ctx->done || workerAbort_.load(std::memory_order_relaxed); };
+    { std::lock_guard<std::mutex> lk(ctx->promM); if (mine()) return; }
+    bool parked = gilPark();
+    {
+        std::unique_lock<std::mutex> lk(ctx->promM);
+        // (bounded: `done` and a shutdown do not tell promCv)
+        while (!mine()) ctx->promCv.wait_for(lk, std::chrono::milliseconds(20));
+    }
+    gilUnpark(parked);
+}
+
 thread_local bool t_holdsGil = false;
 std::atomic<int> g_stmtLine{0};
 std::atomic<bool> g_stmtLineThreaded{false};
