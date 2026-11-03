@@ -6670,6 +6670,35 @@ void Interpreter::gilUnpark(bool wasParked) {
     loadCtx(g_gilParkCtx);
 }
 
+// Rakudo runs a react's bodies one at a time, so a `whenever $promise` body
+// fired after the promise settled waits until no other body of the react runs:
+// it ran beside the one that kept the promise, and could finish first. It runs
+// on a worker of its own, holding nothing another body could wait for, and the
+// GIL, when there is one, is released while it waits. The check and the push
+// are one step under turnM, so two such bodies take turns too; a react that
+// closes, or a shutdown, ends the wait.
+void Interpreter::reactPushInTurn(const std::shared_ptr<ReactCtx>& c) {
+    for (;;) {
+        {
+            std::lock_guard<std::mutex> lk(c->turnM);
+            if (c->running.load() == 0 || c->closed || workerAbort_.load(std::memory_order_relaxed)) {
+                reactStack_.push_back(c);
+                return;
+            }
+        }
+        bool parked = gilPark();
+        {
+            std::unique_lock<std::mutex> lk(c->turnM);
+            c->turnWaiters++;
+            // (bounded: a `done` sets `closed` without telling turnCv)
+            while (c->running.load() > 0 && !c->closed && !workerAbort_.load(std::memory_order_relaxed))
+                c->turnCv.wait_for(lk, std::chrono::milliseconds(20));
+            c->turnWaiters--;
+        }
+        gilUnpark(parked);
+    }
+}
+
 thread_local bool t_holdsGil = false;
 std::atomic<int> g_stmtLine{0};
 std::atomic<bool> g_stmtLineThreaded{false};

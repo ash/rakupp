@@ -2051,6 +2051,13 @@ struct ReactCtx {
     bool aborted = false;  // drainWorkers wake-up: a parked WORKER react unwinds
     std::mutex m;
     RaceCv cv;             // a condition_variable; under --race a notify releases (runReactLoop acquires)
+    // Its bodies running now, on any thread (each holds the react on its
+    // reactStack_), and the `whenever $promise` bodies waiting until none is
+    // (reactPushInTurn), on a mutex of their own: a pop never takes m
+    std::atomic<int> running{0};
+    std::atomic<int> turnWaiters{0};
+    std::mutex turnM;
+    std::condition_variable turnCv;
     // Externally-wired taps (e.g. OS-signal taps) whose teardown isn't driven by
     // supplyCloseStack_. When the react block ends they must be closed, or their
     // dispatcher keeps firing the handler after the block is gone (a second
@@ -2074,12 +2081,18 @@ struct ReactCtx {
 struct ReactStack : std::vector<std::shared_ptr<ReactCtx>> {
     void push_back(const std::shared_ptr<ReactCtx>& c) {
         std::vector<std::shared_ptr<ReactCtx>>::push_back(c);
-        if (c) raceAcquire(c->cv.race, RaceEdge::React);
+        if (c) { c->running.fetch_add(1); raceAcquire(c->cv.race, RaceEdge::React); }
     }
     void pop_back() {
-        if (!empty() && back()) raceRelease(back()->cv.race, RaceEdge::React);
+        std::shared_ptr<ReactCtx> c = !empty() ? back() : nullptr;
+        if (c) raceRelease(c->cv.race, RaceEdge::React);
         std::vector<std::shared_ptr<ReactCtx>>::pop_back();
+        if (c && c->running.fetch_sub(1) == 1 && c->turnWaiters.load() > 0) {
+            std::lock_guard<std::mutex> lk(c->turnM);
+            c->turnCv.notify_all();
+        }
     }
+    void clear() { while (!empty()) pop_back(); }   // (a pooled worker's next job)
 };
 
 long long nowMicros(); // steady_clock microseconds — the gather probe's budget clock
@@ -4468,6 +4481,9 @@ public:
     // window must touch no interpreter state (only thread-local buffers + syscalls).
     bool gilPark();
     void gilUnpark(bool wasParked);
+    // Push react `c` once no other body of it runs (a `whenever $promise` body
+    // fired later, on a worker of its own)
+    void reactPushInTurn(const std::shared_ptr<ReactCtx>& c);
     // Spawn a worker running `code` (no args); returns a Promise Value backed by
     // a PromiseState. awaitPromise blocks the caller until `ps` completes, dropping
     // the GIL so the worker can run. drainWorkers joins everything at program end.

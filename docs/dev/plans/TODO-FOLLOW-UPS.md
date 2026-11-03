@@ -1487,17 +1487,17 @@ moves to [TODO.md](TODO.md).
     against Rakudo's ~0.6: evalAssignInner's general path, statement by
     statement.
 
-- [ ] **Two promise-ordering tests fail under load** (found 2026-11-02 in
-  the suite runs for 5321f41c; dcdf14ba fails both too):
-  t/regression/promise-whenever-fires-later-and-in-turn.raku ("…and a
-  react's": `react body` before `after keep 2`) and
+- [ ] **A promise-ordering test fails under load** (found 2026-11-02 in the
+  suite runs for 5321f41c; dcdf14ba fails it too):
   t/regression/supply-tapper-death-is-not-a-quit.raku ("a whenever over a
-  promise": `second` before `first`). Both pass alone; run beside a build or
-  another suite, dcdf14ba failed the first 2 runs in 6 and the second 4 in
-  48. Each keeps two promises in turn and expects their `whenever`s to run
-  in that order, which a continuation on a pooled worker (a11aa7ab) does
-  not promise. Done when either the tests stop assuming the order or the
-  delivery keeps it, and 48 loaded runs of each pass.
+  promise": `second` before `first`). It passes alone; run beside a build or
+  another suite, dcdf14ba failed it 4 runs in 48. It keeps two promises in
+  turn and expects their `whenever`s to run in that order, which a
+  continuation on a pooled worker (a11aa7ab) does not promise. Done when
+  either the test stops assuming the order or the delivery keeps it, and 48
+  loaded runs pass. (The other test this item named,
+  promise-whenever-fires-later-and-in-turn.raku, stopped failing with
+  116a638e and 3c68ff57.)
 
 
 - [ ] **A composed curry like `* cmp * == More` is about 2.2x Rakudo per
@@ -1637,22 +1637,6 @@ moves to [TODO.md](TODO.md).
 
 ## Gates
 
-- [ ] **t/regression/promise-whenever-fires-later-and-in-turn.raku fails now
-  and then** (found 2026-10-31 in a full t/run.raku beside 586c5160; 2 runs in
-  20 alone on 23e143f2):
-
-  ```bash
-  for i in $(seq 20); do build/rakupp t/regression/promise-whenever-fires-later-and-in-turn.raku | tail -1; done | sort | uniq -c
-  ```
-
-  It is always the react case: `FAIL: …and a react's — $("react body", "after
-  keep 2")`, where the whenever's body is to run after `keep` returns, and
-  ran first. The body is queued to the pool when the promise is kept (the
-  "fires later" half of the fix the file guards), so a worker can reach it
-  before the keeping thread prints its next line; the supply case beside it
-  has not failed. Start with what orders the two in the passing runs, and
-  whether Rakudo's ordering is a guarantee or the same race it wins every
-  time. Done when it passes 50 of 50 runs alone and inside a full suite.
 - [ ] **t/jit/run.raku: 5 of its 21 tier-up cases enter no kernel** (found
   2026-10-22 gating the FLOAT-HEAVY-ISSUES work; on v5.5.0 too, on macOS
   arm64): the gate ends `not ok - only 16 of the 21 tier-up cases actually
