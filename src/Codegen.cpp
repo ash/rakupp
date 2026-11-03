@@ -1025,6 +1025,7 @@ struct Codegen {
     bool moduleMode_ = false;
     std::set<std::string> aotRefs_;   // every name varRef was asked for (pass one)
     std::set<std::string> aotFree_;   // the outer names (pass two)
+    std::set<std::string> whereScalars_;   // AotNames::whereScalars
     std::set<std::string> callEnvNames_;   // sub names a call resolves through the env
     std::set<std::string> rwSubNames_, rwMethodNames_;   // see AotNames
     std::set<std::string> aotTypeNames_;   // types the module graph declares (AotNames::types)
@@ -4521,7 +4522,8 @@ struct Codegen {
         if (t->kind != NK::VarExpr) return rhs;
         auto* v = static_cast<const VarExpr*>(t);
         const char k = storeKind(v, ty);
-        const bool untypedOuter = k == 'o' && v->lexResolved && (v->d().readType.empty() || v->d().readType == "Any");
+        const bool untypedOuter = k == 'o' && v->lexResolved && (v->d().readType.empty() || v->d().readType == "Any") &&
+                              !whereScalars_.count(v->name);
         return k == 't' || (k == 'o' && !untypedOuter) ? scalarStore(v, rhs) : rhs;
     }
     // …and whether every Int passes the check (every Num and Str too, with
@@ -4532,7 +4534,7 @@ struct Codegen {
         static const std::set<std::string> ints = {"", "Any", "Int", "Cool", "Numeric", "Real", "Mu"};
         std::string ty;
         const char k = storeKind(v, ty);
-        if (k == 'o') { if (!v->lexResolved) return false; ty = v->d().readType; }
+        if (k == 'o') { if (!v->lexResolved || whereScalars_.count(v->name)) return false; ty = v->d().readType; }
         return k == 'p' || ints.count(ty) || (ty[0] >= 'a' && ty[0] <= 'z') || (lane && (ty == "Num" || ty == "Str"));
     }
     // An assignment's native target of exactly full width: 'i' (`int`, `int64`),
@@ -9998,6 +10000,7 @@ std::string emitAotPass(SubDecl* d, const std::string& fn, const AotNames& names
     g.aotTypeNames_ = names.types;
     g.lexOps_ = names.ops;
     g.nativeElemNames_ = names.nativeArrays;
+    g.whereScalars_ = names.whereScalars;
     g.aotFree_ = freeNames;
     g.aotLocals_ = locals;
     g.aotTag_ = fn;
@@ -10058,6 +10061,20 @@ std::set<std::string> nativeArrayNames(const Program& p) {
     Codegen g;
     g.collectNativeArrays(p.stmts);
     return g.nativeElemNames_;
+}
+
+std::set<std::string> whereScalarNames(const Program& p) {
+    std::set<std::string> out;
+    std::function<void(Node*)> walk = [&](Node* n) {
+        if (!n) return;
+        if (n->kind == NK::VarExpr) {
+            auto* v = static_cast<VarExpr*>(n);
+            if (v->declare && v->d().declWhereExpr && v->name.size() > 1 && v->name[0] == '$') out.insert(v->name);
+        }
+        forEachAstChild(n, walk);
+    };
+    for (auto& s : p.stmts) walk(s.get());
+    return out;
 }
 
 std::string transpileModuleRoutine(SubDecl* d, const std::string& fnName, const AotNames& callEnvNames,
