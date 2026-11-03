@@ -33,8 +33,11 @@ _SHIM_ABI = 1  # must equal rk-shim-abi() in grammar_shim.raku
 _OBJECT_ABI = 1  # must equal rk-py-abi() in object_shim.raku
 
 # The module name at the front of a use() spec: what `use` takes before any
-# adverbs (:ver<...>) or import arguments.
-_MODULE_NAME = re.compile(r"[A-Za-z_][\w'-]*(?:::[A-Za-z_][\w'-]*)*")
+# adverbs (:ver<...>) or import arguments. Its parts are joined by `::` or, as
+# Python joins them, by a dot: no Raku name holds one, so "JSON.Fast" can only
+# mean JSON::Fast. (A language version, "v6.d", keeps its dot.)
+_MODULE_NAME = re.compile(r"[A-Za-z_][\w'-]*(?:(?:::|\.)[A-Za-z_][\w'-]*)*")
+_VERSION = re.compile(r"v\d")
 
 # rk_int_get is an int64 and BigInt::toLL saturates there, so an Int arriving
 # as either of these may be a wider one in disguise — see _int_of.
@@ -199,13 +202,17 @@ class Interp:
         """Load a Raku module, as `use` does, and return it as a Module.
 
         `module` is what follows `use` in Raku: "JSON::Fast", or with import
-        arguments, "Geo :ALL". The module's exports also become visible to
-        later eval() calls, exactly as after `use` in a Raku program."""
+        arguments, "Geo :ALL". "JSON.Fast" is JSON::Fast too. The module's
+        exports also become visible to later eval() calls, exactly as after
+        `use` in a Raku program."""
         spec = module.strip()
         m = _MODULE_NAME.match(spec)
         if not m:
             raise ValueError(f"not a module name: {module!r}")
         name = m.group(0)
+        if not _VERSION.match(name):
+            name = name.replace(".", "::")
+            spec = name + spec[m.end():]
         quoted = name.replace("'", "\\'")   # Raku names may hold an apostrophe
         self._load_objects()
         raw = self._eval_raw(
@@ -719,5 +726,5 @@ def _attr_result(obj, got, name):
         return got[1]
     if kind == "method":
         return Method(got[2] if len(got) > 2 else obj, got[1])
-    what = obj._name if isinstance(obj, Module) else obj._op("name")
+    what = (obj._name or "MAIN") if isinstance(obj, Module) else obj._op("name")
     raise AttributeError(f"Raku {what} has no {name!r}")
