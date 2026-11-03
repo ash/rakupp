@@ -47,7 +47,7 @@ ad7f05dc and e6777420 (issue #77); 608774f1 and 5321f41c (issue #217); 636f69d0 
 d23c2ed8 (a variable's `where`); 0d9ea1ca (a variable's `:D` and `:U`);
 3072c3a5 and 992c75cf (a qualified name's packages, and dotted module
 names in Python); 116a638e and 3c68ff57 (a react's promise bodies in
-turn).*
+turn); 762ce0e2 (constrained variables compiled).*
 
 ---
 
@@ -119,6 +119,20 @@ interpreted.
   ran boxed. A slot now takes the type the parser resolved its declaration
   to. The review's numloop-n over 200M, against fe9237a8, best of 3: 7.82 →
   0.162 s (C at `-O2`: 0.158 s; untyped 0.169 s).
+- **`--exe` compiles a routine with a `:D`/`:U`, `where` or subset variable,
+  each store asking the check inline** (762ce0e2). A routine declaring a
+  `:D`/`:U` or `where` variable ran interpreted, and a subset's store ran
+  its `where` through the interpreter. The parser now gives each use its
+  declaration's smiley and `where`, and a compiled store asks the `where` (a
+  WhateverCode's body or a block's one expression inline, anything else
+  smartmatched), the smiley and the type, in the interpreter's order. A
+  `where` that reads another variable, and a write that would skip the check
+  (a list assignment, a binding, a `cas` or `⚛=`, an `is rw` write-back),
+  still run interpreted. 3M iterations of `$s += 3` in a sub, against
+  576cfe1b, best of 3: `my Int:D $s` 0.34 → 0.008 s,
+  `my Int $s where * < 10**12` 1.19 → 0.065 s, a subset's 0.97 → 0.057 s
+  (Rakudo 0.77, 0.87, 0.88 s). t/regression/exe-constrained-var-native.raku
+  agrees with Rakudo 2026.09, whole and bundled.
 - **A packed `int` / `num` array keeps its words under a computed key**
   (5e5d80ec). `@a[$i + 1]`, read or stored, unpacked the array for good in
   the interpreter, so a `--cnp` loop entered after it read boxed Values. The
@@ -1974,6 +1988,16 @@ does not.
   2` stores the Str, and a `where`, a `:D` and a `:U` are skipped the same
   way, as in `my (Int:D $a, $b) = $int, 2`; Rakudo dies on each. (The parse
   cache's `:D` and `:U`, found with d23c2ed8, are fixed in 0d9ea1ca.)
+- Found with 762ce0e2, the same before it, in the interpreter and so in a
+  routine that still runs there: a variable's `where` is asked before its
+  type, so `my Int $x where * < 10 = 5; $x = "a"` dies X::Str::Numeric where
+  Rakudo says X::TypeCheck::Assignment; a Nil resets a `where` variable to
+  Any, where Rakudo's is the `<anon>` type; `=` into a variable of
+  `subset Pos of Int:D where * > 0` takes the Int type object, which Rakudo
+  and compiled code refuse; and `.=` checks neither a variable's type nor
+  its `where` (`my Int $x = 5; $x .= Str` holds "5"), where compiled code
+  checks both. And under `--exe`, `temp $x = 6` dies
+  "Undefined routine 'temp'".
 - Found with 116a638e, the same before it: a react's other bodies still run
   beside one another, where Rakudo runs one at a time. Two timers' bodies
   overlap (`whenever Promise.in(0.1) { sleep 0.4; say "c end" }` beside a
