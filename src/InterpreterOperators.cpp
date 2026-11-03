@@ -2806,6 +2806,31 @@ Value& Interpreter::attrParamRef(ObjectData* od, const std::string& pname, const
     return *slot;
 }
 
+// `my Int:D $x` takes only a defined value, `my Int:U $x` only a type object:
+// checked before the store, so a refused one leaves the old value. A Nil
+// resets to the default, refused only when a `:D` one has no defined default.
+void Interpreter::varSmileyCheck(const std::string& nm, const Value& rhs) {
+    if (!elemSmileyDeclared_.load(std::memory_order_relaxed) || nm.empty() || nm[0] != '$') return;
+    for (Env* en = tctx().cur.get(); en; en = en->parent.get()) {
+        auto si = en->xr().varSmiley.find(nm);
+        if (si != en->xr().varSmiley.end()) {
+            auto di = en->xr().varDefault.find(nm);
+            const bool def = rhs.t == VT::Nil ? di != en->xr().varDefault.end() && isDefined(di->second) : isDefined(rhs);
+            if ((si->second == 'D' && !def) || (si->second == 'U' && def && rhs.t != VT::Nil)) {
+                std::string want = di != en->xr().varDefault.end() && di->second.t == VT::Type
+                                 ? std::string(di->second.s.c_str()) : std::string("Any");
+                want += si->second == 'D' ? ":D" : ":U";
+                throwTypedV("X::TypeCheck::Assignment",
+                    {{"got", rhs}, {"expected", Value::typeObj(want)}, {"symbol", Value::str(nm)}},
+                    "Type check failed in assignment to " + nm + "; expected " + want +
+                    " but got " + rhs.typeName() + (isDefined(rhs) ? " (" + rhs.gist() + ")" : ""));
+            }
+            return;
+        }
+        if (en->local(nm)) return;
+    }
+}
+
 // `my $x where Int|Num` — every assignment asks the constraint, a smartmatch
 // (a Code is called) evaluated in the declaring scope with $_ as the value
 void Interpreter::varWhereCheck(const std::string& nm, const Value& rhs) {

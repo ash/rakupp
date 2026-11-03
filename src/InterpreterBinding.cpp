@@ -6064,6 +6064,7 @@ Value Interpreter::rtTypedScalarStore(Value rhs, const char* want, const char* n
 // declaration (enforceTypedAssign)
 Value Interpreter::rtOuterScalarStore(Value rhs, const char* nm) {
     if (rhs.t == VT::Nil) {
+        varSmileyCheck(nm, rhs);   // a `my Int:D $x` has no undefined default to reset to
         for (Env* en = tctx().cur.get(); en; en = en->parent.get()) {
             auto di = en->xr().varDefault.find(nm);
             if (di != en->xr().varDefault.end()) return di->second;

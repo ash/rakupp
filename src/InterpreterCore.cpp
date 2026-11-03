@@ -17233,28 +17233,7 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
                 const bool attrTarget = nm.size() > 2 && (nm[1] == '!' || nm[1] == '.');
                 if (!attrTarget) {
                     varWhereCheck(nm, rhs);   // `my $x where Int|Num`
-                    // `my Int:D $x` takes only a defined value, `my Int:U $x` only
-                    // a type object — checked BEFORE the store, so a refused
-                    // assignment leaves the old value
-                    if (!nm.empty() && nm[0] == '$')
-                        for (Env* en = tctx().cur.get(); en; en = en->parent.get()) {
-                            auto si = en->xr().varSmiley.find(nm);
-                            if (si != en->xr().varSmiley.end()) {
-                                const bool def = isDefined(rhs);
-                                if ((si->second == 'D' && !def) || (si->second == 'U' && def)) {
-                                    auto di = en->xr().varDefault.find(nm);
-                                    std::string want = di != en->xr().varDefault.end() && di->second.t == VT::Type
-                                                     ? std::string(di->second.s.c_str()) : std::string("Any");
-                                    want += si->second == 'D' ? ":D" : ":U";
-                                    throwTypedV("X::TypeCheck::Assignment",
-                                        {{"got", rhs}, {"expected", Value::typeObj(want)}, {"symbol", Value::str(nm)}},
-                                        "Type check failed in assignment to " + nm + "; expected " + want +
-                                        " but got " + rhs.typeName() + (def ? " (" + rhs.gist() + ")" : ""));
-                                }
-                                break;
-                            }
-                            if (en->local(nm)) break;
-                        }
+                    varSmileyCheck(nm, rhs);  // `my Int:D $x`
                         // A typed container detonates a Failure rather than storing it:
                         // the type check has to look at the value. See the twin guard
                         // in the declaration path.
@@ -26289,6 +26268,7 @@ void Interpreter::enforceTypedAssign(const std::string& nm, Value& rhs) {
     // look at the value. An untyped target has no varDefault entry and falls
     // through.)
     varWhereCheck(nm, rhs);   // `my $x where Int|Num`
+    varSmileyCheck(nm, rhs);  // `my Int:D $x`: a list's, an `op=`'s, a `++`'s, a `cas`'s store too
     for (Env* en = tctx().cur.get(); en; en = en->parent.get()) {
         // A coercion-typed slot CONVERTS what it is handed rather than refusing
         // it: `my Int() $x; $x = "7"` stores 7, as the declaration form already

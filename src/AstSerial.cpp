@@ -356,12 +356,19 @@ template <class IO> void visit(IO& io, VarExpr& n)  {
     // its `where`: without it a cached module's `my $x where * < 10` took any
     // value, and so did a bundled program's compiled routine, read from here
     F(io, d.declHasWhere); ioSharedExpr(io, d.declWhereOwn);
+    // …and the rest the run reads: a cached `my Int:D $x` took Int, `my
+    // Int(Str) $x` a Rat, `(state @a) = …` was assigned once, a `my constant`
+    // became a package symbol, `my ::foo $x` held Any, and a bare `my S $s`
+    // of a subset with no type object to start from held one
+    F(io, d.declSmiley); F(io, d.declCoerceFrom); F(io, d.stateInParens);
+    F(io, d.declMyConstant); F(io, d.declStubType); F(io, d.declBare);
     if constexpr (IO::reading) {
         d.declWhereExpr = d.declWhereOwn.get();
         if (!d.declScope.empty() || !d.declType.empty() || !d.declCoerce.empty() || d.declDefault ||
             d.declDynamic || d.declExport || !d.exportTags.empty() || !d.containerIs.empty() || !d.containerOf.empty() ||
             d.declShape || d.namedBind || !d.pseudoPkg.empty() || d.declTypeExpr || !d.readType.empty() ||
-            d.declWhereOwn || d.declHasWhere)
+            d.declWhereOwn || d.declHasWhere || d.declSmiley || !d.declCoerceFrom.empty() || d.stateInParens ||
+            d.declMyConstant || !d.declStubType.empty() || d.declBare)
             n.dm() = std::move(scratch);
     }
     n.syncAttrCache(); }  // derived from `name`, not stored
