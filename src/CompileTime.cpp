@@ -528,8 +528,10 @@ CtTable computeCompileTimeValues(const std::string& src, const std::string& srcN
     try { rc = interp.run(prog); } catch (...) { rc = 1; }
     std::cout.flush();
     if (rc != 0 || !vals.count(nullptr)) {
-        std::cerr << "note: the compile-time code of " << srcName << " failed while building; its constants "
-                     "and BEGIN blocks run when the binary starts instead.\n";
+        t.failed = true;
+        if (!everyConstant)   // a board has no start to put it off to: its caller says so
+            std::cerr << "note: the compile-time code of " << srcName << " failed while building; its constants "
+                         "and BEGIN blocks run when the binary starts instead.\n";
         return t;
     }
     t.nSites = (int)w.sites.size();

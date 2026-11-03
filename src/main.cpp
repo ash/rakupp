@@ -1912,6 +1912,11 @@ static int compileArduino(const std::string& src, const std::string& srcName, st
     // to (g_ct): BEGIN and EVERY constant run here, and the board gets values
     if (int rc = declCheckGate(src, srcName, effectiveSearchPath(libPaths)); rc >= 0) return rc;
     g_ct = computeCompileTimeValues(src, srcName, libPaths, /*everyConstant=*/true);
+    if (g_ct.failed) {
+        std::cerr << "rakupp --target=arduino: " << srcName << ": the program's compile-time code died (above) — "
+                     "the board gets only what the build computes, so there is nothing to build\n";
+        return 5;
+    }
     std::string sketch;
     try {
         Lexer lexer(src);
@@ -1950,6 +1955,11 @@ static int compileArduino(const std::string& src, const std::string& srcName, st
     fs::create_directories(dir, ec);
     std::string h = (dir / "Arduino.h").string(), cpp = (dir / "sketch.cpp").string();
     { std::ofstream f = openOut(h); if (!f) { std::cerr << "Cannot write " << h << "\n"; return 5; } f << arduinoSimCore(); }
+    {   // the Uno R4 WiFi's matrix library: its class is in the host core above
+        std::string mh = (dir / "Arduino_LED_Matrix.h").string();
+        std::ofstream f = openOut(mh); if (!f) { std::cerr << "Cannot write " << mh << "\n"; return 5; }
+        f << "#include \"Arduino.h\"\n";
+    }
     { std::ofstream f = openOut(cpp); if (!f) { std::cerr << "Cannot write " << cpp << "\n"; return 5; } f << sketch; }
     std::string cxx = nativeCxx();
     std::string cmd = (cxx == "cl" || cxx == "clang-cl")
