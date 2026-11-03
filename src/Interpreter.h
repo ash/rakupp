@@ -4646,6 +4646,12 @@ public:
     bool lexicalAliasAccepts(Env* scope, const std::string& ty, const Value& v);
     void varWhereCheck(const std::string& nm, const Value& rhs);
     void varSmileyCheck(const std::string& nm, const Value& rhs);   // `my Int:D $x` / `:U`
+    [[noreturn]] void smileyRefused(const std::string& nm, const Value& rhs, std::string want, char sm);
+    // --exe: a compiled store's checks (Codegen::scalarStore): a `:D`/`:U`, and
+    // the refusals of a `where` and of a subset's `where`
+    void rtSmileyStore(const Value& rhs, char sm, const char* want, const char* nm);
+    [[noreturn]] void rtWhereRefused(const Value& rhs, const char* nm);
+    [[noreturn]] void rtStoreRefused(const Value& rhs, const char* want, const char* nm);
     std::shared_ptr<Env> curPkgEnv_; // package scope `our` installs into (global_, or a module's env during load)
     // True when the code being executed was written for 6.e or later. Every
     // 6.e-only routine, method and behaviour is gated on this, so a 6.d program
@@ -6191,6 +6197,18 @@ inline Value rtTypedStore(Interpreter& I, Value v, int fast, const char* want, c
     if (rtTypedFast(v, fast)) return v;
     return I.rtTypedScalarStore(std::move(v), want, nm);
 }
+// …a `my T:D $x`'s or `my T:U $x`'s, before the type's: an Int into a `:D` inline
+inline void rtSmileyCheck(Interpreter& I, const Value& v, char sm, const char* want, const char* nm) {
+    if (sm == 'D' && v.t == VT::Int && v.hashKind.empty()) return;
+    I.rtSmileyStore(v, sm, want, nm);
+}
+// …and the one value a `where` inlined from a WhateverCode reads for its `*`
+// (Codegen::whereTest), as a WhateverCode's body reads its argument list
+struct RtOneArg {
+    const Value& v;
+    size_t size() const { return 1; }
+    const Value& operator[](size_t) const { return v; }
+};
 // --exe: a compiled routine one of whose BLOCKS says `return`. The return
 // leaves the routine, through whatever runs the block (`.map`'s own loop,
 // interpreted code), so the routine is an interpreter frame for the length of

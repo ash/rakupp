@@ -6035,12 +6035,15 @@ void Interpreter::enforceTypedValue(const std::string& nm, const std::string& wa
         // a SUBSET's where-clause is late-bound: asked on every write
         (rhs.t != VT::Nil && subsets_.count(want) && !isCoercionSubset(want) &&
          !subsetMatches(want, rhs, 0)))
-        throwTypedV("X::TypeCheck::Assignment",
-            {{"got", rhs}, {"expected", Value::typeObj(want)},
-             {"symbol", Value::str(nm)}},
-            "Type check failed in assignment to " + nm +
-            "; expected " + want + " but got " + rhs.typeName() +
-            (isDefined(rhs) ? " (" + typeCheckRepr(rhs) + ")" : " " + rhs.gist()));
+        rtStoreRefused(rhs, want.c_str(), nm.c_str());
+}
+// …and its refusal, which a compiled store into a subset's variable throws too
+// when the subset's `where` refuses a value of its base type
+void Interpreter::rtStoreRefused(const Value& rhs, const char* want, const char* nm) {
+    throwTypedV("X::TypeCheck::Assignment",
+        {{"got", rhs}, {"expected", Value::typeObj(want)}, {"symbol", Value::str(nm)}},
+        std::string("Type check failed in assignment to ") + nm + "; expected " + want + " but got " +
+        rhs.typeName() + (isDefined(rhs) ? " (" + typeCheckRepr(rhs) + ")" : " " + rhs.gist()));
 }
 
 const Callable& rtRetCallable(const char* retType) {

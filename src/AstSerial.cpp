@@ -362,13 +362,16 @@ template <class IO> void visit(IO& io, VarExpr& n)  {
     // of a subset with no type object to start from held one
     F(io, d.declSmiley); F(io, d.declCoerceFrom); F(io, d.stateInParens);
     F(io, d.declMyConstant); F(io, d.declStubType); F(io, d.declBare);
+    // …and a use's of its declaration's `:D`/`:U` and `where`, which a routine
+    // compiled from here checks its stores by
+    F(io, d.readSmiley); ioSharedExpr(io, d.readWhereOwn);
     if constexpr (IO::reading) {
         d.declWhereExpr = d.declWhereOwn.get();
         if (!d.declScope.empty() || !d.declType.empty() || !d.declCoerce.empty() || d.declDefault ||
             d.declDynamic || d.declExport || !d.exportTags.empty() || !d.containerIs.empty() || !d.containerOf.empty() ||
             d.declShape || d.namedBind || !d.pseudoPkg.empty() || d.declTypeExpr || !d.readType.empty() ||
             d.declWhereOwn || d.declHasWhere || d.declSmiley || !d.declCoerceFrom.empty() || d.stateInParens ||
-            d.declMyConstant || !d.declStubType.empty() || d.declBare)
+            d.declMyConstant || !d.declStubType.empty() || d.declBare || d.readSmiley || d.readWhereOwn)
             n.dm() = std::move(scratch);
     }
     n.syncAttrCache(); }  // derived from `name`, not stored

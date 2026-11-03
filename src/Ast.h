@@ -247,6 +247,8 @@ struct VarDeclInfo {
     bool declHasWhere = false;   // `my Int:D $x where …` — Rakudo asks no initializer then // …and it came from `use variables`, not the declaration
     bool declMyConstant = false; // `my constant` — lexical only; a bare/`our` constant is also a package symbol
     std::string readType;        // a USE's: the type the nearest declaration of its name gave it (VarExpr::lexResolved)
+    char readSmiley = 0;         // …and its `:D`/`:U`, and its `where` (a compiled store checks them: Codegen::scalarStore)
+    std::shared_ptr<struct Expr> readWhereOwn;
     std::string containerIs;     // `my %h is Set` — the container type trait (Set/Bag/Mix…)
     std::string containerOf;     // `my %h is Bag[Int]` — the container's key-type parameter
     ExprPtr declShape;           // shaped array `my @a[3]` / `my @a[2;2]`: the dimension list

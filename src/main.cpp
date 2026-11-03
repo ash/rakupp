@@ -1269,6 +1269,7 @@ static ModuleAot buildModuleAot(const std::vector<BundledModule>& mods,
         names.callEnv = exports;
         names.nativeArrays = nativeArrayNames(prog);
         names.whereScalars = whereScalarNames(prog);
+        names.subsets = inlineSubsets(prog);
         for (SubDecl* sd : routines) if (!sd->isMethod && !sd->name.empty()) names.callEnv.insert(sd->name);
         for (size_t k = 0; k < routines.size(); k++) {
             const std::string fn = "__aot" + std::to_string(mi) + "_" + std::to_string(k);
