@@ -21,7 +21,9 @@ sub log($x) { $lock.protect: { @log.push: $x } }
 
 my $p = Promise.new; my $v = $p.vow;
 my $t = supply { whenever $p { log 'supply body' }; whenever Supply.interval(10) { } }.tap;
-$v.keep(1); log 'after keep';
+# (the lock held across `keep`: a body run inside it logs first, on this
+# thread, and one on a worker waits for 'after keep', however loaded the box)
+$lock.protect: { $v.keep(1); log 'after keep' };
 for ^100 { last if @log >= 2; sleep 0.01 }
 ck @log.List, ('after keep', 'supply body'), "a supply's promise body runs after `keep` returns";
 $t.close;
