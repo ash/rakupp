@@ -44,7 +44,8 @@ ad7f05dc and e6777420 (issue #77); 608774f1 and 5321f41c (issue #217); 636f69d0 
 56309f17 (--target=arduino); 42618157 (Text::CSV and JSON::Unmarshal);
 89d80faa (a `my token` in a variable); b81021ba (PERF-REVIEW-2026-11-02
 §6); 6617859d (typed scalar stores); 34d05b96 (use Arduino::LEDMatrix);
-d23c2ed8 (a variable's `where`); 0d9ea1ca (a variable's `:D` and `:U`).*
+d23c2ed8 (a variable's `where`); 0d9ea1ca (a variable's `:D` and `:U`);
+116a638e and 3c68ff57 (a react's promise bodies in turn).*
 
 ---
 
@@ -1649,6 +1650,18 @@ does not.
   supply from `whenever $close` before its input's end arrived.
   t/regression/promise-whenever-fires-later-and-in-turn.raku agrees with
   Rakudo 2026.09.
+- **A react's `whenever $promise` body waits while another of the react's
+  bodies runs** (116a638e), as Rakudo runs them one at a time. Fired later
+  on a worker of its own, it ran at once beside the body that kept the
+  promise, so `$v.keep(2); log 'after keep'` could log second and the
+  promise's `done` could end the react before the keeper finished;
+  promise-whenever-fires-later-and-in-turn.raku lost that race now and then,
+  and its supply case, which raced the keeping thread's next line on a
+  loaded box, holds its lock across `keep` (3c68ff57). A promise already
+  kept when its whenever was registered ran its body inline, in the middle
+  of the react's own body; it now runs after it.
+  t/regression/react-promise-body-in-turn.raku agrees with Rakudo 2026.09,
+  interpreted, under RAKUPP_GIL=1 and compiled.
 - **`done` in a react whenever's LAST ends the react** (5b70d2e1) when the
   source finishes on another thread; Cro's WebSocket client waited out its
   timeout after the server closed.
@@ -1938,11 +1951,11 @@ does not.
   2` stores the Str, and a `where`, a `:D` and a `:U` are skipped the same
   way, as in `my (Int:D $a, $b) = $int, 2`; Rakudo dies on each. (The parse
   cache's `:D` and `:U`, found with d23c2ed8, are fixed in 0d9ea1ca.)
-- Found with 0d9ea1ca, the same before it: a react's `whenever $promise`
-  body is not held back while another of the react's bodies runs, so in
-  `whenever Promise.in(0.05) { $v.keep(2); log 'after keep' }` the kept
-  promise's body can log first, where Rakudo runs one body at a time.
-  t/regression/promise-whenever-fires-later-and-in-turn.raku loses that
-  race now and then; built with `--exe`, it lost it in 0–2 of 40 runs
-  before 0d9ea1ca and 9–15 of 40 after, as it does with the cache's larger
-  blob alone (the new fields written and discarded on reading).
+- Found with 116a638e, the same before it: a react's other bodies still run
+  beside one another, where Rakudo runs one at a time. Two timers' bodies
+  overlap (`whenever Promise.in(0.1) { sleep 0.4; say "c end" }` beside a
+  `whenever Promise.in(0.2) { done }` ends the react before "c end"), and so
+  do a Supplier's emits from other threads. Waiting for a turn there is not
+  safe yet: a Supplier runs a tap's body on the emitting thread holding the
+  supplier's mutex, which a body of the same react emitting into it would
+  wait for. (A `whenever $promise` body takes its turn since 116a638e.)
