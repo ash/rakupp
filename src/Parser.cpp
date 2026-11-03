@@ -18226,9 +18226,9 @@ ExprPtr Parser::makeNqpOp(const std::string& op, std::vector<ExprPtr>& args) {
         {"getuniprop_bool", NqpOpc::GetUniPropBool}, {"getuniprop_int", NqpOpc::GetUniPropInt},
         {"unipvalcode", NqpOpc::UniPvalCode}, {"matchuniprop", NqpOpc::MatchUniProp},
         // Red's resumable warning: build a BOOTException, mark it CONTROL_WARN, throw
-        {"newexception", NqpOpc::NewException}, {"setmessage", NqpOpc::SetMessage},
+        {"newexception", NqpOpc::NewException}, {"setmessage", NqpOpc::SetExMessage},
         {"setextype", NqpOpc::SetExType}, {"setpayload", NqpOpc::SetPayload},
-        {"getmessage", NqpOpc::GetMessage}, {"getextype", NqpOpc::GetExType},
+        {"getmessage", NqpOpc::GetExMessage}, {"getextype", NqpOpc::GetExType},
         {"getpayload", NqpOpc::GetPayload}, {"throw", NqpOpc::ThrowOp}, {"where", NqpOpc::Where},
         {"hasuniprop", NqpOpc::HasUniProp},
         // the AttrX::Mooish surface

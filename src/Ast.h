@@ -786,8 +786,10 @@ enum class NqpOpc : uint16_t {
     UniPvalCode, MatchUniProp, HasUniProp,
     // appended: a BOOTException and its accessors, the op that throws one, and
     // an object's identity as an Int — Red raises its resumable warning
-    // through the first, and compares shared ASTs through `where`
-    NewException, SetMessage, SetExType, SetPayload, GetMessage, GetExType, GetPayload, ThrowOp, Where,
+    // through the first, and compares shared ASTs through `where`. Not
+    // `GetMessage`: <windows.h> makes that a macro, and BuiltinsNqp.cpp sees
+    // it after this header, so `O::GetMessage` named nothing on Windows
+    NewException, SetExMessage, SetExType, SetPayload, GetExMessage, GetExType, GetPayload, ThrowOp, Where,
 };
 struct NqpOp : Expr {
     NqpOpc op;

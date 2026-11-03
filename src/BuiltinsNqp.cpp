@@ -1280,17 +1280,17 @@ Value rtNqpOp(NqpOpc op, ValueList& v) {
         // object by its name (IterationEnd is one), everything else by value.
         // a BOOTException is a tagged hash of its message, category and payload
         case O::NewException: { Value e = Value::makeHash(); e.hashKind = "BOOTException"; return e; }
-        case O::SetMessage: case O::SetExType: case O::SetPayload: {
+        case O::SetExMessage: case O::SetExType: case O::SetPayload: {
             if (v.size() < 2 || v[0].t != VT::Hash || !v[0].hash()) return v.size() > 1 ? v[1] : Value::nil();
-            const char* k = op == O::SetMessage ? "message" : op == O::SetExType ? "extype" : "payload";
+            const char* k = op == O::SetExMessage ? "message" : op == O::SetExType ? "extype" : "payload";
             return (*v[0].hash())[k] = v[1];
         }
-        case O::GetMessage: case O::GetExType: case O::GetPayload: {
-            const char* k = op == O::GetMessage ? "message" : op == O::GetExType ? "extype" : "payload";
+        case O::GetExMessage: case O::GetExType: case O::GetPayload: {
+            const char* k = op == O::GetExMessage ? "message" : op == O::GetExType ? "extype" : "payload";
             if (v.empty() || v[0].t != VT::Hash || !v[0].hash()) return Value::nil();
             auto it = v[0].hash()->find(k);
             return it != v[0].hash()->end() ? it->second
-                 : op == O::GetMessage ? Value::str("") : op == O::GetExType ? Value::integer(0) : Value::nil();
+                 : op == O::GetExMessage ? Value::str("") : op == O::GetExType ? Value::integer(0) : Value::nil();
         }
         case O::ThrowOp: return g_cbInterp->nqpThrow(v.empty() ? Value::nil() : v[0]);
         // the object's identity as an Int: the same object answers the same,
