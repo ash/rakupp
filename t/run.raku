@@ -2324,6 +2324,34 @@ section('--slim: levels, features, directives');
         ok($p.out.slurp(:close) eq $want, 'the verified binary matches the golden');
         try unlink $bin;
     }
+
+    # The Arduino backend (ARDUINO-PLAN.md) costs a compiled binary nothing
+    # unless its program asks for it: the emitter, the --sim host core and the
+    # board modules live in the rakupp CLI alone, and a binary carries the
+    # `Arduino` module only when its program `use`s it. The markers are the
+    # host core (rk_sim), the matrix class (ArduinoLEDMatrix) and the board
+    # module's source (RAKUPP_ARDUINO_STOP): none in fibonacci's binary at the
+    # default level, and the module's alone in blink's, which shows the check
+    # can see them.
+    {
+        my @markers = <rk_sim ArduinoLEDMatrix RAKUPP_ARDUINO_STOP>;
+        my $sfx = $WIN ?? '.exe' !! '';
+        my sub carries(Str $src) {
+            my $bin = $*TMPDIR.add("rakupp-suite-slim-ard-$*PID").Str;
+            my $p = run($*EXECUTABLE, '-q', '--exe', $src, '-o', $bin, :!out, :err);
+            $p.err.slurp(:close);
+            return Nil if $p.exitcode != 0;
+            my $bytes = ($bin ~ $sfx).IO.slurp(:bin).decode('latin-1');
+            try unlink $bin ~ $sfx;
+            @markers.grep({ $bytes.contains($_) }).join(',')
+        }
+        my $f = carries($fib);
+        ok($f.defined && $f eq '', 'a binary whose program has no `use Arduino` carries nothing of the Arduino backend');
+        diag("it carries: $f") if $f;
+        my $b = carries($ROOT.add('t/arduino/cases/blink.raku').Str);
+        ok($b.defined && $b eq 'RAKUPP_ARDUINO_STOP', 'one whose program does carries the board module, and nothing else of it');
+        diag("it carries: {$b // '(no build)'}") unless $b.defined && $b eq 'RAKUPP_ARDUINO_STOP';
+    }
 }
 
 section('the source size budget (tools/source-helpers/budget.raku)');

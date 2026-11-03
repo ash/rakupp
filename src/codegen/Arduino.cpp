@@ -277,6 +277,7 @@ private:
     std::set<std::string> cnames_;          // C names taken at file scope
     std::vector<LoopCtx> loops_;
     bool useArduino_ = false, prints_ = false, serialBegun_ = false;
+    bool useMatrix_ = false, matrixUsed_ = false;   // `use Arduino::LEDMatrix`, and a call that needs the library
     bool inSub_ = false;
     CT subRt_ = CT::None;
     std::string subName_;
@@ -530,7 +531,7 @@ private:
         if (s == "pi" || s == "π") return {cNum(3.141592653589793), K::Num, true};
         if (s == "tau" || s == "τ") return {cNum(6.283185307179586), K::Num, true};
         if (s == "e") return {cNum(2.718281828459045), K::Num, true};
-        if (s == "Serial") refuse(n, "Serial used as a value — call one of its methods");
+        if (s == "Serial" || s == "LEDMatrix") refuse(n, s + " used as a value — call one of its methods");
         refuse(n, "the name " + s + ", which the board does not know");
     }
 
@@ -785,8 +786,9 @@ private:
             refuse(m, "a method call of a form the board does not have");
         const std::string& n = m->method;
         auto args = argsOf(m->args);
-        if (m->inv && m->inv->kind == NK::NameTerm && static_cast<NameTerm*>(m->inv.get())->name == "Serial")
-            refuse(m, "Serial." + n + " used as a value");
+        if (m->inv && m->inv->kind == NK::NameTerm &&
+            (static_cast<NameTerm*>(m->inv.get())->name == "Serial" || static_cast<NameTerm*>(m->inv.get())->name == "LEDMatrix"))
+            refuse(m, static_cast<NameTerm*>(m->inv.get())->name + "." + n + " used as a value — it answers nothing");
         if (n == "elems" || n == "end") {
             if (!args.empty() || !m->inv || m->inv->kind != NK::VarExpr) refuse(m, "." + n + " of something other than a constant list or a shaped native array");
             const std::string& vn = static_cast<VarExpr*>(m->inv.get())->name;
@@ -984,6 +986,7 @@ private:
                 auto* u = static_cast<UseStmt*>(s);
                 if (u->isRequire) refuse(s, "`require` — the board loads nothing while it runs");
                 if (u->module == "Arduino" && !u->isNo) useArduino_ = true;
+                if (u->module == "Arduino::LEDMatrix" && !u->isNo) useMatrix_ = true;
                 return;
             }
             case NK::SubDecl: refuse(s, "a sub declared inside a block — declare it at the top level");
@@ -1049,11 +1052,43 @@ private:
                 }
                 refuse(e, "Serial." + m->method + " — the board's Serial has begin, print and println");
             }
+            if (m->inv && m->inv->kind == NK::NameTerm && static_cast<NameTerm*>(m->inv.get())->name == "LEDMatrix") {
+                matrixCall(m, o, in);
+                return;
+            }
             o << ind(in) << "(void)" << method(m, false).c << ";\n";
             return;
         }
         Ex x = expr(e);
         o << ind(in) << (e->kind == NK::Assign || e->kind == NK::Unary ? "" : "(void)") << x.c << ";\n";
+    }
+
+    // The Uno R4 WiFi's matrix (`use Arduino::LEDMatrix`): one global
+    // ArduinoLEDMatrix of the core's Arduino_LED_Matrix library. A frame is
+    // copied into a local array of three words, so a table of any element
+    // type, or a shaped array the board computes as it runs, can be shown.
+    void matrixCall(MethodCall* m, std::ostream& o, int in) {
+        if (!useMatrix_) refuse(m, "LEDMatrix is not declared — did you mean to `use Arduino::LEDMatrix`?");
+        auto args = argsOf(m->args);
+        const std::string& n = m->method;
+        matrixUsed_ = true;
+        if (n == "begin" && args.empty()) { o << ind(in) << "rk_matrix.begin();\n"; return; }
+        if (n == "clear" && args.empty()) { o << ind(in) << "{ uint32_t rk_z[3] = {0, 0, 0}; rk_matrix.loadFrame(rk_z); }\n"; return; }
+        if (n == "show" && args.size() == 1 && args[0]->kind == NK::VarExpr) {
+            const std::string& vn = static_cast<VarExpr*>(args[0])->name;
+            std::string L = lineOf(m), w[3];
+            if (const Var* v = findVar(vn); v && v->array && v->n == 3 && isIntT(v->t)) {
+                for (int i = 0; i < 3; i++) w[i] = "(uint32_t)rk_at(" + v->c + ", " + std::to_string(i) + ", " + L + ")";
+            } else if (const Const* c = findConst(vn); c && c->table && c->n == 3 && isIntT(c->et)) {
+                for (int i = 0; i < 3; i++) w[i] = "(uint32_t)rk_tab(" + c->c + ", " + std::to_string(i) + ", " + L + ")";
+            } else {
+                refuse(m, "LEDMatrix.show of " + vn + " — a frame is a constant list or a shaped integer array of three "
+                          "32-bit words; make one with `frame`");
+            }
+            o << ind(in) << "{ uint32_t rk_f[3] = {" << w[0] << ", " << w[1] << ", " << w[2] << "}; rk_matrix.loadFrame(rk_f); }\n";
+            return;
+        }
+        refuse(m, "LEDMatrix." + n + " — the matrix has begin, show(@frame) and clear");
     }
 
     void forStmt(ForStmt* f, std::ostream& o, int in) {
@@ -1283,8 +1318,10 @@ std::string Emitter::run() {
     out << "// Generated by `rakupp --target=arduino` (Raku++ " << opt_.version << ") from " << opt_.srcName << ".\n"
         << "// An Arduino sketch: open it in the Arduino IDE, or build it with arduino-cli.\n"
         << "// `rakupp --target=arduino --sim` builds it for this computer instead, on a simulated board.\n"
-        << "#include <Arduino.h>\n#include <stdint.h>\n#include <string.h>\n#include <math.h>\n\n"
-        << kPrelude;
+        << "#include <Arduino.h>\n#include <stdint.h>\n#include <string.h>\n#include <math.h>\n";
+    if (matrixUsed_) out << "#include \"Arduino_LED_Matrix.h\"   // the Uno R4 WiFi's matrix, from its core\n";
+    out << "\n" << kPrelude;
+    if (matrixUsed_) out << "\nstatic ArduinoLEDMatrix rk_matrix;\n";
     if (!globals_.str().empty()) out << "\n" << globals_.str();
     if (!protos_.str().empty()) out << "\n" << protos_.str();
     out << "\nvoid setup() {\n";

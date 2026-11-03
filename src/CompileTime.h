@@ -52,6 +52,7 @@ struct CtTable {
     // variables (name, value as Raku source) restored in their place
     bool dropBegins = false;
     std::vector<std::pair<std::string, std::string>> restore;
+    bool failed = false;   // the compile-time code died while building (it said why on stderr)
     bool empty() const { return subs.empty() && !dropBegins; }
 };
 

@@ -60,6 +60,7 @@ embed_file(BLOB_BD_JSON_RAKU kBdJsonRaku "${SRC_DIR}/rakulib/JSON/Native/Raku.ra
 # shadow, so no -I path or store can stand in for it, and the host core a
 # `--target=arduino --sim` build compiles a sketch against rides along with it.
 embed_file(BLOB_SH_ARDUINO kShArduino "${SRC_DIR}/rakulib/Arduino.rakumod")
+embed_file(BLOB_SH_ARDUINO_MATRIX kShArduinoMatrix "${SRC_DIR}/rakulib/Arduino/LEDMatrix.rakumod")
 embed_file(BLOB_ARDUINO_SIM kArduinoSim "${SRC_DIR}/src/codegen/ArduinoSim.h")
 
 # The fixed half of the output. docToolSource() splices the two guides into
@@ -119,6 +120,8 @@ void registerShadowModules() {
         reinterpret_cast<const char*>(kBdJsonRaku), kBdJsonRakuLen);
     rakuppRegisterShadowModule(\"Arduino\",
         reinterpret_cast<const char*>(kShArduino), kShArduinoLen);
+    rakuppRegisterShadowModule(\"Arduino::LEDMatrix\",
+        reinterpret_cast<const char*>(kShArduinoMatrix), kShArduinoMatrixLen);
 }
 
 std::string arduinoSimCore() {
@@ -147,6 +150,7 @@ ${BLOB_SH_CSTRUCT}
 ${BLOB_SH_POINTER}
 ${BLOB_BD_JSON_RAKU}
 ${BLOB_SH_ARDUINO}
+${BLOB_SH_ARDUINO_MATRIX}
 ${BLOB_ARDUINO_SIM}
 ${EPILOGUE}")
 

@@ -194,6 +194,7 @@ add_custom_command(
           "${CMAKE_CURRENT_SOURCE_DIR}/rakulib/NativeHelpers/Pointer.rakumod"
           "${CMAKE_CURRENT_SOURCE_DIR}/rakulib/JSON/Native/Raku.rakumod"
           "${CMAKE_CURRENT_SOURCE_DIR}/rakulib/Arduino.rakumod"
+          "${CMAKE_CURRENT_SOURCE_DIR}/rakulib/Arduino/LEDMatrix.rakumod"
           "${CMAKE_CURRENT_SOURCE_DIR}/src/codegen/ArduinoSim.h"
           "${CMAKE_CURRENT_SOURCE_DIR}/cmake/EmbedTools.cmake"
   COMMENT "Embedding the install, doc and upgrade tools"

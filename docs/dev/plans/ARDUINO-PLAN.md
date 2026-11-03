@@ -13,16 +13,31 @@ landed and where it departs from this draft is in "Where it stands".*
 `--target=arduino` emits a sketch; `--target=arduino --sim` builds it for the
 host against a simulated board; `rakupp prog.raku` runs a `use Arduino`
 program on the same simulated board. User guide:
-[ARDUINO.md](../../guide/ARDUINO.md). Gate: `t/arduino/run.raku` (34 checks
+[ARDUINO.md](../../guide/ARDUINO.md). Gate: `t/arduino/run.raku` (41 checks
 with `--arduino15`, ~5 s), one check in `t/run.raku`.
 
-Measured on the gate's seven programs: each one's transcript under the
+Measured on the gate's eight programs: each one's transcript under the
 interpreter equals its golden, and its `--sim` sketch writes the same bytes on
-stdout and stderr and exits the same way. Every sketch compiles for an Arduino
-Due with the SAM core 1.6.12 and its arm-none-eabi-gcc 4.8.3 under
-`-Wall -Werror`: blink is 102 bytes of code, `features.raku` 1,830 bytes of
-code and 29 of RAM (`-Os`, the sketch's object, the core not linked). Not yet
-tried: an AVR board (no avr-gcc on the machine), real hardware.
+stdout and stderr and exits the same way. Every sketch but the LED-matrix one
+compiles for an Arduino Due with the SAM core 1.6.12 and its
+arm-none-eabi-gcc 4.8.3 under `-Wall -Werror`: blink is 102 bytes of code,
+`features.raku` 1,830 bytes of code and 29 of RAM (`-Os`, the sketch's object,
+the core not linked). Not yet tried: an AVR board (no avr-gcc on the
+machine), the Uno R4 core, real hardware.
+
+**The Uno R4 WiFi's LED matrix (2026-11-03).** `use Arduino::LEDMatrix`, a
+second shadow module (rakulib/Arduino/LEDMatrix.rakumod), is the first C++
+library object: `LEDMatrix.begin`, `.show(@frame)` and `.clear` become the
+core's Arduino_LED_Matrix calls on one global `ArduinoLEDMatrix`, and the
+sketch includes the header only when the program uses them. `frame` packs a
+picture into the library's three words while building; Arduino's tutorial
+heart packs to the tutorial's own `3184a444 44042081 100a0040`, which is what
+pins the bit order without the library at hand. Both simulators draw a frame
+that changes the picture on stderr. The sketch has not been compiled against
+the real header: the Uno R4 core is not installed on the machine. A
+compile-time error now stops an Arduino build at once
+(`CtTable::failed`), where it used to fall through to a refusal of the
+constant it left behind.
 
 | phase | state |
 |---|---|
@@ -31,7 +46,7 @@ tried: an AVR board (no avr-gcc on the machine), real hardware.
 | A2 | sized natives in parameters, results, locals, globals and `state`; `die` → message and halt; not yet: the `int` and `num` policy per board, printing a num |
 | A3 | shaped native arrays, global and local; not yet: `repr('CStruct')` classes, enums |
 | A4 | `--sim` (a host build, not in the draft); not yet: `--firmware`, `--upload`, the size report |
-| A5 | not started |
+| A5 | the first C++ library object, the Uno R4 WiFi's LED matrix (frames, not yet animations); not yet: interrupts, a general way to declare a library class |
 
 Where the implementation departs from the draft below, and why:
 
