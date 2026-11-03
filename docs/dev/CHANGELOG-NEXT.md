@@ -44,7 +44,7 @@ ad7f05dc and e6777420 (issue #77); 608774f1 and 5321f41c (issue #217); 636f69d0 
 56309f17 (--target=arduino); 42618157 (Text::CSV and JSON::Unmarshal);
 89d80faa (a `my token` in a variable); b81021ba (PERF-REVIEW-2026-11-02
 §6); 6617859d (typed scalar stores); 34d05b96 (use Arduino::LEDMatrix);
-d23c2ed8 (a variable's `where`).*
+d23c2ed8 (a variable's `where`); 0d9ea1ca (a variable's `:D` and `:U`).*
 
 ---
 
@@ -478,6 +478,21 @@ plain before 500c29e2 and native from it, unless they say otherwise.
   (version 58), a routine that declares one runs interpreted, and a compiled
   routine checks every store into an outer variable declared with one and
   gives it no lane; an outer variable without one keeps its lane.
+- **A variable's `:D` and `:U` are checked from the parse cache, in a compiled
+  routine and in an interpreted `op=`, `++` or `cas`** (0d9ea1ca). The parse
+  cache did not write a variable's smiley, and a bundled program's routines
+  are compiled from it: `my Int:D $x = 5; $x = $int` held Int under `--exe`
+  and `--exe -O`, where Rakudo dies with X::TypeCheck::Assignment, and `my
+  Int:U $x; $x = $five` held 5. A compiled routine's store into an outer `my
+  Int:D $c` took Int too, and a Nil reset it to Int. Interpreted, `=` checked
+  the smiley, but `cas`, `⚛=`, `op=`, `//=` and `++` did not: `my Int:U $x;
+  $x++` held 1. A module read from the parse cache lost five more of a
+  declaration's fields: a Rat was coerced into a `my Int(Str) $x`, `(state @s)
+  = 1, 2` was assigned on the first call only, a `my constant` became a
+  package symbol, `my ::foo $x` held Any and a bare `my S $s` of a subset with
+  no type object to start from held one. The cache writes all six (version
+  59), a routine that declares a smiley runs interpreted, and each of those
+  stores checks it.
 - **Compiled `try` consumes a live Failure** (42f79e98), as interpreted: a block
   that returned one handed the Failure back and left `$!` unset; now `try`
   answers Nil, sets `$!` and marks the Failure handled.
@@ -1918,6 +1933,16 @@ does not.
   a subset. `loop (my int $k …)` inside a top-level `try { }` fails to
   compile under `-O`: the header's `my` is never declared. (The `where`
   cases found beside them are fixed in d23c2ed8.)
-- Found with d23c2ed8, the same before it: the parse cache drops a
-  variable's `:D` and `:U`, so `my Int:D $x = 5; $x = Int` in a module read
-  from the cache stores the type object, where its first run dies.
+- Found with 0d9ea1ca, the same before it: a list assignment checks none of its
+  targets' declarations, interpreted. `my Int $a = 1; ($a, my $b) = $str,
+  2` stores the Str, and a `where`, a `:D` and a `:U` are skipped the same
+  way, as in `my (Int:D $a, $b) = $int, 2`; Rakudo dies on each. (The parse
+  cache's `:D` and `:U`, found with d23c2ed8, are fixed in 0d9ea1ca.)
+- Found with 0d9ea1ca, the same before it: a react's `whenever $promise`
+  body is not held back while another of the react's bodies runs, so in
+  `whenever Promise.in(0.05) { $v.keep(2); log 'after keep' }` the kept
+  promise's body can log first, where Rakudo runs one body at a time.
+  t/regression/promise-whenever-fires-later-and-in-turn.raku loses that
+  race now and then; built with `--exe`, it lost it in 0–2 of 40 runs
+  before 0d9ea1ca and 9–15 of 40 after, as it does with the cache's larger
+  blob alone (the new fields written and discarded on reading).
