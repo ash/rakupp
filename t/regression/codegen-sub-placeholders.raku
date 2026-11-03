@@ -11,6 +11,16 @@
 # gives such a sub the signature its placeholders imply (positionals in sorted
 # order, `$:name` named) and binds, counts and introspects it from that.
 #
+# A placeholder's bare name is the same variable — `$^c` declares the block's
+# `$c`, which the body may write without the twigil after its first mention —
+# and the codegen named the two apart: `$^x` was `v_s_5ex` and a later `$x`
+# was `v_sx`. So `sub f { $^x ~ $x }` referenced an undeclared variable and
+# --exe failed with no fallback (roast/S32-io/IO-Socket-INET.t is that shape,
+# reached once 762ce0e2 compiled its `:D` variables), and a block
+# `{ print $^c; say $c }` under an outer `my $c = 100` compiled to the OUTER
+# variable and printed 100 where Rakudo prints 42. A placeholder is now
+# named by its bare name.
+#
 # Guarded here: interpreted, --exe and --exe -O each print what Rakudo prints,
 # and both compiled builds are NATIVE — a bundle fallback runs the interpreter
 # and would pass without testing the codegen at all.
@@ -36,6 +46,15 @@ my $src = q:to/RAKU/;
         inner($k, 'z') ~ ' ' ~ &inner.signature.raku
     }
     say outer('a');
+    sub bare { $^x ~ '/' ~ $x }
+    say bare('p');
+    sub nbare { $:v ~ '|' ~ $v }
+    say nbare(:v<q>);
+    sub take(&b) { b(42) }
+    my $c = 100;
+    take { print $^c, ' '; say $c };
+    take { print $^d, ' '; { my $d = 5; print $d, ' ' }; say $d };
+    say (1, 2, 3).map({ $^a * 10 + $a });
     RAKU
 
 # What Rakudo prints for $src, verbatim
@@ -47,6 +66,11 @@ my $want = q:to/OUT/.chomp;
     6
     3628800
     a/z :($p, $q)
+    p/p
+    q|q
+    42 42
+    42 5 42
+    (11 22 33)
     OUT
 
 my $bin = $*EXECUTABLE.absolute;

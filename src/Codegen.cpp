@@ -147,9 +147,53 @@ static std::string declInit(const std::string& type, char sigil) {
     return "rtTypedDefault(" + cesc(type) + ", '" + std::string(1, sigil) + "')";
 }
 
+// The name a placeholder declares: `$^c` (and the named `$:c`) is the block's
+// `$c`, which the body may also write without the twigil once the placeholder
+// is in it — the interpreter's binder defines only the bare name. "" for any
+// other name (`$::x` is a package lookup, not a placeholder).
+static std::string placeholderBare(const std::string& n) {
+    if (n.size() > 2 && (n[1] == '^' || (n[1] == ':' && n[2] != ':'))) return n.substr(0, 1) + n.substr(2);
+    return "";
+}
+// …so the name sets the closure analysis keys on carry both spellings
+static void insertName(std::set<std::string>& s, const std::string& n) {
+    s.insert(n);
+    if (std::string b = placeholderBare(n); !b.empty()) s.insert(b);
+}
+// Whether a body's own top level declares NAME (`my $c` after `$^c`, which
+// Rakudo only warns about). The placeholder and its bare name are one C++
+// local, so a second declaration of it would not compile: such a routine is
+// refused instead, and the program falls back to bundling.
+static bool declaresAtTop(const std::vector<StmtPtr>& body, const std::string& name) {
+    auto isDecl = [&](Expr* x) {
+        if (x && x->kind == NK::Assign) x = static_cast<Assign*>(x)->target.get();
+        return x && x->kind == NK::VarExpr && static_cast<VarExpr*>(x)->declare &&
+               static_cast<VarExpr*>(x)->name == name;
+    };
+    for (auto& st : body) {
+        if (st->kind == NK::VarDecl) {
+            for (auto& n : static_cast<VarDecl*>(st.get())->names) if (n == name) return true;
+        } else if (st->kind == NK::ExprStmt) {
+            Expr* e = static_cast<ExprStmt*>(st.get())->e.get();
+            if (isDecl(e)) return true;
+            if (e && e->kind == NK::ListExpr)
+                for (auto& it : static_cast<ListExpr*>(e)->items) if (isDecl(it.get())) return true;
+        }
+    }
+    return false;
+}
+static void refuseRedeclaredPlaceholders(const std::vector<std::string>& phs, const std::vector<StmtPtr>& body) {
+    for (auto& ph : phs)
+        if (std::string b = placeholderBare(ph); !b.empty() && declaresAtTop(body, b))
+            unsupported("a block that declares " + b + " beside its placeholder " + ph);
+}
+
 std::string mangleVar(const std::string& name) {
     // keep the sigil (tagged) so `$x` / `@x` / `%x` / `&x` are distinct C++ names
     char sigil = (!name.empty() && (name[0] == '$' || name[0] == '@' || name[0] == '%' || name[0] == '&')) ? name[0] : 0;
+    // a placeholder is its bare name, so `$^c` and a later `$c` are one local
+    // (they were two, and `$c` compiled to an outer `$c`, or to nothing)
+    if (std::string b = placeholderBare(name); sigil && !b.empty()) return mangleVar(b);
     std::string body = sigil ? name.substr(1) : name;
     char tag = sigil == '@' ? 'a' : sigil == '%' ? 'h' : sigil == '&' ? 'c' : 's'; // sigilless → 's'
     return std::string("v_") + tag + mangleBody(body);
@@ -175,7 +219,9 @@ struct Codegen {
         auto it = phParams_.find(d);
         if (it != phParams_.end()) return it->second;
         std::vector<Param> ps;
-        for (auto& ph : computePlaceholders(d->body)) {
+        const std::vector<std::string> phs = computePlaceholders(d->body);
+        refuseRedeclaredPlaceholders(phs, d->body);
+        for (auto& ph : phs) {
             if (ph.size() < 3) continue;
             Param p; p.name = ph; p.sigil = ph[0];
             if (ph[1] == ':') { p.named = true; p.namedKey = ph.substr(2); }
@@ -729,10 +775,15 @@ struct Codegen {
     void markParams(const std::vector<Param>& ps) {
         for (const Param& p : ps) {
             if (p.name.size() < 2) continue;
+            const std::string bare = placeholderBare(p.name);   // `$x` writes `$^x` too
             if (p.name[0] == '$' && !p.isRw && !p.isCopy && !p.isRaw && !p.slurpy && !p.invocant &&
-                p.name[1] != '!' && p.name[1] != '.')
+                p.name[1] != '!' && p.name[1] != '.') {
                 readonlyVars_.insert(p.name);
-            else readonlyVars_.erase(p.name);
+                if (!bare.empty()) readonlyVars_.insert(bare);
+            } else {
+                readonlyVars_.erase(p.name);
+                if (!bare.empty()) readonlyVars_.erase(bare);
+            }
         }
     }
     void checkWritable(Expr* e) {
@@ -1849,7 +1900,7 @@ struct Codegen {
                     auto* be = static_cast<BlockExpr*>(e);
                     std::set<std::string> inner;
                     for (auto& p : be->params) if (!p.name.empty()) inner.insert(p.name);
-                    for (auto& ph : computePlaceholders(be->body)) inner.insert(ph);
+                    for (auto& ph : computePlaceholders(be->body)) insertName(inner, ph);
                     collectMutatedCaptures(be->body, inner, /*inClosure=*/true, out);
                     break; }
                 default: break;
@@ -1874,7 +1925,7 @@ struct Codegen {
                     auto* d = static_cast<SubDecl*>(s);
                     if (d->isMethod) break;
                     std::set<std::string> inner; // its own params only — see BlockExpr note
-                    for (auto& p : sigOf(d)) if (!p.name.empty()) inner.insert(p.name);
+                    for (auto& p : sigOf(d)) if (!p.name.empty()) insertName(inner, p.name);
                     collectMutatedCaptures(d->body, inner, /*inClosure=*/true, out);
                     break; }
                 default: {
@@ -2079,7 +2130,7 @@ struct Codegen {
         Nest __nest{this, 's'};
         RoutineScope __rs{this, ""};
         std::set<std::string> params;
-        for (auto& p : sigOf(d)) if (!p.name.empty()) params.insert(p.name);
+        for (auto& p : sigOf(d)) if (!p.name.empty()) insertName(params, p.name);
         checkClosureCapture(d->body, params); // against the OUTER scope's cells
         std::vector<std::string> outerCells = cellsLive_;
         BodyScope __bs{this, /*closure=*/false};
@@ -2254,7 +2305,9 @@ struct Codegen {
         bool pushed = false; std::string topic;
         std::vector<std::string> phs = be->params.empty() ? computePlaceholders(be->body)
                                                           : std::vector<std::string>{};
-        std::set<std::string> own(phs.begin(), phs.end());
+        refuseRedeclaredPlaceholders(phs, be->body);
+        std::set<std::string> own;
+        for (auto& ph : phs) insertName(own, ph);
         for (auto& p : be->params) if (!p.name.empty()) own.insert(p.name);
         checkClosureCapture(be->body, own);
         analyzeCells(be->body, own);
@@ -7091,7 +7144,7 @@ struct Codegen {
         struct CurParams { Codegen* g; const std::vector<Param>* saved; ~CurParams() { g->curParams_ = saved; } }
             __cp{this, std::exchange(curParams_, &ps)};
         std::set<std::string> params;
-        for (auto& p : ps) params.insert(p.name);
+        for (auto& p : ps) insertName(params, p.name);
         analyzeCells(d->body, params);
         if (!cellVars_.empty()) return false;   // a local a closure shares: none here
         markParams(ps);
@@ -9304,7 +9357,7 @@ struct Codegen {
         struct CurParams { Codegen* g; const std::vector<Param>* saved; ~CurParams() { g->curParams_ = saved; } }
             __cp{this, std::exchange(curParams_, &ps)};
         std::set<std::string> params;
-        for (auto& p : ps) if (!p.name.empty()) params.insert(p.name);
+        for (auto& p : ps) if (!p.name.empty()) insertName(params, p.name);
         analyzeCells(body, params);
         if (fast) {
             markParams(ps);   // (bindParams does this on the boxed path)
