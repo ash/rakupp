@@ -43,7 +43,7 @@ parentheses); 9695e120, 1d5e98c0, 4df715fc, c423e9db, 5ebfc05f, 3f0baa68,
 ad7f05dc and e6777420 (issue #77); 608774f1 and 5321f41c (issue #217); 636f69d0 (a program from a URL);
 56309f17 (--target=arduino); 42618157 (Text::CSV and JSON::Unmarshal);
 89d80faa (a `my token` in a variable); b81021ba (PERF-REVIEW-2026-11-02
-§6); 6617859d (typed scalar stores).*
+§6); 6617859d (typed scalar stores); d23c2ed8 (a variable's `where`).*
 
 ---
 
@@ -453,6 +453,19 @@ plain before 500c29e2 and native from it, unless they say otherwise.
   type checks more than its guard does (a subset, UInt, a class), so that
   loop runs boxed. Untyped, `my Int`, `my Num` and `my Str` slots keep their
   lanes, and an untyped store compiles to the same C++ as before.
+- **A variable's `where` is checked in a routine, in a compiled routine and
+  from the parse cache** (d23c2ed8). An untyped `my $x where * < 10` in a sub
+  or an inline block took any value interpreted (`$x = $one + 100` held
+  101). The parse cache did not write a variable's `where`, and a bundled
+  program's routines are compiled from it, so a compiled routine never saw a
+  local's: `my Int $x where * < 10 = 5; $x += 100` held 105 under `--exe`
+  and `--exe -O`, where Rakudo dies with X::TypeCheck::Assignment, and a
+  module read from the parse cache took any value from its second run on.
+  Nor did a compiled routine see an outer one's in an untyped `op=` or `++`,
+  or in a loop lane, untyped or `my Int`. The cache now writes the `where`
+  (version 58), a routine that declares one runs interpreted, and a compiled
+  routine checks every store into an outer variable declared with one and
+  gives it no lane; an outer variable without one keeps its lane.
 - **Compiled `try` consumes a live Failure** (42f79e98), as interpreted: a block
   that returned one handed the Failure back and left `$!` unset; now `try`
   answers Nil, sets `$!` and marks the Failure handled.
@@ -1890,9 +1903,9 @@ does not.
   `my rule` keeps its whitespace significant.
 - Found with 6617859d, the same before it: the interpreter's `$u -= 5` on a
   `my UInt` gives -2, its `op=` check running only when the program declares
-  a subset. A `where` on an untyped variable is not checked by the
-  interpreter; a bundled program's compiled routine drops a local's `where`
-  (`my Int $x where * < 10 = 5; $x += 100` holds 105), and its loop lanes,
-  and its `op=` on an untyped one, do not see an outer variable's `where`.
-  `loop (my int $k …)` inside a top-level `try { }` fails to compile under
-  `-O`: the header's `my` is never declared.
+  a subset. `loop (my int $k …)` inside a top-level `try { }` fails to
+  compile under `-O`: the header's `my` is never declared. (The `where`
+  cases found beside them are fixed in d23c2ed8.)
+- Found with d23c2ed8, the same before it: the parse cache drops a
+  variable's `:D` and `:U`, so `my Int:D $x = 5; $x = Int` in a module read
+  from the cache stores the type object, where its first run dies.
