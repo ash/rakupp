@@ -15,10 +15,11 @@
 # the interpreter (rtOuterScalarStore), but an untyped one's `op=` and `++`
 # did not, and a loop lane over one, untyped or `my Int`, wrote `.i`.
 #
-# Now the slot is not simple, the cache carries the `where` (v58), a routine
-# that declares one runs interpreted, and a routine compiled in module mode
-# checks every store into an outer name declared with a `where`
-# (whereScalarNames) and gives it no lane.
+# Now the slot is not simple, the cache carries the `where` (v58), and a
+# routine compiled in module mode checks every store into an outer name
+# declared with a `where` (whereScalarNames) and gives it no lane. A routine
+# that declares one ran interpreted; it is compiled now, and each store asks
+# the `where` inline (Codegen::whereTest).
 #
 # This file holds the interpreter, `--exe` and `--exe -O` to Rakudo 2026.09's
 # lines, checks the AOT report and the kept C++ of `-O`, and runs a module
@@ -32,6 +33,7 @@ $dir.mkdir;
 LEAVE { try { my sub rm($d) { for $d.dir { $_.d ?? rm($_) !! .unlink }; $d.rmdir }; rm($dir) } }
 
 my $src = q:to/END/;
+    subset Bundled of Int;   # (a program-level subset bundles the program)
     my $one = 1;
     sub e($c) { say (try $c()) // "died {$!.^name}" }
     my $t where * < 10 = 5;
@@ -105,9 +107,8 @@ $f.spurt($src);
 my $interp = run($bin, $f.absolute, :out, :err);
 held('interpreted', $interp.out.slurp(:close)); $interp.err.slurp(:close);
 
-# A routine that declares a `where` runs interpreted; the ones writing an
-# outer one are compiled, or the lines above say nothing about their stores.
-my %native = <e o-loop o-add o-eq o-inc oi-loop oi-add count>.map(* => True);
+# Every routine is compiled, the ones declaring a `where` and the ones writing
+# an outer one, or the lines above say nothing about their stores.
 for (('--exe', '-O'), ('--exe',)) -> @mode {
     my $exe = $dir.add("where-{+@mode}.bin");
     my $report = $dir.add("where-{+@mode}.report");
@@ -119,8 +120,7 @@ for (('--exe', '-O'), ('--exe',)) -> @mode {
     @fail.push("{@mode}: {+@r} routines reported, want 21") unless @r == 21;
     for @r -> @row {
         my $name = @row[3].subst(/^ 'sub '/, '');
-        my $how = %native{$name} ?? 'native' !! 'interpreted';
-        @fail.push("{@mode}: $name is {@row[4]}, want $how") unless @row[4] eq $how;
+        @fail.push("{@mode}: $name is {@row[4]}, want native") unless @row[4] eq 'native';
     }
     my $r = run($exe.absolute, :out, :err);
     held(@mode.join(' '), $r.out.slurp(:close)); $r.err.slurp(:close);

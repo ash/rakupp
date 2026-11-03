@@ -641,9 +641,11 @@ private:
     // whether that declaration is a native int. A read resolves to the NEAREST
     // frame that declares its name — see VarExpr::nativeIntRead.
     std::vector<std::map<std::string, char>> nativeIntDecl_ = {{}};   // 0 boxed, 'i' int, 'n' num
-    // …and, beside it, the type each declaration gave its name ("" untyped):
-    // VarExpr::lexResolved / readType
-    std::vector<std::map<std::string, std::string>> scalarDeclType_ = {{}};
+    // …and, beside it, the type each declaration gave its name ("" untyped),
+    // its `:D`/`:U` and its `where`: VarExpr::lexResolved, readType, readSmiley
+    // and readWhereOwn
+    struct ScalarDecl { std::string type; char smiley = 0; std::shared_ptr<Expr> where; };
+    std::vector<std::map<std::string, ScalarDecl>> scalarDeclType_ = {{}};
     std::vector<std::pair<std::string, std::string>> pendingParamType_;
     // …and, frame for frame with it, the names a typed read-only `$`
     // parameter declared: VarExpr::bareParam

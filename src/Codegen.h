@@ -1,6 +1,7 @@
 #pragma once
 #include "Ast.h"
 #include <functional>
+#include <map>
 #include <set>
 #include <string>
 #include <vector>
@@ -93,6 +94,7 @@ struct AotNames {
     std::set<std::string> callEnv, rwSubs, rwMethods, types, ops;
     std::set<std::string> nativeArrays;   // the module's `@` names declared native, any width (nativeArrayNames)
     std::set<std::string> whereScalars;   // …and its `$` names declared with a `where` (whereScalarNames)
+    std::map<std::string, const SubsetDecl*> subsets;   // …and the subsets a store checks inline (inlineSubsets)
 };
 // The `@` names a program declares with a native element type, in any scope
 // (`my int @a`, `my int8 @b`, `my str @c`): its routines compiled in module
@@ -102,6 +104,10 @@ std::set<std::string> nativeArrayNames(const Program& p);
 // compiled in module mode checks its stores into an outer one of them, an
 // untyped one too, and gives it no lane
 std::set<std::string> whereScalarNames(const Program& p);
+// The subsets a program declares once, at its top level, of a core type whose
+// values are known inline, with a `where` that reads nothing but the value: a
+// store into a variable of one asks its `where` inline
+std::map<std::string, const SubsetDecl*> inlineSubsets(const Program& p);
 // `delegatedLines`, when given, receives the source line of every statement
 // the body hands to the interpreter (RAKUPP_AOT_REPORT). `optimize` is the
 // program's `-O`.

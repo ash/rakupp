@@ -11453,7 +11453,7 @@ void Parser::noteScalarDecls(const Expr* e) {
     if (!ve->declare || ve->name.size() < 2 || ve->name[0] != '$') return;
     scalarDeclTypes_.back()[ve->name] = ve->d().declType;
     nativeIntDecl_.back()[ve->name] = nativeScalarKind(ve->d().declType);
-    scalarDeclType_.back()[ve->name] = ve->d().declType;
+    scalarDeclType_.back()[ve->name] = {ve->d().declType, ve->d().declSmiley, ve->d().declWhereOwn};
     bareParamDecl_.back().erase(ve->name);
 }
 
@@ -11474,7 +11474,8 @@ void Parser::resolveScalarDecl(VarExpr& e) {
         auto it = fr->find(e.name);
         if (it != fr->end()) {
             e.lexResolved = true;
-            if (!it->second.empty()) e.dm().readType = it->second;
+            if (!it->second.type.empty()) e.dm().readType = it->second.type;
+            if (it->second.smiley || it->second.where) { e.dm().readSmiley = it->second.smiley; e.dm().readWhereOwn = it->second.where; }
             const size_t at = (size_t)(scalarDeclType_.rend() - fr) - 1;
             e.bareParam = at < bareParamDecl_.size() && bareParamDecl_[at].count(e.name);
             break;
@@ -11629,7 +11630,7 @@ std::unique_ptr<Block> Parser::parseBlock() {
     for (auto& pn : pendingParamNative_) nativeIntDecl_.back()[pn.first] = pn.second;
     pendingParamNative_.clear();
     scalarDeclType_.emplace_back();
-    for (auto& pt : pendingParamType_) scalarDeclType_.back()[pt.first] = pt.second;
+    for (auto& pt : pendingParamType_) scalarDeclType_.back()[pt.first] = {pt.second};
     pendingParamType_.clear();
     bareParamDecl_.emplace_back(pendingParamBare_.begin(), pendingParamBare_.end());
     pendingParamBare_.clear();

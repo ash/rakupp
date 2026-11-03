@@ -2816,19 +2816,27 @@ void Interpreter::varSmileyCheck(const std::string& nm, const Value& rhs) {
         if (si != en->xr().varSmiley.end()) {
             auto di = en->xr().varDefault.find(nm);
             const bool def = rhs.t == VT::Nil ? di != en->xr().varDefault.end() && isDefined(di->second) : isDefined(rhs);
-            if ((si->second == 'D' && !def) || (si->second == 'U' && def && rhs.t != VT::Nil)) {
-                std::string want = di != en->xr().varDefault.end() && di->second.t == VT::Type
-                                 ? std::string(di->second.s.c_str()) : std::string("Any");
-                want += si->second == 'D' ? ":D" : ":U";
-                throwTypedV("X::TypeCheck::Assignment",
-                    {{"got", rhs}, {"expected", Value::typeObj(want)}, {"symbol", Value::str(nm)}},
-                    "Type check failed in assignment to " + nm + "; expected " + want +
-                    " but got " + rhs.typeName() + (isDefined(rhs) ? " (" + rhs.gist() + ")" : ""));
-            }
+            if ((si->second == 'D' && !def) || (si->second == 'U' && def && rhs.t != VT::Nil))
+                smileyRefused(nm, rhs, di != en->xr().varDefault.end() && di->second.t == VT::Type
+                                       ? std::string(di->second.s.c_str()) : std::string("Any"), si->second);
             return;
         }
         if (en->local(nm)) return;
     }
+}
+void Interpreter::smileyRefused(const std::string& nm, const Value& rhs, std::string want, char sm) {
+    want += sm == 'D' ? ":D" : ":U";
+    throwTypedV("X::TypeCheck::Assignment",
+        {{"got", rhs}, {"expected", Value::typeObj(want)}, {"symbol", Value::str(nm)}},
+        "Type check failed in assignment to " + nm + "; expected " + want +
+        " but got " + rhs.typeName() + (isDefined(rhs) ? " (" + rhs.gist() + ")" : ""));
+}
+// --exe: a store into a compiled `my T:D $x` / `my T:U $x` (Codegen::scalarStore),
+// as varSmileyCheck has the interpreter's: no `is default` compiles, so a Nil is
+// refused by a `:D` and resets a `:U` to its type
+void Interpreter::rtSmileyStore(const Value& rhs, char sm, const char* want, const char* nm) {
+    const bool def = rhs.t != VT::Nil && isDefined(rhs);
+    if ((sm == 'D' && !def) || (sm == 'U' && def)) smileyRefused(nm, rhs, want, sm);
 }
 
 // `my $x where Int|Num` — every assignment asks the constraint, a smartmatch
@@ -2856,16 +2864,20 @@ void Interpreter::varWhereCheck(const std::string& nm, const Value& rhs) {
                     else ok = boolify(smartmatchValue("~~", rhs, cv));
                 } catch (...) { tctx().cur = saved; throw; }
                 tctx().cur = saved;
-                if (!ok)
-                    throwTypedV("X::TypeCheck::Assignment",
-                        {{"got", rhs}, {"expected", Value::typeObj("<anon>")}, {"symbol", Value::str(nm)}},
-                        "Type check failed in assignment to " + nm + "; expected <anon> but got " +
-                        rhs.typeName() + (isDefined(rhs) ? " (" + typeCheckRepr(rhs) + ")" : ""));
+                if (!ok) rtWhereRefused(rhs, nm.c_str());
                 return;
             }
         }
         if (en->local(nm)) return;
     }
+}
+
+// …and its refusal, which a compiled store's inline check throws too
+void Interpreter::rtWhereRefused(const Value& rhs, const char* nm) {
+    throwTypedV("X::TypeCheck::Assignment",
+        {{"got", rhs}, {"expected", Value::typeObj("<anon>")}, {"symbol", Value::str(nm)}},
+        std::string("Type check failed in assignment to ") + nm + "; expected <anon> but got " +
+        rhs.typeName() + (isDefined(rhs) ? " (" + typeCheckRepr(rhs) + ")" : ""));
 }
 
 // `$o!Pkg::meth` from outside Pkg: only a package Pkg `trusts` may call it.

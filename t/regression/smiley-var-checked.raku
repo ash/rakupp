@@ -17,6 +17,9 @@
 # (rtOuterScalarStore), which checked the type and not the smiley, and reset a
 # Nil to the type object.
 #
+# A routine that declares a `:D` or `:U` ran interpreted; it is compiled now,
+# and each store asks the smiley inline (rtSmileyCheck).
+#
 # This file holds the interpreter, `--exe` and `--exe -O` to Rakudo 2026.09's
 # lines, checks the AOT report, and runs a module twice from the parse cache.
 #
@@ -88,9 +91,11 @@ $f.spurt($src);
 my $interp = run($bin, $f.absolute, :out, :err);
 held('interpreted', $interp.out.slurp(:close)); $interp.err.slurp(:close);
 
-# A routine that declares a `:D` or `:U` runs interpreted; the ones writing an
-# outer one are compiled, or the lines above say nothing about their stores.
-my %native = <e o-eq o-nil o-loop o-ok ou-eq ou-nil>.map(* => True);
+# A routine that declares a `:D` or `:U` is compiled, each store asking it
+# inline, and so is one writing an outer one, or the lines above say nothing
+# about their stores. An `is default` one, a typed array's, and a `cas` or `⚛=`
+# into one (which the interpreter's atomics check by name) run interpreted.
+my %interpreted = <d-dflt d-arr d-cas d-atomic>.map(* => True);
 for (('--exe', '-O'), ('--exe',)) -> @mode {
     my $exe = $dir.add("smiley-{+@mode}.bin");
     my $report = $dir.add("smiley-{+@mode}.report");
@@ -102,7 +107,7 @@ for (('--exe', '-O'), ('--exe',)) -> @mode {
     @fail.push("{@mode}: {+@r} routines reported, want 21") unless @r == 21;
     for @r -> @row {
         my $name = @row[3].subst(/^ 'sub '/, '');
-        my $how = %native{$name} ?? 'native' !! 'interpreted';
+        my $how = %interpreted{$name} ?? 'interpreted' !! 'native';
         @fail.push("{@mode}: $name is {@row[4]}, want $how") unless @row[4] eq $how;
     }
     my $r = run($exe.absolute, :out, :err);

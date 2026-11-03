@@ -966,8 +966,78 @@ struct Codegen {
         if (v->d().declDefault) unsupported("an `is default` variable");
         if (!v->d().declCoerce.empty()) unsupported("a coercion-typed variable");
         if (!v->d().containerIs.empty() || !v->d().containerOf.empty()) unsupported("a container-type trait on a variable");
-        if (v->d().declSmiley) unsupported("a `:D`/`:U` variable");
-        if (v->d().declWhereExpr || v->d().declHasWhere) unsupported("a `where`-constrained variable");
+        // a `$` variable's `:D`/`:U` and `where` are asked by each store into it
+        // (scalarStore); a native's, a dynamic's, an `@`'s or a `%`'s are not,
+        // nor a `where` that reads another variable (whereInlinable)
+        const bool boxed = plainScalarName(n) && (v->d().declType.empty() || typeNameLead(v->d().declType[0]));
+        if ((v->d().declSmiley == 'D' || v->d().declSmiley == 'U') && !boxed) unsupported("a `:D`/`:U` variable");
+        if ((v->d().declWhereExpr || v->d().declHasWhere) && (!boxed || !whereInlinable(v->d().declWhereExpr)))
+            unsupported("a `where`-constrained variable");
+    }
+    // A `$` variable's checks besides its type, by its declaration: its own, or
+    // the one the parser resolved a use to (VarDeclInfo::readSmiley, readWhereOwn)
+    static char varSmiley(const VarExpr* v) {
+        const char s = v->declare ? v->d().declSmiley : v->lexResolved ? v->d().readSmiley : 0;
+        return s == 'D' || s == 'U' ? s : 0;
+    }
+    static const Expr* varWhere(const VarExpr* v) {
+        return v->declare ? v->d().declWhereExpr : v->lexResolved ? v->d().readWhereOwn.get() : nullptr;
+    }
+    static bool constrainedVar(const Expr* e) {
+        auto* v = e && e->kind == NK::VarExpr ? static_cast<const VarExpr*>(e) : nullptr;
+        return v && (varSmiley(v) || varWhere(v));
+    }
+    // …a write that would skip them, refused: the routine runs interpreted
+    static void refuseConstrainedWrite(const Expr* e, const char* what) {
+        if (constrainedVar(e)) unsupported(std::string(what) + " into a `:D`/`:U` or `where` variable");
+    }
+    // A `where` a store can ask inline (whereTest): one that reads nothing but
+    // the value — `*` or `$_`, literals and type names, operators, calls and
+    // method calls of those, and a block of one such expression. One that reads
+    // another variable is asked in the scope that declared it.
+    static bool whereInlinable(const Expr* e) {
+        if (!e) return false;
+        auto all = [](const std::vector<ExprPtr>& xs) {
+            for (auto& x : xs) if (!whereInlinable(x.get())) return false;
+            return true;
+        };
+        switch (e->kind) {
+            case NK::IntLit: case NK::NumLit: case NK::StrLit: case NK::BoolLit: case NK::Whatever:
+            case NK::NameTerm: case NK::RegexLit: return true;
+            case NK::VarExpr: return static_cast<const VarExpr*>(e)->name == "$_" && !static_cast<const VarExpr*>(e)->declare;
+            case NK::Binary: {
+                auto* b = static_cast<const Binary*>(e);
+                return whereInlinable(b->lhs.get()) && whereInlinable(b->rhs.get());
+            }
+            case NK::Unary: {
+                auto* u = static_cast<const Unary*>(e);
+                return u->op != "++" && u->op != "--" && u->op != "do" && whereInlinable(u->operand.get());
+            }
+            case NK::ChainExpr: return all(static_cast<const ChainExpr*>(e)->operands);
+            case NK::Ternary: {
+                auto* t = static_cast<const Ternary*>(e);
+                return whereInlinable(t->cond.get()) && whereInlinable(t->then.get()) && whereInlinable(t->els.get());
+            }
+            case NK::Range: {
+                auto* r = static_cast<const RangeExpr*>(e);
+                return whereInlinable(r->from.get()) && whereInlinable(r->to.get());
+            }
+            case NK::Call: return !static_cast<const Call*>(e)->callee && all(static_cast<const Call*>(e)->args);
+            case NK::MethodCall: {
+                auto* m = static_cast<const MethodCall*>(e);
+                return !m->methodExpr && !m->mutate && whereInlinable(m->inv.get()) && all(m->args);
+            }
+            case NK::ListExpr: return all(static_cast<const ListExpr*>(e)->items);
+            case NK::BlockExpr: {   // `{ $_ %% 2 }`
+                auto* b = static_cast<const BlockExpr*>(e);
+                if (!b->params.empty() || b->isSub || b->isPointy || b->body.size() != 1 || !b->body[0] ||
+                    b->body[0]->kind != NK::ExprStmt)
+                    return false;
+                const Expr* x = static_cast<const ExprStmt*>(b->body[0].get())->e.get();
+                return x && !hasWhatever(const_cast<Expr*>(x)) && whereInlinable(x);
+            }
+            default: return false;
+        }
     }
 
     // `$Foo::greeting` — a package-qualified name lives in a package's stash,
@@ -1026,6 +1096,7 @@ struct Codegen {
     std::set<std::string> aotRefs_;   // every name varRef was asked for (pass one)
     std::set<std::string> aotFree_;   // the outer names (pass two)
     std::set<std::string> whereScalars_;   // AotNames::whereScalars
+    std::map<std::string, const SubsetDecl*> inlineSubsets_;   // AotNames::subsets (inlineSubsets)
     std::set<std::string> callEnvNames_;   // sub names a call resolves through the env
     std::set<std::string> rwSubNames_, rwMethodNames_;   // see AotNames
     std::set<std::string> aotTypeNames_;   // types the module graph declares (AotNames::types)
@@ -3022,6 +3093,7 @@ struct Codegen {
                     (c->name == "cas" ? c->args.size() >= 2
                                       : c->name.rfind("atomic-", 0) == 0 && c->args.size() <= 2)) {
                     checkWritable(c->args[0].get());
+                    refuseConstrainedWrite(c->args[0].get(), "a `cas` or atomic store");
                     std::string more = "ValueList{";
                     for (size_t k = 1; k < c->args.size(); k++) more += (k > 1 ? ", " : "") + exArg(c->args[k].get());
                     more += "}";
@@ -3106,6 +3178,7 @@ struct Codegen {
                                            || a->kind == NK::Index;
                                     if (!lv) continue;
                                     checkWritable(a);   // Rakudo: "expected a writable container"
+                                    refuseConstrainedWrite(a, "an `is rw` argument's write-back");
                                     const bool mv = a->kind == NK::VarExpr && rwMovable(static_cast<VarExpr*>(a)) &&
                                                     seen[static_cast<VarExpr*>(a)->name] == 1;
                                     (mv ? moved : copied).push_back({i, lvalueExpr(a)});
@@ -3874,6 +3947,15 @@ struct Codegen {
             }
         }
         if (when && !given) return "";
+        // a local's `:D`/`:U` or `where` is the compiled code's: the interpreter's
+        // copy of the local would take anything, so a statement naming one stays
+        std::set<std::string> checked;
+        std::function<void(Node*)> walk = [&](Node* n) {
+            if (!n) return;
+            if (n->kind == NK::VarExpr && constrainedVar(static_cast<Expr*>(n))) checked.insert(static_cast<VarExpr*>(n)->name);
+            forEachAstChild(n, walk);
+        };
+        walk(s);
         // The names to copy in: the routine's own locals among them. An outer
         // name the interpreter finds itself, through the frame; a special the
         // frame holds already — except a topic or match a native construct
@@ -3885,7 +3967,10 @@ struct Codegen {
             if (nm == "$_") { if (!topics.empty()) bind.push_back({nm, topics.back()}); continue; }
             if ((nm == "$/" || nm == "$!") && boundSpecials.count(nm)) { bind.push_back({nm, mangleVar(nm)}); continue; }
             if (nm.size() < 2 || nm[1] == '*' || nm[1] == '!' || nm[1] == '.' || nm[1] == '?') continue;
-            if (aotLocals_.count(mangleVar(nm))) bind.push_back({nm, mangleVar(nm)});
+            if (aotLocals_.count(mangleVar(nm))) {
+                if (checked.count(nm)) return "";
+                bind.push_back({nm, mangleVar(nm)});
+            }
         }
         std::string sym = "__aotb_" + aotTag_ + "_" + std::to_string(aotBlobN_++);
         std::ostringstream o;
@@ -4128,6 +4213,7 @@ struct Codegen {
                     // only all-scalar targets: `my ($a, $b, $c) = …` (a slurpy @rest tail
                     // has different semantics — leave that to the bundling fallback)
                     bool allDecl = !lst->items.empty();
+                    for (auto& it : lst->items) refuseConstrainedWrite(it.get(), "a list assignment");
                     for (auto& it : lst->items) {
                         if (it->kind != NK::VarExpr) { allDecl = false; break; }
                         auto* v = static_cast<VarExpr*>(it.get());
@@ -4506,13 +4592,58 @@ struct Codegen {
     }
     std::string scalarStore(const VarExpr* v, const std::string& rhs) {
         std::string ty;
-        switch (storeKind(v, ty)) {
-            case 'p': return rhs;
-            case 'a': return "rtNilToAny(" + rhs + ")";
-            case 'o': return "RT.rtOuterScalarStore(" + rhs + ", " + cesc(v->name) + ")";
+        const char k = storeKind(v, ty);
+        if (k == 'p') return rhs;
+        if (k == 'o') return "RT.rtOuterScalarStore(" + rhs + ", " + cesc(v->name) + ")";
+        const char sm = varSmiley(v);
+        const Expr* w = varWhere(v);
+        if (!sm && !w) return typedStore(v, k, ty, rhs);
+        // its `where` on the value, its `:D`/`:U`, then its type, as
+        // enforceTypedAssign asks the interpreter's; a Nil skips the `where`
+        std::string st = "([&]()->Value{ Value __cv = " + rhs + "; ";
+        if (w) st += "if (__cv.t != VT::Nil && !" + whereTest(w, "__cv") + ") RT.rtWhereRefused(__cv, " + cesc(v->name) + "); ";
+        if (sm) st += "rtSmileyCheck(RT, __cv, '" + std::string(1, sm) + "', " + cesc(k == 'a' ? std::string("Any") : ty) +
+                      ", " + cesc(v->name) + "); ";
+        return st + "return " + typedStore(v, k, ty, "std::move(__cv)") + "; }())";
+    }
+    // …by its type alone: a subset's `where` inline (inlineSubsets_) for a value
+    // of its base type, which is all its check asks of one
+    std::string typedStore(const VarExpr* v, char k, const std::string& ty, const std::string& rhs) {
+        if (k == 'a') return "rtNilToAny(" + rhs + ")";
+        auto si = inlineSubsets_.find(ty);
+        if (si != inlineSubsets_.end()) {
+            Param bp; bp.type = si->second->baseType;
+            return "([&]()->Value{ Value __sv = " + rhs + "; if (rtTypedFast(__sv, " + typedFastCode(bp) + ")) { if (!" +
+                   whereTest(si->second->where.get(), "__sv") + ") RT.rtStoreRefused(__sv, " + cesc(ty) + ", " +
+                   cesc(v->name) + "); return __sv; } return rtTypedStore(RT, std::move(__sv), RTB_NONE, " + cesc(ty) +
+                   ", " + cesc(v->name) + "); }())";
         }
         Param tp; tp.type = ty;
         return "rtTypedStore(RT, " + rhs + ", " + typedFastCode(tp) + ", " + cesc(ty) + ", " + cesc(v->name) + ")";
+    }
+    // A `where` asked of the Value `val` at a store, as varWhereCheck asks it: a
+    // Code is called with the value, anything else smartmatched (rtWhenMatch),
+    // `$_` the value. A WhateverCode's body and a block's one expression are
+    // inlined, so a store builds no closure.
+    std::string whereTest(const Expr* w, const std::string& val) {
+        struct Topic {
+            Codegen* g;
+            Topic(Codegen* c, const std::string& t) : g(c) { g->topics.push_back(t); }
+            ~Topic() { g->topics.pop_back(); }
+        } topic{this, val};
+        Expr* e = const_cast<Expr*>(w);
+        if (e->kind == NK::BlockExpr)
+            return "RT.boolify(" + ex(static_cast<ExprStmt*>(static_cast<BlockExpr*>(e)->body[0].get())->e.get()) + ")";
+        if (e->kind == NK::Whatever || rxValueLit(e) || !hasWhatever(e)) return "rtWhenMatch(RT, " + val + ", " + matcher(e) + ")";
+        struct Wc {
+            Codegen* g;
+            explicit Wc(Codegen* c) : g(c) { g->wcDepth++; g->wcArity.push_back(0); }
+            ~Wc() { g->wcDepth--; g->wcArity.pop_back(); }
+        } wc{this};
+        const std::string an = "__w" + std::to_string(wcDepth);
+        const std::string body = ex(e);
+        if (wcArity.back() > 1) unsupported("a `where` WhateverCode of more than one `*`");
+        return "([&]()->bool{ RtOneArg " + an + "{" + val + "}; return RT.boolify(" + body + "); }())";
     }
     // …the store of what an increment or `op=` computes, checked as `=` checks
     // it: `my Small $x = 5; $x += 100` kept 105, `my Int $i = 1; $i ~= "a"` "1a"
@@ -4524,7 +4655,7 @@ struct Codegen {
         const char k = storeKind(v, ty);
         const bool untypedOuter = k == 'o' && v->lexResolved && (v->d().readType.empty() || v->d().readType == "Any") &&
                               !whereScalars_.count(v->name);
-        return k == 't' || (k == 'o' && !untypedOuter) ? scalarStore(v, rhs) : rhs;
+        return k == 't' || (k == 'o' && !untypedOuter) || constrainedVar(v) ? scalarStore(v, rhs) : rhs;
     }
     // …and whether every Int passes the check (every Num and Str too, with
     // `lane`: a loop lane's guard lets in only the slot's own kind), so a lane
@@ -4532,6 +4663,7 @@ struct Codegen {
     // an outer scalar is judged by the type the parser resolved it to.
     bool storeOpen(const VarExpr* v, bool lane) const {
         static const std::set<std::string> ints = {"", "Any", "Int", "Cool", "Numeric", "Real", "Mu"};
+        if (varWhere(v) || varSmiley(v) == 'U') return false;   // (an Int passes a `:D`)
         std::string ty;
         const char k = storeKind(v, ty);
         if (k == 'o') { if (!v->lexResolved || whereScalars_.count(v->name)) return false; ty = v->d().readType; }
@@ -4734,6 +4866,7 @@ struct Codegen {
         if (tgt->kind == NK::ListExpr && a->op == "=") {
             auto* le = static_cast<ListExpr*>(tgt);
             bool allDecl = !le->items.empty(), anyDecl = false, allScalar = true;
+            for (auto& it : le->items) refuseConstrainedWrite(it.get(), "a list assignment");
             for (auto& it : le->items) {
                 if (it->kind != NK::VarExpr) { allScalar = false; break; }
                 auto* v = static_cast<VarExpr*>(it.get());
@@ -4769,6 +4902,7 @@ struct Codegen {
                 if (v && (v->kind == NK::VarExpr || v->kind == NK::Index))
                     throw CodegenError{"binding a scalar to a container (`" + static_cast<VarExpr*>(tgt)->name +
                                        " := …`)", /*routineWide=*/true};
+                refuseConstrainedWrite(tgt, "a binding");
                 return lvalueExpr(tgt) + " = " + exArg(a->value.get());
             }
             unsupported("binding (:=) of a non-scalar");
@@ -9590,6 +9724,7 @@ std::string transpileToCpp(Program& prog, bool optimize, const std::string& srcP
         else one(e);
     };
     g.scanRwReach(prog.stmts);
+    g.inlineSubsets_ = inlineSubsets(prog);
     MyDeclFn asTopVar = [&](const std::string& nm, const std::string& dt) {
         g.topVars_.insert(nm);
         if (!dt.empty()) g.topVarTypes_[nm] = dt;
@@ -10001,6 +10136,7 @@ std::string emitAotPass(SubDecl* d, const std::string& fn, const AotNames& names
     g.lexOps_ = names.ops;
     g.nativeElemNames_ = names.nativeArrays;
     g.whereScalars_ = names.whereScalars;
+    g.inlineSubsets_ = names.subsets;
     g.aotFree_ = freeNames;
     g.aotLocals_ = locals;
     g.aotTag_ = fn;
@@ -10074,6 +10210,27 @@ std::set<std::string> whereScalarNames(const Program& p) {
         forEachAstChild(n, walk);
     };
     for (auto& s : p.stmts) walk(s.get());
+    return out;
+}
+
+std::map<std::string, const SubsetDecl*> inlineSubsets(const Program& p) {
+    std::map<std::string, int> seen;
+    std::function<void(Node*)> walk = [&](Node* n) {
+        if (!n) return;
+        if (n->kind == NK::SubsetDecl) seen[static_cast<SubsetDecl*>(n)->name]++;
+        forEachAstChild(n, walk);
+    };
+    for (auto& s : p.stmts) walk(s.get());
+    std::map<std::string, const SubsetDecl*> out;
+    for (auto& s : p.stmts) {
+        if (!s || s->kind != NK::SubsetDecl) continue;
+        auto* d = static_cast<const SubsetDecl*>(s.get());
+        Param bp; bp.type = d->baseType;
+        if (seen[d->name] == 1 && !d->isMy && !d->isAnon && !d->coerceBase && d->defConstraint != 2 && d->where &&
+            !d->baseType.empty() && typeNameLead(d->baseType[0]) && std::strcmp(Codegen::typedFastCode(bp), "RTB_NONE") &&
+            Codegen::whereInlinable(d->where.get()))
+            out[d->name] = d;
+    }
     return out;
 }
 
