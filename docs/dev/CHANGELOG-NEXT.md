@@ -44,7 +44,9 @@ ad7f05dc and e6777420 (issue #77); 608774f1 and 5321f41c (issue #217); 636f69d0 
 56309f17 (--target=arduino); 42618157 (Text::CSV and JSON::Unmarshal);
 89d80faa (a `my token` in a variable); b81021ba (PERF-REVIEW-2026-11-02
 §6); 6617859d (typed scalar stores); 34d05b96 (use Arduino::LEDMatrix);
-d23c2ed8 (a variable's `where`); 0d9ea1ca (a variable's `:D` and `:U`).*
+d23c2ed8 (a variable's `where`); 0d9ea1ca (a variable's `:D` and `:U`);
+3072c3a5 and 992c75cf (a qualified name's packages, and dotted module
+names in Python).*
 
 ---
 
@@ -435,6 +437,17 @@ plain before 500c29e2 and native from it, unless they say otherwise.
   (docs/dev/findings/rakuast/deparse-l10n-2026.09.tsv); it also renders a
   fixture language by name and reads it back with `.AST("ZZ")` as the same
   program.
+- **The Python binding takes a module's name with dots, and walks a long
+  name a part at a time** (992c75cf, 3072c3a5). `raku.use("JSON.Fast")`
+  loads JSON::Fast, adverbs and import arguments included
+  (`"JSON.Fast:ver<0.19+>"`); the name stopped at the dot, and
+  `raku.use("Outer.Inner")` died "No such method 'Inner' for invocant of
+  type 'Any'". After `raku.use("Outer::Inner")`,
+  `raku.main.Outer.Inner.hi()` calls `Outer::Inner::hi`, through the
+  package Outer that the engine now declares (see Behaves like Rakudo). A
+  name missing from `raku.main` raises "Raku MAIN has no …", where the name
+  was blank. bindings/python/tests has two new tests, and the README's
+  modules section shows both.
 
 ### Fixed: silent wrong answers
 
@@ -1753,6 +1766,16 @@ does not.
   and JSON::Unmarshal's 11 among them. Eight files in t/regression hold the
   fixes; seven agree with Rakudo 2026.09, and the slang one uses a fixture
   that does not load there.
+- **`class A::B` and `use A::B` declare the package A as well** (3072c3a5).
+  Each package a qualified name passes through is a stub made by
+  PackageHOW that holds the next part, as in Rakudo: `::('A')` is A,
+  `A.WHO<B>` reaches A::B, and a later `class A`, `my class A` or `module
+  A` replaces the stub. A bare `A` was "Undeclared name 'A'" and `::('A')`
+  a Failure, and naming A before a later `package A {}` was refused as an
+  illegal post-declaration. The core namespaces (`X`, `IO`, `Metamodel`, …)
+  are left as they were. t/regression/implied-package-of-qualified-name.raku
+  agrees with Rakudo 2026.09 in 16 checks, under `--exe`, `--exe -O` and
+  the parse cache too.
 
 ### Left open
 
@@ -1946,3 +1969,10 @@ does not.
   race now and then; built with `--exe`, it lost it in 0–2 of 40 runs
   before 0d9ea1ca and 9–15 of 40 after, as it does with the cache's larger
   blob alone (the new fields written and discarded on reading).
+- Found with 3072c3a5, the same before it: `GLOBAL::.keys` lists none of
+  the program's packages, where Rakudo lists them; a second `module A {}`
+  is no redeclaration; `.new` on a package says "No such method 'new'",
+  where Rakudo says "You cannot create an instance of this type"; and in
+  the Python binding, `dir()` of a package reached as an Object
+  (`dir(raku.main.Outer)`) lists Python's own attributes, not the
+  package's. TODO-FOLLOW-UPS.md has each.

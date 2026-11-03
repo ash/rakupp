@@ -8100,6 +8100,7 @@ static void mergeParentRoleMultis(ClassInfo* ci, const SigKey& sigKeyParams) {
                 }
             }
             if (!stubOverCompleted) classes_[clsName] = ci;
+            if (impliedPkgs_.erase(clsName)) pkgKind_.erase(clsName);   // `my class A` after `class A::B` too
             // `my class X::Encode::Unknown` inside `unit module Encode`: its leading
             // `X` is the GLOBAL exception package, so Rakudo installs the class in
             // X's stash and `X::Encode::Unknown` names it from anywhere — while

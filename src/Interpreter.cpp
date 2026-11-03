@@ -5931,6 +5931,26 @@ void Interpreter::stashDeclare(const std::string& fq, bool stubPkg) {
         stashTracked_.insert(acc);
         n = k;
     }
+    if (kl.owns_lock()) kl.unlock();
+    declareImpliedPackages(fq);
+}
+
+// …and the packages `A::B::C` implies are packages of their own, as in Rakudo:
+// `A` and `A::B` resolve, each a PackageHOW that lists what it holds, so after
+// `use Outer::Inner` the program reaches `Outer.WHO<Inner>`. A name something
+// else already claims is left alone, and declaring it replaces the stub: the
+// kind a `module A` gives it, the class a `class A` makes.
+void Interpreter::declareImpliedPackages(const std::string& fq) {
+    if (impliedPkgs_.erase(fq)) pkgKind_.erase(fq);
+    for (size_t c = fq.find("::"); c != std::string::npos; c = fq.find("::", c + 2)) {
+        const std::string p = fq.substr(0, c);
+        if (p.empty() || pkgKind_.count(p) || classes_.count(p) || subsets_.count(p) ||
+            enumPairs_.count(p) || isKnownTypeName(p) || isKnownTypeName(p + "::") || isPseudoChain(p))
+            continue;
+        pkgKind_[p] = 2;
+        impliedPkgs_.insert(p);
+        if (global_ && !global_->local(p)) global_->define(p, Value::typeObj(p));
+    }
 }
 
 // Package nodes merge by CONTENT: a stub (an implied package, or `package
