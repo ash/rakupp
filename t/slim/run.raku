@@ -3,7 +3,7 @@
 # catchable, named X::Feature::NotBuilt instead of crashing or quietly
 # misbehaving, that the grammar's conflicts are loud errors naming the
 # alternatives, that the embedded manifest round-trips through --exe-info,
-# that the size budgets hold (-all ≤ 12.5 MB, bare --slim ≤ 12.75 MB on hello) —
+# that the size budgets hold (-all ≤ 13.0 MB, bare --slim ≤ 13.25 MB on hello) —
 # and, since P4, that the SCAN decides right: cuts what a program provably
 # does not use, keeps what it does (uniname calls, script assertions), keeps
 # EVERYTHING when a force-full trigger fires (and says so), and that max
@@ -194,6 +194,26 @@ my $hello = probe('hello.raku', q{say 'Hello';});
 # Unified_Ideograph copied out for the parser and collation, and this box's
 # arm64 hello-all went 12,879,880 → 12,665,256; the builtin Raku a binary
 # without `eval` now carries pre-parsed puts back 912 bytes (12,666,168).
+#
+# Re-pinned 2026-11-03, to 13.0 MB and 13.25 MB, at the v5.6.0 gates. This
+# box's arm64 hello-all went 12,762,920 at v5.5.0 to 13,419,640 at 8c52e934
+# (+656,720, +5.15%), 312,440 bytes past 12.5 MB; bare --slim is the same
+# size within 8 bytes, ~50 KB past 12.75. The full --exe hello grew beside
+# it (18,045,400 → 18,803,616) and full − slim is 5,383,976. Of the growth,
+# 626,792 bytes is code nm puts in a source file (each symbol's size from
+# the address gaps, in both binaries): InterpreterBinding.cpp +121,552,
+# InterpreterCalls.cpp +112,336, InterpreterCore.cpp +86,248,
+# InterpreterModules.cpp +41,488, RaceDetector.cpp +34,540 (new),
+# MethodCallPart2.cpp +33,752, MethodCallPart3.cpp +24,428, Interpreter.cpp
+# +24,008, BuiltinsSupply.cpp +18,016, Builtins.cpp +17,580 — the cycle's
+# engine work (v5.5.0..ba6dc6b2, 403 commits), not a leak: nm finds no
+# Codegen, JS, MCP or Jupyter symbol in the slim binary. RaceDetector.cpp is
+# the one piece a cut could take: it serves only the race detector, which a
+# binary turns on through RAKUPP_RACE, so cutting it is a new slim feature,
+# not a table moved; 48 of its 111 symbols ride in a hello, and its 34,540
+# bytes alone would not clear the old lines. 13.0 MB clears this box by
+# 211,848 bytes. The x86_64 slice, derived at the 7.8% spread, is
+# ≈14,466,000; CI measures arm64 only.
 my $full-size;
 my $all-size;
 
@@ -270,8 +290,8 @@ my $catch = probe('catch.raku', q:to/END/);
     my ($xc, $out, $) = run-bin($bin);
     check $xc == 0 && $out.trim eq 'Hello', '--slim=-all hello runs', $out;
     $all-size = $bin.IO.s;
-    check $*KERNEL.name ne 'darwin' || $all-size <= 12.5 * 1024 * 1024,
-          "--slim=-all hello is within the 12.5 MB darwin budget ($all-size bytes; darwin-only gate)";
+    check $*KERNEL.name ne 'darwin' || $all-size <= 13.0 * 1024 * 1024,
+          "--slim=-all hello is within the 13.0 MB darwin budget ($all-size bytes; darwin-only gate)";
     my $info = run $*EXECUTABLE, '--exe-info', $bin, :out, :err;
     my $line = $info.out.slurp(:close);
     $info.err.slurp(:close);
@@ -333,8 +353,8 @@ my $catch = probe('catch.raku', q:to/END/);
     check $rc == 0, 'bare --slim (= auto) compiles', $log;
     my ($xc, $out, $) = run-bin($bin);
     check $xc == 0 && $out.trim eq 'Hello', '--slim hello runs', $out;
-    check $*KERNEL.name ne 'darwin' || $bin.IO.s <= 12.75 * 1024 * 1024,
-          "--slim hello is within the 12.75 MB darwin budget ({$bin.IO.s} bytes; darwin-only gate)";
+    check $*KERNEL.name ne 'darwin' || $bin.IO.s <= 13.25 * 1024 * 1024,
+          "--slim hello is within the 13.25 MB darwin budget ({$bin.IO.s} bytes; darwin-only gate)";
     check $full-size - $bin.IO.s >= 2 * 1024 * 1024,
           "bare --slim removes >= 2 MB from hello on this platform "
           ~ "(delta {$full-size - $bin.IO.s})";

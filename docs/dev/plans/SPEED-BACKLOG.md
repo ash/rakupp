@@ -58,7 +58,7 @@ theme the rows are sorted by complexity, largest first.
 | 14 | `--types` (paused 2026-09-29) | L | N1 the switch, N2 the checked rule, N3 measure, N7 Str — [TYPES-PLAN.md](TYPES-PLAN.md) |
 | 15 | `--exe` build time: split the mainline into chunks (`range-int.t` 52 s at -O2) | L | V6 P5 |
 | 33 | The compile modes (`--exe`, `--cpp`, `--target=js`) parse the program twice | S–M | Reuse the parse `declCheckGate` makes — src/main.cpp |
-| 35 | `--slim` review: what it actually removes | S–M | Binary size; the 12.5 / 12.75 MB budgets are a stopgap — [SLIM-PLAN.md](SLIM-PLAN.md) |
+| 35 | `--slim` review: what it actually removes | S–M | Binary size; the 13.0 / 13.25 MB budgets are a stopgap — [SLIM-PLAN.md](SLIM-PLAN.md) |
 | 44 | `--exe`: one refused construct (a CATCH, a phaser, `my num @a`, a kept List) bundles the program — its routines now keep native bodies, but its mainline and anonymous blocks are interpreted, and a call into a native body costs an interpreted call (~250 ns) | M–L | Mainline loops and block closures as native bodies, and a cheaper interpreter-to-native call — float report, items 2, 4, 14; feeds #3 and #45 |
 | 45 | `--exe`: a module routine called from the program costs ~6× a local one (68 vs 10.6 ns) | L | The call goes through callEnvFirstAmp and the interpreter's binding, and the native body runs inside that — float report, item 10; near #13 |
 | 46 | `--exe`: a native-typed value is still a boxed Value. Since d7c6d9d5 native code runs at the untyped code's speed (a `num` sub 10.0 vs 9.7 ns, a `num` loop 9.5 vs 8.7), but no faster: typed locals are not C++ doubles/int64s | L | Typed locals as C++ doubles/int64s; the stores, ops and `int` kernels are done — float report, item 16; near #29 |

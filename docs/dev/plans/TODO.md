@@ -162,7 +162,9 @@ The same items grouped by theme, with a complexity estimate for each:
   itself. Left: every `uniprop` call keeps both `unicode-props` and
   `unicode-names` whatever it names, because SlimScan's noteName treats a call
   like a bare `&uniprop`. [SLIM-PLAN.md](SLIM-PLAN.md) P6 (make `auto` the
-  default) and P7 (`--aot`) follow.
+  default) and P7 (`--aot`) follow. Re-pinned 2026-11-03 to 13.0 / 13.25 MB
+  (t/slim/run.raku has the per-file growth); the one cut it found to make is
+  the race detector, 34,540 bytes of a hello that only RAKUPP_RACE reaches.
 - [ ] **Small tails**:
   - [VALUE32-PLAN.md](VALUE32-PLAN.md): one measurement decides B versus C.
   - [JUNCTION-PLAN.md](JUNCTION-PLAN.md): Ph3, list-associative `|`, `&`, `^`.
