@@ -92,11 +92,16 @@ std::string transpileToCpp(Program& prog, bool optimize = false, const std::stri
 struct AotNames {
     std::set<std::string> callEnv, rwSubs, rwMethods, types, ops;
     std::set<std::string> nativeArrays;   // the module's `@` names declared native, any width (nativeArrayNames)
+    std::set<std::string> whereScalars;   // …and its `$` names declared with a `where` (whereScalarNames)
 };
 // The `@` names a program declares with a native element type, in any scope
 // (`my int @a`, `my int8 @b`, `my str @c`): its routines compiled in module
 // mode judge stores into their elements as the interpreter does
 std::set<std::string> nativeArrayNames(const Program& p);
+// The `$` names a program declares with a `where`, in any scope: a routine
+// compiled in module mode checks its stores into an outer one of them, an
+// untyped one too, and gives it no lane
+std::set<std::string> whereScalarNames(const Program& p);
 // `delegatedLines`, when given, receives the source line of every statement
 // the body hands to the interpreter (RAKUPP_AOT_REPORT). `optimize` is the
 // program's `-O`.

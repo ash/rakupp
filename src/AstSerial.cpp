@@ -214,6 +214,16 @@ template <class IO> void ioExprVec(IO& io, std::vector<ExprPtr>& v) {
         for (auto& x : v) ioExpr(io, x);
     }
 }
+// an expression a shared_ptr owns (a variable's `where`): written through a
+// non-owning ExprPtr, released however the write ends
+template <class IO> void ioSharedExpr(IO& io, std::shared_ptr<Expr>& sp) {
+    if constexpr (IO::reading) { ExprPtr e; ioExpr(io, e); sp = std::move(e); }
+    else {
+        ExprPtr e(sp.get());
+        struct Lend { ExprPtr& e; ~Lend() { (void)e.release(); } } lend{e};
+        ioExpr(io, e);
+    }
+}
 template <class IO> void ioStmtVec(IO& io, std::vector<StmtPtr>& v) {
     if constexpr (IO::reading) {
         size_t n = io.count(); v.clear(); v.resize(n);
@@ -343,10 +353,15 @@ template <class IO> void visit(IO& io, VarExpr& n)  {
     F(io, n.nativeNumRead);
     F(io, n.lexResolved); F(io, d.readType);
     F(io, n.bareParam);
+    // its `where`: without it a cached module's `my $x where * < 10` took any
+    // value, and so did a bundled program's compiled routine, read from here
+    F(io, d.declHasWhere); ioSharedExpr(io, d.declWhereOwn);
     if constexpr (IO::reading) {
+        d.declWhereExpr = d.declWhereOwn.get();
         if (!d.declScope.empty() || !d.declType.empty() || !d.declCoerce.empty() || d.declDefault ||
             d.declDynamic || d.declExport || !d.exportTags.empty() || !d.containerIs.empty() || !d.containerOf.empty() ||
-            d.declShape || d.namedBind || !d.pseudoPkg.empty() || d.declTypeExpr || !d.readType.empty())
+            d.declShape || d.namedBind || !d.pseudoPkg.empty() || d.declTypeExpr || !d.readType.empty() ||
+            d.declWhereOwn || d.declHasWhere)
             n.dm() = std::move(scratch);
     }
     n.syncAttrCache(); }  // derived from `name`, not stored
