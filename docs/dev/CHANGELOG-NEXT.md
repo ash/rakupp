@@ -43,7 +43,7 @@ parentheses); 9695e120, 1d5e98c0, 4df715fc, c423e9db, 5ebfc05f, 3f0baa68,
 ad7f05dc and e6777420 (issue #77); 608774f1 and 5321f41c (issue #217); 636f69d0 (a program from a URL);
 56309f17 (--target=arduino); 42618157 (Text::CSV and JSON::Unmarshal);
 89d80faa (a `my token` in a variable); b81021ba (PERF-REVIEW-2026-11-02
-§6); 6617859d (typed scalar stores).*
+§6); 6617859d (typed scalar stores); 34d05b96 (use Arduino::LEDMatrix).*
 
 ---
 
@@ -303,6 +303,17 @@ plain before 500c29e2 and native from it, unless they say otherwise.
   `--arduino15=DIR` every sketch also compiles for an Arduino Due under
   `-Wall -Werror` — blink is 102 bytes of code. Not yet tried on an AVR board
   or real hardware. See docs/guide/ARDUINO.md.
+- **`use Arduino::LEDMatrix`: the Uno R4 WiFi's 12×8 LED matrix** (34d05b96).
+  `frame` packs a picture — eight rows of twelve, `#` lit and `.` dark — into
+  the three 32-bit words the core's Arduino_LED_Matrix library takes, while
+  building, so the board gets twelve bytes; Arduino's tutorial heart packs to
+  the tutorial's own words, `3184a444 44042081 100a0040`. `LEDMatrix.begin`,
+  `.show(@frame)` and `.clear` become the library's calls, and both simulated
+  boards draw each new picture on stderr. A compile-time error now stops an
+  Arduino build with its message. None of the backend reaches an `--exe`
+  binary whose program does not `use Arduino`: fibonacci's has no trace of it
+  at `--slim=safe` or `auto`, which t/run.raku now checks. Not yet compiled
+  against the real R4 core.
 - **A program can be run from a URL** (636f69d0): `rakupp
   https://github.com/antononcube/Raku-Mathematica-Serializer/blob/main/examples/Serializer-profiling.raku`.
   curl fetches it, as it fetches for `rakupp install`, so the engine still has
