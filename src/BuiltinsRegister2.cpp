@@ -2121,6 +2121,23 @@ void Interpreter::registerBuiltinsPart4() {
                         throw RakuError{r == 2 ? repl : ex,
                                         causeMsg.empty() ? std::string("Promise broken") : causeMsg};
                     }
+                    // In a react it runs after the body registering it, and in
+                    // turn with the react's other bodies, as in Rakudo: inline,
+                    // `whenever Promise.kept(5) { log $_ }; log 'body'` logged 5 first
+                    if (!I.reactStack_.empty()) {
+                        auto rctx = I.reactStack_.back();
+                        Interpreter* self = &I;
+                        Value blkCopy = blk, res = ps->result;
+                        std::function<void()> run = [self, rctx, blkCopy, res]() {
+                            self->reactPushInTurn(rctx);
+                            struct Pop { Interpreter* s; ~Pop() { s->reactStack_.pop_back(); } } pop{self};
+                            if (rctx->closed) return;
+                            ValueList one{res};
+                            try { self->callCallable(blkCopy, one); } catch (NextEx&) {} catch (LastEx&) {}
+                        };
+                        { std::lock_guard<std::mutex> lk(rctx->m); rctx->deferred.push_back(run); rctx->cv.notify_all(); }
+                        Value t = Value::makeHash(); t.hashKind = "Tap"; return t;
+                    }
                     ValueList one{ps->result}; return I.callCallable(blk, one);
                 }
                 // UNKEPT promise in a react: REGISTER — fire the block once with the
@@ -2135,9 +2152,10 @@ void Interpreter::registerBuiltinsPart4() {
                     scanSupplyPhasers(blk, nullptr, &quitP, nullptr);
                     Interpreter* self = &I;
                     Value blkCopy = blk;
-                    std::function<void()> fire = [self, blkCopy, ps, rctx, quitP]() {
-                        // runs under the GIL, from the settler's thread (via ps->thens)
-                        self->reactStack_.push_back(rctx);
+                    std::function<void(bool)> fire = [self, blkCopy, ps, rctx, quitP](bool later) {
+                        // fired later, on a worker: in turn with the react's other bodies
+                        if (later) self->reactPushInTurn(rctx);
+                        else self->reactStack_.push_back(rctx);
                         if (!rctx->closed) {
                             if (ps->broken) {
                                 // S-57 again: only a QUIT phaser that MATCHES consumes
@@ -2175,12 +2193,12 @@ void Interpreter::registerBuiltinsPart4() {
                     // (settling later, on a worker of its own: see the supply arm)
                     std::function<void()> later = [self, fire]() {
                         Value body; body.t = VT::Code; body.setCode(makePayload<Callable>());
-                        body.code()->ciM().builtin = [fire](Interpreter&, ValueList&) -> Value { fire(); return Value::any(); };
+                        body.code()->ciM().builtin = [fire](Interpreter&, ValueList&) -> Value { fire(true); return Value::any(); };
                         self->spawnContinuation(body);
                     };
                     bool now = false;
                     { std::lock_guard<std::mutex> lk(ps->m); if (ps->done) now = true; else ps->thens.push_back(later); }
-                    if (now) fire();
+                    if (now) fire(false);
                     Value t = Value::makeHash(); t.hashKind = "Tap"; return t;
                 }
             }
