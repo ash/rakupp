@@ -48,7 +48,7 @@ d23c2ed8 (a variable's `where`); 0d9ea1ca (a variable's `:D` and `:U`);
 3072c3a5 and 992c75cf (a qualified name's packages, and dotted module
 names in Python); 116a638e and 3c68ff57 (a react's promise bodies in
 turn); 762ce0e2 (constrained variables compiled); 9326ca7e (a placeholder's
-bare name compiled).*
+bare name compiled); 7a419af4 (a supply's promise bodies in keep order).*
 
 ---
 
@@ -1703,6 +1703,16 @@ does not.
   of the react's own body; it now runs after it.
   t/regression/react-promise-body-in-turn.raku agrees with Rakudo 2026.09,
   interpreted, under RAKUPP_GIL=1 and compiled.
+- **A supply block's `whenever $promise` bodies run in the order their
+  promises are kept** (7a419af4), as Rakudo's pool queue cues their
+  `.then`s. Each fired on a pooled worker of its own, and the workers raced
+  to the supply: ten kept in a row came out in another order in 19 of 20
+  runs, where Rakudo 2026.09 keeps the order in 20 of 20, and
+  supply-tapper-death-is-not-a-quit.raku's two, a TLS listener's shape, in
+  6 of 200 runs with eight copies at once. The keep hands each delivery its
+  turn, and a body's worker waits only until the one before it is queued or
+  running. t/regression/supply-promise-whenevers-in-keep-order.raku agrees
+  with Rakudo 2026.09, interpreted, under RAKUPP_GIL=1 and compiled.
 - **`done` in a react whenever's LAST ends the react** (5b70d2e1) when the
   source finishes on another thread; Cro's WebSocket client waited out its
   timeout after the server closed.
