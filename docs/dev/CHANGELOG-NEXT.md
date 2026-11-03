@@ -47,7 +47,8 @@ ad7f05dc and e6777420 (issue #77); 608774f1 and 5321f41c (issue #217); 636f69d0 
 d23c2ed8 (a variable's `where`); 0d9ea1ca (a variable's `:D` and `:U`);
 3072c3a5 and 992c75cf (a qualified name's packages, and dotted module
 names in Python); 116a638e and 3c68ff57 (a react's promise bodies in
-turn); 762ce0e2 (constrained variables compiled).*
+turn); 762ce0e2 (constrained variables compiled); 9326ca7e (a placeholder's
+bare name compiled).*
 
 ---
 
@@ -1015,6 +1016,19 @@ plain before 500c29e2 and native from it, unless they say otherwise.
   the same 1,745 rows and writes the same WL and WXF text as Rakudo
   2026.09. t/regression/regex-routine-in-a-variable.raku agrees with Rakudo
   2026.09.
+- **`--exe` reads a placeholder through its bare name** (9326ca7e). `$^c`
+  declares the block's `$c`, which the body may name without the twigil
+  after its first mention, and the C++ backend gave the two spellings two
+  locals: `{ print $^c; say $c }` under an outer `my $c = 100` printed 100
+  where Rakudo prints 42, and `sub f { $^x ~ $x }` or the same block without
+  the outer `$c` did not compile, so `--exe` failed with no fallback. The
+  same at v5.5.0; roast/S32-io/IO-Socket-INET.t reached it once 762ce0e2
+  compiled its `:D` variables. A placeholder is now named by its bare name,
+  as the interpreter binds it, and a block that declares that name again
+  bundles. `tools/cpp-build-check.raku` goes from 59 accepted programs that
+  do not compile to 57, none newly failing;
+  t/regression/codegen-sub-placeholders.raku carries the cases, with
+  Rakudo 2026.09's output.
 
 ### Fixed: crashes
 
@@ -2013,3 +2027,8 @@ does not.
   the Python binding, `dir()` of a package reached as an Object
   (`dir(raku.main.Outer)`) lists Python's own attributes, not the
   package's. TODO-FOLLOW-UPS.md has each.
+- Found with 9326ca7e, the same before it, in the interpreter and so in
+  compiled code: a placeholder is writable, where Rakudo's is read-only.
+  `{ say $^c; $c = 5; say $c }(42)` and the same with `my $c = 5` print
+  42 and 5; Rakudo prints 42 and dies "Cannot assign to a readonly variable
+  or a value".
