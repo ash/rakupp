@@ -30,7 +30,7 @@ function showcase(relpath, entry) {
 const CASES = [
     { name: 'say',   src: 'say "hello";', want: 'hello\n' },
     { name: 'grammar', want: 'ok\n',
-      src: 'grammar G { token TOP { <w>+ % "," } token w { \\w+ } }\n' +
+      src: 'grammar G { token TOP { <w>+ % "," }; token w { \\w+ } }\n' +
            'say G.parse(("ab" xx 400).join(",")) ?? "ok" !! "no parse";' },
     { name: 'lisp',  src: showcase('lisp/lisp.raku', 'run-source($*IN.slurp, global-env());'),
       stdin: '(display (map (lambda (x) (* x x)) (list 1 2 3)))', want: '(1 4 9)' },
