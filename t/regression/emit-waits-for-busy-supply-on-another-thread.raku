@@ -32,5 +32,25 @@ ck @log.List, ('handled slow', 'handled fast', 'after emit'),
     'an emit into an activation busy on another thread is handled before emit returns';
 $t.close;
 
+# …however long the holder takes, up to a second. The wait gave up after
+# 25 ms, and GitHub's macOS runner, loaded, took longer than that over the
+# 3 ms above; a 50 ms body did it every time. Rakudo waits for 200 ms too.
+{
+    @log = ();
+    my $a = Supplier.new; my $b = Supplier.new;
+    my $busy = Promise.new; my $v = $busy.vow;
+    my $t = supply {
+        whenever $a.Supply { $v.keep(True); sleep 0.05; log "handled $_" }
+        whenever $b.Supply { log "handled $_" }
+    }.tap;
+    start { $a.emit('slow') };
+    await $busy;
+    $b.emit('fast');
+    log 'after emit';
+    ck @log.List, ('handled slow', 'handled fast', 'after emit'),
+        'the emit waits for a holder busy for 50 ms';
+    $t.close;
+}
+
 say $fails ?? "FAIL ($fails)" !! 'PASS';
 exit $fails ?? 1 !! 0;

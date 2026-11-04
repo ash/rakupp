@@ -99,18 +99,48 @@ void Interpreter::maybeFinishSupply(const std::shared_ptr<SupplyTapCtx>& ctx) {
     closeTapHandle(ctx->tap);
 }
 
+// The activation each thread is waiting for in supplyDelivery, so that a wait
+// which closes a circle is seen: the holder of the activation this thread
+// wants waits, through any number of others, for one this thread holds. Only
+// waiting threads are listed. A thread follows the chain holding g_supplyWaitM
+// and leaves the list under it before it lets go of the activation it waited
+// for, so every pointer read here is live.
+static std::mutex g_supplyWaitM;
+static std::unordered_map<std::thread::id, SupplyTapCtx*> g_supplyWaits;
+
+static bool supplyWaitClosesCircle(SupplyTapCtx* want, std::thread::id me) {
+    std::lock_guard<std::mutex> lk(g_supplyWaitM);
+    for (int hop = 0; want && hop < 64; hop++) {
+        std::thread::id holder;
+        {
+            std::lock_guard<std::mutex> l2(want->m);
+            if (want->running <= 0) return false;
+            holder = want->runner;
+        }
+        if (holder == me) return true;
+        auto it = g_supplyWaits.find(holder);
+        if (it == g_supplyWaits.end()) return false;
+        want = it->second;
+    }
+    return false;
+}
+
 // One delivery into a supply activation (S-53). It runs now if nothing is
 // running there, and otherwise joins the queue for whoever is running — this
 // thread's own body, or another thread's, since a `start` block emitting into
 // a Supplier delivers on its own thread. Deciding which, and queueing, happen
 // under ctx->m; see drainSupplyQueue for the other half.
-// When ANOTHER thread holds the activation, this one first waits for it, a
-// little (25 ms at most), and then delivers itself, as Rakudo's emit waits on
-// a busy supply's lock: queued instead, a value this thread emitted reached
-// the tapper only once the holder had drained it, after whatever this thread
-// did next. (Cro::WebSocket's handler test counts the replies it got when the
-// close promise this thread keeps afterwards fires.) The bound keeps two
-// activations delivering into each other from waiting on one another.
+// When ANOTHER thread holds the activation, this one waits until it is free
+// and then delivers itself, as Rakudo's emit waits on a busy supply's lock:
+// queued instead, a value this thread emitted reached the tapper only once the
+// holder had drained it, after whatever this thread did next. (Cro::WebSocket's
+// handler test counts the replies it got when the close promise this thread
+// keeps afterwards fires.) f3ffb5c3 bounded the wait at 25 ms, and a holder
+// slower than that on a loaded machine (a 3 ms sleep on GitHub's macOS
+// runner) let the emit return first. Two activations delivering into each
+// other, which deadlocks Rakudo, are seen as a circle and queue at once. A
+// holder blocked on something this thread would do next deadlocks Rakudo too;
+// that is the one wait still bounded, at a second.
 // A promise's whenever does not wait: nothing on its worker comes after the
 // delivery, and waiting kept a pooled worker from the next continuation
 // (Rakudo's waits on the supply's lock with an `await`, which gives its
@@ -138,21 +168,35 @@ Value Interpreter::supplyDelivery(const std::shared_ptr<SupplyTapCtx>& ctx, long
         };
         bool now;
         const auto me = std::this_thread::get_id();
-        const auto until = std::chrono::steady_clock::now() + std::chrono::milliseconds(25);
-        for (;;) {
-            bool settled = false;
-            {
-                std::lock_guard<std::mutex> lk(ctx->m);
-                if (ctx->done || (sub && ctx->closedSubs.count(sub))) settled = true;
-                else if (ctx->running <= 0) break;
-                else if (ctx->runner == me || !waitIfBusy || std::chrono::steady_clock::now() >= until) {
-                    ctx->queue.push_back(deferred());
-                    settled = true;
+        const auto until = std::chrono::steady_clock::now() + std::chrono::seconds(1);
+        {
+            struct Listed {                  // in g_supplyWaits while this thread waits
+                std::thread::id t; bool on = false;
+                void add(SupplyTapCtx* c) { std::lock_guard<std::mutex> lk(g_supplyWaitM); g_supplyWaits[t] = c; on = true; }
+                ~Listed() { if (on) { std::lock_guard<std::mutex> lk(g_supplyWaitM); g_supplyWaits.erase(t); } }
+            } listed{me};
+            bool circle = false;
+            int pauseUs = 20;
+            for (;;) {
+                bool settled = false;
+                {
+                    std::lock_guard<std::mutex> lk(ctx->m);
+                    if (ctx->done || (sub && ctx->closedSubs.count(sub))) settled = true;
+                    else if (ctx->running <= 0) break;
+                    else if (ctx->runner == me || !waitIfBusy || circle || std::chrono::steady_clock::now() >= until) {
+                        ctx->queue.push_back(deferred());
+                        settled = true;
+                    }
+                }
+                if (settled) { place(); return Value::any(); }
+                if (!listed.on) listed.add(ctx.get());
+                if ((circle = supplyWaitClosesCircle(ctx.get(), me))) continue;
+                if (I2.gilHeld_ && !I2.parallelMode_) I2.yieldToWorkerFor(0.0002);
+                else {                       // 20 us, doubling to 1 ms for a long-busy holder
+                    std::this_thread::sleep_for(std::chrono::microseconds(pauseUs));
+                    pauseUs = std::min(pauseUs * 2, 1000);
                 }
             }
-            if (settled) { place(); return Value::any(); }
-            if (I2.gilHeld_ && !I2.parallelMode_) I2.yieldToWorkerFor(0.0002);
-            else std::this_thread::sleep_for(std::chrono::microseconds(20));
         }
         {
             bool settled = false;
