@@ -8,7 +8,7 @@ prints it on every run.
 
 ## The one-line summary
 
-> **100.00% of Roast's assertions pass, with skipped and todo tests left out (219,207 / 219,207).**
+> **100.00% of Roast's assertions pass, with skipped and todo tests left out (219,395 / 219,395).**
 
 That is the number to quote first. Second comes the same count with skip and
 todo counted as passes, and third the files that fully pass. The file count is
@@ -25,11 +25,11 @@ The harness's summary prints five ratios. In order of importance:
 
 | Rank | Measure | Current (1,425 files) | Definition |
 |---|---|---:|---|
-| **1st** | **Assertions passed without skip/todo** | **219,207 / 219,207 (100.00%)** | every declared test except the skipped and todo-marked ones, which leave both sides |
-| 2nd | Assertions of all declared tests (measure 4) | 220,845 / 220,845 (100.00%) | the same, with `# skip` and `# todo` lines counted as passes |
+| **1st** | **Assertions passed without skip/todo** | **219,395 / 219,395 (100.00%)** | every declared test except the skipped and todo-marked ones, which leave both sides |
+| 2nd | Assertions of all declared tests (measure 4) | 221,033 / 221,033 (100.00%) | the same, with `# skip` and `# todo` lines counted as passes |
 | 3rd | Files fully passing (measure 1) | 1,425 / 1,425 (100.00%) | every planned assertion passes, or the file legitimately `plan skip-all`s |
-| diagnostic | Assertions of tests planned (measure 3) | 220,845 / 220,845 (100.00%) | ÷ the plan `N` of every file that emitted one |
-| diagnostic | Assertions of tests that ran (measure 2) | 220,845 / 220,845 (100.00%) | ÷ assertions the files actually emitted |
+| diagnostic | Assertions of tests planned (measure 3) | 221,033 / 221,033 (100.00%) | ÷ the plan `N` of every file that emitted one |
+| diagnostic | Assertions of tests that ran (measure 2) | 221,033 / 221,033 (100.00%) | ÷ assertions the files actually emitted |
 
 Measures 1 to 4 are the harness's original four ratios. The rest of this page
 and the harness's own comments use those names.
@@ -123,7 +123,7 @@ common denominator, which is one reason the regression gate is on the file list.
 
 On the list today measures 2, 3 and 4 coincide: every file emits its plan and
 none times out, so tests that ran, tests planned and tests declared are the
-same 220,845.
+same 221,033.
 
 ## Exactly how the denominators are built
 
@@ -193,7 +193,7 @@ that carried directives at Roast `b2cbe8a42`: Rakudo 2026.08 fails 260 of them
 raw and passes 277 of them fudged.
 
 **At the assertion level the directives barely matter.** They shield 1,638 of
-the list's 220,845 declared tests (0.7%). The headline leaves them out of both
+the list's 221,033 declared tests (0.7%). The headline leaves them out of both
 sides and measure 4 counts them as passes, and both read 100.00%.
 
 For a file count, record the bar next to the number. Ours is always the fudged

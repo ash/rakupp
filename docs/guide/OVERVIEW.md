@@ -32,7 +32,7 @@ official specification test suite. The guiding motto:
 | **Size** | a hand-written front end + a `Value`-based runtime, all in `src/` |
 | **Runs as** | an interpreter **and** an ahead-of-time / native compiler — and in the browser via WebAssembly (**[Raku.js](../../rakujs)**) |
 | **Startup** | ~3 ms cold |
-| **Correctness target** | the Roast suite — 100.00% of its tests pass (219,207 of 219,207, skip and todo left out); all 1,425 files |
+| **Correctness target** | the Roast suite — 100.00% of its tests pass (219,395 of 219,395, skip and todo left out); all 1,425 files |
 | **Not** | a Rakudo fork, or a transpiler to something else |
 
 ## Goals & philosophy
@@ -140,7 +140,7 @@ They make different trade-offs:
 |---|---|---|
 | Role | independent, from-scratch engine — interpreter **+ native compiler** | the reference implementation |
 | Implementation | C++17, no third-party libraries | VM-based (MoarVM/JVM), NQP/Raku |
-| Roast | 1,425 of 1,425 files, 219,207 of 219,207 tests | the reference the suite is written against |
+| Roast | 1,425 of 1,425 files, 219,395 of 219,395 tests | the reference the suite is written against |
 | Compilation | compiles to a standalone native binary (`--exe`) | JITs at run time |
 | Grammar mutation (slangs) | slang modules run; no macros | full |
 
@@ -153,9 +153,9 @@ Rakudo leads.
 
 The same progress measured at three granularities:
 
-- **Tests, skip and todo left out: 100.00%** (219,207 / 219,207) — the headline:
+- **Tests, skip and todo left out: 100.00%** (219,395 / 219,395) — the headline:
   the tests Roast expects an implementation to pass.
-- **All declared tests: 100.00%** (220,845 / 220,845) — the same with skip and
+- **All declared tests: 100.00%** (221,033 / 221,033) — the same with skip and
   todo counted as passes, and with the tests of a file that aborts read from its
   source, so a parse error cannot hide them.
 - **Files fully passing: 100.00%** (1,425 / 1,425) — the stricter bar; a file

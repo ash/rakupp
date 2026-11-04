@@ -60,6 +60,7 @@ Every figure here is measured, not projected; the methodology is in
 | 2026-10-13 | **v5.4.0** | `.hyper` and `.race` on every core, `use JSON::Native` answered by the engine, loading linear again (#141) and a scaling gate; `rakupp install` takes folders and programs — Roast unchanged at 1,425 / 1,425 |
 | 2026-10-13 | **v5.4.1** | `use Data::Native` inside a routine works again without the distribution installed — a patch release; Roast unchanged at 1,425 / 1,425 |
 | 2026-10-22 | **v5.5.0** | Reference cycles freed by a backup collector (#151), `rakupp --auto` installs what a program is missing, Alpine/musl archives and NativeCall on i386, decimal-literal float code on the fast tiers — Roast unchanged at 1,425 / 1,425; measured on an Apple M4 standing in for the M3 |
+| 2026-11-04 | **v5.6.0** | `--target=arduino` writes a program as an Arduino sketch, `--detect-races` reports data races between threads, a program runs from a URL, native-typed code compiles at the untyped code's speed (`exprnext` −99%, `strscan` −94%) — Roast unchanged at 1,425 / 1,425, now 219,395 tests: v5.5.0's 1,425 were 1,424, one file passed by a harness fault |
 
 **By the numbers:** v0.1.0 → v2.0.0 in 36 days (2026-07-02 to 2026-08-07).
 
@@ -302,6 +303,18 @@ zef populates (see [MODULES.md](../guide/MODULES.md)); the goal is breadth and d
   the M3 by two builds both machines timed. The call path (`subcall`,
   `strpass`, `method`) is 4-9% slower than in v5.4.0 and `regex` 4% a match,
   measured and left open.
+- **Nov 4 — v5.6.0.** Roast unchanged (1,425 / 1,425, the same file list),
+  with 188 more tests counted (219,395 / 219,395 without skip/todo): the
+  harness no longer passes a file that dies before its `done-testing`, and
+  under it v5.5.0's 1,425 files are 1,424. `--target=arduino` writes a program
+  as an Arduino sketch and runs it on a simulated board; `--detect-races`
+  reports data races between threads; `rakupp URL` runs a program from the
+  web; native-typed code compiles at the untyped code's speed, and `next` or
+  `return` written as an operand no longer throws (perf-guard's `exprnext`
+  −99%). Every file of FatRoast's fattened Roast that Rakudo passes now
+  passes here. Measured on the Apple M4 again: nothing in perf-guard is more
+  than 5% slower than in v5.5.0, and `junctionwide`, at 4–5%, is accepted and
+  left open.
 
 Beyond the interpreter, the same source feeds a small constellation —
 [raku.online](https://raku.online/) (playground),

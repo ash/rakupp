@@ -44,7 +44,7 @@ The long-term goal, in order:
 ## Status
 
 Against the 1,425 files of Roast's `spectest.data` (Rakudo's own run list, at
-Roast `da425eb92`), as of v5.5.0:
+Roast `da425eb92`), as of v5.6.0:
 
 | Files | Count | Share of suite |
 |---|---:|---:|
@@ -53,9 +53,9 @@ Roast `da425eb92`), as of v5.5.0:
 | No TAP output (parse error / unimplemented) | 0 | 0% |
 | Timeouts | 0 | 0% |
 
-- **Tests — 100.00% pass (219,207 / 219,207)** with the tests Roast marks skip
-  or todo left out. Counting those as passes, as TAP does, it is 220,845 of
-  220,845, and that figure includes the tests of any file that aborts before
+- **Tests — 100.00% pass (219,395 / 219,395)** with the tests Roast marks skip
+  or todo left out. Counting those as passes, as TAP does, it is 221,033 of
+  221,033, and that figure includes the tests of any file that aborts before
   running (read from its source), so a parse error cannot hide them.
 - **Files — 1,425 / 1,425 fully pass.** v5.0.0's one partial file,
   `S16-io/eof.t`, passes since Roast `1f749e338` marks its TTY test todo on

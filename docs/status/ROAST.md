@@ -10,17 +10,25 @@ two ever disagree.
 
 ## Current standing
 
-**Headline: 100.00% of Roast's tests pass** — 219,207 of 219,207 with the tests Roast marks skip or todo left out, and all declared tests (220,845 / 220,845) with those counted as passes, as TAP counts them. **Every one of the 1,425 files passes.**
+**Headline: 100.00% of Roast's tests pass** — 219,395 of 219,395 with the tests Roast marks skip or todo left out, and all declared tests (221,033 / 221,033) with those counted as passes, as TAP counts them. **Every one of the 1,425 files passes.**
 
-Measured 2026-10-13 on the v5.4.0 candidate (`56b55eb8`; the release commit
-changes only the version number), against Roast `da425eb92` (2026-10-07) and
-the 1,425 files its `spectest.data` lists: three runs, all three 1,425 / 1,425,
-the same file list as v5.3.0's. `S17-promise/nonblocking-await.t`
-still crashes now and then (see [the note below](#the-one-file-that-flaps));
-it did not in these three runs. On a loaded
+Measured 2026-11-04 on the v5.6.0 tag (`50a0d8a3`), on an Apple M4, against
+Roast `da425eb92` (2026-10-07) and the 1,425 files its `spectest.data` lists:
+three runs, 1,425 / 1,424 / 1,425, with the same file list as v5.5.0's and the
+union of the three the same 1,425. The run that lost a file lost
+`S17-promise/nonblocking-await.t`, which still crashes now and then (see [the
+note below](#the-one-file-that-flaps)). On a loaded
 machine, `S17-channel/stress.t` — marked `stress slow` in `spectest.data`, 7–12
 s alone against the 10-second ceiling — can also time out with its tests
 passing.
+
+**v5.5.0's 1,425 files were 1,424.** Against v5.5.0 the declared tests rose by
+188 (219,207 → 219,395 without skip/todo), all of them `S32-str/indices.t`'s.
+v5.5.0 dies at that file's line 29, and the harness of the time scored a file
+that died before its `done-testing`, every test so far passing, as a pass:
+`[PASS] 18/18`. The harness counts that as no pass since v5.6.0, and scores
+v5.5.0 `part` on the file. v5.6.0 runs 206 tests there; Rakudo runs 294,
+because the file tries its `:ignoremark` cases only on MoarVM.
 
 Full suite — **1,425 files** (Roast's `spectest.data`):
 
@@ -54,13 +62,17 @@ skip/todo-free count is one test smaller than v5.0.0's. Against v5.0.0's Roast,
 
 ### The one file that flaps
 
-`S17-promise/nonblocking-await.t` crashes with SIGSEGV now and then, part-way
-through its "Deep Promise tree" subtest: once in three full runs here, and once
-in 40 runs of the file alone. It is not new: 150 runs each, interleaved, gave 3
-crashes on v5.1.0 and 2 on the v5.0.1 release binary. Every run that finishes
-passes all 28 tests. The
-cause is not yet found; `t/race/evalcall.raku` reproduces a crash of the same
-kind (6 in 1,000 runs) in a smaller program.
+`S17-promise/nonblocking-await.t` crashes now and then, part-way through: once
+in the three full runs of v5.6.0. Run alone, one copy at a time beside twelve
+busy cores, it crashed 1 time in 25 on the v5.6.0 tag and 5 times in 40 on
+v5.5.0 (SIGSEGV, SIGABRT or SIGTRAP), each time after its sixth test, where a
+hundred workers' awaits break at once. It is not new: 150 runs each,
+interleaved, gave 3 crashes on v5.1.0 and 2 on the v5.0.1 release binary.
+Every run that finishes passes all 28 tests. The likely cause is in
+[TODO.md](../dev/plans/TODO.md): the hundred workers die together, each mixing
+into its exception and writing the interpreter's class table with no lock;
+`t/race/evalcall.raku` reproduces a crash of the same kind (6 in 1,000 runs) in
+a smaller program.
 
 ### How a file is classified
 
@@ -104,15 +116,15 @@ and todo left out, from the by-synopsis table the harness prints.
 | S26 | Documentation (POD) | 27 / 27 | 832 / 832 | 771 / 771 |
 | S28 | Special variables | 3 / 3 | 8 / 8 | 8 / 8 |
 | S29 | Builtins & context | 14 / 14 | 465 / 465 | 462 / 462 |
-| S32 | Standard types (str/list/num/…) | 261 / 261 | 46,531 / 46,531 | 46,365 / 46,365 |
+| S32 | Standard types (str/list/num/…) | 261 / 261 | 46,719 / 46,719 | 46,553 / 46,553 |
 | integration | Cross-feature programs | 119 / 119 | 1,401 / 1,401 | 1,382 / 1,382 |
 | 6.c | v6.c language snapshot | 18 / 18 | 1,041 / 1,041 | 964 / 964 |
 | 6.d | v6.d language snapshot | 18 / 18 | 20,310 / 20,310 | 20,310 / 20,310 |
 | APPENDICES | — | 6 / 6 | 57 / 57 | 53 / 53 |
 | MISC / t | — | 3 / 3 | 9 / 9 | 9 / 9 |
-| Total | — | 1,425 / 1,425 | 220,845 / 220,845 | 219,207 / 219,207 |
+| Total | — | 1,425 / 1,425 | 221,033 / 221,033 | 219,395 / 219,395 |
 
-S15 (Unicode, grapheme and normalization tables) holds 92,521 of the 220,845
+S15 (Unicode, grapheme and normalization tables) holds 92,521 of the 221,033
 declared tests, and the `sprintf` conversion files hold most of 6.d's 20,310,
 so the whole-suite percentage is dominated by those two; every other row is
 now at 100% as well.
