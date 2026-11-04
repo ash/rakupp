@@ -19,6 +19,14 @@
 # the cooperative GIL (RAKUPP_GIL=1), `--exe` and `--exe -O` to Rakudo
 # 2026.09's lines.
 #
+# No case ends its react from a timer. The two-promise case did, with
+# `whenever Promise.in(0.7) { done }`, and a `whenever Promise.in` body does
+# not take its turn yet (CHANGELOG v5.6.0, Left open): on GitHub's loaded
+# macOS runner p4's body ran past 0.7 s, the timer's `done` ran in the middle
+# of it, and the react ended before "p4 end". Stopping this process for 0.45
+# s just after p3 starts does the same here. That case ends with its second
+# body now.
+#
 # Contract: exit 0 + last line PASS.
 my @fail;
 my $bin = $*EXECUTABLE.absolute;
@@ -47,15 +55,16 @@ my $src = q:to/END/;
     }
     say @log.join(', ');
 
-    # two promise bodies take turns
+    # two promise bodies take turns, and the second to end ends the react
     @log = ();
     my $p3 = Promise.new; my $v3 = $p3.vow;
     my $p4 = Promise.new; my $v4 = $p4.vow;
+    my $ended = 0;
     react {
-        whenever $p3 { log 'p3 start'; sleep 0.2; log 'p3 end' }
-        whenever $p4 { log 'p4 start'; sleep 0.2; log 'p4 end' }
+        whenever $p3 { log 'p3 start'; sleep 0.2; log 'p3 end'; done if ++$ended == 2 }
+        whenever $p4 { log 'p4 start'; sleep 0.2; log 'p4 end'; done if ++$ended == 2 }
         whenever Promise.in(0.05) { $v3.keep(1); $v4.keep(1) }
-        whenever Promise.in(0.7) { done }
+        whenever Promise.in(30) { done }   # (only if a body never runs)
     }
     say @log.sort.join(', ');
     say 'in turn: ', so @log.join(' ') ~~ / ^ [ 'p3 start p3 end p4 start p4 end' | 'p4 start p4 end p3 start p3 end' ] $ /;
@@ -101,4 +110,4 @@ for (('--exe', '-O'), ('--exe',)) -> @mode {
     held(@mode.join(' '), $r.out.slurp(:close)); $r.err.slurp(:close);
 }
 
-if @fail { .say for @fail; say "FAIL" } else { say "PASS" }
+if @fail { say "FAIL: $_" for @fail; say "FAIL" } else { say "PASS" }   # (t/run.raku shows the FAIL: lines)
