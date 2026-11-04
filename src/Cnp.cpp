@@ -54,8 +54,9 @@ struct KernelCall {
     std::unique_ptr<InterpStr> isynth;    // …or an interpolation, every part in argRegs
     std::string method;                   // the method's name, for the fast path
     bool pureMethod = false;              // a side-effect-free builtin method (see isPureMethod)
+    bool invBack = false;                 // the invocant is a `my` of the loop's: written back after
     std::vector<int> argRegs;
-    std::vector<std::string> argNames;
+    std::vector<std::string> argNames;    // "" for a loop variable the synth names as itself
     const BuiltinFn* builtin = nullptr;   // the builtin of that name, looked up on first use
     bool builtinChecked = false;
 };
@@ -402,7 +403,8 @@ int rk_cnp_call(RkCnpFrame* f, uint64_t site, uint64_t dst) {
         }
         auto env = makeSlabShared<Env>();
         env->parent = saved;
-        for (size_t k = 0; k < cs.argRegs.size(); k++) env->define(cs.argNames[k], regValue(f, cs.argRegs[k]));
+        for (size_t k = 0; k < cs.argRegs.size(); k++)
+            if (!cs.argNames[k].empty()) env->define(cs.argNames[k], regValue(f, cs.argRegs[k]));
         Interpreter::tctx().cur = env;
         Value res;
         try { res = cs.isynth ? I.eval(cs.isynth.get()) : cs.msynth ? I.eval(cs.msynth.get()) : I.eval(cs.synth.get()); }
@@ -416,6 +418,7 @@ int rk_cnp_call(RkCnpFrame* f, uint64_t site, uint64_t dst) {
         }
         Interpreter::tctx().cur = saved;
         reload();
+        if (cs.invBack) setReg(f, (uint64_t)cs.argRegs[0], *env->find(cs.argNames[0]));
         setReg(f, dst, res);
         return 0;
     } catch (...) {
@@ -767,6 +770,7 @@ struct Lower {
     std::vector<std::map<std::string, int>> scopes;
     int nNamed = 0;          // registers reserved for slots and `my` variables
     int namedTop = 0;
+    int nSlots = 0;          // the first nSlots of them are the loop's slots
     int tempTop = 0, maxTemp = 0;
     // `last` and `next` sites waiting for their loop to finish being lowered.
     struct LoopCtx { std::vector<int> breaks, continues; };
@@ -1300,7 +1304,25 @@ int Lower::expr(Expr* e) {
                 ve->line = m->line;
                 return ve;
             };
-            cs.msynth->inv = bind(m->inv.get(), std::string(1, sig) + "__cnp_inv");
+            // A variable invocant is the VARIABLE, as the interpreter's is: a
+            // mutator (`$buf.push`, `.pop`, `.splice`) writes through the
+            // method's lvalue, and into a scratch copy that write was lost
+            // (#219). A loop variable is named as itself, found through the
+            // scope the kernel runs in; a `my` of the loop's own has no scope
+            // there, so its scratch copy is written back after the call.
+            auto* iv = m->inv->kind == NK::VarExpr ? static_cast<VarExpr*>(m->inv.get()) : nullptr;
+            if (iv && !iv->declare) {
+                int r = lookup(iv->name);
+                if (bad()) return 0;
+                const bool slot = r < nSlots;
+                cs.argRegs.push_back(r);
+                cs.argNames.push_back(slot ? "" : std::string(1, sig) + "__cnp_inv");
+                cs.invBack = !slot;
+                auto ve = std::make_unique<VarExpr>(slot ? iv->name : cs.argNames.back());
+                ve->line = m->line;
+                if (slot) { ve->nativeIntRead = iv->nativeIntRead; ve->nativeNumRead = iv->nativeNumRead; }
+                cs.msynth->inv = std::move(ve);
+            } else cs.msynth->inv = bind(m->inv.get(), std::string(1, sig) + "__cnp_inv");
             if (bad()) return 0;
             for (size_t k = 0; k < m->args.size(); k++) {
                 cs.msynth->args.push_back(bind(m->args[k].get(), "$__cnp_arg" + std::to_string(k)));
@@ -1745,7 +1767,7 @@ Kernel* compile(Stmt* loop, const std::vector<std::string>& slots, std::string& 
     if (L.nNamed > (int)kMaxRegs) { why = "too many variables"; return nullptr; }
     L.scopes.push_back({});
     for (size_t i = 0; i < slots.size(); i++) L.scopes.back()[slots[i]] = (int)i;
-    L.namedTop = (int)slots.size();
+    L.namedTop = L.nSlots = (int)slots.size();
 
     L.loopStmt(loop, true);
     if (!L.bad()) L.emit(ids().ret);
