@@ -41,14 +41,25 @@ ck (at("ab") x 3).index("ab", 27), 50, 'index from a position';
 ck (at("ab") x 3).rindex("ab", 49), 24, 'rindex from a position';
 
 # the cost: `.chars` and the first `.index` from a position, 16 MB with an é
-# in every eight characters (before the fix ~0.5 s together here)
-my $s = 'abcdéfgh' x (16 * 131072);
-my $t = now;
-ck $s.chars, 16 * 1048576, '.chars of 16 MB';
-ck $s.index('ab', 9), 16, 'the first .index from a position';
-my $took = now - $t;
-unless $took < 0.15 {
-    say "FAIL: .chars and the first .index on 16 MB took {$took.round(0.001)} s";
+# in every eight characters, against building that string with `x` on the
+# same machine; each is the best of three, on a fresh string, since the table
+# is kept. Here the two took 0.48 s before the fix and 0.034 s after it,
+# against 0.16 s for the `x`: 3.0 times it, then 0.21. Above 1 fails. A fixed
+# 0.15 s did not hold: the musl build on GitHub's runner took 0.159 s.
+sub fresh() { 'abcdéfgh' x (16 * 131072) }
+my ($took, $built) = Inf, Inf;
+for ^3 {
+    my $t = now;
+    my $s = fresh();
+    $built = min($built, now - $t);
+    $t = now;
+    ck $s.chars, 16 * 1048576, '.chars of 16 MB';
+    ck $s.index('ab', 9), 16, 'the first .index from a position';
+    $took = min($took, now - $t);
+}
+unless $took <= $built || $took < 0.01 {   # (Rakudo's `x` is lazy: both well under 1 ms)
+    say "FAIL: .chars and the first .index on 16 MB took {$took.round(0.001)} s, "
+      ~ "building the string {$built.round(0.001)} s";
     exit 1;
 }
 
