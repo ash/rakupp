@@ -4900,9 +4900,11 @@ void Interpreter::bindParams(const std::vector<Param>& params, ValueList& args,
                     // (only a native parameter, or a value carrying native tags,
                     // has anything for it to do: the common call skips the call)
                     if (v.natBits || paramIsNative(params[i])) bindNativeParam(params[i], v);
-                    // `is raw`/`is rw` bind a writable container; `is copy` keeps what came, typed as the slow path's varDefault
+                    // `is raw`/`is rw` bind a writable container; `is copy` a FRESH one, whatever came (a constant,
+                    // a sigilless `\x`: both readonly), typed as the slow path's varDefault
                     if (!params[i].isCopy) v.readonly = !params[i].isRw && !params[i].isRaw;
-                    else if (!params[i].type.empty() && typeNameLead(params[i].type[0])) env->x().varDefault[params[i].name] = Value::typeObj(params[i].type);
+                    else { v.readonly = v.immutableBind = false;
+                           if (!params[i].type.empty() && typeNameLead(params[i].type[0])) env->x().varDefault[params[i].name] = Value::typeObj(params[i].type); }
                     // and a `$` parameter ITEMIZES what it binds (see the slow path)
                     if (!params[i].isRaw) itemizeScalar(v);
                     // TARG C2: an annotated param writes its slot directly —
@@ -4980,6 +4982,7 @@ void Interpreter::bindParams(const std::vector<Param>& params, ValueList& args,
         if (self && self->isCopy) {
             if (self->sigil == '@') v = coerceArray(v);
             else if (self->sigil == '%') v = coerceHash(v);
+            else if (self->sigil == '$') v.readonly = v.immutableBind = false;   // `$n is copy = CONST`
         }
         return v;
     };
@@ -5100,6 +5103,7 @@ void Interpreter::bindParams(const std::vector<Param>& params, ValueList& args,
             if (p.sigil == '%') {
                 Value h = Value::makeHash();
                 for (auto& kv : named) if (!explicitNamed.count(kv.first)) (*h.hash())[kv.first] = kv.second;
+                if (p.isCopy) for (auto& kv : *h.hash()) kv.second.readonly = kv.second.immutableBind = false;
                 env->define(slotName(p, pidx), h);
                 // `submethod BUILD(*%!f)` — an ATTRIBUTIVE slurpy writes through to
                 // the invocant, as `:$!x` does: `C.new(a => 1).f` is {a => 1}
@@ -5251,6 +5255,8 @@ void Interpreter::bindParams(const std::vector<Param>& params, ValueList& args,
                 // a `|c` param binds a real CAPTURE: `$c<name>` reaches its named
                 // parts and it round-trips as \(…) (Log::Async's wrap tests)
                 if (capture && !p.name.empty()) { a.hashKind = "Capture"; a.itemized = true; }
+                // `*@a is copy` holds fresh containers: a constant's readonly mark stays behind
+                if (p.isCopy && p.sigil == '@') for (auto& e : *a.arr()) e.readonly = e.immutableBind = false;
                 env->define(slotName(p, pidx), a);
                 // …and `*@!items`, an attributive positional slurpy, the same way
                 if (!capture && p.name.size() > 2 && p.name[1] == '!')
@@ -5410,6 +5416,7 @@ void Interpreter::bindParams(const std::vector<Param>& params, ValueList& args,
                 if (p.coerce && !p.type.empty() && bv.typeName() != p.type)
                     bv = coerceToType(bv, p.type);
                 if (p.sigil == '$' && !p.isRaw) itemizeScalar(bv);   // as a positional `$` does
+                if (p.sigil == '$' && p.isCopy) bv.readonly = bv.immutableBind = false;   // …and its `is copy`
                 if (!p.name.empty() || !p.subSig) env->define(slotName(p, pidx), bv);
                 if (!p.captureName.empty())
                     env->define(p.captureName, bv.t == VT::Type ? bv : Value::typeObj(bv.typeName()));
@@ -5769,7 +5776,7 @@ void Interpreter::bindParams(const std::vector<Param>& params, ValueList& args,
         if (p.name.empty() || p.slurpy || p.named || p.sigil != '$') continue;
         if (Value* bound = env->find(slotName(p, i))) {
             if (!bound->natBits && !paramIsNative(p)) continue;
-            const bool ro = bound->readonly;
+            const bool ro = bound->readonly && !p.isCopy;
             bindNativeParam(p, *bound);
             bound->readonly = ro;
         }
