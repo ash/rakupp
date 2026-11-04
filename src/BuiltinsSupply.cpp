@@ -182,6 +182,29 @@ Value Interpreter::supplyDelivery(const std::shared_ptr<SupplyTapCtx>& ctx, long
     });
 }
 
+// A supply block's `whenever $promise` kept later fires on a worker of its
+// own, and two kept one after the other raced to the activation: the second
+// promise's body could run first. Rakudo cues their `.then`s on its pool's
+// queue in the order of the keeps (ten kept in a row come out in order there),
+// so each worker waits for the turn its keep handed it.
+// A turn passes once the delivery before it is queued or running
+// (supplyDelivery's `placed`), not when its body ends, and every earlier
+// turn's job has a worker (runPooled), so the wait is short; `done`, a close
+// or a shutdown ends it too. The GIL, when there is one, is released meanwhile.
+// It lives here, not in Interpreter.cpp: there it moved the int kernels' code
+// along and asg ran 13% slower, with not an instruction of it changed.
+void Interpreter::supplyPromiseInTurn(const std::shared_ptr<SupplyTapCtx>& ctx, long long turn) {
+    auto mine = [&] { return ctx->promTurn >= turn || ctx->done || workerAbort_.load(std::memory_order_relaxed); };
+    { std::lock_guard<std::mutex> lk(ctx->promM); if (mine()) return; }
+    bool parked = gilPark();
+    {
+        std::unique_lock<std::mutex> lk(ctx->promM);
+        // (bounded: `done` and a shutdown do not tell promCv)
+        while (!mine()) ctx->promCv.wait_for(lk, std::chrono::milliseconds(20));
+    }
+    gilUnpark(parked);
+}
+
 int Interpreter::runQuitPhasers(const ValueList& quitP, const Value& ex, Value& replacement) {
     bool consumed = false;
     for (auto& q : quitP) {
