@@ -49,7 +49,8 @@ d23c2ed8 (a variable's `where`); 0d9ea1ca (a variable's `:D` and `:U`);
 names in Python); 116a638e and 3c68ff57 (a react's promise bodies in
 turn); 762ce0e2 (constrained variables compiled); 9326ca7e (a placeholder's
 bare name compiled); 7a419af4 (a supply's promise bodies in keep order);
-d252f389 (asg's code placement).*
+d252f389 (asg's code placement); 1979aacc (an emit's wait for a busy
+supply).*
 
 ---
 
@@ -1727,11 +1728,16 @@ does not.
   t/regression/react-body-fed-from-inside-a-supply-block.raku agrees with
   Rakudo 2026.09.
 - **An emit into a supply block busy on another thread waits for it**
-  (f3ffb5c3), 25 ms at most, as Rakudo's emit waits on the supply's lock,
-  and the value is handled before emit returns: Cro::WebSocket's handler
-  test counted its replies before the last one had been made.
+  (f3ffb5c3, 1979aacc), as Rakudo's emit waits on the supply's lock, and
+  the value is handled before emit returns: Cro::WebSocket's handler test
+  counted its replies before the last one had been made. The wait lasts as
+  long as the holder's body, up to a second; f3ffb5c3's gave up after
+  25 ms, which GitHub's macOS runner, loaded, overran on a 3 ms body. Two
+  supply blocks on two threads emitting into each other, which deadlocks
+  Rakudo, are seen as a circle and queue at once (1979aacc).
   t/regression/emit-waits-for-busy-supply-on-another-thread.raku agrees with
-  Rakudo 2026.09.
+  Rakudo 2026.09; t/regression/supplies-delivering-into-each-other.raku has
+  the circle.
 - **IO::Socket::Async's `write` and `print` queue their bytes and return
   at once** (c067446c), with a Promise kept once the bytes are out, as
   Rakudo's event loop does. Sent on the caller's thread, a write blocked
