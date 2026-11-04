@@ -104,9 +104,10 @@ void Interpreter::maybeFinishSupply(const std::shared_ptr<SupplyTapCtx>& ctx) {
 // wants waits, through any number of others, for one this thread holds. Only
 // waiting threads are listed. A thread follows the chain holding g_supplyWaitM
 // and leaves the list under it before it lets go of the activation it waited
-// for, so every pointer read here is live.
-static std::mutex g_supplyWaitM;
-static std::unordered_map<std::thread::id, SupplyTapCtx*> g_supplyWaits;
+// for, so every pointer read here is live. Never destroyed: a worker still
+// waiting while the process exits reads and leaves it after static destruction.
+static auto& g_supplyWaitM = *new std::mutex;
+static auto& g_supplyWaits = *new std::unordered_map<std::thread::id, SupplyTapCtx*>;
 
 static bool supplyWaitClosesCircle(SupplyTapCtx* want, std::thread::id me) {
     std::lock_guard<std::mutex> lk(g_supplyWaitM);
