@@ -8,13 +8,25 @@ what changed, what it measured and how, with the commit — so the entry starts
 from this page. Move each item into CHANGELOG.md at the tag and delete it
 here.*
 
-*Covered so far: 39f73f24 (`is copy` of a constant, issue #218).*
+*Covered so far: 39f73f24 (`is copy` of a constant, issue #218); b1b35cd7
+(`--cnp` and a method that changes its invocant, issue #219).*
 
 ---
 
 ### Faster
 
 ### Fixed: silent wrong answers
+
+- **Under `--cnp`, a method that changes its invocant changes the loop's
+  variable** (b1b35cd7; issue #219). A kernel ran a method call with the
+  invocant copied into a scratch scope, and a Buf's `push`, `append`,
+  `prepend`, `unshift`, `pop`, `shift`, `splice` and `reallocate` write
+  through the method's lvalue — the copy — so every write the kernel made
+  was lost: `while $k >= 0 { $b.push($k); $k = $k - 1 }` kept the one push
+  made before the loop tiered up. A loop variable invocant is now the
+  variable itself, and a `my` of the loop's own is written back from its
+  copy. t/cnp/cases/mutating-invocant.raku agrees with Rakudo 2026.09,
+  interpreted and under `--cnp`, each of its twelve loops in a kernel.
 
 ### Fixed: crashes
 
@@ -38,3 +50,9 @@ here.*
   that is not `is copy` dies "Cannot assign to a readonly variable or a
   value" when its element is assigned, where Rakudo, and rakupp for a
   literal, say "Cannot assign to an immutable value".
+- Found with b1b35cd7, the same before it: under `--cnp`, a sub that
+  changes a Buf argument (`sub f($x) { $x.push(9) }` called as `f($b)` in
+  a compiled loop) still loses the write, through the scratch argument its
+  parameter links back to; interpreted, and in Rakudo, `$b` takes it. And,
+  interpreted, `my $d = $b; $d.push(1)` leaves `$b` as it was, where a
+  Rakudo Buf is one object both names share.
