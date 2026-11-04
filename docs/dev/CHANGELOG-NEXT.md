@@ -48,7 +48,8 @@ d23c2ed8 (a variable's `where`); 0d9ea1ca (a variable's `:D` and `:U`);
 3072c3a5 and 992c75cf (a qualified name's packages, and dotted module
 names in Python); 116a638e and 3c68ff57 (a react's promise bodies in
 turn); 762ce0e2 (constrained variables compiled); 9326ca7e (a placeholder's
-bare name compiled); 7a419af4 (a supply's promise bodies in keep order).*
+bare name compiled); 7a419af4 (a supply's promise bodies in keep order);
+d252f389 (asg's code placement).*
 
 ---
 
@@ -2042,3 +2043,12 @@ does not.
   `{ say $^c; $c = 5; say $c }(42)` and the same with `my $c = 5` print
   42 and 5; Rakudo prints 42 and dies "Cannot assign to a readonly variable
   or a value".
+- Accepted at the v5.6.0 gates (d252f389, on the M4): perf-guard's
+  junctionwide is 4–5% slower than v5.5.0's, inside gate 3's 5% on the
+  minimum. At a hundred times the kernel's size, interleaved, the best of
+  nine is 1,687 ms against 1,617 (+4.3%) and the median +5.9%. The build
+  before d252f389 (3a9c1b6f) is +4.9%, with the junction code at the same
+  address in both, so it came earlier in the cycle; it is not bisected. At
+  the gate's own size its runs span 7.8%, so `perf-guard --check` calls it
+  inconclusive rather than slower. asg, 13% slower after 7a419af4 from code
+  placement alone, is back inside the 5% with d252f389.
