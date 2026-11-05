@@ -11,11 +11,21 @@ here.*
 *Covered so far: c43f88fa (a metaop's step and the program's own operator);
 00734769 (a `+` over the program's own class and every Int `+`); c77f05e7
 (`~` and a user candidate over an object); 5ebbe282 (a multi whose
-candidates all decline).*
+candidates all decline); fb43011a (an empty native array, packed).*
 
 ---
 
 ### Faster
+
+- **A native array built by a loop keeps its elements as machine words**
+  (fb43011a). Only `my int @a = ^N` and other list assignments made the
+  packed form; a `my int @a` (or `num`) declared empty and grown by `push`
+  or by index stayed 80-byte Values. It is packed from its declaration now,
+  and a store at or past its end grows it. 1M pushed Ints: 87 → 24 MB peak,
+  7.44G → 2.60G instructions; 1M stored by index 6.99G → 1.75G; the
+  pushed row of tools/run-memory.raku 83 → 17 bytes an element, against
+  Rakudo's 63. t/regression/native-array-grown-stays-packed.raku agrees
+  with Rakudo 2026.09, interpreted, compiled and under `--cnp`.
 
 - **A multi whose candidates all decline goes straight to the built-in**
   (5ebbe282; issue #47). Math::NumberTheory adds six `infix:<gcd>`
