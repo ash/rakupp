@@ -23598,10 +23598,11 @@ Value Interpreter::evalBinary(Binary* b) {
             if (userInfixOverCore(op, l, r, uv)) return uv;
         }
         if (RAKUPP_UNLIKELY(uninitOperand(l) || uninitOperand(r))) uninitBinaryOperands(b, op, l, r);
-        // …but an operand that IS-A Str is a Str:D, so Rakudo binds the Str:D
-        // candidate and concatenates its VALUE — per operand, even when the
-        // other side is a plain object. `("bb" but R) ~ Plain.new` is "bbplain",
-        // not "R's-Str" ~ "plain".
+        // An object or enum operand meets a user `multi infix:<~>` first, as on the
+        // general path (`Rt.new ~ 1`, `Red ~ "x"`); then an operand that IS-A Str is
+        // a Str:D, concatenated by VALUE per operand: `("bb" but R) ~ Plain.new` is "bbplain".
+        if ((l.t == VT::Object || r.t == VT::Object || !l.enumType.empty() || !r.enumType.empty()) && boundInfixPossible(op))
+            if (Value res; objectOperandInfix(*this, op, l, r, res)) return res;
         if (l.t == VT::Object || r.t == VT::Object) {
             const std::string lt = strInStrContext(l);   // (composing across the join)
             return Value::str(nfcConcat(lt, strInStrContext(r), nfcKnown(l), nfcKnown(r)));
