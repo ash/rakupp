@@ -4432,45 +4432,86 @@ std::atomic<uint64_t> g_boundInfixMask{0};
 // reader scans without a lock: it reads the count, then that many published
 // names. Past kCap distinct spellings every hit is taken as real, which is what
 // the bare filter answered.
+//
+// A spelling is armed FIRMLY, or PROVISIONALLY by a count of holders that may
+// each let go (lexShadowRelease): a user `multi infix:<+>(Pt, Pt)` hoisted
+// above `class Pt` may name a subset of Int, until the class is declared
+// (Interpreter::reviewUserInfixPending). When the last holder lets go, the
+// mask is made again from the spellings still armed, so the operator's bit
+// clears unless another spelling shares it, and its every use stops paying
+// for the confirming scan. The mask is written only under the lock; a reader
+// takes neither.
 namespace {
 struct ArmedSpellings {
     static constexpr int kCap = 64;
     std::atomic<const std::string*> names[kCap] = {};
+    std::atomic<bool> firm[kCap] = {};
+    std::atomic<int> held[kCap] = {};
     std::atomic<int> count{0};
     std::atomic<bool> overflow{false};
     std::mutex mu;
-    bool has(const char* p, size_t n) const {
+    int find(const char* p, size_t n) const {
         const int k = count.load(std::memory_order_acquire);
         for (int i = 0; i < k; i++) {
             const std::string* s = names[i].load(std::memory_order_relaxed);
-            if (s->compare(0, std::string::npos, p, n) == 0) return true;
+            if (s->compare(0, std::string::npos, p, n) == 0) return i;
         }
+        return -1;
+    }
+    bool live(int i) const {
+        return firm[i].load(std::memory_order_acquire) || held[i].load(std::memory_order_acquire) > 0;
+    }
+    bool has(const char* p, size_t n) const {
+        if (int i = find(p, n); i >= 0) return live(i);
         return overflow.load(std::memory_order_acquire);
     }
-    void arm(std::atomic<uint64_t>& mask, const char* p, size_t n) {
+    void arm(std::atomic<uint64_t>& mask, const char* p, size_t n, bool provisional = false) {
         if (!n) return;
         const uint64_t bit = 1ull << lexShadowSlot(p, n);
-        if ((mask.load(std::memory_order_relaxed) & bit) && has(p, n)) return;
-        if (!has(p, n)) {
-            std::lock_guard<std::mutex> lk(mu);
-            if (!has(p, n)) {
-                const int k = count.load(std::memory_order_relaxed);
-                if (k < kCap) {
-                    names[k].store(new std::string(p, n), std::memory_order_relaxed);
-                    count.store(k + 1, std::memory_order_release);
-                }
-                else overflow.store(true, std::memory_order_release);
-            }
+        if (int i = find(p, n); i >= 0 && !provisional && firm[i].load(std::memory_order_relaxed) &&
+                                (mask.load(std::memory_order_relaxed) & bit))
+            return;
+        std::lock_guard<std::mutex> lk(mu);
+        int i = find(p, n);
+        if (i < 0) {
+            const int k = count.load(std::memory_order_relaxed);
+            if (k < kCap) i = k;
+            else overflow.store(true, std::memory_order_release);
         }
-        // the name is published before the bit, so a reader that sees the bit
-        // finds the name
+        if (i >= 0) {
+            if (provisional) held[i].fetch_add(1, std::memory_order_release);
+            else firm[i].store(true, std::memory_order_release);
+        }
+        if (i >= 0 && i == count.load(std::memory_order_relaxed)) {   // a new spelling, published with its state
+            names[i].store(new std::string(p, n), std::memory_order_relaxed);
+            count.store(i + 1, std::memory_order_release);
+        }
+        // the name and its state are published before the bit, so a reader
+        // that sees the bit finds them
         if (!(mask.load(std::memory_order_relaxed) & bit)) mask.fetch_or(bit, std::memory_order_release);
+    }
+    void release(std::atomic<uint64_t>& mask, const char* p, size_t n) {
+        std::lock_guard<std::mutex> lk(mu);
+        const int i = find(p, n);
+        if (i < 0 || held[i].load(std::memory_order_relaxed) <= 0) return;
+        held[i].fetch_sub(1, std::memory_order_release);
+        if (live(i) || overflow.load(std::memory_order_relaxed)) return;
+        uint64_t m = 0;
+        const int k = count.load(std::memory_order_relaxed);
+        for (int j = 0; j < k; j++)
+            if (live(j)) {
+                const std::string* s = names[j].load(std::memory_order_relaxed);
+                m |= 1ull << lexShadowSlot(s->data(), s->size());
+            }
+        mask.store(m, std::memory_order_release);
     }
 };
 ArmedSpellings g_lexShadowNames, g_boundInfixNames;
 }
 
 void lexShadowArm(const char* p, size_t n) { g_lexShadowNames.arm(g_lexShadowMask, p, n); }
+void lexShadowArmProvisional(const char* p, size_t n) { g_lexShadowNames.arm(g_lexShadowMask, p, n, true); }
+void lexShadowRelease(const char* p, size_t n) { g_lexShadowNames.release(g_lexShadowMask, p, n); }
 bool lexShadowArmed(const char* p, size_t n) { return g_lexShadowNames.has(p, n); }
 bool boundInfixArmed(const char* p, size_t n) { return g_boundInfixNames.has(p, n); }
 std::atomic<uint64_t> g_dynEpoch{1};

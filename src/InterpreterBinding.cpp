@@ -2296,23 +2296,37 @@ static bool userInfixParams(const Callable* c, const Param*& a, const Param*& b)
     return true;
 }
 
-// Whether a candidate's parameter names a concrete core type (a literal, a
-// core type, a subset of one) — or a name nothing has declared YET: the sub
-// is hoisted above the `subset P of Int` its parameter names, so it may be one.
+// How a type a candidate's parameter names stands against a core operand:
+// Core for a concrete core type or a subset of one; Other where no core
+// operand can be narrower than the built-in's own candidate (a broad type, a
+// declared class); Undeclared for a name nothing has declared YET — the sub
+// is hoisted above the `subset P of Int` or the `class Pt` its parameter
+// names, so it may turn out to be either. `t` is left at the name decided on.
+enum class InfixParamKind { Core, Other, Undeclared };
 template <class Subsets, class Classes>
-static bool userInfixConcreteParam(const Param* p, const Subsets& subsets, const Classes& classes) {
-    if (p->litVal) return true;
-    std::string t = p->type;
+static InfixParamKind userInfixTypeKind(std::string& t, const Subsets& subsets, const Classes& classes) {
     for (int guard = 0; guard < 16; guard++) {
         auto it = subsets.find(t);
         if (it == subsets.end() || it->second.base.empty()) break;
         t = it->second.base;
     }
-    if (userInfixCoreType(t)) return true;
+    if (userInfixCoreType(t)) return InfixParamKind::Core;
     static const std::set<std::string> kBroad = {
         "Any", "Mu", "Cool", "Numeric", "Real", "Rational", "Stringy", "Positional", "Associative",
         "Callable", "Code", "Iterable", "Junction", "List", "Array", "Hash", "Seq", "Range"};
-    return !t.empty() && !kBroad.count(t) && !classes.count(t);
+    if (t.empty() || kBroad.count(t) || classes.count(t)) return InfixParamKind::Other;
+    return isKnownTypeName(t) ? InfixParamKind::Core : InfixParamKind::Undeclared;
+}
+template <class Subsets, class Classes>
+static InfixParamKind userInfixParamKind(const Param* p, const Subsets& subsets, const Classes& classes,
+                                         std::string& t) {
+    t = p->type;
+    return p->litVal ? InfixParamKind::Core : userInfixTypeKind(t, subsets, classes);
+}
+template <class Subsets, class Classes>
+static bool userInfixConcreteParam(const Param* p, const Subsets& subsets, const Classes& classes) {
+    std::string t;
+    return userInfixParamKind(p, subsets, classes, t) != InfixParamKind::Other;
 }
 
 void Interpreter::noteUserInfixCandidate(const std::string& name, const Callable* cand) {
@@ -2322,8 +2336,54 @@ void Interpreter::noteUserInfixCandidate(const std::string& name, const Callable
     if (!userInfixModelledOp(op, stringOp)) return;
     const Param *a, *b;
     if (!userInfixParams(cand, a, b)) return;
-    if (userInfixConcreteParam(a, subsets_, classes_) && userInfixConcreteParam(b, subsets_, classes_))
-        lexShadowArm(op.data(), op.size());
+    std::string ta, tb;
+    const InfixParamKind ka = userInfixParamKind(a, subsets_, classes_, ta);
+    const InfixParamKind kb = userInfixParamKind(b, subsets_, classes_, tb);
+    if (ka == InfixParamKind::Other || kb == InfixParamKind::Other) return;
+    if (ka == InfixParamKind::Core && kb == InfixParamKind::Core) { lexShadowArm(op.data(), op.size()); return; }
+    // a name not declared yet: armed until it is, and decided again then
+    std::vector<std::string> names;
+    if (ka == InfixParamKind::Undeclared) names.push_back(ta);
+    if (kb == InfixParamKind::Undeclared && tb != ta) names.push_back(tb);
+    auto [it, fresh] = userInfixPending_.try_emplace(op);
+    if (fresh) lexShadowArmProvisional(op.data(), op.size());
+    for (auto& have : it->second) if (have == names) return;   // a block entered again declares it again
+    it->second.push_back(std::move(names));
+}
+
+// A class or a subset was declared: decide again each operator a candidate
+// armed while a type it names was not declared. A candidate one of whose
+// names is now a class (or a subset of one) can take no core operand, and
+// leaves; one whose names are all core now arms its operator for good. An
+// operator no candidate holds any more is let go, and its `+` is evalBinary's
+// fast one again: a `multi infix:<+>(Pt, Pt)` hoisted above `class Pt` sent
+// every Int `+` in the program through userInfixOverCore, 3.8× its cost.
+void Interpreter::reviewUserInfixPending() {
+    for (auto it = userInfixPending_.begin(); it != userInfixPending_.end();) {
+        const std::string& op = it->first;
+        auto& cands = it->second;
+        bool core = false;
+        for (size_t i = 0; i < cands.size() && !core;) {
+            bool other = false, undeclared = false;
+            for (auto& n : cands[i]) {
+                std::string t = n;
+                switch (userInfixTypeKind(t, subsets_, classes_)) {
+                    case InfixParamKind::Other: other = true; break;
+                    case InfixParamKind::Undeclared: undeclared = true; break;
+                    case InfixParamKind::Core: break;
+                }
+            }
+            if (other) cands.erase(cands.begin() + (long)i);
+            else if (!undeclared) core = true;
+            else i++;
+        }
+        if (core) lexShadowArm(op.data(), op.size());
+        if (core || cands.empty()) {
+            lexShadowRelease(op.data(), op.size());
+            it = userInfixPending_.erase(it);
+        }
+        else ++it;
+    }
 }
 
 // A core operand (…and the built-in Dateish values, whose operators are core

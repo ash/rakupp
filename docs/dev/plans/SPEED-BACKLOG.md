@@ -35,7 +35,6 @@ theme the rows are sorted by complexity, largest first.
 | 16 | Graph #47: a lean `invokeMethod` path, then one for closures | M | A method or closure call is ~0.2 µs against Rakudo's ~0.08 — TODO.md |
 | 52 | The multi-dispatch cache keeps "the builtin answers": euler-phi's `$_ gcd $n` pays ~0.5 µs a call for Math::NumberTheory's six declining candidates (0.09 → 0.36 s for n ≤ 1000), which is all of the #47 driver's 1.21× | M | Profile the call first: `dispatchCacheStore` stores only a winning candidate, and nothing is thrown — V6 P2, P0's `issue47` row |
 | 19 | Operator names as integers (the Int fast path for `div mod %% ** gcd lcm min max` is done, 2026-10-21) | M | V6 P2 |
-| 53 | A `multi infix:<+>(Pt, Pt)` over the program's own class makes every Int `+` in the program slower: `$t = $t + $_` over 5M Ints 8.2G → 31.4G instructions, `[+]` 9.0G → 20.8G | M | The core-type filter is armed when the candidate is declared, where `Pt` may still turn out to be a subset of Int (noteUserInfixCandidate), and evalBinary and applyBinOp then ask userInfixOverCore at every operation. Re-decide the filter once the classes are declared, as metaInfixUser's own check does per metaop — found 2026-11-05 |
 | 20 | The call-path cost shipped in v5.3.0 (`privmeth` +9.5%, `method` +8.6%) | M | `setupRwLinks` on calls with no rw parameter, SlotStripe single-threaded; A/B against v5.2.1 — TODO.md |
 | 23 | Cache a class name's resolution on its node | M | A NameTerm also resolves lexically (`::T`, `my class`), so the cache needs a record that no scope binds the name; at most ~7% of a 10× `objects` run — V6 P1 |
 | 26 | Built-in methods in interpreted loops: `.map`/`.flat`/`.any` on a Seq; a CStruct's CArray field built once per pointer | M | TODO.md |
@@ -110,6 +109,15 @@ theme the rows are sorted by complexity, largest first.
 
 ## Closed since the first list (2026-10-14)
 
+- **53, a `+` over the program's own class slowing every Int `+`**
+  (2026-11-05): a `multi infix:<+>(Pt, Pt)` is noted when its sub is
+  hoisted, above `class Pt`, where `Pt` could still name a subset of Int,
+  and armed the filter that sends a core-operand `+` through
+  userInfixOverCore. It is armed provisionally now and decided again as
+  each class and subset is declared (reviewUserInfixPending); a released
+  spelling leaves the mask. `$t = $t + $_` over 5M Ints 31.4G → 8.17G
+  instructions (8.20G with no such multi), `[+]` 21.0G → 8.87G, and
+  perf-guard's new `userplus` kernel 259 → 73 ms.
 - **GRAMMAR-SPEED-PLAN** (2026-11-01): closed, re-measured at the close. Its
   open targets are [TEXT-PLAN.md](TEXT-PLAN.md) T5's and row 16's.
 

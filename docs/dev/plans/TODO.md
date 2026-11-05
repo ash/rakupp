@@ -206,6 +206,13 @@ The same items grouped by theme, with a complexity estimate for each:
 
 ## 2. Correctness (v5 error batches)
 
+- [ ] **A user's `~` candidate over an object is never taken**, found
+  2026-11-05 beside SPEED-BACKLOG 53: with `class Rt {}` and `multi
+  infix:<~>(Rt $a, Int $b) { "rt-cat" }` (and an `(Rt, Rt)` one) declared,
+  `Rt.new ~ 1` is `Rt<…>1` and `Rt.new ~ Rt.new` `Rt<…>Rt<…>`, where Rakudo
+  2026.09 answers "rt-cat" and the `(Rt, Rt)` candidate's value. The same
+  shape over `**` or `+` takes the candidate, so it is `~`'s own path
+  (string concatenation reading an object's Str first). As old as v5.6.2.
 - [ ] **A bare `<:Name>` the engine does not know matches every character**:
   `'A' ~~ /<:Bogus_Thing>/` is True (Rakudo 2026.09: False). The last line of
   uniMatchesProp's bare form answers True for a name it cannot place, on

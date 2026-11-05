@@ -5237,7 +5237,7 @@ static void mergeParentRoleMultis(ClassInfo* ci, const SigKey& sigKeyParams) {
                 if (!tctx().pkgPrefix.empty() && !sd->isMy) subsets_[tctx().pkgPrefix + sd->name] = info;
                 // (what was decided from a name before it named a subset — a
                 // `--> T` shortcut, a type match kept — is decided again)
-                if (subsets_.size() != hadSubsets) noteSymbolMutation("subset declaration");
+                if (subsets_.size() != hadSubsets) { noteSymbolMutation("subset declaration"); reviewUserInfixPending(); }
                 // …and its user traits run on it, as on a class (Red's `is sub-model`),
                 // with ONE metaobject under both names for what they mix into it
                 Value* tm = sd->traits.empty() ? nullptr : tctx().cur->find("&trait_mod:<is>");
@@ -8100,6 +8100,7 @@ static void mergeParentRoleMultis(ClassInfo* ci, const SigKey& sigKeyParams) {
                 }
             }
             if (!stubOverCompleted) classes_[clsName] = ci;
+            if (!userInfixPending_.empty()) reviewUserInfixPending();   // an operator armed for this name
             if (impliedPkgs_.erase(clsName)) pkgKind_.erase(clsName);   // `my class A` after `class A::B` too
             // `my class X::Encode::Unknown` inside `unit module Encode`: its leading
             // `X` is the GLOBAL exception package, so Rakudo installs the class in

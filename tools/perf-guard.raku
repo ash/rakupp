@@ -167,6 +167,16 @@ my %kernels =
     objnew    => 'class K { has $.a; has $.b }
                   my $t; my int $n = 0;
                   while $n < 200_000 { $t = K.new(a => 1, b => 2); $n = $n + 1 }; say $t.a;',
+    # userplus (2026-11-05, SPEED-BACKLOG 53) — Int `+` in a program that
+    #   declares `+` for its own class. The candidate is hoisted above the
+    #   class, where `Pt` could still name a subset of Int, and armed the
+    #   filter that sent every core-operand `+` through userInfixOverCore:
+    #   3.8× on this loop, which no kernel here could see, none of them
+    #   declaring an operator. The class's declaration now lets it go.
+    userplus  => 'class Pt { has $.x }
+                  multi infix:<+>(Pt $a, Pt $b) { Pt.new(x => $a.x + $b.x) }
+                  my @a = ^1_000_000; my $t = 0; for @a { $t = $t + $_ };
+                  say $t, " ", (Pt.new(x => 1) + Pt.new(x => 2)).x;',
     # mainnext/mainwhen were added 2026-09-06 (NATIVE-MATH-PLAN §1), after the
     # cooperative next/last/redo and when/default paths turned out to have been
     # OFF AT THE MAINLINE since the day they were written: "no frame is armed"
@@ -257,7 +267,7 @@ class C@I@ { has $.a = @I@; method m($z) { $!a + $z div 2 } }
 # The kernel list, in one place: the run loop and the gate loop must agree, and
 # they used to carry two hardcoded copies of it.
 my @KERNELS = <fib asg loopsum hash strscan strpass subcall rats regexloop
-                method attrread privmeth multimeth multiwhere objnew mainnext mainwhen exprnext
+                method attrread privmeth multimeth multiwhere objnew userplus mainnext mainwhen exprnext
                 junction junctionwide intcat prepend sharedappend substrloop loadtime>;
 
 # …and it must stay in step with %kernels. A kernel added to the hash but not to

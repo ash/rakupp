@@ -21601,7 +21601,7 @@ Value Interpreter::applyBinOp(const std::string& op, const Value& l, const Value
     // an object or enum operand: a user `multi infix:<op>`, then a .Numeric
     // bridge, as evalBinary gives them (`[+]`, `Z+`, `X+`, `R+` reach here)
     if (l.t == VT::Object || r.t == VT::Object ||
-        (boundInfixPossible(op) && (!l.enumType.empty() || !r.enumType.empty())))
+        ((!l.enumType.empty() || !r.enumType.empty()) && boundInfixPossible(op)))
         if (Value res; objectOperandInfix(*this, op, l, r, res)) return res;
     // see isStringCmpOp: an object compares by its own `method Str`
     if ((l.t == VT::Object || r.t == VT::Object || isPlatformHash(l) || isPlatformHash(r)) && isStringCmpOp(op))

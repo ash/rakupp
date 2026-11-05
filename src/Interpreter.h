@@ -881,6 +881,9 @@ inline bool nameTypeMemoHit(const NameTerm* nt) {
 Value typeObjNoted(const NameTerm* nt, const std::string& rn, uint64_t gen);   // …and where it is kept (Interpreter.cpp)
 // The one way to arm the filter: sets the spelling's bit and records it.
 void lexShadowArm(const char* p, size_t n);
+// …for as long as a holder keeps it (Interpreter::reviewUserInfixPending).
+void lexShadowArmProvisional(const char* p, size_t n);
+void lexShadowRelease(const char* p, size_t n);
 // Whether exactly this spelling was armed (Interpreter.cpp).
 bool lexShadowArmed(const char* p, size_t n);
 inline bool lexShadowPossible(const char* p, size_t n) {
@@ -2679,6 +2682,7 @@ public:
     }
     Value metaInfixUserStep(const Value& uf, const std::string& op, const Value& l, const Value& r);
     void noteUserInfixCandidate(const std::string& name, const Callable* cand);
+    void reviewUserInfixPending();   // after a class or a subset is declared
     Value declInitial(const VarExpr* ve, char sigil); // a declaration's starting value (parameterized types included)
     char elemSmileyOf(const std::string& symbol);
     void checkElemSmiley(const std::string& symbol, const std::string& type, const Value& v);
@@ -3351,6 +3355,10 @@ public:
                         std::shared_ptr<Value> whereBlock;
                         Value howObj; };                   // its own .HOW, made on first ask (or by new_type)
     std::unordered_map<std::string, SubsetInfo> subsets_;
+    // operator → the not-yet-declared type names of each candidate that armed
+    // it provisionally (noteUserInfixCandidate); decided again as classes and
+    // subsets are declared (reviewUserInfixPending, InterpreterBinding.cpp)
+    std::unordered_map<std::string, std::vector<std::vector<std::string>>> userInfixPending_;
     // per-site `ff`/`fff` flip-flop latch + how many elements since it fired
     // (the result while on is that count, not a Bool)
     long long anonMixinSeq_ = 0; // names the anonymous role a value mixin composes
