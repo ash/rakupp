@@ -199,7 +199,7 @@ void forEachEdge(void* key, PK k, F&& f, bool& pin, long& scan) {
         case PK::Obj: {
             ObjectData& od = static_cast<Body<ObjectData>*>(static_cast<Payload*>(key))->v;
             hashEdges(od.attrs, f, pin, scan);
-            if (od.boxedSlot.p && scan >= 0) valueEdge(*od.boxedSlot.p, f);
+            if (const Value* b = od.boxedIfAny(); b && scan >= 0) valueEdge(*b, f);
             break;
         }
         case PK::Match: {
@@ -265,7 +265,7 @@ void breakBody(Payload* p, PK k) {
         case PK::Obj: {
             ObjectData& od = static_cast<Body<ObjectData>*>(p)->v;
             od.attrs.clear();
-            od.boxedSlot.p.reset();
+            if (ObjectData::Cold* c = od.cold.get()) c->boxed = Value();
             od.hasBoxed = false;
             break;
         }

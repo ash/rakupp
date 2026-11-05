@@ -45,9 +45,11 @@
 namespace rakupp {
 
 // A list whose elements never move once constructed (VALUEHASH-SMALL-PLAN.md):
-// the one guarantee ValueHash took std::deque for. Storage is a run of chunks,
-// each twice the one before, starting from a first chunk of `1 << shift_`
-// elements — 4 by default, or what reserve() asked for. libc++'s deque block
+// the one guarantee ValueHash took std::deque for. Storage is a run of chunks:
+// a first chunk of `cap0_` elements — 4 by default, or exactly what reserve()
+// asked for (an object's attribute count: five attributes were given eight
+// entries when it was rounded to a power of two) — and then chunks of
+// `(1 << shift_) << k`, each twice the one before. libc++'s deque block
 // is 4 KB whatever the element, which is 24 entries of 168 bytes: every hash
 // that received one key paid for 24, and every object's attribute table is a
 // hash. The first chunk's pointer lives inline and later ones in `more_`,
@@ -57,15 +59,21 @@ class ChunkList {
     T* first_ = nullptr;
     std::vector<T*> more_;   // chunks 1, 2, … (chunk k holds cap0 << k elements)
     size_t n_ = 0;
-    unsigned shift_ = 2;     // log2 of the first chunk's capacity
+    unsigned shift_ = 2;     // log2 of the later chunks' base, 1 << shift_ >= cap0_
+    uint32_t cap0_ = 4;      // the first chunk's capacity (in shift_'s padding)
 
-    // element i lives in chunk k at offset o, where chunk k starts at
-    // cap0 * (2^k - 1): k = floor(log2(i / cap0 + 1))
+    // element i lives in the first chunk below cap0_, else in chunk k >= 1 at
+    // offset o, where with j = i - cap0_ chunk k starts at j = base * (2^k - 2):
+    // k = floor(log2(j / base + 2)). With cap0_ == base that is the layout of
+    // one geometric run from the first chunk.
     void locate(size_t i, size_t& k, size_t& o) const {
-        const size_t q = (i >> shift_) + 1;
+        if (i < cap0_) { k = 0; o = i; return; }
+        const size_t j = i - cap0_;
+        const size_t q = (j >> shift_) + 2;
         k = 63 - (size_t)clzll((unsigned long long)q);
-        o = i - (((size_t(1) << k) - 1) << shift_);
+        o = j - (((size_t(1) << k) - 2) << shift_);
     }
+    size_t capOf(size_t k) const { return k == 0 ? cap0_ : size_t(1) << (shift_ + k); }
     T* chunk(size_t k) const { return k == 0 ? first_ : more_[k - 1]; }
     static T* allocChunk(size_t cap) { return static_cast<T*>(::operator new(cap * sizeof(T))); }
     void release() {
@@ -80,13 +88,13 @@ public:
     ChunkList(const ChunkList&) = delete;
     ChunkList& operator=(const ChunkList&) = delete;
     ChunkList(ChunkList&& o) noexcept
-        : first_(o.first_), more_(std::move(o.more_)), n_(o.n_), shift_(o.shift_) {
+        : first_(o.first_), more_(std::move(o.more_)), n_(o.n_), shift_(o.shift_), cap0_(o.cap0_) {
         o.first_ = nullptr; o.more_.clear(); o.n_ = 0;
     }
     ChunkList& operator=(ChunkList&& o) noexcept {
         if (this != &o) {
             release();
-            first_ = o.first_; more_ = std::move(o.more_); n_ = o.n_; shift_ = o.shift_;
+            first_ = o.first_; more_ = std::move(o.more_); n_ = o.n_; shift_ = o.shift_; cap0_ = o.cap0_;
             o.first_ = nullptr; o.more_.clear(); o.n_ = 0;
         }
         return *this;
@@ -100,7 +108,7 @@ public:
     void runs(F&& f) const {
         size_t left = n_;
         for (size_t k = 0; left; k++) {
-            const size_t cap = size_t(1) << (shift_ + k);
+            const size_t cap = capOf(k);
             const size_t m = left < cap ? left : cap;
             if (!f(static_cast<const T*>(chunk(k)), m)) return;
             left -= m;
@@ -110,19 +118,22 @@ public:
     const T& operator[](size_t i) const { size_t k, o; locate(i, k, o); return chunk(k)[o]; }
     T& back() { return (*this)[n_ - 1]; }
     void clear() { release(); }
-    // Size the FIRST chunk for `n` elements — only before anything is stored.
+    // Size the FIRST chunk for exactly `n` elements — only before anything is
+    // stored; later chunks grow from the power of two at or above it.
     void reserve(size_t n) {
-        if (n_ || first_) return;
+        if (n_ || first_ || n == 0) return;
+        if (n > (size_t(1) << 20)) n = size_t(1) << 20;
         unsigned s = 0;
-        while ((size_t(1) << s) < n && s < 20) s++;
+        while ((size_t(1) << s) < n) s++;
         shift_ = s;
+        cap0_ = (uint32_t)n;
     }
     template <class... A>
     T& emplace_back(A&&... a) {
         size_t k, o;
         locate(n_, k, o);
         if (o == 0) {                       // the first element of a new chunk
-            const size_t cap = size_t(1) << (shift_ + k);
+            const size_t cap = capOf(k);
             if (k == 0) { if (!first_) first_ = allocChunk(cap); }
             else if (more_.size() < k) more_.push_back(allocChunk(cap));
         }
@@ -139,13 +150,18 @@ public:
 
 private:
     // Entry: the exposed pair (const key — nobody may rewrite a key in
-    // place, the index holds its hash) plus the bookkeeping beside it.
+    // place, the index holds its hash) plus the bookkeeping beside it. A key's
+    // hash is 63 bits (hashKey), and the top bit of `h` marks the entry dead
+    // (erase): a dead entry's `h` therefore equals no key's, so a scan's hash
+    // compare is its liveness test too. Was a bool beside it: 120 bytes an
+    // entry, 112 now.
+    static constexpr uint64_t kDead = 1ull << 63;
     struct Entry {
         std::pair<const std::string, Value> kv;
         uint64_t h;
-        bool dead = false;
         Entry(std::string k, Value v, uint64_t hh)
             : kv(std::move(k), std::move(v)), h(hh) {}
+        bool dead() const { return (h & kDead) != 0; }
     };
 
     static constexpr int32_t EMPTY = -1;
@@ -154,7 +170,7 @@ private:
     // Insertion order; holes stay (dead flag). The entries live in `own_`, and
     // every access goes there. Once something ALIASES one of them — a Pair that
     // a plain Hash hands out holds the hash's own container, as Rakudo's do —
-    // `gen_` is a generation the aliases co-own (aliasOf). It stays EMPTY while
+    // the generation (Cold::gen) the aliases co-own (aliasOf). It stays EMPTY while
     // the hash holds its entries: a clear, an assignment or the hash's own end
     // hands them over to it (retireEntries) and lets it go when its last alias
     // does, so a Pair taken before `%h = ()` keeps its container, and nothing
@@ -168,17 +184,36 @@ private:
     // already freed — and a thread iterating a hash (`run` reading %*ENV) while
     // another took its first Pair read the list mid-move (issue #193).
     ChunkList<Entry> own_;
-    std::shared_ptr<ChunkList<Entry>> gen_;
-    // gen_ is made once, under genMutex(), and published here: a thread that
-    // sees the flag set sees gen_ (aliasOf, entriesAliased)
-    std::atomic<bool> genPub_{false};
+    // The rare parts, behind one pointer a plain hash never allocates: the
+    // aliases' generation (`gen`, made once under genMutex() and published by
+    // `genPub`: a thread that sees the flag set sees gen — aliasOf,
+    // entriesAliased) and an object-keyed hash's original keys (below). They
+    // were 48 bytes inline in every hash, and so in every object's attribute
+    // table. The block itself is made under genMutex() too, and published by
+    // its pointer, because the readers that make a generation may be several.
+    struct Cold {
+        std::shared_ptr<ChunkList<Entry>> gen;
+        std::atomic<bool> genPub{false};
+        std::map<std::string, Value> objKeys;
+    };
+    std::atomic<Cold*> cold_{nullptr};
+    Cold* cold() const { return cold_.load(std::memory_order_acquire); }
+    Cold& coldMake() {
+        if (Cold* c = cold()) return *c;
+        std::lock_guard<std::mutex> lk(genMutex());
+        if (Cold* c = cold_.load(std::memory_order_relaxed)) return *c;
+        Cold* c = new Cold();
+        cold_.store(c, std::memory_order_release);
+        return *c;
+    }
     ChunkList<Entry>& E() { return own_; }
     const ChunkList<Entry>& E() const { return own_; }
     void retireEntries() {
-        if (gen_) {   // the entries leave with the generation, which keeps them while a Pair does
-            *gen_ = std::move(own_);
-            gen_.reset();
-            genPub_.store(false, std::memory_order_relaxed);
+        Cold* c = cold();
+        if (c && c->gen) {   // the entries leave with the generation, which keeps them while a Pair does
+            *c->gen = std::move(own_);
+            c->gen.reset();
+            c->genPub.store(false, std::memory_order_relaxed);
         }
         own_.clear();
     }
@@ -187,10 +222,11 @@ private:
     __attribute__((noinline))
 #endif
     void makeGeneration() {
+        Cold& c = coldMake();
         std::lock_guard<std::mutex> lk(genMutex());
-        if (genPub_.load(std::memory_order_relaxed)) return;   // another thread made it while we waited
-        gen_ = std::make_shared<ChunkList<Entry>>();
-        genPub_.store(true, std::memory_order_release);
+        if (c.genPub.load(std::memory_order_relaxed)) return;   // another thread made it while we waited
+        c.gen = std::make_shared<ChunkList<Entry>>();
+        c.genPub.store(true, std::memory_order_release);
     }
     std::vector<int32_t> index_;   // power-of-two probe table of entry numbers
     size_t live_ = 0;              // entries not dead
@@ -203,19 +239,20 @@ private:
     // live HERE rather than on the stored value, because the lvalue path hands
     // back a slot pointer the caller overwrites — and here they travel with the
     // payload's shared_ptr, so every copy of the Value sees them. Empty, and
-    // never touched, for an ordinary string-keyed hash.
-    std::map<std::string, Value> objKeys_;
+    // never touched, for an ordinary string-keyed hash (Cold::objKeys).
 
-    static uint64_t hashKey(const std::string& k) { return std::hash<std::string>{}(k); }
+    static uint64_t hashKey(const std::string& k) { return std::hash<std::string>{}(k) & ~kDead; }
 
 public:
     // The object a key was subscripted with, when this hash is object-keyed.
-    void setObjKey(const std::string& k, const Value& v) { objKeys_[k] = v; }
+    void setObjKey(const std::string& k, const Value& v) { coldMake().objKeys[k] = v; }
     const Value* objKey(const std::string& k) const {
-        auto it = objKeys_.find(k);
-        return it == objKeys_.end() ? nullptr : &it->second;
+        const Cold* c = cold();
+        if (!c) return nullptr;
+        auto it = c->objKeys.find(k);
+        return it == c->objKeys.end() ? nullptr : &it->second;
     }
-    bool hasObjKeys() const { return !objKeys_.empty(); }
+    bool hasObjKeys() const { const Cold* c = cold(); return c && !c->objKeys.empty(); }
 
 private:
 
@@ -228,7 +265,7 @@ private:
         used_ = 0;
         ChunkList<Entry>& es = E();
         for (size_t i = 0; i < es.size(); i++) {
-            if (es[i].dead) continue;
+            if (es[i].dead()) continue;
             size_t s = es[i].h & mask();
             while (index_[s] != EMPTY) s = (s + 1) & mask();
             index_[s] = (int32_t)i;
@@ -264,7 +301,7 @@ private:
         size_t base = 0;
         E().runs([&](const Entry* p, size_t m) {
             for (size_t j = 0; j < m; j++)
-                if (p[j].h == h && !p[j].dead && p[j].kv.first == key) { found = (int32_t)(base + j); return false; }
+                if (p[j].h == h && p[j].kv.first == key) { found = (int32_t)(base + j); return false; }   // (a dead h has kDead)
             base += m;
             return true;
         });
@@ -322,21 +359,26 @@ public:
         const ChunkList<Entry>& oe = o.E();
         E().reserve(o.live_);   // one right-sized first chunk for the copy
         for (size_t i = 0; i < oe.size(); i++)
-            if (!oe[i].dead) (*this)[oe[i].kv.first] = oe[i].kv.second;
+            if (!oe[i].dead()) (*this)[oe[i].kv.first] = oe[i].kv.second;
         // …and the objects its keys were (`my %c{K} = %o` kept "(K)", a Str)
-        objKeys_.clear();
-        for (const auto& kv : o.objKeys_)
-            if (count(kv.first)) objKeys_.insert(kv);
+        if (Cold* c = cold()) c->objKeys.clear();
+        if (const Cold* oc = o.cold())
+            for (const auto& kv : oc->objKeys)
+                if (count(kv.first)) coldMake().objKeys.insert(kv);
         return *this;
     }
     // A hash that ends while a Pair still holds one of its entries hands the
     // entries to the generation, as a clear does (retireEntries)
-    ~ValueHash() { if (gen_) *gen_ = std::move(own_); }
+    ~ValueHash() {
+        Cold* c = cold_.load(std::memory_order_relaxed);
+        if (c && c->gen) *c->gen = std::move(own_);
+        delete c;
+    }
+    // (the moves take the other hash's cold block whole: its generation, its
+    // flag and its object keys, as they took the three fields)
     ValueHash(ValueHash&& o) noexcept
-        : own_(std::move(o.own_)), gen_(std::move(o.gen_)),
-          genPub_(o.genPub_.load(std::memory_order_relaxed)), index_(std::move(o.index_)),
-          live_(o.live_), used_(o.used_), objKeys_(std::move(o.objKeys_)) {
-        o.genPub_.store(false, std::memory_order_relaxed);
+        : own_(std::move(o.own_)), cold_(o.cold_.exchange(nullptr, std::memory_order_relaxed)),
+          index_(std::move(o.index_)), live_(o.live_), used_(o.used_) {
         o.index_.clear();
         o.live_ = o.used_ = 0;
     }
@@ -344,14 +386,11 @@ public:
         if (this == &o) return *this;
         retireEntries();   // this hash's own entries go to its aliases, if any hold them
         own_ = std::move(o.own_);
-        gen_ = std::move(o.gen_);
-        genPub_.store(o.genPub_.load(std::memory_order_relaxed), std::memory_order_relaxed);
-        o.genPub_.store(false, std::memory_order_relaxed);
+        delete cold_.exchange(o.cold_.exchange(nullptr, std::memory_order_relaxed), std::memory_order_acq_rel);
         index_ = std::move(o.index_);
         o.index_.clear();
         live_ = o.live_; used_ = o.used_;
         o.live_ = o.used_ = 0;
-        objKeys_ = std::move(o.objKeys_);
         return *this;
     }
     // Bridge from the deliberate sorted locals: sorted order becomes
@@ -365,7 +404,7 @@ public:
         using Owner = std::conditional_t<Const, const ValueHash, ValueHash>;
         Owner* m_ = nullptr;
         size_t i_ = 0;
-        void skip() { while (m_ && i_ < m_->E().size() && m_->E()[i_].dead) i_++; }
+        void skip() { while (m_ && i_ < m_->E().size() && m_->E()[i_].dead()) i_++; }
         friend class ValueHash;
     public:
         iter() = default;
@@ -410,13 +449,14 @@ public:
     void clear() { retireEntries(); index_.clear(); live_ = used_ = 0; }
 
     // A shared_ptr to `v`, the Value of one of THIS hash's entries, that keeps
-    // the entry alive whatever later happens to the hash (see gen_). Threads
+    // the entry alive whatever later happens to the hash (see Cold::gen). Threads
     // that only READ the hash call this — `.pairs` on a hash several `start`
     // blocks share — so the first makes the generation under the lock and the
     // rest find it published.
     PRef<Value> aliasOf(Value& v) {
-        if (!genPub_.load(std::memory_order_acquire)) makeGeneration();
-        return makeValueAlias(gen_, &v);
+        const Cold* c = cold();
+        if (!c || !c->genPub.load(std::memory_order_acquire)) makeGeneration();
+        return makeValueAlias(cold()->gen, &v);
     }
 
     // The cycle collector's view (Cycle.cpp): every Value this hash holds a
@@ -428,10 +468,14 @@ public:
     void forEachHeld(F&& f) const {
         const ChunkList<Entry>& es = E();
         for (size_t i = 0; i < es.size(); i++) if (!f(es[i].kv.second)) return;
-        for (const auto& kv : objKeys_) if (!f(kv.second)) return;
+        if (const Cold* c = cold())
+            for (const auto& kv : c->objKeys) if (!f(kv.second)) return;
     }
-    bool entriesAliased() const { return genPub_.load(std::memory_order_acquire) && gen_.use_count() > 1; }
-    bool holdsNothing() const { return E().size() == 0 && objKeys_.empty(); }
+    bool entriesAliased() const {
+        const Cold* c = cold();
+        return c && c->genPub.load(std::memory_order_acquire) && c->gen.use_count() > 1;
+    }
+    bool holdsNothing() const { return E().size() == 0 && !hasObjKeys(); }
 
     iterator find(const std::string& key) {
         int32_t e = findEntry(key, hashKey(key));
@@ -500,14 +544,14 @@ public:
             e = index_[s];
             index_[s] = TOMB;   // stays `used_` — the probe path must not break
         }
-        E()[e].dead = true;
+        E()[e].h |= kDead;
         live_--;
         if (!entriesAliased()) std::swap(dropped, E()[e].kv.second);
         return 1;
     }
     iterator erase(iterator it) {
         size_t i = it.i_;
-        if (i < E().size() && !E()[i].dead) erase(E()[i].kv.first);
+        if (i < E().size() && !E()[i].dead()) erase(E()[i].kv.first);
         return iterator(this, i + 1);
     }
 

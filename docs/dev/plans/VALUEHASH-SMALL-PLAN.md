@@ -30,6 +30,15 @@ four entries now has no index and scans its entries, comparing the stored
 hash first; objects.raku 428,683 -> 228,677 mallocs, one per object (the
 entries' chunk), and -2.0% retired instructions.
 
+Step 5 (done 2026-11-05, V6-PLAN P3.11 phase 0): the first chunk is exactly
+the size reserve() asks for, no longer rounded up to a power of two (an
+object of five attributes held eight entries); later chunks double from the
+power of two at or above it, and an element below the first chunk's size is
+found by one compare. In the same batch an entry's dead flag became the top
+bit of its stored hash (entries 120 → 112 bytes), and the hash's generation
+and object keys moved behind one pointer (ValueHash 136 → 96). 200k
+two-attribute objects 609 → 512 bytes each, two-key hashes 769 → 663.
+
 ## The measurement
 
 `tools/bench/objects.raku` builds 200k two-attribute `Point`s. Counted with

@@ -10566,9 +10566,9 @@ Value Interpreter::invokeMethod(const Value& codeVal, const Value& self, ValueLi
         static std::mutex mkMonitorLock;
         {
             std::lock_guard<std::mutex> g(mkMonitorLock);
-            if (!self.obj()->monitorLock)
-                self.obj()->monitorLock = std::make_shared<std::recursive_mutex>();
-            monitorHeld = self.obj()->monitorLock;
+            auto& lock = self.obj()->monitorLockM();
+            if (!lock) lock = std::make_shared<std::recursive_mutex>();
+            monitorHeld = lock;
         }
         monitorGuard = std::unique_lock<std::recursive_mutex>(*monitorHeld);
     }

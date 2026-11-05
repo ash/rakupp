@@ -206,6 +206,11 @@ The same items grouped by theme, with a complexity estimate for each:
 
 ## 2. Correctness (v5 error batches)
 
+- [ ] **A class deriving Int loses its value in arithmetic**, found
+  2026-11-05 beside V6 P3.11: `class D is Int { method double { self * 2 } }`
+  gives `D.new(21).double` 0 and `D.new(3) + 4` 4, where Rakudo 2026.09 gives
+  42 and 7. The same before and after P3.11's phase 0 (the boxed value moved
+  behind a pointer, its answers unchanged); older than v5.6.2.
 - [ ] **A user candidate exactly as narrow as a core one is not ambiguous**,
   found 2026-11-05 beside SPEED-BACKLOG 52: with `multi infix:<gcd>(Int:D
   $a, Int:D $b) { "mine" }` declared, `4 gcd 6` is "mine", where Rakudo

@@ -89,8 +89,9 @@ stays an array of Values (91 MB peak for 1M either way, 17 MB for `= ^N`).
 *The same day:* an empty `my int @a` is packed from its declaration
 (SPEED-BACKLOG 49), and the pushed row is 17 bytes an element against
 Rakudo's 63 (0.28×); and a Rat's parts are a payload of their own (P3.3), so
-1M Rats are 163 bytes an element against 211 (0.77×). Two rows are above
-Rakudo's: objects 1.23× and hashes 1.03×.
+1M Rats are 163 bytes an element against 211 (0.77×); and an object's body
+and every hash are leaner (P3.11): objects 609 → 512 (1.04×), hashes 769 →
+663 (0.89×). One row is above Rakudo's: objects.
 
 | workload | rakupp | Rakudo | ratio |
 |---|---:|---:|---:|
@@ -451,6 +452,24 @@ In order of evidence per cost:
 
     Together with the `realloc` growth, arrays would come to about 60 B per
     element and hash entries 168 → 96.
+11. **Objects** (measured 2026-11-05: 200k two-attribute objects 609 bytes
+    each, Rakudo 494). Each was its 80-byte Value, a 208-byte body — of
+    ObjectData's 184 bytes, 136 a full ValueHash and 40 the boxed slot and a
+    monitor's lock, which almost no object uses — and its attributes' first
+    chunk, 120 bytes an entry with the name copied into each, rounded up to a
+    power of two (five attributes held eight, 1,444 bytes an object).
+    - *Phase 0, done 2026-11-05:* a hash's generation and object keys behind
+      one pointer (ValueHash 136 → 96 bytes), an entry's dead flag in its
+      hash's top bit (120 → 112), a first chunk of exactly the reserved size
+      (VALUEHASH-SMALL-PLAN), and an object's boxed value and monitor lock
+      behind one pointer (ObjectData 184 → 128, its body 200 → 144). Objects
+      609 → 512 bytes (1.04×), hashes 769 → 663 (0.89×); five attributes
+      1,444 → 1,009, three 866 → 679, none 323 → 258.
+    - *Phase 1, open:* attribute values in a slot array laid out by the
+      class, the names kept once per class — about 330 bytes for two
+      attributes (0.67×). 384 sites use the table through ValueHash's
+      interface; a stand-in type over the class's names would keep it, and
+      attributes a mixin adds at run time go to an overflow table.
 
 ### P4 — compile and load
 

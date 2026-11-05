@@ -2382,34 +2382,62 @@ struct ClassInfo {
 struct ObjectData {
     std::shared_ptr<ClassInfo> cls;
     ValueMap attrs;
-    // For a `but`/`does` mixin over a non-object base (`5 but Role`, `{} does R`):
-    // the original value is kept here and the object delegates coercions,
-    // operators, and unfound methods to it — and for a class deriving a
-    // built-in (`class D is Int`). Behind a pointer, allocated on first use,
-    // so the objects that box nothing (nearly all of them) carry 8 bytes where
-    // they carried an 80-byte Value. Copying an ObjectData copies the value.
-    struct BoxedSlot {
-        std::unique_ptr<Value> p;
-        BoxedSlot() = default;
-        BoxedSlot(const BoxedSlot& o) : p(o.p ? std::make_unique<Value>(*o.p) : nullptr) {}
-        BoxedSlot& operator=(const BoxedSlot& o) {
-            if (this != &o) p = o.p ? std::make_unique<Value>(*o.p) : nullptr;
+    // The rare parts, behind one pointer allocated on first use, so the objects
+    // that have neither (nearly all of them) carry 8 bytes where they carried
+    // 24, and an 80-byte Value before that:
+    //   boxed — for a `but`/`does` mixin over a non-object base (`5 but Role`,
+    //     `{} does R`) the original value, to which the object delegates
+    //     coercions, operators and unfound methods; and for a class deriving a
+    //     built-in (`class D is Int`);
+    //   monitorLock — a `monitor` instance's reentrant lock, held around every
+    //     method call (created by invokeMethod's guard). Reentrant, so a monitor
+    //     method calling another method on self does not deadlock — OO::Monitors'
+    //     semantics, native.
+    // The block is published by a compare-and-swap: the first monitor call may
+    // come from two threads at once. Copying an ObjectData copies the block, the
+    // boxed value with it and the lock shared, as the two fields were copied.
+    struct Cold {
+        Value boxed;
+        std::shared_ptr<std::recursive_mutex> monitorLock;
+    };
+    struct ColdSlot {
+        std::atomic<Cold*> p{nullptr};
+        ColdSlot() = default;
+        ColdSlot(const ColdSlot& o) {
+            if (const Cold* c = o.get()) p.store(new Cold(*c), std::memory_order_relaxed);
+        }
+        ColdSlot& operator=(const ColdSlot& o) {
+            if (this != &o) {
+                const Cold* c = o.get();
+                delete p.exchange(c ? new Cold(*c) : nullptr, std::memory_order_acq_rel);
+            }
             return *this;
         }
-        BoxedSlot(BoxedSlot&&) noexcept = default;
-        BoxedSlot& operator=(BoxedSlot&&) noexcept = default;
-    } boxedSlot;
-    Value& boxed() { if (!boxedSlot.p) boxedSlot.p = std::make_unique<Value>(); return *boxedSlot.p; }
+        ColdSlot(ColdSlot&& o) noexcept : p(o.p.exchange(nullptr, std::memory_order_relaxed)) {}
+        ColdSlot& operator=(ColdSlot&& o) noexcept {
+            if (this != &o) delete p.exchange(o.p.exchange(nullptr, std::memory_order_relaxed), std::memory_order_acq_rel);
+            return *this;
+        }
+        ~ColdSlot() { delete p.load(std::memory_order_relaxed); }
+        Cold* get() const { return p.load(std::memory_order_acquire); }
+        Cold& make() {
+            Cold* c = get();
+            if (c) return *c;
+            Cold* mine = new Cold();
+            if (p.compare_exchange_strong(c, mine, std::memory_order_acq_rel, std::memory_order_acquire)) return *mine;
+            delete mine;
+            return *c;
+        }
+    } cold;
+    Value& boxed() { return cold.make().boxed; }
     const Value& boxed() const {
         static const Value kNone;
-        return boxedSlot.p ? *boxedSlot.p : kNone;
+        const Cold* c = cold.get();
+        return c ? c->boxed : kNone;
     }
+    const Value* boxedIfAny() const { const Cold* c = cold.get(); return c ? &c->boxed : nullptr; }
+    std::shared_ptr<std::recursive_mutex>& monitorLockM() { return cold.make().monitorLock; }
     bool hasBoxed = false;
-    // `monitor` instances: one reentrant lock per object, held around every
-    // method call (created lazily by invokeMethod's guard). Reentrant, so a
-    // monitor method calling another method on self does not deadlock —
-    // OO::Monitors' semantics, native.
-    std::shared_ptr<std::recursive_mutex> monitorLock;
 };
 
 // Collapsing a junction to a Bool, SHORT-CIRCUITING. Feed one eigenstate's
