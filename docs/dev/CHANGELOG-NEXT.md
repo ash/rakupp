@@ -12,7 +12,8 @@ here.*
 00734769 (a `+` over the program's own class and every Int `+`); c77f05e7
 (`~` and a user candidate over an object); 5ebbe282 (a multi whose
 candidates all decline); fb43011a (an empty native array, packed); 300832c7
-(a Rat's parts, a payload of their own); a90fb35e (objects and hashes leaner).*
+(a Rat's parts, a payload of their own); a90fb35e (objects and hashes leaner);
+ab86fea9 (an Arduino sketch the IDE compiles).*
 
 ---
 
@@ -96,6 +97,19 @@ candidates all decline); fb43011a (an empty native array, packed); 300832c7
   2026.09.
 
 ### Fixed: crashes
+
+### Platforms and packaging
+
+- **A `--target=arduino` sketch compiles in the Arduino IDE** (ab86fea9).
+  Every sketch failed there, blink included, on every board: the IDE writes
+  a prototype for each file-scope function of a .ino and dropped the
+  `template<...>` of the runtime's helpers, so `static T rk_flash(const T*
+  p);` stopped the build. The helpers sit in a namespace now, which the IDE
+  leaves alone. Every t/arduino case builds with arduino-cli 1.5.1 for an
+  Uno, an Uno R4 WiFi and a Due, with no warning from the sketch; the gate's
+  `--arduino15` check now goes through the IDE's own .ino step when
+  arduino-cli is found, and uses the Due's own gcc 4.8.3 where a newer one
+  is installed beside it.
 
 ### Left open
 
