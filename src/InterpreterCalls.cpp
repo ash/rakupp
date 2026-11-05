@@ -5689,8 +5689,10 @@ bool Interpreter::packedIndexShape(const Index* ix) {
 // `@m[$i; $j]` in a shaped one's packed row: @a a plain lexical that is still
 // packed, writable, with no `is default`, and the subscript a machine Int in
 // range. Null for anything else, before anything with an effect is evaluated
-// (a computed subscript has none: packedIndexShape).
-PackedArr* Interpreter::packedWordAt(Index* ix, size_t& at) {
+// (a computed subscript has none: packedIndexShape). With `grow`, a subscript
+// at or past the end of an unshaped @a is taken too, up to kPackedGrowGap
+// beyond it: the caller grows the words, once it knows it stores one.
+PackedArr* Interpreter::packedWordAt(Index* ix, size_t& at, bool grow) {
     if (ix->multiDim) {
         const Value* row = shapedLeafRow(ix, at, true);
         if (!row || row->t != VT::Array || !row->packedLive()) return nullptr;
@@ -5717,7 +5719,9 @@ PackedArr* Interpreter::packedWordAt(Index* ix, size_t& at) {
         i = k.i;
     }
     PackedArr* pa = bp->packed();
-    if (i < 0 || i >= (long long)pa->w.size()) return nullptr;
+    if (i < 0 || (i >= (long long)pa->w.size() &&
+                  (!grow || bp->shape() || i - (long long)pa->w.size() >= kPackedGrowGap)))
+        return nullptr;
     at = (size_t)i;
     return pa;
 }
@@ -6014,13 +6018,16 @@ bool Interpreter::packedElemStore(Assign* a, Value& out) {
         lexShadowPossible(a->uniSpelled ? a->written().substr(0, a->written().size() - 1) : std::string(1, op)))
         return false;
     size_t i;
-    PackedArr* pa = packedWordAt(ix, i);
+    PackedArr* pa = packedWordAt(ix, i, op == '=');
     if (!pa) return false;
     Value v = eval(a->value.get());
     v.readonly = v.immutableBind = false;
     if (v.natBits == 64 && (pa->isNum ? v.natFloat : v.natSigned && !v.natFloat)) dropNativeTags(v);
     if (!pa->isNum && v.t == VT::Bool) v = Value::integer(v.b ? 1 : 0);   // (an int array holds True as 1)
     if (!plainWordValue(v, pa->isNum)) return false;
+    // past the end (an `=` only): the gap holds the native default, 0 or 0e0,
+    // whose bits are all zero — as `my int @a; @a[3] = 7` is (0, 0, 0, 7)
+    if (i >= pa->w.size()) pa->w.resize(i + 1, 0);
     if (op != '=') {
         if (pa->isNum) {
             double d; std::memcpy(&d, &pa->w[i], 8);

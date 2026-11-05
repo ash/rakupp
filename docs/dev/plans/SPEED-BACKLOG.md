@@ -46,7 +46,6 @@ theme the rows are sorted by complexity, largest first.
 |---|---|---|---|
 | 4 | Values stop being refcounted, which also answers reference cycles | XL | B or C was measured 2026-10-15: C. B adds 7–17% allocations (+357% on one Roast file), C 0.5%. Next is C's 16-byte string, `Value` 80 -> 64 with ~1,549 `string_view` sites; then the refcount question — [VALUE32-PLAN.md](VALUE32-PLAN.md) "B versus C, measured", V6 P3.10 |
 | 29 | Tail: UNBOX P3–P5 (`--exe` lanes across inlined calls, `my int` lanes, Rat lanes) | M–L | Which backend gets this, now that `--cnp` is to be the default, is the maintainer's decision — [UNBOX-PLAN.md](UNBOX-PLAN.md) |
-| 49 | An empty `my int @a` grown by `push` or by index is never packed: 83 B an element, against 9 for `my int @a = ^N` and Rakudo's 64 | S–M | Find where the empty array is made unpacked — [PACKED-ARRAY-PLAN.md](PACKED-ARRAY-PLAN.md), V6 P0's memory table |
 
 ## 3. Compiled tiers: `--cnp`, `--exe`, kernels, `--types`
 
@@ -108,6 +107,11 @@ theme the rows are sorted by complexity, largest first.
 
 ## Closed since the first list (2026-10-14)
 
+- **49, an empty `my int @a` grown by `push` or by index** (2026-11-05):
+  the declaration makes an empty packed body, and the store lane grows the
+  words at the end (PACKED-ARRAY-PLAN, "Empty arrays"). 1M pushed Ints 87 →
+  24 MB peak and 7.44G → 2.60G instructions, 1M stored by index 6.99G →
+  1.75G; the memory table's pushed row 83 → 17 bytes an element (Rakudo 63).
 - **52, a multi whose candidates all decline** (2026-11-05): the dispatch
   cache keeps "no candidate takes this shape", and the dispatch goes straight
   to its built-in; `Rat`, `FatRat`, `Complex` and `Bool` became cacheable

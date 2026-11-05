@@ -106,6 +106,13 @@ an interleaved perf-guard A/B, and the memory row.
   before the method's name (so `@a.elems` unpacked), and `for` asked it
   before testing for a Slip. A 1M-element `@a[$i] += 1` loop: 0.16 -> 0.04 s,
   86 -> 9.5 MB.
+- **Empty arrays (done, 2026-11-05, SPEED-BACKLOG 49).** Only a list
+  assignment made the packed form, so a `my int @a` declared empty and grown
+  by `push` or by index stayed Values. The declaration makes an empty packed
+  body now (typedDefault), and the store lane's `=` grows the words at or past
+  the end, a gap of up to kPackedGrowGap holding 0 (0e0); a shaped array does
+  not grow. 1M pushed Ints 87 -> 24 MB peak, 7.44G -> 2.60G instructions;
+  1M stored by index 6.99G -> 1.75G.
 - **The census.** `RAKUPP_PACKED_CENSUS=1` prints, at exit, each return
   address an unpack was asked from (name them with `atos -o build/rakupp -l
   BASE ADDR` or addr2line). Over the examples and `types/` benchmarks: one

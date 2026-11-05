@@ -70,9 +70,9 @@ my @rows =
        :code('my @a; @a.push(%(a => $_, b => $_)) for ^@N@; say @a.elems') ),
     %( :name<int-array>, :n(1_000_000), :note('my int @a, grown by push'),
        :code('my int @a; @a.push($_) for ^@N@; say @a.elems') ),
-    # The same array built from a list in one step. On 2026-11-05 only this
+    # The same array built from a list in one step. Until 2026-11-05 only this
     # form was packed (PACKED-ARRAY-PLAN): an empty `my int @a` grown by push
-    # or by index stayed an array of Values.
+    # or by index stayed an array of Values, 83 bytes an element, now 17.
     %( :name<int-array-list>, :n(1_000_000), :note('my int @a = ^N'),
        :code('my int @a = ^@N@; say @a.elems') ),
     %( :name<int-pairs>, :n(1_000_000), :note('Int-keyed Pairs'),

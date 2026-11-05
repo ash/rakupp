@@ -5142,7 +5142,8 @@ private:
     static bool packedStoreShape(const Assign* a);   // `@a[$i] = EXPR` may take the packed-store lane
     bool packedElemStore(Assign* a, Value& out);   // …and takes it, when @a is packed (PACKED-ARRAY-PLAN)
     static bool packedIndexShape(const Index* ix);   // `@a[$i]` / `@a[3]` / `@a[$i + 1]`: the packed lanes' 1-D subscript
-    PackedArr* packedWordAt(Index* ix, size_t& at);   // …the word it names in a still-packed array, or null
+    PackedArr* packedWordAt(Index* ix, size_t& at, bool grow = false);   // …the word it names in a still-packed array, or null
+    static constexpr long long kPackedGrowGap = 1 << 20;   // how far past its end a store may grow one
     bool packedComputedRead(Index* ix, const Value& base, std::optional<Value>& key, Value& out);   // `@a[$i + 1]` from the words
     Value subscriptKey(Expr* e);   // a subscript's key, evaluated; a Failure throws (detonateFailureKey)
     bool packedCopy(const Value& rhs, const std::string& keepType, Value& out);   // `my num @c = @b`: the words

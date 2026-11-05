@@ -1136,7 +1136,18 @@ Value typedDefault(const std::string& type, char sigil) {
          type.rfind("int", 0) == 0 || type.rfind("uint", 0) == 0 ||
          type.rfind("num", 0) == 0 || type == "str" || type == "byte" ||
          type == "atomicint")) {
-        Value v = defaultFor(sigil);
+        // PACKED-ARRAY-PLAN: an empty full-width `int`/`num` array is words from
+        // the start, so `push` and a store at its end keep it so; it unpacked
+        // only on a list assignment's refill, and an array grown by `push` or by
+        // index stayed Values: 83 bytes an element, against 9 for `= ^N`
+        Value v;
+        if (sigil == '@' && (type == "int" || type == "int64" || type == "num" || type == "num64")) {
+            auto pa = makePayload<PackedArr>();
+            pa->isNum = type[0] == 'n';
+            v.t = VT::Array;
+            v.setPacked(pa);
+        }
+        else v = defaultFor(sigil);
         v.ofTypeM() = type;
         // "valueType,keyType" is the declarator's encoding of an OBJECT hash
         // (`my %h{Any:U}`): type-object keys must stay distinct, exactly as

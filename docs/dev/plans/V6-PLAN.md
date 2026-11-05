@@ -86,6 +86,9 @@ Four rows are above Rakudo's: Rats 2.06×, the pushed `my int @a` 1.29×,
 objects 1.23× and hashes 1.03×. Of the two `my int @a` rows only the one
 built from a list is packed: an empty `my int @a` grown by `push` or by index
 stays an array of Values (91 MB peak for 1M either way, 17 MB for `= ^N`).
+*The same day:* an empty `my int @a` is packed from its declaration
+(SPEED-BACKLOG 49), and the pushed row is 17 bytes an element against
+Rakudo's 63 (0.28×): three rows are above Rakudo's, Rats, objects and hashes.
 
 | workload | rakupp | Rakudo | ratio |
 |---|---:|---:|---:|
