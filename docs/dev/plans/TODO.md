@@ -145,9 +145,8 @@ The same items grouped by theme, with a complexity estimate for each:
   the threaded-program gap; P4 make it the default and remove `--jit`.
 - [ ] **`--types`**: paused 2026-09-29. [TYPES-PLAN.md](TYPES-PLAN.md). N1 the
   switch, N2 the checked rule, N3 measure on Roast and the battery, N7 Str.
-- [ ] **V6 phases not started**: [V6-PLAN.md](V6-PLAN.md). P0's #47 driver
-  (Math::NumberTheory is not installed here) and the time table re-taken on a
-  quiet machine; P4 compile and load time (the precomp key
+- [ ] **V6 phases not started**: [V6-PLAN.md](V6-PLAN.md). P0's time table
+  re-taken on a quiet machine; P4 compile and load time (the precomp key
   is a decision for the maintainer); P5 `--exe` size and fallback coverage;
   P7 `use` in the web editions (#83).
 - [ ] **`tctx_` thread-local lookups**: 20% of a walking `loopsum`'s samples
@@ -207,6 +206,15 @@ The same items grouped by theme, with a complexity estimate for each:
 
 ## 2. Correctness (v5 error batches)
 
+- [ ] **A reduction or a zip ignores a user's candidate for a built-in
+  operator**, found 2026-11-05 by V6 P0's #47 driver: with `multi
+  infix:<lcm>(Rat:D, Int:D) { "mine" }` declared, `2.0 lcm 6` is "mine" but
+  `[lcm] 2.0, 6` is 6, and so are `[gcd]`, `[\lcm]`, `[+]`, `[max]` and `Z+`
+  over a (Rat, Int) candidate (Rakudo: "mine" in every one).
+  `.reduce(&infix:<lcm>)` is right. applyBinOp asks the user's operator only
+  for an object operand (objectOperandInfix) or after the built-in dies, so
+  a built-in that answers wins. Math::NumberTheory's `carmichael-lambda`
+  returns 12 where Rakudo returns 12.0 (`[lcm]` over a Rat lambda).
 - [ ] **A bare `<:Name>` the engine does not know matches every character**:
   `'A' ~~ /<:Bogus_Thing>/` is True (Rakudo 2026.09: False). The last line of
   uniMatchesProp's bare form answers True for a name it cannot place, on

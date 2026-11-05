@@ -177,8 +177,17 @@ None of the 9 loops in the real workloads was eligible.
   interpreted and 1.81× under `--exe`, `multiwhere-steady` 1.70× interpreted,
   where the shipped sizes read 0.78× and 0.87×. Under `--cnp` the multi row
   is slower still: `multiwhere` 0.18 → 0.28 s, and a two-candidate multi
-  without a `where` 0.15 → 0.19 s, against the interpreter alone. The #47
-  driver waits for Math::NumberTheory, which is not installed here.
+  without a `where` 0.15 → 0.19 s, against the interpreter alone.
+  *The #47 driver, 2026-11-05:* `tools/bench/issue47/numbertheory.raku`,
+  eleven of Math::NumberTheory 0.1.4's functions over 1 .. 3000, in
+  run-bench as `issue47`, which skips the row where the module does not load.
+  Interleaved best of six: 4.11 s interpreted, 3.23 s under `--exe`, 3.40 s on
+  Rakudo — 1.21× and 0.95×, where the survey read 2.35×. Ten of the eleven
+  functions are faster here, three to fifteen times at this size, and
+  euler-phi is the whole distance (3.16 s against 1.38 alone; see P2's
+  dispatch cache). carmichael-lambda is left out: rakupp's `[lcm]` skips the
+  module's Rat candidate (TODO.md, Correctness), so the two engines would do
+  different work.
 - **Install Graph's dependencies** (BinaryHeap, Data::TypeSystem) under both
   engines and measure it. *Done 2026-11-05:* Graph 0.1.3 depends on
   LeftistHeap and Data::TypeSystem, not BinaryHeap, and all three were already
@@ -324,7 +333,10 @@ Each item is gated alone, so its effect has a number:
   table from the `where`s' outcomes to the winner; `multiwhere` −38% more.
   Only a winning candidate is stored, so a dispatch the builtin answers is
   not cached, and a candidate with a named parameter makes its dispatcher
-  uncacheable.
+  uncacheable. The first of those is likely all of the #47 driver's distance
+  (P0, 2026-11-05; not yet profiled): euler-phi's `$_ gcd $n` over Ints costs ~0.5 µs more with
+  Math::NumberTheory's six declining candidates loaded than without them
+  (0.09 → 0.36 s for n ≤ 1000), and throws nothing.
 - **`where` constraints:** cache the constraint's Code on the `Param` when it
   reads no earlier parameter and no `self`, as `SubsetInfo::whereBlock` already
   does, and call it directly. *Done 2026-10-01* (4b537aa9): a `where` that

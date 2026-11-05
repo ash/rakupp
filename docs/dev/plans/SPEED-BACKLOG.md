@@ -33,6 +33,7 @@ theme the rows are sorted by complexity, largest first.
 | 5 | Pass the thread context down instead of reading `tctx_` (20% of a walking `loopsum`) | XL | runLoopBody, execPlainBlock, exec, evalAssign — INTERP-SPEED-PLAN task 4 |
 | 6 | A dispatch table and type-keyed inline caches for built-in methods | XL | Design first: hashing the method chain alone measured slower — V6 P2, [DISPATCH-PERF-PLAN.md](DISPATCH-PERF-PLAN.md) |
 | 16 | Graph #47: a lean `invokeMethod` path, then one for closures | M | A method or closure call is ~0.2 µs against Rakudo's ~0.08 — TODO.md |
+| 52 | The multi-dispatch cache keeps "the builtin answers": euler-phi's `$_ gcd $n` pays ~0.5 µs a call for Math::NumberTheory's six declining candidates (0.09 → 0.36 s for n ≤ 1000), which is all of the #47 driver's 1.21× | M | Profile the call first: `dispatchCacheStore` stores only a winning candidate, and nothing is thrown — V6 P2, P0's `issue47` row |
 | 19 | Operator names as integers (the Int fast path for `div mod %% ** gcd lcm min max` is done, 2026-10-21) | M | V6 P2 |
 | 20 | The call-path cost shipped in v5.3.0 (`privmeth` +9.5%, `method` +8.6%) | M | `setupRwLinks` on calls with no rw parameter, SlotStripe single-threaded; A/B against v5.2.1 — TODO.md |
 | 23 | Cache a class name's resolution on its node | M | A NameTerm also resolves lexically (`::T`, `my class`), so the cache needs a record that no scope binds the name; at most ~7% of a 10× `objects` run — V6 P1 |
@@ -101,7 +102,7 @@ theme the rows are sorted by complexity, largest first.
 
 | # | Item | Complexity | Next step / source |
 |---|---|---|---|
-| 34 | V6 P0's last two: the #47 driver as a kernel, and the time table re-taken on a quiet machine | S | Math::NumberTheory has to be installed first; the steady-state kernels, `tools/run-memory.raku` and the censuses landed 2026-11-05 — V6 P0 |
+| 34 | V6 P0's last item: the time table re-taken on a quiet machine | S | Everything else in P0 landed 2026-11-05 — V6 P0 |
 | — | A quiet-machine `perf-guard --check`, owed by APPEND, KERNEL, SANDBOX, the phaser work and the V6 P1 batch | S | The batch's interleaved A/B was within ±4%, on a loaded machine |
 
 ---

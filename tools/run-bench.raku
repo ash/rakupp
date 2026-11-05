@@ -151,6 +151,11 @@ my @benches =
        :note('objects ×10: 1M .new + 1.5M method calls') ),
     %( :name<multiwhere-steady>, :file("multiwhere-steady.raku"),
        :note('multiwhere ×7.5: 3M calls (--exe falls back to the interpreter)') ),
+    # issue47 (2026-11-05, V6-PLAN P0): issue #47's Math::NumberTheory driver.
+    # It needs the distribution installed, so it runs only where the module
+    # loads (`:needs`), and the table says so where it does not.
+    %( :name<issue47>, :file("issue47/numbertheory.raku"), :needs<Math::NumberTheory>,
+       :note('eleven Math::NumberTheory functions over 1 .. 3000 (issue #47)') ),
     # mainwhen (2026-09-20): a `given`/`when` ladder inside a loop, written AT
     # THE MAINLINE. It is perf-guard's kernel of the same name, same source and
     # same iteration count, promoted to a timed program so the published table
@@ -363,6 +368,12 @@ my $W = $suite ?? max(12, |@benches.map({ .<name>.chars + 8 })) !! 12;   # room 
 my @rusage-rows;   # one per kernel, filled only under --rusage
 printf "%-{$W}s %10s %10s %10s %10s %10s %10s   %s\n", 'benchmark', 'interp', 'native', 'cnp', 'mutsu', 'rakudo', 'perl', 'note';
 for @benches -> %b {
+    # A kernel that needs a distribution is a row only where it loads; a
+    # missing module is not a correctness failure, so it stays out of @bad.
+    if %b<needs> && !capture([$RAKUPP, '-e', "use %b<needs>; print 1"]).defined {
+        printf "%-{$W}s   — skipped: needs %s (rakupp install %s)\n", %b<name>, %b<needs>, %b<needs>;
+        next;
+    }
     my $path = $bench.add(%b<file>).Str;
     my $nbin = "/tmp/rakupp-bench-$*PID-{%b<name>}"; # unique per run: macOS wedges re-execs of an overwritten exe path
     my $ppath = %b<perl> ?? $bench.add(%b<perl>).Str !! Str;
