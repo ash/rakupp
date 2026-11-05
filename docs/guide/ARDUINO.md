@@ -12,9 +12,9 @@ blinking LED to the Uno R4 WiFi's LED matrix, with a program for each step.
 > constants.** The sketch and both simulators are implemented and checked
 > against each other byte for byte (`t/arduino/run.raku`). Every sketch in that
 > gate compiles for an Arduino Due with its own core and compiler, warning-free
-> under `-Wall -Werror`, except the LED-matrix one, which needs the Uno R4
+> under `-Wall -Werror`, except the LED-matrix ones, which need the Uno R4
 > core; with arduino-cli installed, each first goes through the IDE's own
-> `.ino` step. All of them, the LED-matrix one on the Uno R4 WiFi alone, also
+> `.ino` step. All of them, the LED-matrix ones on the Uno R4 WiFi alone, also
 > build with arduino-cli 1.5.1 for an Uno (AVR core 1.8.8) and an Uno R4 WiFi
 > (Renesas core 1.6.0), tried by hand rather than by the gate. Not yet tried:
 > a program running on real hardware. Building and flashing the firmware is
@@ -216,6 +216,11 @@ A picture with a mistake in it stops the build with what is wrong.
 | `LEDMatrix.begin` | `matrix.begin()` |
 | `LEDMatrix.show(@frame)` | `matrix.loadFrame(…)`: `@frame` is a constant of three words, or a shaped integer array of three the board computes as it runs (`my uint32 @f[3]`) |
 | `LEDMatrix.clear` | a dark frame |
+
+A frame the board computes is how
+[t/arduino/cases/fib.raku](../../t/arduino/cases/fib.raku) shows Fibonacci
+numbers, one a second: its 3×5 digits are a picture the build turns into a
+table, and a number too wide for the 12 columns scrolls.
 
 The sketch includes `Arduino_LED_Matrix.h`, which comes with the Uno R4
 core, so it builds for an Uno R4 WiFi and not for a board without the
