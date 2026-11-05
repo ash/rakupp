@@ -11,11 +11,23 @@ here.*
 *Covered so far: c43f88fa (a metaop's step and the program's own operator);
 00734769 (a `+` over the program's own class and every Int `+`); c77f05e7
 (`~` and a user candidate over an object); 5ebbe282 (a multi whose
-candidates all decline); fb43011a (an empty native array, packed).*
+candidates all decline); fb43011a (an empty native array, packed); 300832c7
+(a Rat's parts, a payload of their own).*
 
 ---
 
 ### Faster
+
+- **A Rat takes 163 bytes, not 437** (300832c7). Its numerator and
+  denominator were two separately allocated BigInts reached through the
+  200-byte block every Value with a cold field carries; they are one 80-byte
+  body of their own now, shared by every copy of the Rat, with the FatRat
+  flag in it. 1M kept Rats: 437 → 163 bytes an element (Rakudo 211), one
+  allocation each where there were three; that block is 168 bytes, not 200,
+  for every other value. Rat arithmetic costs what it did (perf-guard's
+  `rats` kernel unchanged), and keeping 300k Rats from a `.map` takes 24%
+  fewer instructions. t/regression/rat-body-shared-and-written.raku agrees
+  with Rakudo 2026.09; Roast 1,425 / 1,425.
 
 - **A native array built by a loop keeps its elements as machine words**
   (fb43011a). Only `my int @a = ^N` and other list assignments made the
