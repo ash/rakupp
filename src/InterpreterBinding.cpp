@@ -2296,6 +2296,25 @@ static bool userInfixParams(const Callable* c, const Param*& a, const Param*& b)
     return true;
 }
 
+// Whether a candidate's parameter names a concrete core type (a literal, a
+// core type, a subset of one) — or a name nothing has declared YET: the sub
+// is hoisted above the `subset P of Int` its parameter names, so it may be one.
+template <class Subsets, class Classes>
+static bool userInfixConcreteParam(const Param* p, const Subsets& subsets, const Classes& classes) {
+    if (p->litVal) return true;
+    std::string t = p->type;
+    for (int guard = 0; guard < 16; guard++) {
+        auto it = subsets.find(t);
+        if (it == subsets.end() || it->second.base.empty()) break;
+        t = it->second.base;
+    }
+    if (userInfixCoreType(t)) return true;
+    static const std::set<std::string> kBroad = {
+        "Any", "Mu", "Cool", "Numeric", "Real", "Rational", "Stringy", "Positional", "Associative",
+        "Callable", "Code", "Iterable", "Junction", "List", "Array", "Hash", "Seq", "Range"};
+    return !t.empty() && !kBroad.count(t) && !classes.count(t);
+}
+
 void Interpreter::noteUserInfixCandidate(const std::string& name, const Callable* cand) {
     if (name.size() < 9 || name.compare(0, 7, "infix:<") != 0 || name.back() != '>') return;
     const std::string op = name.substr(7, name.size() - 8);
@@ -2303,23 +2322,7 @@ void Interpreter::noteUserInfixCandidate(const std::string& name, const Callable
     if (!userInfixModelledOp(op, stringOp)) return;
     const Param *a, *b;
     if (!userInfixParams(cand, a, b)) return;
-    auto concrete = [&](const Param* p) {
-        if (p->litVal) return true;
-        std::string t = p->type;
-        for (int guard = 0; guard < 16; guard++) {
-            auto it = subsets_.find(t);
-            if (it == subsets_.end() || it->second.base.empty()) break;
-            t = it->second.base;
-        }
-        if (userInfixCoreType(t)) return true;
-        // a name nothing has declared YET: the sub is hoisted above the
-        // `subset P of Int` its parameter names, so it may be one
-        static const std::set<std::string> kBroad = {
-            "Any", "Mu", "Cool", "Numeric", "Real", "Rational", "Stringy", "Positional", "Associative",
-            "Callable", "Code", "Iterable", "Junction", "List", "Array", "Hash", "Seq", "Range"};
-        return !t.empty() && !kBroad.count(t) && !classes_.count(t);
-    };
-    if (concrete(a) && concrete(b))
+    if (userInfixConcreteParam(a, subsets_, classes_) && userInfixConcreteParam(b, subsets_, classes_))
         lexShadowArm(op.data(), op.size());
 }
 
@@ -2405,6 +2408,55 @@ bool Interpreter::userInfixOverCoreOf(const Value& fv, const std::string& op, co
     catch (...) {}
     throw RakuError{Value::typeObj("X::Multi::Ambiguous"),
                     "Ambiguous call to '" + name + "(" + tl + ", " + tr + ")'; these signatures all match:" + sigs};
+}
+
+// The program's own `&infix:<op>` for the steps of a metaop over `op` — `[op]`,
+// `[\op]`, `Zop`, `Xop` — or null, looked up once per metaop. A step is what
+// `l op r` written out does (metaInfixStep), and a step that went straight to
+// applyBinOp did neither of those things: `[lcm] 2.0, 6` with a `multi
+// infix:<lcm>(Rat:D, Int:D)` declared was the built-in's 6. A multi of an
+// operator evalBinary keeps is asked, as evalBinary asks it, only once one of
+// its candidates names a core type (lexShadowPossible) — and, since that
+// filter is armed at declaration, where the class a candidate names may not
+// be declared yet, only when one of them takes two core operands now. So
+// `[+]` over Ints keeps its fold in a program whose `+` candidates take its
+// own classes; through their scoring it cost 3.4× the built-in fold.
+static bool metaInfixMulti(const Callable& c) {   // a multi, its lone candidate, or a proto
+    return c.ci().isMultiDispatcher || c.ci().isMultiCandidate || c.ci().isProto;
+}
+Value* Interpreter::metaInfixUser(const std::string& op) {
+    if (!tctx().cur || !boundInfixPossible(op)) return nullptr;
+    Value* f = tctx().cur->find("&infix:<" + op + ">");
+    if (!f || f->t != VT::Code || !f->code()) return nullptr;
+    bool stringOp;
+    const Callable& c = *f->code();
+    if (metaInfixMulti(c) && userInfixModelledOp(op, stringOp)) {
+        if (!lexShadowPossible(op)) return nullptr;
+        auto takesCore = [&](const Callable* cc) {
+            const Param *a, *b;
+            return cc && !cc->ci().isProto && !cc->ci().isProtoBody && userInfixParams(cc, a, b) &&
+                   userInfixConcreteParam(a, subsets_, classes_) && userInfixConcreteParam(b, subsets_, classes_);
+        };
+        bool any = !c.ci().isMultiDispatcher && takesCore(&c);
+        if (c.ci().isMultiDispatcher)
+            for (auto& cand : c.cold().candidates) if (takesCore(cand.code())) { any = true; break; }
+        if (!any) return nullptr;
+    }
+    return f;
+}
+
+// One step with such an operator: the operators userInfixModelledOp lists
+// stay Binary nodes, whose user multi is judged against the built-in the
+// operands meet (an object operand is applyBinOp's to dispatch); every other
+// operator a program declares is parsed as a call of it, and its dispatcher
+// falls back to the built-in when no candidate takes the operands. A plain sub
+// replaces the operator whole.
+Value Interpreter::metaInfixUserStep(const Value& uf, const std::string& op, const Value& l, const Value& r) {
+    bool stringOp;
+    if (!metaInfixMulti(*uf.code()) || !userInfixModelledOp(op, stringOp))
+        return callCallable(uf, ValueList{l, r});
+    if (Value out; userInfixOverCoreOf(uf, op, l, r, out)) return out;
+    return applyBinOp(op, l, r);
 }
 
 // `try { … }` runs its block under `use fatal` (Rakudo): the call marks the
@@ -5520,6 +5572,13 @@ Value Interpreter::captureBacktrace() {
 // a Blob/Buf spreads to its elements (`$H Z+ $M` in Digest::SHA1).
 Value Interpreter::zxOp(const std::string& op, Value l, Value r) {
     std::string sub = op.substr(1);
+    // the program's own inner operator, which each step meets as `x sub y`
+    // would (metaInfixUser); held by value for the lazy forms' closures. Not
+    // for `max` and `min`: Rakudo 2026.09's `Zmax`/`Xmin` are the built-ins
+    // whatever the program declares, though its `[max]` is not.
+    Value uf;
+    if (sub != "max" && sub != "min")
+        if (Value* f = metaInfixUser(sub)) uf = *f;
     // a FINITE lazy side — a map a routine returned — is read to its end: it
     // holds none of its elements until then, and `f() X <a>` crossed nothing
     if (l.t == VT::Array && l.ext()) drainIfFiniteLazy(l);
@@ -5564,11 +5623,11 @@ Value Interpreter::zxOp(const std::string& op, Value l, Value r) {
         auto st = std::make_shared<LazySeqState>(); st->infinite = true;
         auto idx = std::make_shared<size_t>(0);
         Value lv = l, rv = r; std::string inner = sub;
-        st->appendNext = [this, nth, idx, lv, rv, inner](ValueList& cache) -> bool {
+        st->appendNext = [this, nth, idx, lv, rv, inner, uf](ValueList& cache) -> bool {
             size_t i = (*idx)++;
             Value x = nth(lv, i), y = nth(rv, i);
             cache.push_back(inner.empty() || inner == "," ? Value::list(ValueList{x, y})
-                                                          : applyBinOp(inner, x, y));
+                                                          : metaInfixStep(uf.t == VT::Code ? &uf : nullptr, inner, x, y));
             return true;
         };
         out.extM() = st;
@@ -5591,13 +5650,13 @@ Value Interpreter::zxOp(const std::string& op, Value l, Value r) {
         ValueList fin = leftEndless ? oneLevel(r) : oneLevel(l);
         if (fin.empty()) { Value e = Value::array(); e.isList = true; e.s = "Seq"; return e; }
         Value endless = leftEndless ? l : r; std::string inner = sub;
-        st->appendNext = [this, nth, idx, fin, endless, leftEndless, inner](ValueList& cache) -> bool {
+        st->appendNext = [this, nth, idx, fin, endless, leftEndless, inner, uf](ValueList& cache) -> bool {
             size_t i = (*idx)++;
             Value x, y;
             if (leftEndless) { x = nth(endless, i / fin.size()); y = fin[i % fin.size()]; }
             else { x = fin[0]; y = nth(endless, i); }
             cache.push_back(inner.empty() || inner == "," ? Value::list(ValueList{x, y})
-                                                          : applyBinOp(inner, x, y));
+                                                          : metaInfixStep(uf.t == VT::Code ? &uf : nullptr, inner, x, y));
             return true;
         };
         out.extM() = st;
@@ -5636,7 +5695,7 @@ Value Interpreter::zxOp(const std::string& op, Value l, Value r) {
         st->declaredLazy = declLazy(l) || declLazy(r);
         auto idx = std::make_shared<size_t>(0);
         std::string inner = sub;
-        st->appendNext = [this, ls, rs, idx, inner, zip](ValueList& cache) -> bool {
+        st->appendNext = [this, ls, rs, idx, inner, zip, uf](ValueList& cache) -> bool {
             auto nth = [this](Side& s, size_t i, Value& out) -> bool {
                 if (!s.lazy) { if (i >= s.items.size()) return false; out = s.items[i]; return true; }
                 materializeLazy(s.src, i + 1);
@@ -5659,7 +5718,7 @@ Value Interpreter::zxOp(const std::string& op, Value l, Value r) {
                 cache.push_back(p);
             }
             else if (inner.empty() || inner == ",") cache.push_back(Value::list(ValueList{x, y}));
-            else cache.push_back(applyBinOp(inner, x, y));
+            else cache.push_back(metaInfixStep(uf.t == VT::Code ? &uf : nullptr, inner, x, y));
             return true;
         };
         out.extM() = st;
@@ -5684,7 +5743,7 @@ Value Interpreter::zxOp(const std::string& op, Value l, Value r) {
             t.arr()->push_back(x); t.arr()->push_back(y);
             out.arr()->push_back(t);
         }
-        else out.arr()->push_back(applyBinOp(sub, x, y));
+        else out.arr()->push_back(metaInfixStep(uf.t == VT::Code ? &uf : nullptr, sub, x, y));
     };
     if (op[0] == 'Z') {
         // A side that ENDS in `*` extends: its last real element repeats for
@@ -5699,12 +5758,12 @@ Value Interpreter::zxOp(const std::string& op, Value l, Value r) {
             auto st = std::make_shared<LazySeqState>(); st->infinite = true;
             auto idx = std::make_shared<size_t>(0);
             std::string inner = sub;
-            st->appendNext = [this, idx, a, bb, inner](ValueList& cache) -> bool {
+            st->appendNext = [this, idx, a, bb, inner, uf](ValueList& cache) -> bool {
                 size_t i = (*idx)++;
                 const Value& x = a[std::min(i, a.size() - 1)];
                 const Value& y = bb[std::min(i, bb.size() - 1)];
                 cache.push_back(inner.empty() || inner == "," ? Value::list(ValueList{x, y})
-                                                              : applyBinOp(inner, x, y));
+                                                              : metaInfixStep(uf.t == VT::Code ? &uf : nullptr, inner, x, y));
                 return true;
             };
             out.extM() = st;

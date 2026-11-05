@@ -3277,6 +3277,9 @@ Value Interpreter::applyReduce(std::string op, ValueList& items) {
     bool neg = op.size() > 1 && op[0] == '!' && op != "!=" && op != "!==";
     std::string base = neg ? op.substr(1) : op;
     const bool chains = chainOps.count(chainRule.empty() ? base : chainRule) != 0;
+    // the program's own operator, which every step below meets as `a op b` would
+    Value* uf = metaInfixUser(op);
+    Value* ufBase = neg ? metaInfixUser(base) : uf;
     if (scan) { // yield (a, a op b, a op b op c, …)
         Value out = Value::array(); out.isList = true; out.s = "Seq"; // `[\+]` is lazy (Rakudo)
         if (items.empty()) return out;
@@ -3295,7 +3298,7 @@ Value Interpreter::applyReduce(std::string op, ValueList& items) {
             Value acc = items.back();
             out.arr()->push_back(acc);
             for (size_t k = items.size() - 1; k-- > 0; ) {
-                acc = applyBinOp(op, items[k], acc);
+                acc = metaInfixStep(uf, op, items[k], acc);
                 out.arr()->push_back(acc);
             }
             return out;
@@ -3323,7 +3326,7 @@ Value Interpreter::applyReduce(std::string op, ValueList& items) {
             bool ok = true;
             out.arr()->push_back(Value::boolean(true)); // a single element chains truthfully
             for (size_t k = 1; k < items.size(); k++) {
-                bool c = applyBinOp(base, items[k - 1], items[k]).truthy();
+                bool c = metaInfixStep(ufBase, base, items[k - 1], items[k]).truthy();
                 if (neg) c = !c;
                 ok = ok && c;
                 out.arr()->push_back(Value::boolean(ok));
@@ -3332,7 +3335,7 @@ Value Interpreter::applyReduce(std::string op, ValueList& items) {
         }
         Value acc = items[0];
         out.arr()->push_back(acc);
-        for (size_t k = 1; k < items.size(); k++) { acc = applyBinOp(op, acc, items[k]); out.arr()->push_back(acc); }
+        for (size_t k = 1; k < items.size(); k++) { acc = metaInfixStep(uf, op, acc, items[k]); out.arr()->push_back(acc); }
         return out;
     }
     if (op == "minmax" && items.size() == 1)   // one operand still spans its extremes
@@ -3342,7 +3345,7 @@ Value Interpreter::applyReduce(std::string op, ValueList& items) {
         for (auto& it : items) if (isDefined(it)) def.push_back(it);
         if (def.empty()) return Value::number(op == "min" ? INFINITY : -INFINITY);
         Value acc = def[0];
-        for (size_t k = 1; k < def.size(); k++) acc = applyBinOp(op, acc, def[k]);
+        for (size_t k = 1; k < def.size(); k++) acc = metaInfixStep(uf, op, acc, def[k]);
         return acc;
     }
     if (items.empty()) {
@@ -3395,7 +3398,7 @@ Value Interpreter::applyReduce(std::string op, ValueList& items) {
         return Value::str(strOf(items[0]));
     if (chains) {
         for (size_t k = 1; k < items.size(); k++) {
-            bool ok = applyBinOp(base, items[k - 1], items[k]).truthy();
+            bool ok = metaInfixStep(ufBase, base, items[k - 1], items[k]).truthy();
             if (neg) ok = !ok;
             if (!ok) return Value::boolean(false);
         }
@@ -3423,7 +3426,7 @@ Value Interpreter::applyReduce(std::string op, ValueList& items) {
                 if (items[k].t != VT::Str) p.setPairKey(items[k]);
                 acc = p;
             }
-            else acc = applyBinOp(op, items[k], acc);
+            else acc = metaInfixStep(uf, op, items[k], acc);
         }
         return acc;
     }
@@ -3573,7 +3576,7 @@ Value Interpreter::applyReduce(std::string op, ValueList& items) {
         if (auto j = setOpFoldN(op, items)) return *j;   // one joint tier over every operand
     // `[~]` over plain strings appends into ONE buffer, as `~=` does: folding
     // pairwise copied the growing string at each step (`run/str-concat-reduce`)
-    if (op == "~" && items.size() > 2 && !lexShadowPossible(op)) {
+    if (op == "~" && items.size() > 2 && !lexShadowPossible(op) && !uf) {
         bool plain = true;
         for (auto& it : items)
             if (it.t != VT::Str || !it.hashKind.empty() || it.isAllomorph() || it.itemized) { plain = false; break; }
@@ -3590,7 +3593,7 @@ Value Interpreter::applyReduce(std::string op, ValueList& items) {
         }
     }
     Value acc = items[0];
-    for (size_t k = 1; k < items.size(); k++) acc = applyBinOp(op, acc, items[k]);
+    for (size_t k = 1; k < items.size(); k++) acc = metaInfixStep(uf, op, acc, items[k]);
     return acc;
 }
 

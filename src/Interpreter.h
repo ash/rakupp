@@ -2671,6 +2671,13 @@ public:
     // built-in candidate it competes with (see InterpreterBinding.cpp).
     bool userInfixOverCore(const std::string& op, const Value& l, const Value& r, Value& out);
     bool userInfixOverCoreOf(const Value& f, const std::string& op, const Value& l, const Value& r, Value& out);
+    // …and a metaop's step over `op` as `l op r` written out would take it
+    // (a program with no operator of its own steps straight to applyBinOp)
+    Value* metaInfixUser(const std::string& op);
+    Value metaInfixStep(const Value* uf, const std::string& op, const Value& l, const Value& r) {
+        return uf ? metaInfixUserStep(*uf, op, l, r) : applyBinOp(op, l, r);
+    }
+    Value metaInfixUserStep(const Value& uf, const std::string& op, const Value& l, const Value& r);
     void noteUserInfixCandidate(const std::string& name, const Callable* cand);
     Value declInitial(const VarExpr* ve, char sigil); // a declaration's starting value (parameterized types included)
     char elemSmileyOf(const std::string& symbol);

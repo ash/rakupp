@@ -11,9 +11,10 @@
 # It lives below tools/bench/ because it needs Math::NumberTheory installed
 # (`rakupp install Math::NumberTheory`), which t/run.raku's coverage check and
 # the CI legs do not have. run-bench runs it when the module loads and says
-# so when it does not. carmichael-lambda is left out: on 2026-11-05 rakupp's
-# `[lcm]` skipped the module's Rat candidate, which Rakudo uses, so the two
-# engines did different work.
+# so when it does not. carmichael-lambda is left out, so the kernel stays the
+# one first measured: when it was written, rakupp's `[lcm]` skipped the
+# module's Rat candidate, which Rakudo uses (fixed the same day,
+# t/regression/metaop-core-operands-user-infix.raku).
 #
 #     rakupp tools/bench/issue47/numbertheory.raku [N] [function ...]
 use Math::NumberTheory;

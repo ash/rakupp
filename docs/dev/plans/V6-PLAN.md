@@ -185,9 +185,10 @@ None of the 9 loops in the real workloads was eligible.
   Rakudo — 1.21× and 0.95×, where the survey read 2.35×. Ten of the eleven
   functions are faster here, three to fifteen times at this size, and
   euler-phi is the whole distance (3.16 s against 1.38 alone; see P2's
-  dispatch cache). carmichael-lambda is left out: rakupp's `[lcm]` skips the
-  module's Rat candidate (TODO.md, Correctness), so the two engines would do
-  different work.
+  dispatch cache). carmichael-lambda is left out, so the row stays the one
+  measured here: rakupp's `[lcm]` skipped the module's Rat candidate, which
+  Rakudo uses (fixed the same day: a metaop's step meets the program's own
+  operator as the operator written out does).
 - **Install Graph's dependencies** (BinaryHeap, Data::TypeSystem) under both
   engines and measure it. *Done 2026-11-05:* Graph 0.1.3 depends on
   LeftistHeap and Data::TypeSystem, not BinaryHeap, and all three were already
