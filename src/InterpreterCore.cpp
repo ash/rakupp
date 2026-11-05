@@ -8748,8 +8748,8 @@ Value Interpreter::callCallableRaw(const Value& codeVal, ValueList args, const s
             // the dispatch cache's answer for this argument shape (dispatchCacheLookup)
             uint32_t wherePattern = UINT32_MAX;   // outcomes the where-aware cache evaluated
             const Value* cached = visited.empty() && c.dispatchCache.p.load(std::memory_order_relaxed)
-                ? dispatchCacheLookup(c, nullptr, as, &wherePattern) : nullptr;
-            if (cached) { best = cached; bestScore = 0; }
+                ? dispatchCacheLookup(c, nullptr, as, &wherePattern, true) : nullptr;
+            if (cached) { if (cached != dispatchToBuiltin()) { best = cached; bestScore = 0; } }   // (else: no candidate)
             else
             for (auto& cand : c.cold().candidates) {
                 if (cand.code() && (cand.code()->ci().isProto || cand.code()->ci().isProtoBody))
@@ -8769,8 +8769,8 @@ Value Interpreter::callCallableRaw(const Value& codeVal, ValueList args, const s
             if (!cached && best && visited.empty() && nMatched > 1) throwIfAmbiguous(c, best, matched, nMatched, as);
             if (!cached && best && bestScore >= 0 && wherePattern != UINT32_MAX)
                 dispatchCacheRecord(c, wherePattern, best);
-            else if (!cached && best && bestScore >= 0 && visited.empty() && c.ci().dispatchCacheable != 0)
-                dispatchCacheStore(c, nullptr, as, best);
+            else if (!cached && (!best || bestScore >= 0) && visited.empty() && c.ci().dispatchCacheable != 0)
+                dispatchCacheStore(c, nullptr, as, best && bestScore >= 0 ? best : nullptr);   // null: the fallback's
             if (!best || bestScore < 0) {
                 // A redispatch (callsame/nextsame) that runs past the last same-class
                 // candidate: for a METHOD multi, defer up the inheritance tree to the

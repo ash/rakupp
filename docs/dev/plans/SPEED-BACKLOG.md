@@ -33,7 +33,6 @@ theme the rows are sorted by complexity, largest first.
 | 5 | Pass the thread context down instead of reading `tctx_` (20% of a walking `loopsum`) | XL | runLoopBody, execPlainBlock, exec, evalAssign — INTERP-SPEED-PLAN task 4 |
 | 6 | A dispatch table and type-keyed inline caches for built-in methods | XL | Design first: hashing the method chain alone measured slower — V6 P2, [DISPATCH-PERF-PLAN.md](DISPATCH-PERF-PLAN.md) |
 | 16 | Graph #47: a lean `invokeMethod` path, then one for closures | M | A method or closure call is ~0.2 µs against Rakudo's ~0.08 — TODO.md |
-| 52 | The multi-dispatch cache keeps "the builtin answers": euler-phi's `$_ gcd $n` pays ~0.5 µs a call for Math::NumberTheory's six declining candidates (0.09 → 0.36 s for n ≤ 1000), which is all of the #47 driver's 1.21× | M | Profile the call first: `dispatchCacheStore` stores only a winning candidate, and nothing is thrown — V6 P2, P0's `issue47` row |
 | 19 | Operator names as integers (the Int fast path for `div mod %% ** gcd lcm min max` is done, 2026-10-21) | M | V6 P2 |
 | 20 | The call-path cost shipped in v5.3.0 (`privmeth` +9.5%, `method` +8.6%) | M | `setupRwLinks` on calls with no rw parameter, SlotStripe single-threaded; A/B against v5.2.1 — TODO.md |
 | 23 | Cache a class name's resolution on its node | M | A NameTerm also resolves lexically (`::T`, `my class`), so the cache needs a record that no scope binds the name; at most ~7% of a 10× `objects` run — V6 P1 |
@@ -109,6 +108,13 @@ theme the rows are sorted by complexity, largest first.
 
 ## Closed since the first list (2026-10-14)
 
+- **52, a multi whose candidates all decline** (2026-11-05): the dispatch
+  cache keeps "no candidate takes this shape", and the dispatch goes straight
+  to its built-in; `Rat`, `FatRat`, `Complex` and `Bool` became cacheable
+  parameter types, which Math::NumberTheory's `infix:<gcd>` group needed.
+  euler-phi over 1 .. 3000 3.37 → 1.39 s (Rakudo 1.54), the `issue47` row
+  4.11 → 2.21 s interpreted and 3.23 → 1.29 s under `--exe` (Rakudo 3.33),
+  perf-guard's new `multidecline` kernel 170 → 83 ms.
 - **53, a `+` over the program's own class slowing every Int `+`**
   (2026-11-05): a `multi infix:<+>(Pt, Pt)` is noted when its sub is
   hoisted, above `class Pt`, where `Pt` could still name a subset of Int,

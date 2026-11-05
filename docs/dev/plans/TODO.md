@@ -206,6 +206,13 @@ The same items grouped by theme, with a complexity estimate for each:
 
 ## 2. Correctness (v5 error batches)
 
+- [ ] **A user candidate exactly as narrow as a core one is not ambiguous**,
+  found 2026-11-05 beside SPEED-BACKLOG 52: with `multi infix:<gcd>(Int:D
+  $a, Int:D $b) { "mine" }` declared, `4 gcd 6` is "mine", where Rakudo
+  2026.09 dies "Ambiguous call to 'infix:<gcd>(Int, Int)'" and lists the
+  core's `(Int:D $a, Int:D $b)` beside it. The dispatcher only falls back to
+  the built-in when no user candidate takes the operands; the built-in is
+  never a candidate that ties. Older than v5.6.2.
 - [ ] **A bare `<:Name>` the engine does not know matches every character**:
   `'A' ~~ /<:Bogus_Thing>/` is True (Rakudo 2026.09: False). The last line of
   uniMatchesProp's bare form answers True for a name it cannot place, on

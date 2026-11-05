@@ -5109,6 +5109,11 @@ const Value* Interpreter::staticWhereCode(const Param& p, const std::vector<Para
 //   sub-signature, default, `is rw` or native type.
 // The entry is published once and names its candidate by index; it is good
 // while the candidate count and the symbol generation are what they were.
+// A sub's entry may instead say that NO candidate takes the shape (kNoCandidate),
+// so the dispatch goes straight to its fallback, the built-in an operator or a
+// routine name has: Math::NumberTheory's six `infix:<gcd>` candidates, none
+// for two Ints, were all scored at every `$_ gcd $n` before the built-in
+// answered, ~11,000 instructions a call. The fallback itself still runs.
 //
 // A candidate may also carry a `where` on a positional (WHERE-AWARE entries):
 // then the winner depends on the values, but only through the outcomes of
@@ -5121,6 +5126,7 @@ extern std::atomic<uint64_t> g_symbolGen;
 namespace {
 constexpr int kWhereMaxCand = 8;    // candidates a where-aware entry covers
 constexpr int kWhereMaxBits = 6;    // `where`s in all: the table has 1 << this slots
+constexpr uint32_t kNoCandidate = UINT32_MAX;   // DispatchCacheEntry::best: the fallback answers
 struct DispatchCacheEntry {
     uint64_t gen; uint32_t ncand; uint32_t nkey; uint32_t best; uint64_t key[8];
     // where-aware (nwhere > 0): per candidate, its first outcome bit and how
@@ -5173,8 +5179,10 @@ Callable::DispatchCacheSlot::~DispatchCacheSlot() {
 template <typename Classes, typename Subsets>
 static int dispatchCandidatesCacheable(const Callable& c, const Classes& classes, const Subsets& subsets) {
     int wheres = 0;
+    // (`Rat`, `FatRat`, `Complex` and `Bool` too: no key's kind is one by value)
     static const std::set<std::string> kNominal = {"", "Any", "Mu", "Int", "Str", "Num", "Real",
-                                                   "Numeric", "Cool", "Stringy"};
+                                                   "Numeric", "Cool", "Stringy", "Rat", "FatRat",
+                                                   "Complex", "Bool"};
     for (auto& cand : c.cold().candidates) {
         const Callable* cc = cand.code();
         if (!cc) return false;
@@ -5201,8 +5209,13 @@ static int dispatchCandidatesCacheable(const Callable& c, const Classes& classes
     return wheres <= kWhereMaxBits && c.cold().candidates.size() <= (size_t)kWhereMaxCand ? 2 : 0;
 }
 
+const Value* Interpreter::dispatchToBuiltin() {
+    static const Value mark;   // compared by address, never called
+    return &mark;
+}
+
 const Value* Interpreter::dispatchCacheLookup(Callable& c, const Value* self, const ValueList& as,
-                                              uint32_t* pattern) {
+                                              uint32_t* pattern, bool builtinOk) {
     if (pattern) *pattern = UINT32_MAX;
     auto* e = static_cast<const DispatchCacheEntry*>(c.dispatchCache.p.load(std::memory_order_acquire));
     if (!e || e->ncand != c.cold().candidates.size() || e->gen != g_symbolGen.load(std::memory_order_relaxed))
@@ -5210,6 +5223,7 @@ const Value* Interpreter::dispatchCacheLookup(Callable& c, const Value* self, co
     uint64_t key[8]; uint32_t n;
     if (!dispatchKey(self, as, key, n) || n != e->nkey) return nullptr;
     for (uint32_t k = 0; k < n; k++) if (key[k] != e->key[k]) return nullptr;
+    if (e->best == kNoCandidate) return builtinOk ? dispatchToBuiltin() : nullptr;
     if (!e->nwhere) return &c.cold().candidates[e->best];
     if (!pattern) return nullptr;
     // the outcomes of the matching candidates' `where`s, in declaration order
@@ -5262,15 +5276,17 @@ void Interpreter::dispatchCacheStore(Callable& c, const Value* self, const Value
         c.ci().dispatchCacheN = ncand;
     }
     if (c.ci().dispatchCacheable != 1 && c.ci().dispatchCacheable != 2) return;
+    // no candidate: only where no `where` could have decided it
+    if (!best && c.ci().dispatchCacheable != 1) return;
     auto* e = new DispatchCacheEntry;
-    if (!dispatchKey(self, as, e->key, e->nkey) || best < c.cold().candidates.data() ||
-        best >= c.cold().candidates.data() + ncand) {
+    if (!dispatchKey(self, as, e->key, e->nkey) ||
+        (best && (best < c.cold().candidates.data() || best >= c.cold().candidates.data() + ncand))) {
         delete e;
         return;
     }
     e->gen = g_symbolGen.load(std::memory_order_relaxed);
     e->ncand = ncand;
-    e->best = (uint32_t)(best - c.cold().candidates.data());
+    e->best = best ? (uint32_t)(best - c.cold().candidates.data()) : kNoCandidate;
     if (c.ci().dispatchCacheable == 2) {
         // which candidates match the shape (scored with every `where` assumed
         // to pass, which evaluates none), and each one's outcome bits

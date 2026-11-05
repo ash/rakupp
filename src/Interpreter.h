@@ -4176,11 +4176,15 @@ public:
     // `pattern`: set for a where-aware entry whose table has no winner for the
     // `where` outcomes just evaluated (they are in it, for the full dispatch to
     // assume and then record with dispatchCacheRecord); UINT32_MAX otherwise
+    // `builtinOk`: a sub's dispatch, which may be answered dispatchToBuiltin() —
+    // no candidate takes this shape, so the built-in fallback answers
     const Value* dispatchCacheLookup(Callable& c, const Value* self, const ValueList& as,
-                                     uint32_t* pattern = nullptr);
+                                     uint32_t* pattern = nullptr, bool builtinOk = false);
+    static const Value* dispatchToBuiltin();
     void dispatchCacheRecord(Callable& c, uint32_t pattern, const Value* best);
     // the where outcomes for one candidate of a pattern (null: none to assume)
     bool dispatchWhereBits(const Callable& c, const Value* cand, uint32_t pattern, WhereAssume& out);
+    // (`best` null: no candidate took the shape — stored only where no `where` decides)
     void dispatchCacheStore(Callable& c, const Value* self, const ValueList& as, const Value* best);
 
     // Concurrency. saveCtx moves the live execution registers into `c`; loadCtx

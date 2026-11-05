@@ -164,6 +164,16 @@ my %kernels =
                             multi method m(Int $x) { 0 } }
                   my $k = K.new; my $t = 0; my int $n = 0;
                   while $n < 400_000 { $t = $k.m(1); $n = $n + 1 }; say $t;',
+    # multidecline (2026-11-05, SPEED-BACKLOG 52) — a multi whose candidates
+    #   all decline two Ints, so the built-in answers: Math::NumberTheory's
+    #   `infix:<gcd>`, which euler-phi calls ~4.5M times. Every call scored
+    #   every candidate until the dispatch cache could say "no candidate";
+    #   multimeth and multiwhere both have a winner, and could not see it.
+    multidecline => 'multi infix:<gcd>(Rat:D $a, Rat:D $b) { 0.0 }
+                  multi infix:<gcd>(Int:D $a, Rat:D $b) { 0.0 }
+                  multi infix:<gcd>(Rat:D $a, Int:D $b) { 0.0 }
+                  my $t = 0; my int $n = 0;
+                  while $n < 400_000 { $t = $t + ($n gcd 12); $n = $n + 1 }; say $t;',
     objnew    => 'class K { has $.a; has $.b }
                   my $t; my int $n = 0;
                   while $n < 200_000 { $t = K.new(a => 1, b => 2); $n = $n + 1 }; say $t.a;',
@@ -267,7 +277,7 @@ class C@I@ { has $.a = @I@; method m($z) { $!a + $z div 2 } }
 # The kernel list, in one place: the run loop and the gate loop must agree, and
 # they used to carry two hardcoded copies of it.
 my @KERNELS = <fib asg loopsum hash strscan strpass subcall rats regexloop
-                method attrread privmeth multimeth multiwhere objnew userplus mainnext mainwhen exprnext
+                method attrread privmeth multimeth multiwhere multidecline objnew userplus mainnext mainwhen exprnext
                 junction junctionwide intcat prepend sharedappend substrloop loadtime>;
 
 # …and it must stay in step with %kernels. A kernel added to the hash but not to

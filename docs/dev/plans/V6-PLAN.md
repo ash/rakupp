@@ -185,7 +185,10 @@ None of the 9 loops in the real workloads was eligible.
   Rakudo — 1.21× and 0.95×, where the survey read 2.35×. Ten of the eleven
   functions are faster here, three to fifteen times at this size, and
   euler-phi is the whole distance (3.16 s against 1.38 alone; see P2's
-  dispatch cache). carmichael-lambda is left out, so the row stays the one
+  dispatch cache). *After the dispatch cache's "no candidate" entry, the same
+  day:* 2.21 s interpreted, 1.29 s under `--exe`, 3.33 s on Rakudo — 0.66× and
+  0.39×. With Graph's diameter at 0.81×, issue #47 is at parity on both of
+  its workloads. carmichael-lambda is left out, so the row stays the one
   measured here: rakupp's `[lcm]` skipped the module's Rat candidate, which
   Rakudo uses (fixed the same day: a metaop's step meets the program's own
   operator as the operator written out does).
@@ -334,10 +337,15 @@ Each item is gated alone, so its effect has a number:
   table from the `where`s' outcomes to the winner; `multiwhere` −38% more.
   Only a winning candidate is stored, so a dispatch the builtin answers is
   not cached, and a candidate with a named parameter makes its dispatcher
-  uncacheable. The first of those is likely all of the #47 driver's distance
-  (P0, 2026-11-05; not yet profiled): euler-phi's `$_ gcd $n` over Ints costs ~0.5 µs more with
-  Math::NumberTheory's six declining candidates loaded than without them
-  (0.09 → 0.36 s for n ≤ 1000), and throws nothing.
+  uncacheable. The first of those was all of the #47 driver's distance (P0):
+  euler-phi's `$_ gcd $n` scored Math::NumberTheory's six `infix:<gcd>`
+  candidates, none for two Ints, at every call, ~11,000 instructions, and the
+  dispatcher was not even cacheable, its candidates naming `Rat` and
+  `Complex`. *Done 2026-11-05:* a sub's entry may say that no candidate takes
+  the shape, so the dispatch goes straight to its built-in fallback, and
+  `Rat`, `FatRat`, `Complex` and `Bool` count as nominal parameter types. A
+  module-free twin 7.47G → 3.31G instructions (1.94G with no candidates);
+  euler-phi over 1 .. 3000 3.37 → 1.39 s, Rakudo 1.54.
 - **`where` constraints:** cache the constraint's Code on the `Param` when it
   reads no earlier parameter and no `self`, as `SubsetInfo::whereBlock` already
   does, and call it directly. *Done 2026-10-01* (4b537aa9): a `where` that
