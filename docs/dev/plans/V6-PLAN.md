@@ -76,6 +76,17 @@ P3 land.
 Strs 163, 1M Int-keyed Pairs 582, 1M Str-keyed Pairs 276, 1M `[$_, $_+1]` 373,
 a 1M Int → Str hash 340. The table below is the 2026-09-26 survey.
 
+*Re-measured 2026-11-05* with [tools/run-memory.raku](../../../tools/run-memory.raku)
+(rakupp / Rakudo, empty programs 7.5 MB / 102 MB): 200k objects 608 / 493,
+200k two-key hashes 767 / 745, 1M `my int @a` grown by push 83 / 64 and built
+as `my int @a = ^N` 9 / 33, 1M Int-keyed Pairs 195 / 205, 1M Rats 436 / 211,
+1M Ints 83 / 163, 1M Nums 82 / 150, 1M short Strs 83 / 196, 1M Str-keyed
+Pairs 195 / 307, 1M `[$_, $_+1]` 292 / 480, a 1M Int → Str hash 266 / 300.
+Four rows are above Rakudo's: Rats 2.06×, the pushed `my int @a` 1.29×,
+objects 1.23× and hashes 1.03×. Of the two `my int @a` rows only the one
+built from a list is packed: an empty `my int @a` grown by `push` or by index
+stays an array of Values (91 MB peak for 1M either way, 17 MB for `= ^N`).
+
 | workload | rakupp | Rakudo | ratio |
 |---|---:|---:|---:|
 | 200k two-attribute objects | 4,780 | 312–526 | **11×** |
@@ -159,18 +170,57 @@ None of the 9 loops in the real workloads was eligible.
 
 - **Steady-state variants of `objects` and `multiwhere`,** and the #47 driver,
   as kernels. A new kernel has to be named in four lists; three of them fail
-  silently.
+  silently. *Done 2026-11-05 for the first two:* `objects-steady` (×10) and
+  `multiwhere-steady` (×7.5) in `tools/bench/` and run-bench's list, and the
+  second named in `t/run.raku`'s list of known `--exe` fallbacks. Interleaved
+  best of six at a load of 3.4–3.7, rakupp ÷ Rakudo: `objects-steady` 1.56×
+  interpreted and 1.81× under `--exe`, `multiwhere-steady` 1.70× interpreted,
+  where the shipped sizes read 0.78× and 0.87×. Under `--cnp` the multi row
+  is slower still: `multiwhere` 0.18 → 0.28 s, and a two-candidate multi
+  without a `where` 0.15 → 0.19 s, against the interpreter alone. The #47
+  driver waits for Math::NumberTheory, which is not installed here.
 - **Install Graph's dependencies** (BinaryHeap, Data::TypeSystem) under both
-  engines and measure it.
+  engines and measure it. *Done 2026-11-05:* Graph 0.1.3 depends on
+  LeftistHeap and Data::TypeSystem, not BinaryHeap, and all three were already
+  in the module store the two engines share. `Graph::Grid.new(20, 20).diameter`
+  takes 15.05 s here and 18.52 s on Rakudo (0.81×), best of three interleaved
+  runs at a load of about 2.
 - **`tools/bench/memory.raku`:** the bytes-per-element table for both engines,
-  so row 3 of the numbers can be re-measured.
+  so row 3 of the numbers can be re-measured. *Done 2026-11-05* as
+  [tools/run-memory.raku](../../../tools/run-memory.raku), outside
+  `tools/bench/`, whose programs `t/run.raku` requires to compile natively.
+  Its first reading is under "Memory" above: four rows are above Rakudo's.
 - **The malloc census as a tool:** allocations per operation for `objects` and
-  a hash loop.
+  a hash loop. *Done 2026-11-05*
+  ([tools/malloc-census.raku](../../../tools/malloc-census.raku)): mallocs and
+  requested bytes per operation, from runs at N and 2N. One `objects`
+  iteration makes 2 mallocs (480 bytes, one per object), a `K.new` 1, and a
+  method call, a call into a `where` multi and `%c{$_ % 1000}++` none. A
+  closure made and called makes 1.94 (1.4 KB). `for %h.kv -> $k, $v` and
+  `$t += $_ for (^N).map({ … })` make almost none, but request about 650 and
+  500 bytes an element through `realloc`: each builds its whole list before
+  the loop runs (the `.map` one peaks at 164 MB for 1M elements and 316 MB
+  for 2M).
 - **Profile a `die`/CATCH round trip** (~70 µs here, ~4.5 µs on Rakudo).
+  *Done* (9cc30857, a CATCH takes its error by hand). *Re-timed 2026-11-05:*
+  `try { die }` 200k times, 16.5 µs a round trip interpreted, 3.1 µs under
+  `--exe`, 3.2 µs on Rakudo. A sub with a `CATCH` that dies on half of 200k
+  calls, 25 µs a `die` in both lanes (`--exe` bundles the program) and 105 µs
+  on Rakudo; each of those `die`s throws twice.
 - **Measure `--exe`'s exception share.** The claim that exceptions dominate
   `--exe`'s distance from hand-written native code was measured on the WASM
   build only ([rakujs/INTERNALS.md](../../../rakujs/INTERNALS.md)).
-- **Re-take the time table** on a quiet machine.
+  *Done 2026-11-05*
+  ([tools/throw-census.raku](../../../tools/throw-census.raku), which times
+  each C++ throw to its catch): no exception is thrown by any program in
+  `tools/bench/`, interpreted or native, nor by `return` from a loop, a
+  nested `last`, `when` in a sub, or perf-guard's mainnext, mainwhen and
+  exprnext. Only `die` throws, and a program that dies in a loop spends all
+  but a few percent of its time between the throw and the catch. The WASM
+  finding was the `-fexceptions` trampolines, a cost native code does not
+  have: exceptions explain none of `--exe`'s distance on the kernels.
+- **Re-take the time table** on a quiet machine. *Not done 2026-11-05:* the
+  load average stayed between 2 and 3.7 all session.
 
 ### P1 — small and independent
 

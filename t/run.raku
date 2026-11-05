@@ -637,6 +637,7 @@ my %expected-fallback =
     # engines, so it is the one bench program that cannot compile natively until
     # the constraint is emitted rather than refused.
     'multiwhere.raku' => 'a `where` constraint on a routine parameter',
+    'multiwhere-steady.raku' => 'a `where` constraint on a routine parameter',
 ;
 for <examples tools/bench tools/optbench> -> $dir {
     my (@fellback, @unexpected-pass);

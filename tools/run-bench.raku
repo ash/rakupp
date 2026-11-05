@@ -144,6 +144,13 @@ my @benches =
     %( :name<multiwhere>, :file("multiwhere.raku"),
        :note('400k calls into a `where`-constrained multi candidate (--exe falls back to the interpreter)') ),
     %( :name<objects>,  :file("objects.raku"),  :note('200k .new + 300k method calls') ),
+    # objects-steady, multiwhere-steady (2026-11-05, V6-PLAN P0): the two rows
+    # above at the size where Rakudo's ~80 ms of startup and warm-up stop
+    # counting — the steady-state figures V6's first number is judged by.
+    %( :name<objects-steady>,    :file("objects-steady.raku"),
+       :note('objects ×10: 1M .new + 1.5M method calls') ),
+    %( :name<multiwhere-steady>, :file("multiwhere-steady.raku"),
+       :note('multiwhere ×7.5: 3M calls (--exe falls back to the interpreter)') ),
     # mainwhen (2026-09-20): a `given`/`when` ladder inside a loop, written AT
     # THE MAINLINE. It is perf-guard's kernel of the same name, same source and
     # same iteration count, promoted to a timed program so the published table

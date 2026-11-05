@@ -145,8 +145,9 @@ The same items grouped by theme, with a complexity estimate for each:
   the threaded-program gap; P4 make it the default and remove `--jit`.
 - [ ] **`--types`**: paused 2026-09-29. [TYPES-PLAN.md](TYPES-PLAN.md). N1 the
   switch, N2 the checked rule, N3 measure on Roast and the battery, N7 Str.
-- [ ] **V6 phases not started**: [V6-PLAN.md](V6-PLAN.md). P0 steady-state
-  measurements on a quiet machine; P4 compile and load time (the precomp key
+- [ ] **V6 phases not started**: [V6-PLAN.md](V6-PLAN.md). P0's #47 driver
+  (Math::NumberTheory is not installed here) and the time table re-taken on a
+  quiet machine; P4 compile and load time (the precomp key
   is a decision for the maintainer); P5 `--exe` size and fallback coverage;
   P7 `use` in the web editions (#83).
 - [ ] **`tctx_` thread-local lookups**: 20% of a walking `loopsum`'s samples

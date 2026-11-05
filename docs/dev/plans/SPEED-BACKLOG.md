@@ -46,6 +46,7 @@ theme the rows are sorted by complexity, largest first.
 |---|---|---|---|
 | 4 | Values stop being refcounted, which also answers reference cycles | XL | B or C was measured 2026-10-15: C. B adds 7–17% allocations (+357% on one Roast file), C 0.5%. Next is C's 16-byte string, `Value` 80 -> 64 with ~1,549 `string_view` sites; then the refcount question — [VALUE32-PLAN.md](VALUE32-PLAN.md) "B versus C, measured", V6 P3.10 |
 | 29 | Tail: UNBOX P3–P5 (`--exe` lanes across inlined calls, `my int` lanes, Rat lanes) | M–L | Which backend gets this, now that `--cnp` is to be the default, is the maintainer's decision — [UNBOX-PLAN.md](UNBOX-PLAN.md) |
+| 49 | An empty `my int @a` grown by `push` or by index is never packed: 83 B an element, against 9 for `my int @a = ^N` and Rakudo's 64 | S–M | Find where the empty array is made unpacked — [PACKED-ARRAY-PLAN.md](PACKED-ARRAY-PLAN.md), V6 P0's memory table |
 
 ## 3. Compiled tiers: `--cnp`, `--exe`, kernels, `--types`
 
@@ -57,6 +58,7 @@ theme the rows are sorted by complexity, largest first.
 | 13 | `--exe` native module bodies: the `RT.methodCall` ladder | L | TODO.md |
 | 14 | `--types` (paused 2026-09-29) | L | N1 the switch, N2 the checked rule, N3 measure, N7 Str — [TYPES-PLAN.md](TYPES-PLAN.md) |
 | 15 | `--exe` build time: split the mainline into chunks (`range-int.t` 52 s at -O2) | L | V6 P5 |
+| 51 | `--cnp` slows a loop of multi-method calls: `multiwhere` 0.18 → 0.28 s, a two-candidate multi without a `where` 0.15 → 0.19 s; a plain method call is unchanged | S–M | Find what the tier-up does to a multi call; run-bench's cnp lane shows it on every run — V6 P0 |
 | 33 | The compile modes (`--exe`, `--cpp`, `--target=js`) parse the program twice | S–M | Reuse the parse `declCheckGate` makes — src/main.cpp |
 | 35 | `--slim` review: what it actually removes | S–M | Binary size; the 13.0 / 13.25 MB budgets are a stopgap — [SLIM-PLAN.md](SLIM-PLAN.md) |
 | 44 | `--exe`: one refused construct (a CATCH, a phaser, `my num @a`, a kept List) bundles the program — its routines now keep native bodies, but its mainline and anonymous blocks are interpreted, and a call into a native body costs an interpreted call (~250 ns) | M–L | Mainline loops and block closures as native bodies, and a cheaper interpreter-to-native call — float report, items 2, 4, 14; feeds #3 and #45 |
@@ -72,6 +74,7 @@ theme the rows are sorted by complexity, largest first.
 | 18 | Append plan: `eq` and printing read views directly; a grapheme table for non-ASCII views | M | [APPEND-PLAN.md](APPEND-PLAN.md) |
 | 25 | `$s ~~ m:c/…/` in a loop is quadratic (×58 for 8× the size; ×50 since 2026-10-21, which cut the constant: a 5,000-token ASCII tokenizer 29.9G → 0.46G instructions) | M | graphemeToByte still scans from the front: read the string's own `gIndex` — `run/str-match-continue` in t/scaling, [REVIEW-PARALLEL-2026-10](../findings/REVIEW-PARALLEL-2026-10.md) O7 |
 | 31 | `@a.unshift` / `.prepend` are quadratic (×60) | S–M | Headroom at the front of the ValueList storage — TODO.md |
+| 50 | `for %h.kv -> $k, $v` builds the whole key/value list before the loop: ~190 B a pair above the hash, ~650 requested bytes a step | S–M | Walk the hash in place — V6 P0's malloc census |
 | 36 | `.join` reads the array in place, as `.sum`/`.min`/`.max` do since 02fb7c6a | S | Elements that can run no user code only — V6 P1 |
 
 ## 5. Parallelism
@@ -98,7 +101,7 @@ theme the rows are sorted by complexity, largest first.
 
 | # | Item | Complexity | Next step / source |
 |---|---|---|---|
-| 34 | V6 P0: steady-state kernels, `tools/bench/memory.raku`, the malloc census | S–M | Everything else is judged against these — V6 P0 |
+| 34 | V6 P0's last two: the #47 driver as a kernel, and the time table re-taken on a quiet machine | S | Math::NumberTheory has to be installed first; the steady-state kernels, `tools/run-memory.raku` and the censuses landed 2026-11-05 — V6 P0 |
 | — | A quiet-machine `perf-guard --check`, owed by APPEND, KERNEL, SANDBOX, the phaser work and the V6 P1 batch | S | The batch's interleaved A/B was within ±4%, on a loaded machine |
 
 ---
