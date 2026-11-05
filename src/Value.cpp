@@ -2068,8 +2068,7 @@ bool objectStructEqv(const Value& a, const Value& b,
     if (d > (__int128)0xFFFFFFFFFFFFFFFFULL) { out = Value::number(smallRatSpill(n, d)); return true; }
     if (n < (__int128)LLONG_MIN || n > (__int128)LLONG_MAX || d > (__int128)LLONG_MAX) return false;
     out.t = VT::Rat;   // already reduced with d > 0: no second gcd
-    out.ratNM() = std::make_shared<BigInt>((long long)n);
-    out.ratDM() = std::make_shared<BigInt>((long long)d);
+    out.setRatParts(BigInt((long long)n), BigInt((long long)d));
     return true;
 }
 #endif

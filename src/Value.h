@@ -946,7 +946,6 @@ struct ElemView {
 struct ValueExt : RefCounted {   // owned by Value::x_, a Ref (batch 4)
     double im = 0; // imaginary part for VT::Complex (real part is Value::n)
     std::shared_ptr<BigInt> big;     // for VT::Int when value exceeds long long
-    std::shared_ptr<BigInt> ratN, ratD; // for VT::Rat (normalized, ratD > 0)
     std::shared_ptr<Value> pairKey; // for Pair key when it's non-scalar (e.g. an array key: [..] => [..])
     // range
     long long rFrom = 0, rTo = 0;
@@ -955,7 +954,6 @@ struct ValueExt : RefCounted {   // owned by Value::x_, a Ref (batch 4)
     // endpoints in the otherwise-unused `n`/`im` doubles; elements step by 1 from
     // `n` while <= `im`. Integer ranges leave this false and use rFrom/rTo.
     bool rNum = false;
-    bool fatRat = false; // VT::Rat tagged as FatRat (type identity; arithmetic stays FatRat)
     // A List/Array/Capture some of whose ELEMENTS are containers (Proxy-cells:
     // `\($a)`, `List.new(…, my $ = 3)`, `@b[1] := $x`) rather than values. The
     // readers that walk elements raw — every built-in method and operator —
@@ -1010,8 +1008,18 @@ struct MatchData {
 // Env::find/local and padPtr hand out the Value inside, so a cell is never read
 // as a value of its own. (Array and hash ELEMENTS bound to a container still
 // hold a Proxy over such a shared Value — the form their readers deproxy.)
-enum class PK : uint8_t { None, List, Hash, Code, PairV, Obj, Match, Cell, Packed };
+enum class PK : uint8_t { None, List, Hash, Code, PairV, Obj, Match, Cell, Packed, Rat };
 struct PackedArr;   // a native int/num array's elements as machine words (PACKED-ARRAY-PLAN)
+// PK::Rat: a Rat's numerator and denominator (normalized, den > 0, or Rat.new's
+// ±1/0 and 0/0), shared by every copy of the Value and changed in place only by
+// its sole holder (Value::ratBodyUnique). A FatRat is the body's kPayFatRat flag.
+// It was two shared BigInts in the 200-byte cold block, three allocations and
+// ~336 bytes a Rat; this is one slab block of 80.
+struct RatBody {
+    BigInt num, den;
+    RatBody(BigInt n, BigInt d) : num(std::move(n)), den(std::move(d)) {}
+    RatBody(const RatBody&) = default;
+};
 
 #ifdef RAKUPP_IN_AUDIT
 // VALUE32-PLAN design A, batch 1: may `i` and `n` share one slot? This build
@@ -1303,8 +1311,10 @@ struct Value {
     }
     double im() const { return xr().im; }
     const std::shared_ptr<BigInt>& big() const { return xr().big; }
-    const std::shared_ptr<BigInt>& ratN() const { return xr().ratN; }
-    const std::shared_ptr<BigInt>& ratD() const { return xr().ratD; }
+    // a Rat's parts (PK::Rat), null for anything else
+    const RatBody* ratBody() const;
+    const BigInt* ratN() const { const RatBody* r = ratBody(); return r ? &r->num : nullptr; }
+    const BigInt* ratD() const { const RatBody* r = ratBody(); return r ? &r->den : nullptr; }
     // The cold block's key slot: a Pair's key when it is neither the Str in
     // `s` nor a plain Int held inline (keyInt), and a hash slot's element
     // (elemKey, below).
@@ -1337,12 +1347,21 @@ struct Value {
     bool rExFrom() const { return xr().rExFrom; }
     bool rExTo() const { return xr().rExTo; }
     bool rNum() const { return xr().rNum; }
-    bool fatRat() const { return xr().fatRat; }
+    bool fatRat() const {
+        return pk_ == PK::Rat && (p_.get()->pflags_.load(std::memory_order_relaxed) & kPayFatRat);
+    }
 
     double& imM() { return xw().im; }
     std::shared_ptr<BigInt>& bigM() { return xw().big; }
-    std::shared_ptr<BigInt>& ratNM() { return xw().ratN; }
-    std::shared_ptr<BigInt>& ratDM() { return xw().ratD; }
+    // A Rat's body made from its parts, as given (the caller normalized them),
+    // or shared with another Rat; the body to write when this Value is its sole
+    // holder (null otherwise); and the FatRat flag, the body copied first when
+    // another Value shares it
+    void setRatParts(BigInt n, BigInt d);
+    void setRatBody(const PRef<RatBody>& b) { p_ = b.slot(); pk_ = p_ ? PK::Rat : PK::None; }
+    PRef<RatBody> ratBodyRef() const;
+    RatBody* ratBodyUnique();
+    void setFatRat(bool f);
     std::shared_ptr<Value>& pairKeyRawM() { keyInt = false; return xw().pairKey; }
     std::shared_ptr<Value>& elemDefaultM() { return xw().cw().elemDefault; }
     std::shared_ptr<void>& extM() { return xw().cw().ext; }
@@ -1363,7 +1382,6 @@ struct Value {
     bool& rExFromM() { return xw().rExFrom; }
     bool& rExToM() { return xw().rExTo; }
     bool& rNumM() { return xw().rNum; }
-    bool& fatRatM() { return xw().fatRat; }
 
 
     // The bit-fields are set here rather than with `= false` at their
@@ -1399,9 +1417,7 @@ struct Value {
         if (d.sign < 0) { n = -n; d = -d; }
         BigInt g = BigInt::gcd(n, d);
         if (!g.isZero()) { BigInt q, r; BigInt::divmod(n, g, q, r); n = q; BigInt::divmod(d, g, q, r); d = q; }
-        ValueExt& x = v.xw();
-        x.ratN = std::make_shared<BigInt>(n);
-        x.ratD = std::make_shared<BigInt>(d);
+        v.setRatParts(std::move(n), std::move(d));
         return v;
     }
     // Rat.new semantics: like rat() but a zero denominator is preserved
@@ -1411,9 +1427,7 @@ struct Value {
         Value v; v.t = VT::Rat;
         if (n.sign > 0) n = BigInt(1);
         else if (n.sign < 0) n = BigInt(-1);
-        ValueExt& x = v.xw();
-        x.ratN = std::make_shared<BigInt>(n);
-        x.ratD = std::make_shared<BigInt>(BigInt(0));
+        v.setRatParts(std::move(n), BigInt(0));
         return v;
     }
     BigInt toBig() const {
@@ -1686,6 +1700,18 @@ inline void Value::setPairKey(Value k) {
     xw().pairKey = std::make_shared<Value>(std::move(k));
 }
 inline PackedArr* Value::packed() const { return pk_ == PK::Packed ? pv<PackedArr>() : nullptr; }
+inline const RatBody* Value::ratBody() const { return pk_ == PK::Rat ? pv<RatBody>() : nullptr; }
+inline void Value::setRatParts(BigInt n, BigInt d) { setRatBody(makePayload<RatBody>(std::move(n), std::move(d))); }
+inline PRef<RatBody> Value::ratBodyRef() const {
+    return pk_ == PK::Rat ? PRef<RatBody>::fromSlot(p_) : PRef<RatBody>();
+}
+inline RatBody* Value::ratBodyUnique() { return pk_ == PK::Rat && p_.use_count() == 1 ? pv<RatBody>() : nullptr; }
+inline void Value::setFatRat(bool f) {
+    if (pk_ != PK::Rat || fatRat() == f) return;
+    if (p_.use_count() > 1) setRatBody(makePayload<RatBody>(*pv<RatBody>()));   // (a fresh body is not fat)
+    if (f) p_.get()->pflags_.fetch_or(kPayFatRat, std::memory_order_relaxed);
+    else p_.get()->pflags_.fetch_and(~(uint32_t)kPayFatRat, std::memory_order_relaxed);
+}
 inline bool Value::packedLive() const {
     return pk_ == PK::Packed && !pv<PackedArr>()->unpacked.load(std::memory_order_acquire);
 }

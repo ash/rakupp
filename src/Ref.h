@@ -132,6 +132,7 @@ enum : std::uint32_t {
     // (cycleClassify); it stays untracked even after a collection.
     kPayCycleAcyclic = 16,
     kPayKeptDetached = 32,   // a kept `@a.head(n)`'s buffer, its array refilled (keepEndsContainers)
+    kPayFatRat = 64,         // a Rat body (PK::Rat) whose Value is a FatRat: its type, not its parts
 };
 constexpr unsigned kPayCycleIdxShift = 8;
 void cycleForget(Payload* p) noexcept;   // Cycle.cpp

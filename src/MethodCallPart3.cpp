@@ -973,7 +973,7 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
         if (inv.t == VT::Int && inv.big()) return Value::bigint(inv.big()->abs());
         if (inv.t == VT::Int) return inv.toInt() == std::numeric_limits<long long>::min()
             ? Value::bigint(-BigInt(inv.toInt())) : Value::integer(std::llabs(inv.toInt())); // llabs(LLONG_MIN) is UB (it wrapped)
-        if (inv.t == VT::Rat) { Value r = Value::rat(inv.ratN()->abs(), *inv.ratD()); r.fatRatM() = inv.fatRat(); return r; }
+        if (inv.t == VT::Rat) { Value r = Value::rat(inv.ratN()->abs(), *inv.ratD()); r.setFatRat(inv.fatRat()); return r; }
         return Value::number(std::fabs(inv.toNum()));
     }
     if (m == "sqrt") { double x = inv.toNum(); return (x < 0 && langRev_ >= 2) ? Value::complex(0, std::sqrt(-x)) : Value::number(std::sqrt(x)); }
@@ -2070,7 +2070,7 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
                 else r = big ? Value::rat(neg ? -B : B, D) : Value::rat(BigInt(neg ? -b : b), BigInt(d));
             }
         }
-        r.fatRatM() = fat; // FatRat is the arbitrary-precision Rat, tagged for type identity
+        r.setFatRat(fat); // FatRat is the arbitrary-precision Rat, tagged for type identity
         return r;
     }
     // an ENUM value steps through its enum's members in DECLARATION order,

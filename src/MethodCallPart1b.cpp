@@ -1272,7 +1272,7 @@ std::optional<Value> Interpreter::methodCallPart1b(const Value& inv, const MName
             if (m == "Num") return Value::number((double)c);
             if (m == "Int" || m == "Numeric" || m == "chars") return Value::integer(c);
             Value v = Value::rat(BigInt(c), BigInt(1));
-            if (m == "FatRat") v.fatRatM() = true;
+            if (m == "FatRat") v.setFatRat(true);
             return v;
         }
     }

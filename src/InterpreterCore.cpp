@@ -13229,19 +13229,18 @@ static std::string opAssignElemName(Interpreter& I, Index* ix) {
     return base + "[" + iv.toStr() + "]";
 }
 
-// A Rat that is a value and nothing else: every flag at its default, and a
-// cold block holding its two parts alone — no container fields (a type, a
+// A Rat that is a value and nothing else: every flag at its default, its two
+// parts in its PK::Rat body and no cold block — no container fields (a type, a
 // default, a shape), not a FatRat, no view. Stored over wholesale, such a
 // slot loses nothing, which is what lets plain `=` into it take the
 // assignment lane, and a typed subtree's Rat be written into its parts.
 static inline bool bareRatValue(const Value& v) {
-    if (v.t != VT::Rat || !v.x_ || v.pk_ != PK::None || v.natBits || v.natSigned || v.natFloat ||
+    if (v.t != VT::Rat || v.x_ || v.pk_ != PK::Rat || v.natBits || v.natSigned || v.natFloat ||
         v.readonly || v.itemized || v.b || v.isList || v.objKeyed || v.immutableBind || v.pairValRO ||
         v.namedArg || !v.enumName.empty() || !v.enumType.empty() || !v.hashKind.empty() || !v.s.empty())
         return false;
-    const ValueExt& x = *v.x_;
-    return x.ratN && x.ratD && !x.big && !x.pairKey && !x.cont && !x.view.src && x.im == 0 &&
-           !x.rFrom && !x.rTo && !x.rExFrom && !x.rExTo && !x.rNum && !x.fatRat && !x.holdsCells;
+    // (its parts are its PK::Rat body, and a bare Rat has no cold block at all)
+    return !v.fatRat();
 }
 
 // The operators that hand back their right side's value untouched once they
@@ -19161,7 +19160,7 @@ static Value applyArithGeneral(const std::string& op, const Value& l, const Valu
         // a FatRat operand keeps the result a FatRat (type identity is contagious)
         bool fat = (l.t == VT::Rat && l.fatRat()) || (r.t == VT::Rat && r.fatRat());
         auto mkRat = [&](BigInt n, BigInt d) {
-            Value v = Value::rat(std::move(n), std::move(d)); v.fatRatM() = fat;
+            Value v = Value::rat(std::move(n), std::move(d)); v.setFatRat(fat);
             // Rat denominators are capped at uint64: arithmetic that would grow
             // one past that spills to Num (FatRat is arbitrary-precision, never spills).
             if (!fat && v.ratD() && !v.ratD()->fitsU64()) return Value::number(v.toNum());
@@ -19221,7 +19220,7 @@ static Value applyArithGeneral(const std::string& op, const Value& l, const Valu
         if (opEq(op, "/")) {
             BigInt n1 = getN(l), d1 = getD(l), n2 = getN(r), d2 = getD(r);
             if (n2.isZero()) { // 1/0 is a zero-denominator Rat: Num → ±Inf, Str throws
-                Value v = Value::ratZ(n1 * d2, BigInt(0)); v.fatRatM() = fat; return v;
+                Value v = Value::ratZ(n1 * d2, BigInt(0)); v.setFatRat(fat); return v;
             }
             return mkRat(n1 * d2, d1 * n2);
         }
@@ -19277,9 +19276,8 @@ static Value applyArithGeneral(const std::string& op, const Value& l, const Valu
             auto powRat = [&](BigInt n, BigInt d) -> Value {
                 if (d.sign < 0) { n = -n; d = -d; }
                 Value v; v.t = VT::Rat;
-                v.ratNM() = std::make_shared<BigInt>(std::move(n));
-                v.ratDM() = std::make_shared<BigInt>(std::move(d));
-                v.fatRatM() = fat;
+                v.setRatParts(std::move(n), std::move(d));
+                v.setFatRat(fat);
                 if (!fat && !v.ratD()->fitsU64()) return Value::number(v.toNum());
                 return v;
             };
@@ -22335,8 +22333,7 @@ inline Value typedResultValue(const TNum& o) {
     if (!o.f) return Value::integer(o.i);
     if (o.f & TN_RAT) {
         Value v; v.t = VT::Rat;   // already reduced with d > 0, as Value::rat leaves it
-        v.ratNM() = std::make_shared<BigInt>(o.i);
-        v.ratDM() = std::make_shared<BigInt>(o.d);
+        v.setRatParts(BigInt(o.i), BigInt(o.d));
         return v;
     }
     Value v = (o.f & TN_NUM) ? Value::number(o.n) : Value::integer(o.i);
@@ -22365,12 +22362,12 @@ inline Value typedResultValue(const TNum& o) {
     }
     if (p->t != VT::Rat) return false;
     // a Rat whose parts fit an int64: not a FatRat, no tag, a positive denominator
-    if (!p->x_ || p->pk_ != PK::None || !p->enumName.empty() || !p->s.empty()) return false;
-    const ValueExt& x = *p->x_;
-    if (x.fatRat || !x.ratN || !x.ratD || !x.ratN->fitsLL() || !x.ratD->fitsLL()) return false;
-    const long long dd = x.ratD->toLL();
+    if (p->x_ || p->pk_ != PK::Rat || !p->enumName.empty() || !p->s.empty() || p->fatRat()) return false;
+    const RatBody& x = *p->ratBody();
+    if (!x.num.fitsLL() || !x.den.fitsLL()) return false;
+    const long long dd = x.den.toLL();
     if (dd <= 0) return false;
-    o.f = TN_RAT; o.i = x.ratN->toLL(); o.d = dd;
+    o.f = TN_RAT; o.i = x.num.toLL(); o.d = dd;
     return true;
 }
 
@@ -22489,8 +22486,8 @@ static inline bool nativeNumberSlotValue(const Value& v) {
 }
 
 // fusedTypedAssign's store when a Rat is on either side of it. A Rat over a
-// bare Rat that owns its block and both parts rewrites the parts (inline
-// limbs, nothing allocated) where the store would free the block and build
+// Rat (not a FatRat) that is its body's sole holder rewrites the parts (inline
+// limbs, nothing allocated) where the store would free the body and build
 // another. Looked at under the stripe: a copy another thread takes then waits
 // for it, and one taken before shows in the counts. Anything else is the
 // wholesale store, the Value built before the stripe is taken.
@@ -22498,10 +22495,9 @@ static inline bool nativeNumberSlotValue(const Value& v) {
     if (slot->t == VT::Rat && (o.f & TN_RAT)) {
         BigInt nn(o.i), dd(o.d);
         Interpreter::SlotStripe ws(I, slot, RaceAcc::Write);
-        if (slot->x_.use_count() == 1 && slot->x_->ratN.use_count() == 1 && slot->x_->ratD.use_count() == 1) {
-            ValueExt& x = *slot->x_;
-            *x.ratN = std::move(nn);
-            *x.ratD = std::move(dd);
+        if (RatBody* x = slot->fatRat() ? nullptr : slot->ratBodyUnique()) {   // its body, no other holder
+            x->num = std::move(nn);
+            x->den = std::move(dd);
             return;
         }
     }
@@ -29201,7 +29197,7 @@ Value Interpreter::evalIndex(Index* idx) {
 // them across threads safe once the pointer is published with release ordering.
 // Defined here rather than in Ast.h so BigInt stays out of the AST header.
 struct RatLitParts {
-    std::shared_ptr<BigInt> n, d;
+    PRef<RatBody> body;   // shared by every evaluation, never written: none holds it alone
 };
 
 // The expression shapes eval dispatches here, kept out of its frame.
@@ -30237,25 +30233,24 @@ Value Interpreter::eval(Expr* e) {
             // so a signed-zero real part survives the sum
             if (nl->imaginary) return Value::complex(!nl->raw.empty() && nl->raw[0] == '<' ? -0.0 : 0.0, nl->v);
             if (nl->isRat) {
-                // Build once, then share the immutable BigInt parts on every
-                // eval (ratZ: an explicit zero denominator — `<42/0>` — is
-                // preserved). Both parts live in ONE holder published
-                // atomically: as two bare shared_ptrs, "set D, then N as the
-                // ready flag" was a data race on the control blocks themselves,
-                // so a racing reader could corrupt a refcount rather than merely
-                // read a stale pointer. Readers COPY the shared_ptrs out, which
-                // is safe — the holder is never mutated after publication.
+                // Build once, then share the Rat's body on every eval (ratZ:
+                // an explicit zero denominator — `<42/0>` — is preserved). The
+                // body lives in ONE holder published atomically: as two bare
+                // shared_ptrs, "set D, then N as the ready flag" was a data race
+                // on the control blocks themselves, so a racing reader could
+                // corrupt a refcount rather than merely read a stale pointer.
+                // Readers take a count on the body, which the holder's own count
+                // keeps from ever being written in place (ratBodyUnique).
                 if (const void* p = nl->ratCache.get()) {
                     auto* parts = static_cast<const RatLitParts*>(p);
                     Value v; v.t = VT::Rat;
-                    v.ratNM() = parts->n;
-                    v.ratDM() = parts->d;
+                    v.setRatBody(parts->body);
                     return v;
                 }
                 Value first = nl->bigNum.empty()
                     ? Value::ratZ(BigInt(nl->ratNum), BigInt(nl->ratDen))         // 3.14 is a Rat
                     : Value::ratZ(BigInt::fromString(nl->bigNum), BigInt::fromString(nl->bigDen));
-                auto* mine = new RatLitParts{first.ratN(), first.ratD()};
+                auto* mine = new RatLitParts{first.ratBodyRef()};
                 if (nl->ratCache.publish(mine) != mine) delete mine; // another thread won
                 return first;
             }

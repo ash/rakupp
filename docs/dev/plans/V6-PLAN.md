@@ -88,7 +88,9 @@ built from a list is packed: an empty `my int @a` grown by `push` or by index
 stays an array of Values (91 MB peak for 1M either way, 17 MB for `= ^N`).
 *The same day:* an empty `my int @a` is packed from its declaration
 (SPEED-BACKLOG 49), and the pushed row is 17 bytes an element against
-Rakudo's 63 (0.28×): three rows are above Rakudo's, Rats, objects and hashes.
+Rakudo's 63 (0.28×); and a Rat's parts are a payload of their own (P3.3), so
+1M Rats are 163 bytes an element against 211 (0.77×). Two rows are above
+Rakudo's: objects 1.23× and hashes 1.03×.
 
 | workload | rakupp | Rakudo | ratio |
 |---|---:|---:|---:|
@@ -397,6 +399,16 @@ In order of evidence per cost:
    *2026-10-15:* re-measured, Rat arithmetic already makes no malloc per
    operation (the slab work since); the inline form is a memory question now,
    not an allocation one.
+   *Phase 1 done 2026-11-05:* a kept Rat was its 80-byte Value, the 208-byte
+   cold block (of which it used two shared_ptrs and a flag) and two
+   `make_shared<BigInt>` of 64, three allocations. Its parts are now a payload
+   of their own, `PK::Rat`: a RatBody of two BigInts by value, the FatRat flag
+   in the body's `pflags_`, one 80-byte slab block shared by every copy and no
+   cold block. `ratN()`/`ratD()` answer a pointer into it, so 181 sites read it
+   unchanged. 1M kept Rats 437 → 163 bytes an element (Rakudo 211), one
+   allocation each; the cold block 200 → 168 bytes for every other value. The
+   inline form (no body at all, ~100 bytes) stays open: it needs a second word
+   in `Value`, which VALUE32's 64-byte step competes for.
 4. **Pairs with an inline Int/Bool key,** and `pairVal` allocated through
    `makePayload`. There are 83 `make_shared<Value>` sites that bypass the slab.
    *Done 2026-10-15* (9b3ed082) for Int keys: a plain Int key sits in the

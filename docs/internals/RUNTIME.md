@@ -109,7 +109,10 @@ code reads the fields that tag makes live.
 slot replaced them, and `big`, `ratN`, `ratD`, `pairKey`, `ext`, `shape`,
 `ofType`, `im` and the `Range` bounds were inline until the cold block took
 them — but each is still reached as `v.arr()`, `v.ratN()`, `v.rFrom()` and
-still returns what it always did. That is deliberate: about 3,900 call sites
+still returns what it always did. (A Rat's two parts have since moved again,
+into a payload body of their own, `PK::Rat`; `v.ratN()` answers a pointer to
+the numerator there, which every site read the way it read the shared_ptr.)
+That is deliberate: about 3,900 call sites
 depend on it, and the accessors were introduced before the fields moved so
 that they would not have to move again. Read older notes in this directory
 with that in mind; where they name a field, the accessor of that name is what
@@ -127,8 +130,8 @@ frequently **several fields at once**, not one active member:
 - A **`Match`** sets the subject `s`, the span `rFrom`/`rTo`, the positional
   captures in `arr`, *and* the named captures in `hash` — all live together
   (`src/Value.h`). A **`Pair`** is the key `s` *plus* `pairVal`. An **enum**
-  value is the ordinal `i` *plus* `enumName`/`enumType`. A **`Rat`** is `ratN`
-  *plus* `ratD` *plus* `fatRat`. And cross-cutting flags — `isList`, `itemized`,
+  value is the ordinal `i` *plus* `enumName`/`enumType`. A **`Rat`** is its
+  numerator *plus* its denominator *plus* the FatRat flag. And cross-cutting flags — `isList`, `itemized`,
   `readonly`, `namedArg`, `ofType`, `natBits` — are set *regardless* of the tag
   (a `readonly` Int, an `itemized` Array). So `VT t` isn't "which one field is
   valid"; it's "how to read a bag of fields, several of them set." That is a
@@ -176,10 +179,12 @@ access and trivial copyability. See [Honest limitations](#honest-limitations).
 A few tag choices are worth noting because they reuse fields cleverly:
 
 - **A `Rat`** stores its normalized numerator and denominator as two `BigInt`s
-  (`ratN`, `ratD`). Exact rational arithmetic stays exact until the denominator
+  by value in a payload body of its own (`PK::Rat`, `RatBody`; `v.ratN()`,
+  `v.ratD()`), one 80-byte slab block shared by every copy of the value, and no
+  cold block. Exact rational arithmetic stays exact until the denominator
   would exceed 64 bits, where a plain `Rat` spills to `Num` (Raku's `Rat`→`Num`
-  rule). A **`FatRat`** is the *same* storage with the `fatRat` flag set
-  (`src/Value.h`): it carries the `FatRat` type identity — contagious through
+  rule). A **`FatRat`** is the *same* storage with the body's `kPayFatRat` flag
+  set (`src/Value.h`): it carries the `FatRat` type identity — contagious through
   arithmetic, so any `FatRat` operand makes the result a `FatRat` — and is
   **exempt from the spill**, staying an arbitrary-precision rational forever
   (`src/InterpreterCore.cpp`).

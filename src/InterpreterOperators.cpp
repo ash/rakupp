@@ -772,7 +772,7 @@ Value Interpreter::prefixNumeric(const std::string& op, const Value& v) {
         if (v.t == VT::Complex) return Value::complex(0.0 - v.n, 0.0 - v.im());
         if (v.t == VT::Int && v.big()) return Value::bigint(-(*v.big()));
         if (v.t == VT::Int || v.t == VT::Bool) return negInt(v.toInt());
-        if (v.t == VT::Rat) { Value r = Value::rat(-(*v.ratN()), *v.ratD()); r.fatRatM() = v.fatRat(); return r; }
+        if (v.t == VT::Rat) { Value r = Value::rat(-(*v.ratN()), *v.ratD()); r.setFatRat(v.fatRat()); return r; }
         if (v.t == VT::Str || v.t == VT::Match) {
             Value n = v.t == VT::Str ? numifyStrFailure(v.s) : numifyStr(strOf(v));
             // negating the Failure USES it: `-"2 foo"` throws X::Str::Numeric

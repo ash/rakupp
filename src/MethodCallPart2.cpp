@@ -4619,7 +4619,7 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
         BigInt n = pos.size() > 0 ? pos[0].toBig() : BigInt(0);
         BigInt d = pos.size() > 1 ? pos[1].toBig() : BigInt(1);
         Value v = Value::ratZ(std::move(n), std::move(d));
-        if (inv.s == "FatRat") v.fatRatM() = true;
+        if (inv.s == "FatRat") v.setFatRat(true);
         // Rat denominators are capped at uint64 (FatRat is arbitrary): a wider one
         // degrades to Num at construction too — Rat.new(10**400, 9**999).Str is "0"
         // (the value underflows a double), matching the arithmetic spill rule.

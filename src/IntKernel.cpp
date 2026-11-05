@@ -400,16 +400,15 @@ inline bool nativeNum64Value(const Value& v) {
            v.hashKind.empty() && v.s.empty();
 }
 // A Rat whose numerator and denominator both fit an int64 (not a FatRat, not
-// a zero denominator, no tag, nothing in its block but the two parts)
+// a zero denominator, no tag, no cold block: its parts are its PK::Rat body)
 inline bool plainRatValue(const Value& v) {
-    if (v.t != VT::Rat || !v.x_ || v.pk_ != PK::None || v.natBits || v.natSigned || v.natFloat || v.b ||
+    if (v.t != VT::Rat || v.x_ || v.pk_ != PK::Rat || v.natBits || v.natSigned || v.natFloat || v.b ||
         v.isList || v.objKeyed || v.namedArg || !v.enumName.empty() || !v.enumType.empty() ||
-        !v.hashKind.empty() || !v.s.empty())
+        !v.hashKind.empty() || !v.s.empty() || v.fatRat())
         return false;
-    const ValueExt& x = *v.x_;
-    if (x.fatRat || x.big || x.pairKey || x.cont || x.holdsCells || x.rNum || !x.ratN || !x.ratD) return false;
-    if (!x.ratN->fitsLL() || !x.ratD->fitsLL()) return false;
-    return x.ratD->toLL() > 0;
+    const RatBody& x = *v.ratBody();
+    if (!x.num.fitsLL() || !x.den.fitsLL()) return false;
+    return x.den.toLL() > 0;
 }
 inline bool plainBoolValue(const Value& v) {
     return v.t == VT::Bool && !v.x_ && v.pk_ == PK::None && !v.natBits && !v.natSigned && !v.natFloat &&
@@ -435,7 +434,7 @@ inline bool plainContainer(const Value& v, bool hash) {
         return false;
     if (v.x_) {
         const ValueExt& x = *v.x_;
-        if (x.holdsCells || x.big || x.ratN || x.ratD || x.pairKey) return false;
+        if (x.holdsCells || x.big || x.pairKey) return false;
         if (x.cont) {
             const ValueContExt& c = *x.cont;
             if (c.elemDefault || c.ext || c.shape || !c.ofType.empty() || c.seqTok) return false;
@@ -2337,8 +2336,7 @@ int64_t xdenomFn(const KNode* n, int64_t* fr, KRun& R) { krun(n->a, fr, R); retu
 Value ratValue(int64_t n, int64_t d) {
     Value v;
     v.t = VT::Rat;
-    v.ratNM() = std::make_shared<BigInt>((long long)n);
-    v.ratDM() = std::make_shared<BigInt>((long long)d);
+    v.setRatParts(BigInt((long long)n), BigInt((long long)d));
     return v;
 }
 const std::string& sexactFn(const KNode* n, int64_t* fr, KRun& R) {

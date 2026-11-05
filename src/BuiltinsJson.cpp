@@ -202,9 +202,7 @@ bool jsonParseValue(const std::string& s, size_t& i, Value& out, JsonCfg cfg) {
                 const long long g = std::gcd(v < 0 ? -v : v, den);
                 out = Value();
                 out.t = VT::Rat;
-                ValueExt& x = out.xw();
-                x.ratN = std::make_shared<BigInt>(BigInt(v / g));
-                x.ratD = std::make_shared<BigInt>(BigInt(den / g));
+                out.setRatParts(BigInt(v / g), BigInt(den / g));
                 return true;
             }
             // longer than a machine word: numifyStr's own construction, step
