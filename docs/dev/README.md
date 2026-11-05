@@ -67,6 +67,11 @@ Next up:
   `tctx_`, frame size and calls to closure compilation, fused integer leaves and
   a `--cnp` tier-up for loops. Schedules V6's P2, P3 and P6 items for the
   interpreter.
+- **[plans/OBJECT-SLOTS-PLAN.md](plans/OBJECT-SLOTS-PLAN.md)** — **an object's
+  attributes in an array its class lays out** (planned 2026-11-05, V6 P3.11
+  phase 1): two-attribute objects 512 → ~350 bytes, the 397 uses of the
+  attribute table listed by the compiler, five batches, the risks and what
+  would stop it.
 - **[plans/V5-IDEAS.md](plans/V5-IDEAS.md)** — the candidate list both plans
   were chosen from (collecting, 2026-09-17). What it still holds is
   unscheduled: platforms and hosts, the capability sandbox, modules and the

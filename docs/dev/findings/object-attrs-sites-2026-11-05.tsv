@@ -1,0 +1,398 @@
+# Every use of ObjectData::attrs on 2026-11-05 (main at 6943e980), found by the compiler:
+# the field renamed in src/Value.h, every translation unit in build/compile_commands.json
+# syntax-checked with -fsyntax-only -ferror-limit=0, each "no member named 'attrs' in
+# 'rakupp::ObjectData'" location kept once, the header restored. See OBJECT-SLOTS-PLAN.md.
+# Columns: file, line, operation (what follows `attrs`), the line of code.
+file	line	op	code
+src/AotModules.cpp	421	find	auto it = od->attrs.find(ve->attrBare);
+src/AotModules.cpp	422	end	if (it != od->attrs.end()) {
+src/AotModules.cpp	447	find	auto it = od->attrs.find(ve->attrBare);
+src/AotModules.cpp	448	end	if (it != od->attrs.end() && it->second.hashKind != "Proxy" && !it->second.isCell() &&
+src/AotModules.cpp	539	find	auto it = od->attrs.find(ve->attrBare);
+src/AotModules.cpp	540	end	if (it != od->attrs.end()) {
+src/Builtins.cpp	2682	count	v.obj()->attrs.count("__native_ptr") && g_cbInterp;
+src/Builtins.cpp	2705	find	auto it = v.obj()->attrs.find(*slot);
+src/Builtins.cpp	2707	end	Value av = it != v.obj()->attrs.end() ? it->second
+src/Builtins.cpp	5601	[]	so->attrs["prefix"] = pfx;
+src/Builtins.cpp	5603	[]	ro->attrs["store"] = Value::object(so);
+src/Builtins.cpp	6183	find	auto it = inv.obj()->attrs.find(*slot);
+src/Builtins.cpp	6184	end	return it != inv.obj()->attrs.end() ? &it->second : &kAny;
+src/Builtins.cpp	6840	find	auto it = invIn.obj()->attrs.find("snap");
+src/Builtins.cpp	6841	end	if (it != invIn.obj()->attrs.end()) return methodCall(it->second, mName, std::move(args));
+src/Builtins.cpp	7091	[]	od->attrs["name"] = Value::str(name);
+src/Builtins.cpp	7093	[]	od->attrs["prefix"] = p;
+src/Builtins.cpp	7188	[]	r.obj()->attrs["\x01chain"] = Value::boolean(true);
+src/Builtins.cpp	7199	[]	if (a.t == VT::Pair && a.s == "next-repo" && a.pairVal()) r.obj()->attrs["next-repo"] = *a.pairVal();
+src/Builtins.cpp	7204	[]	r.obj()->attrs["\x01chain"] = Value::boolean(true);
+src/Builtins.cpp	7250	[]	od->attrs["prefix"] = Value::str(pfx);
+src/Builtins.cpp	7251	[]	od->attrs["next-repo"] = next;
+src/Builtins.cpp	7258	bound	auto& at = inv.obj()->attrs;
+src/Builtins.cpp	7334	bound	auto& at = inv.obj()->attrs;
+src/Builtins.cpp	7379	find	auto cit = inv.obj()->attrs.find("\x01cu:" + want);
+src/Builtins.cpp	7380	end	if (cit != inv.obj()->attrs.end()) return cit->second;
+src/Builtins.cpp	7399	[]	inv.obj()->attrs["\x01cu:" + want] = cu;
+src/Builtins.cpp	7405	bound	auto& at = inv.obj()->attrs;
+src/Builtins.cpp	7641	[]	auto& lst = inv.obj()->attrs["\x01loaded"];
+src/Builtins.cpp	7644	[]	inv.obj()->attrs[cuKey] = cu;
+src/Builtins.cpp	7682	[]	od->attrs["name"] = Value::str(nm);
+src/Builtins.cpp	7683	[]	od->attrs["\x01chain"] = Value::boolean(true);
+src/Builtins.cpp	7685	[]	od->attrs["prefix"] = p2;
+src/Builtins.cpp	7700	[]	od->attrs["name"] = Value::str("core");
+src/Builtins.cpp	7701	[]	od->attrs["\x01chain"] = Value::boolean(true);
+src/Builtins.cpp	7703	[]	od->attrs["prefix"] = p3;
+src/Builtins.cpp	7773	[]	auto& lst = inv.obj()->attrs["\x01loaded"];
+src/Builtins.cpp	10158	find	auto np = inv.obj()->attrs.find("__native_ptr");
+src/Builtins.cpp	10159	end	if (np != inv.obj()->attrs.end() && !inv.obj()->cls->findMethod(m)) {
+src/Builtins.cpp	10177	[]	o.obj()->attrs["__native_ptr"] = Value::integer(fa);
+src/Builtins.cpp	10201	find	auto kp = inv.obj()->attrs.find("__native_keep_" + m);
+src/Builtins.cpp	10202	end	if (kp != inv.obj()->attrs.end() && kp->second.t == VT::Str &&
+src/Builtins.cpp	10212	[]	o.obj()->cls = cit->second; o.obj()->attrs["__native_ptr"] = Value::integer(p);
+src/Builtins.cpp	10339	find	auto it = inv.obj()->attrs.find(m);
+src/Builtins.cpp	10340	end	if (it != inv.obj()->attrs.end() && it->second.t != VT::Any) return it->second;
+src/Builtins.cpp	10351	[]	inv.obj()->attrs["__io-encoding"] = args[0];
+src/Builtins.cpp	10354	find	auto it = inv.obj()->attrs.find("__io-encoding");
+src/Builtins.cpp	10355	end	return it != inv.obj()->attrs.end() ? it->second : Value::str("utf8");
+src/BuiltinsNqp.cpp	1381	find	auto it = v[0].obj()->attrs.find(bare);
+src/BuiltinsNqp.cpp	1382	end	if (it != v[0].obj()->attrs.end()) return it->second;
+src/BuiltinsNqp.cpp	1403	[]	v[0].obj()->attrs[bare] = std::move(bound);
+src/BuiltinsRegister.cpp	176	[]	ex.obj()->attrs["message"] = Value::str(a[0].toStr());
+src/BuiltinsRegister.cpp	179	[]	ex.obj()->attrs["payload"] = a[0];
+src/BuiltinsRegister.cpp	198	count	(*f.hash())["message"] = ex.obj() && ex.obj()->attrs.count("message")
+src/BuiltinsRegister.cpp	199	[]	? ex.obj()->attrs["message"] : Value::str("Failed");
+src/BuiltinsRegister2.cpp	617	[]	if (st.t == VT::Object && st.obj()) st.obj()->attrs["dynonly"] = Value::boolean(true);
+src/BuiltinsRegister2.cpp	1141	count	if (ex.t != VT::Object || !ex.obj() || ex.obj()->attrs.count("__reactbt")) return;
+src/BuiltinsRegister2.cpp	1148	[]	mixed.obj()->attrs["__reactbt"] = std::move(h);
+src/BuiltinsRegister3.cpp	998	[]	o.obj()->cls = it->second; o.obj()->attrs["__native_ptr"] = Value::integer(addr);
+src/BuiltinsRegister3.cpp	1103	[]	mixed.obj()->attrs["__awaitbt"] = std::move(h);
+src/BuiltinsSupply.cpp	1500	find	auto mit = ex.obj()->attrs.find("message");
+src/BuiltinsSupply.cpp	1501	end	if (mit != ex.obj()->attrs.end()) qmsg = mit->second.toStr();
+src/BuiltinsSupply.cpp	3010	[]	o.obj()->attrs["data"] = payload;
+src/BuiltinsSupply.cpp	3011	[]	o.obj()->attrs["hostname"] = Value::str(host);
+src/BuiltinsSupply.cpp	3012	[]	o.obj()->attrs["port"] = Value::integer(port);
+src/BuiltinsSupply.cpp	3387	[]	ex.obj()->attrs["message"] = Value::str(msg);
+src/BuiltinsSupply.cpp	3388	[]	ex.obj()->attrs["payload"] = a.empty() ? Value::str(msg) : a.size() > 1 ? payload : a[0]; // .payload is what was thrown
+src/Cycle.cpp	201	argument	hashEdges(od.attrs, f, pin, scan);
+src/Cycle.cpp	267	clear	od.attrs.clear();
+src/Interpreter.cpp	394	at	long long pa = a.obj()->attrs.at("__native_ptr").toInt();
+src/Interpreter.cpp	395	at	long long pb = b.obj()->attrs.at("__native_ptr").toInt();
+src/Interpreter.cpp	628	count	a.obj()->attrs.count("__native_ptr") && b.obj()->attrs.count("__native_ptr"))
+src/Interpreter.cpp	2524	[]	od->attrs["from"] = Value::str(from);
+src/Interpreter.cpp	2525	[]	od->attrs["message"] = Value::str(msg);
+src/Interpreter.cpp	4903	[]	od->attrs["name"] = Value::str("home");
+src/Interpreter.cpp	4905	[]	od->attrs["prefix"] = pfx;
+src/Interpreter.cpp	4906	[]	od->attrs["\x01chain"] = Value::boolean(true);   // (one of the default chain: see the CURI arm)
+src/Interpreter.cpp	6429	assign	mixed->attrs = ci->second.obj()->attrs;
+src/Interpreter.cpp	6429	bound	mixed->attrs = ci->second.obj()->attrs;
+src/Interpreter.cpp	7813	[]	od->attrs["name"] = Value::str(name);
+src/Interpreter.cpp	7815	[]	od->attrs["prefix"] = p;
+src/Interpreter.cpp	7816	[]	od->attrs["next-repo"] = nextRepo;
+src/Interpreter.cpp	7947	find	auto cached = repo.attrs.find("\x01dist");
+src/Interpreter.cpp	7948	end	if (cached != repo.attrs.end()) return cached->second;
+src/Interpreter.cpp	7949	count	std::string prefix = repo.attrs.count("prefix") ? repo.attrs["prefix"].toStr() : std::string(".");
+src/Interpreter.cpp	7949	[]	std::string prefix = repo.attrs.count("prefix") ? repo.attrs["prefix"].toStr() : std::string(".");
+src/Interpreter.cpp	8009	[]	repo.attrs["\x01dist"] = dist;
+src/InterpreterBinding.cpp	412	[]	for (auto& kv : attrs) ex.obj()->attrs[kv.first] = kv.second;
+src/InterpreterBinding.cpp	413	[]	ex.obj()->attrs["message"] = Value::str(message);
+src/InterpreterBinding.cpp	414	count	if (isAdHocKind(type) && !ex.obj()->attrs.count("payload"))
+src/InterpreterBinding.cpp	415	[]	ex.obj()->attrs["payload"] = Value::str(message);
+src/InterpreterBinding.cpp	1369	[]	if (si.howObj.t == VT::Object && si.howObj.obj()) si.howObj.obj()->attrs["__type"] = Value::typeObj(key);
+src/InterpreterBinding.cpp	1390	[]	h.obj()->attrs["__type"] = Value::typeObj(name);
+src/InterpreterBinding.cpp	3011	range-for	if (ex.obj()) for (auto& kv : ex.obj()->attrs) {
+src/InterpreterBinding.cpp	3021	count	bool hasMsg = ex.obj() && ex.obj()->attrs.count("message");
+src/InterpreterBinding.cpp	3022	at	if (hasMsg) msg = ex.obj()->attrs.at("message").toStr();
+src/InterpreterBinding.cpp	3025	count	if (ex.obj() && ex.obj()->attrs.count("__bt")) {
+src/InterpreterBinding.cpp	3816	[]	return base.obj()->attrs[acc ? *slot : name];
+src/InterpreterBinding.cpp	3930	[]	od->attrs["chain"] = Value::str(chain);
+src/InterpreterBinding.cpp	3931	[]	od->attrs["mode"] = Value::str(std::string(1, mode));
+src/InterpreterBinding.cpp	3934	[]	od->attrs["\x01rev"] = Value::integer(langRev_);
+src/InterpreterBinding.cpp	3935	[]	od->attrs["dyn"] = Value::integer(dynIdx);
+src/InterpreterBinding.cpp	3936	[]	if (raw) od->attrs["raw"] = Value::integer((long long)(uintptr_t)raw);
+src/InterpreterBinding.cpp	3937	[]	else if (env) { Value ctx = Value::makeHash(); ctx.hashKind = "PseudoCtx"; ctx.extM() = std::static_pointer_cast<void>(env); od->attrs["ctx"] = ctx; }
+src/InterpreterBinding.cpp	4017	[]	od->attrs["snap"] = snap;
+src/InterpreterBinding.cpp	4051	bound	auto& at = self.obj()->attrs;
+src/InterpreterBinding.cpp	4202	bound	auto& at = self.obj()->attrs;
+src/InterpreterBinding.cpp	4210	bound	auto& at = self.obj()->attrs;
+src/InterpreterBinding.cpp	4971	find	auto it = self.obj()->attrs.find(name);
+src/InterpreterBinding.cpp	4972	end	if (it != self.obj()->attrs.end()) return it->second;
+src/InterpreterBinding.cpp	4980	[]	Value& slot = self.obj()->attrs[name];
+src/InterpreterBinding.cpp	5543	bound	auto& at = exObj.obj()->attrs;
+src/InterpreterBinding.cpp	6886	find	auto pa = it->second.obj()->attrs.find("__native_ptr");
+src/InterpreterBinding.cpp	6887	end	if (pa != it->second.obj()->attrs.end() && pa->second.toInt() == p) return it->second;
+src/InterpreterBinding.cpp	6892	[]	o.obj()->cls = ci; o.obj()->attrs["__native_ptr"] = Value::integer(p);
+src/InterpreterBinding.cpp	6970	[]	Value& kept = (inv.obj()->attrs["__native_keep_" + field] = rhs);
+src/InterpreterBinding.cpp	6973	[]	ncWriteElem(inv.obj()->attrs["__native_ptr"].toInt() + off, "Pointer", 0,
+src/InterpreterBinding.cpp	6976	[]	else ncWriteElem(inv.obj()->attrs["__native_ptr"].toInt() + off, type, 0, rhs);
+src/InterpreterBinding.cpp	7169	count	if (v.t == VT::Object && v.obj() && v.obj()->attrs.count("__native_ptr")) return v.obj()->attrs.at("__native_ptr").toInt();
+src/InterpreterBinding.cpp	7169	at	if (v.t == VT::Object && v.obj() && v.obj()->attrs.count("__native_ptr")) return v.obj()->attrs.at("__native_ptr").toInt();
+src/InterpreterBinding.cpp	7762	count	else if (v.t == VT::Object && v.obj() && v.obj()->attrs.count("__native_ptr"))
+src/InterpreterBinding.cpp	7763	[]	cur = (NcWord)v.obj()->attrs["__native_ptr"].toInt();
+src/InterpreterBinding.cpp	7820	[]	else if (v.t == VT::Object && v.obj() && v.obj()->attrs.count("__native_ptr")) putPtr(s, (void*)(intptr_t)v.obj()->attrs["__native_ptr"].toInt());
+src/InterpreterBinding.cpp	7820	count	else if (v.t == VT::Object && v.obj() && v.obj()->attrs.count("__native_ptr")) putPtr(s, (void*)(intptr_t)v.obj()->attrs["__native_ptr"].toInt());
+src/InterpreterBinding.cpp	8083	[]	nv.obj()->attrs["__native_ptr"] = Value::integer(*rb.i);
+src/InterpreterBinding.cpp	8147	[]	o.obj()->cls = ci; o.obj()->attrs["__native_ptr"] = Value::integer(ri);
+src/InterpreterBinding.cpp	8268	count	if (!pl.obj()->attrs.count("parameter")) {
+src/InterpreterBinding.cpp	8269	[]	e.payload.obj()->attrs["parameter"] = po;
+src/InterpreterBinding.cpp	8593	find	auto ti = how.obj()->attrs.find("__type");
+src/InterpreterBinding.cpp	8594	end	if (ti == how.obj()->attrs.end()) return out;
+src/InterpreterBinding.cpp	8612	[]	h.obj()->attrs["__type"] = Value::typeObj(inv.s);
+src/InterpreterCalls.cpp	3269	bound	od->attrs = s.obj()->attrs;
+src/InterpreterCalls.cpp	3269	assign	od->attrs = s.obj()->attrs;
+src/InterpreterCore.cpp	2282	[]	sp->obj()->attrs[bv.substr(2)] = cv;
+src/InterpreterCore.cpp	2692	[]	if (sp->t == VT::Object && sp->obj()) sp->obj()->attrs[g->var.substr(2)] = topic;
+src/InterpreterCore.cpp	6057	find	auto it = arg.obj()->attrs.find("\x01rev");
+src/InterpreterCore.cpp	6058	end	const bool sixE = it != arg.obj()->attrs.end() && it->second.toInt() >= 2;
+src/InterpreterCore.cpp	6958	find	auto it = av.obj()->attrs.find(key); if (it != av.obj()->attrs.end()) got = &it->second;
+src/InterpreterCore.cpp	6958	end	auto it = av.obj()->attrs.find(key); if (it != av.obj()->attrs.end()) got = &it->second;
+src/InterpreterCore.cpp	10762	find	auto it = selfCopy.obj()->attrs.find(c.ci().name);
+src/InterpreterCore.cpp	10763	end	if (it != selfCopy.obj()->attrs.end()) return deproxy(it->second);
+src/InterpreterCore.cpp	10892	find	auto it = selfCopy.obj()->attrs.find(*slot);
+src/InterpreterCore.cpp	10893	end	if (it != selfCopy.obj()->attrs.end()) return deproxy(it->second);
+src/InterpreterCore.cpp	11654	count	if (ve->name[1] == '.' && selfp->obj()->cls && !selfp->obj()->attrs.count(ve->attrBare) &&
+src/InterpreterCore.cpp	11664	find	auto st = selfp->obj()->attrs.find(ve->attrTwin);
+src/InterpreterCore.cpp	11665	end	if (st != selfp->obj()->attrs.end()) slot = &st->second;
+src/InterpreterCore.cpp	11668	[]	if (!slot) slot = &selfp->obj()->attrs[ve->name[1] == '!' ? attrSlotFor(selfp->obj(), ve->attrBare, slotBuf)
+src/InterpreterCore.cpp	11729	[]	return raceNoteAttr(&selfp->obj()->attrs[an], selfp->obj());
+src/InterpreterCore.cpp	12103	[]	Value& slot = base->obj()->attrs[at2.name];
+src/InterpreterCore.cpp	12292	[]	Value& slot = base->obj()->attrs[at2.name];
+src/InterpreterCore.cpp	12603	bound	auto& at = base->obj()->attrs;
+src/InterpreterCore.cpp	12709	count	(fetched.obj()->attrs.count(mcName) ||
+src/InterpreterCore.cpp	12754	bound	auto& attrs = obj.obj()->attrs;
+src/InterpreterCore.cpp	12786	count	!mcName.empty() && !base->obj()->attrs.count(mcName)) {
+src/InterpreterCore.cpp	12840	[]	Value* d = &cur->obj()->attrs[via->name];
+src/InterpreterCore.cpp	12861	[]	return &d->obj()->attrs[to];
+src/InterpreterCore.cpp	12937	[]	return raceNoteAttr(&base->obj()->attrs[mc->methodQual + "\x01" + mcName], base->obj());
+src/InterpreterCore.cpp	12939	[]	return raceNoteAttr(&base->obj()->attrs[acc ? *accSlot : mcName], base->obj());
+src/InterpreterCore.cpp	14602	count	ov.obj()->attrs.count("__native_ptr") &&
+src/InterpreterCore.cpp	14613	[]	inlineInv.obj()->attrs["__native_ptr"] =
+src/InterpreterCore.cpp	14614	[]	Value::integer(ov.obj()->attrs["__native_ptr"].toInt() + ioff);
+src/InterpreterCore.cpp	14638	count	inv.obj()->attrs.count("__native_ptr") && !inv.obj()->cls->findMethod(mc->method)) {
+src/InterpreterCore.cpp	14718	count	selfp->obj()->attrs.count("__native_ptr")) {
+src/InterpreterCore.cpp	14935	find	auto it = iv.obj()->attrs.find(*slot);
+src/InterpreterCore.cpp	14936	end	return it != iv.obj()->attrs.end() ? it->second : Value::any();
+src/InterpreterCore.cpp	21919	find	auto it = selfp->obj()->attrs.find(key);
+src/InterpreterCore.cpp	21920	end	if (it == selfp->obj()->attrs.end() || !plainIntSlotValue(it->second)) return nullptr;
+src/InterpreterCore.cpp	23771	[]	if (res.t == VT::Object && res.obj()) res.obj()->attrs[pr.first] = pr.second;
+src/InterpreterCore.cpp	31119	count	selfp->obj()->attrs.count("__native_ptr")) {
+src/InterpreterCore.cpp	31138	find	auto st = selfp->obj()->attrs.find(ve->attrTwin);
+src/InterpreterCore.cpp	31139	end	if (st != selfp->obj()->attrs.end()) {
+src/InterpreterCore.cpp	31146	find	auto it = selfp->obj()->attrs.find(slotKey);
+src/InterpreterCore.cpp	31147	end	if (it != selfp->obj()->attrs.end()) {
+src/InterpreterCore.cpp	31786	find	auto it = selfp->obj()->attrs.find(an);
+src/InterpreterCore.cpp	31787	end	return it != selfp->obj()->attrs.end()
+src/InterpreterCore.cpp	32361	find	auto it = inv.obj()->attrs.find(*slot);
+src/InterpreterCore.cpp	32362	end	return it != inv.obj()->attrs.end() ? it->second : Value::any();
+src/InterpreterCore.cpp	33014	find	auto rit = inv.obj()->attrs.find("\x01rev");
+src/InterpreterCore.cpp	33015	end	Value ver = Value::str(rit != inv.obj()->attrs.end() && rit->second.toInt() >= 2 ? "6.e" : "6.c");
+src/InterpreterCore.cpp	33041	find	auto mit = p.obj()->attrs.find("method");
+src/InterpreterCore.cpp	33042	find	auto tit = p.obj()->attrs.find("typename");
+src/InterpreterCore.cpp	33043	end	if (mit != p.obj()->attrs.end()) mname = mit->second.toStr();
+src/InterpreterCore.cpp	33044	end	if (tit != p.obj()->attrs.end()) tname = tit->second.toStr();
+src/InterpreterModules.cpp	2120	bound	auto& at = rv->obj()->attrs;
+src/InterpreterModules.cpp	7186	find	auto at = a[0].obj()->attrs.find(attr);
+src/InterpreterModules.cpp	7187	end	return Value::boolean(at != a[0].obj()->attrs.end() &&
+src/InterpreterModules.cpp	8425	[]	od->attrs["__type"] = Value::typeObj(clsName);
+src/InterpreterModules.cpp	9483	bound	auto& at = e.payload.obj()->attrs;
+src/InterpreterOperators.cpp	180	assign	nd->attrs = obj->attrs;
+src/InterpreterOperators.cpp	180	bound	nd->attrs = obj->attrs;
+src/InterpreterOperators.cpp	277	count	if (obj->attrs.count(a.name)) continue;
+src/InterpreterOperators.cpp	291	[]	obj->attrs[a.name] = dv;
+src/InterpreterOperators.cpp	330	count	if (obj->attrs.count(a.name)) continue;
+src/InterpreterOperators.cpp	339	[]	obj->attrs[a.name] = dv;
+src/InterpreterOperators.cpp	385	[]	obj->attrs[p.s] = p.pairVal() ? *p.pairVal() : Value::any();
+src/InterpreterOperators.cpp	399	[]	if (presets) for (auto& pr : *presets) obj->attrs[pr.first] = pr.second;
+src/InterpreterOperators.cpp	1856	count	if (ex.obj()->attrs.count("__bt")) return;
+src/InterpreterOperators.cpp	1859	[]	ex.obj()->attrs["__bt"] = std::move(h);
+src/InterpreterOperators.cpp	1898	[]	od->attrs["message"] = Value::str(e.message);
+src/InterpreterOperators.cpp	1918	[]	od->attrs["message"] = Value::str(e.message + didYouMean(sug));
+src/InterpreterOperators.cpp	1920	[]	od->attrs["routine_suggestion"] = rs;
+src/InterpreterOperators.cpp	1921	[]	od->attrs["type_suggestion"] = ts;
+src/InterpreterOperators.cpp	1927	[]	if (isAdHocKind(tn)) od->attrs["payload"] = Value::str(e.message);
+src/InterpreterOperators.cpp	2037	find	auto ab = v.obj()->attrs.find("__awaitbt");
+src/InterpreterOperators.cpp	2038	end	if (ab != v.obj()->attrs.end() && ab->second.ext()) {
+src/InterpreterOperators.cpp	2042	erase	od->attrs.erase("__awaitbt");
+src/InterpreterOperators.cpp	2061	find	auto rb = v.obj()->attrs.find("__reactbt");
+src/InterpreterOperators.cpp	2062	end	if (rb != v.obj()->attrs.end()) {
+src/InterpreterOperators.cpp	2065	erase	od->attrs.erase("__reactbt");
+src/InterpreterOperators.cpp	2076	find	auto it = v.obj()->attrs.find("message");
+src/InterpreterOperators.cpp	2079	end	if (v.obj()->cls->name == "X::AdHoc" && (it == v.obj()->attrs.end() || !rtIsDefined(it->second))) {
+src/InterpreterOperators.cpp	2080	find	auto pl = v.obj()->attrs.find("payload");
+src/InterpreterOperators.cpp	2081	end	if (pl != v.obj()->attrs.end() && rtIsDefined(pl->second)) return pl->second.toStr();
+src/InterpreterOperators.cpp	2092	end	if (it == v.obj()->attrs.end() || !rtIsDefined(it->second)) {
+src/InterpreterOperators.cpp	2096	count	if (v.obj()->attrs.count("__bt")) {
+src/InterpreterOperators.cpp	2105	end	if (it != v.obj()->attrs.end()) {
+src/InterpreterOperators.cpp	2111	count	if (v.obj()->attrs.count("__bt")) {
+src/InterpreterOperators.cpp	2278	find	auto mit = v.obj()->attrs.find("message");
+src/InterpreterOperators.cpp	2279	end	if (mit != v.obj()->attrs.end()) return strOf(mit->second);
+src/InterpreterOperators.cpp	2799	find	auto it = od->attrs.find(buf);
+src/InterpreterOperators.cpp	2800	end	if (it != od->attrs.end()) slot = &it->second;
+src/InterpreterOperators.cpp	2802	[]	if (!slot) slot = &od->attrs[attrSlotFor(od, bare, buf, rc)];
+src/MethodCallPart1b.cpp	78	[]	o.obj()->attrs["__native_ptr"] = Value::integer(addr);
+src/MethodCallPart1b.cpp	184	[]	o.obj()->attrs["__native_ptr"] = Value::integer((long long)(uintptr_t)mem);
+src/MethodCallPart1b.cpp	185	[]	o.obj()->attrs["__cstruct_owned"] = Value::boolean(true);
+src/MethodCallPart1b.cpp	465	find	auto it = b.obj()->attrs.find("__native_ptr");
+src/MethodCallPart1b.cpp	466	end	if (it != b.obj()->attrs.end())
+src/MethodCallPart1b.cpp	800	count	const Value data = inv.obj()->attrs.count("data") ? inv.obj()->attrs.at("data") : Value::any();
+src/MethodCallPart1b.cpp	800	at	const Value data = inv.obj()->attrs.count("data") ? inv.obj()->attrs.at("data") : Value::any();
+src/MethodCallPart1b.cpp	806	assign	o.obj()->attrs = inv.obj()->attrs;
+src/MethodCallPart1b.cpp	806	bound	o.obj()->attrs = inv.obj()->attrs;
+src/MethodCallPart1b.cpp	807	[]	o.obj()->attrs["data"] = methodCall(data, m, args);
+src/MethodCallPart1b.cpp	996	[]	o.obj()->attrs["id"] = Value::str(args.empty() ? "" : args[0].toStr());
+src/MethodCallPart1b.cpp	1019	[]	h.obj()->attrs["unit"] = unit;
+src/MethodCallPart1b.cpp	1032	find	auto it = args[0].obj()->attrs.find("src");
+src/MethodCallPart1b.cpp	1033	end	if (it != args[0].obj()->attrs.end()) src = ioFsPath(it->second);
+src/MethodCallPart1b.cpp	1080	[]	h.obj()->attrs["unit"] = unit;
+src/MethodCallPart1c.cpp	710	[]	if (xit != classes_.end()) { Value ex; ex.t = VT::Object; ex.setObj(makePayload<ObjectData>()); ex.obj()->cls = xit->second; ex.obj()->attrs["message"
+src/MethodCallPart1c.cpp	767	find	auto mit = fc.obj()->attrs.find("message");
+src/MethodCallPart1c.cpp	768	end	if (mit != fc.obj()->attrs.end()) msg = mit->second.toStr();
+src/MethodCallPart1c.cpp	1087	find	auto mit = ex.obj()->attrs.find("message");
+src/MethodCallPart1c.cpp	1088	end	if (mit != ex.obj()->attrs.end()) qmsg = mit->second.toStr();
+src/MethodCallPart1c.cpp	1430	[]	ex.obj()->attrs["message"] = Value::str(v.toStr());
+src/MethodCallPart1c.cpp	1431	[]	ex.obj()->attrs["payload"] = v;
+src/MethodCallPart2.cpp	304	[]	how.obj()->attrs["__type"] = Value::typeObj(h->name);
+src/MethodCallPart2.cpp	370	find	auto ma = inv.obj()->attrs.find("message");
+src/MethodCallPart2.cpp	371	end	if (ma != inv.obj()->attrs.end() && rtIsDefined(ma->second)) msg = ma->second.toStr();
+src/MethodCallPart2.cpp	1046	reserve	od->attrs.reserve(nAttr);
+src/MethodCallPart2.cpp	1229	[]	Value& sv = od->attrs[slot];
+src/MethodCallPart2.cpp	1296	[]	if (at.def || userContainer) od->attrs[slot] = seed;
+src/MethodCallPart2.cpp	1344	assign	mixed->attrs = at.containerProto.obj()->attrs;
+src/MethodCallPart2.cpp	1344	bound	mixed->attrs = at.containerProto.obj()->attrs;
+src/MethodCallPart2.cpp	1350	[]	od->attrs[slot] = dv;
+src/MethodCallPart2.cpp	1369	[]	od->attrs[*pv.name] = typedContainer(
+src/MethodCallPart2.cpp	1524	find	auto it = od->attrs.find(tv->attrBare);
+src/MethodCallPart2.cpp	1525	end	if (it == od->attrs.end()) return nullptr;
+src/MethodCallPart2.cpp	1556	[]	Value& entry = od->attrs[tv->attrBare];
+src/MethodCallPart2.cpp	1682	find	auto ait = od->attrs.find(at.name);
+src/MethodCallPart2.cpp	1683	end	if (ait != od->attrs.end() && defined(ait->second)) continue;
+src/MethodCallPart2.cpp	1705	find	auto ait = od->attrs.find(at.name);
+src/MethodCallPart2.cpp	1708	end	if (ait != od->attrs.end() && defined(ait->second)) {
+src/MethodCallPart2.cpp	1718	find	auto ait = od->attrs.find(at.name);
+src/MethodCallPart2.cpp	1719	end	if (ait != od->attrs.end() && attrInitNoted(&*od, &ait->second)) continue;
+src/MethodCallPart2.cpp	1783	count	Value cur = od->attrs.count(at.name) ? od->attrs[at.name] : Value::any();
+src/MethodCallPart2.cpp	1783	[]	Value cur = od->attrs.count(at.name) ? od->attrs[at.name] : Value::any();
+src/MethodCallPart2.cpp	1800	find	auto wit = od->attrs.find(at.name);
+src/MethodCallPart2.cpp	1801	end	if (wit == od->attrs.end() || !defined(wit->second)) continue;
+src/MethodCallPart2.cpp	1815	find	auto ait = od->attrs.find(at.name);
+src/MethodCallPart2.cpp	1816	end	if (ait != od->attrs.end()) {
+src/MethodCallPart2.cpp	1830	[]	od->attrs[at.name] = makeShapedContainer(dims, at.type, &flat);
+src/MethodCallPart2.cpp	3568	[]	obj.obj()->attrs[*slot] = v;
+src/MethodCallPart2.cpp	3571	find	auto it = obj.obj()->attrs.find(*slot);
+src/MethodCallPart2.cpp	3572	end	if (it != obj.obj()->attrs.end()) return it->second;
+src/MethodCallPart2.cpp	4271	[]	ex.obj()->cls = xit->second; ex.obj()->attrs["message"] = Value::str(c.toStr());
+src/MethodCallPart2.cpp	4272	[]	ex.obj()->attrs["payload"] = c;   // `.payload` is the value itself
+src/MethodCallPart2.cpp	6367	count	if (!od->attrs.count(at.name))
+src/MethodCallPart2.cpp	6368	[]	od->attrs[at.name] = rtTypedDefault(at.type.c_str(), at.sigil);
+src/MethodCallPart2.cpp	6547	find	auto rit = inv.obj()->attrs.find("\x01rev");
+src/MethodCallPart2.cpp	6548	end	Value ver = Value::str(rit != inv.obj()->attrs.end() && rit->second.toInt() >= 2 ? "6.e" : "6.c");
+src/MethodCallPart2.cpp	7093	find	auto rit = inv.obj()->attrs.find("\x01rev");
+src/MethodCallPart2.cpp	7094	end	Value ver = Value::str(rit != inv.obj()->attrs.end() && rit->second.toInt() >= 2 ? "6.e" : "6.c");
+src/MethodCallPart2.cpp	7813	[]	od->attrs["__native_ptr"] = Value::integer((long long)(uintptr_t)mem);
+src/MethodCallPart2.cpp	7814	[]	od->attrs["__cstruct_owned"] = Value::boolean(true);
+src/MethodCallPart2.cpp	7930	count	if (!od->attrs.count(at.name))
+src/MethodCallPart2.cpp	7931	[]	od->attrs[at.name] = rtTypedDefault(at.type.c_str(), at.sigil);
+src/MethodCallPart2.cpp	7986	count	if (!od->attrs.count(at.name))
+src/MethodCallPart2.cpp	7987	[]	od->attrs[at.name] = rtTypedDefault(at.type.c_str(), at.sigil);
+src/MethodCallPart2.cpp	7992	[]	od->attrs[arg.s] = arg.pairVal() ? *arg.pairVal() : Value::any();
+src/MethodCallPart2.cpp	8122	range-for	for (auto& kv : aod->attrs) {
+src/MethodCallPart2.cpp	8231	find	auto mAttr = inv.obj()->attrs.find("message");
+src/MethodCallPart2.cpp	8233	end	(mAttr == inv.obj()->attrs.end() || !rtIsDefined(mAttr->second));
+src/MethodCallPart2.cpp	8234	count	if (exc && !bareBuiltin && (inv.obj()->attrs.count("message") || inv.obj()->cls->findMethod("message"))) {
+src/MethodCallPart2.cpp	8245	find	auto pl = inv.obj()->attrs.find("payload");
+src/MethodCallPart2.cpp	8246	end	return Value::str(pl != inv.obj()->attrs.end() && rtIsDefined(pl->second)
+src/MethodCallPart2.cpp	8303	assign	ni->cls = inv.obj()->cls; ni->attrs = inv.obj()->attrs;
+src/MethodCallPart2.cpp	8303	bound	ni->cls = inv.obj()->cls; ni->attrs = inv.obj()->attrs;
+src/MethodCallPart2.cpp	8308	range-for	for (auto& kv : ni->attrs) {
+src/MethodCallPart2.cpp	8336	[]	ni->attrs[a.s] = coerceToSigil(std::move(v), at->sigil);
+src/MethodCallPart2.cpp	8354	find	auto it = inv.obj()->attrs.find(m);
+src/MethodCallPart2.cpp	8355	end	if (it != inv.obj()->attrs.end()) return it->second;
+src/MethodCallPart2.cpp	8376	find	auto it = inv.obj()->attrs.find(*slot);
+src/MethodCallPart2.cpp	8390	end	if ((it == inv.obj()->attrs.end() || !rtIsDefined(it->second)) &&
+src/MethodCallPart2.cpp	8392	find	auto pl = inv.obj()->attrs.find("payload");
+src/MethodCallPart2.cpp	8393	end	if (pl != inv.obj()->attrs.end() && rtIsDefined(pl->second)) return Value::str(pl->second.toStr());
+src/MethodCallPart2.cpp	8396	end	if ((it == inv.obj()->attrs.end() || !rtIsDefined(it->second)) &&
+src/MethodCallPart2.cpp	8399	end	if (it == inv.obj()->attrs.end()) return Value::any();
+src/MethodCallPart2.cpp	8430	find	auto ait = inv.obj()->attrs.find(a.name);
+src/MethodCallPart2.cpp	8431	end	Value target = ait != inv.obj()->attrs.end() ? ait->second : Value::any();
+src/MethodCallPart2.cpp	8671	count	throw RakuError{bindErr, bindErr.obj() && bindErr.obj()->attrs.count("message")
+src/MethodCallPart2.cpp	8672	[]	? bindErr.obj()->attrs["message"].toStr() : "binding failed"};
+src/MethodCallPart2.cpp	9266	bound	auto& attrs = inv.obj()->attrs;
+src/MethodCallPart2.cpp	9370	find	auto it = inv.obj()->attrs.find(m);
+src/MethodCallPart2.cpp	9371	[]	if (!args.empty()) { inv.obj()->attrs[m] = args[0]; return args[0]; }
+src/MethodCallPart2.cpp	9372	end	if (it != inv.obj()->attrs.end()) return it->second;
+src/MethodCallPart2.cpp	9385	find	auto it = inv.obj()->attrs.find(m);
+src/MethodCallPart2.cpp	9386	[]	if (!args.empty()) { inv.obj()->attrs[m] = args[0]; return args[0]; }
+src/MethodCallPart2.cpp	9387	end	return it != inv.obj()->attrs.end() ? it->second : Value::boolean(true);
+src/MethodCallPart2.cpp	10695	[]	if (ci->howObj.obj()) ci->howObj.obj()->attrs["__type"] = Value::typeObj(ci->name);
+src/MethodCallPart2.cpp	10837	[]	h.obj()->attrs["__type"] = Value::typeObj(inv.s);
+src/MethodCallPart2.cpp	10858	[]	h.obj()->attrs["__type"] = Value::typeObj(hci->name);
+src/MethodCallPart2.cpp	10881	[]	h.obj()->attrs["__type"] = Value::typeObj(hci->name);
+src/MethodCallTail.cpp	536	find	auto ait = inv.obj()->attrs.find(a.name);
+src/MethodCallTail.cpp	537	end	Value target = ait != inv.obj()->attrs.end() ? ait->second : Value::any();
+src/MethodCallTail.cpp	1873	find	auto it = inv.obj()->attrs.find(at.name);
+src/MethodCallTail.cpp	1874	end	if (it == inv.obj()->attrs.end()) continue;
+src/MethodCallTail.cpp	5672	range-for	for (auto& kv : inv.obj()->attrs) names.push_back(kv.first);
+src/MethodCallTail.cpp	5674	[]	for (auto& n : names) { Value np = Value::pair(n, inv.obj()->attrs[n]); np.namedArg = true; c.arr()->push_back(std::move(np)); }
+src/RaceDetector.cpp	611	range-for	for (auto& kv : od->attrs) if ((uintptr_t)&kv.second == sub) { an = kv.first; break; }
+src/RaceDetector.cpp	628	range-for	for (auto& kv : self->obj()->attrs)
+src/RakuAstClasses.cpp	137	find	auto it = self.obj()->attrs.find(key);
+src/RakuAstClasses.cpp	138	end	return it == self.obj()->attrs.end() ? nullptr : &it->second;
+src/RakuAstClasses.cpp	160	[]	a[0].obj()->attrs["statement-list"] = a[1];
+src/RakuAstClasses.cpp	176	[]	Value& lst = a[0].obj()->attrs[slot];
+src/RakuAstClasses.cpp	188	[]	a[0].obj()->attrs["expression"] = a[1];
+src/RakuAstClasses.cpp	229	range-for	for (auto& kv : a[0].obj()->attrs) {
+src/RakuAstDeparse.cpp	93	find	auto it = node.obj()->attrs.find(key);
+src/RakuAstDeparse.cpp	94	end	return it == node.obj()->attrs.end() ? nullptr : &it->second;
+src/RakuAstDeparse.cpp	1036	[]	if (a.t == VT::Pair && a.namedArg && a.pairVal()) od->attrs[a.s] = *a.pairVal();
+src/RakuAstDeparse.cpp	1044	[]	od->attrs[slot] = std::move(list);
+src/RakuAstDeparse.cpp	1059	[]	od->attrs["blorst"] = positionals[0];
+src/RakuAstDeparse.cpp	1065	[]	od->attrs[ps->second] = positionals[0];
+src/RakuAstDeparse.cpp	1072	find	if (cls == "ApplyInfix" && od->attrs.find("args") == od->attrs.end()) {
+src/RakuAstDeparse.cpp	1072	end	if (cls == "ApplyInfix" && od->attrs.find("args") == od->attrs.end()) {
+src/RakuAstDeparse.cpp	1073	find	auto l = od->attrs.find("left"), r = od->attrs.find("right");
+src/RakuAstDeparse.cpp	1074	end	if (l != od->attrs.end() && r != od->attrs.end()) {
+src/RakuAstDeparse.cpp	1080	[]	ad->attrs["args"] = std::move(inner);
+src/RakuAstDeparse.cpp	1081	erase	od->attrs.erase("left");
+src/RakuAstDeparse.cpp	1082	erase	od->attrs.erase("right");
+src/RakuAstDeparse.cpp	1083	[]	od->attrs["args"] = Value::object(ad);
+src/RakuAstDeparse.cpp	1131	[]	od->attrs["parts"] = std::move(list);
+src/RakuAstDump.cpp	105	range-for	for (auto& kv : node.obj()->attrs) {
+src/RakuAstDump.cpp	113	range-for	for (auto& kv : node.obj()->attrs) {
+src/RakuAstView.cpp	56	[]	for (auto& a : attrs) od->attrs[a.first] = a.second;
+src/RakuAstView.cpp	196	[]	decl.obj()->attrs["initializer"] =
+src/RakuAstView.cpp	346	[]	pc.obj()->attrs["colonpairs"] = list(cps);
+src/RakuAstView.cpp	491	[]	n.obj()->attrs["type"] = node("Type::Simple", {{"name", name(v->d().declType)}});
+src/RakuAstView.cpp	510	[]	st.obj()->attrs[loopSlot ? "loop-modifier" : "condition-modifier"] =
+src/RakuAstView.cpp	520	[]	t.obj()->attrs["argument"] =
+src/RakuAstView.cpp	568	[]	n.obj()->attrs["scope"] = Value::str(d->isOur ? "our" : "my");
+src/RakuAstView.cpp	582	[]	n.obj()->attrs["type"] = node("Type::Simple", {{"name", name(a.type)}});
+src/RakuAstView.cpp	600	[]	if (!traits.empty()) n.obj()->attrs["traits"] = list(traits);
+src/RakuAstView.cpp	602	[]	n.obj()->attrs["initializer"] =
+src/RakuAstView.cpp	742	[]	n.obj()->attrs["target"] = node("ParameterTarget::Var", {{"name", Value::str(p.name)}});
+src/RakuAstView.cpp	752	[]	n.obj()->attrs["sub-signature"] = node("Signature", {{"parameters", list(sps)}});
+src/RakuAstView.cpp	755	[]	n.obj()->attrs["type"] = node("Type::Simple", {{"name", name(p.type)}});
+src/RakuAstView.cpp	763	[]	n.obj()->attrs["slurpy"] = Value::typeObj(std::string(kRakuAstPrefix) + sl);
+src/RakuAstView.cpp	773	[]	n.obj()->attrs["names"] = list(keys);
+src/RakuAstView.cpp	775	[]	if (p.optional) n.obj()->attrs["optional"] = Value::boolean(true);
+src/RakuAstView.cpp	776	[]	if (p.required) n.obj()->attrs["required"] = Value::boolean(true);
+src/RakuAstView.cpp	786	[]	if (!traits.empty()) n.obj()->attrs["traits"] = list(traits);
+src/RakuAstView.cpp	787	[]	if (p.defaultVal) n.obj()->attrs["default"] = buildExpr(p.defaultVal.get());
+src/RakuAstView.cpp	825	[]	decl.obj()->attrs["initializer"] =
+src/RakuAstView.cpp	872	[]	n.obj()->attrs["elsifs"] = list(elsifs);
+src/RakuAstView.cpp	875	[]	n.obj()->attrs["else"] = binderBlock(i->elseVar, i->elseParams, i->elseBlock->stmts);
+src/RakuAstView.cpp	912	[]	pn.obj()->attrs["traits"] = list({traitIs("rw")});
+src/RakuAstView.cpp	967	[]	if (arg.t == VT::Object) n.obj()->attrs["argument"] = arg;
+src/RakuAstView.cpp	973	[]	if (arg.t == VT::Object) n.obj()->attrs["argument"] = arg;
+src/RakuAstView.cpp	1123	[]	n.obj()->attrs["base-type"] = node("Type::Simple", {{"name", name(d->baseType)}});
+src/RakuAstView.cpp	1124	[]	if (d->where) n.obj()->attrs["where"] = buildExpr(d->where.get());
+src/RakuAstView.cpp	1157	[]	n.obj()->attrs["else"] = binderBlock(g->elseVar, g->elseParams, g->elseBody->stmts);
+src/RakuAstView.cpp	1175	[]	if (l->init)  n.obj()->attrs["setup"]     = buildExpr(l->init.get());
+src/RakuAstView.cpp	1176	[]	if (l->cond)  n.obj()->attrs["condition"] = buildExpr(l->cond.get());
+src/RakuAstView.cpp	1177	[]	if (l->incr)  n.obj()->attrs["increment"] = buildExpr(l->incr.get());
+src/RakuAstView.cpp	1236	find	auto it = sl.obj()->attrs.find("statements");
+src/RakuAstView.cpp	1237	end	return it == sl.obj()->attrs.end() ? nullptr : &it->second;
+src/Value.cpp	1126	find	auto it = obj()->attrs.find("message");
+src/Value.cpp	1127	end	if (it != obj()->attrs.end() && it->second.t == VT::Str) return it->second.s;
+src/Value.cpp	1156	count	obj()->cls->name.rfind("X::", 0) != 0 && !obj()->attrs.count("__native_ptr"))
+src/Value.cpp	2006	size	else if (a.obj()->attrs.size() != b.obj()->attrs.size()) ok = false;
+src/Value.cpp	2007	range-for	else for (auto& kv : a.obj()->attrs) {
+src/Value.cpp	2008	find	auto it = b.obj()->attrs.find(kv.first);
+src/Value.cpp	2009	end	if (it == b.obj()->attrs.end() || !eq(kv.second, it->second)) { ok = false; break; }

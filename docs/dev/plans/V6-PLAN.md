@@ -465,11 +465,11 @@ In order of evidence per cost:
       behind one pointer (ObjectData 184 → 128, its body 200 → 144). Objects
       609 → 512 bytes (1.04×), hashes 769 → 663 (0.89×); five attributes
       1,444 → 1,009, three 866 → 679, none 323 → 258.
-    - *Phase 1, open:* attribute values in a slot array laid out by the
-      class, the names kept once per class — about 330 bytes for two
-      attributes (0.67×). 384 sites use the table through ValueHash's
-      interface; a stand-in type over the class's names would keep it, and
-      attributes a mixin adds at run time go to an overflow table.
+    - *Phase 1, planned:* attribute values in a slot array laid out by the
+      class, the names kept once per class — about 350 bytes for two
+      attributes (0.71×). [OBJECT-SLOTS-PLAN.md](OBJECT-SLOTS-PLAN.md): 397
+      uses of the table, found by the compiler, keep ValueHash's interface
+      through a stand-in type; keys a layout lacks go to an overflow table.
 
 ### P4 — compile and load
 
