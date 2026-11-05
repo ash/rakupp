@@ -10,11 +10,23 @@ here.*
 
 *Covered so far: c43f88fa (a metaop's step and the program's own operator);
 00734769 (a `+` over the program's own class and every Int `+`); c77f05e7
-(`~` and a user candidate over an object).*
+(`~` and a user candidate over an object); 5ebbe282 (a multi whose
+candidates all decline).*
 
 ---
 
 ### Faster
+
+- **A multi whose candidates all decline goes straight to the built-in**
+  (5ebbe282; issue #47). Math::NumberTheory adds six `infix:<gcd>`
+  candidates, none for two Ints, and every `$_ gcd $n` in its euler-phi
+  scored all six before the built-in answered. The multi-dispatch cache now
+  remembers "no candidate takes this shape", and takes candidates typed
+  `Rat`, `FatRat`, `Complex` or `Bool`. euler-phi over 1 .. 3000 3.37 → 1.39 s
+  (Rakudo 1.54); the issue #47 driver in run-bench 4.11 → 2.21 s interpreted
+  and 3.23 → 1.29 s under `--exe`, against Rakudo's 3.33 s.
+  t/regression/dispatch-cache-builtin-answers.raku agrees with Rakudo
+  2026.09; perf-guard's new `multidecline` kernel 170 → 83 ms.
 
 - **A `multi infix:<+>` over the program's own class no longer slows every
   Int `+` in the program** (00734769). Its candidate is noted when the sub
@@ -54,4 +66,10 @@ here.*
 ### Fixed: crashes
 
 ### Left open
+
+- Found with 5ebbe282, the same before it: a user candidate exactly as
+  narrow as a core one is taken, where Rakudo calls the two ambiguous —
+  `multi infix:<gcd>(Int:D $a, Int:D $b) { "mine" }; 4 gcd 6` is "mine",
+  and Rakudo 2026.09 dies "Ambiguous call to 'infix:<gcd>(Int, Int)'"
+  (TODO.md, Correctness).
 
