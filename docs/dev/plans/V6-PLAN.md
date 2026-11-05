@@ -262,9 +262,25 @@ Each item is gated alone, so its effect has a number:
   - `scoreCandidate`'s per-candidate vectors go.
   - This is most of issue #47. [DISPATCH-PERF-PLAN.md](DISPATCH-PERF-PLAN.md)
     left `scoreCandidate` "to its own plan", and this is that plan.
+
+  *Done 2026-10-01* (4b537aa9), monomorphic: one entry per dispatcher
+  (`Callable::dispatchCache`), keyed by each argument's kind, native width
+  and class, and invalidated by the candidate count and the symbol
+  generation `noteSymbolMutation` bumps. The dispatch is a lambda on the
+  frame, `visited` and the parameter vector are inline, and the score vectors
+  come from a per-thread pool, so a multi-method call allocates nothing.
+  `multimeth` 308 → 148 ms, `multiwhere` 586 → 315 ms. *2026-10-04*
+  (944fda3b): candidates with a positional `where` are cached too, through a
+  table from the `where`s' outcomes to the winner; `multiwhere` −38% more.
+  Only a winning candidate is stored, so a dispatch the builtin answers is
+  not cached, and a candidate with a named parameter makes its dispatcher
+  uncacheable.
 - **`where` constraints:** cache the constraint's Code on the `Param` when it
   reads no earlier parameter and no `self`, as `SubsetInfo::whereBlock` already
-  does, and call it directly.
+  does, and call it directly. *Done 2026-10-01* (4b537aa9): a `where` that
+  reads nothing per call (`Param::whereStatic`) is built once in the
+  candidate's declaration scope (staticWhereCode). A WhateverCode over a
+  variable, `* > $lim`, is still built per check.
 - **Operator names as integers in hot paths.**
   - `applyArith` has 172 `op ==` sites, and `typeMatchesArg`, `coreEnumValue`
     and `isKnownTypeName` compare strings the same way. Wrap the name in an
@@ -373,7 +389,12 @@ In order of evidence per cost:
 
 - **Build time:**
   - Ship a precompiled runtime header. With `-fpch-instantiate-templates` the
-    hello TU drops from 0.93 s to 0.36 s.
+    hello TU drops from 0.93 s to 0.36 s. *Done 2026-10-05* (6d957605,
+    0bd60fb7), built on the machine rather than shipped, and without
+    `-fpch-instantiate-templates`: the first `--exe` compile saves the
+    header's parse in the cache, later ones load it, and the three most
+    recently used are kept. `say 42` 1.10 → 0.77 s with clang, 1.78 → 1.22 s
+    with GCC.
   - Split the mainline into non-inlined chunks, or compile straight-line code
     without optimisation.
 - **Coverage, by the fallback table:**
