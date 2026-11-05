@@ -19,6 +19,7 @@
 // message and line on the serial port and halts the board.
 #include "Arduino.h"
 #include <algorithm>
+#include <cctype>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
@@ -164,108 +165,172 @@ std::string cNum(double d) {
     return "((double)" + s + ")";
 }
 
-// The helpers every sketch carries. RK_FN is `static inline` and, for GCC and
-// Clang, `unused`: the compiler drops the ones a sketch never calls, without a
-// warning for each. Written for C++11: the Due core's gcc 4.8 stops there.
-// They live in a namespace because the Arduino IDE writes a prototype for each
-// file-scope function of a .ino above the first one, and drops a template's
-// `template<...>` when it does: `static T rk_flash(const T* p);` does not
-// compile. Functions in a namespace it leaves alone.
-const char* kPrelude = R"RK(// ---- the Raku++ board runtime: helpers only, no allocation, no exceptions ----
-#if defined(__GNUC__)
+// The helpers a sketch may carry, as pieces: each defines the names in
+// `names`, and a sketch gets the pieces its own code names, then the ones
+// those name, in this order, so each comes after what it calls (runtimeFor
+// below) — a sketch that calls none, such as blink, is setup() and loop()
+// alone. RK_FN is `static inline` and, for GCC and Clang, `unused`: a piece's
+// overloads the program does not call go without a warning for each.
+// Written for C++11: the Due core's gcc 4.8 stops there.
+// The functions live in a namespace because the Arduino IDE writes a
+// prototype for each file-scope function of a .ino above the first one, and
+// drops a template's `template<...>` when it does: `static T rk_flash(const
+// T* p);` does not compile. Functions in a namespace it leaves alone.
+struct Piece { const char* names; bool macro; const char* text; };
+const Piece kPieces[] = {
+{"RK_FN", true, R"RK(#if defined(__GNUC__)
 #define RK_FN static inline __attribute__((unused))
 #else
 #define RK_FN static inline
 #endif
-namespace rk_rt {
-#ifdef RAKUPP_ARDUINO_SIM
+)RK"},
+{"RK_ERR", true, R"RK(#ifdef RAKUPP_ARDUINO_SIM
 #define RK_ERR rk_sim::err
-#define rk_halt(code) rk_sim::halt(code)
 #else
 #define RK_ERR Serial
-RK_FN void rk_halt(int) { Serial.flush(); for (;;) delay(1000); }
 #endif
-#if defined(__AVR__)
+)RK"},
+{"RK_FLASH", true, R"RK(#if defined(__AVR__)
 #define RK_FLASH PROGMEM
-template<typename T> RK_FN T rk_flash(const T* p) { T v; memcpy_P(&v, p, sizeof(T)); return v; }
 #else
 #define RK_FLASH
+#endif
+)RK"},
+{"rk_halt", false, R"RK(#ifdef RAKUPP_ARDUINO_SIM
+#define rk_halt(code) rk_sim::halt(code)
+#else
+RK_FN void rk_halt(int) { Serial.flush(); for (;;) delay(1000); }
+#endif
+)RK"},
+{"rk_flash", false, R"RK(#if defined(__AVR__)
+template<typename T> RK_FN T rk_flash(const T* p) { T v; memcpy_P(&v, p, sizeof(T)); return v; }
+#else
 template<typename T> RK_FN T rk_flash(const T* p) { return *p; }
 #endif
-template<typename S> RK_FN void rk_print_int(S& s, int64_t v) {
+)RK"},
+{"rk_print_int", false, R"RK(template<typename S> RK_FN void rk_print_int(S& s, int64_t v) {
     char b[21]; char* p = b + 20; *p = 0;
     uint64_t u = v < 0 ? 0 - (uint64_t)v : (uint64_t)v;
     do { *--p = (char)('0' + u % 10); u /= 10; } while (u);
     if (v < 0) *--p = '-';
     s.print(p);
 }
-RK_FN void rk_die_at(int line) {
+)RK"},
+{"rk_die_at", false, R"RK(RK_FN void rk_die_at(int line) {
     RK_ERR.print(F("\n  at line ")); rk_print_int(RK_ERR, line); RK_ERR.print(F("\n"));
     rk_halt(1);
 }
-RK_FN void rk_die_div(int line) { RK_ERR.print(F("Attempt to divide by zero")); rk_die_at(line); }
-RK_FN void rk_oob(int64_t i, int64_t n, int line) {
+)RK"},
+{"rk_die_div", false, R"RK(RK_FN void rk_die_div(int line) { RK_ERR.print(F("Attempt to divide by zero")); rk_die_at(line); }
+)RK"},
+{"rk_oob", false, R"RK(RK_FN void rk_oob(int64_t i, int64_t n, int line) {
     RK_ERR.print(F("Index out of range. Is: ")); rk_print_int(RK_ERR, i);
     RK_ERR.print(F(", should be in 0..")); rk_print_int(RK_ERR, n - 1); rk_die_at(line);
 }
-RK_FN int64_t rk_add(int64_t a, int64_t b) { return (int64_t)((uint64_t)a + (uint64_t)b); }
-RK_FN int64_t rk_sub(int64_t a, int64_t b) { return (int64_t)((uint64_t)a - (uint64_t)b); }
-RK_FN int64_t rk_mul(int64_t a, int64_t b) { return (int64_t)((uint64_t)a * (uint64_t)b); }
-RK_FN int64_t rk_neg(int64_t a) { return (int64_t)(0 - (uint64_t)a); }
-RK_FN int64_t rk_abs(int64_t a) { return a < 0 ? rk_neg(a) : a; }
-RK_FN int64_t rk_div(int64_t a, int64_t b, int line) {
+)RK"},
+{"rk_add", false, R"RK(RK_FN int64_t rk_add(int64_t a, int64_t b) { return (int64_t)((uint64_t)a + (uint64_t)b); }
+)RK"},
+{"rk_sub", false, R"RK(RK_FN int64_t rk_sub(int64_t a, int64_t b) { return (int64_t)((uint64_t)a - (uint64_t)b); }
+)RK"},
+{"rk_mul", false, R"RK(RK_FN int64_t rk_mul(int64_t a, int64_t b) { return (int64_t)((uint64_t)a * (uint64_t)b); }
+)RK"},
+{"rk_neg", false, R"RK(RK_FN int64_t rk_neg(int64_t a) { return (int64_t)(0 - (uint64_t)a); }
+)RK"},
+{"rk_abs", false, R"RK(RK_FN int64_t rk_abs(int64_t a) { return a < 0 ? rk_neg(a) : a; }
+)RK"},
+{"rk_div", false, R"RK(RK_FN int64_t rk_div(int64_t a, int64_t b, int line) {
     if (!b) rk_die_div(line);
     if (b == -1) return rk_neg(a);
     int64_t q = a / b;
     if ((a % b != 0) && ((a < 0) != (b < 0))) q--;
     return q;
 }
-RK_FN int64_t rk_mod(int64_t a, int64_t b, int line) {
+)RK"},
+{"rk_mod", false, R"RK(RK_FN int64_t rk_mod(int64_t a, int64_t b, int line) {
     if (!b) rk_die_div(line);
     if (b == -1) return 0;
     int64_t m = a % b;
     if (m && ((m < 0) != (b < 0))) m += b;
     return m;
 }
-RK_FN int64_t rk_pow(int64_t a, int64_t b, int line) {
+)RK"},
+{"rk_pow", false, R"RK(RK_FN int64_t rk_pow(int64_t a, int64_t b, int line) {
     if (b < 0) { RK_ERR.print(F("Negative exponent in an integer power")); rk_die_at(line); }
     uint64_t r = 1, x = (uint64_t)a;
     while (b) { if (b & 1) r *= x; x *= x; b >>= 1; }
     return (int64_t)r;
 }
-RK_FN int64_t rk_shr(int64_t a, int64_t n);
+)RK"},
+{"rk_shl rk_shr", false, R"RK(RK_FN int64_t rk_shr(int64_t a, int64_t n);
 RK_FN int64_t rk_shl(int64_t a, int64_t n) { return n < 0 ? rk_shr(a, -n) : n >= 64 ? 0 : (int64_t)((uint64_t)a << n); }
 RK_FN int64_t rk_shr(int64_t a, int64_t n) { return n < 0 ? rk_shl(a, -n) : n >= 64 ? (a < 0 ? -1 : 0) : (a >> n); }
-RK_FN int64_t rk_to_int(double d, int line) {
+)RK"},
+{"rk_to_int", false, R"RK(RK_FN int64_t rk_to_int(double d, int line) {
     if (d != d || d - d != 0) { RK_ERR.print(F("Cannot convert NaN or Inf to an integer")); rk_die_at(line); }
     return (int64_t)d;
 }
-template<typename T> RK_FN T rk_min(T a, T b) { return b < a ? b : a; }
-template<typename T> RK_FN T rk_max(T a, T b) { return a < b ? b : a; }
-template<typename T> RK_FN T rk_preinc(T& x) { x = (T)((uint64_t)(int64_t)x + 1u); return x; }
-template<typename T> RK_FN T rk_predec(T& x) { x = (T)((uint64_t)(int64_t)x - 1u); return x; }
-template<typename T> RK_FN T rk_postinc(T& x) { T o = x; rk_preinc(x); return o; }
-template<typename T> RK_FN T rk_postdec(T& x) { T o = x; rk_predec(x); return o; }
+)RK"},
+{"rk_min", false, R"RK(template<typename T> RK_FN T rk_min(T a, T b) { return b < a ? b : a; }
+)RK"},
+{"rk_max", false, R"RK(template<typename T> RK_FN T rk_max(T a, T b) { return a < b ? b : a; }
+)RK"},
+{"rk_preinc", false, R"RK(template<typename T> RK_FN T rk_preinc(T& x) { x = (T)((uint64_t)(int64_t)x + 1u); return x; }
 RK_FN double rk_preinc(double& x) { return x += 1; }
-RK_FN double rk_predec(double& x) { return x -= 1; }
-RK_FN double rk_postinc(double& x) { double o = x; x += 1; return o; }
-RK_FN double rk_postdec(double& x) { double o = x; x -= 1; return o; }
 RK_FN float rk_preinc(float& x) { return x += 1; }
+)RK"},
+{"rk_predec", false, R"RK(template<typename T> RK_FN T rk_predec(T& x) { x = (T)((uint64_t)(int64_t)x - 1u); return x; }
+RK_FN double rk_predec(double& x) { return x -= 1; }
 RK_FN float rk_predec(float& x) { return x -= 1; }
+)RK"},
+{"rk_postinc", false, R"RK(template<typename T> RK_FN T rk_postinc(T& x) { T o = x; rk_preinc(x); return o; }
+RK_FN double rk_postinc(double& x) { double o = x; x += 1; return o; }
 RK_FN float rk_postinc(float& x) { float o = x; x += 1; return o; }
+)RK"},
+{"rk_postdec", false, R"RK(template<typename T> RK_FN T rk_postdec(T& x) { T o = x; rk_predec(x); return o; }
+RK_FN double rk_postdec(double& x) { double o = x; x -= 1; return o; }
 RK_FN float rk_postdec(float& x) { float o = x; x -= 1; return o; }
-template<typename T, size_t N> RK_FN T& rk_at(T (&a)[N], int64_t i, int line) {
+)RK"},
+{"rk_at", false, R"RK(template<typename T, size_t N> RK_FN T& rk_at(T (&a)[N], int64_t i, int line) {
     if (i < 0 || i >= (int64_t)N) rk_oob(i, (int64_t)N, line);
     return a[i];
 }
-template<typename T, size_t N> RK_FN T rk_tab(const T (&a)[N], int64_t i, int line) {
+)RK"},
+{"rk_tab", false, R"RK(template<typename T, size_t N> RK_FN T rk_tab(const T (&a)[N], int64_t i, int line) {
     if (i < 0 || i >= (int64_t)N) rk_oob(i, (int64_t)N, line);
     return rk_flash(&a[i]);
 }
-} // namespace rk_rt
-using namespace rk_rt;
-// ---- the program ----
-)RK";
+)RK"},
+};
+
+// The runtime for a sketch whose code is `code`: the pieces it names, and
+// the pieces those name, until none is new. Empty when it names none.
+std::string runtimeFor(const std::string& code) {
+    const size_t n = sizeof kPieces / sizeof kPieces[0];
+    std::map<std::string, size_t> owner;
+    for (size_t i = 0; i < n; i++) {
+        std::istringstream names(kPieces[i].names);
+        for (std::string w; names >> w;) owner[w] = i;
+    }
+    std::vector<bool> need(n);
+    std::vector<size_t> todo;
+    auto scan = [&](const char* s) {
+        for (const char* p = s; *p;) {
+            if (!isalnum((unsigned char)*p) && *p != '_') { p++; continue; }
+            const char* b = p;
+            while (isalnum((unsigned char)*p) || *p == '_') p++;
+            auto f = owner.find(std::string(b, p));   // a number such as 500LL is no piece's name
+            if (f != owner.end() && !need[f->second]) { need[f->second] = true; todo.push_back(f->second); }
+        }
+    };
+    scan(code.c_str());
+    while (!todo.empty()) { size_t i = todo.back(); todo.pop_back(); scan(kPieces[i].text); }
+    std::string macros, fns;
+    for (size_t i = 0; i < n; i++) if (need[i]) (kPieces[i].macro ? macros : fns) += kPieces[i].text;
+    if (macros.empty() && fns.empty()) return "";
+    std::string rt = "// ---- the Raku++ board runtime: the helpers this program calls, no allocation, no exceptions ----\n" + macros;
+    if (!fns.empty()) rt += "namespace rk_rt {\n" + fns + "} // namespace rk_rt\nusing namespace rk_rt;\n";
+    return rt + "// ---- the program ----\n";
+}
 
 struct LoopCtx { bool arduino; };   // arduino: the top-level loop, whose body is loop()
 
@@ -1327,17 +1392,20 @@ std::string Emitter::run() {
         << "// `rakupp --target=arduino --sim` builds it for this computer instead, on a simulated board.\n"
         << "#include <Arduino.h>\n#include <stdint.h>\n#include <string.h>\n#include <math.h>\n";
     if (matrixUsed_) out << "#include \"Arduino_LED_Matrix.h\"   // the Uno R4 WiFi's matrix, from its core\n";
-    out << "\n" << kPrelude;
-    if (matrixUsed_) out << "\nstatic ArduinoLEDMatrix rk_matrix;\n";
-    if (!globals_.str().empty()) out << "\n" << globals_.str();
-    if (!protos_.str().empty()) out << "\n" << protos_.str();
-    out << "\nvoid setup() {\n";
-    if (prints_ && !serialBegun_) out << "    Serial.begin(9600);\n";
-    out << begin_.str() << setup_.str() << "}\n\nvoid loop() {\n";
-    if (sawLoop) out << loop_.str();
-    else out << "    rk_halt(0);   // the program has no top-level loop: it ran once, in setup()\n";
-    out << "}\n";
-    if (!funcs_.str().empty()) out << "\n" << funcs_.str();
+    std::ostringstream body;   // the program; the runtime above it is what it calls
+    if (matrixUsed_) body << "\nstatic ArduinoLEDMatrix rk_matrix;\n";
+    if (!globals_.str().empty()) body << "\n" << globals_.str();
+    if (!protos_.str().empty()) body << "\n" << protos_.str();
+    body << "\nvoid setup() {\n";
+    if (prints_ && !serialBegun_) body << "    Serial.begin(9600);\n";
+    body << begin_.str() << setup_.str() << "}\n\nvoid loop() {\n";
+    if (sawLoop) body << loop_.str();
+    else body << "    rk_halt(0);   // the program has no top-level loop: it ran once, in setup()\n";
+    body << "}\n";
+    if (!funcs_.str().empty()) body << "\n" << funcs_.str();
+    std::string rt = runtimeFor(body.str());
+    if (!rt.empty()) out << "\n" << rt;
+    out << body.str();
     return out.str();
 }
 

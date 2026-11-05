@@ -125,7 +125,12 @@ arduino-cli upload  --fqbn arduino:sam:arduino_due_x -p /dev/cu.usbmodem1101 bli
 ```
 
 The sketch is C++11 with the core's own headers, so any core that compiles
-C++11 can take it. It needs no library. Measured with the Due core 1.6.12 and
+C++11 can take it. It needs no library. Above `setup()` it carries the helpers
+its program calls, and only those: Raku's arithmetic where C's differs (`div`
+and `%` floor, 64-bit integers wrap rather than overflow), array indexes
+checked, and the message and line a runtime error prints before the board
+halts. Blink calls none, so its sketch is the includes, `setup()` and
+`loop()`, as the IDE's own Blink is. Measured with the Due core 1.6.12 and
 its arm-none-eabi-gcc 4.8.3 (`-Os`, the sketch's object alone, the core not
 linked): blink is 102 bytes of code, and `t/arduino/cases/features.raku`, its
 tables included, is 1,830 bytes of code and 29 of RAM.
