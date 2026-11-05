@@ -19,7 +19,9 @@
 #   rakupp t/arduino/run.raku --record          # rewrite expected/ from the interpreter
 #   rakupp t/arduino/run.raku --arduino15=DIR   # also compile each sketch for an
 #                                               # Arduino Due with the SAM core under
-#                                               # DIR (~/Library/Arduino15 on a Mac)
+#                                               # DIR (~/Library/Arduino15 on a Mac),
+#                                               # through the IDE's .ino step when
+#                                               # arduino-cli is found
 #
 # Without a C++ compiler the sketch half is skipped, and says so. Exit 1 when
 # anything fails.
@@ -46,6 +48,17 @@ sub header(IO::Path $f, Str $key) {
     Nil
 }
 sub without-locations(Str $s) { $s.lines.grep({ !/^ \s+ ['in ' | 'at line ' | \d+ ' |'] / }).join("\n") }
+
+# $ARDUINO_CLI, else arduino-cli on PATH, else the copy inside the Arduino IDE on a Mac.
+sub arduino-cli() {
+    return %*ENV<ARDUINO_CLI> if %*ENV<ARDUINO_CLI>;
+    return Nil if $*DISTRO.is-win;
+    my $p = run 'sh', '-c', 'command -v arduino-cli', :out, :!err;
+    my $found = $p.out.slurp(:close).trim;
+    return $found if $p.exitcode == 0 && $found;
+    my $ide = '/Applications/Arduino IDE.app/Contents/Resources/app/lib/backend/resources/arduino-cli';
+    $ide.IO.x ?? $ide !! Nil
+}
 
 sub run-in(@cmd, %env) {
     my $p = run |@cmd, :out, :err, :cwd($cases.Str), :env(%(%*ENV, %env));
@@ -128,14 +141,23 @@ sub MAIN(Bool :$record = False, Str :$arduino15) {
     ok((%s<out> ~ %s<err>).contains('Illegal option --sim') && !%s<out>.contains("1\n"),
        '--sim without --target=arduino is an illegal option, and runs nothing');
 
-    # The Due's own compiler and core headers, when they are installed.
+    # The Due's own compiler and core headers, when they are installed. With
+    # arduino-cli the sketch first goes through the IDE's own .ino step, which
+    # writes a prototype for each file-scope function above the first one: a
+    # sketch that compiles as C++ can still fail there.
     with $arduino15 {
         my $root = .IO;
         my $core = ($root.add('packages/arduino/hardware/sam').dir.sort.tail if $root.add('packages/arduino/hardware/sam').d);
-        my $gcc  = ($root.add('packages/arduino/tools/arm-none-eabi-gcc').dir.sort.tail.add('bin/arm-none-eabi-g++')
-                   if $root.add('packages/arduino/tools/arm-none-eabi-gcc').d);
+        # The toolchain the core's platform.txt names: the Uno R4 core installs a newer one beside it.
+        my $tools = $root.add('packages/arduino/tools/arm-none-eabi-gcc');
+        my $want  = ($core.add('platform.txt').slurp ~~ / 'arm-none-eabi-gcc-' (<-[\s{}]>+?) '.path' / ?? ~$0 !! Nil
+                     if $core && $core.add('platform.txt').e);
+        my $gcc   = (($want && $tools.add($want).d ?? $tools.add($want) !! $tools.dir.sort.tail).add('bin/arm-none-eabi-g++')
+                     if $tools.d);
+        my $cli  = arduino-cli();
         if !$core || !$gcc || !$gcc.e { skip("the Due: no SAM core and arm-none-eabi-gcc under $root"); }
         else {
+            skip("the IDE's .ino step: no arduino-cli (\$ARDUINO_CLI, PATH, or the Arduino IDE's own)") without $cli;
             my $sys = $core.add('system');
             for $cases.dir.grep(*.extension eq 'raku').sort -> $case {
                 if $case.slurp.contains('use Arduino::LEDMatrix') {
@@ -143,7 +165,24 @@ sub MAIN(Bool :$record = False, Str :$arduino15) {
                     next;
                 }
                 my $sketch = $tmp.add($case.basename ~ '.cpp');
-                my %e = run-in([$*EXECUTABLE.Str, '-q', '--target=arduino', $case.basename, '-o', $sketch.Str], {});
+                my %e;
+                with $cli {
+                    # A sketch is a folder of its own name; --preprocess prints what the IDE hands the compiler.
+                    my $name = 'sketch_' ~ $case.extension('').basename;   # the --sim binary has the bare name
+                    my $dir  = $tmp.add($name);
+                    $dir.mkdir;
+                    my $ino  = $dir.add("$name.ino");
+                    %e = run-in([$*EXECUTABLE.Str, '-q', '--target=arduino', $case.basename, '-o', $ino.Str], {});
+                    my $pp = run $cli, 'compile', '--fqbn', 'arduino:sam:arduino_due_x', '--preprocess', $dir.Str,
+                        :out, :err, :env(%(%*ENV, ARDUINO_DIRECTORIES_DATA => $root.Str));
+                    $sketch.spurt($pp.out.slurp(:close));
+                    my $pperr = $pp.err.slurp(:close);
+                    if $pp.exitcode != 0 { %e<exit> = 1; diag($pperr) }
+                    $ino.unlink; $dir.rmdir;
+                }
+                else {
+                    %e = run-in([$*EXECUTABLE.Str, '-q', '--target=arduino', $case.basename, '-o', $sketch.Str], {});
+                }
                 my $p = run $gcc.Str, '-c', '-Os', '-Wall', '-Werror', '-std=gnu++11', '-ffunction-sections', '-fdata-sections',
                     '-nostdlib', '-fno-threadsafe-statics', '-fno-rtti', '-fno-exceptions', '-mcpu=cortex-m3', '-mthumb',
                     '-DF_CPU=84000000L', '-DARDUINO=10819', '-DARDUINO_SAM_DUE', '-DARDUINO_ARCH_SAM', '-D__SAM3X8E__',
@@ -152,7 +191,8 @@ sub MAIN(Bool :$record = False, Str :$arduino15) {
                     "-I{$core.add('cores/arduino')}", "-I{$core.add('variants/arduino_due_x')}",
                     '-x', 'c++', $sketch.Str, '-o', $tmp.add($case.basename ~ '.o').Str, :out, :err;
                 my $err = $p.err.slurp(:close);
-                ok(%e<exit> == 0 && $p.exitcode == 0, "{$case.basename}: the sketch compiles for the Due, warning-free");
+                ok(%e<exit> == 0 && $p.exitcode == 0,
+                   "{$case.basename}: the sketch compiles for the Due, warning-free{$cli ?? ", as the Arduino IDE builds it" !! ''}");
                 diag($err) if $p.exitcode != 0;
             }
         }

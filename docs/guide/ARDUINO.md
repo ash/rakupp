@@ -10,10 +10,12 @@ board, on a simulated one, under the interpreter or compiled for this computer.
 > against each other byte for byte (`t/arduino/run.raku`). Every sketch in that
 > gate compiles for an Arduino Due with its own core and compiler, warning-free
 > under `-Wall -Werror`, except the LED-matrix one, which needs the Uno R4
-> core. Not yet tried: an 8-bit AVR board (no avr-gcc on the machine that
-> built this), the Uno R4 core's compiler, and a program running on real
-> hardware. Building and flashing the firmware is still done with the Arduino
-> IDE or arduino-cli.
+> core; with arduino-cli installed, each first goes through the IDE's own
+> `.ino` step. All of them, the LED-matrix one on the Uno R4 WiFi alone, also
+> build with arduino-cli 1.5.1 for an Uno (AVR core 1.8.8) and an Uno R4 WiFi
+> (Renesas core 1.6.0), tried by hand rather than by the gate. Not yet tried:
+> a program running on real hardware. Building and flashing the firmware is
+> still done with the Arduino IDE or arduino-cli.
 
 ```raku
 use Arduino;

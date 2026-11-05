@@ -167,12 +167,17 @@ std::string cNum(double d) {
 // The helpers every sketch carries. RK_FN is `static inline` and, for GCC and
 // Clang, `unused`: the compiler drops the ones a sketch never calls, without a
 // warning for each. Written for C++11: the Due core's gcc 4.8 stops there.
+// They live in a namespace because the Arduino IDE writes a prototype for each
+// file-scope function of a .ino above the first one, and drops a template's
+// `template<...>` when it does: `static T rk_flash(const T* p);` does not
+// compile. Functions in a namespace it leaves alone.
 const char* kPrelude = R"RK(// ---- the Raku++ board runtime: helpers only, no allocation, no exceptions ----
 #if defined(__GNUC__)
 #define RK_FN static inline __attribute__((unused))
 #else
 #define RK_FN static inline
 #endif
+namespace rk_rt {
 #ifdef RAKUPP_ARDUINO_SIM
 #define RK_ERR rk_sim::err
 #define rk_halt(code) rk_sim::halt(code)
@@ -257,6 +262,8 @@ template<typename T, size_t N> RK_FN T rk_tab(const T (&a)[N], int64_t i, int li
     if (i < 0 || i >= (int64_t)N) rk_oob(i, (int64_t)N, line);
     return rk_flash(&a[i]);
 }
+} // namespace rk_rt
+using namespace rk_rt;
 // ---- the program ----
 )RK";
 
