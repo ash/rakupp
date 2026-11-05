@@ -9,7 +9,8 @@ from this page. Move each item into CHANGELOG.md at the tag and delete it
 here.*
 
 *Covered so far: c43f88fa (a metaop's step and the program's own operator);
-00734769 (a `+` over the program's own class and every Int `+`).*
+00734769 (a `+` over the program's own class and every Int `+`); c77f05e7
+(`~` and a user candidate over an object).*
 
 ---
 
@@ -41,12 +42,16 @@ here.*
   2026.09, interpreted and compiled; `[+]` over Ints keeps its fold, also in
   a program whose `+` candidates take its own classes.
 
+- **`~` written out takes a user candidate over an object or an enum**
+  (c77f05e7). With `multi infix:<~>(Rt $a, Int $b) { "rt-cat" }` declared,
+  `Rt.new ~ 1` was `Rt<…>1`, and a `(Color, Str)` candidate left `Red ~
+  "x"` as "Redx": the arm for `~` concatenated an object through its Str
+  before anything looked, where `**`, `+`, `[~]`, `Z~` and `~=` took the
+  candidate. Where none takes the operands, they concatenate as before.
+  t/regression/cat-user-candidate-object-operand.raku agrees with Rakudo
+  2026.09.
+
 ### Fixed: crashes
 
 ### Left open
 
-- Found with 00734769, the same before it: a user `~` candidate over an
-  object is never taken. With `multi infix:<~>(Rt $a, Int $b) { "rt-cat" }`
-  declared, `Rt.new ~ 1` is `Rt<…>1`, where Rakudo 2026.09 answers
-  "rt-cat"; the same shape over `**` or `+` takes its candidate (TODO.md,
-  Correctness).
