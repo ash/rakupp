@@ -12,11 +12,21 @@ here.*
 00734769 (a `+` over the program's own class and every Int `+`); c77f05e7
 (`~` and a user candidate over an object); 5ebbe282 (a multi whose
 candidates all decline); fb43011a (an empty native array, packed); 300832c7
-(a Rat's parts, a payload of their own).*
+(a Rat's parts, a payload of their own); a90fb35e (objects and hashes leaner).*
 
 ---
 
 ### Faster
+
+- **Objects and hashes take less memory** (a90fb35e). Every hash carried
+  48 bytes for an aliasing generation and object keys almost none has, and
+  every object 24 for a boxed value and a monitor's lock; both are behind
+  one pointer now. An entry's dead flag moved into its hash (120 → 112
+  bytes), and an object's attribute table holds exactly its attributes where
+  it rounded up to a power of two. 200k two-attribute objects 609 → 512 bytes
+  each (Rakudo 494); five attributes 1,444 → 1,009; two-key hashes 769 →
+  663 (Rakudo 746). t/regression/hash-exact-first-chunk.raku agrees with
+  Rakudo 2026.09; Roast 1,425 / 1,425.
 
 - **A Rat takes 163 bytes, not 437** (300832c7). Its numerator and
   denominator were two separately allocated BigInts reached through the
@@ -88,6 +98,11 @@ candidates all decline); fb43011a (an empty native array, packed); 300832c7
 ### Fixed: crashes
 
 ### Left open
+
+- Found with a90fb35e, the same before it: a class deriving Int loses its
+  value in arithmetic — `class D is Int { method double { self * 2 } }`
+  gives `D.new(21).double` 0 and `D.new(3) + 4` 4, where Rakudo 2026.09
+  gives 42 and 7 (TODO.md, Correctness).
 
 - Found with 5ebbe282, the same before it: a user candidate exactly as
   narrow as a core one is taken, where Rakudo calls the two ambiguous —
