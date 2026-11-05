@@ -61,6 +61,8 @@ Every figure here is measured, not projected; the methodology is in
 | 2026-10-13 | **v5.4.1** | `use Data::Native` inside a routine works again without the distribution installed — a patch release; Roast unchanged at 1,425 / 1,425 |
 | 2026-10-22 | **v5.5.0** | Reference cycles freed by a backup collector (#151), `rakupp --auto` installs what a program is missing, Alpine/musl archives and NativeCall on i386, decimal-literal float code on the fast tiers — Roast unchanged at 1,425 / 1,425; measured on an Apple M4 standing in for the M3 |
 | 2026-11-04 | **v5.6.0** | `--target=arduino` writes a program as an Arduino sketch, `--detect-races` reports data races between threads, a program runs from a URL, native-typed code compiles at the untyped code's speed (`exprnext` −99%, `strscan` −94%) — Roast unchanged at 1,425 / 1,425, now 219,395 tests: v5.5.0's 1,425 were 1,424, one file passed by a harness fault |
+| 2026-11-04 | **v5.6.1** | v5.6.2's source under a tag cut before the version bump, so its binaries, wheels and Raku.js engine call themselves 5.6.0 — superseded by v5.6.2 |
+| 2026-11-05 | **v5.6.2** | v5.6.1, correctly named: an `is copy` parameter takes a constant (#218), `--cnp` keeps a method's writes to its invocant (#219), and the Raku.js archives v5.6.0 lacked — a patch release; Roast not re-run |
 
 **By the numbers:** v0.1.0 → v2.0.0 in 36 days (2026-07-02 to 2026-08-07).
 
@@ -315,6 +317,12 @@ zef populates (see [MODULES.md](../guide/MODULES.md)); the goal is breadth and d
   passes here. Measured on the Apple M4 again: nothing in perf-guard is more
   than 5% slower than in v5.5.0, and `junctionwide`, at 4–5%, is accepted and
   left open.
+- **Nov 5 — v5.6.2.** v5.6.1, correctly named: the v5.6.1 tag was cut before
+  the version bump, so its binaries, Python wheels and Raku.js engine call
+  themselves 5.6.0. Both carry two fixes on v5.6.0 — an `is copy` parameter
+  given a constant is writable (#218), and under `--cnp` a method that changes
+  its invocant changes the loop's variable (#219) — and the Raku.js archives,
+  which v5.6.0's wasm job failed to build. Roast was not re-run.
 
 Beyond the interpreter, the same source feeds a small constellation —
 [raku.online](https://raku.online/) (playground),

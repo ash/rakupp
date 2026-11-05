@@ -13,7 +13,7 @@ WebAssembly, no server required. It is not a fork of Rakudo and shares no code
 with it; it targets the *language*, measured against
 [**Roast**](https://github.com/Raku/roast), the official Raku test suite.
 
-**Status:** current release **v5.6.0** (2026-11-04) — **100.00% of Roast.**
+**Status:** current release **v5.6.2** (2026-11-05) — **100.00% of Roast.**
 Of the tests Roast expects an implementation to pass, **all 219,395** pass, and
 **all 1,425 files** in Roast's `spectest.data` pass completely (Roast
 `da425eb92`, which carries Unicode 18.0's tests). On Roast `1f521d798`, which
@@ -26,7 +26,9 @@ URL, and compiles native-typed code at the untyped code's speed; against
 v5.5.0, perf-guard's `exprnext` is 99% faster and `strscan` 94%, and no
 kernel is more than 5% slower. Like v5.5.0, it was measured on an Apple M4
 standing in for the machine of record; the benchmark tables are still
-v5.5.0's ([BENCHMARKS.md](docs/status/BENCHMARKS.md)). Every release is
+v5.5.0's ([BENCHMARKS.md](docs/status/BENCHMARKS.md)). v5.6.2 is v5.6.0 with
+two fixes and the Raku.js archives v5.6.0 lacked: the release v5.6.1 was
+meant to be, whose binaries call themselves 5.6.0. Every release is
 written up in the [CHANGELOG](CHANGELOG.md), and what each major set out to do is in
 [VERSIONS.md](docs/dev/plans/VERSIONS.md).
 
@@ -37,7 +39,7 @@ same harness (2026-09-16, 2,529 dists), passes 1,791; the other 738 cannot pass
 there under any engine, for want of libgsl, fontconfig or a network. Every distribution, with how it ran, is at
 [raku.online/modules/ecosystem](https://raku.online/modules/ecosystem/).
 
-| | v5.6.0 | at v4.0.0 | at v3.0.0 |
+| | v5.6.2 | at v4.0.0 | at v3.0.0 |
 |---|---:|---:|---:|
 | Roast tests, skip and todo left out‡ | **219,395 of 219,395 (100.00%)** | — | — |
 | Roast tests, every declared test‡ | **221,033 of 221,033 (100.00%)** | 200,843 of 219,610 (91%) | 197,191 of 218,772 (90%) |
@@ -45,11 +47,12 @@ there under any engine, for want of libgsl, fontconfig or a network. Every distr
 | Official documentation examples byte-identical on both engines | **1,006**¶ | 957 | 945 |
 | Modules — the 59-dist battery, each against its own suite | **44 / 59** | 49 / 59† | 47 / 59 |
 | Modules — the whole [ecosystem](https://raku.online/modules/ecosystem/) | **1,019 of 2,547**§ | 1,006 of 2,529 | — |
-| Local regression suite | **1,957** | 1,020 | 398 |
+| Local regression suite | **1,958** | 1,020 | 398 |
 
-Dashes mean the measurement did not exist yet. The v5.6.0 Roast figures are on
-the 1,425 files `spectest.data` lists at Roast `da425eb92`, one more than
-v5.2.1's (`S15-nfg/GraphemeBreakTest-4.t`, new with Unicode 18.0). They count
+Dashes mean the measurement did not exist yet. The Roast figures are v5.6.0's,
+which v5.6.2 did not re-run, on the 1,425 files `spectest.data` lists at Roast
+`da425eb92`, one more than v5.2.1's (`S15-nfg/GraphemeBreakTest-4.t`, new with
+Unicode 18.0). They count
 188 tests more than v5.5.0's, all `S32-str/indices.t`'s, a file v5.5.0 died
 in and the harness of the time passed, so v5.5.0's 1,425 files were 1,424
 ([ROAST.md](docs/status/ROAST.md)). The older
@@ -57,9 +60,9 @@ columns were measured on the whole checkout (1,464 files at v4.0.0, 1,462 at
 v3.0.0), and 656 is how many of the 1,424 files listed at Roast `1f749e338`
 v4.0.0 passed.
 
-¶ Measured for v5.0.0; v5.1.0 through v5.6.0 did not re-run that sweep.
+¶ Measured for v5.0.0; v5.1.0 through v5.6.2 did not re-run that sweep.
 
-The battery figure is v5.3.0's; v5.4.0 through v5.6.0 did not re-run it. It was
+The battery figure is v5.3.0's; v5.4.0 through v5.6.2 did not re-run it. It was
 48 / 59 at v5.0.1. Color, Encode and Trap broke between v5.0.1 and v5.2.1, and
 YAMLish no longer counts because Rakudo now fails its suite
 ([CHANGELOG](CHANGELOG.md)).
@@ -100,7 +103,7 @@ docker run --rm -it ghcr.io/ash/rakupp                       # the REPL
 docker run --rm -v "$PWD:/work" ghcr.io/ash/rakupp main.raku  # a file from here
 ```
 
-The tags are `latest`, the version and the minor (`5.6.0`, `5.6`); building on
+The tags are `latest`, the version and the minor (`5.6.2`, `5.6`); building on
 the image, modules and `--exe` inside it are in
 [INSTALL.md](docs/guide/INSTALL.md#docker).
 

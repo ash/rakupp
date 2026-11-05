@@ -3,6 +3,79 @@
 Release notes for tagged releases. Numbers are measured, not projected;
 methodology for all Roast figures is in [docs/status/COUNTING.md](docs/status/COUNTING.md).
 
+## v5.6.2 (2026-11-05) — v5.6.1, correctly named: `is copy` of a constant, `--cnp` and a method that changes its invocant, and the Raku.js archives
+
+A patch release on v5.6.0, and v5.6.1's source with the version added. The
+v5.6.1 tag was cut on 52f31000, before `project(RakuPP VERSION …)` and the
+three package files moved from 5.6.0, so every v5.6.1 binary reports 5.6.0,
+its Python wheels are `rakulang-5.6.0-…` (which the PyPI workflow refuses for
+the tag v5.6.1), and its Raku.js engine would announce 5.6.0 in the
+playground: the v3.20.0 mistake again. A published tag is never moved, so
+v5.6.2 is that release built from the commit that names it (5fe10487).
+Install this one; everything in v5.6.1 is in it.
+
+v5.6.1's tag run left out two more things: its linux-aarch64 job failed the
+example and showcase suite, which the same commit's `main` run passed, so the
+release has no glibc aarch64 Linux archive and no aarch64 wheel, and the
+Docker image, which waits for that job, was not built. PyPI still serves
+5.5.0, because v5.6.0's wheels were never uploaded.
+
+Roast was not re-run, and its figures are v5.6.0's: 1,425 of 1,425 files and
+219,395 of 219,395 tests on Roast `da425eb92`. The local suite passes all
+1,958 checks on 5fe10487. The benchmarks, perf-guard and the other gates
+were not re-run.
+
+- **The Raku.js archives are built again** (52f31000). v5.6.0's wasm job
+  failed its Node smoke test: the grammar case wrote its two tokens with no
+  `;` between them, which Rakudo and Raku++ both refuse. So v5.6.0 has no
+  `rakujs-*.zip`, no Excel add-in and no Google Sheets download, and
+  raku.online's playground stayed on v5.5.0's engine. The case now has the `;`.
+
+### Fixed: silent wrong answers
+
+- **Under `--cnp`, a method that changes its invocant changes the loop's
+  variable** (b1b35cd7; issue #219). A kernel ran a method call with the
+  invocant copied into a scratch scope, and a Buf's `push`, `append`,
+  `prepend`, `unshift`, `pop`, `shift`, `splice` and `reallocate` write
+  through the method's lvalue — the copy — so every write the kernel made
+  was lost: `while $k >= 0 { $b.push($k); $k = $k - 1 }` kept the one push
+  made before the loop tiered up. A loop variable invocant is now the
+  variable itself, and a `my` of the loop's own is written back from its
+  copy. t/cnp/cases/mutating-invocant.raku agrees with Rakudo 2026.09,
+  interpreted and under `--cnp`, each of its twelve loops in a kernel.
+
+### Fixed: crashes
+
+- **An `is copy` parameter given a constant is writable, in every shape**
+  (39f73f24; issue #218). `my constant X = 500; sub f($n is copy) { $n =
+  $n - 1 }; f(X)` died "Cannot assign to a readonly variable or a value":
+  a constant's value is readonly, as a sigilless `\y` parameter's is, and
+  the mark came along into the copy. The simple path `is copy` joined in
+  5321f41c kept it, b7c47a57's native wrap put it back (`int32 $n is copy
+  = X`), and a named parameter, a default and a slurpy (`*@`, `+@`, `**@`,
+  `*%`) never cleared it, so a sub, a method, a multi, a pointy block and a
+  `for` loop's all died, and `sub g(\y) { f(y) }` on any argument.
+  t/regression/is-copy-of-a-readonly-argument.raku agrees with Rakudo
+  2026.09, interpreted and under `--exe`.
+
+### Left open
+
+- Found with 39f73f24, the same before it: a slurpy hash's values are
+  writable, so `sub f(*%h) { %h<a> = 1 }; f(:a(5))` lives where Rakudo dies
+  "Cannot assign to an immutable value"; and a constant handed to a slurpy
+  that is not `is copy` dies "Cannot assign to a readonly variable or a
+  value" when its element is assigned, where Rakudo, and rakupp for a
+  literal, say "Cannot assign to an immutable value".
+- Found with b1b35cd7, the same before it: under `--cnp`, a sub that
+  changes a Buf argument (`sub f($x) { $x.push(9) }` called as `f($b)` in
+  a compiled loop) still loses the write, through the scratch argument its
+  parameter links back to; interpreted, and in Rakudo, `$b` takes it. And,
+  interpreted, `my $d = $b; $d.push(1)` leaves `$b` as it was, where a
+  Rakudo Buf is one object both names share.
+- Why v5.6.1's linux-aarch64 example suite failed is not known: its log
+  needs a GitHub sign-in, and the same job passed on `main` at the same
+  commit.
+
 ## v5.6.0 (2026-11-04) — Arduino sketches, `--detect-races`, programs run from a URL, and native types at the untyped code's speed
 
 Roast: **all 1,425 files** of `spectest.data` and **all 219,395** of its tests
