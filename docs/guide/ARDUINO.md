@@ -5,6 +5,9 @@ that names no runtime, which the Arduino core's own compiler builds into a
 firmware image the board runs on its own. The same program runs without a
 board, on a simulated one, under the interpreter or compiled for this computer.
 
+New to it? [examples/arduino](../../examples/arduino/README.md) walks from a
+blinking LED to the Uno R4 WiFi's LED matrix, with a program for each step.
+
 > **Phase A0 of [ARDUINO-PLAN.md](../dev/plans/ARDUINO-PLAN.md), with A1's
 > constants.** The sketch and both simulators are implemented and checked
 > against each other byte for byte (`t/arduino/run.raku`). Every sketch in that

@@ -17,6 +17,10 @@ every run.
 [`modules/`](modules) holds examples that need modules installed from the
 ecosystem, one directory each — see [Needs modules](#needs-modules) below.
 
+[`arduino/`](arduino) holds programs for an Arduino board, which run on a
+simulated one too: a walkthrough from a blinking LED to the Uno R4 WiFi's LED
+matrix — see its [README](arduino/README.md).
+
 [`lint/`](lint) is a different kind of gallery beside these: twelve programs
 written to trip one `rakupp --lint` diagnostic each — see
 [LINT.md](../docs/guide/LINT.md).
