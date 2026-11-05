@@ -13,7 +13,8 @@ here.*
 (`~` and a user candidate over an object); 5ebbe282 (a multi whose
 candidates all decline); fb43011a (an empty native array, packed); 300832c7
 (a Rat's parts, a payload of their own); a90fb35e (objects and hashes leaner);
-ab86fea9 (an Arduino sketch the IDE compiles).*
+ab86fea9 (an Arduino sketch the IDE compiles); 73559a27 (an Arduino sketch
+carries only the helpers it calls).*
 
 ---
 
@@ -110,6 +111,17 @@ ab86fea9 (an Arduino sketch the IDE compiles).*
   `--arduino15` check now goes through the IDE's own .ino step when
   arduino-cli is found, and uses the Due's own gcc 4.8.3 where a newer one
   is installed beside it.
+
+- **An Arduino sketch carries only the helpers its program calls**
+  (73559a27). Every sketch had the whole board runtime above `setup()`, 95
+  lines of it, whether the program called one helper or none; now it has
+  the ones its code names and the ones those call, read off the helpers
+  themselves. Blink, which calls none, is its includes, `setup()` and
+  `loop()`: 21 lines where it was 116, as the IDE's own Blink is; the other
+  t/arduino sketches lose 10 to 61 lines each. The firmware is the same
+  byte for byte (the compiler had dropped the unused helpers already), and
+  every case still builds with arduino-cli for an Uno, an Uno R4 WiFi and a
+  Due.
 
 ### Left open
 
