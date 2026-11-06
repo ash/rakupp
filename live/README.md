@@ -33,10 +33,10 @@ we run somebody else's software; there we run our own, every day.
 Everything above is other people's software running on this engine.
 **[ADOPTIONS.md](ADOPTIONS.md)** is the mirror image: other people's software
 that reached for *the engine* — a Wolfram paclet in Wolfram's own repository, a
-browser playground that offers rakupp as one of four runtimes, a course of 105
-Raku koans that Raku.js grades in the browser, a Guix channel, a port of the
-release matrix to somebody else's CI, an agent runtime and an invariants
-tool, each compiled into standalone files. Nothing to run there and
+browser playground that offers rakupp as one of four runtimes, a koans site
+in fourteen languages whose 105 Raku koans Raku.js grades in the browser, a
+Guix channel, a port of the release matrix to somebody else's CI, an agent
+runtime and an invariants tool, each compiled into standalone files. Nothing to run there and
 nothing checked in there either; it is a record of what other people have done
 with Raku++, links and credits only.
 

@@ -21,7 +21,7 @@ raku.online — those are ours and belong in
 |---|---|---|
 | [**RakuppLink**](https://resources.wolframcloud.com/PacletRepository/resources/AntonAntonov/RakuppLink/) | Anton Antonov | ships the Wolfram binding as a paclet in Wolfram's own repository |
 | [**Raku Playground**](https://fco.github.io/Raku-Playground/?runtime=rakupp) | Fernando Correa de Oliveira | offers rakupp as one of four runtimes, in the browser |
-| [**Raku Koans**](https://hankache.github.io/raku-koans/) | Naoum Hankache | runs a course of 105 test-driven koans on Raku.js, in the browser |
+| [**koans.app**](https://koans.app/raku/) | Naoum Hankache | grades 105 Raku koans with Raku.js in the browser, one of fourteen languages on a koans site that grew out of Raku Koans |
 | [**rakupp-dsci**](https://github.com/melezhik/rakupp-dsci) | Alexey Melezhik | ports the Raku++ release matrix to another CI |
 | [**sibl**](https://github.com/4zv4l/sibl-channel) | 4zv4l | packages rakupp in a personal Guix channel |
 | [**321**](https://github.com/nige123/cli.321.do) | Nigel Hamilton | compiles an agent runtime, written in Raku, into one standalone file per system |
@@ -109,29 +109,43 @@ subtracts a line offset from our `line N` errors to point them back at the
 user's own code. Two workarounds, both fair descriptions of something this
 engine does not offer an embedder.
 
-## Raku Koans — a Raku course graded by Raku.js
+## koans.app — Raku Koans, grown into fourteen languages
 
-[**Raku Koans**](https://hankache.github.io/raku-koans/) is a course by Naoum
-Hankache, the author of [raku.guide](https://raku.guide)
-([source](https://github.com/hankache/raku-koans); code Artistic-2.0, artwork
-CC BY-SA 4.0). It follows the guide's order through 105 koans in sixteen
-groups, from `Test` assertions to grammars: each koan is a short program whose
-tests fail until the learner fills in every `___`. The idea is Ruby Koans'.
+[**koans.app**](https://koans.app) is Naoum Hankache's site for learning a
+language by fixing failing tests
+([source](https://github.com/hankache/koans-app); code Artistic-2.0, koans
+CC BY-SA 4.0): 1,108 koans in fourteen languages, each run in the browser by
+that language's own interpreter compiled to WebAssembly — Pyodide for Python,
+ruby.wasm for Ruby, webR for R — and, for [Raku](https://koans.app/raku/), by
+Raku.js, the WebAssembly build of this engine. It grew out of
+[Raku Koans](https://hankache.github.io/raku-koans/), the same author's Raku
+course, and the Raku path is that course carried over: 105 koans in sixteen
+groups in the order of [raku.guide](https://raku.guide), which Naoum Hankache
+also wrote, from `Test` assertions to grammars. Each koan is a short program
+whose tests fail until the learner fills in every `___`, and every language's
+tests are written with its own testing tools — Raku's `Test` module here. The
+idea is Ruby Koans'.
 
-Every answer is checked in the browser by Raku.js, the WebAssembly build of
-this engine. The course downloads it from a Raku++ release and pins it by
-checksum — v4.0.1 when this entry was written — and moves to a newer release
-only after re-running every koan on it. Every Raku++ release candidate runs
-that same check first: gate 6b in [RELEASING.md](../docs/dev/RELEASING.md).
+A Web Worker loads Raku.js once and calls `rakupp_run` per koan, building a
+fresh instance when a run crashes. The site downloads Raku.js from a Raku++
+release and pins it by checksum — v5.4.1 as of 2026-10-30 — and its CI runs
+every koan on the pinned build, under Node.
 
-**Where it meets our plans.** Three koans teach code Rakudo refuses: two calls
-it rejects at compile time as ones that "will never work", and a `next OUTER`
-that it resolves differently. Builds after v5.2.1 refuse all three the same way
-([V5-PLAN.md](../docs/dev/plans/V5-PLAN.md), B3), so those koans fail on them
-until the course changes them. What the
-course had to build around — a Raku.js that runs only in a browser, no way to
-stop a running program, shallow recursion in a Web Worker — is under "A fresh
-WebAssembly build" in [V5-IDEAS.md](../docs/dev/plans/V5-IDEAS.md).
+The original course is still online, pinned to v5.0.1 and unchanged since
+2026-09-30. Every Raku++ release candidate still runs that course's own check
+first: gate 6b in [RELEASING.md](../docs/dev/RELEASING.md).
+
+**Where it meets our plans.** Three koans in the original course teach code
+Rakudo refuses: two calls it rejects at compile time as ones that "will never
+work", and a `next OUTER` that it resolves differently. Builds after v5.2.1
+refuse all three the same way on the command line
+([V5-PLAN.md](../docs/dev/plans/V5-PLAN.md), B3), so gate 6b fails them. In the
+browser only `next OUTER` fails, because `rk_run`, which Raku.js calls, skips
+the CLI's compile-time checks; koans.app's loop-control koan labels that loop
+`ROW` instead. What the course had to build around — a Raku.js that runs only
+in a browser, no way to stop a running program, shallow recursion in a Web
+Worker — is under "A fresh WebAssembly build" in
+[V5-IDEAS.md](../docs/dev/plans/V5-IDEAS.md).
 
 ## rakupp-dsci — the release matrix on somebody else's CI
 
