@@ -35,6 +35,7 @@ What other people write about Raku++ is a different file:
 | 10 October 2026 | [Better ways to install modules in Raku++](https://andrewshitov.com/2026/10/10/better-ways-to-install-modules-in-raku/) | `rakupp install prog.raku` installs the modules a program uses; `rakupp install -r lib` installs a folder of module files, with or without a META6.json. |
 | 23 October 2026 | [Raku as a foreign language and more: learn.raku.online](https://andrewshitov.com/2026/10/23/raku-as-a-foreign-language/) | [learn.raku.online](https://learn.raku.online), the learner-facing pages that came out of building Raku++: Raku as a foreign language, A Tour of Raku, Raku Drills, Raku by example, the Cookbook and Raku behind the Docs. |
 | 24 October 2026 | [Raku Course updates](https://andrewshitov.com/2026/10/24/raku-course-update/) | The [course](https://course.raku.org) now covers all three Raku compilers; the Learn Raku app for iOS and Android, with Raku++ built in as its playground; a Run button on every course page. |
+| 5 November 2026 | [Raku on Arduino](https://andrewshitov.com/2026/11/05/raku-on-arduino/) | Raku programs for Arduino boards: the `Arduino` and `Arduino::LEDMatrix` modules, built into Raku++, and `--target=arduino`, which turns a program into a sketch for the Arduino IDE; blink, PWM and the UNO R4's LED matrix. |
 
 ## On dev.to
 
