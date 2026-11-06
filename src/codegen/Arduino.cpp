@@ -119,6 +119,15 @@ bool isBoardConst(const std::string& n) {
                                             "A0", "A1", "A2", "A3", "A4", "A5", "A6", "A7"};
     return s.count(n) > 0;
 }
+// wl_status_t of the WiFiS3 library, which `use Arduino::WiFi` names
+bool isWiFiConst(const std::string& n) {
+    static const std::set<std::string> s = {"WL_NO_MODULE", "WL_IDLE_STATUS", "WL_NO_SSID_AVAIL", "WL_CONNECTED",
+                                            "WL_CONNECT_FAILED", "WL_CONNECTION_LOST", "WL_DISCONNECTED"};
+    return s.count(n) > 0;
+}
+bool isNamed(const ExprPtr& e, const char* name) {
+    return e && e->kind == NK::NameTerm && static_cast<NameTerm*>(e.get())->name == name;
+}
 
 // A Raku name as a C identifier: the sigil off, `-` and anything outside
 // [A-Za-z0-9_] spelled out, so `blink-count` and `blink_count` stay apart.
@@ -350,6 +359,7 @@ private:
     std::vector<LoopCtx> loops_;
     bool useArduino_ = false, prints_ = false, serialBegun_ = false;
     bool useMatrix_ = false, matrixUsed_ = false;   // `use Arduino::LEDMatrix`, and a call that needs the library
+    bool useWiFi_ = false, wifiUsed_ = false;       // `use Arduino::WiFi`, and a name that needs the library
     bool inSub_ = false;
     CT subRt_ = CT::None;
     std::string subName_;
@@ -603,7 +613,12 @@ private:
         if (s == "pi" || s == "π") return {cNum(3.141592653589793), K::Num, true};
         if (s == "tau" || s == "τ") return {cNum(6.283185307179586), K::Num, true};
         if (s == "e") return {cNum(2.718281828459045), K::Num, true};
-        if (s == "Serial" || s == "LEDMatrix") refuse(n, s + " used as a value — call one of its methods");
+        if (isWiFiConst(s)) {
+            if (!useWiFi_) refuse(n, s + " is not declared — did you mean to `use Arduino::WiFi`?");
+            wifiUsed_ = true;
+            return {"((int64_t)" + s + ")", K::Int, true};
+        }
+        if (s == "Serial" || s == "LEDMatrix" || s == "WiFi") refuse(n, s + " used as a value — call one of its methods");
         refuse(n, "the name " + s + ", which the board does not know");
     }
 
@@ -793,6 +808,11 @@ private:
                 emitPrints(o, in, stream, parts, at);
                 continue;
             }
+            if (a->kind == NK::MethodCall && isNamed(static_cast<MethodCall*>(a)->inv, "WiFi") &&
+                static_cast<MethodCall*>(a)->method == "localIP" && argsOf(static_cast<MethodCall*>(a)->args).empty()) {
+                o << ind(in) << stream << ".print(" << wifiCall(static_cast<MethodCall*>(a), {}, true).c << ");\n";
+                continue;
+            }
             Ex e = expr(a);
             if (e.k == K::Str) { if (e.c != "\"\"") o << ind(in) << stream << ".print(F(" << e.c << "));\n"; }
             else if (e.k == K::Int) o << ind(in) << "rk_print_int(" << stream << ", " << e.c << ");\n";
@@ -858,6 +878,7 @@ private:
             refuse(m, "a method call of a form the board does not have");
         const std::string& n = m->method;
         auto args = argsOf(m->args);
+        if (isNamed(m->inv, "WiFi")) return wifiCall(m, args, false);
         if (m->inv && m->inv->kind == NK::NameTerm &&
             (static_cast<NameTerm*>(m->inv.get())->name == "Serial" || static_cast<NameTerm*>(m->inv.get())->name == "LEDMatrix"))
             refuse(m, static_cast<NameTerm*>(m->inv.get())->name + "." + n + " used as a value — it answers nothing");
@@ -1059,6 +1080,7 @@ private:
                 if (u->isRequire) refuse(s, "`require` — the board loads nothing while it runs");
                 if (u->module == "Arduino" && !u->isNo) useArduino_ = true;
                 if (u->module == "Arduino::LEDMatrix" && !u->isNo) useMatrix_ = true;
+                if (u->module == "Arduino::WiFi" && !u->isNo) useWiFi_ = true;
                 return;
             }
             case NK::SubDecl: refuse(s, "a sub declared inside a block — declare it at the top level");
@@ -1161,6 +1183,33 @@ private:
             return;
         }
         refuse(m, "LEDMatrix." + n + " — the matrix has begin, show(@frame) and clear");
+    }
+
+    // The Uno R4 WiFi's network (`use Arduino::WiFi`): the global `WiFi` of
+    // the core's WiFiS3 library. The network's name and password are strings
+    // the build knows — literals or constants — as the board has no others;
+    // the address it answers can be printed (`printed`), not kept.
+    Ex wifiCall(MethodCall* m, const std::vector<Expr*>& args, bool printed) {
+        if (!useWiFi_) refuse(m, "WiFi is not declared — did you mean to `use Arduino::WiFi`?");
+        const std::string& n = m->method;
+        wifiUsed_ = true;
+        if (n == "begin" && (args.size() == 1 || args.size() == 2)) {
+            std::string a;
+            for (Expr* x : args) {
+                Ex e = expr(x);
+                if (e.k != K::Str)
+                    refuse(x, "WiFi.begin of something other than a string the build knows — the network's name and "
+                              "password are constants, as in `constant SSID = %*ENV<WIFI_SSID>`");
+                a += (a.empty() ? "" : ", ") + e.c;
+            }
+            return {"((int64_t)WiFi.begin(" + a + "))", K::Int};
+        }
+        if ((n == "status" || n == "disconnect") && args.empty()) return {"((int64_t)WiFi." + n + "())", K::Int};
+        if (n == "localIP" && args.empty()) {
+            if (!printed) refuse(m, "WiFi.localIP used as a value — the board can print the address (`say WiFi.localIP`), not keep it");
+            return {"WiFi.localIP()", K::Str};   // an IPAddress, which the core's print takes
+        }
+        refuse(m, "WiFi." + n + " — the board's WiFi has begin(SSID, PASS), status, localIP and disconnect");
     }
 
     void forStmt(ForStmt* f, std::ostream& o, int in) {
@@ -1392,6 +1441,7 @@ std::string Emitter::run() {
         << "// `rakupp --target=arduino --sim` builds it for this computer instead, on a simulated board.\n"
         << "#include <Arduino.h>\n#include <stdint.h>\n#include <string.h>\n#include <math.h>\n";
     if (matrixUsed_) out << "#include \"Arduino_LED_Matrix.h\"   // the Uno R4 WiFi's matrix, from its core\n";
+    if (wifiUsed_) out << "#include <WiFiS3.h>   // the Uno R4 WiFi's network, from its core\n";
     std::ostringstream body;   // the program; the runtime above it is what it calls
     if (matrixUsed_) body << "\nstatic ArduinoLEDMatrix rk_matrix;\n";
     if (!globals_.str().empty()) body << "\n" << globals_.str();

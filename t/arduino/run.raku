@@ -8,8 +8,8 @@
 # `--target=arduino --sim` against the host core (src/codegen/ArduinoSim.h),
 # must write the same bytes and exit the same way: the interpreter is the
 # oracle for the C++. Both run in virtual time — a case's `# stop: MS` line is
-# RAKUPP_ARDUINO_STOP and its `# pins:` line RAKUPP_ARDUINO_PINS — so a run is
-# exact and takes milliseconds. stderr is compared without the location lines
+# RAKUPP_ARDUINO_STOP, its `# pins:` line RAKUPP_ARDUINO_PINS and its `# wifi:`
+# line RAKUPP_ARDUINO_WIFI — so a run is exact and takes milliseconds. stderr is compared without the location lines
 # under a `die` message: the interpreter prints a backtrace, a board the line.
 #
 # Then what the board refuses: programs outside the subset must stop the build
@@ -21,7 +21,9 @@
 #                                               # Arduino Due with the SAM core under
 #                                               # DIR (~/Library/Arduino15 on a Mac),
 #                                               # through the IDE's .ino step when
-#                                               # arduino-cli is found
+#                                               # arduino-cli is found, and build the
+#                                               # Uno R4 WiFi's own sketches (matrix,
+#                                               # network) for it with arduino-cli
 #
 # Without a C++ compiler the sketch half is skipped, and says so. Exit 1 when
 # anything fails.
@@ -47,6 +49,8 @@ sub header(IO::Path $f, Str $key) {
     }
     Nil
 }
+# A sketch for the Uno R4 WiFi alone: its LED matrix or its network.
+sub r4-only(IO::Path $f) { so $f.slurp ~~ / 'use Arduino::' ['LEDMatrix' | 'WiFi'] » / }
 sub without-locations(Str $s) { $s.lines.grep({ !/^ \s+ ['in ' | 'at line ' | \d+ ' |'] / }).join("\n") }
 
 # $ARDUINO_CLI, else arduino-cli on PATH, else the copy inside the Arduino IDE on a Mac.
@@ -74,6 +78,7 @@ sub MAIN(Bool :$record = False, Str :$arduino15) {
         my $name = $case.basename.subst(/'.raku' $/, '');
         my %env = RAKUPP_ARDUINO_STOP => header($case, 'stop') // '1000';
         with header($case, 'pins') { %env<RAKUPP_ARDUINO_PINS> = $_ }
+        with header($case, 'wifi') { %env<RAKUPP_ARDUINO_WIFI> = $_ }
         my %int = run-in([$*EXECUTABLE.Str, $case.basename], %env);
         my $want-out = $here.add("expected/$name.out");
         my $want-err = $here.add("expected/$name.err");
@@ -107,6 +112,12 @@ sub MAIN(Bool :$record = False, Str :$arduino15) {
     ok(%f<exit> == 0 && %f<out>.contains('static const uint8_t t_wave[32] RK_FLASH')
        && %f<out>.contains("void setup()") && %f<out>.contains("void loop()") && !%f<out>.contains('map'),
        'fade: the table was computed while building and is a const byte table in the sketch');
+    # …and the network's name and password are strings: wifi.json was read
+    # while building, by a parser the board never sees.
+    my %w = run-in([$*EXECUTABLE.Str, '--target=arduino', 'wifi.raku'], {});
+    ok(%w<exit> == 0 && %w<out>.contains('#include <WiFiS3.h>') && %w<out>.contains('WiFi.begin("home", "correct-horse")')
+       && !%w<out>.contains('json'),
+       'wifi: the credentials were read while building and are string literals in the sketch');
 
     # What the board refuses, and how it says so.
     for (
@@ -124,6 +135,11 @@ sub MAIN(Bool :$record = False, Str :$arduino15) {
         'use Arduino; LEDMatrix.begin'                     => 'did you mean to `use Arduino::LEDMatrix`',
         'use Arduino::LEDMatrix; my uint32 @f[2]; LEDMatrix.show(@f)' => 'three 32-bit words',
         'use Arduino::LEDMatrix; LEDMatrix.blink'          => 'the matrix has begin, show(@frame) and clear',
+        'use Arduino; say WiFi.status'                     => 'did you mean to `use Arduino::WiFi`',
+        'use Arduino; say WL_CONNECTED'                    => 'did you mean to `use Arduino::WiFi`',
+        'use Arduino::WiFi; my int $n = 3; WiFi.begin($n, "x")' => 'a string the build knows',
+        'use Arduino::WiFi; my int $ip = WiFi.localIP'     => 'can print the address',
+        'use Arduino::WiFi; WiFi.scanNetworks'             => 'the board\'s WiFi has begin(SSID, PASS), status, localIP and disconnect',
     ) -> (:key($code), :value($why)) {
         my %r = run-in([$*EXECUTABLE.Str, '--target=arduino', '-e', $code], {});
         ok(%r<exit> == 5 && %r<err>.starts-with('rakupp --target=arduino: -e, line 1: ') && %r<err>.contains($why),
@@ -160,8 +176,8 @@ sub MAIN(Bool :$record = False, Str :$arduino15) {
             skip("the IDE's .ino step: no arduino-cli (\$ARDUINO_CLI, PATH, or the Arduino IDE's own)") without $cli;
             my $sys = $core.add('system');
             for $cases.dir.grep(*.extension eq 'raku').sort -> $case {
-                if $case.slurp.contains('use Arduino::LEDMatrix') {
-                    skip("{$case.basename}: the Due has no LED matrix (an Uno R4 WiFi sketch)");
+                if r4-only($case) {
+                    skip("{$case.basename}: the Due has no LED matrix and no WiFi (an Uno R4 WiFi sketch)");
                     next;
                 }
                 my $sketch = $tmp.add($case.basename ~ '.cpp');
@@ -194,6 +210,27 @@ sub MAIN(Bool :$record = False, Str :$arduino15) {
                 ok(%e<exit> == 0 && $p.exitcode == 0,
                    "{$case.basename}: the sketch compiles for the Due, warning-free{$cli ?? ", as the Arduino IDE builds it" !! ''}");
                 diag($err) if $p.exitcode != 0;
+            }
+        }
+        # The Uno R4 WiFi's sketches, built whole by arduino-cli with the
+        # board's own core, whose libraries the matrix and the network are.
+        my $r4 = $root.add('packages/arduino/hardware/renesas_uno');
+        if !$cli || !$r4.d { skip("the Uno R4 WiFi: no arduino-cli, or no renesas_uno core under $root") }
+        else {
+            for $cases.dir.grep(*.extension eq 'raku').sort.grep(&r4-only) -> $case {
+                my $name = 'r4_' ~ $case.extension('').basename;
+                my $dir  = $tmp.add($name);
+                $dir.mkdir;
+                my $ino  = $dir.add("$name.ino");
+                my %e = run-in([$*EXECUTABLE.Str, '-q', '--target=arduino', $case.basename, '-o', $ino.Str], {});
+                my $p = run $cli, 'compile', '--fqbn', 'arduino:renesas_uno:unor4wifi', '--warnings', 'all', $dir.Str,
+                    :out, :err, :env(%(%*ENV, ARDUINO_DIRECTORIES_DATA => $root.Str));
+                my $log = $p.out.slurp(:close) ~ $p.err.slurp(:close);
+                my $warned = $log.contains("$name.ino:");
+                ok(%e<exit> == 0 && $p.exitcode == 0 && !$warned,
+                   "{$case.basename}: the sketch builds for an Uno R4 WiFi with its core, no warning from the sketch");
+                diag($log) if $p.exitcode != 0 || $warned;
+                $ino.unlink; $dir.rmdir;
             }
         }
     }

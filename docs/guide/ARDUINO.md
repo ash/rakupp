@@ -6,19 +6,21 @@ firmware image the board runs on its own. The same program runs without a
 board, on a simulated one, under the interpreter or compiled for this computer.
 
 New to it? [examples/arduino](../../examples/arduino/README.md) walks from a
-blinking LED to the Uno R4 WiFi's LED matrix, with a program for each step.
+blinking LED to the Uno R4 WiFi's LED matrix and its network, with a program
+for each step.
 
 > **Phase A0 of [ARDUINO-PLAN.md](../dev/plans/ARDUINO-PLAN.md), with A1's
 > constants.** The sketch and both simulators are implemented and checked
 > against each other byte for byte (`t/arduino/run.raku`). Every sketch in that
 > gate compiles for an Arduino Due with its own core and compiler, warning-free
-> under `-Wall -Werror`, except the LED-matrix ones, which need the Uno R4
-> core; with arduino-cli installed, each first goes through the IDE's own
-> `.ino` step. All of them, the LED-matrix ones on the Uno R4 WiFi alone, also
-> build with arduino-cli 1.5.1 for an Uno (AVR core 1.8.8) and an Uno R4 WiFi
-> (Renesas core 1.6.0), tried by hand rather than by the gate. Not yet tried:
-> a program running on real hardware. Building and flashing the firmware is
-> still done with the Arduino IDE or arduino-cli.
+> under `-Wall -Werror`, except the LED-matrix and WiFi ones, which need the
+> Uno R4 core; with arduino-cli installed, each first goes through the IDE's
+> own `.ino` step, and the gate builds those three whole for an Uno R4 WiFi
+> (Renesas core 1.6.0), with no warning from the sketch. The others also build
+> with arduino-cli 1.5.1 for an Uno (AVR core 1.8.8) and an Uno R4 WiFi, tried
+> by hand rather than by the gate. Not yet tried: a program running on real
+> hardware. Building and flashing the firmware is still done with the Arduino
+> IDE or arduino-cli.
 
 ```raku
 use Arduino;
@@ -242,6 +244,76 @@ stderr, with `#` and `.`, and an all-dark one as `matrix clear`:
 Not yet: animations (`loadSequence`, `play`) and text. Both would be frames
 computed while building, from a font table in Raku.
 
+## The network (Uno R4 WiFi)
+
+The Uno R4 WiFi joins a WiFi network through the WiFiS3 library of its core.
+`use Arduino::WiFi`, built into rakupp as `use Arduino` is, names it:
+
+```raku
+use Arduino;
+use Arduino::WiFi;
+
+constant SSID = %*ENV<WIFI_SSID> // die "set WIFI_SSID to the network's name";
+constant PASS = %*ENV<WIFI_PASS> // die "set WIFI_PASS to its password";
+
+until WiFi.begin(SSID, PASS) == WL_CONNECTED {
+    say "not yet: status {WiFi.status}";
+    delay(5000);
+}
+say "joined, address {WiFi.localIP}";
+```
+
+```bash
+mkdir wifi && WIFI_SSID=home WIFI_PASS=secret rakupp --target=arduino wifi.raku -o wifi/wifi.ino
+```
+
+**The name and password are read while building.** They are constants, so
+the build computes them: from the environment here, or from a file you keep
+out of version control, as
+[t/arduino/cases/wifi.raku](../../t/arduino/cases/wifi.raku) reads
+`wifi.json` with `use JSON::Native`. The program's source holds neither. The
+sketch does: they are string literals in it, and in the firmware, as in any
+sketch that joins a network, so treat the `.ino` as you would the password.
+A `WiFi.begin` of anything but a string the build knows is refused, because
+the board has no strings at run time.
+
+| Raku | on the board |
+|---|---|
+| `WiFi.begin(SSID, PASS)`, `WiFi.begin(SSID)` | joins the network (one with no password, with one argument); answers `WL_CONNECTED` or `WL_CONNECT_FAILED` |
+| `WiFi.status` | `WL_IDLE_STATUS` before the first `begin`, then `WL_CONNECTED`, `WL_NO_SSID_AVAIL`, `WL_CONNECT_FAILED`, `WL_CONNECTION_LOST`, `WL_DISCONNECTED`; `WL_NO_MODULE` |
+| `say WiFi.localIP` | the address, `0.0.0.0` when not joined: printed, or interpolated into what is printed, not kept |
+| `WiFi.disconnect` | leaves the network |
+
+The sketch includes `WiFiS3.h`, which comes with the Uno R4 core, so it
+builds for an Uno R4 WiFi and not for a board without it.
+
+**The simulated network.** `RAKUPP_ARDUINO_WIFI="name:password"` is the one
+network in range, `name` alone an open one, and an empty value none; unset,
+any name and password join. Joining takes no time, and a failed `begin` waits
+out the library's 10-second timeout, as on a board. The address is 192.168.1.42. The board's stderr has a line for each
+attempt and each disconnect, never with the password. Here is
+[examples/arduino/wifi.raku](../../examples/arduino/wifi.raku), the program
+above with the LED showing the connection, given the wrong password:
+
+```
+$ RAKUPP_ARDUINO_STOP=31000 RAKUPP_ARDUINO_WIFI=home:secret WIFI_SSID=home WIFI_PASS=guess rakupp wifi.raku
+[0 ms] pin 13 mode OUTPUT
+joining home
+[10000 ms] wifi "home": wrong password
+not yet: status 4
+[25000 ms] wifi "home": wrong password
+not yet: status 4
+[31000 ms] stop
+```
+
+After a failed `begin`, the simulated status says why: `WL_NO_SSID_AVAIL` for
+a network out of range, `WL_CONNECT_FAILED` for a wrong password. On a board
+it is what the WiFi module reports, which has not been tried on hardware.
+
+Not yet: clients, servers and UDP, the signal strength, scanning, and an
+access point. Each needs strings or byte buffers at run time, or an object the
+board's code keeps, which the subset does not have yet.
+
 ## The subset
 
 | Raku | on the board |
@@ -302,7 +374,7 @@ interpreter to bundle.
 ## Not yet
 
 Printing a num, strings at run time, hashes, `repr('CStruct')` classes,
-interrupts, `Serial` input, C++ libraries beyond the LED matrix (Servo,
-Wire), the board's facts as constants (`--board`), and `rakupp` building and
-flashing the firmware itself.
+interrupts, `Serial` input, C++ libraries beyond the LED matrix and joining a
+network (Servo, Wire, WiFi's clients and servers), the board's facts as
+constants (`--board`), and `rakupp` building and flashing the firmware itself.
 The plan has them in order: [ARDUINO-PLAN.md](../dev/plans/ARDUINO-PLAN.md).

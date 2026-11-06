@@ -585,10 +585,10 @@ The same items grouped by theme, with a complexity estimate for each:
   building, shaped native arrays, and `--sim` — a sketch and its source agree
   byte for byte on the gate's eight programs, and each but the LED-matrix one
   compiles for a Due. `use Arduino::LEDMatrix` (2026-11-03) drives the Uno R4
-  WiFi's matrix; its sketch is not yet compiled against the R4 core. Next:
-  that compile (the gate's `--arduino15` once the core is installed), printing
-  a num the way Raku does, then `if` on a constant emitting one branch, and an
-  AVR compile (the plan's A1–A2 remainder).
+  WiFi's matrix and `use Arduino::WiFi` (2026-11-06) joins its network; the
+  gate's `--arduino15` builds those sketches for the R4 with its own core.
+  Next: printing a num the way Raku does, then `if` on a constant emitting one
+  branch, and an AVR compile (the plan's A1–A2 remainder).
 - [ ] **`--exe -O` and `--cnp` answer regressions wrongly** (the t/exe and
   `t/jit/run.raku --cnp` gates, 2026-10-15, the same on 5549bf83):
   - `-O`: t/regression/nfc-join-window.raku's "e + acute" join counts 2

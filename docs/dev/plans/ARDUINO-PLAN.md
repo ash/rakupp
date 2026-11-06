@@ -39,6 +39,20 @@ compile-time error now stops an Arduino build at once
 (`CtTable::failed`), where it used to fall through to a refusal of the
 constant it left behind.
 
+**The Uno R4 WiFi's network (2026-11-06).** `use Arduino::WiFi`, a third
+shadow module (rakulib/Arduino/WiFi.rakumod), names the core's WiFiS3
+library: `WiFi.begin`, `.status`, `.localIP` and `.disconnect` on its global
+`WiFi`, and the `WL_*` statuses. The name and password must be strings the
+build knows, constants read from the environment or a file while building;
+`WiFi.localIP` can only be printed (a `Printable` in the core), since nothing
+else on the board could hold it. Both simulators simulate one network,
+`RAKUPP_ARDUINO_WIFI="name:password"` (unset: any joins), with a failed
+`begin` taking the library's 10 s timeout. The gate's `--arduino15` now also
+builds the three Uno R4 WiFi sketches (two of the matrix, one of the
+network) whole, with arduino-cli and the Renesas core 1.6.0, and finds no
+warning from the sketch: 56 checks. Clients, servers and UDP wait for strings
+or byte buffers at run time and for library objects the program declares.
+
 | phase | state |
 |---|---|
 | A0 | done |
@@ -46,7 +60,7 @@ constant it left behind.
 | A2 | sized natives in parameters, results, locals, globals and `state`; `die` → message and halt; not yet: the `int` and `num` policy per board, printing a num |
 | A3 | shaped native arrays, global and local; not yet: `repr('CStruct')` classes, enums |
 | A4 | `--sim` (a host build, not in the draft); not yet: `--firmware`, `--upload`, the size report |
-| A5 | the first C++ library object, the Uno R4 WiFi's LED matrix (frames, not yet animations); not yet: interrupts, a general way to declare a library class |
+| A5 | the first C++ library objects, the Uno R4 WiFi's LED matrix (frames, not yet animations) and its network (joining, status, the address); not yet: interrupts, a general way to declare a library class |
 
 Where the implementation departs from the draft below, and why:
 

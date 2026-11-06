@@ -7032,7 +7032,8 @@ std::string Interpreter::resolveAttrTypeAlias(const std::string& t, const std::s
 // The names rakulib/ shadows on purpose — see the resolver's search order.
 bool Interpreter::isShadowedModule(const std::string& name) {
     return name == "NativeHelpers::Blob" || name == "NativeHelpers::CStruct" ||
-           name == "NativeHelpers::Pointer" || name == "Arduino" || name == "Arduino::LEDMatrix";
+           name == "NativeHelpers::Pointer" || name == "Arduino" || name == "Arduino::LEDMatrix" ||
+           name == "Arduino::WiFi";
 }
 
 // The library an `is native(EXPR)` names. A Str is taken as written; the

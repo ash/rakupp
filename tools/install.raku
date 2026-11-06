@@ -1717,11 +1717,11 @@ sub run-suite($root, Str $prefix, @tests, %env) {
 # compiled into the binary this installer runs in (cmake/EmbedTools.cmake), so
 # the answer no longer depends on a rakulib/ beside it — an installed rakupp
 # has none, and used to fetch the MoarVM-only original and fail its suite.
-# Keep in step with Interpreter::isShadowedModule. `Arduino` and
-# `Arduino::LEDMatrix` are the engine's simulated board (ARDUINO-PLAN.md); the
-# ecosystem dists of those names are stubs that tell every other Raku the
-# program needs Raku++.
-constant SHADOWED = set <NativeHelpers::Blob NativeHelpers::CStruct NativeHelpers::Pointer Arduino Arduino::LEDMatrix>;
+# Keep in step with Interpreter::isShadowedModule. `Arduino`,
+# `Arduino::LEDMatrix` and `Arduino::WiFi` are the engine's simulated board
+# (ARDUINO-PLAN.md); the ecosystem dists of those names are stubs that tell
+# every other Raku the program needs Raku++.
+constant SHADOWED = set <NativeHelpers::Blob NativeHelpers::CStruct NativeHelpers::Pointer Arduino Arduino::LEDMatrix Arduino::WiFi>;
 sub shadowed-by-rakulib(%e --> Bool) {
     # The DIST's own name is the question: NativeHelpers::Blob also provides
     # `MoarVM::Guts::REPRs`, which reads MoarVM's object headers and exists for

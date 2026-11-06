@@ -41,6 +41,7 @@ typedef uint8_t byte;
 typedef bool boolean;
 class __FlashStringHelper;
 #define F(s) (reinterpret_cast<const __FlashStringHelper*>(s))
+struct IPAddress { uint8_t b[4]; };   // WiFi.localIP(): the core's is Printable
 
 namespace rk_sim {
 struct Port {
@@ -49,6 +50,7 @@ struct Port {
     void print(const char* s) { fputs(s, f); }
     void print(const __FlashStringHelper* s) { fputs(reinterpret_cast<const char*>(s), f); }
     void print(char c) { fputc(c, f); }
+    void print(const IPAddress& a) { fprintf(f, "%d.%d.%d.%d", a.b[0], a.b[1], a.b[2], a.b[3]); }
     void flush() { fflush(f); }
 };
 static Port err = {stderr};
@@ -166,6 +168,64 @@ public:
 private:
     uint32_t shown[3] = {0, 0, 0};
 };
+
+// The Uno R4 WiFi's network, as WiFiS3.h declares it (the --sim build writes
+// that header as an include of this one), on the air rakulib/Arduino/
+// WiFi.rakumod simulates: RAKUPP_ARDUINO_WIFI="name:password" is the one
+// network in range (empty: none); unset, any name and password join. Joining
+// is instant; a failed begin waits out the library's 10 s timeout. Each
+// attempt, and a disconnect, is a line on stderr — never the password.
+#define WL_NO_MODULE 255
+#define WL_IDLE_STATUS 0
+#define WL_NO_SSID_AVAIL 1
+#define WL_CONNECTED 3
+#define WL_CONNECT_FAILED 4
+#define WL_CONNECTION_LOST 5
+#define WL_DISCONNECTED 6
+class CWifi {
+public:
+    int begin(const char* ssid, const char* pass = "") {
+        rk_sim::advance(1);
+        int why = WL_CONNECTED;
+        if (const char* air = getenv("RAKUPP_ARDUINO_WIFI")) {
+            const char* colon = strchr(air, ':');
+            size_t n = colon ? (size_t)(colon - air) : strlen(air);
+            if (!*air || strlen(ssid) != n || strncmp(ssid, air, n) != 0) why = WL_NO_SSID_AVAIL;
+            else if (strcmp(pass, colon ? colon + 1 : "") != 0) why = WL_CONNECT_FAILED;
+        }
+        if (why == WL_CONNECTED) {
+            st = WL_CONNECTED;
+            joined = ssid;
+            rk_sim::stamp();
+            fprintf(stderr, "wifi \"%s\" connected, ip %d.%d.%d.%d\n", ssid, ip.b[0], ip.b[1], ip.b[2], ip.b[3]);
+            return WL_CONNECTED;
+        }
+        delay(10000);
+        st = why;
+        rk_sim::stamp();
+        fprintf(stderr, "wifi \"%s\": %s\n", ssid, why == WL_NO_SSID_AVAIL ? "no such network" : "wrong password");
+        return WL_CONNECT_FAILED;
+    }
+    uint8_t status() { rk_sim::advance(1); return (uint8_t)st; }
+    IPAddress localIP() {
+        rk_sim::advance(1);
+        IPAddress none = {{0, 0, 0, 0}};
+        return st == WL_CONNECTED ? ip : none;
+    }
+    int disconnect() {
+        rk_sim::advance(1);
+        if (st != WL_CONNECTED) return 1;
+        rk_sim::stamp();
+        fprintf(stderr, "wifi \"%s\" disconnected\n", joined);
+        st = WL_DISCONNECTED;
+        return 1;
+    }
+private:
+    int st = WL_IDLE_STATUS;
+    const char* joined = "";   // a string literal of the sketch: begin takes no other
+    IPAddress ip = {{192, 168, 1, 42}};   // the simulated network's address for the board
+};
+static CWifi WiFi;
 
 void setup();
 void loop();
