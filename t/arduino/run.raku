@@ -113,11 +113,13 @@ sub MAIN(Bool :$record = False, Str :$arduino15) {
        && %f<out>.contains("void setup()") && %f<out>.contains("void loop()") && !%f<out>.contains('map'),
        'fade: the table was computed while building and is a const byte table in the sketch');
     # …and the network's name and password are strings: wifi.json was read
-    # while building, by a parser the board never sees.
+    # while building, by a parser the board never sees. On a board, `begin`
+    # answers once the router has given the address (rk_wifi_joined).
     my %w = run-in([$*EXECUTABLE.Str, '--target=arduino', 'wifi.raku'], {});
-    ok(%w<exit> == 0 && %w<out>.contains('#include <WiFiS3.h>') && %w<out>.contains('WiFi.begin("home", "correct-horse")')
-       && !%w<out>.contains('json'),
-       'wifi: the credentials were read while building and are string literals in the sketch');
+    ok(%w<exit> == 0 && %w<out>.contains('#include <WiFiS3.h>')
+       && %w<out>.contains('rk_wifi_joined(WiFi.begin("home", "correct-horse"))')
+       && %w<out>.contains('(uint32_t)WiFi.localIP() != 0') && !%w<out>.contains('json'),
+       'wifi: the credentials were read while building, are string literals in the sketch, and its begin waits for the address');
 
     # What the board refuses, and how it says so.
     for (

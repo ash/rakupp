@@ -309,6 +309,23 @@ RK_FN float rk_postdec(float& x) { float o = x; x -= 1; return o; }
     return rk_flash(&a[i]);
 }
 )RK"},
+// WiFi.begin's answer, held until the board has an address: WiFiS3 answers
+// WL_CONNECTED once it has joined, and the router's address comes after, so
+// a localIP() straight after it is 0.0.0.0 (an Uno R4 WiFi printed that).
+// It asks every 100 ms for the library's 10 s; with no address it leaves, so
+// status() agrees. The simulated network brings the address as it joins.
+{"rk_wifi_joined", false, R"RK(#ifdef RAKUPP_ARDUINO_SIM
+#define rk_wifi_joined(s) (s)
+#else
+RK_FN int rk_wifi_joined(int s) {
+    if (s != WL_CONNECTED) return s;
+    for (unsigned long t = millis(); millis() - t < 10000UL; delay(100))
+        if ((uint32_t)WiFi.localIP() != 0) return WL_CONNECTED;
+    WiFi.disconnect();
+    return WL_CONNECT_FAILED;
+}
+#endif
+)RK"},
 };
 
 // The runtime for a sketch whose code is `code`: the pieces it names, and
@@ -1187,7 +1204,8 @@ private:
 
     // The Uno R4 WiFi's network (`use Arduino::WiFi`): the global `WiFi` of
     // the core's WiFiS3 library. The network's name and password are strings
-    // the build knows — literals or constants — as the board has no others;
+    // the build knows — literals or constants — as the board has no others,
+    // and `begin` answers once the board has an address (rk_wifi_joined);
     // the address it answers can be printed (`printed`), not kept.
     Ex wifiCall(MethodCall* m, const std::vector<Expr*>& args, bool printed) {
         if (!useWiFi_) refuse(m, "WiFi is not declared — did you mean to `use Arduino::WiFi`?");
@@ -1202,7 +1220,7 @@ private:
                               "password are constants, as in `constant SSID = %*ENV<WIFI_SSID>`");
                 a += (a.empty() ? "" : ", ") + e.c;
             }
-            return {"((int64_t)WiFi.begin(" + a + "))", K::Int};
+            return {"((int64_t)rk_wifi_joined(WiFi.begin(" + a + ")))", K::Int};
         }
         if ((n == "status" || n == "disconnect") && args.empty()) return {"((int64_t)WiFi." + n + "())", K::Int};
         if (n == "localIP" && args.empty()) {

@@ -173,7 +173,8 @@ private:
 // that header as an include of this one), on the air rakulib/Arduino/
 // WiFi.rakumod simulates: RAKUPP_ARDUINO_WIFI="name:password" is the one
 // network in range (empty: none); unset, any name and password join. Joining
-// is instant; a failed begin waits out the library's 10 s timeout. Each
+// is instant and brings the address, so the sketch's rk_wifi_joined has none
+// to wait for; a failed begin waits out the library's 10 s timeout. Each
 // attempt, and a disconnect, is a line on stderr — never the password.
 #define WL_NO_MODULE 255
 #define WL_IDLE_STATUS 0

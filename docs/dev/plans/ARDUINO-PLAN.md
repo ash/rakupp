@@ -52,6 +52,13 @@ builds the three Uno R4 WiFi sketches (two of the matrix, one of the
 network) whole, with arduino-cli and the Renesas core 1.6.0, and finds no
 warning from the sketch: 56 checks. Clients, servers and UDP wait for strings
 or byte buffers at run time and for library objects the program declares.
+The first run on a board, the same day, printed `0.0.0.0` for `WiFi.localIP`
+straight after a `begin` that answered `WL_CONNECTED`: the library answers
+once the board has joined, before the router has given it an address. The
+sketch's `begin` now waits for one (`rk_wifi_joined`: every 100 ms, up to the
+library's 10 s, else it leaves and answers `WL_CONNECT_FAILED`); the
+simulated network brings the address as it joins, so `--sim` passes the
+library's answer through.
 
 | phase | state |
 |---|---|
