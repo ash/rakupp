@@ -124,7 +124,9 @@ bool Interpreter::isaMemo(const Value& inv, const std::string& m, const ValueLis
         return false;
     const unsigned t = typeMatchCode(args[0].s);
     return t && typeMemoRead(*this, isaMemo_[t][k], args[0], out, [&] {
-        return methodCallInner(inv, m, ValueList(args), rwArgs, false);
+        Value r = methodCallInner(inv, m, ValueList(args), rwArgs, false);
+        if (RAKUPP_UNLIKELY(isNoMethod(r))) throwNoMethod(std::move(r));
+        return r;
     });
 }
 

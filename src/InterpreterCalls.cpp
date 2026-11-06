@@ -2256,14 +2256,17 @@ Value Interpreter::coerceToType(const Value& v, const std::string& type) {
     if (type == "Hash" && v.t == VT::Hash && !v.hashKind.empty() && v.hashKind != "Hash")
         return methodCall(v, "Hash", ValueList{});
     if (type == "Mu" || type == "Any" || typeOrSubsetMatches(v, type)) return v;
-    try { return methodCall(v, type, ValueList{}); }
+    try {
+        // a missing coercer comes back unthrown (noMethodBack): another route
+        Value r = methodCall(v, type, ValueList{}, nullptr, false, true);
+        if (!isNoMethod(r)) return r;
+    }
     catch (RakuError& e) {
         // only a MISSING coercer means "try another route"; a coercer that ran
         // and refused (`"a".Date` — X::Temporal::InvalidFormat, `"a".Int` —
         // X::Str::Numeric) is the answer
         const Value& p = e.payload;
-        bool notFound = (p.t == VT::Type && p.s == "X::Method::NotFound") ||
-                        (p.t == VT::Object && p.obj() && p.obj()->cls && p.obj()->cls->name == "X::Method::NotFound");
+        bool notFound = noMethodPayload(p);
         // (an `Int()` given a type object says so in Rakudo's own words)
         if (type == "Int" && v.t == VT::Type && p.t == VT::Object && p.obj() && p.obj()->cls &&
             p.obj()->cls->name == "X::Parameter::InvalidConcreteness")

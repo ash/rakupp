@@ -2738,8 +2738,11 @@ public:
     const Regex* dynRegexFor(const Value& v, const std::string& flags);
     // skipOwn: `self.Mu::meth` — bypass the invocant's own methods for THIS
     // dispatch only, so a built-in qualifier reaches the built-in behaviour.
+    // noMethodBack: a name nothing takes comes back as the tagged
+    // X::Method::NotFound instead of being thrown (isNoMethod) — for the
+    // callers that answer a miss (`.?`, `.*`, a coercion's other routes)
     Value methodCall(const Value& inv, const std::string& method, ValueList args, const std::vector<ExprPtr>* rwArgs = nullptr,
-                     bool skipOwn = false);
+                     bool skipOwn = false, bool noMethodBack = false);
     Value interpolate(ValueList& vals);   // evalInterp over evaluated parts (and a --cnp kernel's)
     bool chainLink(const std::string& op, const Value& prev, const Value& next);   // one link of `a < b < c`
     bool chainLinkUser(const std::string& op, const Value& l, const Value& r, Value& out);   // …the program's operator's
@@ -2767,6 +2770,23 @@ public:
     // plain class), so no built-in arm answers it first.
     Value methodCallUnresolved(const Value& inv, const struct MName& m, ValueList& args,
                                const std::vector<ExprPtr>* rwArgs);
+    // …whose X::Method::NotFound is not thrown there but RETURNED, tagged
+    // kNoMethodTag, and thrown by methodCall once methodCallInner and the
+    // segments have returned (throwNoMethod). The unwinder scans each frame's
+    // call-site table up to its call, in both of its passes: methodCallInner's
+    // is 21 KB, and with the throw inside it one not-found method retired 1.6M
+    // instructions. Every caller of methodCallInner checks.
+    static constexpr char kNoMethodTag[] = "\x01no-method";
+    static bool isNoMethod(const Value& r) { return r.t == VT::Object && r.hashKind == kNoMethodTag; }
+    [[noreturn]] void throwNoMethod(Value ex);
+    // an error's payload is an X::Method::NotFound, the type or an instance
+    static bool noMethodPayload(const Value& p) {
+        return (p.t == VT::Type && p.s == "X::Method::NotFound") ||
+               (p.t == VT::Object && p.obj() && p.obj()->cls && p.obj()->cls->name == "X::Method::NotFound");
+    }
+    // …and one `inv.?method` answers Nil for: it names that method and the
+    // invocant's type or an ancestor's (Builtins.cpp)
+    bool maybeOwnMiss(const Value& p, const Value& inv, const std::string& method);
     // `has $.b handles *`, which the tail and that direct route both consult
     std::optional<Value> catchAllDelegation(const Value& inv, const struct MName& m, ValueList& args,
                                             const std::vector<ExprPtr>* rwArgs);

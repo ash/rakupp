@@ -6306,7 +6306,7 @@ static bool junctionInvocantThreads(const Value& inv, const std::string& m) {
 }
 
 Value Interpreter::methodCall(const Value& inv, const std::string& m, ValueList args, const std::vector<ExprPtr>* rwArgs,
-                              bool skipOwn) {
+                              bool skipOwn, bool noMethodBack) {
     // A PLAIN class's default constructor (plainNewClass): straight to the
     // build, past the general path's special cases, which it cannot meet. The
     // build's own Failure (BuildFailureEx) is caught here as the general path
@@ -6748,6 +6748,10 @@ Value Interpreter::methodCall(const Value& inv, const std::string& m, ValueList 
         (opEq(m, "map") || opEq(m, "grep") || opEq(m, "sort") || opEq(m, "list") || opEq(m, "unique")))
         return emptySlipSingleton();
     Value r = methodCallInner(inv, m, std::move(args), rwArgs, skipOwn);
+    if (RAKUPP_UNLIKELY(isNoMethod(r))) {
+        if (noMethodBack) return r;
+        throwNoMethod(std::move(r));
+    }
     if (r.t == VT::Array && r.isList && r.s.empty() && !sortK &&
         (opEq(m, "kv") || opEq(m, "keys") || opEq(m, "values") || opEq(m, "pairs") ||
          opEq(m, "antipairs") || opEq(m, "invert") ||
@@ -10499,12 +10503,22 @@ Value Interpreter::methodCallUnresolved(const Value& inv, const MName& m, ValueL
     // too. Only the key is prefixed — a Raku method name cannot begin with `!`.
     const bool priv = m.size() > 1 && m[0] == '!';
     const std::string name = priv ? m.substr(1) : (const std::string&)m;
-    throwTypedV("X::Method::NotFound",
-                {{"method",   Value::str(name)},
-                 {"typename", Value::str(inv.typeName())},
-                 {"private",  Value::boolean(priv)}},
-                std::string("No such ") + (priv ? "private " : "") + "method '" +
-                    (const std::string&)m + "' for invocant of type '" + inv.typeName() + "'");
+    // returned, for methodCall to throw (kNoMethodTag, Interpreter.h)
+    static const IStr kTag(kNoMethodTag);
+    Value ex = makeTypedEx("X::Method::NotFound",
+                           {{"method",   Value::str(name)},
+                            {"typename", Value::str(inv.typeName())},
+                            {"private",  Value::boolean(priv)}},
+                           std::string("No such ") + (priv ? "private " : "") + "method '" +
+                               (const std::string&)m + "' for invocant of type '" + inv.typeName() + "'");
+    ex.hashKind = kTag;
+    return ex;
+}
+
+void Interpreter::throwNoMethod(Value ex) {
+    ex.hashKind = IStr();
+    std::string msg = ex.obj()->attrs.at("message").toStr();
+    throw RakuError{std::move(ex), std::move(msg)};
 }
 
 // plainNewClass's walk over the ancestry: false for an ancestor that rules the

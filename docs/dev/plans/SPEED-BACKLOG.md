@@ -32,6 +32,7 @@ theme the rows are sorted by complexity, largest first.
 | 1 | Interpreter at native speed (17 of 35 tasks open) | XL | Quicken `evalAssign`/`evalIndex`/`evalUnary`, then task 10 — [INTERP-SPEED-PLAN.md](INTERP-SPEED-PLAN.md) |
 | 5 | Pass the thread context down instead of reading `tctx_` (20% of a walking `loopsum`) | XL | runLoopBody, execPlainBlock, exec, evalAssign — INTERP-SPEED-PLAN task 4 |
 | 6 | A dispatch table and type-keyed inline caches for built-in methods | XL | Design first: hashing the method chain alone measured slower — V6 P2, [DISPATCH-PERF-PLAN.md](DISPATCH-PERF-PLAN.md) |
+| 55 | A thrown exception pays for every large frame it crosses: libc++abi's personality routine scans a frame's call-site table linearly up to its call, in both unwind passes. `try { die "x" }` retires 358K instructions, `.throw` of an exception object 4.0M; Rakudo takes a few µs for either. methodCallInner's table is 21 KB, evalMethodCallExpr's 4 KB | M–L | Throw where the frames are small: a method nothing takes already returns to methodCall first (2026-11-06, below). `.throw` and a `die` in a routine are next, or make the frames a found method runs under smaller. The frame table and the method are in the not-found commit |
 | 16 | Graph #47: a lean `invokeMethod` path, then one for closures | M | A method or closure call is ~0.2 µs against Rakudo's ~0.08 — TODO.md |
 | 19 | Operator names as integers (the Int fast path for `div mod %% ** gcd lcm min max` is done, 2026-10-21) | M | V6 P2 |
 | 20 | The call-path cost shipped in v5.3.0 (`privmeth` +9.5%, `method` +8.6%) | M | `setupRwLinks` on calls with no rw parameter, SlotStripe single-threaded; A/B against v5.2.1 — TODO.md |
@@ -107,6 +108,17 @@ theme the rows are sorted by complexity, largest first.
 ---
 
 ## Closed since the first list (2026-10-14)
+
+- **A method nothing takes, thrown from inside the dispatch chain**
+  (2026-11-06; not a row before, found measuring OBJECT-SLOTS-PLAN batch 2).
+  methodCallUnresolved returns its X::Method::NotFound, and methodCall
+  throws it after methodCallInner has returned, so the unwind skips that
+  frame's 21 KB call-site table. `.?`, `».?`, `.*`, a coercion's other
+  routes and `$.name` take the miss back without a throw (`noMethodBack`).
+  Retired instructions a call: `try { Int.no-such-method }` 1,583K → 602K,
+  `Int.?nope` 1,244K → 20K, `».?nope` an element 1,165K → 16K, `.*nope`
+  1,170K → 18K, a `Foo()` parameter given an Int, reaching COERCE, 1,186K
+  → 38K. perf-guard's method kernels +0.08–0.17%. What is left is row 55.
 
 - **49, an empty `my int @a` grown by `push` or by index** (2026-11-05):
   the declaration makes an empty packed body, and the store lane grows the

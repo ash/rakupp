@@ -18,6 +18,13 @@ sitting, plus whatever tail is cheapest, so that no front falls behind.
 The same items grouped by theme, with a complexity estimate for each:
 [SPEED-BACKLOG.md](SPEED-BACKLOG.md).
 
+- [ ] **What a thrown exception costs** (2026-11-06, SPEED-BACKLOG row 55):
+  libc++abi scans each frame's call-site table up to its call, in both unwind
+  passes, so a throw costs more the larger the frames it crosses. A method
+  nothing takes now returns to methodCall before it is thrown, and `.?`,
+  `».?`, `.*` and a coercion get the miss back unthrown: 1.6M → 0.6M and
+  1.2M → 20K instructions. Left: `.throw` (4.0M) and a `die` in a routine
+  (358K), through methodCallInner (a 21 KB table) and evalMethodCallExpr.
 - [ ] **Parallel `.hyper` / `.race` and hyper kernels** (2026-10-09): `.map` /
   `.grep` on a HyperSeq run on the `hyper for` scheduler (runParallel), and
   `»op«` / `».method` over plain Ints and Nums run natively, split over cores

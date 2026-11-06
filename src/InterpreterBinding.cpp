@@ -2641,16 +2641,36 @@ Value Interpreter::callAllCandidates(const Value& inv, const std::string& mname,
         }
         if (any) return l;
     }
-    try { l.arr()->push_back(methodCall(inv, mname, std::move(args), rwArgs)); }
+    // (`.*`'s own miss comes back unthrown, noMethodBack; a deeper one is caught)
+    try {
+        Value r = methodCall(inv, mname, std::move(args), rwArgs, false, mode == '*');
+        if (isNoMethod(r)) return l;
+        l.arr()->push_back(std::move(r));
+    }
     catch (RakuError& err) {
-        const Value& p = err.payload;
-        bool notFound = (p.t == VT::Type && p.s == "X::Method::NotFound") ||
-                        (p.t == VT::Object && p.obj() && p.obj()->cls &&
-                         p.obj()->cls->name == "X::Method::NotFound");
-        if (mode == '*' && notFound) return l;
+        if (mode == '*' && noMethodPayload(err.payload)) return l;
         throw;
     }
     return l;
+}
+
+bool Interpreter::maybeOwnMiss(const Value& p, const Value& inv, const std::string& method) {
+    if (!noMethodPayload(p)) return false;
+    std::string mname, tname;
+    if (p.t == VT::Object && p.obj()) {
+        auto mit = p.obj()->attrs.find("method");
+        auto tit = p.obj()->attrs.find("typename");
+        if (mit != p.obj()->attrs.end()) mname = mit->second.toStr();
+        if (tit != p.obj()->attrs.end()) tname = tit->second.toStr();
+    }
+    // …and the type it names may be an ANCESTOR of the invocant's: a class
+    // built on a Hash (or an Array) falls through to that builtin's dispatch,
+    // which reports the container type it was looking in. `class B is Hash`,
+    // `$b.?nope` — the payload said Hash where the invocant says B, so the
+    // miss was rethrown instead of answering Nil. PDF::COS::Dict's TWEAK
+    // opens with `self.?cb-init`.
+    return (mname.empty() || mname == method) &&
+           (tname.empty() || tname == inv.typeName() || typeMatchesArg(inv, tname));
 }
 
 Value Interpreter::hyperMethodEach(const Value& inv, const std::string& m, ValueList& args, bool maybe) {
@@ -2679,14 +2699,11 @@ Value Interpreter::hyperMethodEach(const Value& inv, const std::string& m, Value
         }
         if (!maybe) return methodCall(el, m, args);
         // `».?name`: an element without the method answers Nil, not a death
-        try { return methodCall(el, m, args); }
+        // (its own miss comes back unthrown, noMethodBack; a deeper one is caught)
+        try { Value r = methodCall(el, m, args, nullptr, false, true); return isNoMethod(r) ? Value::nil() : r; }
         catch (RakuError& err) {
-            const Value& p = err.payload;
-            bool notFound = (p.t == VT::Type && p.s == "X::Method::NotFound") ||
-                            (p.t == VT::Object && p.obj() && p.obj()->cls &&
-                             p.obj()->cls->name == "X::Method::NotFound");
-            if (!notFound) throw;
-            return Value::any();
+            if (!noMethodPayload(err.payload)) throw;
+            return Value::nil();
         }
     };
     // (…and a Map hypers to a Map: `(:42a, :666b).Map».Str` — S03-metaops/hyper.t)
@@ -2694,7 +2711,11 @@ Value Interpreter::hyperMethodEach(const Value& inv, const std::string& m, Value
         Value hout = Value::makeHash();
         hout.hashKind = inv.hashKind;
         hout.ofTypeM() = inv.ofType(); hout.objKeyed = inv.objKeyed;
-        for (auto& kv : *inv.hash()) (*hout.hash())[kv.first] = each(kv.second);
+        // (a Nil is stored as the element default, Any, as an Array stores it below)
+        for (auto& kv : *inv.hash()) {
+            Value r = each(kv.second);
+            (*hout.hash())[kv.first] = r.t == VT::Nil ? Value::any() : std::move(r);
+        }
         return hout;
     }
     Value out = Value::array();
@@ -2736,6 +2757,10 @@ Value Interpreter::hyperMethodEach(const Value& inv, const std::string& m, Value
     // for the DEEP methods. A nodal one answers a List either way (Rakudo maps
     // the nodes with nodemap, whose result is a Seq): `@a».elems` is `(1, 1)`.
     out.isList = nodal || !(inv.t == VT::Array && !inv.isList);
+    // …and an Array stores a Nil as its element default: `[R.new]».n` with
+    // `method n { Nil }` is `[Any]`, where the List `(R.new,)».n` is `(Nil,)`
+    if (!out.isList)
+        for (auto& x : *out.arr()) if (x.t == VT::Nil) x = Value::any();
     return out;
 }
 

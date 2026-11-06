@@ -31166,14 +31166,11 @@ Value Interpreter::evalVarExpr(Expr* e) {
         // as self, and got the sigil's default instead. A name the type
         // has no method for falls through as before.
         if (selfp && ve->name[1] == '.' && rtIsDefined(*selfp)) {
-            try { ValueList none; return methodCall(*selfp, ve->attrBare, none); }
-            catch (RakuError& nfe) {
-                const Value& np = nfe.payload;
-                bool nf = (np.t == VT::Type && np.s == "X::Method::NotFound") ||
-                          (np.t == VT::Object && np.obj() && np.obj()->cls &&
-                           np.obj()->cls->name == "X::Method::NotFound");
-                if (!nf) throw;
+            try {   // (its miss comes back unthrown: noMethodBack)
+                ValueList none; Value r = methodCall(*selfp, ve->attrBare, none, nullptr, false, true);
+                if (!isNoMethod(r)) return r;
             }
+            catch (RakuError& nfe) { if (!noMethodPayload(nfe.payload)) throw; }
         }
         // `$!x` in a method of a class the invocant is NOT an instance of —
         // `our method foo(A:) { $!x }` declared in B, called with a plain A —
@@ -32915,12 +32912,11 @@ Value Interpreter::evalMethodCallExpr(Expr* e, Value* handedInv) {
             if (hyper) return I.hyperMethodEach(base, method, ma, maybe);
             Value r;
             if (!maybe) r = I.methodCall(base, method, ma);
-            else try { r = I.methodCall(base, method, ma); }
+            else try {   // (its own miss comes back unthrown: noMethodBack)
+                if (I.isNoMethod(r = I.methodCall(base, method, ma, nullptr, false, true))) return Value::nil();
+            }
             catch (RakuError& err) {
-                const Value& p = err.payload;
-                if (!((p.t == VT::Type && p.s == "X::Method::NotFound") ||
-                      (p.t == VT::Object && p.obj() && p.obj()->cls &&
-                       p.obj()->cls->name == "X::Method::NotFound"))) throw;
+                if (!I.noMethodPayload(err.payload)) throw;
                 return Value::nil();
             }
             if (fatal && r.t == VT::Hash && r.hashKind == "Failure") failureDetonate(r);
@@ -33024,37 +33020,19 @@ Value Interpreter::evalMethodCallExpr(Expr* e, Value* handedInv) {
         try {
             // `args` is dead after this call — the catch below reads only
             // the exception and the invocant — so it moves rather than
-            // copying the vector and every Value in it.
-            Value res = methodCall(inv, mname, std::move(args), &mc->args);
+            // copying the vector and every Value in it. Its own miss comes
+            // back unthrown (noMethodBack); a miss deeper in is caught.
+            Value res = methodCall(inv, mname, std::move(args), &mc->args, false, true);
+            if (RAKUPP_UNLIKELY(isNoMethod(res))) {
+                if (maybeOwnMiss(res, inv, mc->method)) return Value::nil();
+                throwNoMethod(std::move(res));
+            }
             seqMint(res, inv);
             if (mc->mutate) return assignChecked(mc->inv.get(), res); // `.=` is its STORED value
             return res;
         }
         catch (RakuError& err) {
-            const Value& p = err.payload;
-            bool notFound = (p.t == VT::Type && p.s == "X::Method::NotFound") ||
-                            (p.t == VT::Object && p.obj() && p.obj()->cls &&
-                             p.obj()->cls->name == "X::Method::NotFound");
-            if (notFound) {
-                std::string mname, tname;
-                if (p.t == VT::Object && p.obj()) {
-                    auto mit = p.obj()->attrs.find("method");
-                    auto tit = p.obj()->attrs.find("typename");
-                    if (mit != p.obj()->attrs.end()) mname = mit->second.toStr();
-                    if (tit != p.obj()->attrs.end()) tname = tit->second.toStr();
-                }
-                // …and the type it names may be an ANCESTOR of the
-                // invocant's: a class built on a Hash (or an Array) falls
-                // through to that builtin's dispatch, which reports the
-                // container type it was looking in. `class B is Hash`,
-                // `$b.?nope` — the payload said Hash where the invocant
-                // says B, so the miss was rethrown instead of answering
-                // Nil. PDF::COS::Dict's TWEAK opens with `self.?cb-init`.
-                if ((mname.empty() || mname == mc->method) &&
-                    (tname.empty() || tname == inv.typeName() ||
-                     typeMatchesArg(inv, tname)))
-                    return Value::nil();
-            }
+            if (maybeOwnMiss(err.payload, inv, mc->method)) return Value::nil();
             throw;
         }
     }
