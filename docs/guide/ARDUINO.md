@@ -279,19 +279,30 @@ the board has no strings at run time.
 
 | Raku | on the board |
 |---|---|
-| `WiFi.begin(SSID, PASS)`, `WiFi.begin(SSID)` | joins the network (one with no password, with one argument); answers `WL_CONNECTED` or `WL_CONNECT_FAILED` |
+| `WiFi.begin(SSID, PASS)`, `WiFi.begin(SSID)` | joins the network (one with no password, with one argument) and waits for its address; answers `WL_CONNECTED` once it has one, or `WL_CONNECT_FAILED` |
 | `WiFi.status` | `WL_IDLE_STATUS` before the first `begin`, then `WL_CONNECTED`, `WL_NO_SSID_AVAIL`, `WL_CONNECT_FAILED`, `WL_CONNECTION_LOST`, `WL_DISCONNECTED`; `WL_NO_MODULE` |
 | `say WiFi.localIP` | the address, `0.0.0.0` when not joined: printed, or interpolated into what is printed, not kept |
 | `WiFi.disconnect` | leaves the network |
+
+**`WiFi.begin` waits for the address.** The library's `begin` answers
+`WL_CONNECTED` as soon as the board has joined, and the router gives it an
+address a moment later, so a `WiFi.localIP` straight after it prints
+`0.0.0.0`. On an Uno R4 WiFi it did, and the library's own examples wait 10
+seconds after `begin` for this. The sketch's `begin` waits instead: it asks
+for the address every 100 ms and answers `WL_CONNECTED` as soon as there is
+one. If none comes within the library's 10 seconds, it leaves the network
+again, so `WiFi.status` agrees, and answers `WL_CONNECT_FAILED`. A program can
+join and print its address with nothing in between.
 
 The sketch includes `WiFiS3.h`, which comes with the Uno R4 core, so it
 builds for an Uno R4 WiFi and not for a board without it.
 
 **The simulated network.** `RAKUPP_ARDUINO_WIFI="name:password"` is the one
 network in range, `name` alone an open one, and an empty value none; unset,
-any name and password join. Joining takes no time, and a failed `begin` waits
-out the library's 10-second timeout, as on a board. The address is 192.168.1.42. The board's stderr has a line for each
-attempt and each disconnect, never with the password. Here is
+any name and password join. Joining takes no time and brings the address,
+192.168.1.42, with it; a failed `begin` waits out the library's 10-second
+timeout, as on a board. The board's stderr has a line for each attempt and
+each disconnect, never with the password. Here is
 [examples/arduino/wifi.raku](../../examples/arduino/wifi.raku), the program
 above with the LED showing the connection, given the wrong password:
 

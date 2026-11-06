@@ -15,7 +15,8 @@
 #
 # The simulated air: RAKUPP_ARDUINO_WIFI="name:password" is the one network
 # in range (empty: none); unset, any name and password join. Joining is
-# instant; a failed `begin` takes the library's 10 s timeout, as on a board.
+# instant and brings the address, which a board's `begin` waits for (the
+# sketch's rk_wifi_joined); a failed one takes the library's 10 s timeout.
 # Each attempt, and a disconnect, is a line on stderr — never the password.
 
 unit module Arduino::WiFi;
