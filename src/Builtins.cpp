@@ -4560,26 +4560,28 @@ static std::string renderDefault(const Param& p) {
 // which owns the subset registry.
 std::string (*g_subsetNominal)(const std::string&) = nullptr;
 
-static std::string renderParam(const Param& p, bool inSignature = false) {
+// `type` is the constraint as it resolved (paramTypeName); p.type when null
+static std::string renderParam(const Param& p, bool inSignature = false, const std::string* type = nullptr) {
     std::string o;
+    const std::string& ptype = type ? *type : p.type;
     // the anonymous-but-typed case: `Int` in a signature, `Int $` alone (see below)
-    const bool anonShort = inSignature && (p.name.empty() || p.name == "$") && !p.type.empty() &&
-        !(p.type == "Any" && p.typeShown.empty() && !p.coerce && !p.defConstraint) && !p.named &&
+    const bool anonShort = inSignature && (p.name.empty() || p.name == "$") && !ptype.empty() &&
+        !(ptype == "Any" && p.typeShown.empty() && !p.coerce && !p.defConstraint) && !p.named &&
         !p.slurpy && p.sigil == '$' && !p.optional && !p.isRw && !p.isCopy && !p.whereExpr && !p.hadWhere &&
         renderDefault(p).empty();
     // A SUBSET is a nominal type and a constraint, and renders as Rakudo has
     // it: `S $x` is `Int $x where { ... }` for a `subset S of Int`, `Any`
     // left out as ever; an `@`/`%` parameter and an anonymous `S $` keep the
     // subset's own name.
-    const std::string subBase = !p.type.empty() && p.typeShown.empty() && !p.coerce && g_subsetNominal
-                              ? g_subsetNominal(p.type) : std::string();
-    std::string ty = p.typeShown.empty() ? p.type : p.typeShown;
+    const std::string subBase = !ptype.empty() && p.typeShown.empty() && !p.coerce && g_subsetNominal
+                              ? g_subsetNominal(ptype) : std::string();
+    std::string ty = p.typeShown.empty() ? ptype : p.typeShown;
     if (!subBase.empty() && p.sigil == '$' && !anonShort) ty = subBase;
     // An explicit `Any` on a `$` parameter is the default spelled out, and
     // Rakudo leaves it out: `sub (Any $x)` is `($x)` (`Any:D` and `Any @a` stay).
     const bool anyOmitted = ty == "Any" && p.typeShown.empty() && p.sigil == '$' && !p.coerce &&
                             !p.defConstraint;
-    if (!p.type.empty() && !anyOmitted) {
+    if (!ptype.empty() && !anyOmitted) {
         o += ty;
         // A COERCION renders both halves — `Int(Cool) $a`, and `Int()` as
         // `Int(Any)`, which is what it means. Only the target was printed, so
@@ -4803,6 +4805,16 @@ static bool literalParamStr(const Expr* e, std::string& out) {
     return true;
 }
 
+// The type a parameter's constraint names where its signature was written (the
+// routine's closure): a `constant` alias is the type it aliases (typeAliasIn).
+// A type capture, `CORE::Int` and a role's `::?CLASS` stay as written.
+static std::string paramTypeName(const Param& p, const Callable* c) {
+    Interpreter* li = Interpreter::liveTarget();
+    if (!li || !c || !c->closure || p.typeCapture || p.typeFromCapture || p.typeIsSetting || !p.typeShown.empty())
+        return p.type;
+    return li->typeAliasIn(p.type, c->closure.get());
+}
+
 Value makeSignature(const Callable* c) {
     // A multi group's signature is its PROTO's: `proto method relpath(Mu $path)`
     // answers `(Mu $path)`, not the empty signature a synthesized dispatcher
@@ -4900,8 +4912,9 @@ Value makeSignature(const Callable* c) {
         else if (p.pastDoubleSemi) { sig += ";; "; rsig += ";; "; }   // `(;; $x)`: nothing before the `;;`
         first = false;
         prevPastSemi = p.pastDoubleSemi;
-        sig += renderParam(p, /*inSignature=*/true);
-        rsig += renderParam(p);
+        const std::string pt = paramTypeName(p, c);
+        sig += renderParam(p, /*inSignature=*/true, &pt);
+        rsig += renderParam(p, false, &pt);
         // `*%opts` slurps NAMED arguments and takes no positional at all, so it
         // does not make the count Inf — only *@ / **@ / +@ do. Every method
         // carries an implicit one, which is how this reached signatures that never
@@ -4947,8 +4960,10 @@ Value makeSignature(const Callable* c) {
     // (space-separated, no comma — and `(--> Int)` when there are no parameters)
     // (Rakudo separates with a space either way, so an empty parameter list
     // renders as `( --> Str)`)
-    if (c && !c->cold().retType.empty()) {
-        std::string rt = c->cold().retType;
+    Interpreter* li = Interpreter::liveTarget();
+    const std::string retT = c && li ? li->retTypeAliased(*c) : c ? c->cold().retType : std::string();
+    if (!retT.empty()) {
+        std::string rt = retT;
         if (char sm = retTypeSmiley(rt)) rt = retTypeName(rt) + ":" + std::string(1, sm);
         sig += " --> " + rt; rsig += " --> " + rt;
     }
@@ -4964,7 +4979,7 @@ Value makeSignature(const Callable* c) {
     // `.returns` / `.of` — the DECLARED return type. DBDish's TypeConverter keys
     // its conversion table by it (`%!Conversions{$_.signature.returns} = $_`), so
     // without this the whole table was built under one key.
-    if (c && !c->cold().retType.empty()) (*s.hash())["returns"] = Value::typeObj(retTypeName(c->cold().retType));
+    if (!retT.empty()) (*s.hash())["returns"] = Value::typeObj(retTypeName(retT));
     // the declared parameters themselves (AST-owned, program lifetime), for
     // Signature ~~ Signature
     if (c && !c->cold().hasPrimed && c->ci().params && synth.empty()) {
@@ -4989,7 +5004,8 @@ Value makeSignature(const Callable* c) {
         Value pv = Value::makeHash(); pv.hashKind = "Parameter";
         // how the parameter renders on its own — Value::gist reads this, so a
         // `say $sig.params[0]` shows `Int $one` rather than the attribute dump
-        (*pv.hash())["str"] = Value::str(renderParam(p));
+        const std::string pt = paramTypeName(p, c);
+        (*pv.hash())["str"] = Value::str(renderParam(p, false, &pt));
         // an ANONYMOUS parameter has an empty .name, not its bare sigil
         // (a sigilless `\x` or capture `|c` carries no sigil: its name is it)
         const bool sigilless = p.sigil == '|' || p.sigil == '\\';
@@ -5013,7 +5029,7 @@ Value makeSignature(const Callable* c) {
                                                                                : p.podLead + "\n" + p.podTrail);
             if (!p.podTrail.empty()) (*pv.hash())["whyTrail"] = Value::str(p.podTrail);
         }
-        (*pv.hash())["type"] = Value::str(p.type);
+        (*pv.hash())["type"] = Value::str(pt);
         // the TYPE OBJECT for `.type` (compared `=:= Str` etc. by Cro's router).
         // Unconstrained is Mu; a slurpy/@-sigil param is Positional, %-sigil
         // Associative, &-sigil Callable — the constraint its sigil implies.
@@ -5024,7 +5040,7 @@ Value makeSignature(const Callable* c) {
             // Rakudo does: `Str :@foo` is Positional[Str] with .of = Str —
             // Getopt::Long derives the option's element type from exactly that
             Value tv;
-            if (!p.type.empty() && (p.sigil == '@' || p.sigil == '%') && !p.slurpy) {
+            if (!pt.empty() && (p.sigil == '@' || p.sigil == '%') && !p.slurpy) {
                 tv = Value::typeObj(p.sigil == '@' ? "Positional" : "Associative");
                 // renders as Positional[Str]; .of answers Str — by the name the
                 // routine's own class knows it as: `IntraFoo:D @foo` in a method
@@ -5032,15 +5048,15 @@ Value makeSignature(const Callable* c) {
                 // IntraFoo matched nothing where Cro::RPC::JSON's unmarshaller
                 // dispatches on it
                 Interpreter* li = Interpreter::liveTarget();
-                tv.ofTypeM() = li && c ? li->qualifyDeclType(p.type, c->ci().pkg) : p.type;
+                tv.ofTypeM() = li && c ? li->qualifyDeclType(pt, c->ci().pkg) : pt;
             }
             // a COERCION parameter reports the coercion type itself, as Rakudo
             // does: `Foo(Str) :$foo` is `Foo(Str)` and a bare `Foo()` is
             // `Foo(Any)`. Both halves live in the name — see the ^coerce /
             // ^target_type / ^constraint_type surface, which is how
             // Getopt::Long decides what to parse an option's argument into.
-            else if (p.coerce && !p.type.empty())
-                tv = Value::typeObj(p.type + "(" +
+            else if (p.coerce && !pt.empty())
+                tv = Value::typeObj(pt + "(" +
                                     (p.coerceFrom.empty() ? std::string("Any") : p.coerceFrom) + ")");
             // a LITERAL parameter `:(3)` is typed by its literal
             else if (std::string ls; p.type.empty() && p.litVal && literalParamStr(p.litVal.get(), ls))
@@ -5053,11 +5069,11 @@ Value makeSignature(const Callable* c) {
             // …and a SUBSET-typed scalar answers the nominal type it narrows
             // (the subset itself is among its constraints): Cro's router asks
             // `.type =:= Str` of a `UUIDv4 $id` route segment
-            else if (std::string sb; p.sigil == '$' && !p.type.empty() && g_subsetNominal &&
-                     !(sb = g_subsetNominal(p.type)).empty())
+            else if (std::string sb; p.sigil == '$' && !pt.empty() && g_subsetNominal &&
+                     !(sb = g_subsetNominal(pt)).empty())
                 tv = Value::typeObj(sb);
             else tv = Value::typeObj(
-                !p.type.empty() ? p.type
+                !pt.empty() ? pt
                 : p.sigil == '@' ? "Positional"
                 : p.sigil == '%' ? "Associative"
                 : p.sigil == '&' ? "Callable"

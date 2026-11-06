@@ -2501,8 +2501,10 @@ std::atomic<bool> g_lexTypeAlias{false};
 bool Interpreter::lexicalAliasAccepts(Env* scope, const std::string& ty, const Value& v) {
     if (!scope || ty.empty()) return false;
     Value* tv = scope->find(ty);
-    return tv && tv->t == VT::Type && !tv->s.empty() && tv->s.str() != ty &&
-           typeOrSubsetMatches(v, tv->s.str());
+    if (!tv || tv->t != VT::Type || tv->s.empty() || tv->s.str() == ty) return false;
+    // a parameterized type keeps its parameter: `constant AI = Array[Int]`
+    // takes an Array[Int] and no untyped Array (issue #220)
+    return tv->ofType().empty() ? typeOrSubsetMatches(v, tv->s.str()) : boolify(smartmatchValue("~~", v, *tv));
 }
 
 // A step or compound assignment on a SUBSET-typed scalar asks the subset

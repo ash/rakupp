@@ -2401,6 +2401,8 @@ public:
     std::map<std::pair<const ClassInfo*, const ClassInfo*>, std::shared_ptr<ClassInfo>> concHandles_;
     Value concretizationHandle(ClassInfo* consumer, ClassInfo* role);
     std::string resolveAttrTypeAlias(const std::string& t, const std::string& pkg = ""); // `has GType $.x` with `constant GType = uint64`
+    std::string typeAliasIn(const std::string& t, Env* scope);   // `constant Alias = Foo::Bar` → "Foo::Bar", as `scope` sees it
+    std::string retTypeAliased(const Callable& c);              // c's declared return type, an alias resolved in its closure
     std::shared_ptr<ClassInfo> ncInlineClass(const std::string& type); // the struct a `HAS` member inlines
     // True once any class has declared a `HAS` member. The assignment path
     // consults it before looking for an inline-struct view, so a program with no

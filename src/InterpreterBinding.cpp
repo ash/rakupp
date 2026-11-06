@@ -2090,11 +2090,13 @@ const std::string& Interpreter::typeAliasTarget(const std::string& name) {
         return typeAliasCache_.emplace(name, name.substr(6)).first->second;
     // Only a name nothing else claims: a real class, a subset or a built-in
     // resolves itself, and asking the scope about those would cost a lookup on
-    // every dispatch for no answer.
+    // every dispatch for no answer. A parameterized type keeps its parameter:
+    // `constant AI = Array[Int]; sub f(AI $x)` refuses an untyped Array, as
+    // `Array[Int] $x` does (issue #220)
     if (!name.empty() && !classes_.count(name) && !subsets_.count(name) &&
         name.find("+{") == std::string::npos)
         if (Value* v = tctx().cur ? tctx().cur->find(name) : nullptr)
-            if (v->t == VT::Type && !v->s.empty()) target = v->s;
+            if (v->t == VT::Type && !v->s.empty()) target = v->typeName();
     return typeAliasCache_.emplace(name, std::move(target)).first->second;
 }
 
@@ -7080,6 +7082,29 @@ std::string Interpreter::resolveAttrTypeAlias(const std::string& t, const std::s
     Value* v = tctx().cur ? tctx().cur->find(t) : nullptr;
     if (v && v->t == VT::Type && !v->s.empty() && v->s != t) return v->s;
     return t;
+}
+
+// The type a name written as a constraint NAMES, as `scope` sees it: the name
+// itself, or for a `constant` bound to a type object the type it is bound to,
+// parameterization and all (`constant AI = Array[Int]` is Array[Int]). Rakudo
+// resolves the constant at compile time, so `constant Alias = Foo::Bar;
+// sub g(Alias $x)` has a Foo::Bar parameter — its .type, its .raku and its
+// signature's (issue #220). The binder and the return check already resolved
+// such a name per call; introspection read it as written and answered a type
+// named Alias that no expression could name. A class or subset of the name
+// wins, and only a TYPE value counts.
+std::string Interpreter::typeAliasIn(const std::string& t, Env* scope) {
+    if (t.empty() || classes_.count(t) || subsets_.count(t)) return t;
+    Value* v = scope ? scope->find(t) : nullptr;
+    return v && v->t == VT::Type && !v->s.empty() ? v->typeName() : t;
+}
+
+// …and a routine's declared return type, in the closure it was declared in:
+// `--> Alias` is `--> Foo::Bar`, its smiley and coercion source kept
+std::string Interpreter::retTypeAliased(const Callable& c) {
+    const std::string& rt = c.cold().retType;
+    const std::string n = retTypeName(rt), to = typeAliasIn(n, c.closure.get());
+    return to == n ? rt : to + rt.substr(n.size());
 }
 
 // The names rakulib/ shadows on purpose — see the resolver's search order.

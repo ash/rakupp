@@ -8842,7 +8842,7 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
             return code;
         }
         if (m == "returns" || m == "of") {
-            const std::string& rt = inv.code()->cold().retType;
+            const std::string rt = retTypeAliased(*inv.code());   // `--> Alias` is `--> Foo::Bar`
             if (rt.empty()) {   // `--> Nil` is a value, and still what the routine returns
                 const std::string lit = retLiteralText(inv.code()->ci().retLiteral);
                 if (lit == "True" || lit == "False") return Value::typeObj("Bool");

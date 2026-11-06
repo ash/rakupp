@@ -4602,14 +4602,15 @@ void Interpreter::typeCheckBindImpl(const Param& p, const Value& v, bool blockPa
                         p.type + " but got " + v.typeName() + " (" + typeCheckRepr(v) + ")");
                 }
             }
+            // (a `constant AI = Array[Int]` keeps its parameter: an untyped Array is no AI, #220)
             if (sigEnv && !p.typeCapture)
                 if (Value* tv = sigEnv->find(p.type))
                     if (tv->t == VT::Type && !tv->s.empty() && tv->s != p.type) {
-                        if (typeOrSubsetMatches(v, tv->s)) return;
+                        if (tv->ofType().empty() ? typeOrSubsetMatches(v, tv->s)
+                                                 : boolify(smartmatchValue("~~", v, *tv))) return;
                         throw RakuError{Value::typeObj("X::TypeCheck::Binding::Parameter"),
                             "Type check failed in binding to parameter '" + paramShownName(p) +
-                            "'; expected " + tv->s + " but got " + v.typeName() +
-                            " (" + typeCheckRepr(v) + ")"};
+                            "'; expected " + tv->typeName() + " but got " + v.typeName() + " (" + typeCheckRepr(v) + ")"};
                     }
             return;
         }
