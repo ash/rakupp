@@ -6825,9 +6825,31 @@ int Interpreter::scoreCandidate(const Value& cand, const ValueList& args,
         // narrower than `(Any:D $j, Any $x)` for a Positional type object —
         // Cro::RPC::JSON's unmarshaller.)
         struct ParamDelta {
-            std::vector<int>* out; const int& now; const int& was; int smiley = 0;
-            ~ParamDelta() { if (out) out->push_back(now - was - smiley); }
+            std::vector<int>* out; int& now; const int& was; int smiley = 0;
+            bool lastResort = false;   // a boxed value into a native parameter (below): the widest match
+            ~ParamDelta() {
+                if (lastResort) now = was;
+                if (out) out->push_back(lastResort ? -1 : now - was - smiley);   // (under an untyped one's 0)
+            }
         } paramDelta{perParam, score, scoreBefore};
+        // A NATIVE parameter takes a native of its own family — signed (`int`,
+        // `int8`…), unsigned (`uint`, `byte`…) or `num` — and never one of
+        // another: a `my uint` is no `int`, a `my int` no `uint` (Rakudo
+        // 2026.09). A BOXED value binds one only as the last resort, scoring
+        // nothing, its `where` included: `multi f(int $x)` beside `multi f($x)`
+        // leaves 3 to the second. (Rakudo's multi dispatch refuses it outright;
+        // rakupp's native array elements carry no tags yet, so a lone native
+        // candidate still takes one.)
+        if (p->sigil == '$' && !p->type.empty() && paramIsNative(*p)) {
+            const NatKind pk = paramNativeKind(*p);
+            const NatKind ak = pos[i].t == VT::Int && pos[i].natBits && !pos[i].natFloat
+                                   ? (pos[i].natSigned ? NatKind::Int : NatKind::UInt)
+                             : pos[i].t == VT::Num && pos[i].natFloat ? NatKind::Num : NatKind::None;
+            if (pk == NatKind::Int || pk == NatKind::UInt || pk == NatKind::Num) {
+                if (ak == NatKind::None) paramDelta.lastResort = true;
+                else if (ak != pk) return -1;
+            }
+        }
         // `::T $x, T $y`: a type CAPTURE records the first argument's type, and a
         // later parameter typed T must be of that type (`wins(Paper, Paper)`)
         {
@@ -7180,11 +7202,13 @@ int Interpreter::scoreCandidate(const Value& cand, const ValueList& args,
             else if (pos[i].t == VT::Str && (pos[i].hashKind == "Blob" || pos[i].hashKind == "Buf") &&
                      p->type != "Stringy" && p->type != "Positional")
                 score += 1;
-            // a NATIVE argument (`my int $i`) is exactly a native parameter:
-            // `multi f(int)` beats `multi f(Int)` for it, and loses for a boxed one
+            // a NATIVE argument (`my int $i`) is exactly a native parameter of its
+            // family, and outranks every boxed candidate, a smiley and a satisfied
+            // `where` or subset included: `multi f(int)` beats `multi f(Int $x
+            // where * > 0)` for it (Rakudo 2026.09)
             if ((pos[i].natBits || pos[i].natFloat) && paramIsNative(*p) && pos[i].t != VT::Str) {
                 const bool pFloat = p->type.rfind("num", 0) == 0;
-                if (pFloat == (bool)pos[i].natFloat) score += 4;
+                if (pFloat == (bool)pos[i].natFloat) score += 24;
             }
             // …and a native STR read (marked natFloat, which a Str never uses
             // otherwise) is exactly a `str` parameter (S02-types/native.t)
@@ -7588,9 +7612,13 @@ static bool candidateNarrowerByType(Interpreter& I, const Value& cand, const Val
     std::vector<const Param*> pa, pb;
     positional(ca, pa);
     positional(cb, pb);
+    // (a NATIVE type is no narrower than a boxed one: what a native takes
+    // depends on the argument, a native or not, and the scores weigh that —
+    // see scoreCandidate's native parameter)
     auto judgeable = [&](const Param& p) {
         return !p.coerce && !p.typeCapture && !p.subSig && !p.litVal && p.captureName.empty() &&
-               p.type.find('[') == std::string::npos && !I.subsets_.count(p.type) && p.type != "UInt";
+               p.type.find('[') == std::string::npos && !I.subsets_.count(p.type) && p.type != "UInt" &&
+               !paramIsNative(p);
     };
     auto isRole = [&](const std::string& t) {
         if (isBuiltinRole(t)) return true;

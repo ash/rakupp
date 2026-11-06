@@ -2196,6 +2196,10 @@ bool Interpreter::multiTie(const Value& a, const Value& b) {
         // (an untyped parameter is Any)
         const std::string xt = x.type.empty() ? "Any" : x.type, yt = y.type.empty() ? "Any" : y.type;
         if (xt == yt) continue;
+        // two natives of one family are equally narrow: `int8` and `int` both
+        // take a native int, and the call is ambiguous (Rakudo 2026.09)
+        if (const NatKind k = paramNativeKind(x); k != NatKind::None && k != NatKind::Str && k == paramNativeKind(y))
+            continue;
         // two CORE types are ordered by the core ancestry: `(Int, Any)` beside
         // `(Any, Int)` each wins a position, which is ambiguous for (1, 1)
         auto coreKnown = [&](const std::string& t) {
