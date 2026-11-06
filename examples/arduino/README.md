@@ -130,11 +130,12 @@ never `Serial.begin`, so the sketch's `setup()` starts with
 `Serial.begin(9600)`. Open the IDE's Serial Monitor at 9600 baud to see
 `blink`.
 
-> **With rakupp 5.6.2,** the IDE stops with `'T' does not name a type`. The
-> IDE adds a declaration for each function of a `.ino` file, and gets the
-> helper templates of that version's sketches wrong. The next release
-> writes sketches it accepts. Until then, put the sketch in a `.cpp` file
-> beside an empty `.ino`. The IDE compiles a `.cpp` file as it is:
+> **With rakupp 5.6.2 or older,** the IDE stops with `'T' does not name a
+> type`. The IDE adds a declaration for each function of a `.ino` file, and
+> gets the helper templates of those versions' sketches wrong. 5.6.3 writes
+> sketches it accepts; `rakupp --version` says which you have. With an older
+> one, put the sketch in a `.cpp` file beside an empty `.ino`. The IDE
+> compiles a `.cpp` file as it is:
 >
 > ```bash
 > mkdir blink

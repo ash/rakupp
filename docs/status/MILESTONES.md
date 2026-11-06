@@ -63,6 +63,7 @@ Every figure here is measured, not projected; the methodology is in
 | 2026-11-04 | **v5.6.0** | `--target=arduino` writes a program as an Arduino sketch, `--detect-races` reports data races between threads, a program runs from a URL, native-typed code compiles at the untyped code's speed (`exprnext` −99%, `strscan` −94%) — Roast unchanged at 1,425 / 1,425, now 219,395 tests: v5.5.0's 1,425 were 1,424, one file passed by a harness fault |
 | 2026-11-04 | **v5.6.1** | v5.6.2's source under a tag cut before the version bump, so its binaries, wheels and Raku.js engine call themselves 5.6.0 — superseded by v5.6.2 |
 | 2026-11-05 | **v5.6.2** | v5.6.1, correctly named: an `is copy` parameter takes a constant (#218), `--cnp` keeps a method's writes to its invocant (#219), and the Raku.js archives v5.6.0 lacked — a patch release; Roast not re-run |
+| 2026-11-06 | **v5.6.3** | `--target=arduino` sketches the Arduino IDE compiles, carrying only the helpers they call; objects, hashes and Rats take less memory; a metaop and `~` meet the program's own operator — a technical release from `main`; Roast and perf not re-run |
 
 **By the numbers:** v0.1.0 → v2.0.0 in 36 days (2026-07-02 to 2026-08-07).
 
@@ -323,6 +324,12 @@ zef populates (see [MODULES.md](../guide/MODULES.md)); the goal is breadth and d
   given a constant is writable (#218), and under `--cnp` a method that changes
   its invocant changes the loop's variable (#219) — and the Raku.js archives,
   which v5.6.0's wasm job failed to build. Roast was not re-run.
+- **Nov 6 — v5.6.3.** A technical release from `main`, so that a released
+  binary writes Arduino sketches the Arduino IDE compiles: every sketch from
+  v5.6.0 through v5.6.2 stopped the IDE's .ino step. It carries the rest of
+  `main` too — leaner objects, hashes and Rats, a native array grown by a
+  loop kept packed, a metaop and `~` that meet the program's own operator.
+  Neither Roast nor any performance gate was re-run.
 
 Beyond the interpreter, the same source feeds a small constellation —
 [raku.online](https://raku.online/) (playground),
