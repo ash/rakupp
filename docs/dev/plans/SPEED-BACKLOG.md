@@ -64,6 +64,7 @@ theme the rows are sorted by complexity, largest first.
 | 45 | `--exe`: a module routine called from the program costs ~6× a local one (68 vs 10.6 ns) | L | The call goes through callEnvFirstAmp and the interpreter's binding, and the native body runs inside that — float report, item 10; near #13 |
 | 46 | `--exe`: a native-typed value is still a boxed Value. Since d7c6d9d5 native code runs at the untyped code's speed (a `num` sub 10.0 vs 9.7 ns, a `num` loop 9.5 vs 8.7), but no faster: typed locals are not C++ doubles/int64s | L | Typed locals as C++ doubles/int64s; the stores, ops and `int` kernels are done — float report, item 16; near #29 |
 | 48 | A loop over a small array costs about what CPython does: summing 10 Nums `--exe -O` 148.8 ns with `for @a -> $x` and 155.2 with `while` and `@a[$i]` (CPython 127 / 195); 915 / 1,591 interpreted on v5.5.0 | L | An array-element loop lane: an element read as a Num or Int without its 128-byte Value copy, so the double lane takes a loop that iterates an array; OPTIMIZATION.md lists it as future work — float report, item 21; near #29 |
+| 54 | Inferred native types, one set of facts for every engine: the board refuses `my $x = 42`, and the `--exe` loop lanes, NUM-UNBOX's routine lanes and NATIVE-MATH phase 4 each infer on their own or not at all | XL | A note, not scheduled. Its first step is S–M: an untyped `my` that nothing changes folds on the board — [INFER-PLAN.md](INFER-PLAN.md) |
 
 ## 4. Lists, strings and laziness
 

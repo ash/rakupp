@@ -72,6 +72,17 @@ Next up:
   phase 1): two-attribute objects 512 → ~350 bytes, the 397 uses of the
   attribute table listed by the compiler, five batches, the risks and what
   would stop it.
+- **[plans/INFER-PLAN.md](plans/INFER-PLAN.md)**: **inferred native types,
+  one set of facts for every engine** (a note for later, 2026-11-06). It
+  lists where untyped code wants a native type:
+  - the board refuses `my $x = 42`;
+  - the `--exe` loop lanes;
+  - routine lanes;
+  - the interpreter's typed expressions;
+  - untyped arrays.
+
+  It also gives the fact layer that would answer all of them, the question
+  of width that only the board asks, and the first steps.
 - **[plans/V5-IDEAS.md](plans/V5-IDEAS.md)** — the candidate list both plans
   were chosen from (collecting, 2026-09-17). What it still holds is
   unscheduled: platforms and hosts, the capability sandbox, modules and the

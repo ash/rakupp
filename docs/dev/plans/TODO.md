@@ -177,6 +177,13 @@ The same items grouped by theme, with a complexity estimate for each:
   zero divisor, where both engines and Rakudo fail. Next come a refusal
   census, Num twins of routines, native arrays under `--exe`, element lanes,
   and small arrays that never leave their routine.
+- [ ] **Inferred native types** (a note for later, 2026-11-06):
+  [INFER-PLAN.md](INFER-PLAN.md). Today, `--target=arduino` refuses
+  `my $x = 42`, and three engines infer a type on their own or not at all:
+  the `--exe` loop lanes, NUM-UNBOX's routine lanes, and NATIVE-MATH phase 4.
+  The note describes one fact layer that all of them read
+  (PERF-REVIEW-2026-11-02 item 10). Its first step: an untyped `my` that
+  nothing changes folds on the board.
 - [ ] **`--exe` native module bodies**: the remaining cost is method dispatch
   (the `RT.methodCall` ladder).
 - [ ] **Built-in methods in interpreted loops**: each walked methodCall's

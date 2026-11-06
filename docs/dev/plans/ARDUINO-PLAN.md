@@ -371,7 +371,10 @@ None of those programs' Raku reaches the board; all of their data does.
   routine has on an 8-bit board and suggests a sized type.
 - **`Int` and untyped variables** are refused on the board unless every value
   they take is known while building (then they fold). Inferring a native type
-  for them is a later possibility, not a first step.
+  for them is a later possibility, not a first step. The fold is not built
+  yet (2026-11-06: `my $x = 42;` is refused, `constant x = 42` folds). Both
+  are in [INFER-PLAN.md](INFER-PLAN.md), with the other engines that ask the
+  same question.
 - **`num`** is a 64-bit `double` on ARM and ESP32 (in software on all the
   boards above), but the AVR toolchain the Arduino core ships has a 32-bit
   `double`. On AVR, `num32` maps to `float`, and `num` is refused rather than
