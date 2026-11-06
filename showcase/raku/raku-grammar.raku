@@ -494,7 +494,7 @@ grammar RakuGrammar {
     token term:sym<contextual> { <[$@%&]> [ '(' <.ws> <EXPR>? <.ws> ')' | '<' <-[>\n]>* '>' ] }
     token term:sym<capture>  { '\\' [ '(' <.ws> <EXPR>? <.ws> ')' | <variable> ] }
     token term:sym<do>       { [ 'do' | 'try' | 'start' | 'gather' | 'once' | 'quietly' | 'lazy' | 'eager' | 'hyper' | 'race' | 'sink' | 'supply' ] <!before <.identchar>> <.ws> [ <block> | <statement> ] }
-    token term:sym<self>     { [ 'self' | 'now' | 'time' | 'rand' | 'True' | 'False' | 'Nil' | 'Any' | 'Mu' | 'Inf' | 'NaN' ] <!before <.identchar>> }
+    token term:sym<self>     { <.term-word> }
     # `<!before '{'>`: without it `if False { ... }` reads `False` as a list
     # operator and the block becomes its argument, leaving the `if` with no
     # body. The compiler settles this by knowing `False` is a term; a grammar
@@ -509,7 +509,12 @@ grammar RakuGrammar {
     # A bare name applied to arguments with no parentheses: `say $x, $y`.
     # The `<!before ...>` guard keeps a word-form infix (`eq`, `x`, `and`) from
     # being read as the start of a call.
-    token listop-name  { <!before <.reserved>> <.identifier> [ [ '::' | '-' ] <.identifier> ]* }
+    # A term word never starts a call: `(pi * 2)` would otherwise read as `pi`
+    # applied to `* 2`, a Whatever, and stop at the `)`.
+    token listop-name  { <!before <.reserved>> <!before <.term-word>> <.identifier> [ [ '::' | '-' ] <.identifier> ]* }
+    token term-word    { [ 'self' | 'now' | 'time' | 'rand' | 'True' | 'False' | 'Nil' | 'Any' | 'Mu'
+                         | 'Inf' | 'NaN' | 'pi' | 'tau' | 'e' | 'π' | 'τ' | '𝑒' ]
+                         <!before <.identchar> | '-' <.identstart>> }
     token infix-only   { [ <.infix-word> | 'if' | 'unless' | 'while' | 'until' | 'for' | 'given'
                          | 'when' | 'with' | 'without' ] <!before <.identchar>> }
     token reserved     { [ 'if' | 'unless' | 'while' | 'until' | 'for' | 'given' | 'when'
