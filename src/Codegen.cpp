@@ -19,7 +19,8 @@
 namespace rakupp {
 bool reverseWordOp(const std::string& op); // InterpreterCalls.cpp: `Rcmp`, `RR-` — a reverse metaop?
 
-std::vector<std::string> computePlaceholders(const std::vector<StmtPtr>& body); // InterpreterCore.cpp
+std::vector<std::string> computePlaceholders(const std::vector<StmtPtr>& body); // InterpreterCalls.cpp
+unsigned bodyImplicitArgs(const std::vector<StmtPtr>& body);                    // …1 = `@_` read, 2 = `%_`
 bool isKnownTypeName(const std::string& n); // InterpreterModules.cpp
 bool isNativeTypeName(const std::string& n); // the native type names (int, num32, str, …)
 std::shared_ptr<Param> signatureParamCopy(const Param& p); // Builtins.cpp
@@ -227,6 +228,11 @@ struct Codegen {
             if (ph[1] == ':') { p.named = true; p.namedKey = ph.substr(2); }
             ps.push_back(std::move(p));
         }
+        // …and `@_` / `%_` read in the body are its `*@_` / `*%_`: without them the
+        // C++ named a variable nothing declared, and `sub f { @_ }` did not build
+        const unsigned implicit = bodyImplicitArgs(d->body);
+        if (implicit & 1) { Param p; p.name = "@_"; p.sigil = '@'; p.slurpy = true; p.slurpyKind = 'f'; ps.push_back(std::move(p)); }
+        if (implicit & 2) { Param p; p.name = "%_"; p.sigil = '%'; p.slurpy = true; ps.push_back(std::move(p)); }
         // positionals first (still sorted among themselves), then the nameds
         std::stable_partition(ps.begin(), ps.end(), [](const Param& p) { return !p.named; });
         return phParams_.emplace(d, std::move(ps)).first->second;
@@ -2327,9 +2333,12 @@ struct Codegen {
     std::string subSig(const std::string& mk, const SubDecl* d) {
         if (d->params.empty() && !d->hadSig) {
             auto phs = computePlaceholders(d->body);
-            if (!phs.empty())
+            const unsigned implicit = bodyImplicitArgs(d->body);   // `.signature` is `(*@_, *%_)` from these
+            if (!phs.empty() || implicit)
                 return withPod("([&]()->Value{ Value _c = " + mk + "; _c.code()->ciM().name = " + cesc(d->name) +
-                               "; _c.code()->ciM().placeholders = {" + placeholderList(phs) + "}; return _c; }())", d);
+                               "; _c.code()->ciM().placeholders = {" + placeholderList(phs) + "};" +
+                               (implicit ? " _c.code()->ciM().implicitArgs = " + std::to_string(implicit) + ";" : "") +
+                               " return _c; }())", d);
         }
         return withPod(sigWrap(mk, d->params, d->name, d->retType, d->hadSig ? RSC_HADSIG : 0u), d);
     }
@@ -2371,6 +2380,13 @@ struct Codegen {
         std::set<std::string> own;
         for (auto& ph : phs) insertName(own, ph);
         for (auto& p : be->params) if (!p.name.empty()) own.insert(p.name);
+        // `@_` / `%_` without a signature: an anonymous `sub` binds its own, as
+        // sigOf gives a named one; a plain block's are the interpreter's to decide
+        // (blockTakesAtArgs, 6.d's fall-through), so that one is bundled
+        const unsigned implicit = be->params.empty() ? bodyImplicitArgs(be->body) : 0;
+        if (implicit && !be->isSub) unsupported("`@_` or `%_` in a block without a signature");
+        if (implicit & 1) own.insert("@_");
+        if (implicit & 2) own.insert("%_");
         checkClosureCapture(be->body, own);
         analyzeCells(be->body, own);
         std::string body = capture([&]() {
@@ -2401,6 +2417,9 @@ struct Codegen {
             } else {
                 bindParams(be->params, 0, false); // full signature forms, same as sub bodies
             }
+            const auto npos = std::count_if(phs.begin(), phs.end(), [](const std::string& ph) { return ph.size() > 2 && ph[1] == '^'; });
+            if (implicit & 1) line(0, "Value " + mangleVar("@_") + " = rtSlurpyPos(RT, __a, " + std::to_string(npos) + ", true, 'f');");
+            if (implicit & 2) line(0, "Value " + mangleVar("%_") + " = rtSlurpyNamed(__a);");
             hoistLexicalSubs(be->body, 0);
             for (size_t i = 0; i < be->body.size(); i++) {
                 Stmt* s = be->body[i].get();
@@ -2431,9 +2450,11 @@ struct Codegen {
         // params — which is also what tells sort/map/for how many elements to
         // feed it per call. A placeholder block ($^a/$^b) lists its placeholders
         // under their real names, in the sorted order they bind.
-        if (!phs.empty())
+        // (and an anonymous `sub { @_ }` says `(*@_)`, from its implicitArgs)
+        const std::string implicitSet = implicit ? " _c.code()->ciM().implicitArgs = " + std::to_string(implicit) + ";" : "";
+        if (!phs.empty() || implicit)
             return "([&]()->Value{ Value _c = " + mk + "; _c.code()->ciM().placeholders = {" + placeholderList(phs) +
-                   "};" + cmpShapeSet(cmpShapeOf(be, phs)) + " return _c; }())";
+                   "};" + implicitSet + cmpShapeSet(cmpShapeOf(be, phs)) + " return _c; }())";
         if (be->params.empty() && !be->isPointy && !(be->isSub && be->sigParens)) return mk;
         std::string sc = sigWrap(mk, be->params, "", be->retType,
                                  (be->isSub ? 0u : (unsigned)RSC_BLOCK) |
@@ -5242,7 +5263,17 @@ struct Codegen {
         return "applyArithInto(" + cesc(binop) + ", " + lhs + ", " + rhs + ")";
     }
 
+    // An `if` block reading `@_` is the interpreter's: it CALLS the block with the
+    // condition, which is its `@_`, where a compiled branch is inline and reads the
+    // routine's. (A postfix `STMT if COND` reads the routine's in both.)
+    void refuseIfAtArgs(const IfStmt* f) {
+        if (f->modifier) return;
+        for (auto& br : f->branches)
+            if (bodyImplicitArgs(br.second->stmts) & 1) unsupported("`@_` in an `if` block");
+        if (f->elseBlock && (bodyImplicitArgs(f->elseBlock->stmts) & 1)) unsupported("`@_` in an `else` block");
+    }
     void ifStmt(IfStmt* f, int ind) {
+        refuseIfAtArgs(f);
         for (auto& bp : f->branchParams)
             if (!bp.empty()) unsupported("if EXPR -> ($a, $b) destructuring binder");
         if (!f->elseParams.empty()) unsupported("else -> ($a, $b) destructuring binder");
@@ -5748,6 +5779,7 @@ struct Codegen {
         stmtValue(b->stmts.back().get(), ind, dst);
     }
     void ifValue(IfStmt* f, int ind, const std::string& dst) {
+        refuseIfAtArgs(f);
         if (!f->thenVar.empty()) { ifStmt(f, ind); return; } // `if EXPR -> $x` in value position: not captured
         for (size_t i = 0; i < f->branches.size(); i++) {
             std::string c = exBool(f->branches[i].first.get());

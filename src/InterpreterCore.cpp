@@ -8998,13 +8998,11 @@ Value Interpreter::callCallableRaw(const Value& codeVal, ValueList args, const s
         return c.ci().builtin(*this, args);
     }
 
-    // Implicit @_ is a flattening slurpy (*@_), and flattens as `*@a` does: `f(@x)`
-    // is @x's elements and `f(%h)` its Pairs. A lazy argument stays whole.
+    // Implicit @_ is a flattening slurpy (*@_), and binds as `*@a` does: `f(@x)` is
+    // @x's elements, `f(%h)` its Pairs, and `f(1..*)` a lazy list (Rakudo's).
     auto slurpyArgs = [this](const ValueList& as) {
-        ValueList out;
-        Value src; bool endless = false;
-        for (auto& a : as)
-            if (slurpyLazySource(*this, a, src, endless)) out.push_back(a); else slurpySpread(a, out);
+        Value out = Value::array();
+        for (size_t i = 0; i < as.size() && !slurpyLazyTail(*this, as, i, out); i++) slurpySpread(as[i], *out.arr());
         return out;
     };
 
@@ -9314,7 +9312,7 @@ Value Interpreter::callCallableRaw(const Value& codeVal, ValueList args, const s
             }
             else
                 for (size_t i = k2; i < args.size(); i++) rest.push_back(args[i]);
-            env->define("@_", Value::array(slurpyArgs(rest)));
+            env->define("@_", slurpyArgs(rest));
             if (c.ci().implicitArgs & 2) env->define("%_", h);
         }
         // (and a body that reads neither has no `@_` — its signature is the
@@ -9349,12 +9347,12 @@ Value Interpreter::callCallableRaw(const Value& codeVal, ValueList args, const s
                 else posOnly.push_back(a);
             }
             env->define("%_", h);
-            env->define("@_", Value::array(slurpyArgs(posOnly)));
+            env->define("@_", slurpyArgs(posOnly));
         }
         // (and only for a block that can read it: Rakudo gives a block an
         // `@_` only when it mentions one — blockTakesAtArgs)
         else if ((sixE() || !(c.ci().isBlock && args.empty())) && blockTakesAtArgs(c))
-            env->define("@_", Value::array(slurpyArgs(args)));
+            env->define("@_", slurpyArgs(args));
     }
     auto saved = tcx.cur;
     Env* savedState = tcx.curStateEnv;

@@ -9,8 +9,9 @@
 #
 # The implicit `@_` is a `*@_` and now binds the same way — it spread only a
 # List, so `f(@x)` handed it one Array and `f(1..3)` one Range. A Set or a Bag
-# stays whole (Rakudo does not flatten them), so does anything in a `$`
-# container, and so does a lazy argument to `@_`.
+# stays whole (Rakudo does not flatten them), and so does anything in a `$`
+# container. (A lazy argument makes `@_` lazy, as it does `*@a`: that is
+# checked in exe-sub-reads-at-underscore.raku, which the JS corpus skips.)
 #
 # The same file runs in t/js's corpus, where the interpreter is the oracle;
 # exe-slurpy-flattens.raku checks a compiled `--exe` program. Contract: exit

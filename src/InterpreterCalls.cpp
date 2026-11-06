@@ -6353,6 +6353,15 @@ std::string firstOwnPlaceholder(const std::vector<StmtPtr>& body, const std::set
     return "";
 }
 
+// Which implicit argument lists a body without a signature reads, as
+// CodeInfo::implicitArgs records them: 1 = `@_`, 2 = `%_`. (Codegen gives such
+// a sub the `*@_` and `*%_` these mean.)
+unsigned bodyImplicitArgs(const std::vector<StmtPtr>& body) {
+    std::set<std::string> ph;
+    for (auto& s : body) collectPHStmt(s.get(), ph);
+    return (ph.count("@_") ? 1u : 0u) | (ph.count("%_") ? 2u : 0u);
+}
+
 std::vector<std::string> computePlaceholders(const std::vector<StmtPtr>& body) {
     std::set<std::string> ph;
     std::vector<std::string> namedOrder;
