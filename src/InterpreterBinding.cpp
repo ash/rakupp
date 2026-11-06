@@ -6337,6 +6337,31 @@ Value rtSlurpyPos(const ValueList& a, size_t from, bool boxed) {
     }
     return o;
 }
+// `*@a`, `+@a` and `+a` in compiled code, bound as the binder binds them: a
+// flattening slurpy spreads each argument (slurpySpread), the single-argument
+// rule takes a lone Iterable's elements, and a lone lazy list is the slurpy
+// itself. rtSlurpyPos bound every one of them as `**@a`, so `f(@x)` handed a
+// compiled `*@a` one Array and `f(%h)` one Hash.
+Value rtSlurpyPos(Interpreter& I, const ValueList& a, size_t from, bool boxed, char kind) {
+    ValueList pos;
+    size_t p = 0;
+    for (auto& v : a) if (!isNamedArg(v) && p++ >= from) pos.push_back(v);
+    Value o = Value::array();
+    if (kind != 'n' && pos.size() == 1 && pos[0].t == VT::Array && !pos[0].itemized && seqIsLazy(pos[0]))
+        return pos[0];
+    if (kind == 'f')
+        for (size_t i = 0; i < pos.size() && !slurpyLazyTail(I, pos, i, o); i++) slurpySpread(pos[i], *o.arr());
+    else if (pos.size() == 1 && slurpyLoneIterable(pos[0])) {
+        if (!slurpyLazyTail(I, pos, 0, o)) slurpyLoneElements(pos[0], *o.arr());
+    }
+    else for (auto& v : pos) {
+        if (v.t == VT::Array && v.arr() && v.s == "Slip") o.arr()->insert(o.arr()->end(), v.arr()->begin(), v.arr()->end());
+        else o.arr()->push_back(v);
+    }
+    if (boxed && o.arr())
+        for (auto& e : *o.arr()) if (e.natBits) dropNativeTags(e);
+    return o;
+}
 Value rtSlurpyNamed(const ValueList& a) {
     Value o = Value::makeHash();
     for (auto& v : a) if (isNamedArg(v)) (*o.hash())[v.s] = v.pairVal() ? *v.pairVal() : Value::any();

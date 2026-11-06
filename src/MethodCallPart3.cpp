@@ -1594,14 +1594,20 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
     if (m == "log2")  return rtLogReal(*this, inv.toNum(), 2.0);
     if (m == "sin") return Value::number(std::sin(inv.toNum()));
     if (m == "cos") return Value::number(std::cos(inv.toNum()));
-    if (m == "numerator") return inv.t == VT::Rat ? Value::bigint(*inv.ratN()) : Value::integer(inv.toInt());
-    if (m == "denominator") return inv.t == VT::Rat ? Value::bigint(*inv.ratD()) : Value::integer(1);
-    if (m == "nude") { // a List (prints "(3 10)"), not an Array, like Rakudo
-        Value o = inv.t == VT::Rat
-            ? Value::array({Value::bigint(*inv.ratN()), Value::bigint(*inv.ratD())})
-            : Value::array({Value::integer(inv.toInt()), Value::integer(1)});
-        o.isList = true;
-        return o;
+    // Only a Rat or a FatRat has these, as in Rakudo: anything else goes on to
+    // X::Method::NotFound. They answered every invocant — `Any.nude` was (0 1),
+    // `5.denominator` 1 and `'x'.numerator` 0 — so a typo or an unexpected Int
+    // read as a fraction instead of failing where it happened.
+    if (m == "numerator" || m == "denominator" || m == "nude") {
+        if (inv.t == VT::Type && (inv.s == "Rat" || inv.s == "FatRat"))
+            throw RakuError{Value::typeObj("X::AdHoc"), "Cannot look up attributes in a " + inv.s + " type object"};
+        if (inv.t == VT::Rat && m == "numerator") return Value::bigint(*inv.ratN());
+        if (inv.t == VT::Rat && m == "denominator") return Value::bigint(*inv.ratD());
+        if (inv.t == VT::Rat) { // a List (prints "(3 10)"), not an Array, like Rakudo
+            Value o = Value::array({Value::bigint(*inv.ratN()), Value::bigint(*inv.ratD())});
+            o.isList = true;
+            return o;
+        }
     }
     if (m == "norm" && inv.t == VT::Rat) return inv; // Rats are always stored reduced
     if (inv.t == VT::Array && inv.arr() &&

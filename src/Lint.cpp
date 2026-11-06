@@ -137,6 +137,7 @@ struct Linter {
     bool dynamicNames = false; // EVAL / symbolic refs seen → suppress "unused" rules
     int curLine = 0;           // line of the statement currently being walked (fallback)
     std::map<std::string, ClassDecl*> classes; // in-file class/role decls, for .new arg checks
+    std::map<std::string, std::vector<ClassDecl*>> augments; // `augment class X {…}`, by X
 
     int lineOf(Node* n) const { return n && n->line ? n->line : curLine; }
 
@@ -725,6 +726,9 @@ struct Linter {
         for (auto& m : c->methods)
             if (m->name == "new" || m->name == "BUILD" || m->name == "TWEAK") return false;
         for (auto& a : c->attrs) if (a.pub) attrs.insert(a.name);
+        // an `augment` adds to the class it names, attributes and methods alike
+        if (!c->isAugment)
+            for (ClassDecl* aug : augments[c->name]) if (!defaultNewAttrs(aug, attrs, depth + 1)) return false;
         std::vector<std::string> supers;
         if (!c->parent.empty()) supers.push_back(c->parent);
         for (auto& p : c->extraParents) supers.push_back(p);
@@ -794,7 +798,11 @@ std::vector<LintFinding> lintProgram(Program& prog) {
         for (auto& s : stmts)
             if (s->kind == NK::ClassDecl) {
                 auto* c = static_cast<ClassDecl*>(s.get());
-                L.classes.emplace(c->name, c); // first declaration wins
+                // The first FULL declaration wins: a forward one (`class T { ... }`)
+                // has none of the attributes the one that follows declares, and
+                // an `augment` adds to it rather than being it.
+                if (c->isAugment) L.augments[c->name].push_back(c);
+                else if (!c->isStubDecl) L.classes.emplace(c->name, c);
                 collect(c->body);
             }
     };

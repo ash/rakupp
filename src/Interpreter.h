@@ -6241,6 +6241,7 @@ bool   rtHasPos(const ValueList& a, size_t idx);     // is an idx-th positional 
 Value  rtNamed(const ValueList& a, const std::string& key);    // named arg's value, or Any
 bool   rtHasNamed(const ValueList& a, const std::string& key); // is a named arg present?
 Value  rtSlurpyPos(const ValueList& a, size_t from, bool boxed = false);   // positional args [from..] as an Array (natives boxed)
+Value  rtSlurpyPos(Interpreter& I, const ValueList& a, size_t from, bool boxed, char kind);   // …as a `*@`/`+@`/`**@` binds them
 Value  rtSlurpyNamed(const ValueList& a);                      // all named args as a Hash
 Value  rtCoerceHash(const Value& v);                           // pair/kv list → Hash (`my %h = a=>1,…`)
 Value  rtObjHash(const Value& v);                              // `:{ … }` → object hash (keys keep their type)

@@ -6765,5 +6765,77 @@ void attrChainMore(ClassInfo* ci, ClassInfo** buf, std::vector<ClassInfo*>& spil
     }
 }
 
+// ---- what a slurpy parameter is handed ---------------------------------
+// The binder, scoreCandidate's `where` on a slurpy, the implicit `@_` and the
+// `--exe` runtime (rtSlurpyPos) all bind through these, so the four cannot
+// disagree about what an argument contributes — the runtime once flattened
+// nothing, so a compiled `f(@x)` bound one Array to `*@a`.
+
+static bool isSlipValue(const Value& e) { return e.t == VT::Array && e.arr() && e.s == "Slip"; }
+
+// A Hash or a Map in no container is the Iterable of its Pairs, as Rakudo
+// flattens one: `f(%h)` binds two Pairs to `*@a`. A Set, a Bag or a Mix stays
+// whole there, and so does every built-in object that rides on a hash body.
+static bool spreadsToPairs(const Value& e) {
+    return e.t == VT::Hash && !e.itemized && e.hash() && (e.hashKind.empty() || e.hashKind == "Map");
+}
+
+// `*@a` — what one argument contributes to a flattening slurpy. Flattening
+// walks THROUGH lists and stops at an ARRAY's elements, because each sits in
+// its own Scalar container: `f([[1,2],[3,4]])` binds two Arrays, not four
+// Ints, while `f((1,(2,3)))` binds three Ints. A SLIP flattens even when
+// itemized — that is the whole of what a Slip is for. Every other itemized
+// value is left whole.
+void slurpySpread(const Value& x, ValueList& out) {
+    if (!(isSlipValue(x) || spreadsToPairs(x) || (!x.itemized && (x.t == VT::Array || x.t == VT::Range)))) {
+        out.push_back(x);
+        return;
+    }
+    std::function<void(const Value&)> spread = [&](const Value& v) {
+        forceLazy(v);                                // a gather: its elements
+        if (spreadsToPairs(v)) {                     // a Hash: its Pairs
+            Value ps = hashToPairs(v);
+            out.insert(out.end(), ps.arr()->begin(), ps.arr()->end());
+            return;
+        }
+        if (v.t != VT::Array || !v.arr()) {          // a Range: expand it whole
+            for (auto& e : v.flatten()) out.push_back(e);
+            return;
+        }
+        // A SHAPED array's elements are its LEAVES, not its rows: `my @m[3;2]`
+        // binds six values to `*@a`, the same six `my @flat = @m` stores.
+        if (isMultiDimShaped(v)) { shapedLeaves(v, out); return; }
+        // An ARRAY's elements each sit in a Scalar container, so they go in
+        // whole, a List, a Range or a Hash among them too: `my @m = (1,2),(3,4);
+        // f(@m)` binds two Lists, and Cro's WebSocket test hands `*@checks` an
+        // `[(…), (…)]` of per-frame check lists. A LIST's elements are bare,
+        // so an Iterable among them — an Array or a Hash as well — flattens on:
+        // `f((1, [2, 3]))` binds three, and `f((%h, 1))` the Pairs and the 1.
+        const bool containers = !v.isList && !isSlipValue(v);
+        for (auto& e : *v.arr()) {                   // one level, then decide
+            if (!containers && (isSlipValue(e) || spreadsToPairs(e) ||
+                                (!e.itemized && (e.t == VT::Range || (e.t == VT::Array && e.arr())))))
+                spread(e);
+            else out.push_back(e);
+        }
+    };
+    spread(x);
+}
+
+// The single-argument rule (`+@a`, a sigilless `+a`): a lone Iterable binds
+// its elements, one level — `f((1, (2, 3)))` binds 1 and (2, 3), because
+// iterating is not flattening — and a lone Hash its Pairs. Anything else, or
+// more than one argument, binds as it came.
+bool slurpyLoneIterable(const Value& x) {
+    return isSlipValue(x) || spreadsToPairs(x) || (!x.itemized && (x.t == VT::Array || x.t == VT::Range));
+}
+void slurpyLoneElements(const Value& only, ValueList& out) {
+    forceLazy(only);   // a gather: its elements
+    if (spreadsToPairs(only)) slurpySpread(only, out);   // a Hash: its Pairs
+    else if (only.t == VT::Array && only.arr() && !isMultiDimShaped(only))
+        out.insert(out.end(), only.arr()->begin(), only.arr()->end());
+    else for (auto& x : only.flatten()) out.push_back(x);
+}
+
 } // namespace rakupp
 

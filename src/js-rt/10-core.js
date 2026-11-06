@@ -711,8 +711,14 @@ function fmtG(n, prec) {
     if (f.includes('.')) f = f.replace(/0+$/, '').replace(/\.$/, '');
     return f;
 }
+// Str of a zero-denominator Rational dies naming its numerator (normalised to
+// 1, -1 or 0, and left out of the message when it is 0), which the exception
+// carries as `.numerator`, as in Rakudo
+function ratDivideByZero(r, what) {
+    return new RakuError('Attempt to divide ' + (r.n === 0n ? '' : r.n + ' ') + 'by zero when ' + what, 'X::Numeric::DivideByZero', { numerator: normBig(r.n) });
+}
 function ratToStr(r) {
-    if (r.d === 0n) throw new RakuError('Attempt to divide by zero when coercing Rational to Str', 'X::Numeric::DivideByZero');
+    if (r.d === 0n) throw ratDivideByZero(r, 'coercing Rational to Str');
     let n = r.n, d = r.d;
     const neg = n < 0n; if (neg) n = -n;
     const ip = n / d, rem = n % d;

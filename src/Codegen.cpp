@@ -9131,7 +9131,8 @@ struct Codegen {
             if (p.invocant) { bind("__self"); continue; }
             if (p.slurpy) {
                 bind(p.sigil == '%' ? "rtSlurpyNamed(__a)"
-                                    : "rtSlurpyPos(__a, " + pos + (p.sigil == '@' ? ", true)" : ")"));
+                                    : "rtSlurpyPos(RT, __a, " + pos + (p.sigil == '@' ? ", true, " : ", false, ") +
+                                      std::to_string((int)p.slurpyKind) + ")");
                 attrParam("true");
                 continue;
             }

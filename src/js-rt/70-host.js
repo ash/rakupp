@@ -330,7 +330,9 @@ function bindMain(c, pos, named) {
             // `--tls=…` collects — does not bind, and the usage message is printed.
             // The mirror of that is a `Str` named refusing the Bool those two
             // words became: `--a=True` does not bind a `Str :$a`.
-            if (named.has(p.name)) { let v = named.get(p.name); if (p.isBool && typeof v !== 'boolean') return null; if (p.type === 'Str' && typeof v === 'boolean') return null; if (p.type === 'Int' && typeof v === 'string') { const n = strToNumeric(v); if (!isIntVal(n)) return null; v = n; } nmap.set(p.name, v); usedNamed.add(p.name); }
+            // …under any of its names: `:f(:$file)` answers `-f` and `--file`
+            const key = (p.aliases || [p.name]).find(k => named.has(k));
+            if (key !== undefined) { let v = named.get(key); if (p.isBool && typeof v !== 'boolean') return null; if (p.type === 'Str' && typeof v === 'boolean') return null; if (p.type === 'Int' && typeof v === 'string') { const n = strToNumeric(v); if (!isIntVal(n)) return null; v = n; } nmap.set(p.name, v); usedNamed.add(key); }
             // `*%opts` takes the leftover options ONE BY ONE: it is the slurpy
             // that collects them, so they arrive as the named arguments they
             // are, not as a single `:opts(%h)`.
@@ -365,7 +367,7 @@ function usage(cands) {
     const lines = ['Usage:'];
     const opts = [];          // the `#=` option list, in declaration order
     for (const c of cands) {
-        const named = [], pos = [];
+        const required = [], named = [], pos = [];
         for (const p of c.params) {
             const doc = (label) => { if (p.pod) opts.push({ label, desc: p.pod, def: p.dflt ? defaultGist(p.dflt) : '' }); };
             if (p.lit !== undefined) { pos.push(p.lit); continue; }
@@ -375,14 +377,15 @@ function usage(cands) {
                 // bare flag (a Bool is an Int, a Cool, an Any) `[=Int]`, any
                 // other `=<Type>`, and a Bool takes nothing at all because its
                 // presence is the value. A required named (`:$x!`) prints
-                // without the outer brackets.
-                let label = (p.name.length === 1 ? '-' : '--') + p.name;
+                // without the outer brackets, and before the optional ones.
+                // Every alias is listed: `-f|--file=<Str>`.
+                let label = (p.aliases || [p.name]).map(n => (n.length === 1 ? '-' : '--') + n).join('|');
                 if (p.type === 'Bool') { }
                 else if (!p.type) label += '[=Any]';
                 else if (['Int', 'UInt', 'Cool', 'Any', 'Mu', 'Numeric', 'Real'].includes(p.type))
                     label += '[=' + p.type + ']';
                 else label += '=<' + p.type + '>';
-                named.push(p.optional ? '[' + label + ']' : label);
+                if (p.optional) named.push('[' + label + ']'); else required.push(label);
                 doc(label);
                 continue;
             }
@@ -391,7 +394,7 @@ function usage(cands) {
             const label = p.optional || p.hasDefault ? '[' + n + ']' : n;
             pos.push(label); doc(label);
         }
-        const parts = named.concat(pos);
+        const parts = required.concat(named, pos);
         lines.push('  ' + prog + (parts.length ? ' ' + parts.join(' ') : '') + (c.pod ? ' -- ' + c.pod : ''));
     }
     if (opts.length) {

@@ -715,6 +715,14 @@ static inline Value hashToPairs(const Value& v) {
     return out;
 }
 
+// What a slurpy parameter is handed (InterpreterCalls.cpp): one argument's
+// share of a `*@a`, and the single-argument rule of `+@a`.
+void slurpySpread(const Value& x, ValueList& out);
+bool slurpyLoneIterable(const Value& x);
+void slurpyLoneElements(const Value& only, ValueList& out);
+// (InterpreterCore.cpp) an argument that never ends makes the slurpy lazy from there
+bool slurpyLazyTail(Interpreter& I, const ValueList& args, size_t from, Value& into);
+
 bool isNativeScalarName(const std::string& t);
 // A COPY's elements are values in fresh containers of its own, so the source's
 // container state stays behind: an element bound to a VALUE (`@a[1] := 42`, which
