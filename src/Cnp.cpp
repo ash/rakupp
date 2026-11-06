@@ -57,6 +57,15 @@ struct KernelCall {
     bool invBack = false;                 // the invocant is a `my` of the loop's: written back after
     std::vector<int> argRegs;
     std::vector<std::string> argNames;    // "" for a loop variable the synth names as itself
+    // What the interpreter's value of each argument carries that a register
+    // does not: a native's tags. `f($n % 3)` with `my int $n` hands f a native
+    // int, and a multi's `int` candidate takes it; boxed plain, the kernel's
+    // argument went to the `Int` one from the tier-up on, and missed the
+    // dispatch cache the interpreted iterations filled (SPEED-BACKLOG 51).
+    // `kind` 'i' or 'n' (nativeNumericStatic); `slot` a native variable read
+    // bare, whose container has the exact tags, else -1.
+    struct ArgNat { int slot = -1; char kind = 0; };
+    std::vector<ArgNat> argNat;
     const BuiltinFn* builtin = nullptr;   // the builtin of that name, looked up on first use
     bool builtinChecked = false;
 };
@@ -171,6 +180,23 @@ Value regValue(RkCnpFrame* f, uint64_t k) {
         case RK_T_RAT:  return Value::rat(BigInt(f->r[k]), BigInt(f->den[k]));
         default:        return static_cast<Value*>(f->boxes)[k];
     }
+}
+
+// A call's k-th argument as the interpreter would have passed it: the
+// register's value with the native tags its expression gives (KernelCall::argNat)
+static Value argValue(RkCnpFrame* f, const rakupp::cnp::KernelCall& cs, size_t k) {
+    Value v = regValue(f, (uint64_t)cs.argRegs[k]);
+    if (k >= cs.argNat.size() || !cs.argNat[k].kind) return v;
+    const auto& a = cs.argNat[k];
+    if (a.kind == 'i' ? v.t != VT::Int || v.big() : v.t != VT::Num) return v;
+    if (a.slot >= 0) {
+        const Value* c = static_cast<Value**>(f->slots)[a.slot];
+        v.natBits = c->natBits; v.natSigned = c->natSigned; v.natFloat = c->natFloat;
+    } else {
+        v.natBits = 64;
+        if (a.kind == 'i') v.natSigned = true; else v.natFloat = true;
+    }
+    return v;
 }
 
 // The unboxing rules, and why each exclusion is there:
@@ -374,10 +400,10 @@ int rk_cnp_call(RkCnpFrame* f, uint64_t site, uint64_t dst) {
         // (and a throw leaves them to the kernel's exit, which writes them
         // back on both paths).
         if (cs.msynth && cs.pureMethod) {
-            Value inv = regValue(f, (uint64_t)cs.argRegs[0]);
+            Value inv = argValue(f, cs, 0);
             if (inv.t != VT::Object) {
                 ValueList args;
-                for (size_t k = 1; k < cs.argRegs.size(); k++) args.push_back(regValue(f, (uint64_t)cs.argRegs[k]));
+                for (size_t k = 1; k < cs.argRegs.size(); k++) args.push_back(argValue(f, cs, k));
                 setReg(f, dst, I.methodCall(inv, cs.method, std::move(args)));
                 return 0;
             }
@@ -392,7 +418,7 @@ int rk_cnp_call(RkCnpFrame* f, uint64_t site, uint64_t dst) {
         if (cs.builtin && cs.synth && !saved->find("&" + cs.synth->name)) {
             ValueList args;
             args.reserve(cs.argRegs.size());
-            for (int r : cs.argRegs) args.push_back(regValue(f, (uint64_t)r));
+            for (size_t k = 0; k < cs.argRegs.size(); k++) args.push_back(argValue(f, cs, k));
             Value res;
             try { res = rtCallB(I, cs.builtin, cs.synth->name.c_str(), std::move(args)); }
             catch (LastEx& e) { if (!e.label.empty()) throw; reload(); f->ctl = 1; return 0; }
@@ -404,7 +430,7 @@ int rk_cnp_call(RkCnpFrame* f, uint64_t site, uint64_t dst) {
         auto env = makeSlabShared<Env>();
         env->parent = saved;
         for (size_t k = 0; k < cs.argRegs.size(); k++)
-            if (!cs.argNames[k].empty()) env->define(cs.argNames[k], regValue(f, cs.argRegs[k]));
+            if (!cs.argNames[k].empty()) env->define(cs.argNames[k], argValue(f, cs, k));
         Interpreter::tctx().cur = env;
         Value res;
         try { res = cs.isynth ? I.eval(cs.isynth.get()) : cs.msynth ? I.eval(cs.msynth.get()) : I.eval(cs.synth.get()); }
@@ -810,6 +836,19 @@ struct Lower {
         }
         fail("variable " + n + " has no register");
         return 0;
+    }
+    // the native tags a call's argument expression gives its value (KernelCall::argNat)
+    KernelCall::ArgNat argNatOf(const Expr* x) {
+        KernelCall::ArgNat a;
+        if (!nativeNumericStatic(x, &a.kind)) { a.kind = 0; return a; }
+        if (x->kind == NK::VarExpr)
+            for (auto it = scopes.rbegin(); it != scopes.rend(); ++it) {
+                auto f = it->find(static_cast<const VarExpr*>(x)->name);
+                if (f == it->end()) continue;
+                if (f->second < nSlots) a.slot = f->second;
+                break;
+            }
+        return a;
     }
 
     int constant(const Value& v) {
@@ -1300,6 +1339,7 @@ int Lower::expr(Expr* e) {
                 exprInto(x, r);
                 cs.argRegs.push_back(r);
                 cs.argNames.push_back(nm);
+                cs.argNat.push_back(argNatOf(x));
                 auto ve = std::make_unique<VarExpr>(nm);
                 ve->line = m->line;
                 return ve;
@@ -1317,6 +1357,7 @@ int Lower::expr(Expr* e) {
                 const bool slot = r < nSlots;
                 cs.argRegs.push_back(r);
                 cs.argNames.push_back(slot ? "" : std::string(1, sig) + "__cnp_inv");
+                cs.argNat.push_back(argNatOf(iv));
                 cs.invBack = !slot;
                 auto ve = std::make_unique<VarExpr>(slot ? iv->name : cs.argNames.back());
                 ve->line = m->line;
@@ -1376,6 +1417,7 @@ int Lower::expr(Expr* e) {
                 std::string nm = "$__cnp_arg" + std::to_string(k);
                 cs.argRegs.push_back(r);
                 cs.argNames.push_back(nm);
+                cs.argNat.push_back(argNatOf(c->args[k].get()));
                 auto ve = std::make_unique<VarExpr>(nm);
                 ve->line = c->line;
                 cs.synth->args.push_back(std::move(ve));

@@ -25929,6 +25929,10 @@ Value Interpreter::evalUnary(Unary* u) {
         nv.natBits = 64; nv.natFloat = true;
         return nv;
     }
+    // …and `+$n` of a native is the BOXED number: prefix:<+> has no native
+    // candidate, so `f(+$n)` takes a multi's `Int` where `f($n)` takes its `int`
+    if (opEq(u->op, "+") && v.natBits && (v.t == VT::Int || v.t == VT::Num))
+        { Value nv = v; nv.natBits = 0; nv.natSigned = nv.natFloat = false; return nv; }
     const bool undefOperand = v.t == VT::Any || v.t == VT::Type || v.t == VT::Nil ||
                               (v.t == VT::Array && v.arr() && v.enumName.empty());
     if (opEq(u->op, "+") || opEq(u->op, "-")) {

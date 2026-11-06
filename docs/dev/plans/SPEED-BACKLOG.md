@@ -58,7 +58,6 @@ theme the rows are sorted by complexity, largest first.
 | 13 | `--exe` native module bodies: the `RT.methodCall` ladder | L | TODO.md |
 | 14 | `--types` (paused 2026-09-29) | L | N1 the switch, N2 the checked rule, N3 measure, N7 Str — [TYPES-PLAN.md](TYPES-PLAN.md) |
 | 15 | `--exe` build time: split the mainline into chunks (`range-int.t` 52 s at -O2) | L | V6 P5 |
-| 51 | `--cnp` slows a loop of multi-method calls: `multiwhere` 0.18 → 0.28 s, a two-candidate multi without a `where` 0.15 → 0.19 s; a plain method call is unchanged | S–M | Find what the tier-up does to a multi call; run-bench's cnp lane shows it on every run — V6 P0 |
 | 33 | The compile modes (`--exe`, `--cpp`, `--target=js`) parse the program twice | S–M | Reuse the parse `declCheckGate` makes — src/main.cpp |
 | 35 | `--slim` review: what it actually removes | S–M | Binary size; the 13.0 / 13.25 MB budgets are a stopgap — [SLIM-PLAN.md](SLIM-PLAN.md) |
 | 44 | `--exe`: one refused construct (a CATCH, a phaser, `my num @a`, a kept List) bundles the program — its routines now keep native bodies, but its mainline and anonymous blocks are interpreted, and a call into a native body costs an interpreted call (~250 ns) | M–L | Mainline loops and block closures as native bodies, and a cheaper interpreter-to-native call — float report, items 2, 4, 14; feeds #3 and #45 |
@@ -108,6 +107,17 @@ theme the rows are sorted by complexity, largest first.
 ---
 
 ## Closed since the first list (2026-10-14)
+
+- **51, `--cnp` slowing a loop of multi-method calls** (2026-11-06). A call
+  inside a kernel boxed each argument plain, where the interpreter's value
+  of a native expression (`$n % 3` with `my int $n`) carries the native's
+  tags. The multi's dispatch cache, filled with the native shape by the
+  interpreted iterations before the tier-up, then missed on every call from
+  the kernel, and a multi with an `int` candidate took the `Int` one instead.
+  Kernel calls now box each argument with the tags its expression gives
+  (nativeNumericStatic, a slot's own from its container). `multiwhere` under
+  `--cnp` 288 → 185 ms (interpreted 187), `multiwhere-steady` 2,130 → 1,393
+  ms; no kernel of run-bench is now slower under `--cnp` than interpreted.
 
 - **A method nothing takes, thrown from inside the dispatch chain**
   (2026-11-06; not a row before, found measuring OBJECT-SLOTS-PLAN batch 2).

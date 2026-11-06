@@ -222,6 +222,16 @@ The same items grouped by theme, with a complexity estimate for each:
 
 ## 2. Correctness (v5 error batches)
 
+- [ ] **A `my uint` read, passed to a multi, takes its `int` candidate**,
+  found 2026-11-06 beside SPEED-BACKLOG 51: with `multi f(int $x)` and
+  `multi f(Int $x)`, `my uint $u = 3; f($u)` is "int", where Rakudo 2026.09
+  takes `Int` (an unsigned native is not an `int`). Older than v5.6.3.
+- [ ] **For a native argument, an `Int $x where …` candidate outranks `int
+  $x`**, found the same day: a method with `multi m(int $x)`, `multi m(Int $x
+  where * > 0)` and `multi m(Int $x)` answers the `where` one for
+  `$o.m($n % 3)` whenever the constraint passes, where Rakudo 2026.09 always
+  takes `int`. Both lanes agree; older than v5.6.3.
+
 - [ ] **A class deriving Int loses its value in arithmetic**, found
   2026-11-05 beside V6 P3.11: `class D is Int { method double { self * 2 } }`
   gives `D.new(21).double` 0 and `D.new(3) + 4` 4, where Rakudo 2026.09 gives
