@@ -5669,7 +5669,7 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
         }
         if (inv.t == VT::Object && inv.obj()) {
             std::vector<std::string> names;
-            for (auto& kv : inv.obj()->attrs) names.push_back(kv.first);
+            for (auto&& kv : inv.obj()->attrs) names.push_back(kv.first);
             std::sort(names.begin(), names.end());
             for (auto& n : names) { Value np = Value::pair(n, inv.obj()->attrs[n]); np.namedArg = true; c.arr()->push_back(std::move(np)); }
             return c;

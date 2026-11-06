@@ -102,7 +102,7 @@ void dumpNode(Interpreter& I, const Value& node, int depth, bool withAttrs,
     // Attributes and children both come out of the node's own map, in
     // insertion order.
     if (withAttrs)
-        for (auto& kv : node.obj()->attrs) {
+        for (auto&& kv : node.obj()->attrs) {
             if (isRakuAstNode(kv.second) || kv.second.t == VT::Array) continue;
             std::string s = scalarOf(kv.second);
             if (!s.empty()) out << " " << kv.first << "=" << s;
@@ -110,7 +110,7 @@ void dumpNode(Interpreter& I, const Value& node, int depth, bool withAttrs,
 
     lines.push_back({out.str(), withSource ? oneLineSource(I, node) : std::string(), depth});
 
-    for (auto& kv : node.obj()->attrs) {
+    for (auto&& kv : node.obj()->attrs) {
         const Value& v = kv.second;
         if (isRakuAstNode(v)) { dumpNode(I, v, depth + 1, withAttrs, withSource, lines); continue; }
         if (v.t == VT::Array && v.arr())

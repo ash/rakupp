@@ -3008,7 +3008,7 @@ std::string Interpreter::exceptionToJson(const Value& ex) {
     std::string tn = ex.obj() && ex.obj()->cls ? ex.obj()->cls->name : "Exception";
     std::string o = "{\n  " + jstr(tn) + " : {\n";
     bool first = true;
-    if (ex.obj()) for (auto& kv : ex.obj()->attrs) {
+    if (ex.obj()) for (auto&& kv : ex.obj()->attrs) {
         if (kv.first == "message") continue; // message emitted last (may be null)
         if (kv.first == "__bt") continue;    // the frame handle is internal; `backtrace` below is its JSON
         o += (first ? "" : ",\n"); first = false;

@@ -1613,6 +1613,7 @@ inline PRef<Value> makeValueAlias(std::shared_ptr<void> owner, Value* target) {
 // reopens for the definitions.
 } // namespace rakupp
 #include "ValueHash.h"
+#include "AttrTable.h"   // an object's attributes: ValueHash's interface (OBJECT-SLOTS-PLAN)
 namespace rakupp {
 
 // PACKED-ARRAY-PLAN. The words of a `my int @a` / `my num @a` (a Num bit-cast
@@ -2385,7 +2386,7 @@ struct ClassInfo {
 
 struct ObjectData {
     std::shared_ptr<ClassInfo> cls;
-    ValueMap attrs;
+    AttrTable attrs;
     // The rare parts, behind one pointer allocated on first use, so the objects
     // that have neither (nearly all of them) carry 8 bytes where they carried
     // 24, and an 80-byte Value before that:
@@ -2443,6 +2444,15 @@ struct ObjectData {
     std::shared_ptr<std::recursive_mutex>& monitorLockM() { return cold.make().monitorLock; }
     bool hasBoxed = false;
 };
+
+// An object's block: the body, then the ValueHash its attributes are kept in
+// (makePayload, Ref.h; AttrTable)
+inline std::size_t objectTailSize() noexcept { return sizeof(ValueHash); }
+inline void objectAdoptTail(ObjectData& od, void* tail) noexcept {
+    od.attrs.x_ = ::new (tail) ValueHash();
+    od.attrs.inBody_ = true;
+}
+inline std::size_t objectTailOf(const ObjectData& od) noexcept { return od.attrs.inBody_ ? sizeof(ValueHash) : 0; }
 
 // Collapsing a junction to a Bool, SHORT-CIRCUITING. Feed one eigenstate's
 // verdict at a time and stop as soon as `done()` says the remaining eigenstates

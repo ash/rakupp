@@ -101,7 +101,9 @@ Each lands alone and is gated alone (below); 1 and 2 change no answer.
    method below); most are `[]`, `find`, `end` and `count`, which keep their
    shape. Behaviour is unchanged; memory is slightly worse (the table moves
    out of line), and that cost is measured here, on RakuAST trees and on
-   exception-heavy code, before layouts make it back.
+   exception-heavy code, before layouts make it back. *Done 2026-11-06,
+   below: out of line it cost RakuAST 5.7%, so the hash stays in the
+   object's own block.*
 3. **Layout mode.** `runAttrDefaults` adopts the layout; slots, presence,
    the copy rules, mixins and hidden keys to `extra`. Measured on the memory
    table and perf-guard.
@@ -168,6 +170,64 @@ under an exported HOW. It pins the two known differences.
 For batch 3: in layout mode `__type` goes to `extra`, so it is iterated after
 the slots where it is now first; the walks over an object's table must skip
 hidden keys, which batch 3 checks site by site.
+
+## Batch 2, done 2026-11-06
+
+`ObjectData::attrs` is an AttrTable (src/AttrTable.h): ValueHash's interface,
+every key in `extra`, a ValueHash. Iteration yields a pair of references
+(`kv.first`, `kv.second`), not the hash's own pair, so batch 3 can hand out a
+key from the layout and a value from a slot. The compiler found the sites
+again: of the 397 uses, only the 10 range-for loops that bound `auto&` failed
+to compile (now `auto&&`). Everything else kept its shape. The cycle
+collector's `hashEdges` takes either table.
+
+**Where the hash lives.** First it was a block of its own, allocated on the
+first store. That cost every object one more allocation, and RakuAST paid for
+it: `.AST` makes ~2,500 nodes from 357 lines, and each one paid a malloc
+(11,256 → 13,724 per parse). Retired instructions went up 5.7%, over the 2%
+this plan allows. So an object made by makePayload carries its hash in its
+own slab block, right behind the body, and frees it with the body. The
+allocation count is back to main's, exactly. A table made any other way still
+allocates its hash on the first store, and the flag that marks the in-body
+hash fits in padding.
+
+Retired instructions against main (min of 3 runs):
+
+| row | own block | in the object's block |
+|---|---:|---:|
+| `.AST` of 357 lines, 300 times | +5.73% | **+0.36%** |
+| 100 such trees held | +5.35% | **+0.28%** |
+| 100k `RakuAST::ApplyInfix.new` held | +1.95% | **+0.02%** |
+| `try { die "x" }`, 200k | +0.01% | **−0.07%** |
+| `die` caught by CATCH in a sub, 200k | +0.12% | **−0.02%** |
+| `try { Int.no-such-method }`, 20k | −3.58% | **−3.60%** |
+| 100k `$!` held | +0.05% | **−0.10%** |
+| 20k X::Method::NotFound held | −3.59% | **−3.62%** |
+| perf-guard `objnew` | +0.56% | **+0.32%** |
+| `attrread`, `method`, `privmeth`, `multimeth`, `userplus` | ±0.25% | **±0.05%** |
+
+Peak RSS moved by no more than its run-to-run spread on any row, in either
+form. tools/run-memory.raku is unchanged: objects 512 bytes, hashes 663 (662),
+every other row within a byte. tools/malloc-census.raku is unchanged too:
+`objects` 2.00 mallocs / 448 bytes, `objnew` 1.00 / 224. The block is 152
+bytes (a 56-byte body and the 96-byte hash) where the body was 144: one slab
+class up, which the memory table does not show.
+
+Gates: t/run.raku 1,967/1,967. All of Roast, 1,425 files (221,034 tests,
+all pass). The installed modules load as on main: 379 of 380, Cro::Tools::CLI
+failing on both. The 113 regression files on objects and hashes give the
+interpreter's output under `--cnp=threshold=0`. Under `--exe`, 22 of them
+print something else, byte for byte what main's `--exe` binaries print. Those
+are `--exe` lane gaps the suite does not run, not this change.
+t/regression/attr-table-empty.raku walks an object that stores nothing
+through every reader of its table.
+
+For batch 3: an object made with a layout must be allocated without the
+tail, so the factory has to know the class's layout at allocation time.
+`bless` makes the object before runAttrDefaults runs. A layout object that
+needs `extra` (a mixin, a hidden key) allocates it on first store. An object
+with no layout keeps its hash in its block at +16 bytes over today, +32 once
+the table holds the layout fields.
 
 ## The sites
 
@@ -242,7 +302,8 @@ objects and is not touched.
   behind a pointer: one more allocation and one more indirection for every
   exception, RakuAST node and engine-made object. Batch 2 measures it alone;
   if it shows, the table keeps its ValueHash inline for those (a tag in the
-  table), and layout objects pay for the tag only.
+  table), and layout objects pay for the tag only. *It showed (RakuAST
+  +5.7%), and the hash now lives in the object's own block: batch 2.*
 - **Attribute reads.** A lookup goes key → the layout's index → slot, against
   today's scan of the entries' hashes. It must not be slower on perf-guard's
   `attrread`, `method`, `privmeth` and `objnew` (batch 5 then makes it

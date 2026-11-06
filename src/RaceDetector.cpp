@@ -608,7 +608,7 @@ std::string Interpreter::raceLocName(int kind, const void* c, uint64_t sub, cons
     if (kind == kAttr) {
         const auto* od = static_cast<const ObjectData*>(c);
         std::string an;
-        for (auto& kv : od->attrs) if ((uintptr_t)&kv.second == sub) { an = kv.first; break; }
+        for (auto&& kv : od->attrs) if ((uintptr_t)&kv.second == sub) { an = kv.first; break; }
         if (auto cut = an.find('\x01'); cut != std::string::npos) an = an.substr(cut + 1);   // a role-qualified slot
         const std::string cls = od->cls ? " of " + od->cls->name : std::string();
         if (an.empty()) return "an attribute" + cls;
@@ -625,7 +625,7 @@ std::string Interpreter::raceLocName(int kind, const void* c, uint64_t sub, cons
     }
     if (var.empty())
         if (const Value* self = tctx().cur ? tctx().cur->findSelf() : nullptr; self && self->obj())
-            for (auto& kv : self->obj()->attrs)
+            for (auto&& kv : self->obj()->attrs)
                 if (!kv.first.empty() && heldContainer(kv.second) == c) {
                     const std::string& k = kv.first;
                     var = std::strchr("@%", k[0]) ? std::string(1, k[0]) + "!" + k.substr(1) : (arr ? "@!" : "%!") + k;

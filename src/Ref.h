@@ -156,6 +156,12 @@ void cycleNoteRelease(Payload* p) noexcept;     // Cycle.cpp
     else if (old & kRefTracked) cycleNoteRelease(p);
 }
 struct ObjectData;
+// An object's block is its body and, right behind it, the hash its attributes
+// are kept in (AttrTable): one allocation an object, as when the hash was a
+// member of ObjectData. Defined in Value.h, once both are complete.
+inline std::size_t objectTailSize() noexcept;
+inline void objectAdoptTail(ObjectData& od, void* tail) noexcept;
+inline std::size_t objectTailOf(const ObjectData& od) noexcept;   // 0, or objectTailSize()
 
 extern const bool g_race;                                  // RaceDetector.h: --race is on
 void raceForgetRange(const void* begin, std::size_t bytes);  // …and a dying body's shadows go
@@ -165,9 +171,11 @@ struct Body final : Payload {
     template <class... A>
     explicit Body(std::in_place_t, A&&... a) : v(std::forward<A>(a)...) {}
     void destroySelf() noexcept override {
-        if (g_race) raceForgetRange(this, sizeof(Body));
+        std::size_t n = sizeof(Body);
+        if constexpr (std::is_same<T, ObjectData>::value) n += objectTailOf(v);
+        if (g_race) raceForgetRange(this, n);
         this->~Body();
-        SlabPool::dealloc(static_cast<void*>(this), sizeof(Body));
+        SlabPool::dealloc(static_cast<void*>(this), n);
     }
 };
 
@@ -312,12 +320,23 @@ public:
 template <class T, class... A>
 inline PRef<T> makePayload(A&&... a) {
     static_assert(alignof(Body<T>) <= alignof(std::max_align_t), "payloads are not over-aligned");
+    if constexpr (std::is_same<T, ObjectData>::value) {
+        // the body, then its attribute hash behind it (objectAdoptTail); a copy
+        // is made by assignment, into the hash already in place
+        static_assert(sizeof...(A) <= 1, "an object is made empty or copied from another");
+        const std::size_t n = sizeof(Body<T>) + objectTailSize();
+        void* mem = SlabPool::alloc(n);
+        Body<T>* b = ::new (mem) Body<T>(std::in_place);
+        objectAdoptTail(b->v, static_cast<char*>(mem) + sizeof(Body<T>));
+        try { (void(b->v = std::forward<A>(a)), ...); }
+        catch (...) { b->destroySelf(); throw; }
+        if (g_cycleTrack) b->refs_.store(1u | kRefTracked, std::memory_order_relaxed);
+        return PRef<T>::adoptNew(b);
+    }
     void* mem = SlabPool::alloc(sizeof(Body<T>));
     Body<T>* b;
     try { b = ::new (mem) Body<T>(std::in_place, std::forward<A>(a)...); }
     catch (...) { SlabPool::dealloc(mem, sizeof(Body<T>)); throw; }
-    if constexpr (std::is_same<T, ObjectData>::value)
-        if (g_cycleTrack) b->refs_.store(1u | kRefTracked, std::memory_order_relaxed);
     return PRef<T>::adoptNew(b);
 }
 

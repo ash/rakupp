@@ -226,7 +226,7 @@ const Registry* build() {
         // would — and mutating the map while iterating it is the
         // rehash-under-reader crash `noteSymbolMutation` exists to police.
         ValueList kids;
-        for (auto& kv : a[0].obj()->attrs) {
+        for (auto&& kv : a[0].obj()->attrs) {
             const Value& v = kv.second;
             if (isRakuAstNode(v)) { kids.push_back(v); continue; }
             if (v.t == VT::Array && v.arr())

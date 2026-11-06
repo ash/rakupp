@@ -8092,7 +8092,7 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
                         auto aod = makePayload<ObjectData>();
                         aod->cls = ci;
                         runAttrDefaults(aod, ci, args);   // the attributes' own defaults
-                        for (auto& kv : aod->attrs) {
+                        for (auto&& kv : aod->attrs) {
                             const ClassAttr* at = ci->findAttr(kv.first);
                             (*p.hash())[std::string("\x01" "a") + (at ? at->sigil : '$') + "!" + kv.first] = kv.second;
                         }
@@ -8278,7 +8278,7 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
             // variable (`$!a := $v`, or a `my $x := $!a` alias) holds a Proxy
             // over a shared cell, and the clone takes its value, not the cell
             // (Rakudo: a later write to $v reaches the original only)
-            for (auto& kv : ni->attrs) {
+            for (auto&& kv : ni->attrs) {
                 Value& sv = kv.second;
                 if (sv.t != VT::Hash || sv.hashKind != "Proxy" || !sv.hash()) continue;
                 auto c = sv.hash()->find(kCellKey);

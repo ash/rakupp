@@ -157,8 +157,8 @@ inline void envEdge(const std::shared_ptr<Env>& e, F& f) {
 
 // Every Value a hash holds a count through: dead entries keep their Values
 // until clear(), and an object-keyed hash keeps its keys' originals.
-template <class F>
-inline void hashEdges(const ValueMap& h, F& f, bool& pin, long& scan) {
+template <class H, class F>   // a ValueHash, or an object's AttrTable
+inline void hashEdges(const H& h, F& f, bool& pin, long& scan) {
     if (h.entriesAliased()) pin = true;   // a live Pair reaches the entries from outside
     h.forEachHeld([&](const Value& v) {
         if (--scan < 0) { pin = true; return false; }

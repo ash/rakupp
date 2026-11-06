@@ -473,7 +473,10 @@ In order of evidence per cost:
       Batch 1, done 2026-11-06: the layout per class, built by the key rule
       the constructor stores by, matches every object built in Roast, the
       suite and the installed modules, except for a custom metaclass's hidden
-      `__type`, which is stored first.
+      `__type`, which is stored first. Batch 2, done 2026-11-06: the table
+      is an AttrTable with ValueHash's interface, the hash kept in the
+      object's own block (a block of its own cost RakuAST 5.7%); RakuAST,
+      exceptions and perf-guard within 0.4% of main, memory unchanged.
 
 ### P4 — compile and load
 

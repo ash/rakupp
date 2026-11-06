@@ -2004,7 +2004,7 @@ bool objectStructEqv(const Value& a, const Value& b,
     if (a.obj()->hasBoxed != b.obj()->hasBoxed) ok = false;
     else if (a.obj()->hasBoxed && !eq(a.obj()->boxed(), b.obj()->boxed())) ok = false;
     else if (a.obj()->attrs.size() != b.obj()->attrs.size()) ok = false;
-    else for (auto& kv : a.obj()->attrs) {
+    else for (auto&& kv : a.obj()->attrs) {
         auto it = b.obj()->attrs.find(kv.first);
         if (it == b.obj()->attrs.end() || !eq(kv.second, it->second)) { ok = false; break; }
     }
