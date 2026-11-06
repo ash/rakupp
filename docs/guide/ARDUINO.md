@@ -282,6 +282,7 @@ the board has no strings at run time.
 | `WiFi.begin(SSID, PASS)`, `WiFi.begin(SSID)` | joins the network (one with no password, with one argument) and waits for its address; answers `WL_CONNECTED` once it has one, or `WL_CONNECT_FAILED` |
 | `WiFi.status` | `WL_IDLE_STATUS` before the first `begin`, then `WL_CONNECTED`, `WL_NO_SSID_AVAIL`, `WL_CONNECT_FAILED`, `WL_CONNECTION_LOST`, `WL_DISCONNECTED`; `WL_NO_MODULE` |
 | `say WiFi.localIP` | the address, `0.0.0.0` when not joined: printed, or interpolated into what is printed, not kept |
+| `WiFi.getTime` | the time from the network, in seconds since 1970, UTC, which the WiFi module fetches from a time server; 0 until it has one |
 | `WiFi.disconnect` | leaves the network |
 
 **`WiFi.begin` waits for the address.** The library's `begin` answers
@@ -294,6 +295,17 @@ one. If none comes within the library's 10 seconds, it leaves the network
 again, so `WiFi.status` agrees, and answers `WL_CONNECT_FAILED`. A program can
 join and print its address with nothing in between.
 
+**The time of day.** A board has no clock of the day, but the Uno R4 WiFi's
+WiFi module fetches the time from a time server once the board has joined,
+and `WiFi.getTime` answers it as a number. It is 0 until the module has it:
+before joining, for a moment after, and always with a WiFi firmware older
+than 0.5.0. [t/arduino/cases/clock.raku](../../t/arduino/cases/clock.raku)
+keeps a clock on the LED matrix by it: it takes the time after joining,
+counts on with `millis()`, and takes it again every hour. The time is UTC; the
+zone is an offset the build adds, and the building computer's own is
+`constant ZONE = DateTime.now.offset`, which holds until the next
+daylight-saving change.
+
 The sketch includes `WiFiS3.h`, which comes with the Uno R4 core, so it
 builds for an Uno R4 WiFi and not for a board without it.
 
@@ -301,7 +313,10 @@ builds for an Uno R4 WiFi and not for a board without it.
 network in range, `name` alone an open one, and an empty value none; unset,
 any name and password join. Joining takes no time and brings the address,
 192.168.1.42, with it; a failed `begin` waits out the library's 10-second
-timeout, as on a board. The board's stderr has a line for each attempt and
+timeout, as on a board. Its time is `RAKUPP_ARDUINO_TIME`, in seconds since
+1970, when the board starts, or this computer's clock when that is unset, and
+runs on with the board's time; `WiFi.getTime` answers it once the board has
+joined. The board's stderr has a line for each attempt and
 each disconnect, never with the password. Here is
 [examples/arduino/wifi.raku](../../examples/arduino/wifi.raku), the program
 above with the LED showing the connection, given the wrong password:

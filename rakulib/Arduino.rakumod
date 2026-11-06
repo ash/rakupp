@@ -48,8 +48,8 @@ my %input = do with %*ENV<RAKUPP_ARDUINO_PINS> {
     }).Hash
 } // {};
 
-sub clock-us() { $virtual ?? $now-us !! ((now - $start) * 1_000_000).floor }
 # `our`, so Arduino::LEDMatrix and other parts of the board keep one clock
+our sub clock-us() { $virtual ?? $now-us !! ((now - $start) * 1_000_000).floor }
 our sub stamp() { '[' ~ (clock-us() div 1000) ~ ' ms] ' }
 our sub advance($us) {
     return unless $virtual;

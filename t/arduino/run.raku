@@ -8,9 +8,11 @@
 # `--target=arduino --sim` against the host core (src/codegen/ArduinoSim.h),
 # must write the same bytes and exit the same way: the interpreter is the
 # oracle for the C++. Both run in virtual time — a case's `# stop: MS` line is
-# RAKUPP_ARDUINO_STOP, its `# pins:` line RAKUPP_ARDUINO_PINS and its `# wifi:`
-# line RAKUPP_ARDUINO_WIFI — so a run is exact and takes milliseconds. stderr is compared without the location lines
-# under a `die` message: the interpreter prints a backtrace, a board the line.
+# RAKUPP_ARDUINO_STOP, its `# pins:` line RAKUPP_ARDUINO_PINS, its `# wifi:`
+# line RAKUPP_ARDUINO_WIFI and its `# time:` line RAKUPP_ARDUINO_TIME — so a
+# run is exact and takes milliseconds. stderr is compared without the location
+# lines under a `die` message: the interpreter prints a backtrace, a board the
+# line.
 #
 # Then what the board refuses: programs outside the subset must stop the build
 # with exit 5 and a message naming the construct and its line.
@@ -79,6 +81,7 @@ sub MAIN(Bool :$record = False, Str :$arduino15) {
         my %env = RAKUPP_ARDUINO_STOP => header($case, 'stop') // '1000';
         with header($case, 'pins') { %env<RAKUPP_ARDUINO_PINS> = $_ }
         with header($case, 'wifi') { %env<RAKUPP_ARDUINO_WIFI> = $_ }
+        with header($case, 'time') { %env<RAKUPP_ARDUINO_TIME> = $_ }
         my %int = run-in([$*EXECUTABLE.Str, $case.basename], %env);
         my $want-out = $here.add("expected/$name.out");
         my $want-err = $here.add("expected/$name.err");
@@ -141,7 +144,7 @@ sub MAIN(Bool :$record = False, Str :$arduino15) {
         'use Arduino; say WL_CONNECTED'                    => 'did you mean to `use Arduino::WiFi`',
         'use Arduino::WiFi; my int $n = 3; WiFi.begin($n, "x")' => 'a string the build knows',
         'use Arduino::WiFi; my int $ip = WiFi.localIP'     => 'can print the address',
-        'use Arduino::WiFi; WiFi.scanNetworks'             => 'the board\'s WiFi has begin(SSID, PASS), status, localIP and disconnect',
+        'use Arduino::WiFi; WiFi.scanNetworks'             => 'the board\'s WiFi has begin(SSID, PASS), status, localIP, getTime and disconnect',
     ) -> (:key($code), :value($why)) {
         my %r = run-in([$*EXECUTABLE.Str, '--target=arduino', '-e', $code], {});
         ok(%r<exit> == 5 && %r<err>.starts-with('rakupp --target=arduino: -e, line 1: ') && %r<err>.contains($why),
