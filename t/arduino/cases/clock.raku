@@ -1,29 +1,31 @@
-# stop: 7000
+# stop: 4000
 # wifi: home:correct-horse
-# time: 1798761597
-# A clock on the Uno R4 WiFi's LED matrix, set from the network, and the minute
-# on the serial port. The board joins the network with wifi.json's name and
-# password, read while building, and takes the time from its WiFi module
-# (WiFi.getTime: seconds since 1970, UTC, which the module fetches from a time
-# server); it counts on with millis() and takes the time again every hour. The
-# zone is an offset the build adds: this case's is 0, so its run is the same on
-# every machine, and a clock for a desk takes the building computer's own,
-# which holds until a daylight-saving change:
+# time: 1798761598
+# A clock on the Uno R4 WiFi's LED matrix, HH:MM:SS, set from the network, and
+# the same each second on the serial port. The board joins the network named in WIFI_SSID and
+# WIFI_PASS, or in wifi.json beside the program where they are unset, all read
+# while building, and takes the time from its WiFi module (WiFi.getTime:
+# seconds since 1970, UTC, which the module fetches from a time server); it
+# counts on with millis() and takes the time again every hour. The zone is the
+# building computer's, an offset the build adds that holds until the next
+# daylight-saving change; TZ picks another (TZ=Asia/Tokyo).
 #
-#   constant ZONE = DateTime.now.offset;
+#   WIFI_SSID=home WIFI_PASS=secret rakupp --target=arduino clock.raku -o clock/clock.ino
 #
-# The gate's network time is 2026-12-31 23:59:57 UTC, so the run crosses
-# midnight. HH:MM in fib.raku's 3×5 font is 17 columns, wider than the
-# matrix's 12, so each reading shows the hours, scrolls a column at a time to
-# the minutes and holds; on the bottom row a lit LED moves every 5 seconds.
+# The gate builds with TZ=UTC and neither variable, so its run is the same on
+# every machine; its network time is 2026-12-31 23:59:58 UTC, so the run
+# crosses midnight. HH:MM:SS in fib.raku's 3×5 font is 27 columns, wider than
+# the matrix's 12, so the matrix holds the hours for a second, scrolls a column
+# every 100 ms to the seconds, holds them and starts again; it is drawn anew
+# each 100 ms, so the seconds it shows are the time's.
 use Arduino;
 use Arduino::LEDMatrix;
 use Arduino::WiFi;
 use JSON::Native;
 
-constant SSID = from-json($?FILE.IO.sibling('wifi.json').slurp)<ssid>;
-constant PASS = from-json($?FILE.IO.sibling('wifi.json').slurp)<password>;
-constant ZONE = 0;          # seconds east of UTC
+constant SSID = %*ENV<WIFI_SSID> // from-json($?FILE.IO.sibling('wifi.json').slurp)<ssid>;
+constant PASS = %*ENV<WIFI_PASS> // from-json($?FILE.IO.sibling('wifi.json').slurp)<password>;
+constant ZONE = DateTime.now.offset;   # seconds east of UTC, where the program is built
 constant HOUR = 3_600_000;  # how often the clock takes the network's time again, in ms
 
 # The ten digits, three columns each with one between; in @FONT a digit is
@@ -42,9 +44,12 @@ constant @FONT = do {
 };
 constant COLON = 0b01010;   # rows 1 and 3 of the digits
 constant TOP   = 1;         # the digits' first row of the eight
-constant WIDTH = 17;        # HH:MM: four digits and the colon, a column between each
+constant WIDTH = 27;        # HH:MM:SS: six digits and two colons, a column between each
+constant SPAN  = WIDTH - 12;   # how far the matrix scrolls, in columns
+constant HOLD  = 10;        # ticks the start and the end are held
+constant TICK  = 100;       # ms a tick: a frame, and a column of scroll
 
-my uint8  @cols[17];        # HH:MM's columns, as @FONT has them
+my uint8  @cols[27];        # HH:MM:SS's columns, as @FONT has them
 my uint32 @frame[3];        # 96 LEDs, row by row from the top left, high bit first
 
 my int    $base;            # the time of day when the clock last took the network's time, in seconds
@@ -75,14 +80,17 @@ sub compose(int $t) {
     @cols[8] = COLON;
     put-digit(10, $t div 600 % 6);
     put-digit(14, $t div 60 % 10);
+    @cols[18] = COLON;
+    put-digit(20, $t % 60 div 10);
+    put-digit(24, $t % 10);
 }
 
 sub light(int $x, int $y) {
     my int $i = $y * 12 + $x;
     @frame[$i div 32] = @frame[$i div 32] +| (1 +< (31 - $i % 32));
 }
-# HH:MM from its column $s on, and the seconds' LED on the bottom row.
-sub draw(int $s, int $t) {
+# HH:MM:SS from its column $s on.
+sub draw(int $s) {
     for ^3 -> $k { @frame[$k] = 0 }
     for ^12 -> $x {
         my int $bits = @cols[$x + $s];
@@ -90,7 +98,6 @@ sub draw(int $s, int $t) {
             light($x, TOP + $r) if $bits +& (1 +< $r) != 0;
         }
     }
-    light($t % 60 div 5, 7);
     LEDMatrix.show(@frame);
 }
 
@@ -102,20 +109,17 @@ sub two(int $n) {
 LEDMatrix.begin;
 until WiFi.begin(SSID, PASS) == WL_CONNECTED { delay(5000) }
 until sync() { delay(1000) }
-my int $said = -1;          # the minute last said on the serial port
+my int $said = -1;          # the second last said on the serial port
+my int $tick = 0;           # where the matrix is in its hold, scroll, hold
 loop {
     sync() if since-sync() >= HOUR;
     my int $t = now-seconds();
+    if $t != $said {
+        $said = $t;
+        two($t div 3600); print ":"; two($t div 60 % 60); print ":"; two($t % 60); say "";
+    }
     compose($t);
-    if $t div 60 != $said {
-        $said = $t div 60;
-        two($t div 3600); print ":"; two($t div 60 % 60); say "";
-    }
-    draw(0, $t);
-    delay(1500);
-    for 1 .. WIDTH - 12 -> $s {
-        draw($s, now-seconds());
-        delay(100);
-    }
-    delay(1400);
+    draw($tick < HOLD ?? 0 !! $tick < HOLD + SPAN ?? $tick - HOLD !! SPAN);
+    $tick = ($tick + 1) % (2 * HOLD + SPAN);
+    delay(TICK);
 }

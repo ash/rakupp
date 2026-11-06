@@ -1,16 +1,17 @@
 # stop: 23500
 # wifi: home:correct-horse
 # The Uno R4 WiFi's network (use Arduino::WiFi), joined with a name and
-# password the build reads from wifi.json beside the program, so neither is
-# in its source: a network out of range, then no password, each failure
-# waiting out the library's 10 s; then the right one, its address printed,
-# and a disconnect the LED shows.
+# password the build reads from WIFI_SSID and WIFI_PASS, or from wifi.json
+# beside the program where they are unset, so neither is in its source (the
+# gate builds with neither variable): a network out of range, then no
+# password, each failure waiting out the library's 10 s; then the right one,
+# its address printed, and a disconnect the LED shows.
 use Arduino;
 use Arduino::WiFi;
 use JSON::Native;
 
-constant SSID = from-json($?FILE.IO.sibling('wifi.json').slurp)<ssid>;
-constant PASS = from-json($?FILE.IO.sibling('wifi.json').slurp)<password>;
+constant SSID = %*ENV<WIFI_SSID> // from-json($?FILE.IO.sibling('wifi.json').slurp)<ssid>;
+constant PASS = %*ENV<WIFI_PASS> // from-json($?FILE.IO.sibling('wifi.json').slurp)<password>;
 
 pinMode(LED_BUILTIN, OUTPUT);
 say "status: ", WiFi.status;

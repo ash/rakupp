@@ -271,7 +271,8 @@ mkdir wifi && WIFI_SSID=home WIFI_PASS=secret rakupp --target=arduino wifi.raku 
 the build computes them: from the environment here, or from a file you keep
 out of version control, as
 [t/arduino/cases/wifi.raku](../../t/arduino/cases/wifi.raku) reads
-`wifi.json` with `use JSON::Native`. The program's source holds neither. The
+`wifi.json` with `use JSON::Native` where `WIFI_SSID` and `WIFI_PASS` are
+unset. The program's source holds neither. The
 sketch does: they are string literals in it, and in the firmware, as in any
 sketch that joins a network, so treat the `.ino` as you would the password.
 A `WiFi.begin` of anything but a string the build knows is refused, because
@@ -300,11 +301,19 @@ WiFi module fetches the time from a time server once the board has joined,
 and `WiFi.getTime` answers it as a number. It is 0 until the module has it:
 before joining, for a moment after, and always with a WiFi firmware older
 than 0.5.0. [t/arduino/cases/clock.raku](../../t/arduino/cases/clock.raku)
-keeps a clock on the LED matrix by it: it takes the time after joining,
-counts on with `millis()`, and takes it again every hour. The time is UTC; the
-zone is an offset the build adds, and the building computer's own is
-`constant ZONE = DateTime.now.offset`, which holds until the next
-daylight-saving change.
+keeps a clock by it, HH:MM:SS scrolling on the LED matrix and printed each
+second on the serial port: it takes the time after joining, counts on with
+`millis()`, and takes it again every hour. The time is UTC; the
+zone is an offset the build adds, and the clock takes the building computer's
+own, `constant ZONE = DateTime.now.offset`, which holds until the next
+daylight-saving change. `TZ` picks another zone while building
+(`TZ=Asia/Tokyo`); the gate builds with `TZ=UTC`, so the case's run is the
+same on every machine. The clock joins the network named in `WIFI_SSID` and
+`WIFI_PASS`, or in the case's `wifi.json` where they are unset:
+
+```bash
+mkdir clock && WIFI_SSID=home WIFI_PASS=secret rakupp --target=arduino t/arduino/cases/clock.raku -o clock/clock.ino
+```
 
 The sketch includes `WiFiS3.h`, which comes with the Uno R4 core, so it
 builds for an Uno R4 WiFi and not for a board without it.
