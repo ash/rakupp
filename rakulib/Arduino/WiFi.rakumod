@@ -18,6 +18,9 @@
 # instant and brings the address, which a board's `begin` waits for (the
 # sketch's rk_wifi_joined); a failed one takes the library's 10 s timeout.
 # Each attempt, and a disconnect, is a line on stderr — never the password.
+# The network's time, `WiFi.getTime`: RAKUPP_ARDUINO_TIME=SECONDS (since 1970,
+# UTC) is the time when the board starts, unset this computer's clock, and the
+# board's own time runs on from it; 0 until the board has joined.
 
 unit module Arduino::WiFi;
 
@@ -36,6 +39,7 @@ constant IP = '192.168.1.42';   # the simulated network's address for the board
 constant TIMEOUT-MS = 10_000;   # CWifi::_timeout
 
 my $air = %*ENV<RAKUPP_ARDUINO_WIFI>;
+my $epoch = do with %*ENV<RAKUPP_ARDUINO_TIME> { .Int if .chars } // time;
 my $status = WL_IDLE_STATUS;
 my $joined = '';
 
@@ -62,6 +66,10 @@ class WiFi is export {
     }
     method status()  { Arduino::advance(1); $status }
     method localIP() { Arduino::advance(1); $status == WL_CONNECTED ?? IP !! '0.0.0.0' }
+    method getTime() {
+        Arduino::advance(1);
+        $status == WL_CONNECTED ?? $epoch + Arduino::clock-us() div 1_000_000 !! 0
+    }
     method disconnect() {
         Arduino::advance(1);
         return 1 unless $status == WL_CONNECTED;

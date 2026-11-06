@@ -17,6 +17,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <math.h>
+#include <time.h>
 #include <chrono>
 #include <map>
 #include <thread>
@@ -56,6 +57,7 @@ struct Port {
 static Port err = {stderr};
 static bool virt = false;
 static uint64_t now_us = 0, stop_us = 0;
+static uint64_t epoch = 0;   // WiFi.getTime() when the board starts: RAKUPP_ARDUINO_TIME, else this computer's clock
 static std::chrono::steady_clock::time_point start;
 static std::map<long, long> mode, level, pwm, input;
 
@@ -82,6 +84,8 @@ static void init() {
     start = std::chrono::steady_clock::now();
     const char* s = getenv("RAKUPP_ARDUINO_STOP");
     if (s && *s) { virt = true; stop_us = strtoull(s, 0, 10) * 1000; }
+    const char* t = getenv("RAKUPP_ARDUINO_TIME");
+    epoch = t && *t ? strtoull(t, 0, 10) : (uint64_t)time(0);
     if (const char* p = getenv("RAKUPP_ARDUINO_PINS")) {
         while (*p) {
             char* q;
@@ -176,6 +180,7 @@ private:
 // is instant and brings the address, so the sketch's rk_wifi_joined has none
 // to wait for; a failed begin waits out the library's 10 s timeout. Each
 // attempt, and a disconnect, is a line on stderr — never the password.
+// getTime() is rk_sim::epoch plus the board's own time, 0 until joined.
 #define WL_NO_MODULE 255
 #define WL_IDLE_STATUS 0
 #define WL_NO_SSID_AVAIL 1
@@ -212,6 +217,10 @@ public:
         rk_sim::advance(1);
         IPAddress none = {{0, 0, 0, 0}};
         return st == WL_CONNECTED ? ip : none;
+    }
+    unsigned long getTime() {
+        rk_sim::advance(1);
+        return st == WL_CONNECTED ? (unsigned long)(rk_sim::epoch + rk_sim::clock_us() / 1000000) : 0;
     }
     int disconnect() {
         rk_sim::advance(1);

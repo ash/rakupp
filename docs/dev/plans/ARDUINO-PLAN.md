@@ -58,7 +58,10 @@ once the board has joined, before the router has given it an address. The
 sketch's `begin` now waits for one (`rk_wifi_joined`: every 100 ms, up to the
 library's 10 s, else it leaves and answers `WL_CONNECT_FAILED`); the
 simulated network brings the address as it joins, so `--sim` passes the
-library's answer through.
+library's answer through. `WiFi.getTime` followed: the WiFi module's own NTP
+time as an integer, so a board gets the time of day with no UDP; the
+simulated network's time is `RAKUPP_ARDUINO_TIME` at the start (unset: the
+host's clock), and t/arduino's clock case keeps HH:MM on the matrix by it.
 
 | phase | state |
 |---|---|

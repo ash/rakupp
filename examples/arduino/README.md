@@ -279,7 +279,8 @@ no strings at run time yet.
   integers and Bools.
 - **On the Uno R4 WiFi:** the LED matrix (`use Arduino::LEDMatrix`), and
   joining a network (`use Arduino::WiFi`): `WiFi.begin`, `WiFi.status`,
-  `WiFi.localIP` and `WiFi.disconnect`.
+  `WiFi.localIP`, `WiFi.getTime` (the time from the network) and
+  `WiFi.disconnect`.
 
 Hashes, strings built at run time, classes, regexes and closures stop the
 build with the line they are on. Most of these are planned: the guide's

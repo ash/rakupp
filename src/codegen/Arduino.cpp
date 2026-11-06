@@ -1206,7 +1206,8 @@ private:
     // the core's WiFiS3 library. The network's name and password are strings
     // the build knows — literals or constants — as the board has no others,
     // and `begin` answers once the board has an address (rk_wifi_joined);
-    // the address it answers can be printed (`printed`), not kept.
+    // the address it answers can be printed (`printed`), not kept. getTime
+    // is the WiFi module's own NTP time, seconds since 1970, 0 until it has it.
     Ex wifiCall(MethodCall* m, const std::vector<Expr*>& args, bool printed) {
         if (!useWiFi_) refuse(m, "WiFi is not declared — did you mean to `use Arduino::WiFi`?");
         const std::string& n = m->method;
@@ -1222,12 +1223,12 @@ private:
             }
             return {"((int64_t)rk_wifi_joined(WiFi.begin(" + a + ")))", K::Int};
         }
-        if ((n == "status" || n == "disconnect") && args.empty()) return {"((int64_t)WiFi." + n + "())", K::Int};
+        if ((n == "status" || n == "disconnect" || n == "getTime") && args.empty()) return {"((int64_t)WiFi." + n + "())", K::Int};
         if (n == "localIP" && args.empty()) {
             if (!printed) refuse(m, "WiFi.localIP used as a value — the board can print the address (`say WiFi.localIP`), not keep it");
             return {"WiFi.localIP()", K::Str};   // an IPAddress, which the core's print takes
         }
-        refuse(m, "WiFi." + n + " — the board's WiFi has begin(SSID, PASS), status, localIP and disconnect");
+        refuse(m, "WiFi." + n + " — the board's WiFi has begin(SSID, PASS), status, localIP, getTime and disconnect");
     }
 
     void forStmt(ForStmt* f, std::ostream& o, int in) {
