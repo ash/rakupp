@@ -66,8 +66,13 @@ sub arduino-cli() {
     $ide.IO.x ?? $ide !! Nil
 }
 
+# A case builds and runs with nothing of this machine's own network or zone:
+# WIFI_SSID and WIFI_PASS are dropped and TZ is UTC, so a case that reads them
+# while building (wifi, clock) builds the same everywhere.
 sub run-in(@cmd, %env) {
-    my $p = run |@cmd, :out, :err, :cwd($cases.Str), :env(%(%*ENV, %env));
+    my %e = %*ENV, TZ => 'UTC', %env;
+    %e{<WIFI_SSID WIFI_PASS>}:delete;
+    my $p = run |@cmd, :out, :err, :cwd($cases.Str), :env(%e);
     my $out = $p.out.slurp(:close);
     my $err = $p.err.slurp(:close);
     %(:$out, :$err, :exit($p.exitcode))
