@@ -6,6 +6,7 @@
 #include "BuiltinsShared.h" // timerRemainingSecs — Promise.in/.at state is time-derived
 #include "RakuAstClasses.h"
 #include "MethodCallSegment.h"
+#include "AttrLayout.h"
 #include <chrono> // DateTime.now subsecond stamp (portable — MSVC has no sys/time.h)
 #if !defined(_WIN32)
 #include <unistd.h> // gethostname — $*KERNEL.hostname
@@ -1038,6 +1039,8 @@ void Interpreter::runAttrDefaults(const PRef<ObjectData>& od,
     size_t nChain = 0;
     attrChainOf(ci.get(), chainBuf, chainSpill, nChain);
     auto chainAt = [&](size_t i) -> ClassInfo* { return i < 8 ? chainBuf[i] : chainSpill[i - 8]; };
+    const AttrChainView chain{chainBuf, &chainSpill, nChain};
+    const bool attrsWereEmpty = od->attrs.empty();   // (for the layout check)
     // the attribute table gets one chunk the size the class declares
     // (VALUEHASH-SMALL-PLAN.md), before anything is stored in it
     {
@@ -1120,24 +1123,6 @@ void Interpreter::runAttrDefaults(const PRef<ObjectData>& od,
                 if (!seen) providedArgs.push_back(ProvidedArg{&k, arg.pairVal(), pat, false});
             }
         }
-    // `has Digest $.digest` beside `has &!digest`: same bare name,
-    // different sigils. attrs is keyed by bare name, so the twins
-    // clobbered each other (Auth::SCRAM's callable ended up holding
-    // the enum). A non-$ twin stores under "&name"/"@name"/"%name";
-    // the read/write paths try that spelling first.
-    // Twins are a matter of ONE class. The same name declared again by a
-    // subclass, whatever its sigil, is shadowing: the ancestor's slot is the
-    // class-qualified one below and the subclass keeps the bare name, which is
-    // where its accessor reads (ClassInfo::findAccessorAttr). Counting sigils
-    // over the whole chain put `class B is A { has %.data }` under "%data",
-    // beside A's `has @.data`, and left `B.new.data` answering Any.
-    // Only a NON-$ attribute can need the sigil-prefixed spelling, so a class of
-    // plain `$` attributes, the common one, never scans for its twin.
-    auto hasTwin = [](const ClassInfo* lvl, const ClassAttr& at) {
-        for (auto& a2 : lvl->attrs)
-            if (a2.sigil != at.sigil && a2.name == at.name) return true;
-        return false;
-    };
     // a role's type-capture parameter, resolved per object (see roleTypeIn)
     auto resolveRoleType = [&](const std::string& t) -> const std::string& {
         return roleTypeIn(ci.get(), t);
@@ -1193,25 +1178,12 @@ void Interpreter::runAttrDefaults(const PRef<ObjectData>& od,
             tctx().cur = denv;
         };
         for (auto& at : lvl->attrs) {
-            // storage slot: bare name, unless a same-named twin of
-            // another sigil exists — then the non-$ one keys by
-            // "&name"/"@name"/"%name"
-            // The slot name is the attribute's own name except for a sigil twin,
-            // so point at it rather than copying a std::string per attribute per
-            // construction.
+            // its storage key, the rule the class's AttrLayout is built by
+            // (attrStoreKey: the bare name, a sigil twin's "@name", or
+            // "Owner\x01name" where a more derived class declares the name
+            // too), pointing at the attribute's own name where it can
             std::string slotBuf;
-            const std::string* slotp = &at.name;
-            if (at.sigil != '$' && hasTwin(lvl, at)) {
-                slotBuf = std::string(1, at.sigil) + at.name;
-                slotp = &slotBuf;
-            }
-            // a MORE-DERIVED class declares this name too: this level's storage
-            // is its own, under a class-qualified key (see attrSlotFor)
-            bool shadowedHere = false;
-            for (size_t k = 0; k < lvlIx && !shadowedHere; k++)
-                for (auto& a2 : chainAt(k)->attrs) if (a2.name == at.name) { shadowedHere = true; break; }
-            if (shadowedHere) { slotBuf = lvl->name + "\x01" + at.name; slotp = &slotBuf; }
-            const std::string& slot = *slotp;
+            const std::string& slot = attrStoreKey(chain, lvlIx, at, slotBuf);
             ProvidedArg* provided = nullptr;
             for (auto& pv : providedArgs)
                 if (*pv.name == at.name) { provided = &pv; break; }
@@ -1368,6 +1340,7 @@ void Interpreter::runAttrDefaults(const PRef<ObjectData>& od,
         if (!pv.bound)
             od->attrs[*pv.name] = typedContainer(
                 coerceToSigil(namedStore(pv.val, *pv.at, ci->declEnv.get()), pv.at->sigil), *pv.at);
+    if (RAKUPP_UNLIKELY(g_attrLayoutCheck != nullptr)) attrLayoutCheck(*od, ci.get(), chain, attrsWereEmpty);
 }
 
 #if defined(__APPLE__)

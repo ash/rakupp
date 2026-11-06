@@ -470,6 +470,10 @@ In order of evidence per cost:
       attributes (0.71×). [OBJECT-SLOTS-PLAN.md](OBJECT-SLOTS-PLAN.md): 397
       uses of the table, found by the compiler, keep ValueHash's interface
       through a stand-in type; keys a layout lacks go to an overflow table.
+      Batch 1, done 2026-11-06: the layout per class, built by the key rule
+      the constructor stores by, matches every object built in Roast, the
+      suite and the installed modules, except for a custom metaclass's hidden
+      `__type`, which is stored first.
 
 ### P4 — compile and load
 

@@ -2080,6 +2080,7 @@ struct NcLayoutSlot {
     ~NcLayoutSlot();
 };
 
+struct AttrLayout;   // the keys an instance stores its declared attributes under (AttrLayout.h)
 struct ClassInfo {
     std::string name;
     // A ROLE composing a role that declares the same attribute: the conflict
@@ -2101,6 +2102,9 @@ struct ClassInfo {
     std::string nativeOf;     // …and its element type, `is Array[Str]` (Str)
     std::vector<std::shared_ptr<ClassInfo>> extraParents; // additional `is` parents (multiple inheritance)
     std::vector<ClassAttr> attrs;
+    // OBJECT-SLOTS-PLAN: the layout of an instance's attributes, built from the
+    // chain runAttrDefaults walks (attrLayoutFor); read and replaced atomically
+    std::shared_ptr<const AttrLayout> attrLayout;
     ValueMap methods; // Code values (closures)
     std::set<std::string> exportedMethods; // `method m is export` — `import Class` gives a sub form
     std::map<std::string, std::string> rules; // grammar token/rule/regex -> pattern

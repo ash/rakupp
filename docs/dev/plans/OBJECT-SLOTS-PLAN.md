@@ -94,7 +94,8 @@ Each lands alone and is gated alone (below); 1 and 2 change no answer.
    `runAttrDefaults` uses for its keys (factored out, so the two cannot
    drift), and a check that every object it builds stores exactly the
    layout's keys in the layout's order. The check runs on through Roast, the
-   suite and the module battery, then becomes a test.
+   suite and the module battery, then becomes a test. *Done 2026-11-06:
+   below.*
 2. **The type swap.** `ObjectData::attrs` becomes an AttrTable in its
    table-only form: every key in `extra`. The compiler finds the sites (the
    method below); most are `[]`, `find`, `end` and `count`, which keep their
@@ -111,6 +112,62 @@ Each lands alone and is gated alone (below); 1 and 2 change no answer.
    accessor (`findAccessorAttr`), `$!x` in a method — keyed by the layout,
    so a read skips the key lookup. A speed step: `objects` is 1.56× Rakudo at
    steady state (V6-PLAN P0).
+
+## Batch 1, done 2026-11-06
+
+`src/AttrLayout.h` holds the key rule, `attrStoreKey`, which runAttrDefaults
+calls for every attribute it stores and the layout is built from: the bare
+name, a sigil twin's `@name`, or `Owner\x01name` where a more derived level
+declares the name too. `ClassInfo::attrLayout` is the layout, built on first
+ask and kept per version of the chain: each level's class and attribute
+count, so a class `makeTypedEx` or the MOP grows gets a new one. Nothing reads
+it yet but the check.
+
+`RAKUPP_ATTR_LAYOUT_CHECK=<file>` compares every object runAttrDefaults
+builds with its class's layout, and appends each distinct difference and a
+per-process summary to the file. Unset, it is one predicted branch per
+construction. Retired instructions against main: objnew equal (within noise),
+the three-level chain (B2 is B1 is B0, a shadowed `$.a`) +0.08%. The key rule
+has to be inlined: out of line, as the compiler first left it, it cost every
+construction ~86 instructions (objnew +0.8%, the chain +1.1%).
+
+| run | processes | objects checked | differed |
+|---|---:|---:|---:|
+| Roast, all 1,425 files (221,034 tests, all pass) | 312 | 132,107 | 9 |
+| `t/run.raku` (1,966 checks, all pass, with and without it) | 554 | 649,300 | 4 |
+| installed modules (below) | 53 | 21,507 | 14 |
+
+Every difference is the same kind, `nonempty,beyond`: an object whose class
+is an instance of a user's metaclass already holds the engine's hidden
+`__type` when its attributes are seeded, stored first. Its declared keys
+follow in the layout's order (`stored=__type,aspects layout=aspects`). Roast's
+come from ClassWithAspectsHOW, TestHOW, `EXPORTHOW::SUPERSEDE::class`, three
+`EXPORTHOW::DECLARE` ones and ProfiledGrammarHOW. The suite's come from
+MetamodelX::HookProbe, ProbeHOW and TracingHOW, and the modules' all from
+MetamodelX::MonitorHOW (OO::Monitors). No object stored its declared keys in
+another order, and none missed a key.
+
+The module battery was not on this machine (tools/battery-scan.raku needs its
+checkout). The 87 distributions installed in `~/.raku` stood in: `use` of each
+of the 380 modules they provide with the check on, and the suite's module
+tests that load them. 376 load. Cro::Tools::CLI, Webraku, Webraku::HTML and
+Webraku::Server fail to load on the build before this batch too.
+
+One order difference was found by building it, not in any run: a runtime
+`set_build` closure that stores a LATER attribute stores it before its own
+(nothing seeds an attribute that has no default first), (b, a) against the
+layout's (a, b). `.raku` lists declaration order on both engines, so nothing
+seen shows it.
+
+t/regression/attr-layout-store-order.raku is the check made a test. It runs
+programs covering shadowing, twins, roles and role parameters, a second
+class parent, `does R is A`, defaults reading and writing other attributes,
+`is built`, BUILD, TWEAK, typed and trait containers, a mixin and a class
+under an exported HOW. It pins the two known differences.
+
+For batch 3: in layout mode `__type` goes to `extra`, so it is iterated after
+the slots where it is now first; the walks over an object's table must skip
+hidden keys, which batch 3 checks site by site.
 
 ## The sites
 
