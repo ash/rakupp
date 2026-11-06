@@ -8174,7 +8174,13 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
         // The message first: making it may raise and catch errors of its own,
         // which must not take the `throw` frame the marker asks for.
         std::string msg = excMessageOf(*this, inv);
-        if (m == "throw") g_btSettingFrames = 1;
+        // …and methodCall raises a `.throw`, once this frame has returned (kThrowTag)
+        if (m == "throw") {
+            static const IStr kTag(kThrowTag);
+            Value mark = Value::pair(std::move(msg), inv);
+            mark.hashKind = kTag;
+            return mark;
+        }
         throw RakuError{inv, msg};
     }
     // `$exception.Failure` — the exception wrapped in a Failure, unthrown, which

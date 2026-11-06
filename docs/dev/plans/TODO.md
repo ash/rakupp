@@ -23,8 +23,10 @@ The same items grouped by theme, with a complexity estimate for each:
   passes, so a throw costs more the larger the frames it crosses. A method
   nothing takes now returns to methodCall before it is thrown, and `.?`,
   `».?`, `.*` and a coercion get the miss back unthrown: 1.6M → 0.6M and
-  1.2M → 20K instructions. Left: `.throw` (4.0M) and a `die` in a routine
-  (358K), through methodCallInner (a 21 KB table) and evalMethodCallExpr.
+  1.2M → 20K instructions. `.throw` and the built-in `die` are raised where the
+  frames are small, and a user method no longer runs under methodCallInner:
+  `.throw` 4.0M → 0.6M, a `die` in a method 1.5M → 0.96M. Left: a `die` in a
+  sub (763K), callCallableRaw's catch-and-rethrow through the caller's evalCall.
 - [ ] **Parallel `.hyper` / `.race` and hyper kernels** (2026-10-09): `.map` /
   `.grep` on a HyperSeq run on the `hyper for` scheduler (runParallel), and
   `»op«` / `».method` over plain Ints and Nums run natively, split over cores

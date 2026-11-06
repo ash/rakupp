@@ -3724,24 +3724,42 @@ void Interpreter::markHandlerError(RakuError& e, uint64_t serial) {
     }
     if (s->kind == NK::ExprStmt) {
         Expr* e = static_cast<ExprStmt*>(s)->e.get();
-        if (e && e->kind == NK::Call) {
+        if (e && e->kind == NK::Call && plainDieCall(static_cast<Call*>(e))) {
             auto* c = static_cast<Call*>(e);
-            if (!c->callee && c->name == "die" && !tctx().cur->find(callAmpName(c))) {
-                auto rit = builtinRefs_.find(c->name);
-                if (rit == builtinRefs_.end() || !rit->second.code() || rit->second.code()->cold().wrappers.empty()) {
-                    if (s->line > 0) curLine_ = s->line;
-                    if (g_traceStmts) traceStmt(s);
-                    tctx().curStmtExpr = e;
-                    if (e->line > 0) curLine_ = e->line;
-                    ValueList args = evalArgs(c->args);
-                    for (auto& a : args) if (a.t == VT::Array) a.seqTouch();
-                    err.reset(new HandedError{dieError(args), nullptr});
-                    return Value::nil();
-                }
-            }
+            if (s->line > 0) curLine_ = s->line;
+            if (g_traceStmts) traceStmt(s);
+            tctx().curStmtExpr = e;
+            if (e->line > 0) curLine_ = e->line;
+            ValueList args = evalArgs(c->args);
+            for (auto& a : args) if (a.t == VT::Array) a.seqTouch();
+            err.reset(new HandedError{dieError(args), nullptr});
+            return Value::nil();
         }
     }
     return exec(s, sink);
+}
+
+// A call of the BUILT-IN `die`: the program has no `&die` of its own in scope,
+// and the built-in is not wrapped — evalCall's own test
+bool Interpreter::plainDieCall(Call* c) {
+    if (c->callee || c->name != "die" || tctx().cur->find(callAmpName(c))) return false;
+    auto rit = builtinRefs_.find(c->name);
+    return rit == builtinRefs_.end() || !rit->second.code() || rit->second.code()->cold().wrappers.empty();
+}
+
+// A call of the built-in `die` (evalCall's first test): its error is made and
+// raised in THIS frame, as the rest of evalCall and the built-in would make
+// and raise it. Thrown from inside evalCall, it unwound that frame's cleanup,
+// which resumes from the end of a 3 KB call-site table — a `die` in a sub
+// retired 880K instructions (SPEED-BACKLOG 55).
+[[gnu::noinline]] Value Interpreter::execDieStmt(Call* c) {
+    ValueList args = evalArgs(c->args);
+    raceOn(args.empty() ? nullptr : &args[0], c->name);
+    for (auto& a : args)
+        if (a.t == VT::Array) { if (a.ext()) drainIfFiniteLazy(a); a.seqTouch(); }
+    const auto& cf = tctx().catchFrames;
+    if (cf.empty() || (!cf.back().catchBlk && !cf.back().fence)) throw dieError(args);
+    return dieDispatching(args);
 }
 
 // LAST {…} once, when a loop ENDS — by exhausting its source, its condition

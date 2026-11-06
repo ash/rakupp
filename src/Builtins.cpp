@@ -6747,10 +6747,27 @@ Value Interpreter::methodCall(const Value& inv, const std::string& m, ValueList 
     if (inv.t == VT::Array && inv.arr() && inv.arr()->empty() && inv.s == "Slip" &&
         (opEq(m, "map") || opEq(m, "grep") || opEq(m, "sort") || opEq(m, "list") || opEq(m, "unique")))
         return emptySlipSingleton();
-    Value r = methodCallInner(inv, m, std::move(args), rwArgs, skipOwn);
-    if (RAKUPP_UNLIKELY(isNoMethod(r))) {
-        if (noMethodBack) return r;
-        throwNoMethod(std::move(r));
+    // A user object's own method is asked for HERE, ahead of the ladder, so
+    // methodCallInner is not under it: an error the method raises would unwind
+    // through an empty cleanup the compiler leaves at the END of that frame,
+    // and its resume scans all 21 KB of the frame's call-site table (a `die` in
+    // a method: 1.5M instructions). PseudoStash and the aliased names keep the
+    // order methodCallInner gives them.
+    std::optional<Value> own;
+    const bool tryOwn = inv.t == VT::Object && inv.obj() && inv.obj()->cls && !skipOwn &&
+                        !opEq(m, "new") && !opEq(m, "perl") && !opEq(m, "Stringy") &&
+                        !opEq(inv.obj()->cls->name, "PseudoStash");
+    if (tryOwn) {
+        raceOn(&inv, m);
+        own = methodCallOwn(inv, MName(m), args, rwArgs);
+    }
+    Value r = own ? std::move(*own) : methodCallInner(inv, m, std::move(args), rwArgs, skipOwn, tryOwn);
+    if (RAKUPP_UNLIKELY(!r.hashKind.empty())) {   // (an error tagged to be raised here: kNoMethodTag, kThrowTag)
+        if (isNoMethod(r)) {
+            if (noMethodBack) return r;
+            throwNoMethod(std::move(r));
+        }
+        if (r.t == VT::Pair && r.hashKind == kThrowTag) throwMarked(std::move(r));
     }
     if (r.t == VT::Array && r.isList && r.s.empty() && !sortK &&
         (opEq(m, "kv") || opEq(m, "keys") || opEq(m, "values") || opEq(m, "pairs") ||
@@ -6820,8 +6837,8 @@ static std::string ctorParamStr(const Value& p, bool inSignature) {
 extern const char* const kCatHandleSrc;                                          // CatHandleSrc.cpp
 
 Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName, ValueList args, const std::vector<ExprPtr>* rwArgs,
-                                   bool skipOwn) {
-    raceOn(&invIn, mName);   // (--race: a method reads its container's length or keys)
+                                   bool skipOwn, bool ownTried) {
+    if (!ownTried) raceOn(&invIn, mName);   // (--race: a method reads its container's length or keys)
     // The invocant arrives BY REFERENCE. It used to be by value, which cost a
     // 376-byte copy and up to eleven atomic refcount bumps on every method call —
     // to serve the handful of arms that actually rewrite it (the class-alias
@@ -6892,6 +6909,46 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
     if (invIn.t == VT::Hash && invIn.hashKind == "Stash" && !invIn.s.empty() &&
         (mName == "gist" || mName == "Str"))
         return Value::str(invIn.s.str());
+    // `.perl` IS `.raku` — the old name for the same method. Aliasing once, here,
+    // replaces sixteen `|| m == "perl"` clauses scattered down the ladder, each of
+    // which had to be remembered by whoever added the next `.raku` arm. It has to
+    // happen at construction: MName holds a REFERENCE to the string, so binding it
+    // to a ternary temporary would dangle — hence the static lvalue.
+    // …but a class that defines its OWN `method perl` keeps it: Rakudo's `.perl`
+    // is a real method on Mu, so a user override wins over the forward to `.raku`.
+    // The lookup only runs for the literal name "perl", which is rare.
+    static const std::string kRaku = "raku";
+    const bool userPerl = opEq(mName, "perl") &&
+                          invIn.t == VT::Object && invIn.obj() && invIn.obj()->cls &&
+                          invIn.obj()->cls->findMethod("perl");
+    // `.Stringy` is Mu's string coercion — `self.Str` — and was missing entirely,
+    // so it died on every type including the enum values LWP::Simple builds its
+    // request line from. Forwarded the same way `.perl` forwards to `.raku`, with
+    // the same escape: a class that defines its own `method Stringy` keeps it.
+    static const std::string kStr = "Str";
+    const bool userStringy = opEq(mName, "Stringy") &&
+                             invIn.t == VT::Object && invIn.obj() && invIn.obj()->cls &&
+                             invIn.obj()->cls->findMethod("Stringy");
+    MName m{(opEq(mName, "perl") && !userPerl)      ? kRaku
+          : (opEq(mName, "Stringy") && !userStringy) ? kStr
+                                                 : mName};
+    m.skipOwn = skipOwn;
+    auto a0 = [&]() -> Value { return args.empty() ? Value::any() : args[0]; };
+    // A USER OBJECT whose class defines the method dispatches HERE. The arm that
+    // does it lives in methodCallPart2, which is reached ~3000 lines down this
+    // function, so every call to a user method first walked the entire built-in
+    // ladder — thousands of `m == "..."` string compares. That is why a plain
+    // method call measured 5.6x Rakudo and a private one 10x, while rakupp's own
+    // loop is 4x FASTER: the cost was dispatch, not the work.
+    //
+    // Only the plain case is taken. `new` (whose multis ADD to the default
+    // constructor), a role STUB satisfied by an attribute, and a `handles`-
+    // delegated name all have rules the full arm knows, so they fall through to
+    // it unchanged. Everything in the ladder that touches a user object already
+    // guards itself with `!cls->findMethod(m)`, so nothing there wanted this call.
+    // (methodCall asks it first, out of this frame: see there)
+    if (!ownTried && invIn.t == VT::Object && invIn.obj() && invIn.obj()->cls && m != "new" && !m.skipOwn)
+        if (auto r = methodCallOwn(invIn, m, args, rwArgs)) return std::move(*r);
     std::optional<Value> invCopy;
     const Value* invp = &invIn;
     // package-relative short name: a bare `Frog` type invocant answers as its
@@ -6935,65 +6992,6 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
         }
     }
     const Value& inv = *invp;
-    // `.perl` IS `.raku` — the old name for the same method. Aliasing once, here,
-    // replaces sixteen `|| m == "perl"` clauses scattered down the ladder, each of
-    // which had to be remembered by whoever added the next `.raku` arm. It has to
-    // happen at construction: MName holds a REFERENCE to the string, so binding it
-    // to a ternary temporary would dangle — hence the static lvalue.
-    // …but a class that defines its OWN `method perl` keeps it: Rakudo's `.perl`
-    // is a real method on Mu, so a user override wins over the forward to `.raku`.
-    // The lookup only runs for the literal name "perl", which is rare.
-    static const std::string kRaku = "raku";
-    const bool userPerl = opEq(mName, "perl") &&
-                          inv.t == VT::Object && inv.obj() && inv.obj()->cls &&
-                          inv.obj()->cls->findMethod("perl");
-    // `.Stringy` is Mu's string coercion — `self.Str` — and was missing entirely,
-    // so it died on every type including the enum values LWP::Simple builds its
-    // request line from. Forwarded the same way `.perl` forwards to `.raku`, with
-    // the same escape: a class that defines its own `method Stringy` keeps it.
-    static const std::string kStr = "Str";
-    const bool userStringy = opEq(mName, "Stringy") &&
-                             inv.t == VT::Object && inv.obj() && inv.obj()->cls &&
-                             inv.obj()->cls->findMethod("Stringy");
-    MName m{(opEq(mName, "perl") && !userPerl)      ? kRaku
-          : (opEq(mName, "Stringy") && !userStringy) ? kStr
-                                                 : mName};
-    m.skipOwn = skipOwn;
-    auto a0 = [&]() -> Value { return args.empty() ? Value::any() : args[0]; };
-    // A USER OBJECT whose class defines the method dispatches HERE. The arm that
-    // does it lives in methodCallPart2, which is reached ~3000 lines down this
-    // function, so every call to a user method first walked the entire built-in
-    // ladder — thousands of `m == "..."` string compares. That is why a plain
-    // method call measured 5.6x Rakudo and a private one 10x, while rakupp's own
-    // loop is 4x FASTER: the cost was dispatch, not the work.
-    //
-    // Only the plain case is taken. `new` (whose multis ADD to the default
-    // constructor), a role STUB satisfied by an attribute, and a `handles`-
-    // delegated name all have rules the full arm knows, so they fall through to
-    // it unchanged. Everything in the ladder that touches a user object already
-    // guards itself with `!cls->findMethod(m)`, so nothing there wanted this call.
-    if (inv.t == VT::Object && inv.obj() && inv.obj()->cls && m != "new" && !m.skipOwn) {
-        auto ci = inv.obj()->cls;
-        if (ci->delegatedNames.empty() || !ci->delegatedNames.count(m)) {
-            ClassInfo* owner = nullptr;
-            if (Value* um = ci->findMethodForCall(m, langRev_ < 2, &owner)) {
-                if (!(um->t == VT::Code && um->code() && um->code()->ci().isStub))
-                    // hand the resolution on — invokeMethodChain would otherwise
-                    // hash and walk for the same name all over again
-                    return invokeMethodChain(m, ci.get(), inv, std::move(args), rwArgs, um, owner);
-            }
-            // …and a public attribute's generated ACCESSOR is a method of the
-            // class too, so it is answered here as well: it used to walk the
-            // whole built-in ladder down to its arm in methodCallPart2, 3.75x
-            // Rakudo per `$node.left`, and LeftistHeap makes ~15 such calls per
-            // merge step (Graph.diameter, #47). The names that are not methods
-            // (WHAT, HOW, …) and those an arm above the accessor's answers for
-            // any object keep the slow path.
-            else if (args.empty()) {
-                if (const Value* slot = plainAccessorSlot(inv, m)) { ParStripe rs(*this, slot); raceAttr(inv.obj(), slot, RaceAcc::Read); return *slot; }
-            }
-        }
-    }
     // A grammar CURSOR — the `self` of a method reached through `<.method>`
     // (issue #64) — answers its grammar's RULES as method calls (`self.b`,
     // `self.expr($x)`: matched in the running parse, at the cursor's position),
@@ -10150,6 +10148,33 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
     return methodCallUnresolved(inv, m, args, rwArgs);
 }
 
+// methodCallInner's arm for a USER OBJECT whose class defines the method,
+// in a frame of its own (see the call): the shared_ptr it holds the class by
+// is cleaned up here, under a small call-site table.
+[[gnu::noinline]] std::optional<Value> Interpreter::methodCallOwn(const Value& inv, const MName& m, ValueList& args,
+                                                                  const std::vector<ExprPtr>* rwArgs) {
+    auto ci = inv.obj()->cls;
+    if (!ci->delegatedNames.empty() && ci->delegatedNames.count(m)) return std::nullopt;
+    ClassInfo* owner = nullptr;
+    if (Value* um = ci->findMethodForCall(m, langRev_ < 2, &owner)) {
+        if (!(um->t == VT::Code && um->code() && um->code()->ci().isStub))
+            // hand the resolution on — invokeMethodChain would otherwise
+            // hash and walk for the same name all over again
+            return invokeMethodChain(m, ci.get(), inv, std::move(args), rwArgs, um, owner);
+    }
+    // …and a public attribute's generated ACCESSOR is a method of the
+    // class too, so it is answered here as well: it used to walk the
+    // whole built-in ladder down to its arm in methodCallPart2, 3.75x
+    // Rakudo per `$node.left`, and LeftistHeap makes ~15 such calls per
+    // merge step (Graph.diameter, #47). The names that are not methods
+    // (WHAT, HOW, …) and those an arm above the accessor's answers for
+    // any object keep the slow path.
+    else if (args.empty()) {
+        if (const Value* slot = plainAccessorSlot(inv, m)) { ParStripe rs(*this, slot); raceAttr(inv.obj(), slot, RaceAcc::Read); return *slot; }
+    }
+    return std::nullopt;
+}
+
 // NativeCall CStruct field read: `$s.field` on a native-backed struct reads
 // native memory at the field's computed offset. (Writes go through the
 // assignment path.) Only for a repr('CStruct') class the accessor doesn't
@@ -10518,6 +10543,13 @@ Value Interpreter::methodCallUnresolved(const Value& inv, const MName& m, ValueL
 void Interpreter::throwNoMethod(Value ex) {
     ex.hashKind = IStr();
     std::string msg = ex.obj()->attrs.at("message").toStr();
+    throw RakuError{std::move(ex), std::move(msg)};
+}
+
+void Interpreter::throwMarked(Value mark) {
+    std::string msg = mark.s.str();
+    Value ex = *mark.pairVal();
+    g_btSettingFrames = 1;   // the setting's `throw`, a frame of the backtrace (btCaptureNow)
     throw RakuError{std::move(ex), std::move(msg)};
 }
 

@@ -2164,6 +2164,10 @@ public:
     // One statement of a block that takes its errors by hand: the error
     // lands in `err` rather than being raised, where that can be done.
     [[gnu::noinline]] Value execStmtHanding(Stmt* s, bool sink, std::unique_ptr<HandedError>& err);
+    // A call of the BUILT-IN `die`, and evalCall's for one: its error raised in
+    // a frame of its own (see the definition)
+    bool plainDieCall(Call* c);
+    [[gnu::noinline]] Value execDieStmt(Call* c);
     // A block's CATCH, run for one error (see the definition).
     [[gnu::noinline]] int runBlockCatch(Block* b, Block* catchBlk, RakuError& e);
     [[gnu::noinline]] int runBlockCatch(const std::vector<StmtPtr>& stmts, Block* catchBlk, RakuError& e);
@@ -2746,8 +2750,9 @@ public:
     Value interpolate(ValueList& vals);   // evalInterp over evaluated parts (and a --cnp kernel's)
     bool chainLink(const std::string& op, const Value& prev, const Value& next);   // one link of `a < b < c`
     bool chainLinkUser(const std::string& op, const Value& l, const Value& r, Value& out);   // …the program's operator's
+    // (ownTried: methodCall asked methodCallOwn already, and nothing answered)
     Value methodCallInner(const Value& inv, const std::string& method, ValueList args, const std::vector<ExprPtr>* rwArgs,
-                          bool skipOwn = false);
+                          bool skipOwn = false, bool ownTried = false);
     // Ordered SEGMENTS of the same dispatch chain, split out of methodCallInner to
     // get it under control (it was 9,138 lines). Each returns nullopt for "not
     // handled here"; they must be called in this order — see MethodCallTail.cpp.
@@ -2770,6 +2775,10 @@ public:
     // plain class), so no built-in arm answers it first.
     Value methodCallUnresolved(const Value& inv, const struct MName& m, ValueList& args,
                                const std::vector<ExprPtr>* rwArgs);
+    // methodCallInner's arm for a user object whose class defines the method,
+    // out of its frame (see the call)
+    [[gnu::noinline]] std::optional<Value> methodCallOwn(const Value& inv, const struct MName& m, ValueList& args,
+                                                         const std::vector<ExprPtr>* rwArgs);
     // …whose X::Method::NotFound is not thrown there but RETURNED, tagged
     // kNoMethodTag, and thrown by methodCall once methodCallInner and the
     // segments have returned (throwNoMethod). The unwinder scans each frame's
@@ -2779,6 +2788,13 @@ public:
     static constexpr char kNoMethodTag[] = "\x01no-method";
     static bool isNoMethod(const Value& r) { return r.t == VT::Object && r.hashKind == kNoMethodTag; }
     [[noreturn]] void throwNoMethod(Value ex);
+    // …and `.throw` of an exception object, the same way: its arm in
+    // methodCallPart2 — the binary's largest call-site table, 46 KB, the arm
+    // 73% in, and a cleanup that rescans all of it — returns the message and
+    // the object as a Pair tagged kThrowTag, and methodCall raises it
+    // (throwMarked). A `.throw` cost 4.0M instructions.
+    static constexpr char kThrowTag[] = "\x01throw";
+    [[noreturn]] void throwMarked(Value mark);
     // an error's payload is an X::Method::NotFound, the type or an instance
     static bool noMethodPayload(const Value& p) {
         return (p.t == VT::Type && p.s == "X::Method::NotFound") ||

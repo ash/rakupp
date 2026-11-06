@@ -32,7 +32,7 @@ theme the rows are sorted by complexity, largest first.
 | 1 | Interpreter at native speed (17 of 35 tasks open) | XL | Quicken `evalAssign`/`evalIndex`/`evalUnary`, then task 10 — [INTERP-SPEED-PLAN.md](INTERP-SPEED-PLAN.md) |
 | 5 | Pass the thread context down instead of reading `tctx_` (20% of a walking `loopsum`) | XL | runLoopBody, execPlainBlock, exec, evalAssign — INTERP-SPEED-PLAN task 4 |
 | 6 | A dispatch table and type-keyed inline caches for built-in methods | XL | Design first: hashing the method chain alone measured slower — V6 P2, [DISPATCH-PERF-PLAN.md](DISPATCH-PERF-PLAN.md) |
-| 55 | A thrown exception pays for every large frame it crosses: libc++abi's personality routine scans a frame's call-site table linearly up to its call, in both unwind passes. `try { die "x" }` retires 358K instructions, `.throw` of an exception object 4.0M; Rakudo takes a few µs for either. methodCallInner's table is 21 KB, evalMethodCallExpr's 4 KB | M–L | Throw where the frames are small: a method nothing takes already returns to methodCall first (2026-11-06, below). `.throw` and a `die` in a routine are next, or make the frames a found method runs under smaller. The frame table and the method are in the not-found commit |
+| 55 | A thrown exception pays for every large frame it crosses: libc++abi's personality routine scans a frame's call-site table linearly up to its call, in both unwind passes, and a frame's cleanup resumes the unwind from its landing pad, usually at the frame's end, scanning again. Since 2026-11-06 a method nothing takes, `.throw` and the built-in `die` are raised where the frames are small, and a user object's own method no longer runs under methodCallInner: `.throw` 4.0M → 0.6M instructions, a `die` in a method 1.5M → 0.96M, at the mainline 359K → 243K (below). Left: a `die` in a sub is 763K (about five times what Rakudo takes), most of it callCallableRaw's catch-and-rethrow through the caller's evalCall, whose cleanups are real (its `args`, a TranspCall) and sit at the end of a 3 KB table | M | A routine's error leaves callCallableRaw without the rethrow, or the caller's frames hold nothing to clean. Calling a program's routine from a helper outside evalCall cost the call kernels up to 1.6% and saved nothing |
 | 16 | Graph #47: a lean `invokeMethod` path, then one for closures | M | A method or closure call is ~0.2 µs against Rakudo's ~0.08 — TODO.md |
 | 19 | Operator names as integers (the Int fast path for `div mod %% ** gcd lcm min max` is done, 2026-10-21) | M | V6 P2 |
 | 20 | The call-path cost shipped in v5.3.0 (`privmeth` +9.5%, `method` +8.6%) | M | `setupRwLinks` on calls with no rw parameter, SlotStripe single-threaded; A/B against v5.2.1 — TODO.md |
@@ -119,6 +119,18 @@ theme the rows are sorted by complexity, largest first.
   `Int.?nope` 1,244K → 20K, `».?nope` an element 1,165K → 16K, `.*nope`
   1,170K → 18K, a `Foo()` parameter given an Int, reaching COERCE, 1,186K
   → 38K. perf-guard's method kernels +0.08–0.17%. What is left is row 55.
+- **`.throw` and the built-in `die`, raised where the frames are small**
+  (2026-11-06, row 55, which stays open for what is left). `.throw` of an
+  exception object is returned to methodCall, tagged, out of methodCallPart2
+  (the binary's largest call-site table, 46 KB, its arm 73% in, a cleanup
+  that rescans all of it) and methodCallInner. A user object's own method is
+  asked for from methodCall (methodCallOwn), so methodCallInner, whose
+  cleanup at that call is an empty pad at the end of 21 KB, is not under it.
+  The built-in `die` is raised by execDieStmt, at the top of evalCall. Retired
+  instructions a throw: `.throw` 4.0M → 0.6M (in a sub 4.5M → 1.15M), a
+  `die` in a method 1.5M → 0.96M, in a sub 880K → 763K, at the mainline 359K
+  → 243K, caught by a CATCH in its sub 350K → 251K. perf-guard's method
+  kernels −0.5 to −0.8%, the rest within ±0.05%.
 
 - **49, an empty `my int @a` grown by `push` or by index** (2026-11-05):
   the declaration makes an empty packed body, and the store lane grows the

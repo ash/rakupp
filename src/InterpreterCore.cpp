@@ -26301,6 +26301,9 @@ void Interpreter::enforceTypedAssign(const std::string& nm, Value& rhs) {
 }
 
 Value Interpreter::evalCall(Call* c) {
+    // the built-in `die` raises from a frame of its own (execDieStmt), called
+    // before anything of this one is alive
+    if (RAKUPP_UNLIKELY(opEq(c->name, "die")) && plainDieCall(c)) return execDieStmt(c);
     // `CORE::name(…)` / `&CORE::name(…)` names the BUILT-IN, past whatever the
     // program has put in scope under that name — and shadowing is exactly when
     // the form gets written. lizmat's Perl-builtin ports are all this shape

@@ -126,6 +126,7 @@ bool Interpreter::isaMemo(const Value& inv, const std::string& m, const ValueLis
     return t && typeMemoRead(*this, isaMemo_[t][k], args[0], out, [&] {
         Value r = methodCallInner(inv, m, ValueList(args), rwArgs, false);
         if (RAKUPP_UNLIKELY(isNoMethod(r))) throwNoMethod(std::move(r));
+        if (RAKUPP_UNLIKELY(r.t == VT::Pair && r.hashKind == kThrowTag)) throwMarked(std::move(r));
         return r;
     });
 }
