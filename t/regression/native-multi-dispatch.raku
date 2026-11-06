@@ -6,8 +6,8 @@
 #   * a native argument takes its family's native candidate over every boxed
 #     one, whatever `where`, smiley or narrower type the boxed one has;
 #   * a BOXED value takes any boxed candidate over a native one, even one
-#     whose `where` it passes (rakupp still lets a lone native candidate take
-#     one, where Rakudo refuses it: not asserted here);
+#     whose `where` it passes, and a lone native candidate refuses it
+#     (native-array-elements.raku);
 #   * two natives of one family are equally narrow: `int8` beside `int` makes
 #     a native int's call ambiguous.
 #

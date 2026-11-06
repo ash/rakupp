@@ -1614,6 +1614,30 @@ void Interpreter::nativeElemTag(const std::string& t, Value& v) {
     const int bits = isFloat ? (t == "num32" ? 32 : 64) : Value::natWidthOfType(t, sg);
     wrapNative(v, bits ? bits : 64, sg, isFloat);
 }
+// `@a[$i]` of a `my int @a` handed to a routine is an int, as Rakudo's AT-POS
+// on a native array answers one: a multi's `int` candidate takes it. Only
+// there — a store and arithmetic see the element as Rakudo does, boxed (an
+// element is a position's container in Rakudo, no native operand).
+void Interpreter::nativeIndexTag(const Index* ix, Value& v) {
+    if (ix->isHash || !ix->adverb.empty() || !ix->base || ix->base->kind != NK::VarExpr) return;
+    auto* bve = static_cast<const VarExpr*>(ix->base.get());
+    if (bve->name.size() < 2 || bve->name[0] != '@') return;
+    const Value* bp = padPtr(bve);
+    if (!bp) bp = tctx().cur->find(bve->name);
+    if (!bp) return;
+    const Value& b = *bp->deref();
+    if (b.t != VT::Array || b.ofType().empty()) return;
+    nativeElemTag(nativeElemTypeOf(b), v);
+}
+// …and what `.map`, `.grep` and `.first` hand a block, and answer, from one
+void Interpreter::nativeElemsTag(const Value& arr, ValueList& items) {
+    if (arr.t != VT::Array || arr.ofType().empty()) return;
+    const std::string t = nativeElemTypeOf(arr);
+    if (!t.empty()) for (auto& v : items) nativeElemTag(t, v);
+}
+void Interpreter::nativeElemsTag(const Value& arr, Value& v) {
+    if (arr.t == VT::Array && !arr.ofType().empty()) nativeElemTag(nativeElemTypeOf(arr), v);
+}
 std::string Interpreter::nativeElemTypeAt(const Expr* e) {
     if (!e || e->kind != NK::Index || !tctx().cur) return "";
     auto* ix = static_cast<const Index*>(e);

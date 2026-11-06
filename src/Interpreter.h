@@ -3464,6 +3464,11 @@ public:
     std::string nativeElemTypeOf(const Value& container);   // `int8` of a `my int8 @a`, or ""
     void nativeElemStore(const std::string& t, Value& v, char how, long long idx = 0, const std::string& op = "", Value* handed = nullptr);
     void nativeElemTag(const std::string& t, Value& v);   // …an alias of one (`for @n { $_ = … }`) carries its tags
+    // …and an element of one handed to a routine is the native it holds: an
+    // argument `@a[$i]` (evalArgs), the items `.map` / `.grep` / `.first` give a block
+    [[gnu::noinline]] void nativeIndexTag(const struct Index* ix, Value& v);
+    void nativeElemsTag(const Value& arr, ValueList& items);
+    void nativeElemsTag(const Value& arr, Value& v);
     std::string nativeElemTypeAt(const Expr* e);   // the native type of the array `@n[…]` names, or ""
     std::string nativeLoopElemType(const Value& src, const Expr* e);   // …of the array a `for` walks
     Value elemAliasGuard(const Value& container, bool isHash, const std::string& symbol);   // what a store through an alias of an element answers to (#184)

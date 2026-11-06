@@ -64,7 +64,7 @@ struct KernelCall {
     // dispatch cache the interpreted iterations filled (SPEED-BACKLOG 51).
     // `kind` 'i' or 'n' (nativeNumericStatic); `slot` a native variable read
     // bare, whose container has the exact tags, else -1.
-    struct ArgNat { int slot = -1; char kind = 0; };
+    struct ArgNat { int slot = -1; char kind = 0; int arrReg = -1; };   // arrReg: `@a[…]`'s array, its element type read at the call
     std::vector<ArgNat> argNat;
     const BuiltinFn* builtin = nullptr;   // the builtin of that name, looked up on first use
     bool builtinChecked = false;
@@ -188,6 +188,11 @@ static Value argValue(RkCnpFrame* f, const rakupp::cnp::KernelCall& cs, size_t k
     Value v = regValue(f, (uint64_t)cs.argRegs[k]);
     if (k >= cs.argNat.size() || !cs.argNat[k].kind) return v;
     const auto& a = cs.argNat[k];
+    if (a.arrReg >= 0) {   // an element of a native array is the native it holds
+        const Value b = regValue(f, (uint64_t)a.arrReg);
+        interpOf(f).nativeElemTag(interpOf(f).nativeElemTypeOf(*b.deref()), v);
+        return v;
+    }
     if (a.kind == 'i' ? v.t != VT::Int || v.big() : v.t != VT::Num) return v;
     if (a.slot >= 0) {
         const Value* c = static_cast<Value**>(f->slots)[a.slot];
@@ -840,6 +845,16 @@ struct Lower {
     // the native tags a call's argument expression gives its value (KernelCall::argNat)
     KernelCall::ArgNat argNatOf(const Expr* x) {
         KernelCall::ArgNat a;
+        if (x && x->kind == NK::Index) {   // `@a[$i]`: by the array the kernel holds (argValue)
+            auto* ix = static_cast<const Index*>(x);
+            if (!ix->isHash && ix->adverb.empty() && ix->base && ix->base->kind == NK::VarExpr) {
+                const std::string& n = static_cast<const VarExpr*>(ix->base.get())->name;
+                if (n.size() > 1 && n[0] == '@')
+                    for (auto it = scopes.rbegin(); it != scopes.rend(); ++it)
+                        if (auto f = it->find(n); f != it->end()) { a.arrReg = f->second; a.kind = 'a'; break; }
+            }
+            return a;
+        }
         if (!nativeNumericStatic(x, &a.kind)) { a.kind = 0; return a; }
         if (x->kind == NK::VarExpr)
             for (auto it = scopes.rbegin(); it != scopes.rend(); ++it) {

@@ -6825,30 +6825,21 @@ int Interpreter::scoreCandidate(const Value& cand, const ValueList& args,
         // narrower than `(Any:D $j, Any $x)` for a Positional type object —
         // Cro::RPC::JSON's unmarshaller.)
         struct ParamDelta {
-            std::vector<int>* out; int& now; const int& was; int smiley = 0;
-            bool lastResort = false;   // a boxed value into a native parameter (below): the widest match
-            ~ParamDelta() {
-                if (lastResort) now = was;
-                if (out) out->push_back(lastResort ? -1 : now - was - smiley);   // (under an untyped one's 0)
-            }
+            std::vector<int>* out; const int& now; const int& was; int smiley = 0;
+            ~ParamDelta() { if (out) out->push_back(now - was - smiley); }
         } paramDelta{perParam, score, scoreBefore};
         // A NATIVE parameter takes a native of its own family — signed (`int`,
-        // `int8`…), unsigned (`uint`, `byte`…) or `num` — and never one of
-        // another: a `my uint` is no `int`, a `my int` no `uint` (Rakudo
-        // 2026.09). A BOXED value binds one only as the last resort, scoring
-        // nothing, its `where` included: `multi f(int $x)` beside `multi f($x)`
-        // leaves 3 to the second. (Rakudo's multi dispatch refuses it outright;
-        // rakupp's native array elements carry no tags yet, so a lone native
-        // candidate still takes one.)
+        // `int8`…), unsigned (`uint`, `byte`…) or `num` — and nothing else: a
+        // `my uint` is no `int`, a `my int` no `uint`, and a BOXED value none
+        // at all — `multi z(int $x)` is no match for 3, where a plain sub's
+        // binder coerces it (Rakudo 2026.09). A native array's element and its
+        // `.map` topic are natives (nativeIndexTag, nativeElemTag).
         if (p->sigil == '$' && !p->type.empty() && paramIsNative(*p)) {
             const NatKind pk = paramNativeKind(*p);
             const NatKind ak = pos[i].t == VT::Int && pos[i].natBits && !pos[i].natFloat
                                    ? (pos[i].natSigned ? NatKind::Int : NatKind::UInt)
                              : pos[i].t == VT::Num && pos[i].natFloat ? NatKind::Num : NatKind::None;
-            if (pk == NatKind::Int || pk == NatKind::UInt || pk == NatKind::Num) {
-                if (ak == NatKind::None) paramDelta.lastResort = true;
-                else if (ak != pk) return -1;
-            }
+            if ((pk == NatKind::Int || pk == NatKind::UInt || pk == NatKind::Num) && ak != pk) return -1;
         }
         // `::T $x, T $y`: a type CAPTURE records the first argument's type, and a
         // later parameter typed T must be of that type (`wins(Paper, Paper)`)
@@ -8316,10 +8307,16 @@ static Value setCoerceOne(const std::string& op, const Value& v);   // (below)
 // nothing on one an exception or a `return` takes (`soft`).
 static void topicWriteBack(Interpreter& I, Value* wb, const Value* guard, Env& env, bool soft) {
     auto it = env.vars.find("$_");
-    if (it == env.vars.end() || it->second.sameRep(*wb)) return;
-    if (!guard) *wb = it->second;
-    else if (!soft) *wb = I.elemAliasStore(*guard, it->second);
-    else try { *wb = I.elemAliasStore(*guard, it->second); } catch (...) {}
+    if (it == env.vars.end()) return;
+    // a native array's element (an untagged slot) takes the topic without the
+    // native tags its read gave it (nativeElemTag); a native scalar keeps them
+    const Value* src = &it->second;
+    Value bare;
+    if (src->natBits && !wb->natBits) { bare = *src; dropNativeTags(bare); src = &bare; }
+    if (src->sameRep(*wb)) return;
+    if (!guard) *wb = *src;
+    else if (!soft) *wb = I.elemAliasStore(*guard, *src);
+    else try { *wb = I.elemAliasStore(*guard, *src); } catch (...) {}
 }
 
 // Invoking a value that is not a Code: what callCallableRaw does with one,
@@ -26206,6 +26203,8 @@ ValueList Interpreter::evalArgs(const std::vector<ExprPtr>& exprs) {
             if (v.t == VT::Str && a->kind == NK::VarExpr && static_cast<VarExpr*>(a.get())->nativeStrRead &&
                 v.hashKind.empty() && !v.isAllomorph())
                 v.natFloat = true;
+            // …and an element of a native array the native it holds (nativeIndexTag)
+            if (a->kind == NK::Index && (v.t == VT::Int || v.t == VT::Num) && !v.natBits) nativeIndexTag(static_cast<Index*>(a.get()), v);
             // A Proxy reaching a routine as an argument is READ: run its FETCH.
             // (Not at the subscript — `$.root{$k}` inside an `is rw` AT-KEY has to
             // hand back the container itself, which is how a write reaches STORE.)
@@ -30477,6 +30476,7 @@ Value Interpreter::eval(Expr* e) {
                         !static_cast<VarExpr*>(it.get())->name.empty() &&
                         static_cast<VarExpr*>(it.get())->name[0] == '$')
                         v.itemized = true;
+                    if (it->kind == NK::Index && (v.t == VT::Int || v.t == VT::Num)) nativeIndexTag(static_cast<Index*>(it.get()), v);   // (a List keeps a native)
                     items.push_back(std::move(v));
                 }
             }
@@ -30495,6 +30495,7 @@ Value Interpreter::eval(Expr* e) {
             // already reset; only the literal did not.
             auto storeSlot = [&](Value v) {
                 if (v.t == VT::Nil && !a.isList) v = Value::any();
+                if (v.natBits && !a.isList) dropNativeTags(v);   // an Array holds the boxed number
                 a.arr()->push_back(std::move(v));
             };
             for (auto& it : l->items) {

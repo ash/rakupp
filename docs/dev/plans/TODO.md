@@ -222,15 +222,18 @@ The same items grouped by theme, with a complexity estimate for each:
 
 ## 2. Correctness (v5 error batches)
 
-- [ ] **A boxed value still binds a lone native multi candidate**: with only
-  `multi z(int $x)`, `z(3)` is "int", where Rakudo 2026.09's multi dispatch
-  refuses a boxed value for a native parameter (X::Multi::NoMatch; a plain
-  sub's binder coerces it on both). Beside a boxed candidate rakupp ranks it
-  last, as Rakudo does (t/regression/native-multi-dispatch.raku). Refusing it
-  needs a native array's elements to carry their tags first: `z(@a[0])` of a
-  `my int @a` is "int" in Rakudo, and rakupp reads the element untagged (also
-  the topic of `@a.map`), as an Int.
-
+- [ ] **A native array's derived lists hand out boxed elements**, found
+  2026-11-06 beside the native-element work: `.head`, `.tail`, `.list`, a
+  slice `@a[1..2]`, `.reverse`, `.sort`, `.kv`, `.values`, `.pairs` and a
+  `for` over a comma list (`for @a[0], 1`) give a `my int @a`'s elements as
+  Ints, where Rakudo 2026.09's are ints. A routine argument `@a[$i]`, a List
+  literal and the `.map` / `.grep` / `.first` topics are natives already
+  (nativeIndexTag, nativeElemsTag). With the strict native multi rule, a lone
+  `multi f(int $x)` refuses `@a.head`.
+- [ ] **A native bound to `\x`, `$x is raw` or a placeholder stays native**:
+  `sub h(\x) { f(x) }; h($n)` with `my int $n` takes `multi f(int)`, where
+  Rakudo 2026.09 boxes it (Int); a plain `$x`, a pointy block's `$x` and the
+  `for` parameters box already, `is rw` and `int $x` keep it, as in Rakudo.
 - [ ] **A class deriving Int loses its value in arithmetic**, found
   2026-11-05 beside V6 P3.11: `class D is Int { method double { self * 2 } }`
   gives `D.new(21).double` 0 and `D.new(3) + 4` 4, where Rakudo 2026.09 gives
@@ -579,6 +582,13 @@ The same items grouped by theme, with a complexity estimate for each:
     postfix:<++>(Int:D)").
 
 ## 3. Compiled backends
+
+- [ ] **`--exe`: a native multi candidate never matches**: the compiled
+  dispatchers test each candidate with rtTypeMatch, which knows no native
+  type, so `multi a(int $x)` beside `multi a(Int $x)` always takes `Int`, and
+  a lone `multi z(int $x)` dies with "No matching multi candidate" for a
+  `my int` — the same on a build of 52dc8d0c, before the strict native rule.
+  Compiled multi methods too. The interpreter and --cnp answer as Rakudo.
 
 - [ ] **`--target=arduino`** ([ARDUINO-PLAN.md](ARDUINO-PLAN.md), started
   2026-11-02): A0 is in, with constants and `BEGIN` values computed while

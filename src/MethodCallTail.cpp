@@ -968,7 +968,6 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
         out.arr()->push_back(Value::str(cycle));
         return out;
     }
-
     // the KEY/POS protocol on an undefined scalar: vacuously empty (xxKEY.t)
     if ((inv.t == VT::Any || inv.t == VT::Nil) && inv.enumName.empty()) {
         if (m == "EXISTS-KEY" || m == "EXISTS-POS") return Value::boolean(false);
@@ -2523,6 +2522,7 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
              m == "reverse" || m == "Seq" || m == "list" || m == "cache" || m == "eager" ||
              m == "Slip" || m == "values" || m == "rotor" || m == "batch" || m == "toggle"))
             for (auto& e : items) itemizeScalar(e);
+        if (m == "map" || m == "grep" || m == "first") nativeElemsTag(inv, items);   // a native array's are natives to them
         // `.map` / `.grep` on what `.hyper` / `.race` answered run over worker
         // threads (hyperSeqCall). One that has to stay serial takes the
         // ordinary arm, and still answers a HyperSeq / RaceSeq.
@@ -4738,7 +4738,7 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
                     catch (RedoEx&) { tctx().topicWriteback = nullptr; gi -= ar; continue; } // `redo` retries it
                     // (a hole of an `is default` array still reads as its default)
                     if (aliasable && ar == 1 && !(inv.elemDefault() && (*inv.arr())[gi].t == VT::Any)) {
-                        v = (*inv.arr())[gi];
+                        v = (*inv.arr())[gi]; nativeElemsTag(inv, v);
                         if (elemItems) itemizeScalar(v);   // (an element, as the snapshot hands it out)
                     }
                     // an N-at-a-time block keeps each matching GROUP whole:
