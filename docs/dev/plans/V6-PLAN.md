@@ -446,7 +446,9 @@ In order of evidence per cost:
     - B or C for the string: *measured 2026-10-15*, C (tools/str-census.md).
       B adds 7–17% allocations across bench and Roast, and up to several
       times that on string programs. C adds 0.5%. C's 16-byte string takes
-      `Value` from 80 to 64 bytes and is the next step
+      `Value` from 80 to 64 bytes. Its step 1, the readers on `string_view`
+      with the storage unchanged, landed 2026-11-06, level on time and
+      allocations. Step 2, the storage, is next
     - then the question the plan leaves open, whether values stop being
       refcounted; that is also the answer to reference cycles
 

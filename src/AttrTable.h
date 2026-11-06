@@ -115,21 +115,21 @@ public:
     void reserve(size_t n) { if (n) x().reserve(n); }
     void clear() { if (x_) x_->clear(); }
 
-    iterator find(const std::string& key) { return x_ ? iterator(x_->find(key)) : iterator(); }
-    const_iterator find(const std::string& key) const {
+    iterator find(std::string_view key) { return x_ ? iterator(x_->find(key)) : iterator(); }
+    const_iterator find(std::string_view key) const {
         return x_ ? const_iterator(std::as_const(*x_).find(key)) : const_iterator();
     }
-    size_t count(const std::string& key) const { return x_ ? x_->count(key) : 0; }
-    Value& operator[](const std::string& key) { return x()[key]; }
-    Value& at(const std::string& key) {
-        if (!x_) throw std::out_of_range("AttrTable::at: " + key);
+    size_t count(std::string_view key) const { return x_ ? x_->count(key) : 0; }
+    Value& operator[](std::string_view key) { return x()[key]; }
+    Value& at(std::string_view key) {
+        if (!x_) throw std::out_of_range(std::string("AttrTable::at: ").append(key));
         return x_->at(key);
     }
-    const Value& at(const std::string& key) const {
-        if (!x_) throw std::out_of_range("AttrTable::at: " + key);
+    const Value& at(std::string_view key) const {
+        if (!x_) throw std::out_of_range(std::string("AttrTable::at: ").append(key));
         return std::as_const(*x_).at(key);
     }
-    size_t erase(const std::string& key) { return x_ ? x_->erase(key) : 0; }
+    size_t erase(std::string_view key) { return x_ ? x_->erase(key) : 0; }
     template <typename... A>
     std::pair<iterator, bool> emplace(const std::string& k, A&&... a) {
         auto r = x().emplace(k, std::forward<A>(a)...);

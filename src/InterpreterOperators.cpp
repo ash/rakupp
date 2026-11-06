@@ -42,7 +42,7 @@ Value Interpreter::mixinValue(Value base, const Value& rhs, bool copy, bool rhsI
     ValueList pairs, valueMixins;
     std::function<void(const Value&)> collect = [&](const Value& v) {
         if (v.t == VT::Type) {
-            roleNames.push_back(v.s);
+            roleNames.emplace_back(v.s);
             auto it = classes_.find(v.s);
             if (it != classes_.end()) roleInfos.push_back(it->second.get());
         } else if (v.t == VT::Pair) {
@@ -78,7 +78,7 @@ Value Interpreter::mixinValue(Value base, const Value& rhs, bool copy, bool rhsI
             if (std::find(mx.roles.begin(), mx.roles.end(), rn) == mx.roles.end())
                 mx.roles.push_back(rn);
         for (auto& p : pairs)
-            if (p.pairVal()) c->mixinsRW().attrs[p.s] = *p.pairVal();
+            if (p.pairVal()) c->mixinsRW().attrs[p.s.copyText()] = *p.pairVal();
         // a role's own attributes exist even unset, so its accessors answer
         for (ClassInfo* role : roleInfos)
             if (role)
@@ -476,7 +476,7 @@ bool Interpreter::chainLinkUser(const std::string& op, const Value& l, const Val
         if (Value* f = tctx().cur->find("&infix:<" + op + ">"))
             try { out = callCallable(*f, ValueList{l, r}); return true; }
             catch (RakuError& e) {
-                std::string en = e.payload.t == VT::Type ? e.payload.s : e.payload.typeName();
+                std::string en = e.payload.t == VT::Type ? e.payload.s.copyText() : e.payload.typeName();
                 if (en != "X::Multi::NoMatch" && en != "X::Multi::Ambiguous") throw;
             }
     return false;
@@ -1869,7 +1869,7 @@ Value Interpreter::exceptionFor(const RakuError& e) {
         attachFrames(p, e);   // `die $obj` / the X::AdHoc `die "msg"` builds
         return p;
     }
-    std::string tn = e.payload.s.empty() ? std::string("X::AdHoc") : e.payload.s.str();
+    std::string tn = e.payload.s.empty() ? std::string("X::AdHoc") : e.payload.s.copyText();
     std::shared_ptr<ClassInfo> ci;
     auto it = classes_.find(tn);
     if (it != classes_.end()) ci = it->second;
@@ -1943,7 +1943,7 @@ Value Interpreter::failureException(const Value& failure) {
     Value ex = it != failure.hash()->end() ? it->second : Value::typeObj("X::AdHoc");
     if (ex.t != VT::Type) return ex; // already an instance (`fail $obj`)
     auto mm = failure.hash()->find("message");
-    return exceptionFor(RakuError{ex, mm != failure.hash()->end() ? mm->second.toStr() : ex.s.str(),
+    return exceptionFor(RakuError{ex, mm != failure.hash()->end() ? mm->second.toStr() : ex.s.copyText(),
                                   RakuError::NoCapture{}});
 }
 // An UNHANDLED Failure detonates the moment its value is actually used —
@@ -1973,8 +1973,8 @@ void failureDetonate(const Value& v) {
 std::string Interpreter::gistOf(const Value& v, bool skipUser) {
     failureDetonate(v);
     if (v.t == VT::Type && !bareStubTypes_.empty() && bareStubTypes_.count(std::string(v.s.c_str())))
-        throwTypedV("X::Method::NotFound", {{"method", Value::str("gist")}, {"typename", Value::str(v.s.str())}},
-                    "Method " + v.s.str() + ".gist not found");
+        throwTypedV("X::Method::NotFound", {{"method", Value::str("gist")}, {"typename", Value::str(v.s)}},
+                    "Method " + v.s + ".gist not found");
     // an enum's type object gists as any type object does: `say day` is (day)
     if (isEnumTypeObject(v)) return "(" + std::string(v.enumType.str()) + ")";
     // An ENDLESS lazy sequence gists as Rakudo's "(...)", and a lazy ARRAY as
@@ -2170,7 +2170,7 @@ std::string Interpreter::strInStrContext(const Value& v) {
 std::string Interpreter::strOf(const Value& v) {
     failureDetonate(v);
     // a package's stash stringifies as the package's long name (`~Foo::Bar.WHO`)
-    if (v.t == VT::Hash && v.hashKind == "Stash" && !v.s.empty()) return v.s.str();
+    if (v.t == VT::Hash && v.hashKind == "Stash" && !v.s.empty()) return v.s.copyText();
     // A Code has no string form: Rakudo warns and yields "". Handing back
     // "sub { ... }" put a placeholder into real output — `~$block` and
     // `$block.join` both produced it — and never told anyone it was a mistake.
@@ -2504,7 +2504,7 @@ bool Interpreter::lexicalAliasAccepts(Env* scope, const std::string& ty, const V
     if (!tv || tv->t != VT::Type || tv->s.empty() || tv->s.str() == ty) return false;
     // a parameterized type keeps its parameter: `constant AI = Array[Int]`
     // takes an Array[Int] and no untyped Array (issue #220)
-    return tv->ofType().empty() ? typeOrSubsetMatches(v, tv->s.str()) : boolify(smartmatchValue("~~", v, *tv));
+    return tv->ofType().empty() ? typeOrSubsetMatches(v, tv->s.copyText()) : boolify(smartmatchValue("~~", v, *tv));
 }
 
 // A step or compound assignment on a SUBSET-typed scalar asks the subset
@@ -3134,7 +3134,7 @@ Value Interpreter::applyUniOp(const std::string& name, const char* builtin, cons
         if (Value* f = tctx().cur->find("&infix:<" + name + ">"))
             try { return callCallable(*f, ValueList{l, r}); }
             catch (RakuError& e) { // only "no candidate took these operands" falls back
-                std::string en = e.payload.t == VT::Type ? e.payload.s : e.payload.typeName();
+                std::string en = e.payload.t == VT::Type ? e.payload.s.copyText() : e.payload.typeName();
                 if (en != "X::Multi::NoMatch" && en != "X::Multi::Ambiguous") throw;
             }
     // …and, as applyBinOp's own last resort, a user operator of that name
@@ -3180,7 +3180,7 @@ bool objectOperandInfix(Interpreter& I, const std::string& op, const Value& l, c
         if (Value* f = Interpreter::tctx().cur->find("&infix:<" + op + ">"))
             try { out = I.callCallable(*f, ValueList{l, r}); return true; }
             catch (RakuError& e) { // only "no candidate took these operands" falls back
-                std::string en = e.payload.t == VT::Type ? e.payload.s : e.payload.typeName();
+                std::string en = e.payload.t == VT::Type ? e.payload.s.copyText() : e.payload.typeName();
                 if (en != "X::Multi::NoMatch" && en != "X::Multi::Ambiguous") throw;
             }
     return bridgedNumericInfix(I, op, l, r, out);

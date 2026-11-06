@@ -100,7 +100,7 @@ size_t positionals(ValueList& a) {
 void noAdverbs(ValueList& a, const char* who) {
     for (auto& x : a)
         if (x.t == VT::Pair && x.namedArg)
-            rDie(std::string(who) + ": no such adverb :" + x.s.str());
+            rDie(std::string(who) + ": no such adverb :" + x.s);
 }
 
 // A non-negative integer from bytes, big-endian. Built through BigInt because

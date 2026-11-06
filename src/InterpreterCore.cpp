@@ -576,17 +576,17 @@ static Value gatherDeepCopy(const Value& v, int depth = 0) {
 // after each `%config{$node.key} = …`).
 static Value iterEntryPair(const Value& h, const std::string& k, Value& stored) {
     Value rk = hashEntryKey(h, k, stored);
-    const std::string& pk = rk.t == VT::Str ? rk.s.str() : k;
+    std::string pk = rk.t == VT::Str ? rk.s.copyText() : k;
     Value p;
     if (h.t == VT::Hash && h.hashKind.empty() && h.hash() && !stored.hasPairKey()) {
-        p.t = VT::Pair; p.s = pk;
+        p.t = VT::Pair; p.s = std::move(pk);
         p.setPairVal(h.hash()->aliasOf(stored));
         p.setPairLive();
     }
     else {
         Value sv = stored;
         if (sv.hasPairKey()) sv.pairKeyRawM() = nullptr;   // the element rides on the Pair, not its value
-        p = Value::pair(pk, std::move(sv));
+        p = Value::pair(std::move(pk), std::move(sv));
     }
     if (!(rk.t == VT::Str && rk.hashKind.empty())) p.setPairKey(rk);
     return p;
@@ -4318,7 +4318,7 @@ void Interpreter::refuseUnpassedDefinite(const Param& p) {
 bool Interpreter::typeMatchesInScope(const Value& v, const std::string& type, Env* scope) {
     if (scope && !type.empty() && type.find("::") == std::string::npos)
         if (Value* tv = scope->find(type); tv && tv->t == VT::Type && !tv->s.empty() && tv->s.str() != type)
-            return typeOrSubsetMatches(v, tv->s.str());
+            return typeOrSubsetMatches(v, tv->s.copyText());
     return typeOrSubsetMatches(v, type);
 }
 
@@ -4392,7 +4392,7 @@ void Interpreter::typeCheckBindImpl(const Param& p, const Value& v, bool blockPa
     if (p.typeFromCapture && sigEnv && v.t != VT::Nil)
         if (Value* tv = sigEnv->find(p.type))
             if (tv->t == VT::Type && !tv->s.empty() && tv->s != p.type) {
-                if (typeOrSubsetMatches(v, tv->s)) return;
+                if (typeOrSubsetMatches(v, tv->s.copyText())) return;
                 throw RakuError{Value::typeObj("X::TypeCheck::Binding::Parameter"),
                     "Type check failed in binding to parameter '" + paramShownName(p) +
                     "'; expected " + tv->s + " but got " + v.typeName() +
@@ -4457,7 +4457,7 @@ void Interpreter::typeCheckBindImpl(const Param& p, const Value& v, bool blockPa
     if (isMuTypeObject(v) && (p.type == "Any" || (p.type.empty() && !blockParam)))
         throw RakuError{Value::typeObj("X::TypeCheck::Binding::Parameter"),
             "Type check failed in binding to parameter '" + paramShownName(p) +
-            "'; expected Any but got " + v.s.str() + " (" + v.s.str() + ")"};
+            "'; expected Any but got " + v.s + " (" + v.s + ")"};
     // …but a SUBSET whose base is DEFINITE (`subset OfDef of Str:D`) refuses
     // a type object like the smiley it carries
     if (v.t == VT::Type && !p.type.empty() && !subsets_.empty()) {
@@ -4482,10 +4482,10 @@ void Interpreter::typeCheckBindImpl(const Param& p, const Value& v, bool blockPa
             if (tv->t == VT::Type && !tv->s.empty() && tv->s != p.type &&
                 tv->s.str().find('(') == std::string::npos &&
                 (classes_.count(tv->s.str()) || isKnownTypeName(tv->s.str())) &&
-                !typeOrSubsetMatches(v, tv->s))
+                !typeOrSubsetMatches(v, tv->s.copyText()))
                 throw RakuError{Value::typeObj("X::TypeCheck::Binding::Parameter"),
                     "Type check failed in binding to parameter '" + paramShownName(p) +
-                    "'; expected " + tv->s.str() + " but got " + v.typeName() + " (" + typeCheckRepr(v) + ")"};
+                    "'; expected " + tv->s + " but got " + v.typeName() + " (" + typeCheckRepr(v) + ")"};
     // A TYPE OBJECT is an undefined value of its own type, so it binds only
     // where that type conforms: `f(Int)` into an Int or Cool parameter, not
     // into a Str one (`sub g(Str $x) {}; g(Any)` dies in Rakudo). Untyped, Any
@@ -4606,7 +4606,7 @@ void Interpreter::typeCheckBindImpl(const Param& p, const Value& v, bool blockPa
             if (sigEnv && !p.typeCapture)
                 if (Value* tv = sigEnv->find(p.type))
                     if (tv->t == VT::Type && !tv->s.empty() && tv->s != p.type) {
-                        if (tv->ofType().empty() ? typeOrSubsetMatches(v, tv->s)
+                        if (tv->ofType().empty() ? typeOrSubsetMatches(v, tv->s.copyText())
                                                  : boolify(smartmatchValue("~~", v, *tv))) return;
                         throw RakuError{Value::typeObj("X::TypeCheck::Binding::Parameter"),
                             "Type check failed in binding to parameter '" + paramShownName(p) +
@@ -4781,7 +4781,7 @@ void Interpreter::bindParams(const std::vector<Param>& params, ValueList& args,
         const std::string tn = v.typeName();
         bool ofMu;
         if (v.t == VT::Type) {
-            static const std::set<std::string> kOfMu = {"List", "Array", "Slip", "Range", "Code", "Block",
+            static const std::set<std::string, std::less<>> kOfMu = {"List", "Array", "Slip", "Range", "Code", "Block",
                                                         "Routine", "Sub", "Method", "Regex", "WhateverCode"};
             ofMu = kOfMu.count(v.s.str()) > 0;
         }
@@ -4905,7 +4905,7 @@ void Interpreter::bindParams(const std::vector<Param>& params, ValueList& args,
     ValueList positional;
     std::map<std::string, Value> named;
     for (auto& a : args) {
-        if (isNamedArg(a)) named[a.s] = a.pairVal() ? *a.pairVal() : Value::any();
+        if (isNamedArg(a)) named[a.s.copyText()] = a.pairVal() ? *a.pairVal() : Value::any();
         else positional.push_back(a);
     }
     // names captured by explicit named params are NOT collected by a slurpy *%hash
@@ -5559,7 +5559,7 @@ void Interpreter::bindParams(const std::vector<Param>& params, ValueList& args,
                 // the capture bound, not a type named T
                 Value* tv = (!classes_.count(p.type) && !isKnownTypeName(p.type)) ? env->find(p.type) : nullptr;
                 if (tv && tv->t == VT::Type && !tv->s.empty() && tv->s != p.type) {
-                    std::string bound = tv->s.str();
+                    std::string bound = tv->s.copyText();
                     coerceParam(p, v, &bound);
                 }
                 else coerceParam(p, v);
@@ -5926,15 +5926,15 @@ static bool isCoolValue(const Value& v) {
             if (v.obj() && v.obj()->cls && v.obj()->cls->name == "PseudoStash") return true;
             return typeMatchesArg(v, "Cool");
         case VT::Type: {
-            const std::string& n = v.s;
+            const std::string_view n = v.s;
             if (g_cbInterp) {
                 auto it = g_cbInterp->classes_.find(n);
                 if (it != g_cbInterp->classes_.end() && it->second && !isKnownTypeName(n))
                     return it->second->isRole ||
-                           typeNameConforms(n, "Cool", std::string(), std::string());
+                           typeNameConforms(std::string(n), "Cool", std::string(), std::string());
             }
             // the built-in classes that are not Cool; any other name keeps True
-            static const std::set<std::string> kNotCool = {
+            static const std::set<std::string, std::less<>> kNotCool = {
                 "Any", "Mu", "Junction", "Pair", "Code", "Block", "Routine", "Sub", "Method",
                 "Submethod", "WhateverCode", "Regex", "Whatever", "HyperWhatever", "Exception",
                 "Promise", "Channel", "Supply", "Supplier", "Tap", "Thread",
@@ -6061,7 +6061,7 @@ bool typeMatchesArg(const Value& arg, const std::string& type) {
         auto rit = arg.hash()->find(ATTR_ROLES_KEY);
         if (rit != arg.hash()->end() && rit->second.t == VT::Array && rit->second.arr())
             for (auto& rn : *rit->second.arr()) {
-                const std::string& r = rn.s;
+                const std::string_view r = rn.s;
                 if (r == type) return true;
                 auto rtail = r.rfind("::") == std::string::npos ? r : r.substr(r.rfind("::") + 2);
                 if (rtail == tail) return true;
@@ -6226,7 +6226,7 @@ bool typeMatchesArg(const Value& arg, const std::string& type) {
             // parent. Ask the podclass, and nothing else.
             if (arg.hashKind == "Pod") {
                 const std::string& pc = arg.hash() && arg.hash()->count("podclass")
-                                      ? arg.hash()->at("podclass").s : std::string();
+                                      ? arg.hash()->at("podclass").s.copyText() : std::string();
                 if (pc.empty()) return false;
                 if (type == pc || type == "Any" || type == "Mu") return true;
                 // Every Pod::* is a Pod::Block — Pod::Block::Para, ::Code,
@@ -6352,13 +6352,13 @@ bool typeMatchesArg(const Value& arg, const std::string& type) {
             // Rakudo's UInt is `subset UInt of Int where { not .defined or $_ >= 0 }`:
             // the where clause ADMITS the undefined, so the Int type object (and
             // every Int-derived one) conforms — `Int ~~ UInt` is True there
-            if (type == "UInt") return typeNameConforms(arg.s, "Int", arg.ofType(), std::string());
+            if (type == "UInt") return typeNameConforms(arg.s.copyText(), "Int", arg.ofType(), std::string());
             // …and the UInt type object itself is its base, Int: `h(UInt)`
             // picks `multi h(Int)` over `multi h($)` (Red maps a `UInt $.id`
             // column to its SQL type that way)
             if (arg.s == "UInt") return typeMatchesArg(Value::typeObj("Int"), type);
-            if (typeNameConforms(arg.s, type, arg.ofType(), std::string())) return true;
-            std::string ln = arg.s;
+            if (typeNameConforms(arg.s.copyText(), type, arg.ofType(), std::string())) return true;
+            std::string ln = arg.s.copyText();
             size_t br = ln.find('['); if (br != std::string::npos) ln = ln.substr(0, br);
             auto known = [](const std::string& n) {
                 return isKnownTypeName(n) || (g_matchClasses && g_matchClasses->count(n) > 0);
@@ -6386,10 +6386,10 @@ bool typeMatchesArg(const Value& arg, const std::string& type) {
 // `log(&task, *%data)`.
 static bool isCallableTypeObj(const Value& v) {
     if (v.t != VT::Type) return false;
-    static const std::set<std::string> kCallableTypes = {
+    static const std::set<std::string, std::less<>> kCallableTypes = {
         "Callable", "Code", "Routine", "Sub", "Method", "Submethod",
         "Block", "WhateverCode", "Regex"};
-    return kCallableTypes.count(v.s) > 0;
+    return kCallableTypes.count(v.s.str()) > 0;
 }
 
 // The per-parameter marker for an argument a SLURPY or CAPTURE swallowed. It is
@@ -6646,7 +6646,7 @@ int Interpreter::scoreCandidate(const Value& cand, const ValueList& args,
         }
         if (!takesAny)
             for (auto& a : args)
-                if (isNamedArg(a) && !declared.count(a.s)) return -1;
+                if (isNamedArg(a) && !declared.count(a.s.copyText())) return -1;
     }
     size_t required = 0, total = 0; bool slurpy = false;
     const Param* slurpyParam = nullptr;
@@ -6811,7 +6811,7 @@ int Interpreter::scoreCandidate(const Value& cand, const ValueList& args,
             !p->subSig && !p->litVal && !p->whereExpr && cand.code()->closure)
             if (Value* tv = cand.code()->closure->local(p->type))
                 if (tv->t == VT::Type && !tv->s.empty() && tv->s != p->type) {
-                    if (!typeOrSubsetMatches(pos[i], tv->s)) return -1;
+                    if (!typeOrSubsetMatches(pos[i], tv->s.copyText())) return -1;
                     if (p->defConstraint == 1 && !isDefinite(pos[i])) return -1;
                     if (p->defConstraint == 2 && isDefinite(pos[i])) return -1;
                     score += 8 + (p->defConstraint ? 2 : 0) + (tv->s == pos[i].typeName() ? 2 : 0);
@@ -6971,7 +6971,7 @@ int Interpreter::scoreCandidate(const Value& cand, const ValueList& args,
             }
             // `Str &x` is a Callable[Str]: a routine DECLARING another return
             // type does not bind, one declaring this one is the better fit
-            static const std::set<std::string> kCallableTypes = {
+            static const std::set<std::string, std::less<>> kCallableTypes = {
                 "Callable", "Code", "Routine", "Sub", "Method", "Block", "Regex", "WhateverCode",
                 "Submethod", "Macro"};
             if (!p->type.empty() && p->type != "Any" && p->type != "Mu" && !kCallableTypes.count(p->type) &&
@@ -8222,7 +8222,7 @@ bool Interpreter::selfCatAssign(Binary* b, Value* slot, Env* cur) {
     std::string txt;
     if (x->t == VT::Str) {
         if (!x->enumName.empty() || x->itemized) return false;
-        txt = x->s.str();   // (X may be $s itself)
+        txt = x->s.copyText();   // (X may be $s itself)
     }
     else if (x->t == VT::Int || x->t == VT::Num || x->t == VT::Rat || x->t == VT::Bool)
         txt = x->toStr();   // the text applyArith's `~` takes
@@ -8313,7 +8313,7 @@ Value Interpreter::callNonCode(const Value& codeVal, ValueList args, const std::
         // a TYPE OBJECT held in a variable invokes as the coercion call,
         // exactly like the literal spelling: `my $t = Int; $t('123')` is
         // Int('123') (DBDish's convert-function builds converters this way)
-        if (!args.empty()) return coerceToType(args[0], codeVal.s);
+        if (!args.empty()) return coerceToType(args[0], codeVal.s.copyText());
     }
     // The undefined value IS the Any type object, and invoking it is the
     // Any coercion — identity (`my $x; $x(5)` is 5 in Rakudo). Fez's own
@@ -8330,13 +8330,13 @@ Value Interpreter::callNonCode(const Value& codeVal, ValueList args, const std::
     if (codeVal.t == VT::Regex && !args.empty()) {
         const Value& a0 = args[0];
         if (a0.t == VT::Match) {
-            std::string orig = a0.ext() ? *std::static_pointer_cast<std::string>(a0.ext()) : a0.s.str();
+            std::string orig = a0.ext() ? *std::static_pointer_cast<std::string>(a0.ext()) : a0.s.copyText();
             long long start = a0.rFrom() < 0 ? 0 : a0.rFrom();
             if (start > (long long)orig.size()) start = (long long)orig.size();
             Value m = regexMatch(orig.substr((size_t)start), codeVal.s, &codeVal);
             // (no match is a FALSE Match here, not Nil — test the truth of it)
             Value cur = m.t == VT::Match && m.truthy()
-                ? Value::matchVal(m.s.str(), start + m.rFrom(), start + m.rTo())
+                ? Value::matchVal(m.s.copyText(), start + m.rFrom(), start + m.rTo())
                 : Value::matchVal("", start, -3);   // -3: MoarVM's "matched nothing" pos (Rakudo-verified)
             cur.extM() = std::make_shared<std::string>(orig);
             if (cur.md() && cur.md()->named) (*cur.md()->named)["\x01rx"] = codeVal;
@@ -8526,7 +8526,7 @@ Value Interpreter::callCallableRaw(const Value& codeVal, ValueList args, const s
             Value out = Value::array(); out.enumName = jv.enumName;
             for (auto& e : *jv.arr()) {
                 ValueList a2 = args;
-                Value np = Value::pair(args[ai].s.str(), e); np.namedArg = true;
+                Value np = Value::pair(args[ai].s.copyText(), e); np.namedArg = true;
                 a2[ai] = np;
                 out.arr()->push_back(callCallable(codeVal, a2, rwArgs));
             }
@@ -8622,9 +8622,9 @@ Value Interpreter::callCallableRaw(const Value& codeVal, ValueList args, const s
                         }
                         if (!namedOpen)
                             for (auto& a : as)
-                                if (isNamedArg(a) && !keys.count(a.s.str()))
+                                if (isNamedArg(a) && !keys.count(a.s.copyText()))
                                     throw RakuError{Value::typeObj("X::AdHoc"),
-                                                    "Unexpected named argument '" + a.s.str() + "' passed"};
+                                                    "Unexpected named argument '" + a.s + "' passed"};
                     }
                     if (capSub && (maxPos > 0 || unbounded)) { capSub = nullptr; unbounded = true; }
                     if (capSub) {
@@ -9306,7 +9306,7 @@ Value Interpreter::callCallableRaw(const Value& codeVal, ValueList args, const s
                     const Value& a = args[i];
                     const bool named = namedPh ? a.t == VT::Pair : isNamedArg(a);
                     if (named) {
-                        if (!usedKeys.count(a.s)) (*h.hash())[a.s] = a.pairVal() ? *a.pairVal() : Value::boolean(true);
+                        if (!usedKeys.count(a.s.copyText())) (*h.hash())[a.s] = a.pairVal() ? *a.pairVal() : Value::boolean(true);
                     }
                     else if (i >= pos) rest.push_back(a);
                 }
@@ -9836,7 +9836,7 @@ Value Interpreter::checkRetType(const Callable& c, Value v) {
         if (c.cold().retType.compare(0, base.size(), base) == 0 &&
             capturedType(*this, tctx().curRoutineEnv, base, cap)) {
             std::string rest = c.cold().retType.substr(base.size());
-            std::string cs = cap.s;
+            std::string cs = cap.s.copyText();
             const bool restSmiley = rest.size() >= 2 && rest[0] == '\x01';
             const bool restCoerces = !rest.empty() && rest.back() == ')';
             if (restSmiley || restCoerces) { size_t lp = cs.find('('); if (lp != std::string::npos) cs.resize(lp); }
@@ -10813,7 +10813,7 @@ Value Interpreter::invokeMethod(const Value& codeVal, const Value& self, ValueLi
                 if (selfCopy.t == VT::Type) {
                     // Mu's own answers for a type object, computed without
                     // re-entering dispatch (which would find the same multi)
-                    std::string shortName = selfCopy.s;
+                    std::string shortName = selfCopy.s.copyText();
                     size_t colons = shortName.rfind("::");
                     if (colons != std::string::npos) shortName = shortName.substr(colons + 2);
                     if (c.ci().name == "gist" || c.ci().name == "raku" || c.ci().name == "perl")
@@ -12113,7 +12113,7 @@ Value* Interpreter::lvalue(Expr* e, bool asInvocant) {
             // `return-rw` that resolves to no container hands back exactly that.
             // `my BagHash $bh; $bh<x>++` vivifies the TYPE the scalar was declared as
             if (base->t == VT::Type && (base->s == "BagHash" || base->s == "SetHash" || base->s == "MixHash")) {
-                std::string kind = base->s.str();
+                std::string kind = base->s.copyText();
                 *base = Value::makeHash(); base->hashKind = kind;
             }
             if (base->t != VT::Hash || !base->hash()) {
@@ -13927,7 +13927,7 @@ Value Interpreter::evalAssign(Assign* a, bool sink) {
         try { r = evalAssignInner(a, sink); }
         catch (RakuError& e) {
             // (a no-match is raised as an instance, carrying .dispatcher and .capture)
-            const std::string tn = e.payload.t == VT::Type ? std::string(e.payload.s)
+            const std::string tn = e.payload.t == VT::Type ? e.payload.s.copyText()
                                  : isMultiNoMatch(e) ? std::string("X::Multi::NoMatch") : std::string();
             if (tn.empty() || tn.rfind("X::Comp", 0) == 0 || tn.rfind("X::Syntax", 0) == 0 ||
                 tn.rfind("X::Undeclared", 0) == 0 || tn.rfind("X::TypeCheck", 0) == 0 ||
@@ -15271,7 +15271,7 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
                 if (from > n) from = n;
                 if (len < 0) len = 0; if (from + len > n) len = n - from;
                 Value rhs = eval(a->value.get());
-                std::string repl = rhs.t == VT::Str ? rhs.s : std::string();
+                std::string repl = rhs.t == VT::Str ? rhs.s.copyText() : std::string();
                 if (rhs.t != VT::Str) for (auto& b : rhs.flatten()) repl += (char)(unsigned char)b.toInt();
                 bp->s = bp->s.substr(0, (size_t)from) + repl + bp->s.substr((size_t)(from + len));
                 return sink ? Value::any() : rhs;
@@ -15698,7 +15698,7 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
             if (ix->base->kind == NK::Index) {
                 Value probe;
                 try { probe = eval(ix->base.get()); } catch (RakuError&) {}
-                const std::string pk = probe.t == VT::Type ? probe.s.str() : probe.hashKind.str();
+                const std::string pk = probe.t == VT::Type ? probe.s.copyText() : probe.hashKind.str();
                 quantBase = pk == "SetHash" || pk == "BagHash" || pk == "MixHash";
             }
             if (quantBase)
@@ -15935,7 +15935,7 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
                                 unsigned long long w = v.big() ? v.big()->toU64Wrap()
                                                              : (unsigned long long)v.toInt();
                                 for (int b = 0; b < esz; b++)
-                                    bp->s.mut()[(size_t)j * esz + b] = (char)((w >> (8 * b)) & 0xFF);
+                                    bp->s.edit([&](std::string& t) { t[(size_t)j * esz + b] = (char)((w >> (8 * b)) & 0xFF); });
                                 outB.arr()->push_back(v);
                             }
                             return sink ? Value::any() : outB;
@@ -16615,7 +16615,7 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
         if (lv->readonly && lv->immutableBind && !opEq(a->op, ":=") &&
             (lv->t == VT::Type || lv->t == VT::Any || lv->t == VT::Nil)) {
             Value iv = *lv; iv.readonly = iv.immutableBind = false;
-            const std::string tn = iv.t == VT::Type ? iv.s.str() : iv.typeName();
+            const std::string tn = iv.t == VT::Type ? iv.s.copyText() : iv.typeName();
             // (a smiley rides on the type value's `i`: `my $x := Int:D` names Int:D)
             if (opEq(a->op, "=") && a->target->kind != NK::NameTerm)
                 throw RakuError{Value::typeObj("X::AdHoc"),
@@ -17178,16 +17178,16 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
             // looking at a Failure detonates it.
             if (opEq(a->op, "=") && a->target->kind == NK::VarExpr) {
                 nativeUndefCheck(rhs, a->target.get(), lv);
-                static const std::set<std::string> kChecked = {   // UInt: see the twin set
+                static const std::set<std::string, std::less<>> kChecked = {   // UInt: see the twin set
                     "Int", "UInt", "Num", "Rat", "Complex", "Str", "Bool",
                 };
-                auto undefOk = [&](const std::string& want) {
+                auto undefOk = [&](std::string_view want) {
                     // an undefined value carries its TYPE; it must still be the
                     // declared type or a subtype (Int matches Int; Any does not)
-                    std::string tn = rhs.t == VT::Type ? rhs.s : rhs.typeName();
+                    std::string tn = rhs.t == VT::Type ? rhs.s.copyText() : rhs.typeName();
                     if (tn == want) return true;
                     // an enum's type object is one of its value type (`my Int $v = Color`)
-                    if (isEnumTypeObject(rhs)) return rtTypeMatch(rhs, want);
+                    if (isEnumTypeObject(rhs)) return rtTypeMatch(rhs, std::string(want));
                     if (want == "UInt" && (tn == "Int" || tn == "UInt" || tn == "IntStr")) return true;
         if (want == "Int" && tn == "IntStr") return true;
                     if (want == "Num" && tn == "NumStr") return true;
@@ -17247,15 +17247,16 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
                                 isCoercionSubset(std::string(dty.s.c_str())))
                                 rhs = coerceViaSubset(rhs, std::string(dty.s.c_str()));
                             // (one of the seven core types needs nothing past rtTypeMatch)
-                            const bool core = dty.t == VT::Type && kChecked.count(dty.s);
+                            const bool core = dty.t == VT::Type && kChecked.count(dty.s.str());
+                            const std::string dtn(dty.t == VT::Type ? dty.s.str() : std::string_view());   // (as the checks read it)
                             if (dty.t == VT::Type &&
                                 ((core &&
-                                  (isDefined(rhs) ? !rtTypeMatch(rhs, dty.s)
+                                  (isDefined(rhs) ? !rtTypeMatch(rhs, dtn)
                                                   : !undefOk(dty.s))) ||
                                  // …the name as the declaring scope reads it
-                                 (userTypeRefuses(rhs, dty.s) &&
-                                  !lexicalAliasAccepts(en, dty.s, rhs)) ||
-                                 (!core && builtinTypeRefuses(*this, nm, rhs, dty.s))))
+                                 (userTypeRefuses(rhs, dtn) &&
+                                  !lexicalAliasAccepts(en, dtn, rhs)) ||
+                                 (!core && builtinTypeRefuses(*this, nm, rhs, dtn))))
                                 throwTypedV("X::TypeCheck::Assignment",
                                     {{"got", rhs},
                                      {"expected", Value::typeObj(dty.s)},
@@ -17490,7 +17491,7 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
                     Value nv = applyBinOp(binop, cur, rhsB);
                     unsigned long long w = nv.big() ? nv.big()->toU64Wrap() : (unsigned long long)nv.toInt();
                     for (int b = 0; b < esz; b++)
-                        bp->s.mut()[(size_t)i * esz + b] = (char)((w >> (8 * b)) & 0xFF);
+                        bp->s.edit([&](std::string& t) { t[(size_t)i * esz + b] = (char)((w >> (8 * b)) & 0xFF); });
                     return sink ? Value::any() : bp->blobElemAt(i);
                 }
             }
@@ -18215,9 +18216,9 @@ static Value applyArithGeneral(const std::string& op, const Value& l, const Valu
             (o.t == VT::Int || o.t == VT::Num || o.t == VT::Rat))
             throw RakuError{g_makeTypedEx
                 ? g_makeTypedEx("X::Numeric::Uninitialized", {{"type", t}},
-                                "Use of uninitialized value of type " + t.s.str() + " in numeric context")
+                                "Use of uninitialized value of type " + t.s + " in numeric context")
                 : Value::typeObj("X::Numeric::Uninitialized"),
-                "Use of uninitialized value of type " + t.s.str() + " in numeric context"};
+                "Use of uninitialized value of type " + t.s + " in numeric context"};
     }
     // …and the same rule once an operand is too wide for the fast path (a
     // uint64 above 2**63 is a BigInt)
@@ -18657,7 +18658,7 @@ static Value applyArithGeneral(const std::string& op, const Value& l, const Valu
     // enum, of Enumeration and of its value type's line — not a list to match
     // element-wise, which is what its pair-list shape fell into
     if (r.t == VT::Type && (opEq(op, "~~") || opEq(op, "!~~")) && isEnumTypeObject(l)) {
-        const bool res = r.i != 1 && rtTypeMatch(l, r.s.str());
+        const bool res = r.i != 1 && rtTypeMatch(l, r.s.copyText());
         return Value::boolean(opEq(op, "~~") ? res : !res);
     }
     if (opEq(op, "...") || opEq(op, "...^") || opEq(op, "^...") || opEq(op, "^...^")) { // simple integer sequence (closure/list seeds handled in evalBinary)
@@ -18953,7 +18954,7 @@ static Value applyArithGeneral(const std::string& op, const Value& l, const Valu
             }
             return out;
         };
-        auto pa = parts(l.s), pb = parts(r.s);
+        auto pa = parts(l.s.copyText()), pb = parts(r.s.copyText());
         // `v1.0.1+` means "this version or later" and `v1.*` is a wildcard; `~~` is
         // the MATCHING operator over both, which is not the same question as `cmp`.
         bool aPlus = !l.s.empty() && l.s.back() == '+';
@@ -18969,8 +18970,8 @@ static Value applyArithGeneral(const std::string& op, const Value& l, const Valu
             if (bMinus) { // X ~~ vA-  ⇔  X <= A, compared over A's own length
                 Value rr = r; rr.s.pop_back();
                 Value ll = l;
-                auto np = parts(rr.s).size();
-                auto la = parts(ll.s);
+                auto np = parts(rr.s.copyText()).size();
+                auto la = parts(ll.s.copyText());
                 if (la.size() > np) {   // `v5 ~~ v5.2-`: only as many parts as the pattern has
                     std::string t;
                     for (size_t k = 0; k < np; k++) { if (k) t += "."; t += la[k].second; }
@@ -19938,7 +19939,7 @@ static Value applyArithGeneral(const std::string& op, const Value& l, const Valu
         // LanguageTag::BCP47`, or a class's tail name) is the same object as the
         // class itself — Intl::LanguageTag's suite binds both and asks `=:=`;
         // a parameterised TYPE keeps its parameter: Array[Int] is not Array[Str]
-        else if (l.t == VT::Type) same = (l.s == r.s || aliasedClassName(l.s) == aliasedClassName(r.s) ||
+        else if (l.t == VT::Type) same = (l.s == r.s || aliasedClassName(l.s.copyText()) == aliasedClassName(r.s.copyText()) ||
                                           l.typeName() == r.typeName()) &&
                                          l.ofType() == r.ofType();
         // Two references to the same ROUTINE are one object. A built-in operator
@@ -20042,7 +20043,7 @@ static Value applyArithGeneral(const std::string& op, const Value& l, const Valu
         // `@x.of =:= Any` guard always took the untyped branch and typed-array
         // attributes unmarshalled as plain Hashes.
         if (l.t == VT::Type && r.t == VT::Type)   // an alias names the same type object (see `===`)
-            return Value::boolean((l.s == r.s || aliasedClassName(l.s) == aliasedClassName(r.s) ||
+            return Value::boolean((l.s == r.s || aliasedClassName(l.s.copyText()) == aliasedClassName(r.s.copyText()) ||
                                    l.typeName() == r.typeName()) && l.ofType() == r.ofType());
         // the EMPTY immutable QuantHashes are singletons: `().Set =:= set()`
         if (l.t == VT::Hash && r.t == VT::Hash && l.hash() && r.hash() && l.hashKind == r.hashKind &&
@@ -20159,7 +20160,7 @@ static Value applyArithGeneral(const std::string& op, const Value& l, const Valu
                 auto endNum = [](const Value& rg, bool high) -> double {
                     auto num = [&](const Value& e) -> double {
                         if (e.t == VT::Str) {
-                            try { return Value::str(e.s.str()).toNum(); }
+                            try { return Value::str(e.s).toNum(); }
                             catch (...) { return high ? INFINITY : -INFINITY; }
                         }
                         return e.toNum();
@@ -20183,7 +20184,7 @@ static Value applyArithGeneral(const std::string& op, const Value& l, const Valu
                 auto endStr = [](const Value& rg, bool high) -> std::string {
                     if (const RangeEnds* re = rangeEnds(rg)) {
                         const Value& e = high ? re->to : re->from;
-                        if (e.t == VT::Str) return e.s.str();
+                        if (e.t == VT::Str) return e.s.copyText();
                     }
                     if (rg.ofType() == "Str") return cpToU8((uint32_t)(high ? rg.rTo() : rg.rFrom()));
                     return high ? std::to_string(rg.rTo()) : std::to_string(rg.rFrom());
@@ -20313,7 +20314,7 @@ static Value applyArithGeneral(const std::string& op, const Value& l, const Valu
             {
                 auto coercionParts = [](const Value& t, std::string& tgt, std::string& src) {
                     if (t.t != VT::Type || !t.ofType().empty()) return false;
-                    const std::string& s = t.s;
+                    const std::string_view s = t.s;
                     size_t p = s.find('(');
                     if (p == std::string::npos || p == 0 || s.back() != ')') return false;
                     tgt = s.substr(0, p);
@@ -20338,7 +20339,7 @@ static Value applyArithGeneral(const std::string& op, const Value& l, const Valu
             // refused the AUTOINCREMENT on it.
             if (l.t == VT::Type && l.s != r.s && g_cbInterp &&
                 (l.s == "UInt" || g_cbInterp->subsets_.count(l.s))) {
-                bool sres = g_cbInterp->typeMatchesResolved(l, r.s);
+                bool sres = g_cbInterp->typeMatchesResolved(l, r.s.copyText());
                 if (sres) return Value::boolean(opEq(op, "~~"));
             }
             // A Pod block is an OBJECT; it is a hash here only as a
@@ -20347,7 +20348,7 @@ static Value applyArithGeneral(const std::string& op, const Value& l, const Valu
             // NOT: the generic hash fallback below called it a Map and an
             // Associative, which no Pod block is.
             if (l.t == VT::Hash && l.hashKind == "Pod") {
-                bool pres = typeMatchesArg(l, r.s);
+                bool pres = typeMatchesArg(l, r.s.copyText());
                 return Value::boolean(opEq(op, "~~") ? pres : !pres);
             }
             // `Mu ~~ Any` is False: Any sits BELOW Mu, and the Mu type object
@@ -20389,9 +20390,9 @@ static Value applyArithGeneral(const std::string& op, const Value& l, const Valu
                   (l.t == VT::Hash && l.hashKind == "Failure" && (r.s == "Nil" || r.s == "Cool"));
             // an allomorph (IntStr/RatStr/NumStr) satisfies BOTH its numeric type and Str
             if (!res && l.isAllomorph())
-                res = typeMatchesArg(l, r.s) || r.s == "Str" || r.s == "Stringy";
+                res = typeMatchesArg(l, r.s.copyText()) || r.s == "Str" || r.s == "Stringy";
             // an object matches its class ancestry incl. a built-in parent (`is DateTime`)
-            if (!res && l.t == VT::Object) res = typeMatchesArg(l, r.s);
+            if (!res && l.t == VT::Object) res = typeMatchesArg(l, r.s.copyText());
             // an Attribute meta-object answering the JSON attribute-role checks
             // (`$attr ~~ JSON::Name::NamedAttribute`) — typeMatchesArg owns the
             // trait-key → role mapping. A Parameter meta-object answers the same
@@ -20399,18 +20400,18 @@ static Value applyArithGeneral(const std::string& op, const Value& l, const Valu
             // Formatted::Named(…)`, which is how Getopt::Long marks an option).
             if (!res && l.t == VT::Hash &&
                 (l.hashKind == "Attribute" || l.hashKind == "Parameter"))
-                res = typeMatchesArg(l, r.s);
+                res = typeMatchesArg(l, r.s.copyText());
             // …and a ROUTINE answering for a role a trait_mod mixed into it in
             // place (`$method does Constraint($p)` — Path::Finder's `is constraint`)
             if (!res && l.t == VT::Code && l.code() && l.code()->mixins.p && !l.code()->mixins.p->roles.empty())
-                res = typeMatchesArg(l, r.s);
+                res = typeMatchesArg(l, r.s.copyText());
             // TYPE ~~ TYPE: consult the type ancestry (Array ~~ Positional,
             // array[int] ~~ Positional[int], Mix ~~ Associative, …)
             // (an INSTANCE consults the same table under its own type name, so
             // `Date.new(…) ~~ Dateish` holds just as `Date ~~ Dateish` does)
             if (!res) {
-                std::string ln = l.t == VT::Type ? l.s : l.typeName();
-                res = typeNameConforms(ln, r.s, l.ofType().empty() ? ncElemTypeOf(l) : l.ofType(), r.ofType());
+                std::string ln = l.t == VT::Type ? l.s.copyText() : l.typeName();
+                res = typeNameConforms(ln, r.s.copyText(), l.ofType().empty() ? ncElemTypeOf(l) : l.ofType(), r.ofType());
             }
             // role / container types (Positional, Associative, …) that a value does
             if (!res) {
@@ -20451,8 +20452,8 @@ static Value applyArithGeneral(const std::string& op, const Value& l, const Valu
             }
             // native numeric types conform to Num/Int/Numeric/Real/Cool (`num64 ~~ Num`)
             if (!res && l.t == VT::Type) {
-                static const std::set<std::string> natNum = {"num", "num32", "num64"};
-                static const std::set<std::string> natInt = {"int", "int8", "int16", "int32", "int64",
+                static const std::set<std::string, std::less<>> natNum = {"num", "num32", "num64"};
+                static const std::set<std::string, std::less<>> natInt = {"int", "int8", "int16", "int32", "int64",
                     "uint", "uint8", "uint16", "uint32", "uint64", "byte", "atomicint"};
                 bool numeric = r.s == "Numeric" || r.s == "Real" || r.s == "Cool" || r.s == "Any" || r.s == "Mu";
                 if ((r.s == "Num" || numeric) && natNum.count(l.s)) res = true;
@@ -20462,7 +20463,7 @@ static Value applyArithGeneral(const std::string& op, const Value& l, const Valu
             if (!res && l.t == VT::Object && l.obj())
                 for (ClassInfo* ci = l.obj()->cls.get(); ci; ci = ci->parent.get())
                     if (ci->name == r.s) { res = true; break; }
-            if (!res && l.t == VT::Object && l.obj() && l.obj()->cls && l.obj()->cls->doesRole(r.s))
+            if (!res && l.t == VT::Object && l.obj() && l.obj()->cls && l.obj()->cls->doesRole(r.s.copyText()))
                 res = true;
             // a PARAMETERIZED type is matched by its parameter as well as by
             // its name; every test above compared names alone, so any two
@@ -20671,7 +20672,7 @@ std::shared_ptr<const Regex> compileRegexCached(const std::string& pat, const st
     return re;
 }
 
-Value Interpreter::regexMatch(const std::string& subject, const std::string& pattern,
+Value Interpreter::regexMatch(const std::string& subject, std::string_view pattern,
                               const Value* rxVal, const std::string& declKind) {
     // `:temp` in any pattern this match reaches is undone when it returns, and
     // `:let` too when it did not match (the `$/` it leaves behind says which)
@@ -20730,7 +20731,7 @@ Value Interpreter::regexMatch(const std::string& subject, const std::string& pat
     // another left the matcher's `$/` untouched (#180). Every exit that
     // publishes calls this first; nothing after it runs a code block.
     auto unwire = [&] { if (wired) tctx().cur = savedCurWired; };
-    std::string pat = pattern;
+    std::string pat(pattern);
     // `m:c(N)/…/` / `m:p(N)/…/` (and `:continue`/`:pos`): start the search at
     // character N — `:p` anchors the match there. With no argument the start
     // is where the `$/` in scope ended, which is how `m:p/…/` walks a string
@@ -21599,7 +21600,7 @@ Value Interpreter::applyBinOp(const std::string& op, const Value& l, const Value
     if ((opEq(op, "~~") || opEq(op, "!~~")) && r.t == VT::Pair && !r.s.empty() &&
         l.hashKind == "IO") {
         bool actual = false;
-        try { actual = boolify(methodCall(l, r.s, {})); } catch (RakuError&) { actual = false; }
+        try { actual = boolify(methodCall(l, r.s.copyText(), {})); } catch (RakuError&) { actual = false; }
         bool want = r.pairVal() ? boolify(*r.pairVal()) : true;
         return Value::boolean((actual == want) == (opEq(op, "~~")));
     }
@@ -23137,7 +23138,7 @@ Value Interpreter::evalBinary(Binary* b) {
                 // (arithmetic on a void pointer dies, and must keep dying).
                 try { return callCallable(*f, ValueList{l, r}); }
                 catch (RakuError& e) {
-                    std::string en = e.payload.t == VT::Type ? e.payload.s : e.payload.typeName();
+                    std::string en = e.payload.t == VT::Type ? e.payload.s.copyText() : e.payload.typeName();
                     if (en != "X::Multi::NoMatch" && en != "X::Multi::Ambiguous") throw;
                 }
         if ((opEq(op, "+") || opEq(op, "-")) &&
@@ -23179,7 +23180,7 @@ Value Interpreter::evalBinary(Binary* b) {
             if (Value* f = tctx().cur->find("&infix:<" + name + ">"))
                 try { return callCallable(*f, ValueList{l, r}); }
                 catch (RakuError& e) { // only "no candidate took these operands" falls back
-                    std::string en = e.payload.t == VT::Type ? e.payload.s : e.payload.typeName();
+                    std::string en = e.payload.t == VT::Type ? e.payload.s.copyText() : e.payload.typeName();
                     if (en != "X::Multi::NoMatch" && en != "X::Multi::Ambiguous") throw;
                 }
         // numeric operators on a .Bridge/.Numeric object work through the bridge
@@ -23587,7 +23588,7 @@ Value Interpreter::evalBinary(Binary* b) {
                         "Cannot use 'does' operator on a type object " + base.typeName() + ".");
         // `Callable but role { }` — a ROLE's type object has no mixin to make
         if (opEq(op, "but") && base.t == VT::Type &&
-            (isBuiltinRole(base.s) ||
+            (isBuiltinRole(base.s.copyText()) ||
              (classes_.count(base.s) && classes_[base.s] && classes_[base.s]->isRole)))
             throwTypedV("X::Method::NotFound",
                 {{"method", Value::str("mixin")}, {"typename", Value::str("Perl6::Metamodel::ParametricRoleGroupHOW")},
@@ -24136,7 +24137,7 @@ Value Interpreter::evalBinary(Binary* b) {
         auto fileTest = [&](const Value& pair) {
             // a missing file makes the test False rather than propagating the throw
             bool actual = false;
-            try { actual = boolify(methodCall(lTopic, pair.s, {})); } catch (RakuError&) { actual = false; }
+            try { actual = boolify(methodCall(lTopic, pair.s.copyText(), {})); } catch (RakuError&) { actual = false; }
             bool want = pair.pairVal() ? boolify(*pair.pairVal()) : true;
             return actual == want;
         };
@@ -24395,7 +24396,7 @@ Value Interpreter::evalBinary(Binary* b) {
         if (Value* f = tctx().cur->find("&infix:<" + b->written() + ">"))
             try { return callCallable(*f, ValueList{l, r}); }
             catch (RakuError& e) { // only "no candidate took these operands" falls back
-                std::string en = e.payload.t == VT::Type ? e.payload.s : e.payload.typeName();
+                std::string en = e.payload.t == VT::Type ? e.payload.s.copyText() : e.payload.typeName();
                 if (en != "X::Multi::NoMatch" && en != "X::Multi::Ambiguous") throw;
             }
     // A string operator stringifies its operands, and for an OBJECT that means
@@ -24910,7 +24911,7 @@ Value Interpreter::evalUnary(Unary* u) {
             std::set<std::string> seenN;
             std::vector<bool> keep(va.size(), true);
             for (size_t i = va.size(); i-- > 0;)
-                if (va[i].t == VT::Pair && va[i].namedArg && !seenN.insert(va[i].s.str()).second) keep[i] = false;
+                if (va[i].t == VT::Pair && va[i].namedArg && !seenN.emplace(va[i].s.str()).second) keep[i] = false;
             ValueList kept;
             for (size_t i = 0; i < va.size(); i++) if (keep[i]) kept.push_back(std::move(va[i]));
             va = std::move(kept);
@@ -25235,7 +25236,7 @@ Value Interpreter::evalUnary(Unary* u) {
             name = symRefName(static_cast<SymbolicRef*>(u->operand.get()));
         else {
             Value mv = eval(u->operand.get());
-            name = mv.t == VT::Type ? mv.s : mv.toStr();
+            name = mv.t == VT::Type ? mv.s.copyText() : mv.toStr();
         }
         if (name.empty())
             throw RakuError{Value::typeObj("X::CompUnit::UnsatisfiedDependency"),
@@ -25269,7 +25270,7 @@ Value Interpreter::evalUnary(Unary* u) {
                     throwTyped("X::NotFoundInRepository", {{"file", name}}, where);   // (Rakudo's type)
                 }
                 std::unordered_set<std::string> before;
-                for (auto& kv : classes_) before.insert(kv.first);
+                for (auto& kv : classes_) before.emplace(kv.first);
                 try { loadModule(mod, {}, /*doImport=*/true, /*quiet=*/true, "", /*requireForm=*/true); }
                 catch (ParseError& pe) { throw RakuError{Value::typeObj("X::AdHoc"), pe.what()}; }
                 // …and what the FILE declares is the requiring scope's alone: a
@@ -25277,7 +25278,7 @@ Value Interpreter::evalUnary(Unary* u) {
                 // `::('GlobalInner')` a Failure outside it (S11-modules/require.t)
                 if (tctx().cur && tctx().cur.get() != global_.get())
                     for (auto& kv : classes_)
-                        if (!before.count(kv.first)) requireScoped_[kv.first] = tctx().cur;
+                        if (!before.count(std::string(kv.first))) requireScoped_[std::string(kv.first)] = tctx().cur;
                 return Value::str(name);
             }
         }
@@ -25949,7 +25950,7 @@ Value Interpreter::evalUnary(Unary* u) {
         // On a Blob/Buf this is the byte-wise complement, and Rakudo implements
         // it: `~^ Buf.new(0x41, 0xFF)` is Buf:0x<BE 00>.
         if (v.t == VT::Str && (v.hashKind == "Buf" || v.hashKind == "Blob")) {
-            std::string r = v.s;
+            std::string r = v.s.copyText();
             for (auto& ch : r) ch = (char)~(unsigned char)ch;
             Value out = Value::str(r); out.hashKind = v.hashKind;
             if (out.hashKind == "Buf") identify(out);
@@ -26266,7 +26267,7 @@ void Interpreter::enforceTypedAssign(const std::string& nm, Value& rhs) {
             auto dti = en->xr().varDefaultType.find(nm);
             const Value& dty = dti != en->xr().varDefaultType.end() ? dti->second : di->second;
             if (dty.t != VT::Type || en->xr().varDefaultUntyped.count(nm)) break;
-            enforceTypedValue(nm, dty.s, rhs, en);
+            enforceTypedValue(nm, dty.s.copyText(), rhs, en);
             break;
         }
         if (en->local(nm)) break;
@@ -26488,7 +26489,7 @@ Value Interpreter::evalCall(Call* c) {
             if (args.empty() || (args.size() == 1 && args[0].t == VT::Type && !args[0].namedArg &&
                                  args[0].ofType().empty() && args[0].s.find('(') == std::string::npos))
                 return Value::typeObj(base + (dc == 1 ? ":D" : dc == 2 ? ":U" : ":_") + "(" +
-                                      (args.empty() ? std::string("Any") : args[0].s.str()) + ")");
+                                      (args.empty() ? std::string("Any") : args[0].s.copyText()) + ")");
             if (args.size() == 1 && !args[0].namedArg) return coerceToType(args[0], base);
         }
         // move, not copy: `args` is a local about to die and ValueList is taken BY
@@ -27695,7 +27696,7 @@ Value Interpreter::evalIndex(Index* idx) {
                     if (argExprs[i]->kind == NK::Pair) argv[i].namedArg = true;
             // a role GROUP puns the candidate these arguments fit
             if (!rit->second->roleVariants.empty()) role = pickRoleVariantValues(rit->second, argv).get();
-            return makeRolePun(role, base.s, argv);
+            return makeRolePun(role, base.s.copyText(), argv);
         }
     }
     // A class with a user `method ^parameterize` decides for itself what `T[…]`
@@ -27719,7 +27720,7 @@ Value Interpreter::evalIndex(Index* idx) {
         Value p = subscriptKey(idx->index.get());
         if (p.t == VT::Type) {
             Value ty = Value::typeObj(base.s);
-            ty.ofTypeM() = base.ofType().empty() ? p.s : base.ofType() + "," + p.s;
+            ty.ofTypeM() = base.ofType().empty() ? p.s.copyText() : base.ofType() + "," + p.s;
             return ty;
         }
     }
@@ -28584,7 +28585,7 @@ Value Interpreter::evalIndex(Index* idx) {
                 raceKeys(base.hash(), RaceAcc::Write);
                 const std::string k = h.skey.empty() ? h.keyV.toStr() : h.skey;
                 base.hash()->erase(k);
-                if (base.hashKind == "Stash" && !base.s.empty()) stashDeleteSymbol(base.s.str(), k);
+                if (base.hashKind == "Stash" && !base.s.empty()) stashDeleteSymbol(base.s.copyText(), k);
             }
             else { long long ai = h.keyV.toInt();
                    if (base.arr() && ai >= 0 && ai < (long long)base.arr()->size()) { raceElem(base.arr(), (size_t)ai, RaceAcc::Write); (*base.arr())[ai] = Value::any(); } }
@@ -32435,7 +32436,7 @@ Value Interpreter::evalMethodCallExpr(Expr* e, Value* handedInv) {
         if (opEq(mc->method, "pop") || opEq(mc->method, "shift")) {
             Value* lv = nullptr; try { lv = lvalue(mc->inv.get()); } catch (RakuError&) {}
             Value* tgt = lv ? lv : nullptr;
-            std::string& s = tgt ? tgt->s.mut() : inv.s.mut();
+            CowStr& s = tgt ? tgt->s : inv.s;   // (read in place; resize/erase detach it first)
             if (s.empty())
                 throwTypedV("X::Cannot::Empty",
                     {{"action", Value::str(mc->method)}, {"what", Value::str(inv.hashKind.str())}},

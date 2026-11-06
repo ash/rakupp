@@ -43,7 +43,7 @@ SandboxCap sandboxOpenCap(const ValueList& args) {
     for (auto& x : args) {
         if (x.t != VT::Pair) continue;
         if (x.pairVal() && !x.pairVal()->truthy()) continue;   // `:!w` asks for nothing
-        const std::string k = x.s;
+        const std::string k = x.s.copyText();
         if (k == "w" || k == "a" || k == "x" || k == "rw" || k == "ra" || k == "rx" ||
             k == "update" || k == "exclusive" || k == "create" || k == "truncate" || k == "append")
             return SandboxCap::Write;

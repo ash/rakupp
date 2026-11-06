@@ -33,6 +33,7 @@
 #include <ostream>
 #include <shared_mutex>
 #include <string>
+#include <string_view>
 #include <unordered_map>
 
 namespace rakupp {
@@ -128,6 +129,7 @@ struct IStr {
 
     IStr& operator=(const char* v) { assign(v, std::strlen(v)); return *this; }
     IStr& operator=(const std::string& v) { assign(v.data(), v.size()); return *this; }
+    IStr& operator=(std::string_view v) { assign(v.data(), v.size()); return *this; }
 
     // ALWAYS inlined for the same reason MName is: out of line the call costs
     // more than the comparison it replaces.

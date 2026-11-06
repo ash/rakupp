@@ -46,7 +46,7 @@ static int stdinFdForHandle(const Value& h, bool& resolved) {
             if (fd >= 0) { resolved = true; return fd; }
             std::string rest = liveProcReadAll(nullptr, lt->toInt(), isErr);
             Value& buf = (*h.hash())["buffer"];
-            buf = Value::str((buf.t == VT::Str ? buf.s : std::string()) + rest);
+            buf = Value::str((buf.t == VT::Str ? buf.s.copyText() : std::string()) + rest);
             h.hash()->erase("live-tok");
             (*h.hash())["captured"] = Value::boolean(true);
             return stdinFdForHandle(h, resolved);
@@ -151,7 +151,7 @@ static void throwIfBoolMatcher(const ValueList& matchers) {
     for (auto& mp : matchers)
         if (mp.pairVal() && mp.pairVal()->t == VT::Bool)
             throw RakuError{Value::typeObj("X::Match::Bool"),
-                "Cannot use Bool as Matcher with '." + mp.s.str() +
+                "Cannot use Bool as Matcher with '." + mp.s +
                 "'.  Did you mean to use $_ inside a block?"};
 }
 
@@ -192,7 +192,7 @@ Value rtFailureFor(Interpreter& I, ValueList& a) {
     // a bare `fail` with no $! still carries an exception — X::AdHoc
     // "Failed" — so `.exception.message` answers rather than dying on Any
     if (ex.t != VT::Object)
-        ex = I.makeTypedEx("X::AdHoc", {}, ex.t == VT::Str ? ex.s.str() : std::string("Failed"));
+        ex = I.makeTypedEx("X::AdHoc", {}, ex.t == VT::Str ? ex.s.copyText() : std::string("Failed"));
     Value f = rakuppNewFailure();
     (*f.hash())["exception"] = ex;
     (*f.hash())["message"] = ex.obj() && ex.obj()->attrs.count("message")
@@ -560,7 +560,7 @@ void Interpreter::registerBuiltins() {
                                 nullptr, /*skipOwn=*/true);
         } catch (RakuError& e) {
             const Value& p = e.payload;
-            std::string tn = p.t == VT::Type ? p.s.str()
+            std::string tn = p.t == VT::Type ? p.s.copyText()
                            : (p.t == VT::Object && p.obj() && p.obj()->cls ? p.obj()->cls->name : std::string());
             if (tn == "X::Method::NotFound" &&
                 e.message.find("'" + *fb.name + "'") != std::string::npos)
@@ -1181,7 +1181,7 @@ void Interpreter::registerBuiltins() {
         // the "type" argument may be a type object, a type NAME string, or any
         // other value — a plain value stands for its own type (isa-ok 3, 3)
         std::string want = a.size() > 1
-            ? (a[1].t == VT::Type ? a[1].s : a[1].t == VT::Str ? a[1].toStr() : a[1].typeName())
+            ? (a[1].t == VT::Type ? a[1].s.copyText() : a[1].t == VT::Str ? a[1].toStr() : a[1].typeName())
             : "";
         std::string got = a.empty() ? "Any" : a[0].typeName();
         // ONE default description for both exit paths — the fast path used to say
@@ -1207,7 +1207,7 @@ void Interpreter::registerBuiltins() {
             // still short of smartmatch: the target must be a TYPE object
             if (a[1].t == VT::Type &&
                 (a[1].s == "UInt" ? a[0].t == VT::Int && !(a[0].big() ? a[0].big()->sign < 0 : a[0].i < 0)
-                                  : I.subsetMatches(a[1].s, a[0]))) {
+                                  : I.subsetMatches(a[1].s.copyText(), a[0]))) {
                 I.emitTest(true, desc);
                 return Value::boolean(true);
             }
@@ -1279,7 +1279,7 @@ void Interpreter::registerBuiltins() {
         // arg is the (relative) tolerance, a Str is the description.
         for (size_t i = 2; i < a.size(); i++) {
             if (a[i].t == VT::Pair) {
-                std::string k = a[i].s; double val = a[i].pairVal() ? a[i].pairVal()->toNum() : 0;
+                std::string k = a[i].s.copyText(); double val = a[i].pairVal() ? a[i].pairVal()->toNum() : 0;
                 if (k == "rel-tol") { haveRel = true; relTol = val; }
                 else if (k == "abs-tol") { haveAbs = true; absTol = val; }
             } else if (a[i].isNumeric() && !havePosTol) { tol = a[i].toNum(); havePosTol = true; }
@@ -1326,7 +1326,7 @@ void Interpreter::registerBuiltins() {
             else if (a[i].t == VT::Str && reason.empty()) reason = a[i].s;
         }
         throwIfBoolMatcher(matchers);
-        const std::string tname = haveType ? type.s : std::string("Exception");
+        const std::string tname = haveType ? type.s.copyText() : std::string("Exception");
         if (reason.empty()) reason = "did we throws-like " + tname + "?";
         // Rakudo's skip puts the marker in the DESCRIPTION slot ("ok 2 - # SKIP …"),
         // which is why these do not go through emitTest's directive argument.
@@ -1340,7 +1340,7 @@ void Interpreter::registerBuiltins() {
                 // the block's result is SUNK — `throws-like { run … }` throws through Proc.sink
                 if (a.empty()) {}
                 else if (a[0].t == VT::Code) I.sinkValue(I.callCallable(a[0], {}));
-                else if (a[0].t == VT::Str) I.sinkValue(I.evalOwnScope(a[0].s));
+                else if (a[0].t == VT::Str) I.sinkValue(I.evalOwnScope(a[0].s.copyText()));
                 // …and anything else has ALREADY been evaluated, so what arrived
                 // is whatever it produced: a Failure that has not detonated yet
                 // is the throw this is asking about. Roast calls
@@ -1383,7 +1383,7 @@ void Interpreter::registerBuiltins() {
                 // assertion says the same thing and still fails the subtest, but
                 // leaves the remaining matchers legible.
                 Value got; bool have = true;
-                try { got = I.methodCall(thrown, mp.s, ValueList{}); }
+                try { got = I.methodCall(thrown, mp.s.copyText(), ValueList{}); }
                 catch (RakuError&) { have = false; }
                 I.emitTest(have && (want.t == VT::Code ? I.callCallable(want, ValueList{got}).truthy()
                                                        : I.smartmatchValue("~~", got, want).truthy()), mdesc);
@@ -1408,7 +1408,7 @@ void Interpreter::registerBuiltins() {
         }
         throwIfBoolMatcher(matchers);
         if (reason.empty())
-            reason = "did we fails-like " + (type.t == VT::Type ? type.s.str() : type.typeName()) + "?";
+            reason = "did we fails-like " + (type.t == VT::Type ? type.s.copyText() : type.typeName()) + "?";
         bool verdict = I.runSubtestFrame(reason, [&]() {
             I.planned_ = 2;
             std::cout << std::string(4 * I.subtestDepth_, ' ') << "1..2\n";
@@ -1421,7 +1421,7 @@ void Interpreter::registerBuiltins() {
             try {
                 if (a.empty()) {}
                 else if (a[0].t == VT::Code) res = I.callCallable(a[0], {});
-                else if (a[0].t == VT::Str) res = I.evalOwnScope(a[0].s);
+                else if (a[0].t == VT::Str) res = I.evalOwnScope(a[0].s.copyText());
             }
             // `fail` in a bare block unwinds as the return of the enclosing
             // routine; there is none inside the block, so it lands here, and
@@ -1449,7 +1449,7 @@ void Interpreter::registerBuiltins() {
                     for (auto& kv : *res.hash())
                         if (kv.first != "exception" && kv.first != "handled") slots.emplace_back(kv.first, kv.second);
                     const std::string msg = res.hash()->count("message") ? (*res.hash())["message"].toStr() : "Failure";
-                    Value inst = I.makeTypedEx(ex->second.s.str(), slots, msg);
+                    Value inst = I.makeTypedEx(ex->second.s.copyText(), slots, msg);
                     blk = Value::closure([inst, msg](ValueList&) -> Value { throw RakuError{inst, msg}; });
                 }
             ValueList ta{blk, type, Value::str("Failure threw when sunk")};
@@ -1479,7 +1479,7 @@ bool envPairsFrom(const Value& v, std::map<std::string, std::string>& out) {
         return true;
     }
     if (v.t == VT::Pair) {
-        out[v.s] = v.pairVal() ? v.pairVal()->toStr() : "";
+        out[v.s.copyText()] = v.pairVal() ? v.pairVal()->toStr() : "";
         return true;
     }
     if (v.t == VT::Array && v.arr()) {
@@ -2856,7 +2856,7 @@ void Interpreter::registerBuiltinsPart2() {
     };
     for (auto nm : {"permutations", "combinations", "unique", "repeated", "squish", "flat"})
         B[nm] = [nm](Interpreter& I, ValueList& a) -> Value {
-            static const std::set<std::string> adv = {"as", "with", "partial"};
+            static const std::set<std::string, std::less<>> adv = {"as", "with", "partial"};
             ValueList items, opts;
             for (auto& x : a) {
                 if (x.t == VT::Pair && adv.count(x.s)) opts.push_back(x);

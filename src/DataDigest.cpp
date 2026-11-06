@@ -48,8 +48,8 @@ bool isBlobKind(const Value& x) {
 // anything else. Nothing here coerces: `md5(42)` hashing "42" would be a
 // silent answer to a question nobody asked.
 std::string bytesOf(Interpreter& I, const Value& v, const char* who) {
-    if (isBlobKind(v)) return v.s.str();
-    if (v.t == VT::Str && v.hashKind.empty()) return v.s.str();
+    if (isBlobKind(v)) return v.s.copyText();
+    if (v.t == VT::Str && v.hashKind.empty()) return v.s.copyText();
     bool isPath   = (v.t == VT::Str  && v.hashKind == "IO");
     bool isHandle = (v.t == VT::Hash && v.hashKind == "FileHandle");
     if (isPath || isHandle) {
@@ -61,7 +61,7 @@ std::string bytesOf(Interpreter& I, const Value& v, const char* who) {
         Value bin = Value::pair("bin", Value::boolean(true));
         bin.namedArg = true;
         sb.push_back(bin);
-        return I.callBuiltin("slurp", std::move(sb)).s.str();
+        return I.callBuiltin("slurp", std::move(sb)).s.copyText();
     }
     digDie(std::string(who) + ": cannot digest a " + v.typeName() +
            "; pass a Str, a Blob, an IO::Path or an IO::Handle");
@@ -106,7 +106,7 @@ Value dataDigestHash(Interpreter& I, ValueList& a, const char* algo, bool hex) {
             if (x.s == "initial-hash")
                 digDie(who + ": :initial-hash is not supported; it is a "
                              "Digest::SHA2 internal, not part of this interface");
-            digDie(who + ": no such adverb :" + x.s.str());
+            digDie(who + ": no such adverb :" + x.s);
         }
     std::string raw = digestBytes(algoOr(algo), bytesOf(I, *positional(a, 0), who.c_str()));
     return hex ? Value::str(digestToHex(raw)) : blobOf(raw);
@@ -119,7 +119,7 @@ Value dataDigestHmac(Interpreter& I, ValueList& a, bool hex) {
         digDie(std::string(who) + ": expected ($key, $message, &hash, $blocksize?)");
     for (auto& x : a)
         if (x.t == VT::Pair && x.namedArg)
-            digDie(std::string(who) + ": no such adverb :" + x.s.str());
+            digDie(std::string(who) + ": no such adverb :" + x.s);
 
     std::string key = bytesOf(I, *positional(a, 0), who);
     std::string msg = bytesOf(I, *positional(a, 1), who);

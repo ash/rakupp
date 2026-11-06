@@ -717,6 +717,87 @@ length byte or a `Ref<const StrBody>`, which brings `Value` from 80 to 64. It
 is measured the way A was, with the field order included, because field offsets
 alone moved kernels by several percent in batch 2.
 
+### C, step 1: the read API, with the storage unchanged (2026-11-06)
+
+C was split in two so that its two costs are measured apart. Step 1 changes
+every reader and writer and leaves `CowStr` at 32 bytes, so the change should
+be level on time and on allocations, and any cost it has comes from the sweep.
+Step 2 changes the storage and measures the layout.
+
+- **Reads are views.** `CowStr::str()` answers a `std::string_view`, and the
+  implicit conversion to `const std::string&` is gone. A `CowStr` converts
+  implicitly only to a view. `c_str()` and `data()` stay and are
+  NUL-terminated, a promise step 2 has to keep.
+- **Writes do not hand out a `std::string&`.** `mut()` is private and
+  `textInPlace()` is gone. `edit(f)` gives `f` a `std::string&` for the call
+  only. The 14 writers use it, or `CowStr`'s own `+=`, `erase` and `resize`,
+  or `mutInPlace()` for a Buf's bytes.
+- **Lookups by a view.** C++17's unordered containers have no lookup by
+  `string_view` (P0919 is C++20, and `--exe` compiles a user's program as
+  C++17), so the transparent hashing is done three ways. `ValueHash` and
+  `AttrTable` take `std::string_view` keys, and `std::hash<string_view>` is
+  `std::hash<string>` by the standard. [src/StrMap.h](../../../src/StrMap.h)
+  is an `unordered_map<string_view, V>` over keys it owns in a deque, and
+  serves `classes_`, `subsets_`, `classAliases_` and `pkgKind_`. Static name
+  tables became `std::set`/`std::map` with `std::less<>`, or sets of views of
+  literals.
+- **Text helpers that only read take a view**: `utf8cp`, `graphemeCount`,
+  `nfcConcat` and the NFC appends, `numifyStr*`, the JSON reader,
+  `strSucc`/`strPred`, `regexMatch`'s pattern, `findAttr`, `isKnownTypeName`,
+  and `resolveClassAlias`, which has a view overload over the same body.
+- **Where a callee still reads a `const std::string&`, the site makes one.**
+  These are the type checker (`typeMatchesArg`, `typeNameConforms`,
+  `rtTypeMatch`, `typeOrSubsetMatches`), `Env::find` and `methodCall`'s name.
+  They are type and method names, short enough for the small buffer, so the
+  copy makes no allocation. The census below checks that.
+- **A copy is `copyText()`, not `std::string(s.str())`.** libc++ copies a
+  short `std::string` whole, without a call. A string built from a view calls
+  `memmove` for its bytes, however short. `Value::toStr` on a Str and the
+  ~300 copies the sweep wrote took the slow road until `copyText()` existed.
+  perf-guard's `prepend` measured +3.8% instructions with them and +1.8%
+  after. In step 2, `copyText()` is where an inline text becomes a
+  `std::string` in its small buffer.
+
+**The recount.** The compiler found 816 distinct sites that no longer built.
+The 1,549 counted on 2026-09-02 measured something else. There are 3,164
+textual `.s` uses today, and most still compile through `CowStr`'s forwarding
+members.
+
+**Measured 2026-11-06**, Darwin 25.6 / arm64, Apple clang 21. Base is
+ac66e898 and both binaries are Release builds from one sitting.
+
+| gate | base | step 1 |
+|---|---|---|
+| `t/run.raku` | | 1,992 of 1,992 |
+| Roast cf28a323c, files fully passing | 1,425 of 1,425 | 1,425 of 1,425, the same files |
+| Roast mallocs, two runs each | 62.98M, 63.22M | 63.15M, 63.13M |
+| mallocs, 44 bench + example programs | 4,501,434 | 4,505,709 (all in `life.raku`, which moves ±1% run to run; the other 43 identical) |
+| `tools/malloc-census.raku`, 8 workloads | | identical per operation |
+| perf-guard time, 27 kernels × 3 interleaved rounds | | geomean +0.13% |
+| instructions retired, 26 kernels | | geomean −0.11% |
+
+- **Roast under AddressSanitizer** finds nothing new. The same four files fail
+  under an ASan build of the base and of step 1, with the same reports.
+  `let.t`, `temp.t` and `clone.t` show a heap-use-after-free: `lvalue()` holds
+  a pointer into a hash that `Env::define` then replaces, in `evalAssignInner`.
+  `deep-recursion-initing-native-array.t` shows a stack-buffer-overflow.
+  These four are bugs of their own, older than this step. Under load,
+  `system.t` timed out once, and it passes 41/41 alone on both builds. The
+  196 `t/regression` files on strings, Bufs and hashes give no report on
+  either build.
+- **`multidecline` measures +10% in time and +0.24% in instructions.** That is
+  where the base binary's code happened to land, not work. Its hot function
+  (`~ScoreVec`) has identical machine code in both builds at a different
+  alignment. Built with `-g`, the two take 87.5 and 87.8 ms. Built with
+  `-falign-functions=64`, they take 91.2 and 90.5 ms. A layout that moves one
+  kernel by 10% is worth remembering when step 2 measures its field order.
+- **The gates found two costs, and both are fixed.** `.trans` copied its
+  pair key, three mallocs per call for `cipher`'s 52-byte keys, and now reads
+  it as a view. Copies made from a view took the slow road, which is
+  `copyText()` above.
+
+The change is 45 source files, `src/StrMap.h` the one new one.
+
 ## Why 16 bytes is an architecture change, not a layout change
 
 Slim16 measures 24x on the array build. It is worth saying plainly what that

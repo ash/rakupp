@@ -15,8 +15,8 @@ std::vector<size_t> uniGraphemeStarts(const std::vector<uint32_t>& cps); // clus
 // sequence — a UTF8-C8 synthetic, which utf8cp passes through as its own value —
 // is a cluster of its own, the way a Control is (it never combines, and nothing
 // combines with it). Pass the string whenever the codepoints came from one.
-size_t uniGraphemeCount(const std::vector<uint32_t>& cps, const std::string& src);
-std::vector<size_t> uniGraphemeStarts(const std::vector<uint32_t>& cps, const std::string& src);
+size_t uniGraphemeCount(const std::vector<uint32_t>& cps, std::string_view src);
+std::vector<size_t> uniGraphemeStarts(const std::vector<uint32_t>& cps, std::string_view src);
 bool uniGraphemeLeadIsOdd(uint32_t cp);   // Extend / ZWJ / SpacingMark / Prepend: `.raku` writes such a cluster as codepoints
 // Raku string indices are GRAPHEME indices, but a decoded string is a vector of
 // CODEPOINTS, and the two coincide only while every cluster is one codepoint long.
@@ -31,7 +31,7 @@ bool uniGraphemeLeadIsOdd(uint32_t cp);   // Extend / ZWJ / SpacingMark / Prepen
 class GraphemeMap {
 public:
     explicit GraphemeMap(const std::vector<uint32_t>& cps);
-    GraphemeMap(const std::vector<uint32_t>& cps, const std::string& src); // cps = utf8cp(src)
+    GraphemeMap(const std::vector<uint32_t>& cps, std::string_view src); // cps = utf8cp(src)
     bool trivial() const { return starts_.empty(); }
     size_t count() const { return starts_.empty() ? ncps_ : starts_.size(); } // graphemes
     // codepoint index where grapheme `g` starts; count() maps to the end of the string
@@ -44,7 +44,7 @@ private:
     size_t ncps_;
     std::vector<size_t> starts_; // empty when one grapheme == one codepoint
 };
-size_t uniClusterEndUtf8(const std::string& s, size_t pos, size_t len);  // byte end of the grapheme cluster at `pos`
+size_t uniClusterEndUtf8(std::string_view s, size_t pos, size_t len);  // byte end of the grapheme cluster at `pos`
 size_t uniGraphemeCountUtf8(const char* s, size_t len);   // clusters in s[0, len), the walk starting fresh at s[0]
 bool uniGraphemeBreakCertain(uint32_t prev, uint32_t cur); // a cluster boundary between them, whatever precedes `prev`
 // Joining two NFC strings. A codepoint is an NFC boundary when nothing before it

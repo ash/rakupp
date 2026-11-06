@@ -205,7 +205,7 @@ std::optional<Value> Interpreter::methodCallPart1b(const Value& inv, const MName
     // (C is handed its address), so the copy is of the BYTES. The strings and
     // objects the slots point at stay owned by both (the shared `ext`).
     if (inv.t == VT::Str && inv.hashKind == "CArray" && m == "clone" && args.empty()) {
-        Value c = Value::str(std::string(inv.s.str()));
+        Value c = Value::str(inv.s.copyText());
         c.hashKind = "CArray";
         c.enumName = inv.enumName;
         c.s.promote();
@@ -474,7 +474,7 @@ std::optional<Value> Interpreter::methodCallPart1b(const Value& inv, const MName
                 p = body->str().data();
             }
             else {
-                smalls.push_back(b.s.str());
+                smalls.emplace_back(b.s.str());
                 if (smalls.size() > 256) smalls.pop_front();
                 p = smalls.back().data();
             }
@@ -629,7 +629,7 @@ std::optional<Value> Interpreter::methodCallPart1b(const Value& inv, const MName
         };
         auto sepBytes = [&](const std::string& sep) -> std::string {
             if (native) return sep;
-            return methodCall(Value::str(sep), "encode", ValueList{Value::str(enc)}).s.str();
+            return methodCall(Value::str(sep), "encode", ValueList{Value::str(enc)}).s.copyText();
         };
         if (m == "add-bytes") { if (!args.empty()) buf.s += args[0].s; return inv; }
         if (m == "set-line-separators") {
@@ -664,7 +664,7 @@ std::optional<Value> Interpreter::methodCallPart1b(const Value& inv, const MName
                     if (pos < best || (pos == best && ss.size() > bestLen)) { best = pos; bestLen = ss.size(); }
                 }
             if (best == std::string::npos) {
-                if (eof && !buf.s.empty()) { std::string all = buf.s; buf.s.clear(); return chars(all); }
+                if (eof && !buf.s.empty()) { std::string all = buf.s.copyText(); buf.s.clear(); return chars(all); }
                 return Value::typeObj("Str"); // no complete line yet
             }
             std::string line = buf.s.substr(0, chomp ? best : best + bestLen);
@@ -680,7 +680,7 @@ std::optional<Value> Interpreter::methodCallPart1b(const Value& inv, const MName
             return b;
         }
         if (m == "consume-all-chars") {
-            std::string all = buf.s; buf.s.clear(); return chars(all);
+            std::string all = buf.s.copyText(); buf.s.clear(); return chars(all);
         }
         // `consume-available-chars` is what a STREAM decoder yields as bytes
         // arrive, and it is not the same as draining the buffer: the tail may
@@ -701,12 +701,12 @@ std::optional<Value> Interpreter::methodCallPart1b(const Value& inv, const MName
                 size_t end = wide ? buf.s.size() & ~(size_t)1 : buf.s.size();
                 const std::string cr = sepBytes("\r");
                 if (end >= cr.size() && buf.s.str().compare(end - cr.size(), cr.size(), cr) == 0) end -= cr.size();
-                std::string out = buf.s.str().substr(0, end);
+                std::string out(buf.s.str().substr(0, end));
                 buf.s.erase(0, end);
                 return chars(out);
             }
             size_t end = utf8TextPrefixLen(buf.s.str());
-            std::string out = buf.s.str().substr(0, end);
+            std::string out(buf.s.str().substr(0, end));
             buf.s.erase(0, end);
             return chars(out);
         }
@@ -984,7 +984,7 @@ std::optional<Value> Interpreter::methodCallPart1b(const Value& inv, const MName
         }
         if (m == "native-descriptor") return Value::integer(fd);
         if (m == "socket-host" || m == "socket-port" || m == "peer-host" || m == "peer-port") {
-            auto it = inv.hash()->find(m);
+            auto it = inv.hash()->find(m.s);
             return it != inv.hash()->end() ? it->second : Value::any();
         }
     }
@@ -1096,7 +1096,7 @@ std::optional<Value> Interpreter::methodCallPart1b(const Value& inv, const MName
             if (a.t != VT::Pair) continue;
             bool on = a.pairVal() ? a.pairVal()->truthy() : true;
             if (a.s == "out" || a.s == "err" || a.s == "merge" || a.s == "in")
-                (*p.hash())["want-" + a.s.str()] = Value::boolean(on);
+                (*p.hash())["want-" + a.s] = Value::boolean(on);
         }
         return p;
     }
@@ -1129,7 +1129,7 @@ std::optional<Value> Interpreter::methodCallPart1b(const Value& inv, const MName
          inv.s.rfind("Blob[", 0) == 0 || inv.s.rfind("Buf[", 0) == 0 ||
          ((inv.s == "Blob" || inv.s == "Buf") && !inv.ofType().empty()))) {
         // the width comes from the name (blob32) or the parameter (Blob[uint32])
-        const std::string& wsrc = inv.ofType().empty() ? inv.s : inv.ofType();
+        const std::string_view wsrc = inv.ofType().empty() ? inv.s.str() : std::string_view(inv.ofType());
         int w = wsrc.find("16") != std::string::npos ? 2
               : wsrc.find("32") != std::string::npos ? 4
               : wsrc.find("64") != std::string::npos ? 8 : 1;
@@ -1176,7 +1176,7 @@ std::optional<Value> Interpreter::methodCallPart1b(const Value& inv, const MName
         // magnitude (Binary::Structured decodes signed fields this way).
         // the parameter may arrive as the ofType ("int8") or inside the name
         // ("Buf[int8]"), and `buf8`/`blob8` are unsigned by their own spelling
-        std::string et = wsrc;
+        std::string et(wsrc);
         if (size_t lb = et.find('['); lb != std::string::npos) et = et.substr(lb + 1, et.find(']', lb) - lb - 1);
         bool signedElem = et.compare(0, 3, "int") == 0;
         b.ofTypeM() = (signedElem ? "int" : "uint") + std::to_string(w * 8);
@@ -1198,7 +1198,7 @@ std::optional<Value> Interpreter::methodCallPart1b(const Value& inv, const MName
         ValueList items;
         for (auto& a : args) {
             if (a.t == VT::Range && a.rTo() >= 9000000000000000000LL)
-                throwTyped("X::Cannot::Lazy", {{"what", inv.s}},
+                throwTyped("X::Cannot::Lazy", {{"what", inv.s.copyText()}},
                            "Cannot create a " + inv.s + " from a lazy list");
             if (a.t == VT::Array || a.t == VT::Range) for (auto& x : a.flatten()) items.push_back(x);
             else items.push_back(a);
@@ -1207,7 +1207,7 @@ std::optional<Value> Interpreter::methodCallPart1b(const Value& inv, const MName
             if (x.t != VT::Pair && x.t != VT::Str && !x.isNumeric())
                 throw RakuError{Value::typeObj("X::AdHoc"),
                                 "Found invalid value " + x.gist() + " in " + inv.s + ".new-from-pairs"};
-        return makeBaggy(items, inv.s, /*pairsAsElements=*/false);
+        return makeBaggy(items, inv.s.copyText(), /*pairsAsElements=*/false);
     }
     if (inv.t == VT::Type &&
         (inv.s == "Set" || inv.s == "SetHash" || inv.s == "Bag" || inv.s == "BagHash" ||
@@ -1222,7 +1222,7 @@ std::optional<Value> Interpreter::methodCallPart1b(const Value& inv, const MName
             bool lazy = endlessLazy(a) || declLazyLive(a) || (a.t == VT::Range && a.rTo() >= 9000000000000000000LL);
             if (!lazy && a.t == VT::Range) { ValueList none; lazy = methodCall(a, "is-lazy", none).truthy(); }
             if (lazy)
-                throwTyped("X::Cannot::Lazy", {{"what", inv.s}},
+                throwTyped("X::Cannot::Lazy", {{"what", inv.s.copyText()}},
                            "Cannot create a " + inv.s + " from a lazy list");
         }
         // a quanthash arg is ONE element (Bag.new(set <a b c>) has 1 elem);
@@ -1247,7 +1247,7 @@ std::optional<Value> Interpreter::methodCallPart1b(const Value& inv, const MName
                 x = coerceToType(x, coerceTarget);
                 if (x.t == VT::Hash && x.hashKind == "Failure") sinkValue(x);   // "a" as an Int key croaks (X::Str::Numeric)
             }
-        Value out = makeBaggy(items, inv.s, /*pairsAsElements=*/true);
+        Value out = makeBaggy(items, inv.s.copyText(), /*pairsAsElements=*/true);
         if (!coerceTarget.empty()) { if (out.hash()) out.ofTypeM() = inv.ofType(); return out; }
         if (!inv.ofType().empty() && out.hash()) { // Set[Str].new(...) enforces the key type
             for (auto& kv : *out.hash()) {
@@ -1279,12 +1279,12 @@ std::optional<Value> Interpreter::methodCallPart1b(const Value& inv, const MName
     if (inv.t == VT::Str && inv.hashKind == "Version") {
         if (m == "parts") { // numeric parts as Ints, everything else as Strs
             Value out = Value::array(); out.isList = true;
-            const std::string& s = inv.s;
+            const std::string_view s = inv.s;
             size_t i = 0;
             while (i < s.size()) {
                 unsigned char c = s[i];
                 if (ascii::isdigit(c)) { size_t j = i; while (j < s.size() && ascii::isdigit((unsigned char)s[j])) j++;
-                    out.arr()->push_back(Value::integer(std::atoll(s.substr(i, j - i).c_str()))); i = j; }
+                    out.arr()->push_back(Value::integer(std::atoll(std::string(s.substr(i, j - i)).c_str()))); i = j; }
                 else if (ascii::isalpha(c)) { size_t j = i; while (j < s.size() && ascii::isalpha((unsigned char)s[j])) j++;
                     out.arr()->push_back(Value::str(s.substr(i, j - i))); i = j; }
                 // a '*' part is the STRING "*", as Rakudo stores it — a Whatever
@@ -1322,7 +1322,7 @@ std::optional<Value> Interpreter::methodCallPart1b(const Value& inv, const MName
             {"Setty", {{"Set","Set"},{"SetHash","SetHash"},{"Bag","Set"},{"BagHash","SetHash"},{"Mix","Set"},{"MixHash","SetHash"}}},
             {"Mixy",  {{"Set","Mix"},{"SetHash","MixHash"},{"Bag","Mix"},{"BagHash","MixHash"},{"Mix","Mix"},{"MixHash","MixHash"}}},
         };
-        auto ci2 = co.find(m); auto ti = ci2->second.find(inv.s);
+        auto ci2 = co.find(m); auto ti = ci2->second.find(inv.s.copyText());
         if (ti != ci2->second.end()) return Value::typeObj(ti->second);
     }
     if (inv.t == VT::Type && inv.s == "Bool" && (m == "pick" || m == "roll")) {
@@ -1340,7 +1340,7 @@ std::optional<Value> Interpreter::methodCallPart1b(const Value& inv, const MName
             if (Value* sp = findDynamicLenient("$*SPEC")) specArg = *sp;
         std::string flavor, userSpec;
         if (specArg.t == VT::Type) {
-            const std::string sn = specArg.s.str();
+            const std::string sn = specArg.s.copyText();
             if (sn.rfind("IO::Spec::", 0) == 0) {
                 const std::string fl = sn.substr(10);
                 if (fl == "Win32" || fl == "Cygwin" || fl == "QNX") flavor = fl;

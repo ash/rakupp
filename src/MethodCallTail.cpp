@@ -1849,7 +1849,7 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
                 if (p.t != VT::Pair) continue;
                 std::string ks = p.hasPairKey() ? (p.nonStrKey().t == VT::Str ? p.nonStrKey().toStr()
                                                 : methodCall(p.nonStrKey(), "Str", ValueList{}).toStr())
-                                             : p.s.str();
+                                             : p.s.copyText();
                 Value np = Value::pair(ks, p.pairVal() ? *p.pairVal() : Value::any()); np.namedArg = true;
                 c.arr()->push_back(std::move(np));
             }
@@ -1900,7 +1900,7 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
                     // otherwise with a Str method of its own
                     auto ci = k.t == VT::Type ? classes_.find(k.s.str()) : classes_.end();
                     bool ownStr = ci != classes_.end() && ci->second && ci->second->findMethodForCall("Str");
-                    std::string ks = k.t == VT::Type && !ownStr ? k.s.str()
+                    std::string ks = k.t == VT::Type && !ownStr ? k.s.copyText()
                                    : k.t == VT::Object || ownStr ? methodCall(k, "Str", ValueList{}).toStr() : strOf(k);
                     p = Value::pair(ks, e.pairVal() ? *e.pairVal() : Value::any());
                 }
@@ -2272,7 +2272,7 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
     // the codepoints 97..101 instead.
     if (inv.t == VT::Range && inv.rTo() >= 9000000000000000000LL && rangeEnds(inv) &&
         rangeEnds(inv)->from.t == VT::Str) {
-        std::string first = rangeEnds(inv)->from.s.str();
+        std::string first = rangeEnds(inv)->from.s.copyText();
         if (inv.rExFrom()) first = strSucc(first);
         auto take = [&](long long n) {
             Value o = Value::array(); o.isList = true;
@@ -2281,7 +2281,7 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
             return o;
         };
         if (m == "is-lazy" || m == "infinite") return Value::boolean(true);
-        if (m == "min")  return Value::str(rangeEnds(inv)->from.s.str());
+        if (m == "min")  return Value::str(rangeEnds(inv)->from.s);
         if (m == "max")  return Value::number(INFINITY);
         if (m == "head" && args.empty()) return Value::str(first);
         if (m == "head") return take(std::max(0LL, args[0].toInt()));
@@ -2396,9 +2396,9 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
                 if (a.t == VT::Pair && a.pairVal() && (a.s == "batch" || a.s == "degree") &&
                     a.pairVal()->isNumeric() && a.pairVal()->toInt() <= 0)
                     throwTypedV("X::Invalid::Value",
-                                {{"method", Value::str(std::string(m))}, {"name", Value::str(a.s.str())},
+                                {{"method", Value::str(std::string(m))}, {"name", Value::str(a.s)},
                                  {"value", *a.pairVal()}},
-                                "Invalid value '" + a.pairVal()->toStr() + "' for :" + a.s.str() +
+                                "Invalid value '" + a.pairVal()->toStr() + "' for :" + a.s +
                                     " on method " + std::string(m));
         // what `.hyper`/`.race` answer IS a HyperSeq/RaceSeq: a list whose
         // `.map` and `.grep` run over worker threads (hyperSeqCall)
@@ -2946,8 +2946,8 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
             for (auto& v : items) {
                 if (v.t != VT::Pair) continue;
                 Value mv;
-                if (Value* f = tctx().cur->find(std::string(inv.enumType.c_str()) + "::" + v.s.str())) mv = *f;
-                else if (Value* f2 = tctx().cur->find(v.s.str())) mv = *f2;
+                if (Value* f = tctx().cur->find(std::string(inv.enumType.c_str()) + "::" + v.s)) mv = *f;
+                else if (Value* f2 = tctx().cur->find(v.s.copyText())) mv = *f2;
                 else continue;
                 o.arr()->push_back(mv);
             }
@@ -3407,7 +3407,7 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
             }
             auto matches = [&](const Value& pred, const Value& el) -> bool {
                 if (pred.t == VT::Code) return boolify(callCallable(pred, {el}));
-                if (pred.t == VT::Type) return rtTypeMatch(el, pred.s);
+                if (pred.t == VT::Type) return rtTypeMatch(el, pred.s.copyText());
                 return deepEq(pred, el);
             };
             Value out = Value::array(); out.isList = true;
@@ -3552,7 +3552,7 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
             if (lo.t == VT::Str && hi.t == VT::Str && lo.hashKind.empty() && hi.hashKind.empty()) {
                 Value rr = Value::range(u8FirstCp(lo.s), u8FirstCp(hi.s), false, false);
                 rr.ofTypeM() = "Str";
-                attachRangeEnds(rr, Value::str(lo.s.str()), Value::str(hi.s.str()));
+                attachRangeEnds(rr, Value::str(lo.s), Value::str(hi.s));
                 return rr;
             }
             // Rat and Num extremes make a Range as well, built the way `..` builds
@@ -3661,9 +3661,9 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
             // spelled-out `{ $_ - 2 }` mean the same thing to .head/.tail/.skip
             if (a.t == VT::Code) { ValueList one{Value::integer(sz)}; return callCallable(a, one).toInt(); }
             if (a.t == VT::Str) { // a non-numeric string count is an error (.skip("foo"))
-                const std::string& s = a.s; bool num = !s.empty();
+                const std::string_view s = a.s; bool num = !s.empty();
                 for (char c : s) if (!ascii::isdigit((unsigned char)c) && c != '-' && c != '+' && c != '.' && c != ' ') { num = false; break; }
-                if (!num) throw RakuError{Value::typeObj("X::Str::Numeric"), "Cannot convert string to number: '" + s + "'"};
+                if (!num) throw RakuError{Value::typeObj("X::Str::Numeric"), "Cannot convert string to number: '" + std::string(s) + "'"};
             }
             return a.toInt();
         };
@@ -3743,7 +3743,7 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
                     throw RakuError{Value::typeObj("X::Adverb"), "Specified a negated :v adverb"};
                 if (!a.pairVal()->truthy()) continue;
                 if (a.s == "end") wantEnd = true;
-                else if (a.s == "k" || a.s == "v" || a.s == "p") { want = a.s[0]; firstSel.push_back(Value::str(a.s.str())); }
+                else if (a.s == "k" || a.s == "v" || a.s == "p") { want = a.s[0]; firstSel.push_back(Value::str(a.s)); }
                 else if (a.s == "kv") { want = 'm'; firstSel.push_back(Value::str("kv")); }
             }
             // Two shape adverbs at once is X::Adverb — but `.first` hands it back
@@ -4524,12 +4524,12 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
                 bool positional = false, wantItem = false;
                 for (auto& a : args) {
                     if (a.t == VT::Pair && a.namedArg) {
-                        const std::string& k = a.s.str();
+                        const std::string_view k = a.s.str();
                         if (k == "item") { if (!a.pairVal() || a.pairVal()->truthy()) wantItem = true; }
                         else if ((k == "flat" || k == "node" || k == "deep" || k == "duck") &&
                                  a.pairVal() && a.pairVal()->t == VT::Code) {
                             namedFn = *a.pairVal();
-                            namedTo = k == "flat" ? "flatmap" : k + "map";
+                            namedTo = k == "flat" ? "flatmap" : std::string(k) + "map";
                         }
                     } else positional = true;
                 }
@@ -4693,7 +4693,7 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
                     // all — Rakudo reports it as an unexpected adverb.
                     else if (a.s == "v") unexpected.push_back(Value::str(a.s));
                 }
-                else if (a.t == VT::Pair && a.namedArg) unexpected.push_back(Value::str(a.s.str()));
+                else if (a.t == VT::Pair && a.namedArg) unexpected.push_back(Value::str(a.s));
                 else if (!haveMt) { mt = a; haveMt = true; }
             }
             auto adverbList = [](const ValueList& names) {

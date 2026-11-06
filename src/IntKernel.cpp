@@ -2547,7 +2547,7 @@ int64_t csappFn(const KNode* n, int64_t* fr, KRun& R) {
     if (el->t != VT::Str) { R.bail = true; return 0; }
     // appended in place: the element's own text, detached once from any
     // other Value that shares it, then grown, not rebuilt each time
-    if (allAscii(v)) el->s.mut() += v;
+    if (allAscii(v)) el->s += v;
     else nfcAppendCow(el->s, v);   // (renormalized where the two meet, the element's NFC flag kept)
     return 0;
 }

@@ -58,7 +58,7 @@ static unsigned typeMatchHash(const char* p, size_t n) {
     return (unsigned(n) * 31u + (unsigned char)p[0] * 7u + (unsigned char)p[n / 2] * 3u +
             (unsigned char)p[n - 1]) & 255u;
 }
-static unsigned typeMatchCode(const std::string& n) {
+static unsigned typeMatchCode(std::string_view n) {
     static const std::array<uint8_t, 256> table = [] {
         std::array<uint8_t, 256> t{};
         for (unsigned i = 0; i < std::size(kTypeMatchNames); i++) {
@@ -167,7 +167,7 @@ std::optional<Value> Interpreter::methodCallEntry(const Value& inv, const std::s
         }
         if (plain && npos == 2 && pat->t == VT::Str && pat->hashKind.empty() && pat->enumName.empty() &&
             !pat->s.empty() && inv.s.str().find(pat->s.str()) == std::string::npos)
-            return Value::str(inv.s.str());
+            return Value::str(inv.s);
     }
     // The commonest zero-argument coercions and queries on a PLAIN core value,
     // answered before the general chain, which spent ~150-250 ns reaching them

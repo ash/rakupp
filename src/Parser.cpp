@@ -87,7 +87,7 @@ static bool rxUsesSym(const std::string& pat) {
     return false;
 }
 
-bool isKnownTypeName(const std::string& n); // InterpreterModules.cpp
+bool isKnownTypeName(std::string_view n); // InterpreterModules.cpp
 bool isNativeTypeName(const std::string& n); // …and so is this
 bool endsElementCall(const Expr* rv);        // InterpreterCalls.cpp
 

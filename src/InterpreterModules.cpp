@@ -790,7 +790,7 @@ void Interpreter::recordPackageExports(const std::string& pkg, const std::vector
                     for (auto& m : members) {
                         Value mv;
                         if (m.t != VT::Pair) continue;
-                        const std::string key = m.s;
+                        const std::string key = m.s.copyText();
                         if (Value* g = global_->local(pfx + ed->name + "::" + key)) mv = *g;
                         else if (!entryOf(key, mv)) continue;
                         exportSymbol(pkg, key, mv, ed->exportTags);
@@ -1224,7 +1224,7 @@ void Interpreter::loadModuleImpl(const std::string& name, const std::vector<std:
                 //    ALL, in any of its three spellings; measured. rakupp does,
                 //    so a throw here would fail a load Rakudo completes.
                 const std::string exType =
-                    e.payload.t == VT::Type ? e.payload.s
+                    e.payload.t == VT::Type ? e.payload.s.copyText()
                   : (e.payload.t == VT::Object && e.payload.obj() && e.payload.obj()->cls)
                         ? e.payload.obj()->cls->name : std::string();
                 const bool moduleRaised = exType == "X::AdHoc";
@@ -1265,7 +1265,7 @@ void Interpreter::loadModuleImpl(const std::string& name, const std::vector<std:
     auto loadParsed = [&](std::shared_ptr<Program> prog, const std::string& finish) {
         // (the classes that exist before this module's body runs — see the end)
         std::unordered_set<std::string> classesBefore;
-        for (auto& kv : classes_) classesBefore.insert(kv.first);
+        for (auto& kv : classes_) classesBefore.emplace(kv.first);
         double tRun = traceLoad ? nowMs() : 0;
         struct TGuard {
             bool on; const std::string& nm; double pms, t0;
@@ -1849,7 +1849,7 @@ void Interpreter::loadModuleImpl(const std::string& name, const std::vector<std:
         // top of the program or of a module keeps its packages for everyone.
         if (!name.empty()) {
             std::vector<std::string> fresh;
-            for (auto& kv : classes_) if (!classesBefore.count(kv.first)) fresh.push_back(kv.first);
+            for (auto& kv : classes_) if (!classesBefore.count(std::string(kv.first))) fresh.emplace_back(kv.first);
             const bool nested = saved && saved.get() != global_.get() &&
                                 std::find(moduleTopEnvs_.begin(), moduleTopEnvs_.end(), saved.get()) ==
                                     moduleTopEnvs_.end();
@@ -1914,7 +1914,7 @@ void Interpreter::loadModuleImpl(const std::string& name, const std::vector<std:
                 } catch (RakuError& e) {
                     // see the replay site above for all three halves of this
                     const std::string exType =
-                        e.payload.t == VT::Type ? e.payload.s
+                        e.payload.t == VT::Type ? e.payload.s.copyText()
                       : (e.payload.t == VT::Object && e.payload.obj() && e.payload.obj()->cls)
                             ? e.payload.obj()->cls->name : std::string();
                     if (name != "if" && !quiet && !requireForm && exType == "X::AdHoc") throw;
@@ -3232,8 +3232,8 @@ std::vector<std::string> Interpreter::replNames() const {
     std::vector<std::string> out;
     for (Env* e = tctx().cur.get(); e; e = e->parent.get())
         e->forEachVar([&](const std::string& n, Value&) { out.push_back(n); });
-    for (auto& kv : classes_)  out.push_back(kv.first);
-    for (auto& kv : subsets_)  out.push_back(kv.first);
+    for (auto& kv : classes_)  out.emplace_back(kv.first);
+    for (auto& kv : subsets_)  out.emplace_back(kv.first);
     std::sort(out.begin(), out.end());
     out.erase(std::unique(out.begin(), out.end()), out.end());
     return out;
@@ -3379,7 +3379,7 @@ std::string Interpreter::renderEndError(const RakuError& e) {
     // labelled all of them X::AdHoc — the least informative answer available,
     // and one that tells a reader the engine did a plain `die` when it did not.
     // `$!.^name` on the same exception says X::IO::Rmdir; so does this now.
-    std::string tn = e.payload.t == VT::Type ? e.payload.s : e.payload.typeName();
+    std::string tn = e.payload.t == VT::Type ? e.payload.s.copyText() : e.payload.typeName();
     if (tn.empty() || tn == "Any" || tn == "Mu") tn = "X::AdHoc";
     std::string out = "  " + tn + ": " + e.message + "\n";
     if (e.bt) {
@@ -3978,13 +3978,13 @@ NatKind nativeKindOf(const std::string& n) {
     return NatKind::None;
 }
 
-bool isKnownTypeName(const std::string& n) {
+bool isKnownTypeName(std::string_view n) {
     if (n.empty()) return false;
     // Asked on hot paths (every `.new` of a user class asks whether it shadows
     // a built-in): one hash probe answers nearly every name, and only a
     // qualified or parameterized one goes on to the prefix tests below. The
     // ordered set stays for callers that walk it.
-    static const std::unordered_set<std::string> kCore(coreTypeNames().begin(), coreTypeNames().end());
+    static const std::unordered_set<std::string_view> kCore(coreTypeNames().begin(), coreTypeNames().end());   // (views of a set that lives as long)
     if (kCore.count(n)) return true;
     if (n.find_first_of(":[") == std::string::npos) return n == "CArray" || n == "Pointer";
     if (n.rfind("X::", 0) == 0) return true;         // exception types
@@ -4012,9 +4012,10 @@ bool isKnownTypeName(const std::string& n) {
 // What the setting's Metamodel package holds (Rakudo 2026.09's
 // `Metamodel::.keys`), by its qualified name: isKnownTypeName takes any
 // `Metamodel::` name, and a module's own nested `Metamodel::Mine` is not one.
-bool isSettingMetamodelName(const std::string& n) {
-    static const std::unordered_set<std::string> kNames = [] {
-        std::unordered_set<std::string> s;
+bool isSettingMetamodelName(std::string_view n) {
+    static std::deque<std::string> held;   // the names kNames views
+    static const std::unordered_set<std::string_view> kNames = [] {
+        std::unordered_set<std::string_view> s;
         for (const char* m : {
                  "Archetypes", "ArrayType", "AttributeContainer", "BUILDALL", "BUILDPLAN", "BaseType",
                  "BoolificationProtocol", "C3MRO", "ClassHOW", "CoercionHOW", "Composing", "ConcreteRoleHOW",
@@ -4026,7 +4027,7 @@ bool isSettingMetamodelName(const std::string& n) {
                  "NativeRefHOW", "Nominalizable", "PackageHOW", "ParametricRoleGroupHOW", "ParametricRoleHOW",
                  "Primitives", "PrivateMethodContainer", "REPRComposeProtocol", "RoleContainer", "RolePunning",
                  "Stashing", "SubsetHOW", "Trusting", "TypePretense", "Versioning"})
-            s.insert(std::string("Metamodel::") + m);
+            s.insert(held.emplace_back(std::string("Metamodel::") + m));
         return s;
     }();
     return kNames.count(n) != 0;
@@ -4179,7 +4180,7 @@ std::string Interpreter::noMatchProfile(const Value& self, const ValueList& as, 
             catch (...) { sep(); prof += ":" + tn; continue; }
         }
         sep();
-        prof += ":" + a.s.str() + "(" + shown + ")";
+        prof += ":" + a.s + "(" + shown + ")";
     }
     return prof;
 }
@@ -4203,7 +4204,7 @@ std::vector<std::string> Interpreter::typeSuggestions(const std::string& name) {
     std::vector<std::string> cands(coreTypeNames().begin(), coreTypeNames().end());
     for (auto& kv : classes_)
         if (!kv.first.empty() && kv.first.rfind("X::", 0) != 0 && kv.first.find('[') == std::string::npos)
-            cands.push_back(kv.first);
+            cands.emplace_back(kv.first);
     // …and the unit's own TERM names (enum values, constants): `sub x(RT123926Floo)`
     // next to `enum E <RT123926Foo Bar>` means the enum value
     if (const Program* unit = unitCurrent())
@@ -4306,7 +4307,7 @@ std::shared_ptr<ClassInfo> Interpreter::pickRoleVariantValues(const std::shared_
         return ps;
     };
     std::set<std::string> givenNamed;   // `R[Int, :extra]` — the named arguments passed
-    for (auto& v : vals) if (v.namedArg && v.t == VT::Pair) givenNamed.insert(v.s);
+    for (auto& v : vals) if (v.namedArg && v.t == VT::Pair) givenNamed.emplace(v.s);
     auto acceptsNamed = [&](ClassInfo* v) -> bool {
         if (!v->decl) return givenNamed.empty();
         std::set<std::string> takes; bool slurpyHash = false;
@@ -4506,8 +4507,8 @@ Value Interpreter::makeRolePun(ClassInfo* role, const std::string& roleName, Val
                                     throw RakuError{Value::typeObj("X::Role::Attribute::Conflicts"),
                                         "Attribute '" + std::string(1, ra.sigil) + "!" + ra.name +
                                         "' conflicts in role '" + roleName + "' composition: declared in both '" +
-                                        roleName + "' and '" + tit->first + "'"};
-                        pun->doneRoles.insert(tit->first);
+                                        roleName + "' and '" + std::string(tit->first) + "'"};
+                        pun->doneRoles.emplace(tit->first);
                         for (auto& sub : tit->second->doneRoles) pun->doneRoles.insert(sub);
                     }
                     else if (tit != classes_.end() && tit->second)   // `role RC[::T] is T`
@@ -4562,7 +4563,7 @@ void Interpreter::applyRoleTypeParamsToAttrs(ClassInfo* dest) {
         if (a.type.empty()) continue;
         for (auto& b : dest->roleParamBindings) {
             if (b.first != a.type || b.second.t != VT::Type) continue;
-            const std::string& bound = b.second.s;
+            const std::string_view bound = b.second.s;
             if (!bound.empty() && bound != a.type) a.type = bound;
             break;
         }
@@ -4818,7 +4819,7 @@ void Interpreter::seqUse(const Value& v, SeqUse how) {
     if (st == kSeqCached) return;
     if (st == kSeqConsumed) {
         if (how == SeqUse::Sink) return;
-        throwTypedV("X::Seq::Consumed", {{"kind", Value::typeObj(v.s.str())}},
+        throwTypedV("X::Seq::Consumed", {{"kind", Value::typeObj(v.s)}},
                     "The iterator of this Seq is already in use/consumed by another Seq\n"
                     "(you might solve this by adding .cache on usages of the Seq, or\n"
                     "by assigning the Seq into an array)");
@@ -5075,7 +5076,7 @@ static bool protoHidesOuterCandidates(Env* scope, Callable* disp, const Value& p
 // subclass of the core one. Only a name with nothing outside it is the class
 // itself, and then neither the lexical name nor the package sibling (which
 // the declaration is about to be) is asked for the outer one.
-static bool parentIsOuterType(std::unordered_map<std::string, std::shared_ptr<ClassInfo>>& classes,
+static bool parentIsOuterType(StrMap<std::shared_ptr<ClassInfo>>& classes,
                               const ClassDecl* cd, const std::string& parentName,
                               const std::string& clsName, const std::shared_ptr<ClassInfo>& ci) {
     if (cd->isRole || clsName == parentName) return false;
@@ -5087,7 +5088,7 @@ static bool parentIsOuterType(std::unordered_map<std::string, std::shared_ptr<Cl
 // second type of one name, which this engine's types (known by their names)
 // cannot be yet: refused, where it crashed or claimed to inherit from itself.
 // Rakudo accepts it; inside a package it works here too.
-static void refuseCoreNamesake(Interpreter& I, std::unordered_map<std::string, std::shared_ptr<ClassInfo>>& classes,
+static void refuseCoreNamesake(Interpreter& I, StrMap<std::shared_ptr<ClassInfo>>& classes,
                                const std::string& clsName, const std::string& parentName) {
     if (clsName != parentName || classes.count(parentName) || !isKnownTypeName(parentName)) return;
     I.throwTypedV("X::NYI", {{"feature", Value::str("A class named like the core " + parentName + " it inherits from, outside a package")}},
@@ -5096,7 +5097,7 @@ static void refuseCoreNamesake(Interpreter& I, std::unordered_map<std::string, s
                   parentName + "`), or give it a name of its own.");
 }
 
-static void methodTermJoinsClass(std::unordered_map<std::string, std::shared_ptr<ClassInfo>>& classes,
+static void methodTermJoinsClass(StrMap<std::shared_ptr<ClassInfo>>& classes,
                                  const std::string& pkgPrefix, const std::string& name, const Value& code) {
     std::string pk = pkgPrefix;
     if (pk.size() > 2 && pk.compare(pk.size() - 2, 2, "::") == 0) pk.resize(pk.size() - 2);
@@ -5489,7 +5490,7 @@ static void mergeParentRoleMultis(ClassInfo* ci, const SigKey& sigKeyParams) {
                     for (auto& kv : classes_) {
                         if (!kv.second || kv.first.size() <= pfx.size() ||
                             kv.first.compare(0, pfx.size(), pfx) != 0) continue;
-                        std::string shortName = kv.first.substr(pfx.size());
+                        std::string shortName(kv.first.substr(pfx.size()));
                         if (shortName.find("::") != std::string::npos ||
                             shortName.find('\x01') != std::string::npos) continue;
                         ClassInfo* ci = kv.second.get();
@@ -5596,7 +5597,7 @@ static void mergeParentRoleMultis(ClassInfo* ci, const SigKey& sigKeyParams) {
                         }
                     }
                     std::set<std::string> before;
-                    for (auto& kv : classes_) before.insert(kv.first);
+                    for (auto& kv : classes_) before.emplace(kv.first);
                     // that very file, as `require "path"` loads it (MAIN and all)
                     if (std::string f = requireFilePath(path); !f.empty()) pinnedFile_ = PinnedFile{stem, f};
                     libPaths_.insert(libPaths_.begin(), dir);
@@ -5606,7 +5607,7 @@ static void mergeParentRoleMultis(ClassInfo* ci, const SigKey& sigKeyParams) {
                     auto& stash = pkgStashes_[u->module];
                     if (!stash) stash = makePayload<ValueMap>();
                     for (auto& kv : classes_)
-                        if (!before.count(kv.first) && kv.first.find("::") == std::string::npos)
+                        if (!before.count(std::string(kv.first)) && kv.first.find("::") == std::string::npos)
                             (*stash)[kv.first] = Value::typeObj(kv.first);
                     requireSymbols(stem);
                     return Value::any();
@@ -6647,8 +6648,8 @@ static void mergeParentRoleMultis(ClassInfo* ci, const SigKey& sigKeyParams) {
                                 give(ed->name, tv->second);
                                 if (tv->second.t == VT::Array && tv->second.arr())
                                     for (auto& p : *tv->second.arr()) {
-                                        auto vi = pkgEnv->vars.find(p.s);
-                                        if (vi != pkgEnv->vars.end()) give(p.s, vi->second);
+                                        auto vi = pkgEnv->vars.find(p.s.copyText());
+                                        if (vi != pkgEnv->vars.end()) give(p.s.copyText(), vi->second);
                                     }
                             }
                         }
@@ -7050,7 +7051,7 @@ static void mergeParentRoleMultis(ClassInfo* ci, const SigKey& sigKeyParams) {
                         auto tit = classes_.find(tv.s);
                         if (tit != classes_.end() && tit->second && tit->second->isRole) {
                             extra.push_back(tit->second.get());
-                            viaParamRoles.push_back(tit->first);
+                            viaParamRoles.emplace_back(tit->first);
                         }
                         else if (tit != classes_.end() && tit->second && !tit->second->isRole) {
                             bool have = false;

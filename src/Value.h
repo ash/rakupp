@@ -12,6 +12,7 @@
 #include <mutex>
 #include <set>
 #include <string>
+#include <string_view>
 #include <type_traits>
 #include <vector>
 
@@ -221,9 +222,19 @@ public:
 #endif
     CowStr& operator=(std::string x) { take(std::move(x)); return *this; }
     CowStr& operator=(const char* x) { take(std::string(x)); return *this; }
+    CowStr& operator=(std::string_view x) { take(std::string(x)); return *this; }
 
-    const std::string& str() const { return p_ ? p_->str() : s_; }
-    operator const std::string&() const { return str(); }         // NOLINT(google-explicit-constructor)
+    // The text, as a VIEW: all a reader needs, and what a CowStr can answer
+    // however it keeps the text — VALUE32-PLAN design C keeps a short one in
+    // 16 bytes where no std::string lives, so nothing here hands one out. Valid
+    // while this CowStr is unchanged and where it is; NUL-terminated, as c_str().
+    std::string_view str() const { return p_ ? std::string_view(p_->str()) : std::string_view(s_); }
+    operator std::string_view() const { return str(); }           // NOLINT(google-explicit-constructor)
+    // The text as a std::string of its own — what std::string(str()) makes,
+    // by the faster road while the text is one: a short std::string is copied
+    // whole, where one built from a view calls memmove for its bytes (+4% of
+    // the instructions in perf-guard's `prepend`).
+    std::string copyText() const { return p_ ? p_->str() : s_; }
     // The shared body, when the string is promoted (null for inline smalls).
     // NativeHelpers::Blob's pointer-to retains it so a pointer handed to C
     // outlives the Value copy it was taken from.
@@ -254,13 +265,14 @@ public:
         b->nfc.store(-1, std::memory_order_relaxed);
         return b->text.empty() ? nullptr : &b->text[0];
     }
-    // …and the same storage as a string, for a write that keeps its length
-    // (Interpreter::bufBitOp's `write-uint16` and the rest)
-    std::string& textInPlace() {
-        mutInPlace();
-        return p_ ? const_cast<StrBody*>(p_.get())->text : s_;
-    }
 
+    // A write through a std::string: `f(std::string&)` rewrites the text, and
+    // edit answers what f does. The reference is good for the call only — it
+    // is what lets a CowStr keep a short text where no std::string lives
+    // (VALUE32-PLAN design C), so it is never handed out past f.
+    template <class F> decltype(auto) edit(F&& f) { return std::forward<F>(f)(mut()); }
+
+private:
     // Write access. A SHARED body is detached from first, so a mutation never
     // reaches another Value holding the same text; the copy stays inline until
     // it is next assigned — which is where promotion happens again.
@@ -284,30 +296,31 @@ public:
         RAKUPP_STR_CEN(cenWrite();)
         return s_;
     }
+public:
     // The cache lives on the shared body, so it survives only for promoted
     // strings — which is exactly the case that needs it. Short strings are
     // cheap to rescan.
     const StrBody* body() const { return p_.get(); }
 
-    // const std::string forwarding — keeps the ~1,100 read sites unchanged.
+    // the read forwards, through str()
     size_t size()  const { return p_ ? p_->size() : s_.size(); }   // (a view is not flattened for it)
     bool   empty() const { return size() == 0; }
-    const char* c_str() const { return str().c_str(); }
+    const char* c_str() const { return str().data(); }   // (str() is NUL-terminated)
     const char* data()  const { return str().data(); }
     char   back()  const { return str().back(); }
     char operator[](size_t i) const { return str()[i]; }
-    std::string substr(size_t p = 0, size_t n = std::string::npos) const { return str().substr(p, n); }
-    size_t find(const std::string& x, size_t p = 0) const { return str().find(x, p); }
+    std::string substr(size_t p = 0, size_t n = std::string::npos) const { return std::string(str().substr(p, n)); }
+    size_t find(std::string_view x, size_t p = 0) const { return str().find(x, p); }
     size_t find(char x, size_t p = 0) const { return str().find(x, p); }
     size_t find(const char* x, size_t p = 0) const { return str().find(x, p); }
-    size_t rfind(const std::string& x, size_t p = std::string::npos) const { return str().rfind(x, p); }
+    size_t rfind(std::string_view x, size_t p = std::string::npos) const { return str().rfind(x, p); }
     size_t rfind(char x, size_t p = std::string::npos) const { return str().rfind(x, p); }
     size_t rfind(const char* x, size_t p = std::string::npos) const { return str().rfind(x, p); }
     size_t find_first_not_of(const char* x, size_t p = 0) const { return str().find_first_not_of(x, p); }
-    int compare(const std::string& x) const { return str().compare(x); }
-    int compare(size_t p, size_t n, const std::string& x) const { return str().compare(p, n, x); }
-    std::string::const_iterator begin() const { return str().begin(); }
-    std::string::const_iterator end()   const { return str().end(); }
+    int compare(std::string_view x) const { return str().compare(x); }
+    int compare(size_t p, size_t n, std::string_view x) const { return str().compare(p, n, x); }
+    std::string_view::const_iterator begin() const { return str().begin(); }
+    std::string_view::const_iterator end()   const { return str().end(); }
 
     // Mutating forwards — each detaches.
     void clear() { RAKUPP_STR_CEN(cenEnd();) p_.reset(); s_.clear(); }
@@ -323,6 +336,7 @@ public:
     // whole text (issue #130). Moving it into a body costs no copy, and the
     // next append writes into that body in place (mut, above).
     CowStr& operator+=(const std::string& x) { mut() += x; grown(); return *this; }
+    CowStr& operator+=(std::string_view x) { mut().append(x.data(), x.size()); grown(); return *this; }   // (a CowStr's text, its own included)
     CowStr& operator+=(const char* x) { mut() += x; grown(); return *this; }
     CowStr& operator+=(char x) { mut() += x; grown(); return *this; }
     // The Str-building paths, which may answer with a view (see StrBuf above).
@@ -345,12 +359,12 @@ public:
         }
         appendTextSlow(x, n);
     }
-    void appendText(const std::string& x) { appendText(x.data(), x.size()); }
+    void appendText(std::string_view x) { appendText(x.data(), x.size()); }
     void appendTextSlow(const char* x, size_t n);
     // appendText of text the caller knows is ASCII. An ASCII tail cannot change
     // whether the text is NFC, so the body keeps saying so (StrBody::nfc), and
     // the next non-ASCII join need not read the whole string to find out.
-    void appendAscii(const std::string& x) {
+    void appendAscii(std::string_view x) {
         const signed char nfc = p_ ? p_->nfc.load(std::memory_order_relaxed) : -1;
         appendText(x.data(), x.size());
         if (nfc >= 0 && p_) p_->nfc.store(nfc, std::memory_order_relaxed);
@@ -358,11 +372,11 @@ public:
     // `$s = x ~ $s`: into the free space before a view; a flat body (whose
     // front cannot grow) moves into a buffer with room in front, once.
     void prependText(const char* x, size_t n);
-    void prependText(const std::string& x) { prependText(x.data(), x.size()); }
+    void prependText(std::string_view x) { prependText(x.data(), x.size()); }
     // the first byte, 0 for an empty string — without flattening a view
     unsigned char firstByte() const {
         if (p_ && p_->view) return p_->view->len ? (unsigned char)p_->view->buf->data[p_->view->off] : 0;
-        const std::string& s = str();
+        const std::string_view s = str();
         return s.empty() ? 0 : (unsigned char)s[0];
     }
     // the bytes, without flattening a view (str() copies a view out, once)
@@ -382,7 +396,7 @@ private:
     void grown() { if (!p_ && s_.size() >= kPromote) promote(); }
 };
 
-// The implicit CowStr -> const std::string& conversion does not apply when BOTH
+// The implicit CowStr -> std::string_view conversion does not apply when BOTH
 // operands are CowStr (no conversion is considered for a built-in operator with
 // no candidate), so the comparisons and concatenation are spelled out.
 // Two copies of one value share its body: equal without reading a byte of it
@@ -396,12 +410,18 @@ inline bool operator<(const CowStr& a, const CowStr& b)  { return a.str() <  b.s
 inline bool operator>(const CowStr& a, const CowStr& b)  { return a.str() >  b.str(); }
 inline bool operator<=(const CowStr& a, const CowStr& b) { return a.str() <= b.str(); }
 inline bool operator>=(const CowStr& a, const CowStr& b) { return a.str() >= b.str(); }
-inline std::string operator+(const CowStr& a, const CowStr& b) { return a.str() + b.str(); }
-inline std::string operator+(const CowStr& a, const std::string& b) { return a.str() + b; }
-inline std::string operator+(const std::string& a, const CowStr& b) { return a + b.str(); }
-inline std::string operator+(const CowStr& a, const char* b) { return a.str() + b; }
-inline std::string operator+(const char* a, const CowStr& b) { return a + b.str(); }
-inline std::string operator+(const CowStr& a, char b) { return a.str() + b; }
+inline std::string strCat(std::string_view a, std::string_view b) {
+    std::string r;
+    r.reserve(a.size() + b.size());
+    r.append(a).append(b);
+    return r;
+}
+inline std::string operator+(const CowStr& a, const CowStr& b) { return strCat(a.str(), b.str()); }
+inline std::string operator+(const CowStr& a, const std::string& b) { return strCat(a.str(), b); }
+inline std::string operator+(const std::string& a, const CowStr& b) { return strCat(a, b.str()); }
+inline std::string operator+(const CowStr& a, const char* b) { return strCat(a.str(), b); }
+inline std::string operator+(const char* a, const CowStr& b) { return strCat(a, b.str()); }
+inline std::string operator+(const CowStr& a, char b) { return strCat(a.str(), std::string_view(&b, 1)); }
 // std::string's own comparisons are templates, and template deduction never
 // considers a user-defined conversion — so `value.s == "Int"` needs real
 // candidates rather than the conversion operator above.
@@ -461,7 +481,7 @@ inline std::enable_if_t<std::is_same_v<P, const char*> || std::is_same_v<P, char
 operator!=(const P& a, const CowStr& b) { return a != b.str(); }
 template <std::size_t N>
 inline bool operator==(const CowStr& a, const char (&lit)[N]) {
-    const std::string& s = a.str();
+    const std::string_view s = a.str();
     return s.size() == N - 1 && std::memcmp(s.data(), lit, N - 1) == 0;
 }
 template <std::size_t N>
@@ -492,12 +512,12 @@ inline std::string cpToU8(uint32_t cp) {
 // …and back. Str ranges and the `...` string sequence both dispatch on the
 // CODEPOINT count (Rakudo tests `.codes` there, not bytes), so both live here
 // rather than as a lambda re-declared at each site.
-inline long long u8CpLen(const std::string& s) {
+inline long long u8CpLen(std::string_view s) {
     long long n = 0;
     for (unsigned char ch : s) if ((ch & 0xC0) != 0x80) n++;
     return n;
 }
-inline uint32_t u8FirstCp(const std::string& s) {
+inline uint32_t u8FirstCp(std::string_view s) {
     if (s.empty()) return 0;
     unsigned char c0 = s[0];
     if (c0 < 0x80) return c0;
@@ -1455,6 +1475,9 @@ struct Value {
     static Value number(double x) { Value v; v.t = VT::Num; v.n = x; return v; }
     static Value complex(double re, double imag) { Value v; v.t = VT::Complex; v.n = re; v.imM() = imag; return v; }
     static Value str(std::string x) { Value v; v.t = VT::Str; v.s = std::move(x); return v; }
+    static Value str(std::string_view x) { return str(std::string(x)); }
+    static Value str(const CowStr& x) { return str(x.copyText()); }   // (a copy of the text, as before)
+    static Value str(const char* x) { return str(std::string(x)); }
     static Value array() { Value v; v.t = VT::Array; v.setArr(makePayload<ValueList>()); return v; }
     static Value array(ValueList items) { Value v; v.t = VT::Array; v.setArr(makePayload<ValueList>(std::move(items))); return v; }
     // a List/Seq: same storage as Array but gists with (..) instead of [..]
@@ -1474,13 +1497,16 @@ struct Value {
     }
     static Value makeHash(); // defined below ValueHash.h's include — the payload type must be complete
     static Value typeObj(std::string name) { Value v; v.t = VT::Type; v.s = std::move(name); return v; }
+    static Value typeObj(std::string_view name) { return typeObj(std::string(name)); }
+    static Value typeObj(const CowStr& name) { return typeObj(name.copyText()); }
+    static Value typeObj(const char* name) { return typeObj(std::string(name)); }
     static Value whatever() { Value v; v.t = VT::Whatever; return v; }
     static Value object(PRef<ObjectData> o) { Value v; v.t = VT::Object; v.setObj(std::move(o)); return v; }
-    static Value enumVal(const std::string& name, long long val) { Value v; v.t = VT::Int; v.i = val; v.enumName = name; return v; }
+    static Value enumVal(std::string_view name, long long val) { Value v; v.t = VT::Int; v.i = val; v.enumName = name; return v; }
     // …and the same member carrying its enum's TYPE name, which is what makes
     // `.WHAT.^name` answer `Color` rather than `Int` and what the MAIN
     // command-line reader tests a looked-up name with.
-    static Value enumVal(const std::string& name, long long val, const std::string& type) {
+    static Value enumVal(std::string_view name, long long val, const std::string& type) {
         Value v = enumVal(name, val); v.enumType = type; return v;
     }
     // Order::Less/Same/More — the result of cmp/<=>/leg/unicmp/coll. Tagged with
@@ -1802,8 +1828,8 @@ int valueCmp(const Value& a, const Value& b);   // for <=> / cmp
 // `<NULL>` for the null one. Hex, as Rakudo prints it and as every C debugger
 // does — this is an ADDRESS, and it is read to be compared with one.
 std::string ncPointerText(const std::string& kind, const std::string& of, long long addr);
-std::string strSucc(const std::string& s);             // Raku magic string increment
-std::string strPred(const std::string& s, bool& ok);  // magic decrement (ok=false on underflow)
+std::string strSucc(std::string_view s);             // Raku magic string increment
+std::string strPred(std::string_view s, bool& ok);  // magic decrement (ok=false on underflow)
 
 // A shaped array's ELEMENT SEQUENCE is its LEAVES, in row-major order. Rakudo
 // iterates `my @a[3;2]` as six values — `my @flat = @a` is six elements, and so
@@ -2338,7 +2364,7 @@ struct ClassInfo {
         for (auto& p : extraParents) if (p) if (auto* r = p->findRuleLitCands(n)) return r;
         return nullptr;
     }
-    const ClassAttr* findAttr(const std::string& n) const {
+    const ClassAttr* findAttr(std::string_view n) const {
         for (auto& a : attrs) if (a.name == n) return &a;
         if (parent) { if (const ClassAttr* r = parent->findAttr(n)) return r; }
         for (auto& p : extraParents) if (p) { if (const ClassAttr* r = p->findAttr(n)) return r; }

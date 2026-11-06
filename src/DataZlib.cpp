@@ -42,8 +42,8 @@ bool isBlobKind(const Value& x) {
 // checksums also take a Str, because `crc32("123456789")` is how everyone
 // checks a CRC-32 implementation and refusing it would be pedantry.
 std::string blobBytes(const Value& v, const char* who, bool allowStr) {
-    if (isBlobKind(v)) return v.s.str();
-    if (allowStr && v.t == VT::Str && v.hashKind.empty()) return v.s.str();
+    if (isBlobKind(v)) return v.s.copyText();
+    if (allowStr && v.t == VT::Str && v.hashKind.empty()) return v.s.copyText();
     zDie(std::string(who) + ": expected a Blob" + (allowStr ? " or a Str" : "") +
          ", got a " + v.typeName());
 }
@@ -57,7 +57,7 @@ ZlibFormat framing(ValueList& a, const char* who) {
         if (!(x.t == VT::Pair && x.namedArg)) continue;
         if (x.s == "gzip") { g = x.pairVal() && x.pairVal()->truthy(); continue; }
         if (x.s == "raw")  { r = x.pairVal() && x.pairVal()->truthy(); continue; }
-        zDie(std::string(who) + ": no such adverb :" + x.s.str());
+        zDie(std::string(who) + ": no such adverb :" + x.s);
     }
     if (g && r) zDie(std::string(who) + ": takes :gzip or :raw, not both");
     return g ? ZlibFormat::Gzip : r ? ZlibFormat::Raw : ZlibFormat::Zlib;
@@ -108,14 +108,14 @@ Value dataZlibGzslurp(Interpreter& I, ValueList& a) {
     const Value* bin = namedArg(a, "bin");
     for (auto& x : a)
         if (x.t == VT::Pair && x.namedArg && x.s != "bin")
-            zDie("gzslurp: no such adverb :" + x.s.str());
+            zDie("gzslurp: no such adverb :" + x.s);
 
     ValueList sa;
     sa.push_back(*positional(a, 0));
     Value b = Value::pair("bin", Value::boolean(true));
     b.namedArg = true;
     sa.push_back(b);
-    std::string raw = I.callBuiltin("slurp", std::move(sa)).s.str();
+    std::string raw = I.callBuiltin("slurp", std::move(sa)).s.copyText();
 
     std::string plain;
     try { plain = zlibInflate(raw, ZlibFormat::Gzip); }
@@ -130,13 +130,13 @@ Value dataZlibGzspurt(Interpreter& I, ValueList& a) {
     const Value* bin = namedArg(a, "bin");
     for (auto& x : a)
         if (x.t == VT::Pair && x.namedArg && x.s != "bin")
-            zDie("gzspurt: no such adverb :" + x.s.str());
+            zDie("gzspurt: no such adverb :" + x.s);
 
     const Value& stuff = *positional(a, 1);
     bool wantBin = bin && bin->truthy();
     if (wantBin && !isBlobKind(stuff))
         zDie("gzspurt: :bin wants a Blob, got a " + stuff.typeName());
-    std::string plain = isBlobKind(stuff) ? stuff.s.str() : stuff.toStr();
+    std::string plain = isBlobKind(stuff) ? stuff.s.copyText() : stuff.toStr();
 
     std::string gz;
     try { gz = zlibDeflate(plain, 6, ZlibFormat::Gzip); }
@@ -154,7 +154,7 @@ Value dataZlibChecksum(Interpreter&, ValueList& a, bool crc) {
     if (np < 1 || np > 2) zDie(std::string(who) + ": expected ($data, $init?)");
     for (auto& x : a)
         if (x.t == VT::Pair && x.namedArg)
-            zDie(std::string(who) + ": no such adverb :" + x.s.str());
+            zDie(std::string(who) + ": no such adverb :" + x.s);
     std::string in = blobBytes(*positional(a, 0), who, true);
     uint32_t init = crc ? 0u : 1u;
     if (np == 2) {

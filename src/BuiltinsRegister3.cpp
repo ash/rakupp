@@ -18,7 +18,7 @@ static std::string causeMessageOf(Interpreter& I, const Value& cause, const std:
             try {
                 ValueList none;
                 Value m = I.methodCall(cause, acc, none);
-                if (m.t == VT::Str && !m.s.empty()) return m.s.str();
+                if (m.t == VT::Str && !m.s.empty()) return m.s.copyText();
             } catch (...) {}
         }
     }
@@ -825,19 +825,19 @@ void Interpreter::registerBuiltinsPart5() {
             // pointer-sized default 8 for a 112-byte struct, and LinearArray then
             // calloc'd 16 bytes for an array C wrote 224 into.
             auto it = I.classes_.find(a[0].s);
-            if (it == I.classes_.end()) it = I.classes_.find(I.resolveClassAlias(a[0].s));
+            if (it == I.classes_.end()) it = I.classes_.find(I.resolveClassAlias(a[0].s.str()));
             if (it != I.classes_.end()) ci = it->second.get();
         }
         if (ci && (ci->repr == "CStruct" || ci->repr == "CPPStruct" || ci->repr == "CUnion"))
             return Value::integer(Interpreter::ncStructSize(ci));
-        std::string t = a[0].t == VT::Type ? a[0].s : a[0].toStr();
+        std::string t = a[0].t == VT::Type ? a[0].s.copyText() : a[0].toStr();
         return Value::integer(Interpreter::ncElemSize(t));
     };
     // parameterized native type name: `CArray[uint8]` is Type{s="CArray",
     // ofType="uint8"} — rebuild the "Name[elem]" string the FFI helpers expect.
     auto ncTypeName = [](const Value& v) -> std::string {
         if (v.t != VT::Type) return v.toStr();
-        return (!v.ofType().empty() && v.s.find('[') == std::string::npos) ? v.s + "[" + v.ofType() + "]" : v.s;
+        return (!v.ofType().empty() && v.s.find('[') == std::string::npos) ? v.s + "[" + v.ofType() + "]" : v.s.copyText();
     };
     // refresh($obj) — Rakudo re-reads a CStruct's native memory into the Raku
     // object after C wrote through the pointer. Here a CStruct attribute read
@@ -948,7 +948,7 @@ void Interpreter::registerBuiltinsPart5() {
                     if (const Value* v = get("name")) p.name = v->toStr();
                     if (!p.name.empty()) p.sigil = p.name[0];
                     const Value* tobj = get("type-obj");
-                    p.type = tobj && tobj->t == VT::Type ? std::string(tobj->s.str())
+                    p.type = tobj && tobj->t == VT::Type ? tobj->s.copyText()
                            : (get("type") ? get("type")->toStr() : std::string());
                     // an untyped parameter is unconstrained, which is what "" means here
                     if (p.type == "Any" || p.type == "Mu") p.type.clear();
@@ -965,7 +965,7 @@ void Interpreter::registerBuiltinsPart5() {
             f.code()->ciM().params = owned.get();
             auto rit = a[0].hash()->find("returns");
             if (rit != a[0].hash()->end() && rit->second.t == VT::Type && rit->second.s != "Mu")
-                f.code()->coldM().retType = std::string(rit->second.s.str());
+                f.code()->coldM().retType = rit->second.s.copyText();
             I.runtimeParams_.push_back(std::move(owned));
             return f;
         }

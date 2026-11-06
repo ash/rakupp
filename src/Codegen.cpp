@@ -21,7 +21,7 @@ bool reverseWordOp(const std::string& op); // InterpreterCalls.cpp: `Rcmp`, `RR-
 
 std::vector<std::string> computePlaceholders(const std::vector<StmtPtr>& body); // InterpreterCalls.cpp
 unsigned bodyImplicitArgs(const std::vector<StmtPtr>& body);                    // …1 = `@_` read, 2 = `%_`
-bool isKnownTypeName(const std::string& n); // InterpreterModules.cpp
+bool isKnownTypeName(std::string_view n); // InterpreterModules.cpp
 bool isNativeTypeName(const std::string& n); // the native type names (int, num32, str, …)
 std::shared_ptr<Param> signatureParamCopy(const Param& p); // Builtins.cpp
 const std::set<std::string>& testExports(); // CallCheck.cpp: the names `use Test` puts in scope
@@ -8973,8 +8973,8 @@ struct Codegen {
                               varRef(n) + ".n : (double)" + varRef(n) + ".i;");
                 continue;
             }
-            line(ind + 1, std::string(uCType(uType_[n])) + uLocal_[n] + " = " + varRef(n)
-                        + (uType_[n] == LT::F64 ? ".n;" : uType_[n] == LT::STR ? ".s.str();" : ".i;"));
+            line(ind + 1, std::string(uCType(uType_[n])) + uLocal_[n] + (uType_[n] == LT::STR ? "(" + varRef(n) + ".s.str());"
+                        : " = " + varRef(n) + (uType_[n] == LT::F64 ? ".n;" : ".i;")));
         }
         // A header `my` is declared here rather than where it is written, so the
         // store-back after the loop can still see it. Its value on the way in is

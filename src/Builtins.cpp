@@ -323,7 +323,7 @@ bool isBuiltinRole(const std::string& n) {
     // generated table owns because Rakudo's hierarchy is what defines them.
     return roles.count(n) > 0 || isExceptionRole(n);
 }
-std::string typeOfVal(const Value& v) { return v.t == VT::Type ? v.s : v.typeName(); }
+std::string typeOfVal(const Value& v) { return v.t == VT::Type ? v.s.copyText() : v.typeName(); }
 std::string lubType(const std::string& a, const std::string& b) {
     if (a == b) return a;
     // an allomorph does BOTH its numeric type (in the ancestry) AND Str — a linear
@@ -2051,7 +2051,7 @@ void rejectNulPath(const std::string& path) {
         throw RakuError{Value::typeObj("X::IO::Null"),
             "Cannot use null character (U+0000) as part of the path"};
 }
-static std::string rakuStrLit(const std::string& s) {
+static std::string rakuStrLit(std::string_view s) {
     static const char* H = "0123456789ABCDEF";
     auto hex = [&](uint32_t cp) {
         std::string r; bool lead = false;
@@ -2115,7 +2115,7 @@ static std::string rakuStrLit(const std::string& s) {
 // after it must start with a LETTER: `a-b` and `a'b` are identifiers, `a-`,
 // `-a` and `a-1` are not. And `alpha`/`word` are the Unicode classes, not the
 // ASCII ones — `é`, `αβ` and `日本` are identifiers, `x·y` is not.
-static bool rakuIdentKey(const std::string& s) {
+static bool rakuIdentKey(std::string_view s) {
     if (s.empty()) return false;
     bool ascii7 = true;
     for (unsigned char c : s) if (c >= 0x80) { ascii7 = false; break; }
@@ -2215,7 +2215,7 @@ std::string rakuReprImpl(const Value& v, int depth, std::set<const void*>& seen)
     if (depth > 512) return "...";
     if (v.isAllomorph()) { // IntStr.new(42, "42") — round-trips via EVAL
         Value num = v; num.hashKind.clear();
-        std::string face = num.s; num.s.clear();
+        std::string face = num.s.copyText(); num.s.clear();
         return v.typeName() + ".new(" + rakuRepr(num, depth + 1, seen) + ", " + rakuStrLit(face) + ")";
     }
     // An enum VALUE renders QUALIFIED — `Order::Less`, `Colour::Red` — because
@@ -2233,11 +2233,11 @@ std::string rakuReprImpl(const Value& v, int depth, std::set<const void*>& seen)
         case VT::Type: {
             // a role pun renders as what it was written as, `Foo[Int]`, not as
             // the registry key that keeps two of them the same type
-            std::string d = g_typeDispName ? g_typeDispName(v.s) : std::string();
+            std::string d = g_typeDispName ? g_typeDispName(v.s.copyText()) : std::string();
             if (!d.empty()) return d;
             // …and a parameterized built-in names its parameter: array[str]
             // (a NativeCall type its package: NativeCall::Types::Pointer)
-            return ncQualifiedName(v.ofType().empty() ? v.s.str() : v.s.str() + "[" + v.ofType() + "]");
+            return ncQualifiedName(v.ofType().empty() ? v.s.copyText() : v.s + "[" + v.ofType() + "]");
         }
         case VT::Str:
             // a Buf/Blob is a Str only in REPRESENTATION — its .raku is the
@@ -2417,7 +2417,7 @@ std::string rakuReprImpl(const Value& v, int depth, std::set<const void*>& seen)
                     if (asked.first >= 0)  batch  = asked.first;
                     if (asked.second >= 0) degree = asked.second;
                 }
-                return v.s.str() + ".new(configuration => HyperConfiguration.new(batch => " +
+                return v.s + ".new(configuration => HyperConfiguration.new(batch => " +
                        std::to_string(batch) + ", degree => " + std::to_string(degree) + "))";
             }
             if (v.hashKind == "Capture") { // \(…) literal round-trips as itself
@@ -2611,7 +2611,7 @@ std::string rakuReprImpl(const Value& v, int depth, std::set<const void*>& seen)
                     // whether THAT looked like an identifier never said yes
                     Value rk = hashEntryKey(v, k, v.hash()->at(k));
                     o += (rk.t == VT::Str && rakuIdentKey(rk.s))
-                             ? ":" + rk.s.str() + "(" + rv + ")"
+                             ? ":" + rk.s + "(" + rv + ")"
                              : rakuRepr(rk, depth + 1, seen) + " => " + rv;
                 }
                 if (v.hash()) seen.erase(v.hash());
@@ -2809,7 +2809,7 @@ size_t codeArity(const Value& code) {
 }
 
 // ---- UTF-8 / codepoint helpers ----
-std::vector<uint32_t> utf8cp(const std::string& s) {
+std::vector<uint32_t> utf8cp(std::string_view s) {
     std::vector<uint32_t> out;
     size_t i = 0, n = s.size();
     while (i < n) {
@@ -2837,7 +2837,7 @@ std::vector<uint32_t> utf8cp(const std::string& s) {
 // which is what lets the nqp string ops skip utf8cp() altogether — see the
 // comment above their cases in rtNqpOp. Eight bytes at a time: these ops are
 // how pure-Raku tokenizers walk text, so this runs once per character scanned.
-size_t asciiRun(const std::string& s, size_t limit) {
+size_t asciiRun(std::string_view s, size_t limit) {
     size_t n = std::min(limit, s.size()), i = 0;
     for (; i + 8 <= n; i += 8) {
         uint64_t w;
@@ -2847,7 +2847,7 @@ size_t asciiRun(const std::string& s, size_t limit) {
     for (; i < n; i++) if ((unsigned char)s[i] & 0x80) break;
     return i;
 }
-bool allAscii(const std::string& s) { return asciiRun(s, s.size()) == s.size(); }
+bool allAscii(std::string_view s) { return asciiRun(s, s.size()) == s.size(); }
 
 // The same three questions, answered once per string instead of once per
 // character. A CowStr long enough to have been promoted carries an immutable
@@ -2947,7 +2947,7 @@ const std::vector<uint32_t>* cowGraphemeIndex(const CowStr& s) {
 }
 // Decode the ONE codepoint whose lead byte sits at `b` — the per-call
 // replacement for decoding the whole string.
-uint32_t cpAtByte(const std::string& s, size_t b) {
+uint32_t cpAtByte(std::string_view s, size_t b) {
     unsigned char c = (unsigned char)s[b];
     if (c < 0x80) return c;
     int w = (c >= 0xF0) ? 4 : (c >= 0xE0) ? 3 : (c >= 0xC0) ? 2 : 1;
@@ -2969,7 +2969,7 @@ uint32_t cpAtByte(const std::string& s, size_t b) {
 // codepoint even an ASCII one may join: a Prepend (U+0600…) takes the next
 // base into its cluster (GB9b), so that case goes the long way. ASCII text
 // with no CR never pays.
-bool atGraphemeBoundary(const std::string& s, size_t p) {
+bool atGraphemeBoundary(std::string_view s, size_t p) {
     const size_t len = s.size();
     if (p == 0 || p >= len) return true;
     const unsigned char c = (unsigned char)s[p], prev = (unsigned char)s[p - 1];
@@ -2982,7 +2982,7 @@ bool atGraphemeBoundary(const std::string& s, size_t p) {
 }
 // std::string::find, but a match must begin AND end on grapheme boundaries:
 // "b" is not found in "ab\x[308]c", whose b̈ is one character (Rakudo's NFG)
-size_t graphemeFind(const std::string& hay, const std::string& ndl, size_t from) {
+size_t graphemeFind(std::string_view hay, std::string_view ndl, size_t from) {
     size_t f = hay.find(ndl, from);
     while (f != std::string::npos) {
         if (atGraphemeBoundary(hay, f) && atGraphemeBoundary(hay, f + ndl.size())) return f;
@@ -2990,7 +2990,7 @@ size_t graphemeFind(const std::string& hay, const std::string& ndl, size_t from)
     }
     return f;
 }
-bool byteIsGraphemeIndex(const std::string& s) {
+bool byteIsGraphemeIndex(std::string_view s) {
     return allAscii(s) && std::memchr(s.data(), '\r', s.size()) == nullptr;
 }
 
@@ -3115,7 +3115,7 @@ std::string cpToUtf8(uint32_t cp) {
 }
 // Simple (1:1) case mappings from the full UnicodeData tables.
 uint32_t toLowerCp(uint32_t c) { return uniSimpleLower(c); }
-bool strHasNoUpper(const std::string& s) {
+bool strHasNoUpper(std::string_view s) {
     for (auto c : utf8cp(s)) if (toLowerCp(c) != c) return false;
     return true;
 }
@@ -3233,7 +3233,7 @@ std::string nfcNormalize(std::string s) { // by value: the ASCII fast path moves
 // (LF, TAB, NUL), which is why a line arrives whole; CR is NOT one of those,
 // because CR LF is a single cluster, and neither is a space, because a mark
 // can attach to it. Oracle-checked against Rakudo's own stream decoder.
-size_t utf8TextPrefixLen(const std::string& b) {
+size_t utf8TextPrefixLen(std::string_view b) {
     size_t end = b.size();
     for (size_t i = end, back = 0; i > 0 && back < 4; i--, back++) {
         unsigned char c = (unsigned char)b[i - 1];
@@ -3258,7 +3258,7 @@ size_t utf8TextPrefixLen(const std::string& b) {
     return terminal ? end : lastStart;
 }
 
-long long graphemeCount(const std::string& s) {
+long long graphemeCount(std::string_view s) {
     // `.chars` on a long ASCII string was the worst of the quadratics: called
     // once per character it decoded the whole text AND ran the full UAX #29 walk
     // over it, 11.5 s for a 30k scan. A byte count answers it outright.
@@ -3911,8 +3911,8 @@ bool deepEq(const Value& a, const Value& b) {
         if (a.hashKind == "Capture" && b.hashKind == "Capture") {
             std::vector<const Value*> ap, bp;
             std::map<std::string, const Value*> an, bn;
-            for (auto& e : *a.arr()) { if (e.t == VT::Pair) an[e.s] = &e; else ap.push_back(&e); }
-            for (auto& e : *b.arr()) { if (e.t == VT::Pair) bn[e.s] = &e; else bp.push_back(&e); }
+            for (auto& e : *a.arr()) { if (e.t == VT::Pair) an[e.s.copyText()] = &e; else ap.push_back(&e); }
+            for (auto& e : *b.arr()) { if (e.t == VT::Pair) bn[e.s.copyText()] = &e; else bp.push_back(&e); }
             if (ap.size() != bp.size() || an.size() != bn.size()) return false;
             for (size_t i = 0; i < ap.size(); i++) if (!deepEq(*ap[i], *bp[i])) return false;
             for (auto& kv : an) {
@@ -3997,17 +3997,17 @@ Value Interpreter::bufBitOp(Value& buf, const std::string& m, ValueList& args) {
     // A read looks at the bytes where they are. This took `buf.s.mut()` for
     // every op, and on a buffer another Value shares that copies ALL of it
     // first: `.read-uint64` on an 8 MB Buf cost 8 MB a call (issue #178).
-    const std::string& bytes = buf.s.str();
+    const std::string_view bytes = buf.s.str();
     // A write lands IN PLACE, in the body every holder of this Buf shares — a
     // Buf is a reference-semantics container (CowStr::mutInPlace), as `$b[2] =
     // 3` already is — so `$b.write-uint16(…)` in a routine reaches its caller's
     // Buf, natively compiled or not (issue #186). Only a write past the end
     // grows a buffer of its own, as the element store does. (`bytes` is not
     // read again once this is called.)
-    auto wbytes = [&](size_t need) -> std::string& {
-        if (buf.s.size() < need) buf.s.mut().resize(need, '\0');
+    auto wbytes = [&](size_t need) -> char* {
+        if (buf.s.size() < need) buf.s.resize(need, '\0');
         buf.s.promote();
-        return buf.s.textInPlace();
+        return buf.s.mutInPlace();
     };
     auto endianOf = [&](const Value& v) -> int { // 0 native, 1 little, 2 big
         std::string e = !v.enumName.empty() ? v.enumName : v.toStr();
@@ -4048,7 +4048,7 @@ Value Interpreter::bufBitOp(Value& buf, const std::string& m, ValueList& args) {
         BigInt v = val.big() ? *val.big() : BigInt(val.toInt());
         if (v.sign < 0) v = v + BigInt(2).pow(bits); // low `bits` bits of the 2's complement
         // grow to fit
-        std::string& wb = wbytes((size_t)((from + bits + 7) / 8));
+        char* wb = wbytes((size_t)((from + bits + 7) / 8));
         // peel value bits LSB-first into positions from+bits-1 .. from
         for (long long i = bits - 1; i >= 0; i--) {
             BigInt q, r; BigInt::divmod(v, BigInt(2), q, r);
@@ -4108,7 +4108,7 @@ Value Interpreter::bufBitOp(Value& buf, const std::string& m, ValueList& args) {
     }
     if (nb > 8) { // int128/uint128: BigInt byte-peeling (the raw[8] fast path below caps at 64 bits)
         if (isWrite) {
-            std::string& wb = wbytes((size_t)growTo);
+            char* wb = wbytes((size_t)growTo);
             BigInt v = val.big() ? *val.big() : BigInt(val.toInt());
             if (v.sign < 0) v = v + BigInt(2).pow(nb * 8);
             for (int i = 0; i < nb; i++) { // peel LSB-first
@@ -4143,7 +4143,7 @@ Value Interpreter::bufBitOp(Value& buf, const std::string& m, ValueList& args) {
             std::memcpy(raw, &u, nb <= 8 ? nb : 8);
         }
         // raw[] is host order; reorder per requested endianness
-        std::string& wb = wbytes((size_t)growTo);
+        char* wb = wbytes((size_t)growTo);
         for (int i = 0; i < nb; i++) {
             int src = isLittle(endian) == hostLittle ? i : nb - 1 - i;
             wb[off + i] = (char)raw[src];
@@ -4299,7 +4299,7 @@ std::string whichOf(const Value& v) {
                                             v.pairValRO && v.i ? (void*)(intptr_t)v.i : (void*)v.pairVal());
                               return "Pair" + std::string(buf);
                           }
-                          return "Pair|" + (v.hasPairKey() ? whichOf(v.nonStrKey()) : "Str|" + v.s.str()) +
+                          return "Pair|" + (v.hasPairKey() ? whichOf(v.nonStrKey()) : "Str|" + v.s) +
                                  "|" + (v.pairVal() ? whichOf(*v.pairVal()) : "Any|");
         // a CAPTURE is a VALUE — `\(1,2) === \(1,2)` is True in Rakudo, alone
         // among the Arrays — so it identifies by its PARTS, each with its own
@@ -4488,7 +4488,7 @@ Value makeBaggy(const ValueList& items, const std::string& kind, bool pairsAsEle
             // (a BOOL weight is not fractional — `(:a, :b).Mix` is a => 1, not
             // a => True; storing the Bool made that Mix un-`eqv` to <a b>.Mix)
             if (isMix && w.t != VT::Int && w.t != VT::Bool && w.isNumeric()) { // fractional weight
-                const std::string mk = v.hasPairKey() ? baggyKeyStr(v.nonStrKey()) : v.s.str();
+                const std::string mk = v.hasPairKey() ? baggyKeyStr(v.nonStrKey()) : v.s.copyText();
                 auto it = h.hash()->find(mk);
                 auto keep = it != h.hash()->end() && it->second.pairKeyRaw() ? it->second.pairKeyRaw() : v.pairKeyShared();
                 if (it != h.hash()->end()) {
@@ -4507,7 +4507,7 @@ Value makeBaggy(const ValueList& items, const std::string& kind, bool pairsAsEle
             // object hash indexes its own entries by identity, and feeding that
             // index in as an element key made `%objhash.Set` disjoint from the
             // same set built any other way.
-            add(v.hasPairKey() ? baggyKeyStr(v.nonStrKey()) : v.s,
+            add(v.hasPairKey() ? baggyKeyStr(v.nonStrKey()) : v.s.copyText(),
                 isSet ? Value::integer(w.truthy() ? 1 : 0) : exactIntWeight(w), v.pairKeyShared());
         }
         else add(baggyKeyStr(v), Value::integer(1), baggyKey(v));
@@ -5463,7 +5463,7 @@ bool Interpreter::fhFlush(const Value& h) {
     std::lock_guard<std::mutex> lk(rtOutMutex());
     // A COPY, not a reference into the map: fhAppendToFile writes "wrote" back,
     // and an insert can rehash the map out from under a reference to a value in it.
-    std::string pending = (*m)["buffer"].s;
+    std::string pending = (*m)["buffer"].s.copyText();
     if (pending.empty()) return false;
     (*m)["buffer"] = Value::str("");
     fhAppendToFile(m, pending);
@@ -5491,7 +5491,7 @@ void Interpreter::fhWrite(const Value& h, const std::string& s) {
             return;
         }
     }
-    std::string pending = (*m)["buffer"].s;      // copied for the same reason as above
+    std::string pending = (*m)["buffer"].s.copyText();      // copied for the same reason as above
     if (!pending.empty()) { (*m)["buffer"] = Value::str(""); fhAppendToFile(m, pending); }
     // A write at least a bufferful on its own has nothing to gain from the
     // buffer and goes straight out; a smaller remainder starts the next one.
@@ -5612,7 +5612,7 @@ const char* quantValueType(const std::string& kind) {
 // `$repo.precomp-repository`: a precompilation repository over a store at
 // `dir` — the shape Test::Compile hands straight back to `.need`. Raku++
 // compiles on demand, so nothing reads the store; the objects are the API.
-static Value precompRepoObj(std::unordered_map<std::string, std::shared_ptr<ClassInfo>>& classes, const std::string& dir) {
+static Value precompRepoObj(StrMap<std::shared_ptr<ClassInfo>>& classes, const std::string& dir) {
     auto so = makePayload<ObjectData>(); so->cls = classes["CompUnit::PrecompilationStore::FileSystem"];
     Value pfx = Value::str(dir); pfx.hashKind = "IO";
     so->attrs["prefix"] = pfx;
@@ -5642,7 +5642,7 @@ struct JsonFastUnsupported { const char* why; };
 static thread_local Interpreter* t_jfInterp = nullptr;
 static thread_local const Value* t_jfSortFn = nullptr;
 
-static void jfEscape(const std::string& s, std::string& out) {
+static void jfEscape(std::string_view s, std::string& out) {
     // Measured against the module (the unicode block in the regression file
     // pins the bytes): \t \n \r, quote and backslash by name; other controls
     // as lower-case \u%04x; BMP text RAW — the module walks NFD codepoints,
@@ -5730,7 +5730,7 @@ static void jfEncode(const Value& v, const JfOpts& o, int level, std::string& ou
     // the ladder is jsonify's, in jsonify's order
     if (!v.enumName.empty()) {           // enum value: its KEY, or with
         if (!o.enumsAsValue) {           // :enums-as-value its underlying value
-            out += '"'; jfEscape(v.enumName, out); out += '"';
+            out += '"'; jfEscape(v.enumName.str(), out); out += '"';
             return;
         }
         // :enums-as-value wants .value, and this Value carries only the
@@ -6378,7 +6378,7 @@ Value Interpreter::methodCall(const Value& inv, const std::string& m, ValueList 
         // is walked only for a class that could: every `Buf.new` walked it)
         const Value* lex = nullptr;
         if (cit != classes_.end() && cit->second && cit->second->decl && !cit->second->isRole &&
-            tctx().cur && (lex = tctx().cur->find(inv.s)) && lex->t == VT::Type) {
+            tctx().cur && (lex = tctx().cur->find(inv.s.copyText())) && lex->t == VT::Type) {
             ClassInfo* ci = cit->second.get();
             if (ci->findMethod("new")) return invokeMethodChain("new", ci, inv, args, rwArgs);
             return methodCall(inv, "bless", std::move(args), rwArgs);
@@ -6474,7 +6474,7 @@ Value Interpreter::methodCall(const Value& inv, const std::string& m, ValueList 
                 plain = false; break;
             }
         if (plain) {
-            const std::string& sep = args[0].s.str();
+            const std::string_view sep = args[0].s.str();
             std::string out;
             bool first = true;
             const int sepNfc = cowIsNfc(args[0].s) ? 1 : 0;
@@ -6544,7 +6544,7 @@ Value Interpreter::methodCall(const Value& inv, const std::string& m, ValueList 
     // `.^roles` of a CORE numeric or string type: the roles its class does
     // (`42.2.^roles.grep(Rational)`, Rakudo's lists, most specific first)
     if (opEq(m, "^roles") && args.empty()) {
-        std::string tn = inv.t == VT::Type ? inv.s.str() : inv.typeName();
+        std::string tn = inv.t == VT::Type ? inv.s.copyText() : inv.typeName();
         const std::vector<const char*>* rl = nullptr;
         static const std::vector<const char*> kRat{"Rational", "Real", "Numeric"};
         static const std::vector<const char*> kReal{"Real", "Numeric"};
@@ -6609,9 +6609,9 @@ Value Interpreter::methodCall(const Value& inv, const std::string& m, ValueList 
             if (!intish(pa[0]) || (pa.size() >= 2 && !intish(pa[1]))) noMatch(inv.typeName() + ", …");
         }
         else if (opEq(m, "protect") && inv.t == VT::Type && (inv.s == "Lock" || inv.s == "Lock::Async"))
-            noMatch(inv.s.str() + ", …");
+            noMatch(inv.s + ", …");
         else if (opEq(m, "new") && inv.t == VT::Type) {
-            const std::string tn = inv.s.str();
+            const std::string tn = inv.s.copyText();
             if (tn == "Proc::Async" && npos == 0 && !classes_.count(tn)) noMatch("Proc::Async");
             else if (tn == "Junction" && !classes_.count(tn)) {
                 // Junction.new(@values, :type) or Junction.new("any", @values)
@@ -6674,7 +6674,7 @@ Value Interpreter::methodCall(const Value& inv, const std::string& m, ValueList 
             {"Str", "Int Num"}, {"Int", "Num Rat FatRat"}, {"Num", "Int Rat FatRat"},
             {"Rat", "Int Num Rat FatRat"}, {"FatRat", "Int Num Rat FatRat"},
             {"Real", "Int Num Rat FatRat"}, {"Complex", "Int Num"}};
-        const std::string tn = inv.s.str();
+        const std::string tn = inv.s.copyText();
         auto it = kDies.find(tn);
         if (it != kDies.end()) {
             const std::string mm = m;
@@ -6814,7 +6814,7 @@ Value jsonParseDoc(const std::string& text) {
 
 Value* Interpreter::builtinExtMethod(const Value& inv, const std::string& m) {
     if (builtinExt_.empty() || inv.t == VT::Object) return nullptr;
-    std::string tn = inv.t == VT::Type ? inv.s : inv.typeName();
+    std::string tn = inv.t == VT::Type ? inv.s.copyText() : inv.typeName();
     auto lookup = [&](const std::string& t) -> Value* {
         auto ti = builtinExt_.find(t);
         if (ti == builtinExt_.end()) return nullptr;
@@ -6925,7 +6925,7 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
     // long name
     if (invIn.t == VT::Hash && invIn.hashKind == "Stash" && !invIn.s.empty() &&
         (mName == "gist" || mName == "Str"))
-        return Value::str(invIn.s.str());
+        return Value::str(invIn.s);
     // `.perl` IS `.raku` — the old name for the same method. Aliasing once, here,
     // replaces sixteen `|| m == "perl"` clauses scattered down the ladder, each of
     // which had to be remembered by whoever added the next `.raku` arm. It has to
@@ -7647,7 +7647,7 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
                 // program's names: `$*REPO.need` merges no globals (the unit's
                 // own are in `$cu.handle.globalish-package`, for merge-symbols)
                 std::unordered_set<std::string> before, firstSegs;
-                for (auto& kv : classes_) { before.insert(kv.first); firstSegs.insert(kv.first.substr(0, kv.first.find("::"))); }
+                for (auto& kv : classes_) { before.emplace(kv.first); firstSegs.emplace(kv.first.substr(0, kv.first.find("::"))); }
                 pinnedInstall_ = PinnedInstall{want, prefix, dist.hash()->at("dist-id").toStr(), dist.hash()->at("\x01src").toStr()};
                 {
                     struct Unpin { std::optional<PinnedInstall>& p; ~Unpin() { p.reset(); } } unpin{pinnedInstall_};
@@ -7655,8 +7655,8 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
                     loadModule(want, {}, /*doImport=*/false, false, "", false, /*mergeGlobals=*/false);
                 }
                 for (auto& kv : classes_)
-                    if (!before.count(kv.first) && !firstSegs.count(kv.first.substr(0, kv.first.find("::"))))
-                        needHidden_.insert(kv.first);
+                    if (!before.count(std::string(kv.first)) && !firstSegs.count(std::string(kv.first.substr(0, kv.first.find("::")))))
+                        needHidden_.emplace(kv.first);
                 auto& lst = inv.obj()->attrs["\x01loaded"];
                 if (lst.t != VT::Array) { lst = Value::array(); lst.isList = true; }
                 lst.arrRef().push_back(cu);
@@ -8045,7 +8045,7 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
         if (inv.t == VT::Hash && inv.hashKind == "Parameter" && inv.hash() && inv.hash()->count("why")) {
             const Value& w = (*inv.hash())["why"];
             if (w.t == VT::Str && !w.s.empty())
-                return declarator(w.s.str(), inv.hash()->count("whyTrail") ? (*inv.hash())["whyTrail"].toStr()
+                return declarator(w.s.copyText(), inv.hash()->count("whyTrail") ? (*inv.hash())["whyTrail"].toStr()
                                                                            : std::string(), 0);
             return w;
         }
@@ -8075,9 +8075,9 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
             ClassInfo* dc = it != classes_.end() && it->second && it->second->isRole ? it->second->roleGroupDefault()
                           : it != classes_.end() ? it->second.get() : nullptr;
             if (dc && !dc->pod.empty()) return typeWhy(dc);
-            auto pi = pkgPod_.find(inv.s); // a module/package keeps its own
+            auto pi = pkgPod_.find(inv.s.copyText()); // a module/package keeps its own
             if (pi != pkgPod_.end()) {
-                auto pt = pkgPodTrail_.find(inv.s);
+                auto pt = pkgPodTrail_.find(inv.s.copyText());
                 return declarator(pi->second, pt != pkgPodTrail_.end() ? pt->second : std::string(), 0);
             }
         }
@@ -8362,7 +8362,7 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
             return hd;
         }
         if (m == "short-name" || m == "repo" || m == "version" || m == "distribution") {
-            auto it = h.find(m);
+            auto it = h.find(m.s);
             return it != h.end() ? it->second : Value::any();
         }
         if (m == "Str" || m == "gist") {
@@ -8597,7 +8597,7 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
         if ((mm == "refinee" || mm == "refinement") && inv.t == VT::Type &&
             !classes_.count(inv.s) && (subsets_.count(inv.s) || inv.s == "UInt")) {
             if (inv.s == "UInt" && !subsets_.count(inv.s)) return Value::typeObj(mm == "refinee" ? "Int" : "Mu");
-            return subsetRefinee(inv.s, mm == "refinement");
+            return subsetRefinee(inv.s.copyText(), mm == "refinement");
         }
         // A COERCION type object (`Foo(Str)`) carries both halves in its name,
         // which is the only place they fit — a type object IS a name here.
@@ -8626,12 +8626,12 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
                     if (uc == classes_.end() || !uc->second->findMethod("COERCE"))
                         return coerceToType(args[0], target);
                 }
-                return coerceThroughType(args[0], target, inv.s);
+                return coerceThroughType(args[0], target, inv.s.copyText());
             }
         }
         if (mm == "name") {
             if (inv.t == VT::Type && inv.s.rfind("Metamodel::", 0) == 0)
-                return Value::str("Perl6::" + inv.s.str()); // Rakudo's full metaclass name
+                return Value::str("Perl6::" + inv.s); // Rakudo's full metaclass name
             // …and the same for a metaobject that is a real OBJECT rather than a
             // type: a user class's `.HOW` is one, and `class C { }.HOW.^name`
             // answered the bare `Metamodel::ClassHOW` where Rakudo prefixes it.
@@ -8737,7 +8737,7 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
         // parameterizable, and the builtin below would quietly answer `X[Int]`
         // instead of running it (Parameterizable).
         {
-            std::string tn = inv.t == VT::Type ? inv.s : inv.typeName();
+            std::string tn = inv.t == VT::Type ? inv.s.copyText() : inv.typeName();
             auto cit2 = classes_.find(tn);
             if (cit2 != classes_.end() && cit2->second)
                 if (Value* umm = cit2->second->findMethod("^" + mm)) {
@@ -8758,12 +8758,12 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
                     ValueList av = args;
                     ClassInfo* role = rit->second->roleVariants.empty()
                                     ? rit->second.get() : pickRoleVariantValues(rit->second, av).get();
-                    return makeRolePun(role, inv.s, av);
+                    return makeRolePun(role, inv.s.copyText(), av);
                 }
             }
-            Value ty = Value::typeObj(inv.t == VT::Type ? inv.s : inv.typeName());
+            Value ty = Value::typeObj(inv.t == VT::Type ? inv.s.copyText() : inv.typeName());
             for (auto& a : args) {
-                std::string pn = a.t == VT::Type ? a.s : a.typeName();
+                std::string pn = a.t == VT::Type ? a.s.copyText() : a.typeName();
                 ty.ofTypeM() = ty.ofType().empty() ? pn : ty.ofType() + "," + pn;
             }
             return ty;
@@ -8800,7 +8800,7 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
         // `int`/`num` have no size to give (atomicint's -8 is Rakudo's own). Cro's router packs the range of a
         // natively typed route segment (`get -> int8 $n`) from these two.
         if ((mm == "nativesize" || mm == "unsigned") && inv.t == VT::Type) {
-            static const std::map<std::string, std::pair<int, int>> kNat = {
+            static const std::map<std::string, std::pair<int, int>, std::less<>> kNat = {
                 {"int8", {8, 0}}, {"int16", {16, 0}}, {"int32", {32, 0}}, {"int64", {64, 0}},
                 {"uint8", {8, 1}}, {"uint16", {16, 1}}, {"uint32", {32, 1}}, {"uint64", {64, 1}},
                 {"byte", {8, 1}}, {"atomicint", {-8, 0}}, {"num32", {32, 0}}, {"num64", {64, 0}},
@@ -8878,7 +8878,7 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
             // `$attr.type.^find_method("red-type-db-methods")` of each column's
             // declared type and then CALLS what it is handed, which died on a UInt
             // column for eleven of its test files (issue #77).
-            std::string tn = inv.t == VT::Type ? inv.s : std::string();
+            std::string tn = inv.t == VT::Type ? inv.s.copyText() : std::string();
             for (int hop = 0; hop < 4 && !tn.empty(); hop++) {
                 auto sit = subsets_.find(tn);
                 if (sit == subsets_.end() || sit->second.base.empty() || sit->second.base == tn) break;
@@ -8918,7 +8918,7 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
             // …and a ROLE the same way, against a type that does it: whatever
             // Cool, Real or Numeric has, an Int has; whatever Stringy has, a Str
             if (!mn.empty() && inv.t == VT::Type && !classes_.count(inv.s)) {
-                const std::string& r = inv.s;
+                const std::string_view r = inv.s;
                 Value rep = r == "Cool" || r == "Real" || r == "Numeric" ? Value::integer(0)
                           : r == "Stringy" ? Value::str("")
                           : r == "Iterable" ? Value::list({}) : Value::any();
@@ -8927,7 +8927,7 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
             }
             Value code; code.t = VT::Code; code.setCode(makePayload<Callable>());
             code.code()->ciM().name = mn; code.code()->ciM().isMethod = true;
-            code.code()->ciM().pkg = inv.t == VT::Type ? (tn.empty() ? std::string(inv.s) : tn) : inv.typeName(); // (wrapBuiltinMethod)
+            code.code()->ciM().pkg = inv.t == VT::Type ? (tn.empty() ? inv.s.copyText() : tn) : inv.typeName(); // (wrapBuiltinMethod)
             code.code()->ciM().builtin = [mn](Interpreter& I, ValueList& a) -> Value {
                 if (a.empty()) return Value::any();
                 Value in2 = a[0]; ValueList rest(a.begin() + 1, a.end());
@@ -9011,7 +9011,7 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
                 {"Map", {"Map", "Cool", "Any", "Mu"}}, {"Hash", {"Hash", "Map", "Cool", "Any", "Mu"}},
                 {"Range", {"Range", "Cool", "Any", "Mu"}}, {"Seq", {"Seq", "Cool", "Any", "Mu"}},
             };
-            std::string tn = tobj.t == VT::Type ? tobj.s.str() : inv.typeName();
+            std::string tn = tobj.t == VT::Type ? tobj.s.copyText() : inv.typeName();
             auto mro = kCoreMro.find(tn);
             if (mro != kCoreMro.end()) {
                 // (.^method_table is the LOCAL table as a Hash, name => Method)
@@ -9231,7 +9231,7 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
                 };
                 auto str = [](const Value& sg) {
                     auto it = sg.hash()->find("str");
-                    return it == sg.hash()->end() ? std::string() : it->second.s;
+                    return it == sg.hash()->end() ? std::string() : it->second.s.copyText();
                 };
                 if (!(num(lhs, "arity") >= num(inv, "arity") &&
                       num(lhs, "count") <= num(inv, "count"))) return Value::boolean(false);
@@ -9286,7 +9286,7 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
             ValueList pos; std::map<std::string, Value> named;
             if (cap.t == VT::Array && cap.arr())
                 for (auto& e : *cap.arr()) {
-                    if (e.t == VT::Pair) named[e.s] = e.pairVal() ? *e.pairVal() : Value::any();
+                    if (e.t == VT::Pair) named[e.s.copyText()] = e.pairVal() ? *e.pairVal() : Value::any();
                     else pos.push_back(e);
                 }
             long long arity = inv.hash()->count("arity") ? (*inv.hash())["arity"].toInt() : 0;
@@ -9323,7 +9323,7 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
                             if (sg == '%' && !(nv.t == VT::Hash || typeOrSubsetMatches(nv, "Associative"))) { ok = false; break; }
                             if (sg == '$' && ph.count("type") && !ph["type"].s.empty() &&
                                 ph["type"].s != "Mu" && ph["type"].s != "Any" &&
-                                !typeOrSubsetMatches(nv, ph["type"].s)) { ok = false; break; }
+                                !typeOrSubsetMatches(nv, ph["type"].s.copyText())) { ok = false; break; }
                         }
                         continue;
                     }
@@ -9341,7 +9341,7 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
                         }
                     }
                     if (ph.count("type") && !ph["type"].s.empty() &&
-                        !typeOrSubsetMatches(a2, ph["type"].s)) { ok = false; break; }
+                        !typeOrSubsetMatches(a2, ph["type"].s.copyText())) { ok = false; break; }
                 }
             return Value::boolean(ok);
         }
@@ -9414,20 +9414,20 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
              m == "raw" || m == "copy" || m == "rw" || m == "capture" ||
              m == "invocant" || m == "multi-invocant" ||
              m == "prefix" || m == "suffix" || m == "modifier" ||
-             m == "default" || m == "readonly" || m == "sub_signature") && inv.hash()->count(m))
-            return (*inv.hash())[m];
+             m == "default" || m == "readonly" || m == "sub_signature") && inv.hash()->count(m.s))
+            return (*inv.hash())[m.s];
         // `.type` answers the TYPE OBJECT (Cro's router compares `=:= Str`);
         // the plain string form stays under the "type" key for legacy callers
         if (m == "type" && inv.hash()->count("type-obj")) return (*inv.hash())["type-obj"];
-        if (m == "type" && inv.hash()->count(m)) return (*inv.hash())[m];
+        if (m == "type" && inv.hash()->count(m.s)) return (*inv.hash())[m.s];
         if (m == "positional") return Value::boolean(!(*inv.hash())["named"].truthy() && !(*inv.hash())["slurpy"].truthy());
-        if (m == "sigil") { const std::string& n = (*inv.hash())["name"].s; return Value::str(n.empty() ? "$" : n.substr(0, 1)); }
+        if (m == "sigil") { const std::string_view n = (*inv.hash())["name"].s; return Value::str(n.empty() ? "$" : n.substr(0, 1)); }
         // An accessor of a role a parameter trait mixed in (`$param does
         // Formatted::Named(:$argument)` put the role's attributes into this same
         // map): `$param.argument`. Last, so it can never shadow a real
         // Parameter method — the Attribute meta-object ends the same way.
         {
-            auto ai = inv.hash()->find(m);
+            auto ai = inv.hash()->find(m.s);
             if (ai != inv.hash()->end()) return ai->second;
         }
     }
@@ -9447,7 +9447,7 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
         return pp;
     }
     if (inv.t == VT::Hash && inv.hashKind == "IO::Path::Parts") {
-        if (m == "volume" || m == "dirname" || m == "basename") return (*inv.hash())[m];
+        if (m == "volume" || m == "dirname" || m == "basename") return (*inv.hash())[m.s];
         // It is Positional as well as Associative: `$parts[0]` is the volume PAIR
         // and `$parts[]` lists all three. The order is the declaration order —
         // volume, dirname, basename — not the map's sorted order, so this cannot
@@ -9519,7 +9519,7 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
             const Value& v = *a.pairVal();
             if (a.s == "type" || a.s == "of") {
                 h["type-obj"] = v;
-                h["type"] = Value::str(v.t == VT::Type ? std::string(v.s.str()) : std::string("Any"));
+                h["type"] = Value::str(v.t == VT::Type ? v.s.copyText() : std::string("Any"));
             }
             else if (a.s == "name") {
                 std::string n = v.toStr();
@@ -9573,7 +9573,7 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
             count++;
             if (!(*e.hash())["optional"].truthy()) arity++;
         }
-        std::string retName = returns.t == VT::Type ? std::string(returns.s.str()) : std::string("Mu");
+        std::string retName = returns.t == VT::Type ? returns.s.copyText() : std::string("Mu");
         (*sv.hash())["str"] = Value::str("(" + body + " --> " + retName + ")");
         (*sv.hash())["arity"] = Value::integer(arity);
         (*sv.hash())["count"] = slurpy ? Value::number(std::numeric_limits<double>::infinity())
@@ -9926,7 +9926,7 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
         // A Pair is a named part only if it WENT IN as one: `\(:a(1))` is named,
         // `\(('a' => 1))` and a Pair slurped from a positional argument are not.
         if (inv.arr()) for (auto& e : *inv.arr()) {
-            if (e.t == VT::Pair && e.namedArg) named[e.s] = e.pairVal() ? *e.pairVal() : Value::any();
+            if (e.t == VT::Pair && e.namedArg) named[e.s.copyText()] = e.pairVal() ? *e.pairVal() : Value::any();
             else pos.push_back(e);
         }
         if (m == "list") { Value o = Value::array(); o.isList = true; *o.arr() = pos; return o; }
@@ -9990,7 +9990,7 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
         !inv.obj()->cls->findMethod(m) && classes_.count(inv.obj()->cls->name))
         return methodCall(Value::typeObj(inv.obj()->cls->name), m, args, rwArgs);
     if (inv.t == VT::Object && inv.obj() && inv.obj()->hasBoxed && inv.obj()->cls &&
-        (m.skipOwn || (!inv.obj()->cls->findMethod(m) && !inv.obj()->cls->findAttr(m)))) {
+        (m.skipOwn || (!inv.obj()->cls->findMethod(m) && !inv.obj()->cls->findAttr(m.s)))) {
         static const std::set<std::string> keepOnObj = {
             // `.can` must see the MIXIN's methods — forwarding it to the boxed
             // value hides them (`(Any but $failure).can('Failure')`)
@@ -10382,7 +10382,7 @@ Value Interpreter::methodCallUnresolved(const Value& inv, const MName& m, ValueL
             // Str.chomp on the object's own stringification, so Text::CSV's
             // `my Bool $chomped = $io.chomp` type-checked a Str against Bool.
             if ((m == "chomp" || m == "nl-in" || m == "nl-out") && args.empty()) {
-                auto it = inv.obj()->attrs.find(m);
+                auto it = inv.obj()->attrs.find(m.s);
                 if (it != inv.obj()->attrs.end() && it->second.t != VT::Any) return it->second;
                 if (m == "chomp") return Value::boolean(true);
                 if (m == "nl-out") return Value::str("\n");
@@ -10449,7 +10449,7 @@ Value Interpreter::methodCallUnresolved(const Value& inv, const MName& m, ValueL
     // The invocant may be a type whose `class`/`grammar` declaration is further
     // down the file — those are compile-time in Rakudo, so `say f("x"); grammar
     // G {…}` works there. Create it now and try once more.
-    if (inv.t == VT::Type && !inv.s.empty() && materializePendingType(inv.s))
+    if (inv.t == VT::Type && !inv.s.empty() && materializePendingType(inv.s.copyText()))
         return methodCall(inv, m, args);
     // Rakudo's Any gives EVERY object the one-element-list interface:
     // `Foo.new.elems` is 1, `.list` is `(Foo.new)`, `.head` is the object
@@ -10522,7 +10522,7 @@ Value Interpreter::methodCallUnresolved(const Value& inv, const MName& m, ValueL
     // seed) constructs the base type with that element type
     if (m == "new") {
         if (inv.t == VT::Type && inv.s.str().find('[') != std::string::npos && inv.s.str().back() == ']') {
-            std::string full = inv.s.str();
+            std::string full = inv.s.copyText();
             size_t br = full.find('[');
             Value base = Value::typeObj(full.substr(0, br));
             base.ofTypeM() = full.substr(br + 1, full.size() - br - 2);
@@ -10564,7 +10564,7 @@ void Interpreter::throwNoMethod(Value ex) {
 }
 
 void Interpreter::throwMarked(Value mark) {
-    std::string msg = mark.s.str();
+    std::string msg = mark.s.copyText();
     Value ex = *mark.pairVal();
     g_btSettingFrames = 1;   // the setting's `throw`, a frame of the backtrace (btCaptureNow)
     throw RakuError{std::move(ex), std::move(msg)};

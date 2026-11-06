@@ -743,7 +743,7 @@ void Interpreter::registerBuiltinsPart3() {
         std::string sig;
         for (size_t i = 1; i < a.size(); i++) {
             if (!sig.empty()) sig += ", ";
-            if (a[i].t == VT::Pair && a[i].namedArg) sig += ":" + a[i].s.str();
+            if (a[i].t == VT::Pair && a[i].namedArg) sig += ":" + a[i].s;
             else sig += a[i].typeName() + (a[i].t == VT::Type ? ":U" : ":D");
         }
         throw RakuError{Value::typeObj("X::Multi::NoMatch"),
