@@ -1,0 +1,5 @@
+household.journal
+  2026-01-01 to 2026-06-30, 145 transactions, 331 postings
+  29 accounts, 3 commodities ($, ACME, €), 21 prices
+  every transaction balances to exactly zero
+  all 24 balance assertions hold

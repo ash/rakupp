@@ -1,0 +1,10 @@
+2026-02-14 * Osteria Lume  ; dinner for three; I take the odd cent
+    Expenses:Food:Dining                     $33.34
+    Assets:Receivable:Sam                    $33.33
+    Assets:Receivable:Alex                   $33.33
+    Liabilities:CreditCard                 $-100.00
+
+2026-02-27 * Osteria Lume
+    Expenses:Food:Dining                     $72.32
+    Liabilities:CreditCard
+

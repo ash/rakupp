@@ -1,0 +1,32 @@
+; broken.journal — a short journal with six mistakes in it, of the kinds
+; that creep into one typed by hand. `check` finds every one, and says where:
+;
+;     rakupp showcase/ledger/ledger.raku check -f=showcase/ledger/examples/broken.journal
+
+2026-03-01 * Opening balances
+    Assets:Checking                 $1,000.00
+    Equity:Opening Balances
+
+2026-03-02 * Green Basket Market
+    Expenses:Food:Groceries            $84.12
+    Liabilities:CreditCard            $-84.21
+
+2026-03-05 * Corner Pharmacy
+    Expenses:Health:Pharmacy $23.18
+    Liabilities:CreditCard
+
+2026-03-09 * City Power & Light
+    Expenses:Housing:Utilities         $96.22
+    Liabilities:CreditCard            $-96,22
+
+2026-03-15 * Northwind Payroll
+    Assets:Checking                 $2,570.24 = $3,570.42
+    Income:Salary
+
+2026-02-30 * Maple Street Apartments
+    Expenses:Housing:Rent           $1,850.00
+    Assets:Checking
+
+2026-03-31 * Harbor Savings
+    Assets:Savings
+    Income:Interest

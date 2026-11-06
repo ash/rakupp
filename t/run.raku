@@ -316,6 +316,42 @@ section('showcase/orbits (Kepler, the planets, and Hohmann transfers)');
        "orbits: Newton converges at e = 0.95 for every mean anomaly tried");
 }
 
+# ---- ledger showcase ---------------------------------------------------
+# Money as FatRat: the goldens are sums to the cent, and the 24 balance
+# assertions in household.journal were worked out in integer cents by a
+# separate program (tools/household.raku). A drift in FatRat arithmetic,
+# rounding, Date or grammar matching shows up as a wrong balance or a failed
+# assertion, not as a crash.
+section('showcase/ledger (plain-text accounting, exactly)');
+{
+    my $led = $ROOT.add('showcase/ledger/ledger.raku').Str;
+
+    for <balance value register monthly budget print float check> -> $n {
+        my @args = $n eq 'balance'  ?? ($led, 'balance', '--depth=2')
+                !! $n eq 'value'    ?? ($led, 'balance', 'Assets', '--value')
+                !! $n eq 'register' ?? ($led, 'register', 'Dining', '-p=2026-02')
+                !! $n eq 'print'    ?? ($led, 'print', '@Osteria', '-p=2026-02')
+                !! ($led, $n);
+        golden(@args, $EXP.add("ledger-$n.out").Str, "ledger: $n");
+    }
+
+    # the self-checks are the real assertion; pin their count so that a
+    # shrinking list cannot pass
+    my ($c, $rc) = run-rakupp($led, '--check');
+    ok($rc == 0 && $c.contains('all 20 checks passed'), "ledger: all 20 self-checks pass");
+
+    # broken.journal's six mistakes are each reported, on their own lines
+    my $p = run($*EXECUTABLE, $led, 'check', "-f={$ROOT.add('showcase/ledger/examples/broken.journal')}", :out, :err);
+    $p.out.slurp(:close);
+    my @lines = $p.err.slurp(:close).lines.map({ / 'broken.journal:' (\d+) ':' / ?? +$0 !! Empty });
+    ok($p.exitcode == 1 && @lines eqv [10, 15, 20, 23, 26, 30],
+       "ledger: check finds broken.journal's six mistakes on their lines (got @lines[])");
+
+    # and it stays natively compilable, engine module and all
+    ok(run($*EXECUTABLE, '--cpp', $led, :!out, :!err).exitcode == 0,
+       'ledger: --exe would compile it natively');
+}
+
 # ---- server showcases (pastebin + chat) -------------------------------
 # The servers are long-lived accept loops. rakupp's Proc::Async deadlocks when
 # the same process then does blocking socket I/O, so we background them through

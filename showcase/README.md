@@ -26,11 +26,12 @@ README below.
 | [**eclipse/**](eclipse) | Transpiling — one engine, a terminal and a browser, through `--target=js` | predicts solar and lunar eclipses; builds an interactive textbook |
 | [**fourier/**](fourier) | Numerics — complex arithmetic and a recursive FFT, checked against exact identities | Fourier series and transforms; an oscilloscope in characters |
 | [**orbits/**](orbits) | Numerics — iteration to convergence, checked against the almanacs | where the planets are, and what a transfer to one costs |
+| [**ledger/**](ledger) | Exact arithmetic — money as `FatRat`, a grammar that reports every mistake | plain-text accounting: balances, budgets, and where a journal is wrong |
 | [**web/**](web) | In the browser — the pure showcases compiled to WebAssembly | three apps that open from a `file://` URL, no server |
 
 All paths below are from the repository root, after building `rakupp` (see the
 top-level [README](../README.md)). Every program also builds a standalone
-binary with `rakupp --exe`, and eleven of the twenty-one entry points compile
+binary with `rakupp --exe`, and eleven of the twenty-two entry points compile
 to native code. Where a program uses
 something the native path does not cover yet — a NativeCall shape, a GUI
 binding — `--exe` falls back to bundling the interpreter with the program and
@@ -551,6 +552,35 @@ Jupiter while the flight time does not.
 It found a parser bug in the interpreter: a bare identifier before a fat arrow
 (`v1 => $x`) was lexed as a version literal, so the hash key came out `"1"` and
 the lookup silently returned `Any`. See [`orbits/README.md`](orbits/README.md).
+
+## ledger — the exact-arithmetic story
+
+**ledger** reads the plain-text journal format of ledger and hledger:
+transactions whose postings must sum to zero, prices, balance assertions, and
+a `~ monthly` budget. Every amount is a `FatRat`, so a transaction balances
+when its sum is exactly zero and an assertion holds when the account holds
+exactly that much, with no tolerance anywhere.
+
+```sh
+build/rakupp showcase/ledger/ledger.raku balance --depth=2
+build/rakupp showcase/ledger/ledger.raku balance Assets --value   # at market prices
+build/rakupp showcase/ledger/ledger.raku budget
+build/rakupp showcase/ledger/ledger.raku check -f=showcase/ledger/examples/broken.journal
+build/rakupp showcase/ledger/ledger.raku float                    # the same sums in doubles
+build/rakupp showcase/ledger/ledger.raku --check
+```
+
+`float` does the bundled journal's sums again in `Num`, and 18 of its 24
+bank-statement assertions then fail `==` — `4809.389999999999, not 4809.39`.
+In `FatRat` all 24 hold. A program separate from the engine worked out those
+24 figures, in integer cents, when it wrote the journal.
+
+The grammar reads a file as `[ <entry> || <unreadable> ]*`, so one bad entry
+does not end the read. `broken.journal`'s six mistakes come back in one pass,
+each with its line, and a misread amount gets a `^` under the place where
+`subparse` stopped. It runs unchanged on Rakudo with byte-identical reports,
+and `--exe` compiles it to native code, engine module included. See
+[`ledger/README.md`](ledger/README.md).
 
 ## In the browser — [`web/`](web)
 

@@ -222,9 +222,8 @@ Android are in §7.
   - Grammar → GBNF for llama.cpp's constrained decoding, so that a model's
     output parses with the same grammar. Speculative: only a subset of
     grammars would translate.
-- **Exact arithmetic as the reason.**
-  - Plain-text accounting: a Ledger/hledger journal parser and balance report
-    on `Rat`, as a showcase.
+- **Exact arithmetic as the reason.** (Plain-text accounting landed as
+  [showcase/ledger](../../../showcase/ledger).)
   - A launcher calculator: a Raycast or Alfred extension, or a macOS Shortcuts
     action, where `1/3 + 1/6` is `0.5` and `2**200` has all its digits.
 - **More hosts on the C API**, beyond §7's: Julia through `ccall`, with no

@@ -1,0 +1,22 @@
+The same journal, summed in binary floating point
+
+Every amount below is held as a double instead of a fraction. The sums are
+the same sums, made in the same order, and compared with == as before.
+
+  transactions that no longer sum to zero       0 of 145
+      each one alone is short enough to come out even
+  balance assertions that fail                 18 of 24
+      2026-01-15 Assets:Checking          holds 4809.389999999999, not 4809.39
+      2026-01-31 Assets:Checking          holds 5582.269999999999, not 5582.27
+      2026-02-15 Assets:Checking          holds 6188.6399999999985, not 6188.64
+  prices paid with @@ that do not multiply      2 of 9
+  back to what was paid
+      2026-04-07 €312.00 @@ $338.11: the unit price times 312 is 338.10999999999996
+      2026-04-09 €41.50 @@ $45.21: the unit price times 41.5 is 45.21000000000001
+
+And the running totals drift:
+  Assets:Checking          exactly  $12,400.97    in doubles 12400.969999999998
+  Assets:Savings           exactly  $15,284.18    in doubles 15284.18
+  Liabilities:CreditCard   exactly     $-56.94    in doubles -56.94000000000034
+
+In lib/Ledger.rakumod each of these is a FatRat, and all of them are exact.

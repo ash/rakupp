@@ -1,0 +1,662 @@
+; household.journal — six months of a fictional household's money, in the
+; plain-text format of ledger and hledger. Nothing here is anybody's real
+; account; the shop names are made up.
+;
+; Every amount is written as it would appear on a statement. The `= $...`
+; after a posting is a balance assertion: the account must hold exactly that
+; much once the posting is made, as the bank's own figure would say.
+
+account Assets:Checking
+account Assets:Savings
+account Assets:Brokerage
+account Assets:Retirement:401k
+account Assets:Cash:EUR
+account Liabilities:CreditCard
+account Income:Salary
+account Income:Interest
+account Income:Dividends
+account Equity:Opening Balances
+
+; what a month is meant to cost
+~ monthly
+    Expenses:Food:Groceries              $450.00
+    Expenses:Food:Dining                 $150.00
+    Expenses:Transport                   $140.00
+    Expenses:Fun                          $80.00
+    Expenses:Subscriptions                $20.00
+    Assets:Checking
+
+; month-end prices, for valuing what is held at market
+P 2026-01-31 ACME $48.62
+P 2026-02-28 ACME $47.10
+P 2026-03-31 ACME $49.85
+P 2026-04-30 ACME $51.30
+P 2026-05-31 ACME $50.12
+P 2026-06-30 ACME $53.48
+P 2026-01-31 EUR $1.0412
+P 2026-02-28 EUR $1.0489
+P 2026-03-31 EUR $1.0655
+P 2026-04-30 EUR $1.0837
+P 2026-05-31 EUR $1.0761
+P 2026-06-30 EUR $1.0893
+
+2026-01-01 * Opening balances
+    Assets:Checking                       $4,210.55
+    Assets:Savings                       $12,000.00
+    Assets:Retirement:401k               $18,400.00
+    Liabilities:CreditCard                 $-312.40
+    Equity:Opening Balances
+
+2026-01-01 * Maple Street Apartments
+    Expenses:Housing:Rent                 $1,850.00
+    Assets:Checking
+
+2026-01-02 * Metro Transit
+    Expenses:Transport:Transit               $86.00
+    Liabilities:CreditCard
+
+2026-01-03 * Green Basket Market
+    Expenses:Food:Groceries                 $119.10
+    Liabilities:CreditCard
+
+2026-01-05 * Streamly
+    Expenses:Subscriptions                   $15.49
+    Liabilities:CreditCard
+
+2026-01-08 * City Power & Light
+    Expenses:Housing:Utilities              $121.40
+    Assets:Checking
+
+2026-01-09 * CloudBox
+    Expenses:Subscriptions                    $2.99
+    Liabilities:CreditCard
+
+2026-01-09 * Noodle Bar
+    Expenses:Food:Dining                     $21.75
+    Liabilities:CreditCard
+
+2026-01-10 * Green Basket Market
+    Expenses:Food:Groceries                  $53.35
+    Liabilities:CreditCard
+
+2026-01-11 * Pageturner Books
+    Expenses:Fun                             $20.70
+    Liabilities:CreditCard
+
+2026-01-12 * FiberNet
+    Expenses:Housing:Utilities               $59.99
+    Liabilities:CreditCard
+
+2026-01-14 * RideShare
+    Expenses:Transport:Rides                 $15.67
+    Liabilities:CreditCard
+
+2026-01-15 * Northwind Payroll
+    Assets:Checking                       $2,570.24 = $4,809.39
+    Expenses:Taxes:Income                   $812.46
+    Expenses:Health:Insurance               $142.30
+    Assets:Retirement:401k                  $225.00
+    Income:Salary                        $-3,750.00
+
+2026-01-17 * Green Basket Market
+    Expenses:Food:Groceries                 $120.24
+    Liabilities:CreditCard
+
+2026-01-20 * Brightline Brokerage  ; monthly buy
+    Assets:Brokerage                 6.2125 ACME @@ $300.00
+    Assets:Checking
+
+2026-01-22 * Pageturner Books
+    Expenses:Fun                             $41.43
+    Liabilities:CreditCard
+
+2026-01-23 * Golden Wok
+    Expenses:Food:Dining                     $72.67
+    Liabilities:CreditCard
+
+2026-01-24 * Green Basket Market
+    Expenses:Food:Groceries                  $55.58
+    Liabilities:CreditCard
+
+2026-01-26 * Card payment
+    Liabilities:CreditCard                  $997.36 = $0.00
+    Assets:Checking
+
+2026-01-27 * Transfer to savings
+    Assets:Savings                          $500.00
+    Assets:Checking
+
+2026-01-31 * Green Basket Market
+    Expenses:Food:Groceries                  $58.65
+    Liabilities:CreditCard
+
+2026-01-31 * Northwind Payroll
+    Assets:Checking                       $2,570.24 = $5,582.27
+    Expenses:Taxes:Income                   $812.46
+    Expenses:Health:Insurance               $142.30
+    Assets:Retirement:401k                  $225.00
+    Income:Salary                        $-3,750.00
+
+2026-01-31 * Harbor Savings  ; interest, 4.10% a year
+    Assets:Savings                           $42.71 = $12,542.71
+    Income:Interest
+
+2026-02-01 * Maple Street Apartments
+    Expenses:Housing:Rent                 $1,850.00
+    Assets:Checking
+
+2026-02-02 * Metro Transit
+    Expenses:Transport:Transit               $86.00
+    Liabilities:CreditCard
+
+2026-02-03 * Green Basket Market
+    Expenses:Food:Groceries                  $49.19
+    Liabilities:CreditCard
+
+2026-02-05 * Streamly
+    Expenses:Subscriptions                   $15.49
+    Liabilities:CreditCard
+
+2026-02-06 * Golden Wok
+    Expenses:Food:Dining                     $32.77
+    Liabilities:CreditCard
+
+2026-02-08 * City Power & Light
+    Expenses:Housing:Utilities              $113.87
+    Assets:Checking
+
+2026-02-09 * CloudBox
+    Expenses:Subscriptions                    $2.99
+    Liabilities:CreditCard
+
+2026-02-10 * Green Basket Market
+    Expenses:Food:Groceries                  $68.96
+    Liabilities:CreditCard
+
+2026-02-11 * Rialto Cinema
+    Expenses:Fun                             $49.20
+    Liabilities:CreditCard
+
+2026-02-12 * FiberNet
+    Expenses:Housing:Utilities               $59.99
+    Liabilities:CreditCard
+
+2026-02-14 * RideShare
+    Expenses:Transport:Rides                 $18.63
+    Liabilities:CreditCard
+
+2026-02-14 * Osteria Lume  ; dinner for three; I take the odd cent
+    Expenses:Food:Dining                     $33.34
+    Assets:Receivable:Sam                    $33.33
+    Assets:Receivable:Alex                   $33.33
+    Liabilities:CreditCard                 $-100.00
+
+2026-02-15 * Northwind Payroll
+    Assets:Checking                       $2,570.24 = $6,188.64
+    Expenses:Taxes:Income                   $812.46
+    Expenses:Health:Insurance               $142.30
+    Assets:Retirement:401k                  $225.00
+    Income:Salary                        $-3,750.00
+
+2026-02-16 * Sam  ; paid me back
+    Assets:Checking                          $33.33
+    Assets:Receivable:Sam
+
+2026-02-17 * Green Basket Market
+    Expenses:Food:Groceries                 $127.03
+    Liabilities:CreditCard
+
+2026-02-19 * Taco Cart
+    Expenses:Food:Dining                     $67.24
+    Liabilities:CreditCard
+
+2026-02-20 * Brightline Brokerage  ; monthly buy
+    Assets:Brokerage                 6.4034 ACME @@ $300.00
+    Assets:Checking
+
+2026-02-21 * Alex  ; paid me back
+    Assets:Checking                          $33.33
+    Assets:Receivable:Alex
+
+2026-02-24 * Green Basket Market
+    Expenses:Food:Groceries                 $116.04
+    Liabilities:CreditCard
+
+2026-02-26 * Card payment
+    Liabilities:CreditCard                  $852.18 = $0.00
+    Assets:Checking
+
+2026-02-27 * Osteria Lume
+    Expenses:Food:Dining                     $72.32
+    Liabilities:CreditCard
+
+2026-02-27 * Transfer to savings
+    Assets:Savings                          $500.00
+    Assets:Checking
+
+2026-02-28 * Northwind Payroll
+    Assets:Checking                       $2,570.24 = $7,173.36
+    Expenses:Taxes:Income                   $812.46
+    Expenses:Health:Insurance               $142.30
+    Assets:Retirement:401k                  $225.00
+    Income:Salary                        $-3,750.00
+
+2026-02-28 * Harbor Savings  ; interest, 4.10% a year
+    Assets:Savings                           $44.56 = $13,087.27
+    Income:Interest
+
+2026-03-01 * Maple Street Apartments
+    Expenses:Housing:Rent                 $1,850.00
+    Assets:Checking
+
+2026-03-02 * Metro Transit
+    Expenses:Transport:Transit               $86.00
+    Liabilities:CreditCard
+
+2026-03-03 * Green Basket Market
+    Expenses:Food:Groceries                  $89.23
+    Liabilities:CreditCard
+
+2026-03-03 * Atlantic Air  ; flights to Lisbon
+    Expenses:Travel:Flights                 $612.40
+    Liabilities:CreditCard
+
+2026-03-05 * Streamly
+    Expenses:Subscriptions                   $15.49
+    Liabilities:CreditCard
+
+2026-03-08 * City Power & Light
+    Expenses:Housing:Utilities               $96.22
+    Assets:Checking
+
+2026-03-09 * CloudBox
+    Expenses:Subscriptions                    $2.99
+    Liabilities:CreditCard
+
+2026-03-09 * Blue Door Cafe
+    Expenses:Food:Dining                     $61.59
+    Liabilities:CreditCard
+
+2026-03-10 * Green Basket Market
+    Expenses:Food:Groceries                  $85.19
+    Liabilities:CreditCard
+
+2026-03-11 * Vinyl Corner
+    Expenses:Fun                             $34.83
+    Liabilities:CreditCard
+
+2026-03-12 * FiberNet
+    Expenses:Housing:Utilities               $59.99
+    Liabilities:CreditCard
+
+2026-03-12 * Corner Pharmacy
+    Expenses:Health:Pharmacy                 $23.18
+    Liabilities:CreditCard
+
+2026-03-14 * RideShare
+    Expenses:Transport:Rides                 $20.48
+    Liabilities:CreditCard
+
+2026-03-15 * Northwind Payroll
+    Assets:Checking                       $2,570.24 = $7,797.38
+    Expenses:Taxes:Income                   $812.46
+    Expenses:Health:Insurance               $142.30
+    Assets:Retirement:401k                  $225.00
+    Income:Salary                        $-3,750.00
+
+2026-03-17 * Green Basket Market
+    Expenses:Food:Groceries                  $92.23
+    Liabilities:CreditCard
+
+2026-03-20 * Brightline Brokerage  ; monthly buy
+    Assets:Brokerage                 6.1350 ACME @@ $300.00
+    Assets:Checking
+
+2026-03-22 * Rialto Cinema
+    Expenses:Fun                             $61.38
+    Liabilities:CreditCard
+
+2026-03-23 * Blue Door Cafe
+    Expenses:Food:Dining                     $36.69
+    Liabilities:CreditCard
+
+2026-03-24 * Green Basket Market
+    Expenses:Food:Groceries                 $119.35
+    Liabilities:CreditCard
+
+2026-03-26 * Card payment
+    Liabilities:CreditCard                $1,473.34 = $0.00
+    Assets:Checking
+
+2026-03-27 * Transfer to savings
+    Assets:Savings                          $500.00
+    Assets:Checking
+
+2026-03-31 * Green Basket Market
+    Expenses:Food:Groceries                  $60.13
+    Liabilities:CreditCard
+
+2026-03-31 * Northwind Payroll
+    Assets:Checking                       $2,570.24 = $8,094.28
+    Expenses:Taxes:Income                   $812.46
+    Expenses:Health:Insurance               $142.30
+    Assets:Retirement:401k                  $225.00
+    Income:Salary                        $-3,750.00
+
+2026-03-31 * Harbor Savings  ; interest, 4.10% a year
+    Assets:Savings                           $46.42 = $13,633.69
+    Income:Interest
+
+2026-04-01 * Maple Street Apartments
+    Expenses:Housing:Rent                 $1,850.00
+    Assets:Checking
+
+2026-04-02 * Metro Transit
+    Expenses:Transport:Transit               $86.00
+    Liabilities:CreditCard
+
+2026-04-03 * Green Basket Market
+    Expenses:Food:Groceries                 $137.51
+    Liabilities:CreditCard
+
+2026-04-05 * Streamly
+    Expenses:Subscriptions                   $15.49
+    Liabilities:CreditCard
+
+2026-04-06 * Blue Door Cafe
+    Expenses:Food:Dining                     $61.55
+    Liabilities:CreditCard
+
+2026-04-07 * ATM, Rua Augusta
+    Assets:Cash:EUR                  €100.00 @@ $109.87
+    Assets:Checking
+
+2026-04-07 * Hotel Alfama  ; four nights
+    Expenses:Travel:Hotel            €312.00 @@ $338.11
+    Liabilities:CreditCard
+
+2026-04-08 * City Power & Light
+    Expenses:Housing:Utilities               $78.15
+    Assets:Checking
+
+2026-04-08 * Pastelaria Sol
+    Expenses:Travel:Food                      €8.40
+    Assets:Cash:EUR
+
+2026-04-08 * City Tram
+    Expenses:Travel:Transport                 €6.00
+    Assets:Cash:EUR
+
+2026-04-09 * CloudBox
+    Expenses:Subscriptions                    $2.99
+    Liabilities:CreditCard
+
+2026-04-09 * Tasca do Rio
+    Expenses:Travel:Food             €41.50 @@ $45.21
+    Liabilities:CreditCard
+
+2026-04-10 * Green Basket Market
+    Expenses:Food:Groceries                 $137.52
+    Liabilities:CreditCard
+
+2026-04-10 * Tile Museum
+    Expenses:Travel:Fun                      €15.00
+    Assets:Cash:EUR
+
+2026-04-10 * Ribeira Market
+    Expenses:Travel:Food                     €23.60
+    Assets:Cash:EUR
+
+2026-04-11 * Pageturner Books
+    Expenses:Fun                             $21.69
+    Liabilities:CreditCard
+
+2026-04-11 * Sintra train
+    Expenses:Travel:Transport                 €4.70
+    Assets:Cash:EUR
+
+2026-04-12 * FiberNet
+    Expenses:Housing:Utilities               $59.99
+    Liabilities:CreditCard
+
+2026-04-14 * RideShare
+    Expenses:Transport:Rides                 $23.88
+    Liabilities:CreditCard
+
+2026-04-15 * Northwind Payroll
+    Assets:Checking                       $2,570.24 = $8,626.50
+    Expenses:Taxes:Income                   $812.46
+    Expenses:Health:Insurance               $142.30
+    Assets:Retirement:401k                  $225.00
+    Income:Salary                        $-3,750.00
+
+2026-04-17 * Green Basket Market
+    Expenses:Food:Groceries                 $108.69
+    Liabilities:CreditCard
+
+2026-04-19 * Taco Cart
+    Expenses:Food:Dining                     $56.74
+    Liabilities:CreditCard
+
+2026-04-20 * Brightline Brokerage  ; monthly buy
+    Assets:Brokerage                 5.9113 ACME @@ $300.00
+    Assets:Checking
+
+2026-04-24 * Green Basket Market
+    Expenses:Food:Groceries                 $136.49
+    Liabilities:CreditCard
+
+2026-04-26 * Card payment
+    Liabilities:CreditCard                $1,291.99 = $0.00
+    Assets:Checking
+
+2026-04-27 * Golden Wok
+    Expenses:Food:Dining                     $55.35
+    Liabilities:CreditCard
+
+2026-04-27 * Transfer to savings
+    Assets:Savings                          $500.00
+    Assets:Checking
+
+2026-04-30 * Northwind Payroll
+    Assets:Checking                       $2,570.24 = $9,104.75
+    Expenses:Taxes:Income                   $812.46
+    Expenses:Health:Insurance               $142.30
+    Assets:Retirement:401k                  $225.00
+    Income:Salary                        $-3,750.00
+
+2026-04-30 * Harbor Savings  ; interest, 4.10% a year
+    Assets:Savings                           $48.29 = $14,181.98
+    Income:Interest
+
+2026-05-01 * Maple Street Apartments
+    Expenses:Housing:Rent                 $1,850.00
+    Assets:Checking
+
+2026-05-02 * Metro Transit
+    Expenses:Transport:Transit               $86.00
+    Liabilities:CreditCard
+
+2026-05-03 * Green Basket Market
+    Expenses:Food:Groceries                 $136.63
+    Liabilities:CreditCard
+
+2026-05-05 * Streamly
+    Expenses:Subscriptions                   $15.49
+    Liabilities:CreditCard
+
+2026-05-08 * City Power & Light
+    Expenses:Housing:Utilities               $64.90
+    Assets:Checking
+
+2026-05-09 * CloudBox
+    Expenses:Subscriptions                    $2.99
+    Liabilities:CreditCard
+
+2026-05-09 * Taco Cart
+    Expenses:Food:Dining                     $34.77
+    Liabilities:CreditCard
+
+2026-05-09 * Petal & Stem  ; flowers for Mum
+    Expenses:Gifts                           $54.00
+    Liabilities:CreditCard
+
+2026-05-10 * Green Basket Market
+    Expenses:Food:Groceries                 $120.46
+    Liabilities:CreditCard
+
+2026-05-11 * Pageturner Books
+    Expenses:Fun                             $26.37
+    Liabilities:CreditCard
+
+2026-05-12 * FiberNet
+    Expenses:Housing:Utilities               $59.99
+    Liabilities:CreditCard
+
+2026-05-14 * RideShare
+    Expenses:Transport:Rides                 $18.57
+    Liabilities:CreditCard
+
+2026-05-15 * Northwind Payroll
+    Assets:Checking                       $2,570.24 = $9,760.09
+    Expenses:Taxes:Income                   $812.46
+    Expenses:Health:Insurance               $142.30
+    Assets:Retirement:401k                  $225.00
+    Income:Salary                        $-3,750.00
+
+2026-05-17 * Green Basket Market
+    Expenses:Food:Groceries                  $53.64
+    Liabilities:CreditCard
+
+2026-05-20 * Brightline Brokerage  ; monthly buy
+    Assets:Brokerage                 5.8800 ACME @@ $300.00
+    Assets:Checking
+
+2026-05-22 * Climbing Gym
+    Expenses:Fun                             $38.75
+    Liabilities:CreditCard
+
+2026-05-23 * Golden Wok
+    Expenses:Food:Dining                     $49.15
+    Liabilities:CreditCard
+
+2026-05-24 * Green Basket Market
+    Expenses:Food:Groceries                 $118.22
+    Liabilities:CreditCard
+
+2026-05-26 * Card payment
+    Liabilities:CreditCard                  $870.38 = $0.00
+    Assets:Checking
+
+2026-05-27 * Transfer to savings
+    Assets:Savings                          $500.00
+    Assets:Checking
+
+2026-05-31 * Green Basket Market
+    Expenses:Food:Groceries                  $87.07
+    Liabilities:CreditCard
+
+2026-05-31 * Northwind Payroll
+    Assets:Checking                       $2,570.24 = $10,659.95
+    Expenses:Taxes:Income                   $812.46
+    Expenses:Health:Insurance               $142.30
+    Assets:Retirement:401k                  $225.00
+    Income:Salary                        $-3,750.00
+
+2026-05-31 * Harbor Savings  ; interest, 4.10% a year
+    Assets:Savings                           $50.16 = $14,732.14
+    Income:Interest
+
+2026-06-01 * Maple Street Apartments
+    Expenses:Housing:Rent                 $1,850.00
+    Assets:Checking
+
+2026-06-02 * Metro Transit
+    Expenses:Transport:Transit               $86.00
+    Liabilities:CreditCard
+
+2026-06-03 * Green Basket Market
+    Expenses:Food:Groceries                  $59.35
+    Liabilities:CreditCard
+
+2026-06-05 * Streamly
+    Expenses:Subscriptions                   $15.49
+    Liabilities:CreditCard
+
+2026-06-06 * Golden Wok
+    Expenses:Food:Dining                     $44.57
+    Liabilities:CreditCard
+
+2026-06-08 * City Power & Light
+    Expenses:Housing:Utilities               $71.33
+    Assets:Checking
+
+2026-06-09 * CloudBox
+    Expenses:Subscriptions                    $2.99
+    Liabilities:CreditCard
+
+2026-06-10 * Green Basket Market
+    Expenses:Food:Groceries                  $65.37
+    Liabilities:CreditCard
+
+2026-06-11 * Climbing Gym
+    Expenses:Fun                             $44.48
+    Liabilities:CreditCard
+
+2026-06-12 * FiberNet
+    Expenses:Housing:Utilities               $59.99
+    Liabilities:CreditCard
+
+2026-06-14 * RideShare
+    Expenses:Transport:Rides                 $20.22
+    Liabilities:CreditCard
+
+2026-06-15 * Northwind Payroll
+    Assets:Checking                       $2,570.24 = $11,308.86
+    Expenses:Taxes:Income                   $812.46
+    Expenses:Health:Insurance               $142.30
+    Assets:Retirement:401k                  $225.00
+    Income:Salary                        $-3,750.00
+
+2026-06-17 * Green Basket Market
+    Expenses:Food:Groceries                  $85.61
+    Liabilities:CreditCard
+
+2026-06-19 * Taco Cart
+    Expenses:Food:Dining                     $18.74
+    Liabilities:CreditCard
+
+2026-06-20 * Brightline Brokerage  ; monthly buy
+    Assets:Brokerage                 5.7582 ACME @@ $300.00
+    Assets:Checking
+
+2026-06-24 * Green Basket Market
+    Expenses:Food:Groceries                 $100.09
+    Liabilities:CreditCard
+
+2026-06-26 * Card payment
+    Liabilities:CreditCard                  $689.97 = $0.00
+    Assets:Checking
+
+2026-06-26 * Brightline Brokerage  ; dividend
+    Assets:Checking                          $11.84
+    Income:Dividends
+
+2026-06-27 * Osteria Lume
+    Expenses:Food:Dining                     $56.94
+    Liabilities:CreditCard
+
+2026-06-27 * Transfer to savings
+    Assets:Savings                          $500.00
+    Assets:Checking
+
+2026-06-30 * Northwind Payroll
+    Assets:Checking                       $2,570.24 = $12,400.97
+    Expenses:Taxes:Income                   $812.46
+    Expenses:Health:Insurance               $142.30
+    Assets:Retirement:401k                  $225.00
+    Income:Salary                        $-3,750.00
+
+2026-06-30 * Harbor Savings  ; interest, 4.10% a year
+    Assets:Savings                           $52.04 = $15,284.18
+    Income:Interest
