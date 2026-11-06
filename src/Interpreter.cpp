@@ -2016,22 +2016,34 @@ std::string Interpreter::mainUsage() {
         return (!n.empty() && (n[0] == '$' || n[0] == '@' || n[0] == '%' || n[0] == '&'))
              ? n.substr(1) : n;
     };
+    // every name an option answers to, outermost first: `:v(:verbose(:$loud))`
+    // is v, verbose and loud, and `:f($file)` is f alone
+    auto names = [&](const Param& p) {
+        std::vector<std::string> ns{bare(p)};
+        for (auto& k : p.aliasKeys) ns.push_back(k);
+        if (p.aliasBoth && p.name.size() > 1 && p.name[1] != '!' && p.name[1] != '.') ns.push_back(p.name.substr(1));
+        std::vector<std::string> out;
+        for (auto& n : ns) if (!n.empty() && std::find(out.begin(), out.end(), n) == out.end()) out.push_back(n);
+        return out;
+    };
+    // Without %*SUB-MAIN-OPTS<named-anywhere> the options must come first on
+    // the command line, and Rakudo's usage line says so; with it, the
+    // positionals lead. Either way a REQUIRED option is listed before the
+    // optional ones. (The option list underneath keeps declaration order.)
+    const bool positionalsFirst = mainNamedAnywhere();
     for (auto& cand : cands) {
         if (!cand.code() || !cand.code()->ci().params) continue;
         std::string line = "  " + (progName().empty() ? std::string("<program>") : progName());
-        // Rakudo lists the OPTIONS first and the positionals after, whatever
-        // order they were declared in — so the two are collected separately and
-        // joined below. (The option list underneath keeps declaration order.)
-        std::string named, positional;
+        std::string named, namedOpt, positional;
         for (auto& p : *cand.code()->ci().params) {
             std::string label;
             if (p.litVal) { positional += " " + eval(p.litVal.get()).toStr(); continue; }
             if (p.named) {
-                // A one-character name is a SHORT option: `-x`, not `--x`. An
-                // untyped one takes `[=Any]`, a typed one `=<Type>`, and a Bool
-                // takes nothing at all because its presence is the value.
-                std::string nm = bare(p);
-                label = (nm.size() == 1 ? "-" : "--") + nm;
+                // A one-character name is a SHORT option: `-x`, not `--x`, and
+                // each alias is listed, `-f|--file`. An untyped one takes
+                // `[=Any]`, a typed one `=<Type>`, and a Bool takes nothing at
+                // all because its presence is the value.
+                for (auto& nm : names(p)) label += (label.empty() ? "" : "|") + std::string(nm.size() == 1 ? "-" : "--") + nm;
                 // A type that would take the bare flag (`--h` is True, and a
                 // Bool is an Int, a Cool, an Any) leaves the value optional:
                 // `[=Int]`, `[=S]` for a subset of Any; Str, Num and their
@@ -2051,7 +2063,7 @@ std::string Interpreter::mainUsage() {
                 // a REQUIRED named param (`:$foo!` or `is required`) prints
                 // without the optionality brackets, as in Rakudo (issue #17)
                 if (p.required) named += " " + label;
-                else named += " [" + label + "]";
+                else namedOpt += " [" + label + "]";
             }
             else if (p.slurpy) { label = "[<" + bare(p) + "> ...]"; positional += " " + label; }
             else if (p.optional || p.defaultVal) { label = "[<" + bare(p) + ">]"; positional += " " + label; }
@@ -2069,7 +2081,8 @@ std::string Interpreter::mainUsage() {
                 opts.push_back({label, p.pod, def});
             }
         }
-        line += named + positional;
+        named += namedOpt;
+        line += positionalsFirst ? positional + named : named + positional;
         // …and the routine's own `#|` becomes the candidate's description.
         if (!cand.code()->cold().pod.empty()) line += " -- " + cand.code()->cold().pod;
         out += line + "\n";

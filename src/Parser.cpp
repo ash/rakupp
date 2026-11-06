@@ -12359,6 +12359,7 @@ std::vector<Param> Parser::parseSignature(Tok closeTok) {
             }
             parseParamTraits(p); // the same ladder as a plain parameter's (`is required`, `is encoded(…)`)
             if (matchOp("=")) p.defaultVal = parseExpr(BP_ASSIGN);
+            claimPod(params.size()); if (paramLine > sigOwnerLine_) p.pod = leadingPodAt(paramTok);   // its `#=`, or a `#|` above
             params.push_back(std::move(p));
             if (!matchKind(Tok::Comma) && !matchKind(Tok::Semicolon)) break;
             continue;

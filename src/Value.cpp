@@ -164,6 +164,8 @@ static StrCensusDump g_strCensusDump;
 
 namespace rakupp {
 
+extern Interpreter* g_revInterp;   // a typed exception's attributes (Str of a zero-denominator Rat)
+
 // ---- strings that share a growable buffer (StrBuf in Value.h) -------------
 namespace {
 // Shorter results stay flat: a view costs a body, a view record and a later
@@ -936,11 +938,15 @@ std::string Value::toStr() const {
         }
         case VT::Rat:
             // Rakudo dies on Str-coercing a zero-denominator Rat, naming the
-            // numerator (normalised to 1 or -1) unless it is 0
-            if (ratN() && ratD() && ratD()->isZero())
-                throw RakuError{Value::typeObj("X::Numeric::DivideByZero"),
-                                "Attempt to divide " + (ratN()->isZero() ? std::string() : ratN()->toString() + " ") +
-                                "by zero when coercing Rational to Str"};
+            // numerator (normalised to 1 or -1) unless it is 0 — and the
+            // exception carries it, as `$!.numerator` (S32-num/rat.t)
+            if (ratN() && ratD() && ratD()->isZero()) {
+                std::string msg = "Attempt to divide " + (ratN()->isZero() ? std::string() : ratN()->toString() + " ") +
+                                  "by zero when coercing Rational to Str";
+                throw RakuError{g_revInterp ? g_revInterp->makeTypedEx("X::Numeric::DivideByZero",
+                                                                       {{"numerator", Value::bigint(*ratN())}}, msg)
+                                            : Value::typeObj("X::Numeric::DivideByZero"), msg};
+            }
             return (ratN() && ratD()) ? ratToStr(*ratN(), *ratD(), fatRat()) : "0";
         case VT::Str:  return s;
         // IterationEnd is a SENTINEL, not a type object — it stringifies bare.

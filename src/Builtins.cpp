@@ -4823,9 +4823,10 @@ Value makeSignature(const Callable* c) {
     }
     // A routine with NO written signature has the one its body implies: its
     // placeholders (`sub c { $^a }` is `($a)`) and, for `@_` / `%_`, the implicit
-    // slurpies (`(*@_, *%_)`)
+    // slurpies (`(*@_, *%_)`) — an anonymous `sub { @_ }` too, whose hadSig is
+    // the empty signature such a sub otherwise has, not one it wrote
     std::vector<Param> synth;
-    if (ps.empty() && c && !c->cold().hasPrimed && !c->ci().hadSig &&
+    if (ps.empty() && c && !c->cold().hasPrimed && (!c->ci().hadSig || c->ci().implicitArgs) &&
         (!c->ci().placeholders.empty() || c->ci().implicitArgs)) {
         synth.reserve(c->ci().placeholders.size() + 2);
         for (auto& ph : c->ci().placeholders) {

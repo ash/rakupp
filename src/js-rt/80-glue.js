@@ -86,8 +86,39 @@ function isaSubset(v, t) {
     if (t.defConstraint === 1 && !defined(v)) return false;
     return t.check ? truthy(t.check(v)) : true;
 }
-// *@args flattening: one level of iterables
-function slurpyFlat(items) { const out = []; for (const x of items) { if (x !== null && typeof x === 'object' && x.item === true) out.push(x); else if (x instanceof RList && x.ty !== T.Array || x instanceof RSeq || x instanceof RRange || x instanceof RSlip) out.push(...listItems(x)); else if (x instanceof RList) out.push(...x.a); else out.push(x); } return out; }
+// *@args flattening, as the interpreter's slurpySpread: THROUGH Lists, Seqs,
+// Ranges and Slips (`f((1, (2, 3)))` binds three), a Hash or a Map as its
+// Pairs, and an Array's elements whole, each being in its own container
+// (`f([[1, 2], [3, 4]])` binds two Arrays). Anything itemized stays whole but
+// a Slip, which is for dissolving. It went one level only and passed a Hash
+// whole, so `f((%h, 1))` bound the Hash.
+function slurpyFlat(items) {
+    const out = [];
+    const spreads = (x) => x instanceof RSlip || (x !== null && typeof x === 'object' && x.item !== true &&
+        (x instanceof RList || x instanceof RSeq || x instanceof RRange || (x instanceof RHash && (x.ty === T.Hash || x.ty === T.Map))));
+    const spread = (x) => {
+        if (x instanceof RHash) out.push(...x.pairs());
+        else if (x instanceof RList && x.ty === T.Array) out.push(...x.a);
+        else for (const e of listItems(x)) { if (spreads(e)) spread(e); else out.push(e); }
+    };
+    for (const x of items) { if (spreads(x)) spread(x); else out.push(x); }
+    return out;
+}
+// +@args, the single-argument rule: one Iterable argument is its elements, one
+// level (a Hash its Pairs); a Set, a Bag, anything itemized, or several
+// arguments bind as they came
+function slurpyOne(items) {
+    if (items.length !== 1) return items;
+    const x = items[0];
+    if (x instanceof RHash) return x.item !== true && (x.ty === T.Hash || x.ty === T.Map) ? x.pairs() : items;
+    if (x instanceof RSlip || (x !== null && typeof x === 'object' && x.item !== true && (x instanceof RList || x instanceof RSeq || x instanceof RRange)))
+        return itemsOf(x).slice();
+    return items;
+}
+// the implicit @_ is a *@_, and binds as one — but a lazy argument stays whole
+function atUnderArgs(items) {
+    return items.flatMap(x => (x instanceof RSeq && x.lazy) || (x instanceof RRange && x.isInfinite()) ? [x] : slurpyFlat([x]));
+}
 function vivArray(v) { return (v instanceof RType || v === undefined) ? mkArray([]) : v; }
 function withOf(c, ty) { c.of = ty; if (c instanceof RList) c.a = c.a.map(x => x === Any ? ty : checkOf(c, x)); else if (c instanceof RHash) for (const [k, v] of c.m) c.m.set(k, v === Any ? ty : checkOf(c, v)); return c; }   // what is already inside must fit too; an empty slot is the element type
 function isAny(v) { return v !== Mu && !(v instanceof RJunction); }
@@ -125,4 +156,4 @@ function userPrefix(f, builtin, a) {
     try { return f(a); } catch (e) { if (e instanceof RakuError && e.type === 'X::Multi::NoMatch') return builtin(a); throw e; }
 }
 Object.assign(R, { userInfix, userInfixAssign, userPrefix });
-Object.assign(R, { vivArray, withOf, isAny, RSig, blk, wc, callCode, rwBox, throwCtl, xxThunk, namedFromHash, kvAdverb, pAdverb, mcSet, meta, coerce, dynGet, dynSet, approxEq, rangeIter, subset, slurpyFlat, factorial, isaSubset });
+Object.assign(R, { slurpyOne, atUnderArgs, vivArray, withOf, isAny, RSig, blk, wc, callCode, rwBox, throwCtl, xxThunk, namedFromHash, kvAdverb, pAdverb, mcSet, meta, coerce, dynGet, dynSet, approxEq, rangeIter, subset, slurpyFlat, factorial, isaSubset });

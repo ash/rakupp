@@ -4673,44 +4673,6 @@ void Interpreter::typeCheckBindImpl(const Param& p, const Value& v, bool blockPa
         p.type + " but got " + v.typeName() + " (" + typeCheckRepr(v) + ")");
 }
 
-// `*@a` — what one argument contributes to a flattening slurpy (see the
-// binder's 'f' arm, and scoreCandidate, whose `where` on the slurpy must see
-// the same list). Flattening walks THROUGH lists and stops at an ARRAY's
-// elements, because each sits in its own Scalar container: `f([[1,2],[3,4]])`
-// binds two Arrays, not four Ints, while `f((1,(2,3)))` binds three Ints. A
-// SLIP flattens even when itemized — that is the whole of what a Slip is for.
-// Every other itemized value is left whole.
-static void slurpySpread(const Value& x, ValueList& out) {
-    auto isSlip = [](const Value& e) { return e.t == VT::Array && e.arr() && e.s == "Slip"; };
-    if (!(isSlip(x) || (!x.itemized && (x.t == VT::Array || x.t == VT::Range)))) {
-        out.push_back(x);
-        return;
-    }
-    std::function<void(const Value&)> spread = [&](const Value& v) {
-        forceLazy(v);                                // a gather: its elements
-        if (v.t != VT::Array || !v.arr()) {          // a Range: expand it whole
-            for (auto& e : v.flatten()) out.push_back(e);
-            return;
-        }
-        // A SHAPED array's elements are its LEAVES, not its rows: `my @m[3;2]`
-        // binds six values to `*@a`, the same six `my @flat = @m` stores.
-        if (isMultiDimShaped(v)) { shapedLeaves(v, out); return; }
-        // An ARRAY's elements each sit in a Scalar container, so they go in
-        // whole, a List or a Range among them too: `my @m = (1,2),(3,4); f(@m)`
-        // binds two Lists, and Cro's WebSocket test hands `*@checks` an
-        // `[(…), (…)]` of per-frame check lists. A LIST's elements are bare,
-        // so an Iterable among them — an Array as well — flattens on:
-        // `f((1, [2, 3]))` binds three.
-        const bool containers = !v.isList && !isSlip(v);
-        for (auto& e : *v.arr()) {                   // one level, then decide
-            if (!containers && (isSlip(e) || (!e.itemized && (e.t == VT::Range || (e.t == VT::Array && e.arr())))))
-                spread(e);
-            else out.push_back(e);
-        }
-    };
-    spread(x);
-}
-
 // A slurpy argument that is lazy as Rakudo means it, an endless Range or a
 // lazy list: the list to pull its elements from, and whether it ever ends.
 static bool slurpyLazySource(Interpreter& I, const Value& x, Value& src, bool& endless) {
@@ -4732,7 +4694,7 @@ static bool slurpyLazySource(Interpreter& I, const Value& x, Value& src, bool& e
 // as the slurpy is read. Spreading it read 10,000 elements of `1..*` and
 // stopped there, so `@a.elems` answered 10000 and `@a.is-lazy` False. False,
 // and `into` left alone, when `args[from]` is not lazy.
-static bool slurpyLazyTail(Interpreter& I, const ValueList& args, size_t from, Value& into) {
+bool slurpyLazyTail(Interpreter& I, const ValueList& args, size_t from, Value& into) {
     Value src;
     bool endless = false;
     if (!slurpyLazySource(I, args[from], src, endless)) return false;
@@ -5216,17 +5178,8 @@ void Interpreter::bindParams(const std::vector<Param>& params, ValueList& args,
                     const bool loneSeq = remaining == 1 && !capture && positional[pi].t == VT::Array &&
                                          positional[pi].isList && positional[pi].s == "Seq";
                     if (lazyTail) pi++;
-                    else if (remaining == 1 && (isSlip(positional[pi]) || loneSeq ||
-                                           (!positional[pi].itemized &&
-                                            (positional[pi].t == VT::Array || positional[pi].t == VT::Range)))) {
-                        // the lone Iterable's ELEMENTS, one level: `f((1, (2, 3)))`
-                        // binds 1 and (2, 3) — iterating is not flattening
-                        const Value& only = positional[pi];
-                        forceLazy(only);   // a gather: its elements
-                        if (only.t == VT::Array && only.arr() && !isMultiDimShaped(only))
-                            for (auto& x : *only.arr()) a.arr()->push_back(x);
-                        else
-                            for (auto& x : only.flatten()) a.arr()->push_back(x);
+                    else if (remaining == 1 && (loneSeq || slurpyLoneIterable(positional[pi]))) {
+                        slurpyLoneElements(positional[pi], *a.arr());   // the lone Iterable's ELEMENTS
                         if (loneSeq) a.isList = true;
                         pi++;
                     } else {
@@ -6727,9 +6680,6 @@ int Interpreter::scoreCandidate(const Value& cand, const ValueList& args,
         const bool capture = slurpyParam->sigil == '\\' && kind == 0;
         const size_t rest = pos.size() > total ? pos.size() - total : 0;
         auto isSlip = [](const Value& e) { return e.t == VT::Array && e.arr() && e.s == "Slip"; };
-        auto iterable = [&](const Value& e) {
-            return isSlip(e) || (!e.itemized && (e.t == VT::Array || e.t == VT::Range));
-        };
         if (!capture && rest == 1 && kind != 'n' && pos[total].t == VT::Array && !pos[total].itemized &&
             seqIsLazy(pos[total]))
             lst = pos[total];
@@ -6739,14 +6689,9 @@ int Interpreter::scoreCandidate(const Value& cand, const ValueList& args,
                 slurpySpread(pos[i], *lst.arr());
             }
         else if (kind == '1' && slurpyParam->sigil == '@' && rest == 1 && slurpyLazyTail(*this, pos, total, lst)) {}
-        else if (kind != 'n' && !capture && rest == 1 && iterable(pos[total])) {
-            const Value& only = pos[total];   // the single-argument rule: its elements, one level
-            forceLazy(only);
-            if (only.t == VT::Array && only.arr() && !isMultiDimShaped(only))
-                for (auto& x : *only.arr()) lst.arr()->push_back(x);
-            else
-                for (auto& x : only.flatten()) lst.arr()->push_back(x);
-        } else
+        else if (kind != 'n' && !capture && rest == 1 && slurpyLoneIterable(pos[total]))
+            slurpyLoneElements(pos[total], *lst.arr());   // the single-argument rule
+        else
             for (size_t i = total; i < pos.size(); i++) {
                 if (!capture && isSlip(pos[i])) for (auto& e : *pos[i].arr()) lst.arr()->push_back(e);
                 else lst.arr()->push_back(pos[i]);
@@ -9053,15 +8998,11 @@ Value Interpreter::callCallableRaw(const Value& codeVal, ValueList args, const s
         return c.ci().builtin(*this, args);
     }
 
-    // Implicit @_ is a flattening slurpy (*@_): list-flavored args (Seq/List
-    // tuples, e.g. from X/Z) spread one level; itemized [..] arrays stay nested.
-    auto slurpyArgs = [](const ValueList& as) {
-        ValueList out;
-        for (auto& a : as) {
-            if (a.t == VT::Array && a.isList && a.arr())
-                out.insert(out.end(), a.arr()->begin(), a.arr()->end());
-            else out.push_back(a);
-        }
+    // Implicit @_ is a flattening slurpy (*@_), and binds as `*@a` does: `f(@x)` is
+    // @x's elements, `f(%h)` its Pairs, and `f(1..*)` a lazy list (Rakudo's).
+    auto slurpyArgs = [this](const ValueList& as) {
+        Value out = Value::array();
+        for (size_t i = 0; i < as.size() && !slurpyLazyTail(*this, as, i, out); i++) slurpySpread(as[i], *out.arr());
         return out;
     };
 
@@ -9371,7 +9312,7 @@ Value Interpreter::callCallableRaw(const Value& codeVal, ValueList args, const s
             }
             else
                 for (size_t i = k2; i < args.size(); i++) rest.push_back(args[i]);
-            env->define("@_", Value::array(slurpyArgs(rest)));
+            env->define("@_", slurpyArgs(rest));
             if (c.ci().implicitArgs & 2) env->define("%_", h);
         }
         // (and a body that reads neither has no `@_` — its signature is the
@@ -9406,12 +9347,12 @@ Value Interpreter::callCallableRaw(const Value& codeVal, ValueList args, const s
                 else posOnly.push_back(a);
             }
             env->define("%_", h);
-            env->define("@_", Value::array(slurpyArgs(posOnly)));
+            env->define("@_", slurpyArgs(posOnly));
         }
         // (and only for a block that can read it: Rakudo gives a block an
         // `@_` only when it mentions one — blockTakesAtArgs)
         else if ((sixE() || !(c.ci().isBlock && args.empty())) && blockTakesAtArgs(c))
-            env->define("@_", Value::array(slurpyArgs(args)));
+            env->define("@_", slurpyArgs(args));
     }
     auto saved = tcx.cur;
     Env* savedState = tcx.curStateEnv;

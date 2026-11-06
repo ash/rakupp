@@ -94,7 +94,7 @@ function baseRepeating(v, radix = 10) {
     if (!(x instanceof RRat)) throw new RakuError(`No such method 'base-repeating' for invocant of type '${typeName(x)}'`, 'X::Method::NotFound');
     const b = Number(toInt(radix));
     if (b < 2 || b > 36) throw new RakuError(`Radix ${b} out of range (allowed: 2..36)`, 'X::Syntax::Number::RadixOutOfRange');
-    if (x.d === 0n) throw new RakuError('Attempt to divide by zero when coercing Rational to Str', 'X::Numeric::DivideByZero');
+    if (x.d === 0n) throw ratDivideByZero(x, 'coercing Rational to Str');
     const bb = BigInt(b), neg = x.n < 0n, a = neg ? -x.n : x.n, d = x.d;
     const whole = (neg ? '-' : '') + (a / d).toString(b).toUpperCase();
     let rem = a % d;

@@ -1867,8 +1867,8 @@ struct JsGen {
             if (slashFromTopic) { fn().slashParam = true; fn().usesSlash = true; line(2, "let v__slash = R.isMatch(" + newT + ") ? " + newT + " : _sl;"); }
             bool bindsTopic = false;
             for (auto& p : params) if (p.name == "$/") fn().slashParam = true;
-            if (usesArgs) { paramList = "..._args"; line(2, "let " + mangleVar("@_") + " = R.mkArray(R.splitArgs(_args)[0]);"); }
-            if (restPos) line(2, "let " + mangleVar("@_") + " = R.mkArray(R.splitArgs(_rest)[0]);");
+            if (usesArgs) { paramList = "..._args"; line(2, "let " + mangleVar("@_") + " = R.mkArray(R.atUnderArgs(R.splitArgs(_args)[0]));"); }
+            if (restPos) line(2, "let " + mangleVar("@_") + " = R.mkArray(R.atUnderArgs(R.splitArgs(_rest)[0]));");
             if (restNamed) line(2, "let " + mangleVar("%_") + " = R.mkHash(new Map(R.splitArgs(_rest)[1]));");
             if (!params.empty()) {
                 // a pointy block's / anonymous sub's params: the same binder subs use
@@ -2667,7 +2667,7 @@ struct JsGen {
                 // to be paired up into it and died on an odd count.
                 if (sig == '%') line(ind, "let " + name + " = R.namedHash(_named, new Set([" + joinStrs(usedNamed) + "]));");
                 else if (p.slurpyKind == 'n') line(ind, "let " + name + " = R.mkArray(" + rest + ");");
-                else if (p.slurpyKind == '1') line(ind, "let " + name + " = R.mkArray(_pos.length - " + std::to_string(pi) + " === 1 ? R.itemsOf(_pos[" + std::to_string(pi) + "]).slice() : " + rest + ");");
+                else if (p.slurpyKind == '1') line(ind, "let " + name + " = R.mkArray(R.slurpyOne(" + rest + "));");
                 else line(ind, "let " + name + " = R.mkArray(R.slurpyFlat(" + rest + "));");
                 continue;
             }
@@ -2759,7 +2759,7 @@ struct JsGen {
             for (auto& p : d->params) fn().params.insert(p.name);
             for (auto& p : d->params) if (p.name == "$/") fn().slashParam = true;
             struct ScopePop { std::vector<Scope>& v; ~ScopePop() { v.pop_back(); } } scopePop{ scopes };
-            if (usesArgs) line(2, "let " + mangleVar("@_") + " = R.mkArray(R.splitArgs(_args)[0]);");
+            if (usesArgs) line(2, "let " + mangleVar("@_") + " = R.mkArray(R.atUnderArgs(R.splitArgs(_args)[0]));");
             else if (!placeholders.empty()) {
                 line(2, "const [_pos, _named] = R.splitArgs(_args);");
                 int pi = 0;
@@ -2857,7 +2857,16 @@ struct JsGen {
             for (auto& p : d->params) {
                 if (p.invocant) continue;
                 if (p.named) { if (p.required) g.push_back("_named.has(" + jsStr(p.namedKey.empty() ? p.name.substr(1) : p.namedKey) + ")"); continue; }
-                if (p.slurpy) { slurpy = true; continue; }
+                if (p.slurpy) {
+                    // a `where` on the slurpy tests the list it would bind (`*@a where *.elems == 2`)
+                    if (p.whereExpr && p.sigil != '%') {
+                        string rest = "_pos.slice(" + std::to_string(pi) + ")";
+                        string lst = p.slurpyKind == 'n' ? rest : p.slurpyKind == '1' ? "R.slurpyOne(" + rest + ")" : "R.slurpyFlat(" + rest + ")";
+                        g.push_back("R.truthy(R.matcherOf(" + exArg(p.whereExpr.get()) + ")(R.mkArray(" + lst + ")))");
+                    }
+                    slurpy = true;
+                    continue;
+                }
                 if (p.optional || p.defaultVal) opt++; else req++;
                 string a = "_pos[" + std::to_string(pi) + "]";
                 string cond;
@@ -3253,9 +3262,18 @@ struct JsGen {
             // with any named parameter printed its usage instead of running.
             bool isNamed = p.named || (p.slurpy && p.sigil == '%');
             bool isOptional = isNamed ? !p.required : p.optional;
+            // every name a named one answers to, outermost first (`:v(:verbose(:$loud))`)
+            std::vector<string> names;
+            auto addName = [&](const string& n) { if (!n.empty() && std::find(names.begin(), names.end(), n) == names.end()) names.push_back(n); };
+            addName(name);
+            for (auto& k : p.aliasKeys) addName(k);
+            if (p.aliasBoth && p.name.size() > 1 && p.name[1] != '!' && p.name[1] != '.') addName(p.name.substr(1));
+            string aliases;
+            for (auto& n : names) aliases += (aliases.empty() ? "" : ", ") + jsStr(n);
             s += (s.empty() ? "" : ", ") + string("{ name: ") + jsStr(name) + ", named: " + (isNamed ? "true" : "false") + ", slurpy: " + (p.slurpy ? "true" : "false") +
                  ", optional: " + (isOptional ? "true" : "false") + ", hasDefault: " + (p.defaultVal ? "true" : "false") + ", type: " + (ty.empty() ? "null" : jsStr(ty)) +
                  ", isBool: " + string(ty == "Bool" ? "true" : "false") +
+                 (isNamed && names.size() > 1 ? ", aliases: [" + aliases + "]" : "") +
                  (p.litVal && p.litVal->kind == NK::StrLit ? ", lit: " + jsStr(static_cast<StrLit*>(p.litVal.get())->v) : "") +
                  // `#=` trailing declarator pod: the aligned option list under the
                  // usage line, with `[default: X]` from the default expression —

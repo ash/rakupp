@@ -129,8 +129,9 @@ function construct(ty, ...args) {
     }
     return buildObj(ty, ...args);
 }
-// Array.new(*@values): the arguments flatten as a slurpy's do — Array.new((1, 2), (3, 4)) is [1, 2, 3, 4]
-function newArgsList(args) { return slurpyFlat(args.filter(a => !(a instanceof RNamed))); }
+// Array.new(…) takes its arguments by the single-argument rule: one Iterable is its elements (a Hash its
+// Pairs), and several stay as they are — Array.new((1, 2), (3, 4)) is two Lists, Array.new(%h, 2) a Hash and a 2
+function newArgsList(args) { const pos = args.filter(a => !(a instanceof RNamed)); return pos.length === 1 ? itemsOf(pos[0]).slice() : pos.flatMap(a => a instanceof RSlip ? listItems(a) : [a]); }
 function buildObj(ty, ...args) {
     if (ty.isUser && (ty.isa(T.Array) || ty.isa(T.List)) && !ty.mro.some(t => t.attrs && t.attrs.length)) { const a = mkArray(listItems(args.length && !(args[0] instanceof RNamed) ? args[0] : []).slice()); a.ty = ty; return a; }   // class X is Array
     if (!ty.isUser) {
