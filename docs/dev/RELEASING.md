@@ -518,18 +518,24 @@ Both run sequentially inside the battery's sandbox, with HOME in a scratch
 directory. Exit 2 means they could not judge (no battery, no binary, no release)
 and is never a pass.
 
-### 6b. An adopter's gate — Raku Koans
+### 6b. An adopter's gate — koans.app's Raku koans
 
 ```bash
-git -C ~/raku-koans pull --ff-only          # once: git clone https://github.com/hankache/raku-koans.git ~/raku-koans
+git -C ~/koans-app pull --ff-only           # once: git clone https://github.com/hankache/koans-app.git ~/koans-app
 rakupp tools/koans-gate.raku                # RAKUPP=/path/to/rakupp to name the binary
 ```
 
-[Raku Koans](../../live/ADOPTIONS.md) is a course graded by Raku.js. It pins a
-Raku++ release by checksum and moves to a newer one only after its own check
-passes: every line holding a `___` fails while unfilled, and every solution
-passes. A release that breaks a koan blocks that upgrade, so this runs the same
-check on the candidate first. It takes seconds natively.
+[koans.app](../../live/ADOPTIONS.md) teaches fourteen languages with koans
+graded in the browser, and its 105 Raku koans run on Raku.js. It pins a Raku++
+release by checksum and moves to a newer one only after its own check passes:
+every line holding a `___` fails while unfilled, and every solution passes. A
+release that breaks a koan blocks that upgrade, so this runs the same check on
+the candidate first. It takes seconds natively. (Until 2026-11-06 this gate ran
+Raku Koans, the course koans.app grew out of; that course stopped at v5.0.1.)
+
+Natively the koans run as Raku.js runs them, with `RAKUPP_NO_DECLCHECK=1` and
+`RAKUPP_NO_CALLCHECK=1`: `rk_run` skips both compile-time checks, and two
+koans `dies-ok` on a call the CLI refuses before anything runs.
 
 **Red is a koan the candidate gets wrong, named.** To tell a regression from a
 koan that is new upstream, run it again with `RAKUPP=` the previous release's
@@ -537,7 +543,9 @@ binary: green there and red here is ours. Exit 2 means it could not judge (no
 checkout, no binary) and is never a pass.
 
 The same check on Raku.js itself — the bundle the course actually loads — runs
-their own harness, `node scripts/check-koans.mjs`, on a Raku.js build (Node 22+):
+their own harness, `node scripts/check-koans.mjs --lang raku`, on a Raku.js
+build (Node 22+, or Bun: `NODE=` names the binary, and without `node` on PATH
+the gate uses `bun`):
 
 ```bash
 rakujs/build.sh && rakupp tools/koans-gate.raku --rakujs=rakujs/playground

@@ -238,7 +238,7 @@ gate
           !! 'the run does NOT name the committed baseline — it may be comparing against itself' )
   };
 
-# --- 6b. an adopter's gate: Raku Koans ---------------------------------------
+# --- 6b. an adopter's gate: koans.app's Raku koans ----------------------------
 # The faithful plant is an engine that answers a koan wrongly, which costs a
 # rebuild. This wraps the real binary instead and turns the first assertion of
 # every program into `not ok` — the gate's red path and its naming, not a
@@ -246,13 +246,13 @@ gate
 # quoting it.
 gate
   id     => '6b',
-  name   => 'koans-gate (Raku Koans)',
+  name   => 'koans-gate (koans.app)',
   defect => 'an engine whose first assertion in every program comes out `not ok`',
   cost   => '~10 s',
   run    => sub {
-      my $koans = (%*ENV<RAKU_KOANS> // ((%*ENV<HOME> // '.') ~ '/raku-koans')).IO;
-      return (Nil, "no Raku Koans checkout at $koans — clone it, or set RAKU_KOANS=")
-          unless $koans.add('koans').d;
+      my $koans = (%*ENV<KOANS_APP> // ((%*ENV<HOME> // '.') ~ '/koans-app')).IO;
+      return (Nil, "no koans.app checkout at $koans — clone it, or set KOANS_APP=")
+          unless $koans.add('languages/raku/koans').d;
       my $wrap = $*TMPDIR.add("prove-gates-koans-{$*PID}");
       my $undo = plant-file($wrap, qq:to/WRAP/);
           #!/bin/bash

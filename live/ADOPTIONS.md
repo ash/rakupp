@@ -129,20 +129,22 @@ idea is Ruby Koans'.
 A Web Worker loads Raku.js once and calls `rakupp_run` per koan, building a
 fresh instance when a run crashes. The site downloads Raku.js from a Raku++
 release and pins it by checksum — v5.4.1 as of 2026-10-30 — and its CI runs
-every koan on the pinned build, under Node.
-
-The original course is still online, pinned to v5.0.1 and unchanged since
-2026-09-30. Every Raku++ release candidate still runs that course's own check
-first: gate 6b in [RELEASING.md](../docs/dev/RELEASING.md).
+every koan on the pinned build, under Node. Every Raku++ release candidate runs
+that same check first, natively and on Raku.js: gate 6b in
+[RELEASING.md](../docs/dev/RELEASING.md). The original course is still online,
+pinned to v5.0.1 and unchanged since 2026-09-30.
 
 **Where it meets our plans.** Three koans in the original course teach code
 Rakudo refuses: two calls it rejects at compile time as ones that "will never
 work", and a `next OUTER` that it resolves differently. Builds after v5.2.1
 refuse all three the same way on the command line
-([V5-PLAN.md](../docs/dev/plans/V5-PLAN.md), B3), so gate 6b fails them. In the
-browser only `next OUTER` fails, because `rk_run`, which Raku.js calls, skips
-the CLI's compile-time checks; koans.app's loop-control koan labels that loop
-`ROW` instead. What the course had to build around — a Raku.js that runs only
+([V5-PLAN.md](../docs/dev/plans/V5-PLAN.md), B3). In the browser only
+`next OUTER` fails, because `rk_run`, which Raku.js calls, skips the CLI's
+compile-time checks, and koans.app's loop-control koan labels that loop `ROW`
+instead; gate 6b runs the koans natively with the same two checks off. Should
+`rk_run` take those checks on (a decision open in
+[TODO.md](../docs/dev/plans/TODO.md)), the two `dies-ok` koans would have to
+change. What the course had to build around — a Raku.js that runs only
 in a browser, no way to stop a running program, shallow recursion in a Web
 Worker — is under "A fresh WebAssembly build" in
 [V5-IDEAS.md](../docs/dev/plans/V5-IDEAS.md).

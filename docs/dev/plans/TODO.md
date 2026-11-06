@@ -299,7 +299,9 @@ The same items grouped by theme, with a complexity estimate for each:
   is called without declCheck, so Raku.js and every embedder run programs the
   CLI refuses (undeclared variables, #32; calls that can never bind,
   d78d1cb0). Turning it on changes the browser's behaviour, including two
-  Raku Koans solutions.
+  koans.app solutions (08-subroutines/02-signature and
+  05-slurpy-and-named-parameters, each a `dies-ok` on such a call), and gate 6b
+  would then drop the `RAKUPP_NO_*CHECK` settings it runs the koans with.
 - [ ] **V5 batches B1–B6**: only B0 (the instruments) has landed.
   [V5-PLAN.md](V5-PLAN.md).
   - B1: regressions (battery scan to 0).
@@ -838,15 +840,6 @@ with its tag, after the release run is green.
   limit by a measured speed factor, so the default run passes there too.
 - [ ] **Docker**: the ghcr.io package is still private; it is the
   maintainer's step to make it public.
-- [ ] **Gate 6b is red on three koans by design**: `next OUTER` under a label
-  named OUTER now dies as on Rakudo, so Raku Koans'
-  control-flow/loop-control-and-phasers fails `tools/koans-gate.raku` until
-  the course renames that label. And a call that can never bind is now a
-  compile-time error as on Rakudo, so 08-subroutines/02-signature
-  (`dies-ok { say-hello(42) }`) and 05-slurpy-and-named-parameters
-  (`dies-ok { needs() }`) no longer compile; their solutions need an argument
-  the compiler cannot type (`my $n = 42; say-hello($n)`) or an EVAL. How to
-  tell the course is the maintainer's call. Found 2026-10-07.
 - [ ] **`.deb`**: `tools/make-deb.raku` plus release.yml's "Debian package
   (Linux)" step, tested in Ubuntu 24.04 against the 5.2.0 layout, not yet run
   in CI. The first release that carries it makes the README and INSTALL.md

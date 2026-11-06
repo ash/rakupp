@@ -67,7 +67,7 @@ where one exists, the number that would show it works.
    - the MCP server cancels a stuck call instead of exiting, which today loses
      the session
      ([MCP.md](../../guide/integrations/MCP.md#lifetime-the-watchdog-and-restarts))
-   - Raku.js stops a run; Raku Koans kills its worker with a watchdog
+   - Raku.js stops a run; koans.app kills its worker with a watchdog
    - Jupyter's "Interrupt kernel"
    - Ctrl-C in the REPL returns to the prompt
 

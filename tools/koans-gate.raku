@@ -1,25 +1,30 @@
 #!/usr/bin/env rakupp
-# Run Raku Koans — an adopter's course — the way its own CI does, on a candidate.
+# Run koans.app's Raku koans — an adopter's course — the way its own CI does, on
+# a candidate.
 #
 #   rakupp tools/koans-gate.raku                               # native: the rakupp Gate picks
 #   RAKUPP=/path/to/rakupp rakupp tools/koans-gate.raku        # native: a named binary
 #   rakupp tools/koans-gate.raku --rakujs=rakujs/playground    # a Raku.js build, their harness
 #
-# Raku Koans (https://github.com/hankache/raku-koans, see live/ADOPTIONS.md) is
-# a course of Raku koans graded in the browser by Raku.js. It pins a Raku++
-# release by checksum and moves to a newer one only after its own check passes
-# on it: every line holding a `___` must fail while unfilled, and every solution
-# must pass. A release that breaks a koan blocks that upgrade. This runs the same
-# two checks here first.
+# koans.app (https://github.com/hankache/koans-app, see live/ADOPTIONS.md)
+# teaches fourteen languages with koans graded in the browser, and its Raku
+# koans run on Raku.js. It pins a Raku++ release by checksum and moves to a
+# newer one only after its own check passes on it: every line holding a `___`
+# must fail while unfilled, and every solution must pass. A release that breaks
+# a koan blocks that upgrade. This runs the same two checks here first. (Raku
+# Koans, the course koans.app grew out of, stopped at v5.0.1; this gate followed
+# its koans to koans.app.)
 #
 # Native is the default because it needs no WebAssembly build and takes about a
 # minute. `--rakujs=DIR` takes a directory holding rakujs.js and rakujs.wasm,
-# copies them into the checkout's public/runtime/ (git-ignored there; whatever
-# was in place is restored afterwards) and runs the checkout's own
-# `node scripts/check-koans.mjs` — byte for byte what the course runs when it
-# moves to a new release. It needs Node 22 or newer.
+# copies them into the checkout's public/runtime/raku/ (git-ignored there;
+# whatever was in place is restored afterwards) and runs the checkout's own
+# `node scripts/check-koans.mjs --lang raku` — byte for byte what the course runs
+# when it moves to a new release. It needs Node 22 or newer, or Bun, which runs
+# the same script: NODE=/path names the binary, and with neither named nor
+# `node` on PATH, `bun` is used.
 #
-# The checkout is RAKU_KOANS=/path, or ~/raku-koans. Pull it before a release:
+# The checkout is KOANS_APP=/path, or ~/koans-app. Pull it before a release:
 # upstream adds koans, and every one of them passed on the release it pins.
 #
 # RED (exit 1) is a koan the candidate gets wrong. To tell a regression from a
@@ -27,12 +32,22 @@
 # binary: green there and red here is ours. Exit 2 is "could not judge" — no
 # checkout, no binary, no node — never a pass.
 #
-# The native check is a copy of scripts/check-koans.mjs and scripts/lib/koans.mjs
-# and has to follow them if they change: the prelude folded onto one line, the
-# `# key: value` header lines dropped, `\n}\ndone-testing;\n` closing the block
-# the prelude opens, and a learner's line read back from "at web line N" as N-1.
-# It is stricter in one place: a solution must also print its plan (`1..N`), so
-# an engine that runs nothing and exits 0 cannot pass.
+# Natively the koans run as Raku.js runs them. rk_run, which Raku.js calls,
+# skips the CLI's two compile-time checks — for an undeclared variable and for a
+# call that can never bind — so RAKUPP_NO_DECLCHECK and RAKUPP_NO_CALLCHECK are
+# set: two koans `dies-ok` on such a call, which the CLI and Rakudo refuse before
+# anything runs and the browser lets die at run time, as the koans expect.
+#
+# The native check is a copy of scripts/check-koans.mjs, scripts/lib/koans.mjs
+# and languages/raku/node.mjs, and has to follow them if they change: the prelude
+# folded onto one line, the `# key: value` header lines dropped,
+# `\n}\ndone-testing;\n` closing the block the prelude opens, and a learner's
+# line read back from "at web line N" as N-1. It leaves out the checks that read
+# only the koans' text — the lint, a `___` left in a solution, a solution that
+# does not line up with its koan — since no engine changes their answer and the
+# course's own CI runs them. It is stricter in one place: a solution must also
+# print its plan (`1..N`), so an engine that runs nothing and exits 0 cannot
+# pass.
 
 use lib $?FILE.IO.parent.add('lib').Str;
 use Gate;
@@ -46,11 +61,12 @@ for @*ARGS -> $a {
     else { note "koans-gate: unknown argument: $a"; exit 2 }
 }
 
-my $KOANS = (%*ENV<RAKU_KOANS> // ((%*ENV<HOME> // '.') ~ '/raku-koans')).IO;
-unless $KOANS.add('koans').add('_prelude.raku').f {
-    note "koans-gate: no Raku Koans checkout at $KOANS — clone it:";
-    note "  git clone https://github.com/hankache/raku-koans.git $KOANS";
-    note "or set RAKU_KOANS=/path/to/raku-koans.";
+my $KOANS = (%*ENV<KOANS_APP> // ((%*ENV<HOME> // '.') ~ '/koans-app')).IO;
+my $RAKU  = $KOANS.add('languages').add('raku');
+unless $RAKU.add('prelude.raku').f {
+    note "koans-gate: no koans.app checkout at $KOANS — clone it:";
+    note "  git clone https://github.com/hankache/koans-app.git $KOANS";
+    note "or set KOANS_APP=/path/to/koans-app.";
     exit 2;
 }
 my $git = run('git', '-C', $KOANS.Str, 'log', '-1', '--format=%h %cs', :out, :err);
@@ -69,11 +85,11 @@ require-native(%PICK, :tool<koans-gate>, :verdict<INCONCLUSIVE>);
 # `RAKUPP=build/rakupp` names nothing and every koan reads as failing
 my $RAKUPP = %PICK<path>.IO.absolute;
 
-my $PRELUDE = $KOANS.add('koans').add('_prelude.raku').lines
+my $PRELUDE = $RAKU.add('prelude.raku').lines
     .map(*.trim).grep({ $_ && !.starts-with('#') }).join(' ') ~ "\n";
 
 my @koans;
-my @sections = $KOANS.add('koans').dir.grep({ .d && .basename ~~ / ^ \d+ '-' / }).sort(*.basename);
+my @sections = $RAKU.add('koans').dir.grep({ .d && .basename ~~ / ^ \d+ '-' / }).sort(*.basename);
 for @sections -> $sec {
     my $sid = $sec.basename.subst(/ ^ \d+ '-' /, '');
     my @files = $sec.dir.grep({
@@ -92,7 +108,7 @@ for @sections -> $sec {
 }
 
 say provenance-line('koans-gate', %PICK);
-say "koans-gate: Raku Koans at $KOANS ($REV), {@koans.elems} koans";
+say "koans-gate: koans.app at $KOANS ($REV), {@koans.elems} Raku koans";
 
 # Two koans write under /tmp, which the browser keeps in memory. Natively they
 # are real files: note which of the paths the koans name exist now, and remove
@@ -105,13 +121,16 @@ my $WORK = $*TMPDIR.add("koans-gate-{$*PID}");
 $WORK.mkdir;
 my $PROG = $WORK.add('koan.raku');
 
+# rk_run's semantics: neither compile-time check (see the top of this file)
+my %ENV-RKRUN = |%*ENV, RAKUPP_NO_DECLCHECK => 1, RAKUPP_NO_CALLCHECK => 1;
+
 sub run-koan(Str $src --> Hash) {
     $PROG.spurt($src);
     my $proc = Proc::Async.new($RAKUPP, $PROG.Str);
     my ($out, $err) = '', '';
     $proc.stdout.tap(-> $c { $out ~= $c });
     $proc.stderr.tap(-> $c { $err ~= $c });
-    my $done = $proc.start(:cwd($WORK.Str));
+    my $done = $proc.start(:cwd($WORK.Str), :ENV(%ENV-RKRUN));
     await Promise.anyof($done, Promise.in(CAP));
     # string compare, as tools/run-roast.raku does — smartmatching the enum is unreliable
     if $done.status ne 'Kept' {
@@ -187,15 +206,27 @@ sub rakujs-check(IO::Path $dir --> Int) {
         note "koans-gate: no $n in $dir — build Raku.js first (rakujs/build.sh).";
         return 2;
     }
-    my $nv = try run('node', '--version', :out, :err);
-    my $node = $nv ?? $nv.out.slurp(:close).trim !! '';
-    $nv.err.slurp(:close) if $nv;
-    unless $node ~~ / ^ 'v' (\d+) / && +$0 >= 22 {
-        note "koans-gate: --rakujs needs Node 22 or newer on PATH (found: {$node || 'none'}).";
+    # NODE= names the runtime; else node, else bun, which runs the script too
+    my ($js, $node);
+    for %*ENV<NODE> ?? (%*ENV<NODE>,) !! <node bun> -> $cand {
+        my $v = try run($cand, '--version', :out, :err);
+        next unless $v;
+        my $ver = $v.out.slurp(:close).trim;
+        $v.err.slurp(:close);
+        next unless $ver;
+        ($js, $node) = $cand, $ver;
+        last;
+    }
+    my $is-bun = $js.defined && $js.IO.basename eq 'bun';
+    unless $node && ($is-bun ?? $node ~~ / ^ \d+ '.' /
+                             !! $node ~~ / ^ 'v' (\d+) / && +$0 >= 22) {
+        note "koans-gate: --rakujs needs Node 22 or newer, or Bun, on PATH or named "
+           ~ "by NODE= (found: {$node ?? "$js $node" !! 'none'}).";
         return 2;
     }
+    $node = ($is-bun ?? 'bun ' !! 'node ') ~ $node;
 
-    my $rt = $KOANS.add('public').add('runtime');
+    my $rt = $KOANS.add('public').add('runtime').add('raku');
     my %saved = @need.map({ $_ => ($rt.add($_).f ?? $rt.add($_).slurp(:bin) !! Buf) });
     LEAVE {
         for @need -> $n {
@@ -205,9 +236,9 @@ sub rakujs-check(IO::Path $dir --> Int) {
     }
     $rt.add($_).spurt($dir.add($_).slurp(:bin)) for @need;
 
-    say "koans-gate: Raku.js from $dir, node $node";
-    say "koans-gate: Raku Koans at $KOANS ($REV), through scripts/check-koans.mjs";
-    my $p = run('node', 'scripts/check-koans.mjs', :cwd($KOANS.Str), :out, :err);
+    say "koans-gate: Raku.js from $dir, $node";
+    say "koans-gate: koans.app at $KOANS ($REV), through scripts/check-koans.mjs --lang raku";
+    my $p = run($js, 'scripts/check-koans.mjs', '--lang', 'raku', :cwd($KOANS.Str), :out, :err);
     my $out = $p.out.slurp(:close);
     my $err = $p.err.slurp(:close);
     my $rc  = $p.exitcode;

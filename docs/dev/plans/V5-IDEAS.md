@@ -90,15 +90,16 @@ a planted exfiltration in a test file fails closed, gated.
 - **A fresh WebAssembly build.** The engine behind `--fallback=wasm` is a July
   build; the playground cannot load a module (planned in
   [V6-PLAN.md](V6-PLAN.md), P7). WASI would make one artifact run
-  in every runtime rather than only a browser. Raku Koans
+  in every runtime rather than only a browser. koans.app
   ([live/ADOPTIONS.md](../../../live/ADOPTIONS.md)) builds on the released
   Raku.js and works around three things it lacks: the release is
   `web,worker` only, so its CI loads it under Node through Emscripten's
   `instantiateWasm` (a `RAKUJS_ENV=node` build exists and is not released);
   `rakupp_run()` cannot be stopped by the host, so a watchdog kills the
-  worker; and recursion in a Web Worker ends at 59 levels in Chrome and 32 in
-  Safari ([rakujs/INTERNALS.md](../../../rakujs/INTERNALS.md)), with no
-  main-thread retry of the kind the playground has.
+  worker; and recursion in a Web Worker is shallow — 59 levels in Chrome and
+  32 in Safari on v4.0.1 ([rakujs/INTERNALS.md](../../../rakujs/INTERNALS.md)),
+  1,000 in Chrome and 2,000 in Firefox on v5.4.1 by koans.app's own measure —
+  with no main-thread retry of the kind the playground has.
 - **More hosts on the one C API.** The JavaScript binding is Bun-only
   (`bun:ffi`); Node needs N-API. Emacs Lisp is requested (issue #44, with
   raku-mode and org-babel named). Ruby, PHP, Java, .NET, Swift and Lua each cost
@@ -242,7 +243,7 @@ Android are in §7.
 - **Small hardware.** GPIO on a Raspberry Pi through NativeCall to libgpiod;
   an OpenWrt package for ARM and RISC-V routers.
 - **After the sandbox (§6).** A grader image for courses and self-hosted
-  judges (Raku Koans in [live/ADOPTIONS.md](../../../live/ADOPTIONS.md) has
+  judges (koans.app in [live/ADOPTIONS.md](../../../live/ADOPTIONS.md) has
   the test-driven shape already); a Discord or Matrix bot that runs snippets;
   user scripting inside other applications.
 
