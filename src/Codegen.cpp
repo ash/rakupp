@@ -988,6 +988,20 @@ struct Codegen {
         if (moduleMode_ || param || n[1] == '!' || n[1] == '.' || !plainArrays_.count(n)) return ask = true, ix;
         return nullptr;
     }
+    // …and whether a `for` over `e` may hand out a native array's elements,
+    // by the same knowledge: an array declared plain here never does, nor does
+    // a literal list or Range (the loop then pays no per-element tag check)
+    bool mayBeNativeArray(Expr* e) {
+        if (!e || e->kind == NK::ListExpr || e->kind == NK::Range || e->kind == NK::IntLit) return false;
+        if (e->kind != NK::VarExpr) return true;
+        auto* v = static_cast<VarExpr*>(e);
+        const std::string& n = v->name;
+        if (n.size() < 2 || n[0] == '%' || n[0] == '&') return false;
+        if (n[0] != '@' || moduleMode_ || nativeArrayBase(v)) return true;   // (a `$` may hold one)
+        bool param = false;
+        if (curParams_) for (const Param& p : *curParams_) param = param || p.name == n;
+        return param || n[1] == '!' || n[1] == '.' || !plainArrays_.count(n);
+    }
     // …its element stepped: the value the step answers (the old one for a postfix)
     std::string nativeElemStep(Index* ix, bool ask, bool up, bool postfix) {
         noteIndexWrite(ix->base.get());
@@ -1458,17 +1472,59 @@ struct Codegen {
     }
 
     static bool isSlip(Expr* e) { return e->kind == NK::Unary && static_cast<Unary*>(e)->op == "|" && !static_cast<Unary*>(e)->postfix; }
-    std::string argList(const std::vector<ExprPtr>& args) {
+    std::string argList(const std::vector<ExprPtr>& args, bool natElems = false) {
         std::string s;
         for (size_t i = 0; i < args.size(); i++) {
             if (i) s += ", ";
             // A |slip in a list literal splices ONE level via listToArray — nested
             // arrays stay single elements (rtSlipShallow marks, doesn't flatten).
             // Deep flattening is call-arg semantics (argsVL/rtSpreadArg), not this.
+            // (natElems: a List literal keeps a native element native, natElemArg)
             s += isSlip(args[i].get()) ? "rtSlipShallow(" + ex(static_cast<Unary*>(args[i].get())->operand.get()) + ")"
-                                       : exArg(args[i].get());
+                 : natElems ? natElemArg(args[i].get(), exArg(args[i].get())) : exArg(args[i].get());
         }
         return s;
+    }
+    // An element of a native array goes out as the native it holds, as the
+    // interpreter's evalArgs hands it on (rtNatElem; nativeIndexTag)
+    std::string natElemArg(Expr* e, std::string code) {
+        if (e->kind != NK::Index) return code;
+        auto* ix = static_cast<Index*>(e);
+        if (ix->isHash || !ix->adverb.empty() || !ix->base || ix->base->kind != NK::VarExpr) return code;
+        const std::string& n = static_cast<VarExpr*>(ix->base.get())->name;
+        if (n.size() < 2 || n[0] != '@') return code;
+        return "rtNatElem(RT, " + ex(ix->base.get()) + ", " + code + ")";
+    }
+    // A NATIVE parameter's family, as a multi dispatches on it (rtNatArg): 'i' a
+    // signed int, 'u' an unsigned one, 'n' a num; 0 for anything else, `str` too
+    static char natParamKind(const std::string& t) {
+        if (t == "num" || t == "num32" || t == "num64") return 'n';
+        if (t == "int" || t == "int8" || t == "int16" || t == "int32" || t == "int64" || t == "atomicint") return 'i';
+        if (t == "uint" || t == "uint8" || t == "uint16" || t == "uint32" || t == "uint64" || t == "byte") return 'u';
+        return 0;
+    }
+    static int natParamCount(const SubDecl* s) {
+        int n = 0;
+        for (auto& p : s->params) if (!p.invocant && !p.named && !p.slurpy && natParamKind(p.type)) n++;
+        return n;
+    }
+    // Two candidates with natives of ONE family but different widths at one
+    // position (`int8` beside `int`) are equally narrow, and the interpreter
+    // calls a native argument's call ambiguous: it decides such a group
+    static bool nativeWidthTie(const std::vector<SubDecl*>& cands) {
+        auto natAt = [](const SubDecl* s) {
+            std::vector<const Param*> v;
+            for (auto& p : s->params) if (!p.invocant && !p.named && !p.slurpy) v.push_back(&p);
+            return v;
+        };
+        for (size_t x = 0; x < cands.size(); x++)
+            for (size_t y = x + 1; y < cands.size(); y++) {
+                auto a = natAt(cands[x]), b = natAt(cands[y]);
+                for (size_t i = 0; i < a.size() && i < b.size(); i++)
+                    if (natParamKind(a[i]->type) && natParamKind(a[i]->type) == natParamKind(b[i]->type) &&
+                        a[i]->type != b[i]->type) return true;
+            }
+        return false;
     }
     // An argument expression: a syntactic `k => v` / `:k(v)` with an identifier key
     // is a NAMED argument (mirrors evalArgs, through the shared syntacticNamedPair:
@@ -1483,7 +1539,7 @@ struct Codegen {
                 return "rtNamedPair(" + cesc(pr->key) + ", " + val + ")";
             }
         }
-        return exArg(a);
+        return natElemArg(a, exArg(a));
     }
     // Full ValueList expression for call arguments; |slips spread positionally
     // (arrays/ranges) or as named args (hashes), like the interpreter's evalArgs.
@@ -2028,8 +2084,13 @@ struct Codegen {
             return nullptr;
         return &p;
     }
-    static std::string bindAs(char sigil, const std::string& init) {
-        if (sigil == '$') return "itemizedScalar(" + init + ")";
+    // (a `$` one boxes a native, as the interpreter's binder does — a
+    // parameter, a placeholder, a loop variable — and a native one, `nat` its
+    // natParamKind, holds the native: rtNatItem tags what rtTypedFast passed)
+    static std::string bindAs(char sigil, const std::string& init, char nat = 0) {
+        if (sigil == '$')
+            return nat == 'i' || nat == 'n' ? "rtNatItem(" + init + ", '" + nat + "')"
+                 : nat ? "itemizedScalar(" + init + ")" : "rtBoxedItem(" + init + ")";
         if (sigil == '@' || sigil == '%') return "unitemized(" + init + ")";
         return init;
     }
@@ -2144,7 +2205,8 @@ struct Codegen {
             for (size_t i = 0; i < d->body.size(); i++) {
                 Stmt* st = d->body[i].get();
                 if (i + 1 == d->body.size() && st->kind == NK::ExprStmt)
-                    line(0, "return " + tailValue(static_cast<ExprStmt*>(st)->e.get()) + ";");
+                    line(0, "return " + retBoxed(static_cast<ExprStmt*>(st)->e.get(),
+                                                 tailValue(static_cast<ExprStmt*>(st)->e.get())) + ";");
                 else if (i + 1 == d->body.size() && (st->kind == NK::IfStmt || st->kind == NK::GivenStmt)) {
                     std::string rv = gensym("__rv");
                     line(0, "Value " + rv + " = " + tailSeed(st) + ";");   // the seed IS the answer for an empty branch
@@ -3450,7 +3512,7 @@ struct Codegen {
             }
             case NK::ListExpr: {
                 auto* le = static_cast<ListExpr*>(e);
-                std::string built = "listToArray({" + argList(le->items) + "})";
+                std::string built = "listToArray({" + argList(le->items, true) + "})";
                 // a comma list — parenned or bare — is a List, as the interpreter's
                 // eval has it: `method rgbd { $a, $b, $c }` answers (…), not […]
                 return "([&]()->Value{ Value _l = " + built + "; _l.isList = true; return _l; }())";
@@ -4051,7 +4113,7 @@ struct Codegen {
     // emitCtlPath lifted out. A bare one answers Nil, as the interpreter's and
     // Rakudo's do.
     void emitReturn(Expr* value, int ind) {
-        std::string v = value ? exArg(value) : std::string("Value::nil()");
+        std::string v = value ? retBoxed(value, exArg(value)) : std::string("Value::nil()");
         // In a module routine, a `return` inside a BLOCK leaves the routine,
         // through whatever called the block — interpreted frames included —
         // so it is thrown at the routine's own frame, as the interpreter's is.
@@ -4178,6 +4240,12 @@ struct Codegen {
     }
     // A body's last statement, whose value the body answers: lifted as the
     // statement would be, its value is the local emitCtlPath left
+    // A routine answers a native's value as the boxed number (rtBoxedNum), as
+    // the interpreter's routine return does: `sub r { my int $x = 5; $x }`
+    // takes a multi's `Int` candidate, not its `int`
+    std::string retBoxed(Expr* e, std::string code) {
+        return e && nativeNumericStatic(e) ? "rtBoxedNum(" + code + ")" : code;
+    }
     std::string tailValue(Expr* e) {
         if (!ctlLiftable(e)) return exArg(e);
         std::string t = gensym("__cv");
@@ -4824,10 +4892,12 @@ struct Codegen {
                 // `.raku` says `$[1, 2]`. (What can only be a scalar skips it.)
                 const std::string st = scalarStore(v, rhs);
                 if (!scalarOnly(value)) return "rtItemized(" + st + ")";
-                return st;
+                return retBoxed(value, st);   // (a boxed `$` holds a native's value boxed: rtBoxedNum)
             }
         }
-        return rhs;
+        // …and so does an element: `@a[0] = $n`, `%h<k> = $n + 1` (a native
+        // array's own store, rtElemStoreN, makes its native again)
+        return tgt->kind == NK::Index ? retBoxed(value, rhs) : rhs;
     }
     // an expression that can only produce a scalar: a literal, an arithmetic or
     // string operator
@@ -5564,7 +5634,7 @@ struct Codegen {
         // variable holds it as ONE item (bindAs), and the topic is an item over
         // an ARRAY's elements (`ae`, the interpreter's arrayElemSrc)
         auto declLoopVar = [&](const std::string& elem, const std::string& ae) {
-            if (tp) return declVar(tp->name, bindAs('$', tpd.empty() ? elem : bindTypedExpr(elem, tpd, *tp))) + ";";
+            if (tp) return declVar(tp->name, bindAs('$', tpd.empty() ? elem : bindTypedExpr(elem, tpd, *tp), natParamKind(tp->type))) + ";";
             if (!f->vars.empty()) return declVar(f->vars[0], bindAs(f->vars[0][0], elem)) + ";";
             return "Value " + topic + " = " + (ae.empty() ? elem : ae + " ? itemizedScalar(" + elem + ") : " + elem) + ";";
         };
@@ -5618,19 +5688,24 @@ struct Codegen {
             line(ind + 1, "}");
         } else {
             std::string lst = gensym("__lst"), el = gensym("__e");
-            std::string fi = gensym("__fi"), src = gensym("__src"), ae = gensym("__ae");
+            std::string fi = gensym("__fi"), src = gensym("__src"), ae = gensym("__ae"), nt = gensym("__nt");
+            const bool natTopic = f->vars.empty() && !tp && mayBeNativeArray(f->list.get());
             // Each element of an ARRAY lives in a scalar container, so `$_` over
             // one is an item (`for @rows { my @r = $_ }` takes each row whole);
             // a List's elements are bare. The interpreter's arrayElemSrc.
+            // …and a native array's are the natives they hold, to the topic
+            // (the interpreter's nativeLoopElemType / nativeElemTag)
             if (f->vars.empty()) {
                 line(ind + 1, "Value " + src + " = " + ex(f->list.get()) + ";");
                 line(ind + 1, "const bool " + ae + " = " + src + ".t == VT::Array && !" + src + ".isList;");
+                if (natTopic) line(ind + 1, "const std::string " + nt + " = RT.nativeElemTypeOf(" + src + ");");
                 line(ind + 1, "Value " + lst + " = rtForList(" + src + ");");
             }
             else line(ind + 1, "Value " + lst + " = rtForList(" + ex(f->list.get()) + ");");
             line(ind + 1, "for (size_t " + fi + " = 0; rtForHas(" + lst + ", " + fi + "); ++" + fi + ") {");
             line(ind + 2, "auto& " + el + " = (*" + lst + ".arr())[" + fi + "];");
             line(ind + 2, declLoopVar(el, f->vars.empty() && !tp ? ae : std::string()));
+            if (natTopic) line(ind + 2, "if (!" + nt + ".empty()) RT.nativeElemTag(" + nt + ", " + topic + ");");
             if (topicLoop) topics.push_back(topic);
             loopBody(f->body.get(), ind + 2, f->label);
             if (topicLoop) topics.pop_back();
@@ -9030,7 +9105,7 @@ struct Codegen {
             auto bind = [&](const std::string& got) {
                 // (`is raw` binds the container as it came; the invocant and a
                 // slurpy are never an item)
-                const std::string init = p.invocant || p.slurpy || p.isRaw ? got : bindAs(p.sigil, got);
+                const std::string init = p.invocant || p.slurpy || p.isRaw ? got : bindAs(p.sigil, got, natParamKind(p.type));
                 if (p.name.empty()) line(ind, "Value __anon" + std::to_string(anon++) + " = " + init + ";");
                 else line(ind, declVar(p.name, init) + ";");
             };
@@ -9055,7 +9130,8 @@ struct Codegen {
             }
             if (p.invocant) { bind("__self"); continue; }
             if (p.slurpy) {
-                bind(p.sigil == '%' ? "rtSlurpyNamed(__a)" : "rtSlurpyPos(__a, " + pos + ")");
+                bind(p.sigil == '%' ? "rtSlurpyNamed(__a)"
+                                    : "rtSlurpyPos(__a, " + pos + (p.sigil == '@' ? ", true)" : ")"));
                 attrParam("true");
                 continue;
             }
@@ -9153,7 +9229,8 @@ struct Codegen {
                 for (size_t i = 0; i < md->body.size(); i++) {
                     Stmt* s = md->body[i].get();
                     if (i + 1 == md->body.size() && s->kind == NK::ExprStmt)
-                        line(1, "return " + tailValue(static_cast<ExprStmt*>(s)->e.get()) + ";");
+                        line(1, "return " + retBoxed(static_cast<ExprStmt*>(s)->e.get(),
+                                                     tailValue(static_cast<ExprStmt*>(s)->e.get())) + ";");
                     else if (i + 1 == md->body.size() && (s->kind == NK::IfStmt || s->kind == NK::GivenStmt)) {
                         std::string rv = gensym("__rv");
                         line(1, "Value " + rv + " = " + tailSeed(s) + ";");   // as above
@@ -9213,6 +9290,7 @@ struct Codegen {
                 if (pp.whereExpr || pp.defConstraint) return "a where/:D constraint";
                 if (pp.named && !pp.slurpy)           return "a named parameter";
             }
+        if (nativeWidthTie(cands)) return "natives of one family and two widths";
         bool unknown = false;
         std::set<ClassDecl*> seen;
         if (ancestorDeclares(cd, mname, unknown, seen)) return "a candidate in a parent class";
@@ -9259,7 +9337,13 @@ struct Codegen {
                 // required params (excluding self), ceiling unless slurpy; typed/literal
                 // params guard with rtTypeMatch/eqv
                 std::string d = "  " + ci + "->methods[" + cesc(kv.first) + "] = Value::closure([](ValueList& __a)->Value{ size_t __n = __a.size() > 0 ? rtPosCount(__a, 1) : 0;";
-                for (size_t k = 0; k < kv.second.size(); k++) {
+                // (the candidates with NATIVE parameters first, as multiDef orders them)
+                std::vector<size_t> order(kv.second.size());
+                for (size_t k = 0; k < order.size(); k++) order[k] = k;
+                std::stable_sort(order.begin(), order.end(), [&](size_t x, size_t y) {
+                    return natParamCount(kv.second[x]) > natParamCount(kv.second[y]);
+                });
+                for (size_t k : order) {
                     SubDecl* c = kv.second[k];
                     size_t req = 0, opt = 0; bool slurpy = false;
                     for (auto& pp : c->params) {
@@ -9274,7 +9358,9 @@ struct Codegen {
                     size_t pi = 1; // positional index; __a[0] is self, so start at 1 (matches bindParams)
                     for (auto& pp : c->params) {
                         if (pp.invocant || pp.slurpy || pp.named) continue;
-                        if (!pp.type.empty())
+                        if (const char nk = natParamKind(pp.type))
+                            guard += " && rtNatArg(rtPos(__a, " + std::to_string(pi) + "), '" + nk + "')";
+                        else if (!pp.type.empty())
                             guard += " && rtTypeMatch(rtPos(__a, " + std::to_string(pi) + "), " + cesc(pp.type) + ")";
                         pi++;
                     }
@@ -9335,7 +9421,7 @@ struct Codegen {
         for (size_t i = 0; i < body.size(); i++) {
             Stmt* s = body[i].get();
             if (i + 1 == body.size() && s->kind == NK::ExprStmt)
-                line(1, "return " + tailExpr(static_cast<ExprStmt*>(s)) + ";");
+                line(1, "return " + retBoxed(static_cast<ExprStmt*>(s)->e.get(), tailExpr(static_cast<ExprStmt*>(s))) + ";");
             else if (i + 1 == body.size() && (s->kind == NK::IfStmt || s->kind == NK::GivenStmt || valueBlock(s))) {
                 std::string rv = gensym("__rv"); // trailing if/given/block: the matched branch's value
                 line(1, "Value " + rv + " = " + tailSeed(s) + ";");   // as above
@@ -9398,8 +9484,13 @@ struct Codegen {
                 // …and each `$` one holds what it was given as ONE item, and an
                 // `@` / `%` one unitemized, as the boxed path's bindParams has it
                 // (bindAs)
-                if (!ps[i].isRaw)
-                    line(1, ps[i].sigil == '$' ? "itemizeScalar(" + nm + ");" : nm + " = unitemized(std::move(" + nm + "));");
+                // (and a native one boxed, or a native's tag given: bindAs)
+                if (!ps[i].isRaw) {
+                    const char k = natParamKind(ps[i].type);
+                    line(1, ps[i].sigil != '$' ? nm + " = unitemized(std::move(" + nm + "));"
+                          : k == 'i' || k == 'n' ? "rtNatItemIn(" + nm + ", '" + k + "');"
+                          : k ? "itemizeScalar(" + nm + ");" : "rtBoxItemIn(" + nm + ");");
+                }
             }
             if (!kernelName.empty() && !anyCell && nrw.empty()) {
                 std::vector<std::string> ka;
@@ -9460,6 +9551,7 @@ struct Codegen {
             for (auto& p : c->params)
                 if (p.whereExpr || p.defConstraint)
                     unsupported("a multi candidate with a where/:D constraint");
+        if (nativeWidthTie(cands)) unsupported("multi candidates with natives of one family and two widths");
         std::map<SubDecl*, int> idx;
         RoutineScope __rs{this, ""};   // a candidate's &?ROUTINE is the candidate, not the dispatcher
         for (size_t i = 0; i < cands.size(); i++) {
@@ -9467,9 +9559,12 @@ struct Codegen {
             bodyDef(mangleSub(name) + "__" + std::to_string(i), cands[i]->params, cands[i]->body, false, "",
                     cands[i]->retType);
         }
-        // specificity: literal params (base cases) beat typed params beat untyped
+        // specificity: literal params (base cases) beat typed params beat untyped —
+        // after the NATIVE ones, which a native argument takes over every boxed
+        // candidate and a boxed one never takes at all (rtNatArg, scoreCandidate)
         std::stable_sort(cands.begin(), cands.end(), [](SubDecl* a, SubDecl* b) {
             auto spec = [](SubDecl* s) { int n = 0; for (auto& p : s->params) n += p.litVal ? 2 : !p.type.empty() ? 1 : 0; return n; };
+            if (natParamCount(a) != natParamCount(b)) return natParamCount(a) > natParamCount(b);
             return spec(a) > spec(b);
         });
         line(0, "static Value " + mangleSub(name) + "(ValueList __a) {");
@@ -9501,6 +9596,8 @@ struct Codegen {
                     guard += " && rtLitStr(" + arg + ", " + staticStr(static_cast<const StrLit*>(lit)->v) + ", " + rtGet + ")";
                 else if (lit)
                     guard += " && RT.literalAccepts(" + ex(p.litVal.get()) + ", " + arg + ")";
+                else if (const char k = natParamKind(p.type))
+                    guard += std::string(" && rtNatArg(") + arg + ", '" + k + "')";
                 else if (!p.type.empty()) {
                     // (an instance of the core type named passes without the lookup)
                     const std::string& t = p.type;

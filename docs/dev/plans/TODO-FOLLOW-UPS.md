@@ -1431,7 +1431,8 @@ moves to [TODO.md](TODO.md).
 - [ ] **Split src/Codegen.cpp** (2026-10-27, fc262224): at 10,048 lines it
   is past the default file ceiling, and tools/source-helpers/budget.txt gives
   it a named one of 10,100 so that a fix could land without the split (raised
-  to 10,200 when the typed-store fix took it to 10,143). The
+  to 10,200 when the typed-store fix took it to 10,143, to 10,400 at 10,317,
+  and to 10,500 when compiled native multi dispatch took it to 10,467). The
   build waits on its slowest file. The statement emitters (stmtNative and
   what it calls: loopBody, emitSeq, the ctl and LEAVE helpers) and the
   expression emitter (ex and its arms) are the natural halves; the scripts in

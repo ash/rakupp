@@ -5255,8 +5255,8 @@ void Interpreter::bindParams(const std::vector<Param>& params, ValueList& args,
                 // a `|c` param binds a real CAPTURE: `$c<name>` reaches its named
                 // parts and it round-trips as \(…) (Log::Async's wrap tests)
                 if (capture && !p.name.empty()) { a.hashKind = "Capture"; a.itemized = true; }
-                // `*@a is copy` holds fresh containers: a constant's readonly mark stays behind
-                if (p.isCopy && p.sigil == '@') for (auto& e : *a.arr()) e.readonly = e.immutableBind = false;
+                // `*@a is copy` holds fresh containers: a constant's readonly mark stays behind; a slurpy (not a `|c`) boxes natives
+                for (auto& e : *a.arr()) { if (p.isCopy && p.sigil == '@') e.readonly = e.immutableBind = false; if (!capture && e.natBits) dropNativeTags(e); }
                 env->define(slotName(p, pidx), a);
                 // …and `*@!items`, an attributive positional slurpy, the same way
                 if (!capture && p.name.size() > 2 && p.name[1] == '!')
@@ -5773,7 +5773,7 @@ void Interpreter::bindParams(const std::vector<Param>& params, ValueList& args,
     // container itself.
     for (size_t i = 0; i < params.size(); i++) {
         const Param& p = params[i];
-        if (p.name.empty() || p.slurpy || p.named || p.sigil != '$') continue;
+        if (p.name.empty() || p.slurpy || p.sigil != '$') continue;   // (a named one too: `:$x` boxes)
         if (Value* bound = env->find(slotName(p, i))) {
             if (!bound->natBits && !paramIsNative(p)) continue;
             const bool ro = bound->readonly && !p.isCopy;
@@ -9352,7 +9352,7 @@ Value Interpreter::callCallableRaw(const Value& codeVal, ValueList args, const s
             // both spellings made two diverging copies (Digest::MD5's padding
             // block pushes via $^b and reads via $b). Lookups of the caret/colon
             // spelling translate to the bare name at resolve time.
-            if (pn[0] == '$') itemizeScalar(v);   // `$^a` is a `$` parameter
+            if (pn[0] == '$') { if (v.natBits) dropNativeTags(v); itemizeScalar(v); }   // `$^a` is a boxed `$` parameter
             env->define(pn.size() > 2 && (pn[1] == '^' || pn[1] == ':') ? std::string(1, pn[0]) + pn.substr(2) : pn, v);
         }
         if (c.ci().implicitArgs & 3) {
@@ -11088,7 +11088,7 @@ Value Interpreter::invokeMethod(const Value& codeVal, const Value& self, ValueLi
                 std::string key = pn.substr(2);
                 for (auto& a : args) if (a.t == VT::Pair && a.s == key && a.pairVal()) { v = *a.pairVal(); break; }
             } else if (posK < args.size()) v = args[posK++];
-            if (pn[0] == '$') itemizeScalar(v);
+            if (pn[0] == '$') { if (v.natBits) dropNativeTags(v); itemizeScalar(v); }   // (boxed, as above)
             // one slot under the bare name — see the main binder
             if (pn.size() > 2 && (pn[1] == '^' || pn[1] == ':'))
                 env->define(std::string(1, pn[0]) + pn.substr(2), v);

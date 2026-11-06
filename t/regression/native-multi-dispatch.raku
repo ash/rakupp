@@ -9,7 +9,9 @@
 #     whose `where` it passes, and a lone native candidate refuses it
 #     (native-array-elements.raku);
 #   * two natives of one family are equally narrow: `int8` beside `int` makes
-#     a native int's call ambiguous.
+#     a native int's call ambiguous;
+#   * a boxed parameter takes a native as its boxed value — a named one, a
+#     slurpy's elements and a placeholder too — and a native one holds it.
 #
 # rakupp scored a native parameter as a nominal type a little narrower than a
 # boxed one, so a `where` on the boxed candidate outweighed it, a native
@@ -56,6 +58,11 @@ check((t({q($d)}), t({q(1.5e0)}), t({q(-1.5e0)}), t({q2($d)}), t({q2(1.5e0)})).j
 check((t({h($n)}), t({h($b)}), t({h(3)})).join(" "), "ERR:Multi::Ambiguous ERR:Multi::Ambiguous Int",
       'int8 beside int');
 check((t({C.m($n)}), t({C.m(3)})).join(" "), "int Int+", 'a multi method');
+sub pf($x) { a($x) }; sub pk(*@x) { a(@x[0]) }; sub pq(:$x) { a($x) }; sub pc($x is copy) { a($x) }; sub pn(int $x) { a($x) }
+my int @ia = 1, 2;
+check((pf($n), pk($n), pq(:x($n)), pc($n), { a($^x) }($n), @ia.map({ a($^x) }).head, @ia.grep({ a($^x) eq "Int" }).elems,
+       pn(3), @ia.map(-> int $x { a($x) }).head).join(" "),
+      "Int Int Int Int Int Int 2 int int", 'a boxed parameter boxes a native (named, slurpy, placeholder), a native one holds it');
 
 if @fail { note $_ for @fail; say "FAIL" } else { say "PASS" }
 exit @fail ?? 1 !! 0;

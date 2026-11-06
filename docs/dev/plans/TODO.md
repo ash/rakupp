@@ -230,10 +230,12 @@ The same items grouped by theme, with a complexity estimate for each:
   literal and the `.map` / `.grep` / `.first` topics are natives already
   (nativeIndexTag, nativeElemsTag). With the strict native multi rule, a lone
   `multi f(int $x)` refuses `@a.head`.
-- [ ] **A native bound to `\x`, `$x is raw` or a placeholder stays native**:
+- [ ] **A native bound to `\x` or a sub's `$x is raw` stays native**:
   `sub h(\x) { f(x) }; h($n)` with `my int $n` takes `multi f(int)`, where
-  Rakudo 2026.09 boxes it (Int); a plain `$x`, a pointy block's `$x` and the
-  `for` parameters box already, `is rw` and `int $x` keep it, as in Rakudo.
+  Rakudo 2026.09 boxes it (Int); a plain `$x`, a named one, a slurpy, a
+  placeholder and the `for` parameters box already, in the interpreter and
+  compiled, and `is rw`, `int $x` and a pointy block's `-> $x is raw` keep it,
+  as in Rakudo (whose `-> $x is raw` keeps what its sub's `$x is raw` boxes).
 - [ ] **A class deriving Int loses its value in arithmetic**, found
   2026-11-05 beside V6 P3.11: `class D is Int { method double { self * 2 } }`
   gives `D.new(21).double` 0 and `D.new(3) + 4` 4, where Rakudo 2026.09 gives
@@ -584,13 +586,6 @@ The same items grouped by theme, with a complexity estimate for each:
     postfix:<++>(Int:D)").
 
 ## 3. Compiled backends
-
-- [ ] **`--exe`: a native multi candidate never matches**: the compiled
-  dispatchers test each candidate with rtTypeMatch, which knows no native
-  type, so `multi a(int $x)` beside `multi a(Int $x)` always takes `Int`, and
-  a lone `multi z(int $x)` dies with "No matching multi candidate" for a
-  `my int` — the same on a build of 52dc8d0c, before the strict native rule.
-  Compiled multi methods too. The interpreter and --cnp answer as Rakudo.
 
 - [ ] **`--target=arduino`** ([ARDUINO-PLAN.md](ARDUINO-PLAN.md), started
   2026-11-02): A0 is in, with constants and `BEGIN` values computed while

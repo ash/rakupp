@@ -3903,10 +3903,14 @@ Value rtArrayVal(const Value& v) {
         if (isMultiDimShaped(v)) return Value::array(shapedLeaves(v));
         // (a kept List's items are its variables' containers: the copy takes
         // their values, as coerceArray's decontCopiedElems gives them)
+        // (a boxed array's elements are boxed, as coerceArray drops a native's tags)
         if (v.isList) { Value r = listToArray(*v.arr()); r.isList = false;
-                        if (v.s == "Seq" || v.holdsContainers()) deproxyElems(r); return r; }
+                        if (v.s == "Seq" || v.holdsContainers()) deproxyElems(r);
+                        for (auto& e : *r.arr()) if (e.natBits) dropNativeTags(e);
+                        return r; }
         Value r = Value::array(*v.arr()); // fresh buffer: `@a = @b` must not alias @b
         if (v.s == "Seq" || v.holdsContainers()) deproxyElems(r); // take-rw's Proxies decontainerize on assign
+        for (auto& e : *r.arr()) if (e.natBits) dropNativeTags(e);
         return r;
     }
     // `my @a = 1..*` is lazy, as interpreted: flattening reached the cap
@@ -4055,6 +4059,7 @@ Value rtArrayVal(Value&& v) {
         for (auto& it : *v.arr())
             if (it.t == VT::Array && it.arr() && it.s == "Slip")
                 return rtArrayVal(static_cast<const Value&>(v));
+        for (auto& it : *v.arr()) if (it.natBits) dropNativeTags(it);   // (boxed elements, as above)
         Value r = Value::array();
         r.setArr(v.arrS());
         return r;

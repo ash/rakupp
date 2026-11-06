@@ -6094,8 +6094,26 @@ inline bool rtForHas(const Value& lst, size_t i) {
 inline Value rtNilToAny(Value v) { if (v.t == VT::Nil) return Value::any(); return v; }
 inline Value rtItemized(Value v) {
     if ((v.t == VT::Array || v.t == VT::Hash || v.t == VT::Range) && !v.itemized) v.itemized = true;
+    if (v.natBits) { v.natBits = 0; v.natSigned = v.natFloat = false; }   // (an untyped container boxes a native)
     return v;
 }
+// …and what a routine answers with a native's value: the boxed number, as
+// the interpreter's routine return has it (Rakudo boxes it, `--> int` too)
+inline Value rtBoxedNum(Value v) { if (v.natBits) { v.natBits = 0; v.natSigned = v.natFloat = false; } return v; }
+// …and what a boxed `$` parameter binds: the item of the value, a native's
+// boxed (the interpreter's bindNativeParam; Codegen::bindAs)
+// (the tags are bit-fields: tested before they are cleared, as dropNativeTags's callers do)
+inline void rtBoxItemIn(Value& v) { if (v.natBits) { v.natBits = 0; v.natSigned = v.natFloat = false; } itemizeScalar(v); }
+inline Value rtBoxedItem(Value v) { rtBoxItemIn(v); return v; }
+// …and what an `int` or `num` one binds (k 'i' or 'n'): the native, tagged as
+// wrapNative tags it, where rtTypedFast took a boxed Int or Num as it was
+inline void rtNatItemIn(Value& v, char k) {
+    if (!v.natBits && (k == 'n' ? v.t == VT::Num : k == 'i' && v.t == VT::Int && !v.big())) {
+        v.natBits = 64; v.natSigned = k == 'i'; v.natFloat = k == 'n';
+    }
+    itemizeScalar(v);
+}
+inline Value rtNatItem(Value v, char k) { rtNatItemIn(v, k); return v; }
 // In-place `,=`: `A = A, B`, stored into the container A already holds. One
 // definition for the interpreter and both compiling backends — see the
 // comment on it in Interpreter.cpp. (Not inline: it needs the coerceArray/
@@ -6222,7 +6240,7 @@ Value  rtPos(const ValueList& a, size_t idx);        // idx-th positional (non-P
 bool   rtHasPos(const ValueList& a, size_t idx);     // is an idx-th positional present?
 Value  rtNamed(const ValueList& a, const std::string& key);    // named arg's value, or Any
 bool   rtHasNamed(const ValueList& a, const std::string& key); // is a named arg present?
-Value  rtSlurpyPos(const ValueList& a, size_t from);           // positional args [from..] as an Array
+Value  rtSlurpyPos(const ValueList& a, size_t from, bool boxed = false);   // positional args [from..] as an Array (natives boxed)
 Value  rtSlurpyNamed(const ValueList& a);                      // all named args as a Hash
 Value  rtCoerceHash(const Value& v);                           // pair/kv list → Hash (`my %h = a=>1,…`)
 Value  rtObjHash(const Value& v);                              // `:{ … }` → object hash (keys keep their type)
@@ -6348,6 +6366,21 @@ inline Value rtIndexGetP(const Value& base, const Value& key) {
         if (key.i >= 0 && key.i < (long long)pa->w.size()) return pa->at((size_t)key.i);
     }
     return rtIndexGet(base, key, false);
+}
+// --exe multi dispatch (Codegen's multiDef and method dispatchers): a NATIVE
+// parameter's guard — the argument is a native of the parameter's family, 'i'
+// a signed int, 'u' an unsigned one, 'n' a num, and a boxed value is none, as
+// scoreCandidate has it
+inline bool rtNatArg(const Value& v, char k) {
+    if (k == 'n') return v.t == VT::Num && v.natBits && v.natFloat;
+    return v.t == VT::Int && v.natBits && !v.natFloat && v.natSigned == (k == 'i');
+}
+// …and an element of a native array handed to a routine, or kept by a List
+// literal: the native it holds, as the interpreter's nativeIndexTag gives it
+inline Value rtNatElem(Interpreter& I, const Value& arr, Value v) {
+    if ((v.t == VT::Int || v.t == VT::Num) && !v.natBits)
+        if (const Value* a = arr.deref(); a && a->t == VT::Array && !a->ofType().empty()) I.nativeElemsTag(*a, v);
+    return v;
 }
 // --exe `++` / `--`: a plain Int steps inline, anything else as the interpreter
 // steps it (Interpreter::stepValue: a Str's succ, Bool, a class's succ/pred)

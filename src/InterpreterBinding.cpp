@@ -6328,9 +6328,13 @@ Value rtSig(Value c, const RtSigParam* ps, size_t n, const char* name, const cha
     if (cflags & RSC_HADSIG) cc->ciM().hadSig = true;
     return c;
 }
-Value rtSlurpyPos(const ValueList& a, size_t from) {
+Value rtSlurpyPos(const ValueList& a, size_t from, bool boxed) {
     Value o = Value::array(); size_t p = 0;
-    for (auto& v : a) { if (isNamedArg(v)) continue; if (p >= from) o.arr()->push_back(v); p++; }
+    for (auto& v : a) {
+        if (isNamedArg(v)) continue;
+        if (p >= from) { o.arr()->push_back(v); if (boxed && v.natBits) dropNativeTags(o.arr()->back()); }
+        p++;
+    }
     return o;
 }
 Value rtSlurpyNamed(const ValueList& a) {
