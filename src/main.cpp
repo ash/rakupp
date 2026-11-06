@@ -1957,8 +1957,9 @@ static int compileArduino(const std::string& src, const std::string& srcName, st
     fs::create_directories(dir, ec);
     std::string h = (dir / "Arduino.h").string(), cpp = (dir / "sketch.cpp").string();
     { std::ofstream f = openOut(h); if (!f) { std::cerr << "Cannot write " << h << "\n"; return 5; } f << arduinoSimCore(); }
-    {   // the Uno R4 WiFi's matrix library: its class is in the host core above
-        std::string mh = (dir / "Arduino_LED_Matrix.h").string();
+    // the Uno R4 WiFi's matrix and network libraries: their classes are in the host core above
+    for (const char* lib : {"Arduino_LED_Matrix.h", "WiFiS3.h"}) {
+        std::string mh = (dir / lib).string();
         std::ofstream f = openOut(mh); if (!f) { std::cerr << "Cannot write " << mh << "\n"; return 5; }
         f << "#include \"Arduino.h\"\n";
     }

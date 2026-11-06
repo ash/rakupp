@@ -1,0 +1,8 @@
+[0 ms] pin 13 mode OUTPUT
+[10000 ms] wifi "cafe": no such network
+[20000 ms] wifi "home": wrong password
+[20000 ms] wifi "home" connected, ip 192.168.1.42
+[20000 ms] pin 13 HIGH
+[22000 ms] wifi "home" disconnected
+[22000 ms] pin 13 LOW
+[23500 ms] stop

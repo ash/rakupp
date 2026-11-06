@@ -90,7 +90,7 @@ sub analogWrite($pin, $value) is export {
     %pwm{+$pin} = $v;
     $*ERR.print: stamp() ~ "pin $pin pwm $v\n";
 }
-sub delay($ms) is export {
+our sub delay($ms) is export {   # `our`: Arduino::WiFi waits out a failed join with it
     if $virtual { advance $ms * 1000 } else { sleep $ms / 1000 }
 }
 sub delayMicroseconds($us) is export {

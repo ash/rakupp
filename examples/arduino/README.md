@@ -5,8 +5,8 @@ Arduino IDE builds and uploads like any other. You need no board to start.
 The same program runs on a simulated board, which shows on your screen what
 the board would do: the serial port, and every pin as it changes.
 
-This is a walkthrough, from a blinking LED to the Uno R4 WiFi's LED matrix,
-with a program for each step in this directory. The full reference is
+This is a walkthrough, from a blinking LED to the Uno R4 WiFi's LED matrix
+and its network, with a program for each step in this directory. The full reference is
 [docs/guide/ARDUINO.md](../../docs/guide/ARDUINO.md).
 
 | Program | What it shows |
@@ -15,6 +15,7 @@ with a program for each step in this directory. The full reference is
 | [`button.raku`](button.raku) | Inputs, and fixing them on the simulated board |
 | [`fade.raku`](fade.raku) | A table computed in full Raku while building; the board gets only the numbers |
 | [`raku-icon.raku`](raku-icon.raku) | A picture on the Uno R4 WiFi's 12×8 LED matrix |
+| [`wifi.raku`](wifi.raku) | The Uno R4 WiFi joins a network, with a password the program's source does not hold |
 
 ## What you need
 
@@ -31,8 +32,9 @@ with a program for each step in this directory. The full reference is
   | Arduino Due | Arduino SAM Boards | `arduino:sam:arduino_due_x` |
 
 Every program here builds for these three boards with their own cores (the
-matrix one for the Uno R4 WiFi only), and runs the same on both simulated
-boards: rakupp's interpreter, and the sketch compiled for your computer.
+matrix and WiFi ones for the Uno R4 WiFi only), and runs the same on both
+simulated boards: rakupp's interpreter, and the sketch compiled for your
+computer.
 
 ## 1. Blink, without a board
 
@@ -211,6 +213,55 @@ $ RAKUPP_ARDUINO_STOP=10 rakupp raku-icon.raku
 `LEDMatrix.show` also takes a picture the board computes as it runs, a
 `my uint32 @frame[3]`, and `LEDMatrix.clear` darkens the matrix.
 
+## 6. Joining a network (Uno R4 WiFi)
+
+```raku
+use Arduino;
+use Arduino::WiFi;
+
+constant SSID = %*ENV<WIFI_SSID> // die "set WIFI_SSID to the network's name";
+constant PASS = %*ENV<WIFI_PASS> // die "set WIFI_PASS to its password";
+
+pinMode(LED_BUILTIN, OUTPUT);
+say "joining {SSID}";
+until WiFi.begin(SSID, PASS) == WL_CONNECTED {
+    say "not yet: status {WiFi.status}";
+    delay(5000);
+}
+say "joined, address {WiFi.localIP}";
+```
+
+[`wifi.raku`](wifi.raku) goes on to show the connection on the LED, and to
+join again if the network is lost. The name and password are constants, so,
+like the sine table, they are computed while building: here they come from
+the environment, and the program's source holds neither. Give them when you
+build the sketch:
+
+```bash
+mkdir wifi && WIFI_SSID=home WIFI_PASS=secret rakupp --target=arduino wifi.raku -o wifi/wifi.ino
+```
+
+The sketch has them as plain strings, as any sketch that joins a network
+does, so don't share it as you would share the program.
+
+The simulated board has a simulated network. With nothing set, it joins any
+network you name; `RAKUPP_ARDUINO_WIFI="home:secret"` puts one network in
+range, and a wrong password then fails as it would on the board, after the
+library's 10-second timeout:
+
+```
+$ RAKUPP_ARDUINO_STOP=3000 WIFI_SSID=home WIFI_PASS=secret rakupp wifi.raku
+[0 ms] pin 13 mode OUTPUT
+joining home
+[0 ms] wifi "home" connected, ip 192.168.1.42
+joined, address 192.168.1.42
+[0 ms] pin 13 HIGH
+[3000 ms] stop
+```
+
+`WiFi.localIP` can be printed, but not kept in a variable: the board has
+no strings at run time yet.
+
 ## What a board program can use
 
 - **Native types:** `int8` … `int64`, `uint8` … `uint64`, `byte`, `num`,
@@ -226,6 +277,9 @@ $ RAKUPP_ARDUINO_STOP=10 rakupp raku-icon.raku
   `digitalRead`, `analogRead`, `analogWrite`, `delay`, `delayMicroseconds`,
   `millis`, `micros`, `Serial`. Also `say`, `print` and `note` of literals,
   integers and Bools.
+- **On the Uno R4 WiFi:** the LED matrix (`use Arduino::LEDMatrix`), and
+  joining a network (`use Arduino::WiFi`): `WiFi.begin`, `WiFi.status`,
+  `WiFi.localIP` and `WiFi.disconnect`.
 
 Hashes, strings built at run time, classes, regexes and closures stop the
 build with the line they are on. Most of these are planned: the guide's
@@ -238,9 +292,10 @@ native type wraps: `my int8 $d = 700` stores −68, and `delay(-68)` asks for
 
 ## Under Rakudo
 
-`use Arduino` and `use Arduino::LEDMatrix` are built into rakupp:
-`rakupp install` skips both names and says so. Other Raku implementations
-can install stub modules of the same names:
+`use Arduino`, `use Arduino::LEDMatrix` and `use Arduino::WiFi` are built
+into rakupp: `rakupp install` skips these names and says so. Other Raku
+implementations can install stub modules for the first two; a WiFi program
+`use`s Arduino first, so that stub stops it too:
 
 ```bash
 zef install Arduino Arduino::LEDMatrix
