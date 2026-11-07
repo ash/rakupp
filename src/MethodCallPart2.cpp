@@ -704,12 +704,14 @@ static Value nilResetForAttr(const Value& v, const ClassAttr& a) {
 // Without this the typed container refused EVERY value put into it, in
 // R[Int] and R[Str] alike, and `.of` answered the literal "TYPE"
 // (Concurrent::PriorityQueue is built on exactly that shape).
-static const std::string& roleTypeIn(ClassInfo* ci, const std::string& t) {
+// A resolved name is copied into `held`, which the caller keeps alive while it
+// uses the result: a CowStr lends no std::string.
+static const std::string& roleTypeIn(ClassInfo* ci, const std::string& t, std::string& held) {
     if (t.empty()) return t;
     for (ClassInfo* c = ci; c; c = c->parent.get())
         for (auto& b : c->roleParamBindings)
             if (b.first == t && b.second.t == VT::Type && !b.second.s.empty())
-                return b.second.s.copyText();
+                return held = b.second.s.copyText();
     return t;
 }
 
@@ -810,7 +812,8 @@ static Value typedAttrContainer(Interpreter& I, Value v, const ClassAttr& at, Cl
     if ((at.sigil != '@' && at.sigil != '%') || at.type.empty()) return v;
     if (v.t != VT::Array && v.t != VT::Hash) return v;
     if (v.t == VT::Hash && !v.hashKind.empty()) return v; // a Set/Bag keys on ofType
-    if (v.ofType().empty()) v.ofTypeM() = roleTypeIn(ci, at.type);
+    std::string held;
+    if (v.ofType().empty()) v.ofTypeM() = roleTypeIn(ci, at.type, held);
     std::string want = I.elemTypeOf(v);
     // `has P() %.props` COERCES each element it is given (P's COERCE, or
     // the built-in conversion) rather than refusing what is not one yet
@@ -848,7 +851,8 @@ void Interpreter::checkAttrParamStore(Value& v, const Value& self, const std::st
     const ClassAttr* at = ci->findAttr(bare);
     if (!at) return;
     if (at->sigil == '@' || at->sigil == '%') { v = typedAttrContainer(*this, std::move(v), *at, ci); return; }
-    checkAttrStore(*this, v, *at, roleTypeIn(ci, at->type), wasNil, ci->declEnv.get());
+    std::string held;
+    checkAttrStore(*this, v, *at, roleTypeIn(ci, at->type, held), wasNil, ci->declEnv.get());
 }
 
 // Park a tap on a Proc::Async stream Supply ({proc, stream, split?, bin?}).
@@ -1124,8 +1128,9 @@ void Interpreter::runAttrDefaults(const PRef<ObjectData>& od,
             }
         }
     // a role's type-capture parameter, resolved per object (see roleTypeIn)
+    std::string roleHeld;
     auto resolveRoleType = [&](const std::string& t) -> const std::string& {
-        return roleTypeIn(ci.get(), t);
+        return roleTypeIn(ci.get(), t, roleHeld);
     };
     // What a NAMED argument puts in its attribute: a Nil resets it to the
     // attribute's `is default` when it has one, and anything else is checked
@@ -1508,8 +1513,9 @@ Value* Interpreter::attrAssignLane(const VarExpr* tv, Expr* value) {
     // construction's behalf) does not: a type object that is not of the
     // attribute's type (`has Cool $.c; $!c = Any`), and a Failure, named as
     // the value it is
+    std::string held;
     if (!wasNil && !ty.empty() && ty != "Mu") {
-        const std::string& rt = roleTypeIn(ci, ty);
+        const std::string& rt = roleTypeIn(ci, ty, held);
         const bool failure = v.t == VT::Hash && v.hashKind == "Failure";
         if (failure || ((v.t == VT::Type || v.t == VT::Any) && rt != "Any" && !typeOrSubsetMatches(v, rt))) {
             const std::string got = failure ? std::string("Failure") : v.typeName();
@@ -1520,7 +1526,7 @@ Value* Interpreter::attrAssignLane(const VarExpr* tv, Expr* value) {
                         " but got " + got + " (" + got + ")");
         }
     }
-    checkAttrStore(*this, v, *at, roleTypeIn(ci, ty), wasNil, ci->declEnv.get());
+    checkAttrStore(*this, v, *at, roleTypeIn(ci, ty, held), wasNil, ci->declEnv.get());
     if (v.natBits) { v.natBits = 0; v.natSigned = v.natFloat = false; }   // a boxed slot takes the VALUE
     // a `$` container itemizes what it holds
     if ((v.t == VT::Array || v.t == VT::Hash) && !v.itemized) v.itemized = true;
@@ -8311,7 +8317,8 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
                 const bool wasNil = pv && pv->t == VT::Nil;
                 Value v = nilResetForAttr(pv ? *pv : Value::any(), *at);
                 if (wasNil && at->defaultTrait && at->sigil == '$') v = eval(const_cast<Expr*>(at->defaultTrait));
-                checkAttrStore(*this, v, *at, roleTypeIn(ci.get(), at->type), wasNil, ci->declEnv.get());
+                std::string held;
+                checkAttrStore(*this, v, *at, roleTypeIn(ci.get(), at->type, held), wasNil, ci->declEnv.get());
                 ni->attrs[a.s] = coerceToSigil(std::move(v), at->sigil);
             }
             nv.setObj(ni); return nv;
@@ -9245,7 +9252,7 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
         auto& attrs = inv.obj()->attrs;
         auto getBuf = [&]() {
             auto it = attrs.find("__io-rbuf");
-            return it == attrs.end() || it->second.t != VT::Str ? std::string() : it->second.s.str();
+            return it == attrs.end() || it->second.t != VT::Str ? std::string() : it->second.s.copyText();
         };
         auto setBuf = [&](std::string b) { attrs["__io-rbuf"] = Value::str(std::move(b)); };
         auto classEof = [&]() { return em && invokeMethod(*em, inv, ValueList{}).truthy(); };
