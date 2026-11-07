@@ -583,6 +583,7 @@ public:
     void noteGobbleSite(const Expr* cond);
     bool inEmbedded_ = false; // parsing an interpolated `"{…}"`/`"$!x"` piece of a larger unit
     int routineDepth_ = 0;   // nesting of sub/method bodies (&?ROUTINE legality)
+    int selfDepth_ = 0;      // nesting of method/submethod bodies: a `self` a nested sub's `$!x` parameter binds into
 public:
     static inline thread_local int allowRoutineMagic = 0;   // >0: parsing a regex's code block, where &?ROUTINE is the regex
 private:
@@ -699,6 +700,7 @@ private:
     void takeTrailingAdverbs(std::vector<ExprPtr>& args);                     // :name / :!name / :name(x) / :$var
     ExprPtr pkgExistsAdverb(const std::string& qual);                          // `Foo::<$x>:exists` (null: no adverb)
     ExprPtr pkgStashSubscript(const std::string& pkg, const std::vector<std::string>& words); // `Foo::<$x>:p` (ParserPackages.cpp)
+    bool enclosingTypeHere(std::string& out, const char* none);   // `::?CLASS` / `::?ROLE`, consumed (ParserPackages.cpp)
     std::vector<ExprPtr> parseCallArgs(ExprPtr* invocant = nullptr); // after '('; *invocant set for `f($obj: args)`
     ExprPtr parseInterpString(const std::string& raw);
     size_t infixDotAt_ = (size_t)-1; // the dotty infix `EXPR . method` being applied (see parseExpr)
