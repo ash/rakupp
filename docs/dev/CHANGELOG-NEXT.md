@@ -11,7 +11,8 @@ here.*
 *Covered so far: 28257097 (a `constant` type alias in a signature, issue #220),
 02e52fa2 (`Value` 80 → 64 bytes), 5d52a248 (string literals keep their Value),
 f0376fa6 (kernels share stored strings; `"…"` literals cached),
-9b294b72 (`%h.elems` without listing the hash).*
+9b294b72 (`%h.elems` without listing the hash),
+f3096c7d and 7a09c596 (`return-rw` use-after-frees; ASan sees the pools' frees).*
 
 ---
 
@@ -61,6 +62,24 @@ f0376fa6 (kernels share stored strings; `"…"` literals cached),
   `t/regression/hash-elems-size.raku`.
 
 ### Fixed: silent wrong answers
+
+- **`return-rw` wrote into, or read from, the frame it had just left**
+  (7a09c596). When a routine returns, its frame goes back to a pool and its
+  variables are cleared. Two paths used one of those variables afterwards.
+  - Assigning through an `is rw` call wrote the value into the returning
+  routine's own copy of a sigilless parameter.
+  `sub raw-id(\c) is rw { return-rw c }; sub set(\c, $v) { raw-id(c) = $v; c }`
+  does that.
+  - A `return-rw` of the routine's own local was read back only after the
+  frame had been cleared.
+
+  On most systems the freed memory still held the old bytes, so nothing
+  showed. musl's allocator reuses it sooner:
+  `t/regression/rw-sub-lvalue.raku` crashed with SIGSEGV on linux-aarch64-musl
+  in CI. Both bugs are older than this release's other changes, and ASan
+  found them only once it could see the engine's own pools free memory
+  (f3096c7d: an ASan build now hands every slab and list block back to the
+  allocator).
 
 - **A `constant` naming a type is that type in a signature** (28257097;
   issue #220). `my constant Alias = Foo::Bar; sub g(Alias $x) { }` gave a
