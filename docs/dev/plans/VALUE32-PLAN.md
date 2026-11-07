@@ -901,6 +901,12 @@ Roast's allocations stay inside run-to-run noise. The +0.5% the census
 predicted for C is smaller than the 0.5% that one binary moves between two
 runs.
 
+**The ThreadSanitizer stress matrix** (`t/stress/run.raku` under a
+`-fsanitize=thread` build, as the linux-tsan CI job runs it) gives 51 cases:
+37 pass, 14 are on the known-bad list, there are no new failures, and TSan
+reports nothing. This is the risk register's parallelism gate, and a body's
+count is still the atomic one `Ref` keeps.
+
 **Left open:**
 
 - **A string literal could keep its `CowStr` on the AST node,** so evaluating
