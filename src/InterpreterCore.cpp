@@ -22644,7 +22644,7 @@ bool Interpreter::declLaneRhs(Expr* e, Value& out) {
     switch (e->kind) {
         case NK::IntLit: out = Value::integer(static_cast<IntLit*>(e)->v); return true;
         case NK::NumLit: out = Value::number(static_cast<NumLit*>(e)->v); return true;
-        case NK::StrLit: { RAKUPP_STR_CEN(StrCenLit lit_;) out = Value::str(static_cast<StrLit*>(e)->v); return true; }
+        case NK::StrLit: out = strLitValue(static_cast<StrLit*>(e)); return true;
         case NK::VarExpr: {
             // the slot itself, looked at before anything reads through it: a
             // bound cell or a Proxy (whose FETCH may run code) declines. The
@@ -30235,7 +30235,7 @@ Value Interpreter::eval(Expr* e) {
         // A pure read: the literal was NFC-normalized when it was constructed.
         // Doing it here, in place, on a node every thread shares was a data race
         // that corrupted the string — see StrLit in Ast.h.
-        case NK::StrLit: { RAKUPP_STR_CEN(StrCenLit lit_;) return Value::str(static_cast<StrLit*>(e)->v); }
+        case NK::StrLit: return strLitValue(static_cast<StrLit*>(e));
         // ---- the rare shapes, out of this frame -----------------------
         // Same reason as exec's declarations: eval is one switch, its frame is
         // the MAX over every case, and eval is entered TWICE per Raku call, so

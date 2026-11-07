@@ -378,6 +378,23 @@ bool CowStr::sub(CowStr& out, const CowStr& s, size_t off, size_t len) {
     return true;
 }
 
+Value strLitBuild(const StrLit* s) {
+    RAKUPP_STR_CEN(StrCenLit lit_;)
+    unsigned char state = 0;
+    if (!s->evalState.compare_exchange_strong(state, 1, std::memory_order_acquire)) {
+        if (state == 2) return *std::launder(reinterpret_cast<const Value*>(s->evalStore));
+        return Value::str(s->v);   // another thread is building it: this one makes its own
+    }
+    const Value* v;
+    try { v = ::new (static_cast<void*>(s->evalStore)) Value(Value::str(s->v)); }
+    catch (...) { s->evalState.store(0, std::memory_order_release); throw; }
+    s->evalState.store(2, std::memory_order_release);
+    return *v;
+}
+StrLit::~StrLit() {
+    if (evalState.load(std::memory_order_acquire) == 2) std::launder(reinterpret_cast<Value*>(evalStore))->~Value();
+}
+
 // A packed array unpacks once (PACKED-ARRAY-PLAN): the first arr()/arrS() on
 // it builds the Values every element would have been stored as — a plain Int
 // or Num — under one lock, since two threads may ask at once, and from then on

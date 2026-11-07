@@ -193,7 +193,19 @@ struct StrLit : Expr {
     // itself. Rakudo's optimizer does not treat it as a typed constant the way
     // it does 'x', so the compile-time call check (CallCheck.cpp) must not.
     bool wordQuote = false;
+    // The literal's Value, built in `evalStore` on its first evaluation and
+    // copied from then on (strLitValue in Value.h): a text over 15 bytes is one
+    // shared body rather than an allocation per evaluation, a shorter one a
+    // 16-byte copy (VALUE32-PLAN design C). Every thread shares the tree, so
+    // `evalState` publishes it: 0 not built, 1 one thread building it (the
+    // others make their own meanwhile), 2 ready. Kept in the node rather than
+    // behind a pointer, which cost every program a malloc per literal. Sound
+    // because `v` never changes once the node can run: it is set here, or by
+    // the deserialiser and normalize() before any evaluation.
+    mutable std::atomic<unsigned char> evalState{0};
+    alignas(8) mutable unsigned char evalStore[64];   // (Value.h asserts a Value fits)
     explicit StrLit(std::string s): Expr(NK::StrLit), v(nfcNormalize(std::move(s))) {}
+    ~StrLit() override;   // (Value.cpp: it destroys the built Value)
     // For the deserialiser, which fills `v` in after construction.
     void normalize() { v = nfcNormalize(std::move(v)); nfcDone = true; }
 };

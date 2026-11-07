@@ -1733,6 +1733,16 @@ struct Value {
 static_assert(sizeof(Value) == 64, "sizeof(Value) moved: see VALUE32-PLAN before changing it");
 #endif
 
+// A string literal's Value: built once in the node, then copied (StrLit::evalState).
+static_assert(sizeof(Value) <= sizeof(StrLit::evalStore) && alignof(Value) <= 8,
+              "a Value no longer fits StrLit::evalStore (Ast.h)");
+Value strLitBuild(const StrLit* s);
+inline Value strLitValue(const StrLit* s) {
+    if (s->evalState.load(std::memory_order_acquire) == 2)
+        return *std::launder(reinterpret_cast<const Value*>(s->evalStore));
+    return strLitBuild(s);
+}
+
 // A Value payload's two bodies (Ref.h's ValueBodyBase): one that OWNS its
 // Value — a Pair's value, a container cell — and one that ALIASES a Value
 // another owner keeps alive (a hash entry's live Pair, ValueHash::aliasOf).

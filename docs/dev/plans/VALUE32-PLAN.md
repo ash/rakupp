@@ -909,13 +909,68 @@ count is still the atomic one `Ref` keeps.
 
 **Left open:**
 
-- **A string literal could keep its `CowStr` on the AST node,** so evaluating
-  it is a 16-byte copy rather than a `string_view` written into a fresh one.
-  Literals were 7.2M of Roast's 12.2M short strings.
 - **The 16–22-byte band costs a malloc per live string**, because
   `SlabPool` keeps few blocks. A pool that carves `StrBody`s from chunks would
   take that back without widening `Value`.
 - **Bitwise relocation on libstdc++**, above.
+
+### A string literal keeps its `Value` (2026-11-07)
+
+The first item step 2 left open. Literals were 7.2M of Roast's 12.2M short
+strings. Until this change each evaluation built a new `Value` from the AST's
+`std::string`, and a literal over 15 bytes allocated a body every time.
+
+- **The `Value` is built once, inside the node.** A `StrLit` builds its `Value`
+  into 64 bytes it holds for it, on its first evaluation, and every evaluation
+  after that copies it. `evalState` publishes it, because every thread shares
+  the tree:
+  - 0 means it is not built;
+  - 1 means one thread is building it, and the others make their own meanwhile;
+  - 2 means it is ready.
+- **The first version kept it behind a pointer.** That cost every program a
+  malloc per distinct literal it evaluated (+0.06% over the 44 programs,
+  `roman` +29).
+- **Sound because a literal's text never changes once the node can run.** The
+  constructor sets it, or the deserialiser and `normalize()` do before any
+  evaluation; nothing else writes `StrLit::v`.
+- **A long literal's body is now shared by every evaluation.** No writer can
+  reach it in place. `mutInPlace` serves only CArray/Buf values, and turning a
+  Str into a Buf appends with `+=`, which copies a shared body first. Every
+  other in-place write checks that the body has one owner.
+
+Measured against step 2's tip (ed7a7d98), one sitting:
+
+| gate | |
+|---|---|
+| `t/run.raku`, Roast | 1,992 of 1,992; 1,425 of 1,425 |
+| perf-guard time, 27 kernels × 3 interleaved rounds | geomean −0.08%, none past 5% |
+| instructions retired, 26 kernels | geomean −0.09%: `prepend` −1.7% (step 2's +2.1% back), `sharedappend` −1.3% |
+| `tools/malloc-census.raku`, 8 workloads | identical |
+| mallocs, 44 bench + example programs | +0.015%: 3 to 5 each at startup, the bodies of long literals now kept |
+
+**Under ThreadSanitizer** the stress matrix gives the same 37 passes and 14
+known-bad, with no new failures. A test in which 16 threads, repeatedly, each
+evaluate a literal for its first time at once gives no report.
+`t/regression/str-literal-shared-value.raku` guards the shared value. It
+writes through a copy of a short and a long literal every way a Str is written
+in place, and makes a Buf from one; after each write the literal must still
+read the same. It also checks a literal first evaluated by eight threads. It
+passes on both binaries, under TSan, and in Rakudo.
+
+**Where it pays is the interpreter's own evaluation.** With the integer kernels
+off (`RAKUPP_NO_KERNELS=1`), a 36-byte literal evaluated 200,000 times:
+
+| loop | mallocs | instructions |
+|---|---|---|
+| `$x = "…"` | 604,457 → 404,460 | −17.9% |
+| `@a.push("…")` | 804,510 → 604,513 | −11.8% |
+| `"…" xx 200_000` | 804,579 → 604,582 | −18.7% |
+
+With the kernels on, a loop such as `@a.push("…")` runs in IntKernel.cpp. Its
+string lane works in `std::string` and makes a new `Value` for each element it
+stores (`scpushFn`, `csappFn`). That is two mallocs per element for a long
+string, before this change and after it. Left open: the kernel's string lane
+on `CowStr`.
 
 ## Why 16 bytes is an architecture change, not a layout change
 
