@@ -87,7 +87,8 @@ there show up at the same URL. `?gist=` picks the first `.raku`/`.rakumod` file
 unless `&file=` names one.
 
 Append `&run=1` (`&run` works too in the hash form) to run the code as soon as
-the interpreter loads:
+the interpreter loads, and `&docs=1` (or `&docs`) to open the
+[Docs tab](#the-docs-tab) on the program:
 
 ```
 https://raku.online/?gh=ash/rakupp/main/examples/anagrams.raku&run=1
@@ -97,6 +98,29 @@ GitHub fetches happen in the visitor's browser (both `api.github.com` and
 `raw.githubusercontent.com` send CORS headers), so the server stays fully
 static. Shared programs are capped at 200 KB. Compression uses the native
 `CompressionStream` API — in every evergreen browser since 2023.
+
+## The Docs tab
+
+The output pane has a second tab, **Docs**: every construct of the program in
+the editor, linked to its page on [docs.raku.org](https://docs.raku.org) — the
+same answer `rakupp --doc-links` gives on the command line
+([CLI.md](../docs/guide/CLI.md#linking-a-program-to-its-documentation---doc-links)).
+With it open:
+
+- the editor underlines each construct that has a page (dashed where the type
+  of a method's invocant is not known without running the program, so the link
+  is to the page that lists every type's version; dotted for the program's own
+  subs, methods and classes);
+- the box at the top names the construct under the cursor and links its page;
+  ⌘-click (Ctrl-click) in the editor opens it;
+- below, the pages are grouped as on the command line, and each line number
+  selects that use in the editor.
+
+Nothing runs and nothing is fetched: the worker answers from
+`rakupp_doc_links()`, the parser and highlighter over the source and a copy of
+the docs site's index compiled into `rakujs.wasm`. The links follow edits a
+quarter-second after typing stops. A request made while a program is running
+waits for it to finish, and pressing Run switches back to Output.
 
 ## The examples
 

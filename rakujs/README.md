@@ -128,6 +128,7 @@ and no network, and it dies with the instance:
 | `rakupp_run(source, stdin)` | runs a program to completion, returns its exit code |
 | `rakupp_version()` | the interpreter's version string |
 | `rakupp_highlight(source)` | the source as highlighted HTML, from `rakupp`'s own tokenizer |
+| `rakupp_doc_links(source)` | every construct linked to its docs.raku.org page, as the JSON `rakupp --doc-links --json` prints; spans in UTF-16 units (`from`/`to`) |
 
 `rakupp_run` is **synchronous** and runs a whole program, so call it from a Web
 Worker unless you know every program is short — on the main thread it freezes
@@ -165,7 +166,7 @@ with it. Flags, environment variables and the smoke test are in
 
 | File | Purpose |
 |------|---------|
-| `rakupp_web.cpp` | The entry point — exports `rakupp_run` / `rakupp_version` / `rakupp_highlight` over the interpreter's existing `rakupp::rakuppRun()`. |
+| `rakupp_web.cpp` | The entry point — exports `rakupp_run` / `rakupp_version` / `rakupp_highlight` / `rakupp_doc_links` over the interpreter's existing `rakupp::rakuppRun()`. |
 | `build.sh` | Compiles `../src/*.cpp` (minus `main.cpp`) + `rakupp_web.cpp` to `playground/rakujs.{js,wasm}`. Bootstraps Emscripten if absent. |
 | `gen-examples.raku` | Generates `playground/examples.js` from `../examples/*.raku` — run with `rakupp` itself, so Raku.js generates its own data with the interpreter it ships. |
 | `playground/` | The self-contained playground page (`index.html` + `worker.js`) and the built engine. |

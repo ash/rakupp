@@ -25,7 +25,7 @@ function Interpreter::methodCallPart3 6580
 function Interpreter::methodCallTail 5098
 function Parser::parsePrimary 3419
 function applyArithGeneral 2573
-function main 1762
+function main 1790
 
 compiler Apple clang version 21.0.0 (clang-2100.3.34.2)
 preprocessed src/BuiltinsParts.h 93340

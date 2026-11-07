@@ -172,6 +172,7 @@ build/rakupp -I lib program.raku      # add lib dirs to the module search path
 | `--precomp-info` | What is cached, where, and what it holds — see [CACHING.md](CACHING.md) |
 | `--precomp-clean` | Empty that cache (entries are derived data — always safe) |
 | `--highlight [SRC]` | Syntax-highlight Raku — `--html` (default) or `--ansi`; a `pygmentize` drop-in |
+| `--doc-links [SRC]` | Every construct linked to its docs.raku.org page — a list, `--html`, `--ansi` or `--json` ([CLI.md](CLI.md#linking-a-program-to-its-documentation---doc-links)) |
 | `--help`, `-h` | Show help |
 | `--version`, `-v` | The release, the build it came from, and the platform — one line |
 | `-V`, `--info`, `--version-full` | The full report: also the Raku version, compiler, FFI backend and binary path |

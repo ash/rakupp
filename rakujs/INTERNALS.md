@@ -33,7 +33,7 @@ The link is `MODULARIZE`d as `RakuJS`, with `INVOKE_RUN=0` / `EXIT_RUNTIME=0`
 memory growing on demand, and these exports:
 
 ```
-_rakupp_run   _rakupp_highlight   _rakupp_version   _malloc   _free
+_rakupp_run   _rakupp_highlight   _rakupp_lsp   _rakupp_doc_links   _rakupp_version   _malloc   _free
 ccall   cwrap   UTF8ToString
 ```
 

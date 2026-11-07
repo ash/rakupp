@@ -35,6 +35,7 @@
 #include "Lint.h"
 #include "Ffi.h"
 #include "Fmt.h"
+#include "DocLinks.h"
 #include "Highlight.h"
 #include "Lsp.h"
 #include "JupyterKernel.h"
@@ -2699,6 +2700,7 @@ static const FlagDoc kFlagDocs[] = {
     {"--highlight", 0, nullptr, "syntax-highlight to HTML"},
     {"--ansi", 0, nullptr, "syntax-highlight for a terminal"},
     {"--html", 0, nullptr, "syntax-highlight to HTML"},
+    {"--doc-links", 0, nullptr, "link every construct to its docs.raku.org page (--html, --ansi, --json)"},
     {"--precomp-info", 0, nullptr, "where the parsed-module cache is"},
     {"--precomp-clean", 0, nullptr, "empty the parsed-module cache"},
     {"--precomp-modules", 1, "on off", "cache the parse of used modules"},
@@ -3017,6 +3019,21 @@ static int readProgramArg(const std::string& a, bool run, std::string& src) {
     return -1;
 }
 
+// `rakupp doc prog.raku` names a PROGRAM, not a symbol: it is
+// `rakupp --doc-links prog.raku`, the doc links of everything in it. No symbol
+// ends in a Raku file extension, and the file has to exist.
+static bool docArgsNameProgram(int argc, char** argv, int from) {
+    static const char* const kExts[] = {".raku", ".rakumod", ".rakutest", ".rakudoc", ".p6", ".pl6", ".pm6", ".t"};
+    for (int i = from; i < argc; i++) {
+        std::string a = argv[i];
+        for (const char* e : kExts) {
+            size_t n = std::strlen(e);
+            if (a.size() > n && a.compare(a.size() - n, n, e) == 0 && std::ifstream(a).good()) return true;
+        }
+    }
+    return false;
+}
+
 int main(int argc, char** argv) {
     rakupp::setupConsole();  // Windows: UTF-8 output and live escape sequences (no-op elsewhere)
     rakupp::registerShadowModules();  // NativeHelpers::Blob & co. answer from the binary, not a rakulib/ beside it
@@ -3066,6 +3083,10 @@ int main(int argc, char** argv) {
     // manager owns. Carried inside the binary for the same reason they are —
     // so it works from a lone rakupp.exe with no script anywhere on disk.
     bool isUpgrade   = cmdWord == "upgrade";
+    if (isDocCmd && docArgsNameProgram(argc, argv, cmdAt + 1)) {   // `rakupp doc prog.raku`
+        static char docLinks[] = "--doc-links";
+        argv[cmdAt] = docLinks; isDocCmd = false; cmdWord.clear();
+    }
     if (cmdWord == "install" || isUninstall || isReinstall || isTestCmd || isDocCmd || isUpgrade) {
         // The tool's name stands in for a path: it is what $*PROGRAM and any
         // backtrace report, and the argument scan below recognises it and
@@ -3121,7 +3142,7 @@ int main(int argc, char** argv) {
     {
         static const std::set<std::string> kLongNames = {
             "exe", "cpp", "emit-cpp", "bundle", "aot", "lint", "highlight",
-            "ansi", "terminal", "ast", "dump-ast", "doc", "help", "version",
+            "ansi", "terminal", "ast", "dump-ast", "doc", "doc-links", "help", "version",
             "mcp", "lsp", "jupyter", "seed", "color", "colour", "env-file",
             "stack-size", "ll-exception", "json", "stagestats", "trace",
             "repl-after", "completions", "watch", "auto",
@@ -3175,7 +3196,7 @@ int main(int argc, char** argv) {
     // `-o out --exe src` is as good as `--exe src -o out`.
     enum class Mode { Run, Help, Version, VersionFull, FfiInfo, Highlight, Ast, RakuAst, AstRoundtrip,
                       PrecompSetting, PrecompInfo, PrecompClean, JitInfo, JitClean, Check, Lint,
-                      Cpp, Bundle, Aot, Exe, Mcp, Lsp, Jupyter, JupyterInstall, Js, Arduino, Fmt };
+                      Cpp, Bundle, Aot, Exe, Mcp, Lsp, Jupyter, JupyterInstall, Js, Arduino, Fmt, DocLinks };
     Mode mode = Mode::Run;
     // --rakuast=tree drops the source column; =attrs adds the scalar
     // attributes; =compunit wraps the tree the way `.AST(:compunit)` does.
@@ -3213,7 +3234,8 @@ int main(int argc, char** argv) {
     bool replAfter = false;               // --repl-after: run, then a session on the result
     bool watch = false;                   // --watch: rerun on change (run, -c, --lint)
     bool optimize = false;                // -O (compile modes and --cpp)
-    bool sawHtml = false;                 // --html is only legal under --highlight
+    bool sawHtml = false;                 // --html is only legal under --highlight and --doc-links
+    bool sawAnsi = false;                 // --ansi, which --doc-links takes too
     bool sawStdio = false;                // --stdio is only legal under --lsp
     long mcpTimeout = -1;                 // --timeout=SECS, only legal under --mcp
     std::string jupyterConn;              // --jupyter FILE: Jupyter's connection file
@@ -3432,12 +3454,17 @@ int main(int argc, char** argv) {
                 continue;
             }
             if (a == "--ansi" || a == "--terminal") {
-                // a bare --ansi implies --highlight (terminal output)
+                // a bare --ansi implies --highlight (terminal output), unless it is --doc-links' format
+                sawAnsi = true; hlFmt = "ansi";
+                if (mode == Mode::DocLinks) continue;
                 if (mode != Mode::Run && mode != Mode::Highlight) return illegalOpt(a);
-                if (!setMode(Mode::Highlight, "--highlight")) return 4;
-                hlFmt = "ansi"; continue;
+                if (!setMode(Mode::Highlight, "--highlight")) return 4; continue;
             }
             if (a == "--html") { sawHtml = true; hlFmt = "html"; continue; }
+            if (a == "--doc-links") {   // after a bare --ansi, which took --highlight for want of a mode
+                if (mode == Mode::Highlight && sawAnsi && modeTok == "--highlight") mode = Mode::Run;
+                if (!setMode(Mode::DocLinks, a)) return 4; continue;
+            }
             if (a == "--ast" || a == "--dump-ast") { if (!setMode(Mode::Ast, "--ast")) return 4; continue; }
             // `--rakuast[=tok,tok…]`. A COMMA LIST, like --slim's, rather than
             // one exact spelling: the values compose (`--rakuast=tree,compunit`
@@ -3652,7 +3679,8 @@ int main(int argc, char** argv) {
     // same banner the flag would have earned in run mode all along
     if (mode != Mode::Help && mode != Mode::Version && mode != Mode::VersionFull
         && mode != Mode::FfiInfo) {
-        if (sawHtml && mode != Mode::Highlight) return illegalOpt("--html");
+        if (sawHtml && mode != Mode::Highlight && mode != Mode::DocLinks) return illegalOpt("--html");
+        if (mode == Mode::DocLinks && sawHtml + sawAnsi + jsonOut > 1) { std::cerr << "--doc-links takes one of --html, --ansi and --json\n"; return 4; }
         if (sawStdio && mode != Mode::Lsp) return illegalOpt("--stdio");
         // (-q is deliberately absent here: every mode takes it — see g_quiet)
         if (mcpTimeout >= 0 && mode != Mode::Mcp) return illegalOpt("--timeout");
@@ -3702,7 +3730,7 @@ int main(int argc, char** argv) {
         // -M applies where the program is checked, compiled or run; the pure
         // source tools see the file exactly as written
         if (!preloadModules.empty() &&
-            (mode == Mode::Highlight || mode == Mode::Ast || mode == Mode::RakuAst || mode == Mode::AstRoundtrip ||
+            (mode == Mode::Highlight || mode == Mode::DocLinks || mode == Mode::Ast || mode == Mode::RakuAst || mode == Mode::AstRoundtrip ||
              mode == Mode::PrecompSetting || mode == Mode::PrecompInfo || mode == Mode::PrecompClean ||
              mode == Mode::JitInfo || mode == Mode::JitClean))
             return illegalOpt("-M");
@@ -3721,7 +3749,7 @@ int main(int argc, char** argv) {
         // --detect-races watches what the interpreter runs: compiled code has no hooks
         if (detectRaces && !runsCode) return illegalOpt("--detect-races");
         if (detectRaces && g_jitAsked) { std::cerr << "--detect-races cannot see inside the loops --jit and --cnp compile; drop one of them\n"; return 4; }
-        if (jsonOut && mode != Mode::Check && mode != Mode::Lint) return illegalOpt("--json");
+        if (jsonOut && mode != Mode::Check && mode != Mode::Lint && mode != Mode::DocLinks) return illegalOpt("--json");
         if (stageStats && mode != Mode::Run) return illegalOpt("--stagestats");
         if (traceStmts && mode != Mode::Run) return illegalOpt("--trace");
         if (replAfter && mode != Mode::Run) return illegalOpt("--repl-after");
@@ -4003,6 +4031,9 @@ int main(int argc, char** argv) {
 "                               reads stdin if no SRC), e.g. as a pygmentize drop-in.\n"
 "                               Flags compose in any order; bare `rakupp --ansi SRC`\n"
 "                               is a shorthand for `--highlight --ansi SRC`\n"
+"  rakupp --doc-links [SRC]     Every construct linked to its page on docs.raku.org: a list,\n"
+"                               the program annotated (--html; --ansi, links clickable) or\n"
+"                               --json. Runs nothing, offline; `rakupp doc SRC` is the list\n"
 "  rakupp -c SRC                Compile-check only: parse, check every variable is\n"
 "                               declared, report, don't run\n"
 "  rakupp --doc SRC             Run, then render the program's Pod to stdout\n"
@@ -4214,6 +4245,12 @@ int main(int argc, char** argv) {
         if (!haveSrc) { std::ostringstream ss; ss << std::cin.rdbuf(); src = ss.str(); }
         std::cout << highlight(src, hlFmt);
         return 0;
+    }
+
+    // --doc-links [--html|--ansi|--json] [FILE | -e CODE | -]: DocLinks.h. Nothing runs.
+    if (mode == Mode::DocLinks) {
+        if (!haveSrc) { std::ostringstream ss; ss << std::cin.rdbuf(); src = ss.str(); fileName = "-"; }
+        return rakupp::runDocLinks(src, fileName, jsonOut ? "json" : sawHtml ? "html" : sawAnsi ? "ansi" : "text");
     }
 
     // --fmt FILE : the formatter (FMT-PLAN). Its gates live in formatSource(),
