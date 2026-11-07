@@ -1418,6 +1418,20 @@ struct ThreadHot {
     RaceThread* race = nullptr;   // the race detector's record of this thread (RaceDetector.cpp)
 };
 RAKUPP_CONSTINIT extern thread_local ThreadHot t_hot;
+// Workers parked in a call nothing can wake (a native routine, a read of stdin):
+// workerAbort_ cannot reach them, so drainWorkers stops waiting once every live
+// worker is one, where it sat out its whole 2 s grace before abandoning them
+// all the same (#229). One count for the process, as stdin is. Guards sit at
+// the blocking calls themselves, so they do not nest.
+extern std::atomic<int> g_unwakeableWorkers;
+struct UnwakeableCall {
+    bool on;
+    UnwakeableCall() : on(t_hot.poll.isWorker) { if (on) g_unwakeableWorkers.fetch_add(1, std::memory_order_relaxed); }
+    void end() { if (on) g_unwakeableWorkers.fetch_sub(1, std::memory_order_relaxed); on = false; }
+    ~UnwakeableCall() { end(); }
+    UnwakeableCall(const UnwakeableCall&) = delete;
+    UnwakeableCall& operator=(const UnwakeableCall&) = delete;
+};
 // A worker thread's count in liveWorkers_, given back when the thread has let
 // go of everything (Interpreter::workerFinished)
 // RAKUPP_WORKER_EXIT_DELAY=MS holds every worker thread that long at its exit,

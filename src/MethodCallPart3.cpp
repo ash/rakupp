@@ -290,6 +290,7 @@ bool stdinGetLine(std::string& line) {
     // unwritten while the program waits for its input; a line stdio already
     // has cannot wait
     if (std::cin.tie() && !stdinHasBufferedLine()) std::cin.tie()->flush();
+    UnwakeableCall parked;   // a worker waiting on stdin cannot see shutdown (drainWorkers)
 #ifndef _WIN32
     struct Buf { char* p = nullptr; size_t cap = 0; ~Buf() { std::free(p); } };
     thread_local Buf b;
@@ -320,6 +321,7 @@ std::string stdinReadAll() {
     std::string all;
     char buf[65536];
     size_t n;
+    UnwakeableCall parked;
     // a short read is the end (or an error): asking again would wait on a
     // terminal whose EOF does not stick
     do { n = std::fread(buf, 1, sizeof buf, stdin); all.append(buf, n); } while (n == sizeof buf);
@@ -370,6 +372,7 @@ static void appendCursorChar(std::string& out, const Value& c) {
 
 // One codepoint's bytes off standard input onto `out`; false at its end.
 static bool stdinCodepoint(std::string& out) {
+    UnwakeableCall parked;
     int c = std::cin.get();
     if (c == EOF) return false;
     out += (char)(unsigned char)c;
@@ -396,7 +399,8 @@ static std::string stdinGrapheme(bool c8) {
     for (;;) {
         unsigned char last = (unsigned char)g.back();
         if ((last < 0x20 && last != '\r') || last == 0x7f) break;
-        int nx = std::cin.peek();
+        int nx;
+        { UnwakeableCall parked; nx = std::cin.peek(); }
         if (nx == EOF) { std::cin.clear(std::cin.rdstate() & ~std::ios::eofbit); break; }
         size_t had = g.size();
         if (nx < 0x80) {   // judged without taking it
@@ -3996,7 +4000,7 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
 #ifndef _WIN32
                     if (!got.empty() && stdinReadAhead() <= 0 && !fdReadableNow(0)) break;
 #endif
-                    int c = std::cin.get();
+                    UnwakeableCall parked; int c = std::cin.get();   // (a worker here cannot see shutdown)
                     if (c == EOF) { g_stdinHitEof = true; break; }
                     got += (char)(unsigned char)c;
                 }

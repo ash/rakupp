@@ -8006,6 +8006,7 @@ Value Interpreter::callNative(Callable& c, ValueList& args, const std::vector<Ex
     bool useFfi = F.ok && rtype;
     if (useFfi) for (auto& s : slots) if (!s.type) { useFfi = false; break; }
 
+    UnwakeableCall inC;   // a worker in C cannot see shutdown (drainWorkers)
     if (useFfi) {
         // Stack-first: a heap allocation costs about as much as the C call, and
         // native signatures are short. Only a freakishly wide one pays for one.
@@ -8144,6 +8145,7 @@ Value Interpreter::callNative(Callable& c, ValueList& args, const std::vector<Ex
                                      D[0],D[1],D[2],D[3],D[4],D[5],D[6],D[7]);
 #endif
     }
+    inC.end();
 
     // Integer return: the value comes back in a 64-bit register but a narrower
     // return type (int32/uint16/…) only fills the low bits — truncate and

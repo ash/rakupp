@@ -6833,6 +6833,7 @@ Value Interpreter::currentThread() {
 // the safe-point abort (inline in the header) so the main thread is never
 // unwound.
 thread_local ThreadHot t_hot;
+std::atomic<int> g_unwakeableWorkers{0};
 
 // The end of a worker's body is not the end of its thread. After it, the
 // closure's captures go (BigStackThread::run_'s Fn), and at the thread's exit
@@ -7410,7 +7411,7 @@ void Interpreter::drainWorkers() {
         wakeParkedReacts();
         stopPool();
         auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
-        while (liveWorkers_.load() > 0 && std::chrono::steady_clock::now() < deadline)
+        while (liveWorkers_.load() > g_unwakeableWorkers.load() && std::chrono::steady_clock::now() < deadline)
             std::this_thread::sleep_for(std::chrono::milliseconds(5));
         std::vector<WorkerSlot> batch;
         { std::lock_guard<std::mutex> lk(sharedMut_); batch.swap(workers_); }
@@ -7435,8 +7436,9 @@ void Interpreter::drainWorkers() {
     // `start {…}` that loops (a server's accept loop) is a daemon thread. Once the
     // mainline is done we give such workers a short grace period, then abandon them
     // so the program can exit — matching Rakudo's thread-pool (daemon) semantics.
+    // One parked where nothing wakes it is not waited for (UnwakeableCall).
     auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
-    while (liveWorkers_.load() > 0 && std::chrono::steady_clock::now() < deadline)
+    while (liveWorkers_.load() > g_unwakeableWorkers.load() && std::chrono::steady_clock::now() < deadline)
         std::this_thread::sleep_for(std::chrono::milliseconds(5));
     std::vector<WorkerSlot> batch;
     { std::lock_guard<std::mutex> lk(sharedMut_); batch.swap(workers_); } // take ownership under the lock
