@@ -16,7 +16,8 @@ f3096c7d and 7a09c596 (`return-rw` use-after-frees; ASan sees the pools' frees),
 578572c6 (a finished worker is not a running one),
 37935a34 (`--exe`: a `do`/`try` block is a scope of its own),
 9b7a9824 (`for` over an array a worker is growing),
-a3246b12 (an untyped Array of Nums packs itself into doubles).*
+a3246b12 (an untyped Array of Nums packs itself into doubles),
+59764c5a (a loop in a top-level block types the top-level variables).*
 
 ---
 
@@ -97,6 +98,20 @@ a3246b12 (an untyped Array of Nums packs itself into doubles).*
   `RAKUPP_SELFPACK_MIN=1`, which packs every Num array. `t/exe/fuzz.raku`
   passes 326 of 326, 70 of them new array programs held to the interpreter with
   packing off. `t/regression/selfpack-arrays.raku` agrees with Rakudo.
+- **A loop in a top-level block knows the top level's types** (59764c5a).
+  Under `--exe -O`, a loop in a bare block, or in a `do` or `try` block, at
+  the top level now types the program's top-level variables as a loop at the
+  top level does. `my $a = 3e0` is a Num there, so `$a / $b` is a float
+  division and the loop takes the unboxed lane.
+  - Before, a bare block refused the lane or kept an Int lane whose guard
+    never held.
+  - A `do`/`try` block lost its lane when it became a scope of its own
+    (37935a34): `t/exe/fuzz.raku`'s 20 `div0` programs, whose loops sit in
+    `(try { … })`, have it back (207 lanes of 326, from 187).
+  - A block's own `my` of the name still shadows it, in that block and the
+    blocks inside it.
+
+  `t/regression/exe-lane-top-types-in-blocks.raku`.
 
 ### Fixed: silent wrong answers
 
