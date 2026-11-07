@@ -80,6 +80,12 @@ only way these can drift.
 - **[compiling.md](compiling.md)** — turning a program into a binary: `--exe`
   vs `--aot` vs `--bundle`, what `-O` buys, and why `--exe` needs a C++ compiler
   on the machine that runs it.
+- **[arduino.md](arduino.md)** — writing Raku for `--target=arduino`: native
+  types and what happens when a value does not fit, fixed-size arrays, string
+  interpolation (you can print a string but not keep one), printing a decimal
+  number, lookup tables computed while building instead of hashes, waiting
+  with `millis()` and the wrap C hides from you, and what to write in place
+  of each thing the board refuses.
 - **[optimizer.md](optimizer.md)** — why `-O` is not the default: what a
   default owes every program, the measured case where `-O` loses, and how a
   pass graduates into the default when it stops being speculation.
