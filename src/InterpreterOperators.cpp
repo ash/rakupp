@@ -1334,7 +1334,7 @@ static void swapExecContext(ExecContext& a, ExecContext& b) {
     swap(a.curRoutineVal, b.curRoutineVal); swap(a.callFrames, b.callFrames); swap(a.leaveResult, b.leaveResult); swap(a.leaveReturned, b.leaveReturned);
     swap(a.leaveReturnV, b.leaveReturnV); swap(a.leaveError, b.leaveError); swap(a.arityCallName, b.arityCallName); swap(a.wantLvalue, b.wantLvalue);
     swap(a.wantTailContainer, b.wantTailContainer); swap(a.catchFrames, b.catchFrames); swap(a.transpFrames, b.transpFrames); swap(a.ctxId, b.ctxId);
-    swap(a.bindRawTails, b.bindRawTails); swap(a.tailVarSlot, b.tailVarSlot); swap(a.rwMirror, b.rwMirror); swap(a.rwMirrorSigil, b.rwMirrorSigil); swap(a.lvalueImmutable, b.lvalueImmutable);
+    swap(a.bindRawTails, b.bindRawTails); swap(a.tailVarSlot, b.tailVarSlot); swap(a.rwMirror, b.rwMirror); swap(a.rwMirrorFrames, b.rwMirrorFrames); swap(a.rwMirrorSigil, b.rwMirrorSigil); swap(a.lvalueImmutable, b.lvalueImmutable);
     swap(a.lvalueImmutableGist, b.lvalueImmutableGist); swap(a.lvalueImmutableVal, b.lvalueImmutableVal); swap(a.lvalueOutLocal, b.lvalueOutLocal); swap(a.lvalueOut, b.lvalueOut);
     swap(a.lvalueOutCell, b.lvalueOutCell); swap(a.collectTailBody, b.collectTailBody); swap(a.collectTail, b.collectTail); swap(a.protoDepth, b.protoDepth);
     swap(a.lastLvalueAttrType, b.lastLvalueAttrType); swap(a.lastLvalueAttrWhere, b.lastLvalueAttrWhere); swap(a.lastLvalueAttrDefault, b.lastLvalueAttrDefault); swap(a.lastLvalueAttrCls, b.lastLvalueAttrCls); swap(a.lastLvalueAttr, b.lastLvalueAttr); swap(a.lastLvalueElemType, b.lastLvalueElemType); swap(a.lastLvalueGrowBase, b.lastLvalueGrowBase); swap(a.lastLvalueGrowSize, b.lastLvalueGrowSize); swap(a.lastLvalueElemIdx, b.lastLvalueElemIdx); swap(a.viewMirrorArr, b.viewMirrorArr); swap(a.viewMirrorIdx, b.viewMirrorIdx);
@@ -1350,7 +1350,7 @@ static void swapExecContext(ExecContext& a, ExecContext& b) {
     // a free list of unused frames — and either side may use it)
 }
 #if defined(__APPLE__) && defined(__aarch64__) && defined(_LIBCPP_VERSION) && !defined(RAKUPP_IN_AUDIT) && !defined(RAKUPP_STR_CENSUS)
-static_assert(sizeof(ExecContext) == 1464,
+static_assert(sizeof(ExecContext) == 1488,
               "ExecContext changed: list the new member in swapExecContext (Interpreter.cpp), "
               "then update this size");
 #endif
