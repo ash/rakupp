@@ -79,6 +79,17 @@ if $pp {
         [q{react { whenever Promise.in(0) { done } }}, 'done', 0, 'done',          '/type/independent-routines#sub_done'],
         [q{sub MAIN() { }},                      'MAIN',  0, 'sub MAIN',           '/language/create-cli'],
         [q{say $*IN;},                           '$*IN',  0, '$*IN',               '/language/variables#Special_filehandles:_STDIN,_STDOUT_and_STDERR'],
+        # native types are lowercase, and were turned away by the capital-letter
+        # guard that keeps ordinary words off type pages
+        [q{my int $i = 1;},                      'int',   0, 'int',                '/native/int'],
+        [q{my atomicint $n = 0;},                'atomicint', 0, 'atomicint',      '/type/atomicint'],
+        [q{my $u = utf8.new(65);},               'utf8',  0, 'utf8',               '/type/utf8'],
+        [q{my str $s;},                          'str',   0, 'str',                '/language/nativetypes#Types_with_native_representation'],
+        [q{my num @a;},                          'num',   0, 'num',                '/language/nativetypes#Types_with_native_representation'],
+        [q{my int64 $j;},                        'int64', 0, 'int64',              '/language/nativetypes#Types_with_native_representation_and_size'],
+        [q{my uint8 $b;},                        'uint8', 0, 'uint8',              '/language/nativetypes#Types_with_native_representation_and_size'],
+        [q{sub f(size_t $x --> ssize_t) { }},    'ssize_t', 0, 'ssize_t',          '/language/nativetypes#Rakudo_specific_native_types'],
+        [q{sub g(--> void) { }},                 'void',  0, 'void',               '/language/nativetypes#The_void_type'],
         # a chain written over several lines keeps its types
         ["my @x = (1..5)\n    .grep(* > 1)\n    .sum;", 'sum', 0, 'Seq.sum',      '/type/Any#method_sum'];
     for @cases -> [$code, $text, $nth, $label, $tail] {
@@ -95,6 +106,25 @@ if $pp {
         check(($m // {})<group>, 'local', 'own method: group');
         check(($m // {})<url>, '', 'own method: no url');
         check((($m // {})<line> // '').contains('"declLine": 1'), True, 'own method: declLine');
+    }
+
+    # …but a native type's name that the program gives its own sub is the sub
+    {
+        my $l = refs('-e', "sub long() \{ 1 \}\nsay long;").grep(*<text> eq 'long').tail;
+        check(($l // {})<group>, 'local', 'own sub named long: group');
+    }
+
+    # the program's own constants and `&` routines are its declarations, and the
+    # words of a `< … >` list written over several lines are not calls (the
+    # highlighter reads them as names; `rat` is a built-in's name)
+    {
+        my @r = refs('-e', "constant N = 5;\nsay N;");
+        check((@r.grep(*<text> eq 'N').tail // {})<label>, 'constant N', 'own constant: label');
+        my @q = refs('-e', "my &qs = -> \$x \{ \$x \};\nsay qs(1);");
+        check((@q.grep(*<text> eq 'qs').tail // {})<group>, 'local', 'own &qs: group');
+        my ($out) = doc-links('--doc-links', '--json', '-e', "my @w = <\n    dog rat\n>;\nsay @w;");
+        check($out.contains('"text": "rat"'), False, 'multi-line word list: rat not linked');
+        check(so $out.contains('"unknown": []'), True, 'multi-line word list: nothing unknown');
     }
 
     # a program that does not parse still gets the token layer

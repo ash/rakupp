@@ -18,16 +18,17 @@ f3096c7d and 7a09c596 (`return-rw` use-after-frees; ASan sees the pools' frees),
 9b7a9824 (`for` over an array a worker is growing),
 a3246b12 (an untyped Array of Nums packs itself into doubles),
 59764c5a (a loop in a top-level block types the top-level variables),
-a516dd92 (`--doc-links`: a program linked to its documentation).*
+a516dd92 and b4bf1dc9 (`--doc-links`: a program linked to its documentation).*
 
 ---
 
 ### New
 
 - **`rakupp --doc-links prog.raku`: every construct of a program, linked to
-  the page on docs.raku.org that documents it** (a516dd92). Keywords,
-  routines and methods, operators, types, special variables, quoting forms
-  and regex constructs, as a list grouped by kind with the lines that use
+  the page on docs.raku.org that documents it** (a516dd92, b4bf1dc9).
+  Keywords, routines and methods, operators, types (native types too: `int`
+  to its own page, `int64` or `size_t` to its table on the native-types
+  page), special variables, quoting forms and regex constructs, as a list grouped by kind with the lines that use
   each; `--html` writes the program as one self-contained page with every
   construct a link, `--ansi` prints it in the terminal with clickable OSC 8
   links, `--json` gives each link's span and URL. `rakupp doc prog.raku` is

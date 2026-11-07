@@ -72,6 +72,9 @@ std::string absUrl(const std::string& rel) {
     return out;
 }
 
+bool identStart(unsigned char c) { return ascii::isalpha(c) || c == '_' || c >= 0x80; }
+bool identChar(unsigned char c) { return ascii::isalnum(c) || c == '_' || c == '-' || c == '\'' || c >= 0x80; }
+
 // ---------------------------------------------------------------------------
 // What the AST says, per line. The token pass asks it the questions a word
 // cannot answer alone.
@@ -85,6 +88,7 @@ struct Facts {
     std::map<int, std::vector<bool>> listAssign;      // per `=`, in order: a list assignment?
     // the program's own declarations: name -> declaring line
     std::map<std::string, int> subs, types;
+    std::map<std::string, std::pair<int, std::string>> sigilless; // `constant N`, `my \x` -> line, declarator
     std::map<std::string, std::string> typeKind;      // class / role / grammar / enum / subset
     std::map<std::string, std::vector<std::string>> parents; // `is` and `does`, in order
     std::map<std::string, std::map<std::string, int>> members; // type -> method or accessor -> line
@@ -92,6 +96,7 @@ struct Facts {
     std::map<std::string, std::string> vars;          // variable -> static type ("" = ambiguous)
     std::set<std::string> fixedVars;                  // …declared with that type, not inferred
     std::set<std::string> modules;                    // `use`d names with a page (Test …)
+    std::set<std::string> typeNames;                  // every name written where a type goes
 };
 
 // What a method returns whatever its invocant — the names whose every
@@ -275,7 +280,10 @@ struct Walker {
 
     void params(const std::vector<Param>& ps, int line) {
         for (auto& p : ps) {
-            if (phase == DECLS && !p.type.empty() && !p.typeCapture) noteVar(p.name, p.type, true);
+            if (phase == DECLS && !p.type.empty() && !p.typeCapture) {
+                noteVar(p.name, p.type, true);
+                f.typeNames.insert(p.type);
+            }
             if (phase == FACTS && p.slurpy)
                 f.terms[line].insert(std::string(p.slurpyKind == 'n' ? "**" : p.slurpyKind == '1' ? "+" : "*") + p.sigil);
             expr(p.defaultVal.get(), line);
@@ -290,8 +298,16 @@ struct Walker {
         switch (e->kind) {
             case NK::VarExpr: {
                 auto* v = static_cast<const VarExpr*>(e);
-                if (phase == DECLS && v->declare && !v->d().declType.empty())
+                if (phase == DECLS && v->declare && !v->d().declType.empty()) {
                     noteVar(v->name, v->d().declType, true);
+                    f.typeNames.insert(v->d().declType);
+                }
+                // `my &f = …` declares a routine as surely as `sub f`, and a
+                // `constant N` or `my \x` is a name with no sigil
+                if (phase == DECLS && v->declare && v->name.size() > 1 && v->name[0] == '&')
+                    f.subs.emplace(v->name.substr(1), line);
+                if (phase == DECLS && v->declare && !v->name.empty() && identStart((unsigned char)v->name[0]))
+                    f.sigilless.emplace(v->name, std::make_pair(line, v->d().declScope));
                 return;
             }
             case NK::InterpStr:
@@ -398,6 +414,7 @@ struct Walker {
             }
             case NK::BlockExpr: {
                 auto* b = static_cast<const BlockExpr*>(e);
+                if (phase == DECLS && !b->retType.empty()) f.typeNames.insert(b->retType);
                 params(b->params, line);
                 body(b->body, line);
                 if (phase == FACTS && b->isPointy) f.terms[line].insert("->");
@@ -426,6 +443,7 @@ struct Walker {
             for (auto& r : c->roles) ps.push_back(r);
             for (auto& a : c->attrs) {
                 if (!a.type.empty()) {
+                    f.typeNames.insert(a.type);
                     noteVar(std::string(1, a.sigil) + "!" + a.name, a.type, true);
                     noteVar(std::string(1, a.sigil) + "." + a.name, a.type, true);
                 }
@@ -466,6 +484,7 @@ struct Walker {
             }
             case NK::SubDecl: {
                 auto* d = static_cast<const SubDecl*>(s);
+                if (phase == DECLS && !d->retType.empty()) f.typeNames.insert(d->retType);
                 if (phase == DECLS && !d->name.empty()) {
                     if (d->isMethod || d->isSubmethod) {
                         if (!cls.empty()) f.members[cls.back()].emplace(d->name, line);
@@ -586,8 +605,6 @@ std::string ltrim(const std::string& s) {
     while (b < s.size() && ascii::isspace((unsigned char)s[b])) b++;
     return s.substr(b);
 }
-bool identStart(unsigned char c) { return ascii::isalpha(c) || c == '_' || c >= 0x80; }
-bool identChar(unsigned char c) { return ascii::isalnum(c) || c == '_' || c == '-' || c == '\'' || c >= 0x80; }
 
 // The operators the fallback recognises when there is no AST to ask (the
 // program does not parse): the common ones, by their usual reading.
@@ -788,6 +805,35 @@ struct Linker {
         return false;
     }
 
+    // Native types are lowercase, which the capital-letter guard in type()
+    // turns away. `int`, `atomicint` and `utf8` have pages of their own; the
+    // rest are rows in the tables of the native-types page, under the heading
+    // of their table. The ones that are also everyday words (`long`, `bool`,
+    // `void` …) count only where the program writes them as a type.
+    const IndexRow* nativeType(const std::string& n) const {
+        if (f.subs.count(n)) return nullptr;
+        if (n == "int" || n == "atomicint" || n == "utf8") return find('T', n);
+        static const std::map<std::string, const char*> section = {
+            {"uint", "Types with native representation"}, {"num", "Types with native representation"},
+            {"str", "Types with native representation"},
+            {"int8", "Types with native representation and size"}, {"int16", "Types with native representation and size"},
+            {"int32", "Types with native representation and size"}, {"int64", "Types with native representation and size"},
+            {"uint8", "Types with native representation and size"}, {"uint16", "Types with native representation and size"},
+            {"uint32", "Types with native representation and size"}, {"uint64", "Types with native representation and size"},
+            {"num32", "Types with native representation and size"}, {"num64", "Types with native representation and size"},
+            {"byte", "Types with native representation and size"},
+            {"long", "Rakudo specific native types"}, {"longlong", "Rakudo specific native types"},
+            {"ulong", "Rakudo specific native types"}, {"ulonglong", "Rakudo specific native types"},
+            {"size_t", "Rakudo specific native types"}, {"ssize_t", "Rakudo specific native types"},
+            {"bool", "Rakudo specific native types"}, {"void", "The void type"},
+        };
+        static const std::set<std::string> words = {"long", "longlong", "ulong", "ulonglong", "size_t", "ssize_t", "bool", "void"};
+        auto it = section.find(n);
+        if (it == section.end()) return nullptr;
+        if (words.count(n) && !f.typeNames.count(n)) return nullptr;
+        return heading("nativetypes", it->second);
+    }
+
     bool type(const Tok& t) {
         const std::string& name = t.text;
         auto own = f.types.find(name);
@@ -796,6 +842,10 @@ struct Linker {
                 auto k = f.typeKind.find(name);
                 addLocal(t.start, t.end, t.line, (k == f.typeKind.end() ? "class" : k->second) + " " + name, own->second);
             }
+            return true;
+        }
+        if (const IndexRow* row = nativeType(name)) {
+            add(t.start, t.end, t.line, "type", name, row);
             return true;
         }
         std::string n = name;
@@ -1221,14 +1271,29 @@ struct Linker {
         if (nextSig && startsWith(ltrim(nextSig->text), "=>") && std::strcmp(nextSig->cls, "") == 0) { termExpected = false; return; }
         if (prev && prev->end == t.start && endsWith(prev->text, ":") && !endsWith(prev->text, "::")) { termExpected = false; return; }
 
+        auto term = f.sigilless.find(n);
+        if (term != f.sigilless.end()) {
+            if (term->second.first != t.line)
+                addLocal(t.start, t.end, t.line, (term->second.second == "constant" ? "constant " : "term ") + n,
+                         term->second.first);
+            termExpected = false;
+            return;
+        }
         if (type(t)) { termExpected = false; return; }
-        auto callsIt = f.calls.find(t.line);
-        bool called = callsIt != f.calls.end() && callsIt->second.count(n);
-        auto namesIt = f.names.find(t.line);
-        called = called || (namesIt != f.names.end() && namesIt->second.count(n));
-        if (called || f.subs.count(n) || std::strcmp(t.cls, "nb") == 0 || !parsed) {
+        // A call or a bare term the parser saw here (or a few lines up, in a
+        // statement written over several). Without one a built-in's name is
+        // not looked up: the highlighter reads the words of a `< … >` list
+        // that spans lines as names, and `rat` in one is not a call.
+        bool called = false;
+        for (int l = t.line; l >= std::max(1, t.line - 4) && !called; l--) {
+            for (auto* m : {&f.calls, &f.names}) {
+                auto it = m->find(l);
+                if (it != m->end() && it->second.count(n)) { called = true; break; }
+            }
+        }
+        if (called || f.subs.count(n) || !parsed) {
             if (sub(t)) { termExpected = true; return; }
-            if (std::strcmp(t.cls, "nb") == 0 || called) unknown.insert(n);
+            if (called) unknown.insert(n);
         }
         termExpected = false;
     }
