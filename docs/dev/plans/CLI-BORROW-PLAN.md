@@ -216,9 +216,13 @@ first user inside this repo.
   playground was already examined and parked (probes: `callframe` works,
   `MY::` comes back empty, `--dump-ast` carries no line numbers, ~20×
   probe cost). Don't re-open it through the back door as a flag.
-- **Lockfiles / `--frozen`** (cargo, npm, uv) — machinery the ecosystem's
-  size doesn't justify yet; `rakupp install --check` covers the integrity
-  half.
+- ~~**Lockfiles / `--frozen`**~~ (cargo, npm, uv) — REVERSED 2026-11-07:
+  [LOCKFILE-PLAN.md](LOCKFILE-PLAN.md) is the plan (`rakupp.lock`,
+  `install --lock`, `install --frozen`), not started. This entry said the
+  ecosystem's size didn't justify the machinery and that `rakupp install
+  --check` covers the integrity half. `--check` audits the store already
+  installed; it does not keep tomorrow's install from resolving a newer
+  graph, and that half is the one a lock is for.
 - **`-O` semantic optimization levels for the interpreter** (gcc) — `-O`
   already means something here (the `--exe` codegen passes); overloading it
   with interpreter-mode behavior differences would sell surprises, and
