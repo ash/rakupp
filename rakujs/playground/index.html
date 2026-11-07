@@ -122,7 +122,7 @@
   /* Editor: a transparent textarea sits exactly over a highlighted <pre>. Both
      must share identical metrics or the caret drifts from the coloured text. */
   .editor { position: relative; flex: 1; min-height: 0; }
-  #hl, textarea#code {
+  #hl, #dl, textarea#code {
     position: absolute; inset: 0; margin: 0; padding: 14px; border: 0;
     font-family: var(--font-mono); font-size: 13.5px; line-height: 1.55;
     letter-spacing: normal; tab-size: 4; white-space: pre; overflow: auto; }
@@ -144,6 +144,39 @@
   html[data-theme-active="dark"] .t-s  { color: #ce9178; }
   html[data-theme-active="dark"] .t-m  { color: #b5cea8; }
   html[data-theme-active="dark"] .t-c  { color: #6a9955; }
+  /* Docs: a third layer between the colours and the textarea underlines every
+     construct that has a page — transparent text, visible underlines, the same
+     metrics as the other two. */
+  #dl { color: transparent; pointer-events: none; overflow: hidden; }
+  #dl u { text-decoration: underline; text-decoration-color: var(--accent2);
+          text-underline-offset: 3px; text-decoration-thickness: 1px; }
+  #dl u.inexact { text-decoration-style: dashed; }
+  #dl u.local { text-decoration-style: dotted; text-decoration-color: var(--muted); }
+  #dl u.at { background: rgba(120,140,170,.22); border-radius: 2px; }
+  /* The right pane's label bar is two tabs: Output and Docs. */
+  .pane > .label.tabs { display: flex; gap: 16px; padding-top: 0; padding-bottom: 0; }
+  .tabs button { background: none; border: 0; border-bottom: 2px solid transparent; border-radius: 0;
+                 padding: 6px 0 4px; font: inherit; letter-spacing: inherit; text-transform: inherit;
+                 color: var(--muted); cursor: pointer; }
+  .tabs button[aria-selected="true"] { color: var(--ink); border-bottom-color: var(--accent); }
+  #docs { flex: 1; min-height: 0; overflow: auto; padding: 10px 14px 16px; font-size: 13px; }
+  #docs .docs-sum { color: var(--muted); margin: 0 0 8px; }
+  #docs .docs-warn { color: var(--accent); margin: 0 0 8px; }
+  #docs .docs-at { border: 1px solid var(--border); border-radius: 6px; padding: 8px 10px;
+                   margin: 0 0 6px; background: var(--panel); min-height: 2.6em; }
+  #docs .docs-at .hint { color: var(--muted); }
+  #docs h3 { font-size: 11px; letter-spacing: .08em; text-transform: uppercase;
+             color: var(--muted); font-weight: 600; margin: 14px 0 4px; }
+  #docs ul { list-style: none; margin: 0; padding: 0; }
+  #docs li { padding: 3px 0; }
+  #docs a, #docs .jump { color: var(--accent2); text-decoration: none; font-family: var(--font-mono); }
+  #docs a:hover, #docs .jump:hover { text-decoration: underline; }
+  #docs .jump { background: none; border: 0; padding: 0; font-size: inherit; cursor: pointer; }
+  #docs .where { color: var(--muted); margin-left: 6px; font-size: 12px; }
+  #docs .where button { background: none; border: 0; padding: 0 1px; font: inherit; color: var(--muted);
+                        text-decoration: underline; cursor: pointer; }
+  #docs .note { display: block; color: var(--muted); font-size: 12px; }
+  #docs .unknown { color: var(--muted); margin-top: 14px; }
   #out { flex: 1; margin: 0; padding: 14px; overflow: auto; white-space: pre-wrap;
          font-family: var(--font-mono); font-size: 13px; }
   #out .err { color: var(--accent); }
@@ -215,6 +248,7 @@
     <div class="label">Raku source</div>
     <div class="editor">
       <pre id="hl" aria-hidden="true"></pre>
+      <pre id="dl" aria-hidden="true"></pre>
       <textarea id="code" spellcheck="false" autocomplete="off" autocapitalize="off" wrap="off"></textarea>
     </div>
     <details id="stdinBox" class="stdin">
@@ -223,8 +257,16 @@
     </details>
   </section>
   <section class="pane">
-    <div class="label">Output</div>
-    <pre id="out"><span class="meta">Press ▶ Run (or ⌘/Ctrl-Enter).</span></pre>
+    <div class="label tabs" role="tablist">
+      <button role="tab" id="tabOut" aria-selected="true" aria-controls="out">Output</button>
+      <button role="tab" id="tabDocs" aria-selected="false" aria-controls="docs"
+              title="Every construct in the program, linked to its page on docs.raku.org">Docs</button>
+    </div>
+    <pre id="out" role="tabpanel"><span class="meta">Press ▶ Run (or ⌘/Ctrl-Enter).</span></pre>
+    <div id="docs" role="tabpanel" hidden>
+      <div class="docs-at" id="docsAt"></div>
+      <div id="docsList"></div>
+    </div>
     <div class="status" id="status"></div>
   </section>
 </main>
@@ -254,6 +296,17 @@ const statusEl = document.getElementById('status');
 const verEl  = document.getElementById('ver');
 const runBtn = document.getElementById('runBtn');
 const sel = document.getElementById('examples');
+const dlEl   = document.getElementById('dl');
+// The Docs tab's state (its code is with the worker's, below).
+const tabOut = document.getElementById('tabOut');
+const tabDocs = document.getElementById('tabDocs');
+const docsEl = document.getElementById('docs');
+const docsAtEl = document.getElementById('docsAt');
+const docsListEl = document.getElementById('docsList');
+let docsOpen = false;
+let docs = null, docsFor = null;   // the last answer, and the source it is for
+let docsAsked = null;              // the source of the request in flight
+let docsTimer = null;
 
 // HTML-escape, shared by the highlighter and the output pane.
 const esc = s => s.replace(/[&<>]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));
@@ -283,7 +336,10 @@ function rakuHighlight(code) {
   }
   return out + esc(code.slice(last));
 }
-function syncScroll() { hlEl.scrollTop = codeEl.scrollTop; hlEl.scrollLeft = codeEl.scrollLeft; }
+function syncScroll() {
+  hlEl.scrollTop = dlEl.scrollTop = codeEl.scrollTop;
+  hlEl.scrollLeft = dlEl.scrollLeft = codeEl.scrollLeft;
+}
 function paintHL() { hlEl.innerHTML = rakuHighlight(codeEl.value); syncScroll(); }
 codeEl.addEventListener('scroll', syncScroll);
 
@@ -309,6 +365,7 @@ function loadExample(ex) {
   stdinEl.value = ex.stdin || '';
   stdinBox.open = !!ex.stdin;
   paintHL();
+  docsEdited();
 }
 sel.onchange = () => loadExample(currentExample());
 loadExample(EXAMPLES[0]);
@@ -393,6 +450,7 @@ function applyShared(code, from) {
       + (code.length / 1000 | 0) + ' KB > ' + (SHARE_CAP / 1000 | 0) + ' KB cap)');
   codeEl.value = code.replace(/\r\n?/g, '\n');
   paintHL();
+  docsEdited();
   statusEl.textContent = 'loaded from ' + from;
 }
 
@@ -423,6 +481,7 @@ async function loadSharedCode() {
     statusEl.textContent = 'shared code failed to load';
     return;
   }
+  if (q.has('docs') || h.has('docs')) showTab('docs');
   if (q.has('run') || h.has('run')) {
     autoRun = true;
     if (ready && !running) { autoRun = false; startRun(); }
@@ -630,6 +689,10 @@ function createWorker() {
         if (pendingRun) { pendingRun = false; startRun(); }   // a restart was queued
         else if (autoRun) { autoRun = false; startRun(); }    // a shared link asked to run
         else if (!running) statusEl.textContent = "ready";
+        docsAsked = null; requestDocs();                      // the Docs tab, if open
+        break;
+      case 'docs':
+        onDocs(m);
         break;
       case 'out':
         feed(m.text, m.cls);
@@ -672,11 +735,13 @@ createWorker();
 // 'ready', re-enabling Run — and running any queued restart).
 function killAndRecreate() {
   worker.terminate();
+  docsAsked = null;              // a docs request dies with the worker; 'ready' asks again
   ready = false;
   runBtn.disabled = true;
   createWorker();
 }
 function startRun() {
+  if (docsOpen) showTab('out');
   lastSrc = codeEl.value; lastStdin = stdinEl.value;
   clearScreen();
   statusEl.textContent = "running…";
@@ -783,6 +848,146 @@ async function runOnMain(src, stdin) {
   setRunning(false);
 }
 
+// ---- Docs: every construct, linked to its page on docs.raku.org ----
+// The worker answers {type:'docs'} with the JSON `rakupp --doc-links --json`
+// prints (src/DocLinks.h): each construct's span (`from`/`to`, in the UTF-16
+// units the textarea counts in), its label and its URL, and the same pages
+// deduplicated. Nothing runs and nothing is fetched — the docs index is inside
+// the wasm. With the Docs tab open the editor underlines what has a page, the
+// box at the top names the one under the cursor, ⌘/Ctrl-click opens it, and
+// the line numbers in the list select that use in the editor.
+const GROUP_TITLES = { syntax: 'Syntax', type: 'Types', routine: 'Routines', operator: 'Operators',
+                       variable: 'Variables', local: 'Declared in this program' };
+function showTab(which) {
+  docsOpen = which === 'docs';
+  tabOut.setAttribute('aria-selected', String(!docsOpen));
+  tabDocs.setAttribute('aria-selected', String(docsOpen));
+  outEl.hidden = docsOpen;
+  docsEl.hidden = !docsOpen;
+  if (docsOpen) requestDocs(); else dlEl.innerHTML = '';
+}
+tabOut.onclick = () => showTab('out');
+tabDocs.onclick = () => showTab('docs');
+function requestDocs() {
+  if (!docsOpen) return;
+  const src = codeEl.value;
+  if (docs && docsFor === src) { paintDocs(); return; }
+  if (!ready) { docsMessage('Waiting for the interpreter to load…'); return; }  // asked again on 'ready'
+  if (docsAsked === src) return;
+  docsAsked = src;
+  worker.postMessage({ type: 'docs', src });
+  if (running) docsMessage('Waiting for the running program to finish…');
+}
+function onDocs(m) {
+  docsAsked = null;
+  if (m.src !== codeEl.value) { requestDocs(); return; }   // edited meanwhile: ask again
+  if (m.error) { docsMessage('Could not link this program: ' + m.error); return; }
+  docs = JSON.parse(m.json);
+  docsFor = m.src;
+  if (docsOpen) paintDocs();
+}
+function docsMessage(text) {
+  if (docs && docsFor === codeEl.value) return;   // a current answer stays up
+  docsAtEl.innerHTML = '<span class="hint">' + esc(text) + '</span>';
+}
+// Edits make the underlines wrong at once; drop them and ask again shortly.
+function docsEdited() {
+  if (!docsOpen) return;
+  dlEl.innerHTML = '';
+  clearTimeout(docsTimer);
+  docsTimer = setTimeout(requestDocs, 250);
+}
+function refAt(pos) {
+  if (!docs || docsFor !== codeEl.value) return -1;
+  const refs = docs.refs;
+  for (let i = 0; i < refs.length; i++) {
+    if (refs[i].from > pos) break;
+    if (pos < refs[i].to || (pos === refs[i].to && !(refs[i + 1] && refs[i + 1].from === pos))) return i;
+  }
+  return -1;
+}
+function paintDocs() {
+  const src = codeEl.value, refs = docs.refs;
+  // the underline layer
+  let html = '', last = 0;
+  refs.forEach((r, i) => {
+    const cls = r.group === 'local' ? 'local' : r.exact ? '' : 'inexact';
+    html += esc(src.slice(last, r.from)) + `<u data-i="${i}" class="${cls}">${esc(src.slice(r.from, r.to))}</u>`;
+    last = r.to;
+  });
+  dlEl.innerHTML = html + esc(src.slice(last));
+  syncScroll();
+  // the list
+  const pages = docs.pages.filter(p => p.url).length;
+  let list = `<p class="docs-sum">${pages} page${pages === 1 ? '' : 's'} on docs.raku.org for `
+           + `${refs.length} construct${refs.length === 1 ? '' : 's'} · index of ${esc(docs.index)}</p>`;
+  if (!docs.parsed)
+    list += `<p class="docs-warn">The program does not parse${docs.error && docs.error.line ? ' (line ' + docs.error.line + ')' : ''}`
+          + ', so these links come from the words alone.</p>';
+  let group = null;
+  docs.pages.forEach((p, k) => {
+    if (p.group !== group) {
+      if (group) list += '</ul>';
+      group = p.group;
+      list += `<h3>${GROUP_TITLES[group] || group}</h3><ul>`;
+    }
+    const name = p.url
+      ? `<a href="${esc(p.url)}" target="_blank" rel="noopener">${esc(p.label)}</a>`
+      : `<button class="jump" data-line="${p.declLine}" data-page="-1">${esc(p.label)}</button>`;
+    const lines = p.lines.slice(0, 12).map(l => `<button data-page="${k}" data-line="${l}">${l}</button>`).join(', ')
+                + (p.lines.length > 12 ? ' +' + (p.lines.length - 12) : '');
+    list += `<li>${name}<span class="where">${p.lines.length === 1 ? 'line' : 'lines'} ${lines}</span>`
+          + (p.note ? `<span class="note">${esc(p.note)}</span>` : '') + '</li>';
+  });
+  if (group) list += '</ul>';
+  if (docs.unknown.length)
+    list += '<p class="unknown">No page on docs.raku.org: ' + docs.unknown.map(u => '<code>' + esc(u) + '</code>').join(', ') + '</p>';
+  docsListEl.innerHTML = list;
+  paintAt();
+}
+// The box at the top: the construct under the cursor.
+function paintAt() {
+  if (!docsOpen || !docs || docsFor !== codeEl.value) return;
+  dlEl.querySelectorAll('u.at').forEach(u => u.classList.remove('at'));
+  const i = refAt(codeEl.selectionStart);
+  if (i < 0) {
+    docsAtEl.innerHTML = '<span class="hint">Put the cursor on a word or an operator to see its page; '
+                       + '⌘/Ctrl-click opens it.</span>';
+    return;
+  }
+  const r = docs.refs[i];
+  const u = dlEl.querySelector(`u[data-i="${i}"]`);
+  if (u) u.classList.add('at');
+  docsAtEl.innerHTML = '<code>' + esc(r.text) + '</code> → '
+    + (r.url ? `<a href="${esc(r.url)}" target="_blank" rel="noopener">${esc(r.label)}</a>`
+             : `<button class="jump" data-line="${r.declLine}" data-page="-1">${esc(r.label)}</button>`)
+    + (r.note ? `<span class="note">${esc(r.note)}</span>` : '');
+}
+// Select a use of a page (or a declaration's line) in the editor.
+function jumpTo(page, line) {
+  const refs = docs ? docs.refs : [];
+  const r = refs.find(r => r.page === page && r.line === line);
+  const lineStart = codeEl.value.split('\n').slice(0, line - 1).join('\n').length + (line > 1 ? 1 : 0);
+  codeEl.focus();
+  if (r) codeEl.setSelectionRange(r.from, r.to); else codeEl.setSelectionRange(lineStart, lineStart);
+  const lh = parseFloat(getComputedStyle(codeEl).lineHeight) || 20;
+  codeEl.scrollTop = Math.max(0, (line - 3) * lh);
+  syncScroll();
+  paintAt();
+}
+docsEl.addEventListener('click', e => {
+  const b = e.target.closest('button[data-line]');
+  if (b) jumpTo(+b.dataset.page, +b.dataset.line);
+});
+['keyup', 'click', 'select'].forEach(ev => codeEl.addEventListener(ev, paintAt));
+codeEl.addEventListener('click', e => {
+  if (!docsOpen || !(e.metaKey || e.ctrlKey)) return;
+  const i = refAt(codeEl.selectionStart);
+  if (i < 0) return;
+  const r = docs.refs[i];
+  if (r.url) window.open(r.url, '_blank', 'noopener');
+  else jumpTo(-1, r.declLine);
+});
 // Click the button to run; while running it shows Stop and clicking halts.
 runBtn.onclick = () => running ? stop() : run();
 document.addEventListener('keydown', e => {
@@ -793,7 +998,7 @@ document.addEventListener('keydown', e => {
 });
 // Safety net: editing the source frees the Run button if it ever got stuck
 // disabled while idle. Never touches the mid-run state.
-codeEl.addEventListener('input', () => { paintHL(); if (!running && ready) runBtn.disabled = false; });
+codeEl.addEventListener('input', () => { paintHL(); docsEdited(); if (!running && ready) runBtn.disabled = false; });
 
 // Editor keys: Enter keeps the current line's indentation; Tab indents (Shift-Tab
 // outdents), and a selection spanning lines indents/outdents every line it touches.

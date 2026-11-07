@@ -23,6 +23,7 @@
 // interpreter's recursion guard measures the real stack and throws X::Recursion
 // before it overflows, so this is safe.
 
+#include "DocLinks.h"
 #include "Highlight.h"
 #include "Lsp.h"
 #include <rakupp/rakupp.h>
@@ -101,6 +102,20 @@ EMSCRIPTEN_KEEPALIVE
 const char* rakupp_lsp(const char* body, const char* reference) {
     static std::string out;
     out = rakupp::lspExchange(body ? body : "", reference ? reference : "");
+    return out.c_str();
+}
+
+// Every construct of a program, linked to its page on docs.raku.org: the JSON
+// `rakupp --doc-links --json` prints (src/DocLinks.h), for the playground's
+// Docs pane. Nothing runs — it is the parser and the highlighter over the
+// source — and nothing is fetched: the docs index is compiled in. `from` and
+// `to` in each ref are UTF-16 offsets, so the page selects with them as they
+// are. Same static-string lifetime as rakupp_highlight.
+EMSCRIPTEN_KEEPALIVE
+const char* rakupp_doc_links(const char* src) {
+    static std::string out;
+    const std::string source = src ? src : "";
+    out = rakupp::doclinks::renderJson(rakupp::doclinks::analyze(source), "playground");
     return out.c_str();
 }
 

@@ -37,6 +37,7 @@ let ready = makeModule()
   .catch(err => post('loaderror', { message: String(err) }));
 
 self.onmessage = async (e) => {
+  if (e.data.type === 'docs') return docLinks(e.data.src);
   if (e.data.type !== 'run') return;
   try { await ready; } catch (_) { /* loaderror already posted */ }
   if (!Module) { post('loaderror', { message: 'module not loaded' }); return; }
@@ -65,3 +66,17 @@ self.onmessage = async (e) => {
   }
   post('done', { rc, ms: Math.round(performance.now() - t0) });
 };
+
+// The Docs pane: every construct of `src` linked to its docs.raku.org page, as
+// the JSON `rakupp --doc-links --json` prints. It parses and never runs, so it
+// is quick — but it is a call into the same instance, so one sent during a run
+// waits for the run to finish. The source goes back with the answer: the page
+// drops an answer for text that has been edited since.
+async function docLinks(src) {
+  try { await ready; } catch (_) { return; }
+  if (!Module) return;
+  let json;
+  try { json = Module.ccall('rakupp_doc_links', 'string', ['string'], [src]); }
+  catch (err) { post('docs', { src, error: String(err) }); return; }
+  post('docs', { src, json });
+}
