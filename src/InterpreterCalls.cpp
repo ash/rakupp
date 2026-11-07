@@ -3189,7 +3189,7 @@ Value Interpreter::scalarAliasOf(Env* own, const std::string& nm, const PRef<Val
         if (auto it = kept.find(nm); it != kept.end() && (!cell || cellOfProxy(&it->second) == cell)) return it->second;
         Value proxy = makeSharedCellProxy(cell ? cell : makePayload<Value>());
         if (keptVarTags(own, nm, proxy)) {
-            if (cell && !(parallelMode_ && liveWorkers_.load(std::memory_order_acquire) > 0)) kept[nm] = proxy;
+            if (cell && !(parallelMode_ && runningBodies_.load(std::memory_order_acquire) > 0)) kept[nm] = proxy;
             return proxy;
         }
     }

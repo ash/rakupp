@@ -3096,7 +3096,10 @@ Value Interpreter::execForStmt(Stmt* s, bool sink) {
         bool viaIterator = lvRaw.t == VT::Object && lv.t != VT::Object && !boxedIteration(lvRaw);
         // a literal IterationEnd in the list is the protocol's sentinel
         // and ENDS the loop there (same rule as the block form below)
-        if (lv.t == VT::Array && lv.arr())
+        // (under push's stripe: a worker growing the array moves its buffer, and
+        // the scan read the freed one — ub-iterate-during-push, aarch64 musl)
+        if (lv.t == VT::Array && lv.arr()) {
+            ParStripe grow(*this, lv.arr());
             for (size_t k = 0; k < lv.arr()->size(); k++)
                 if ((*lv.arr())[k].t == VT::Type && (*lv.arr())[k].s == "IterationEnd") {
                     Value cut = Value::array(); cut.isList = lv.isList;
@@ -3104,6 +3107,7 @@ Value Interpreter::execForStmt(Stmt* s, bool sink) {
                     lv = cut;
                     break;
                 }
+        }
         auto env = tctx().cur;
         bool hadTopic = env->vars.count("$_");
         Value savedTopic = hadTopic ? env->vars["$_"] : Value::any();
@@ -3333,6 +3337,7 @@ Value Interpreter::execForStmt(Stmt* s, bool sink) {
     // sitting in the list ENDS the loop there (`.say for ["foo",
     // IterationEnd, "baz"]` prints only foo)
     if (listv.t == VT::Array && !listv.packedLive() && listv.arr()) {   // (words hold no IterationEnd)
+        ParStripe grow(*this, listv.arr());   // (as the statement form's scan: a worker may grow it)
         for (size_t k = 0; k < listv.arr()->size(); k++)
             if ((*listv.arr())[k].t == VT::Type && (*listv.arr())[k].s == "IterationEnd") {
                 Value cut = Value::array(); cut.isList = listv.isList;

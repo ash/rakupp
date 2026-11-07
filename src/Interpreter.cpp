@@ -6846,7 +6846,12 @@ thread_local ThreadHot t_hot;
 // other one. A body run inline on a thread that is not a worker's (no thread
 // could be made) gives it back at once.
 thread_local WorkerExit t_workerExit;
-void Interpreter::workerFinished() {
+int g_workerExitDelayMs = [] {
+    const char* e = std::getenv("RAKUPP_WORKER_EXIT_DELAY");
+    return e ? std::atoi(e) : 0;
+}();
+void Interpreter::workerFinished(bool body) {
+    if (body) runningBodies_.fetch_sub(1, std::memory_order_release);
     WorkerExit& w = t_workerExit;
     if (w.onWorker && (!w.count || w.count == &liveWorkers_)) { w.count = &liveWorkers_; w.n++; }
     else liveWorkers_--;
@@ -6884,7 +6889,7 @@ Value Interpreter::spawnPromise(Value code, Value threadVal) {
         // by addWorker's own sharedMut_ scope — holding sharedMut_ HERE
         // self-deadlocked against addWorker/throttleSpawn (std::mutex is not
         // recursive).
-        liveWorkers_++;
+        workerStarting();
         auto fin = std::make_shared<std::atomic<bool>>(false);
         auto spawnScope = tctx().cur ? tctx().cur : global_;
         throttleSpawn();
@@ -6934,7 +6939,7 @@ Value Interpreter::spawnPromise(Value code, Value threadVal) {
         }), fin);
         return p;
     }
-    liveWorkers_++;
+    workerStarting();
     auto fin = std::make_shared<std::atomic<bool>>(false);
     auto spawnScope = tctx().cur ? tctx().cur : global_; // dynamics visible at the spawn point
     throttleSpawn();
@@ -6996,7 +7001,7 @@ void Interpreter::spawnContinuation(Value code) {
 static constexpr int kPoolIdleMax = 8;
 void Interpreter::runPooled(std::function<void()> job) {
     engageGil();
-    liveWorkers_++;
+    workerStarting();
     {   std::lock_guard<std::mutex> lk(poolM_);
         if (!poolStopping_ && poolIdle_ > (int)poolJobs_.size()) {
             poolJobs_.push_back(std::move(job));
@@ -7019,6 +7024,7 @@ void Interpreter::poolWorker(std::function<void()> job) {
         tctx() = ExecContext();            // a new thread's registers, for every job
         reactStack_.clear();
         job();
+        runningBodies_.fetch_sub(1, std::memory_order_release);   // (the body is done; its thread counts on)
         job = nullptr;                     // its captures go while this thread counts
         tctx() = ExecContext();            // …and so does what it left in the registers
         std::unique_lock<std::mutex> lk(poolM_);
@@ -7033,7 +7039,7 @@ void Interpreter::poolWorker(std::function<void()> job) {
         job = std::move(poolJobs_.front());
         poolJobs_.pop_front();
     }
-    workerFinished();                      // the count goes back once the thread is gone
+    workerFinished(false);                 // the count goes back once the thread is gone
 }
 
 // The idle workers end too, counted again until their threads are gone (one
@@ -7076,7 +7082,7 @@ Value Interpreter::cueJob(Value code, double delaySecs, double everySecs, long l
     Value cancellation = Value::makeHash(); cancellation.hashKind = "Cancellation";
     cancellation.extM() = cs;
     cuedLoads_++;
-    liveWorkers_++;
+    workerStarting();
     auto fin = std::make_shared<std::atomic<bool>>(false);
     auto spawnScope = tctx().cur ? tctx().cur : global_;
     Interpreter* self = this;
@@ -7275,7 +7281,7 @@ void Interpreter::thenCombinator(const Value& combo, std::function<void()> fn) {
     { std::lock_guard<std::mutex> lk(w->m); if (w->fired) return; }
     std::sort(moments.begin(), moments.end());
     engageGil();
-    liveWorkers_++;
+    workerStarting();
     auto fin = std::make_shared<std::atomic<bool>>(false);
     auto spawnScope = tctx().cur ? tctx().cur : global_;
     Interpreter* self = this;

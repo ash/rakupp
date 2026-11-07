@@ -24,6 +24,7 @@
 #include <set>
 #include <string>
 #include <thread>
+#include <chrono>
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
@@ -1419,11 +1420,20 @@ struct ThreadHot {
 RAKUPP_CONSTINIT extern thread_local ThreadHot t_hot;
 // A worker thread's count in liveWorkers_, given back when the thread has let
 // go of everything (Interpreter::workerFinished)
+// RAKUPP_WORKER_EXIT_DELAY=MS holds every worker thread that long at its exit,
+// still counted: a test's stand-in for a slow teardown, which is when a check
+// reading liveWorkers_ instead of runningBodies_ answers wrong
+// (t/regression/worker-teardown-is-not-a-running-body.raku).
+extern int g_workerExitDelayMs;
 struct WorkerExit {
     std::atomic<int>* count = nullptr;
     int n = 0;
     bool onWorker = false;
-    ~WorkerExit() { if (count && n) count->fetch_sub(n, std::memory_order_release); }
+    ~WorkerExit() {
+        if (!count || !n) return;
+        if (g_workerExitDelayMs > 0) std::this_thread::sleep_for(std::chrono::milliseconds(g_workerExitDelayMs));
+        count->fetch_sub(n, std::memory_order_release);
+    }
 };
 extern thread_local WorkerExit t_workerExit;
 // The line of the statement now executing (test diagnostics, callframe, the line
@@ -3304,7 +3314,7 @@ public:
     // thread can be reading it: workers live and the slot not private (a map
     // entry, which this cannot prove private, counts as reachable).
     bool promotionSafe(const Env* owner, const Value* raw) const {
-        if (!(parallelMode_ && liveWorkers_.load(std::memory_order_acquire) > 0)) return true;   // (acquire: see ParStripe)
+        if (!(parallelMode_ && runningBodies_.load(std::memory_order_acquire) > 0)) return true;   // (acquire: see ParStripe)
         if (!owner || !owner->layout || owner->pad.empty()) return false;
         const Value* b = &owner->pad[0];
         if (raw < b || raw >= b + owner->pad.size()) return false;
@@ -4464,7 +4474,19 @@ public:
         }), workers_.end());
     }
     std::atomic<int> liveWorkers_{0};      // workers that have not yet finished
-    void workerFinished();                 // a worker body's end: liveWorkers_ drops at its thread's exit
+    // …and how many of their BODIES are still running: given back the moment
+    // a body returns, where liveWorkers_ waits for the thread's exit (the cycle
+    // collector must not walk what a finishing thread is still freeing). A
+    // check that asks "can another thread be running Raku code now?" reads
+    // this one: right after `await start {…}` the thread may still be tearing
+    // down, and reading liveWorkers_ there made `my $db := $d` refuse its cell
+    // (promotionSafe) and a later `my $*X` invisible to a callee, now and then.
+    std::atomic<int> runningBodies_{0};
+    void workerStarting() { liveWorkers_++; runningBodies_++; }   // a body is about to run on a worker
+    // A worker body's end: runningBodies_ drops now, liveWorkers_ at the
+    // thread's exit. A pool thread's own end passes body = false (its jobs gave
+    // their body counts back as each returned).
+    void workerFinished(bool body = true);
     // runPooled's idle workers: not in liveWorkers_ while they wait (they hold
     // nothing of the program's), each queued job handed to one of them
     std::mutex poolM_;

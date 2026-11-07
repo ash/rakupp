@@ -12,7 +12,10 @@ here.*
 02e52fa2 (`Value` 80 → 64 bytes), 5d52a248 (string literals keep their Value),
 f0376fa6 (kernels share stored strings; `"…"` literals cached),
 9b294b72 (`%h.elems` without listing the hash),
-f3096c7d and 7a09c596 (`return-rw` use-after-frees; ASan sees the pools' frees).*
+f3096c7d and 7a09c596 (`return-rw` use-after-frees; ASan sees the pools' frees),
+578572c6 (a finished worker is not a running one),
+37935a34 (`--exe`: a `do`/`try` block is a scope of its own),
+9b7a9824 (`for` over an array a worker is growing).*
 
 ---
 
@@ -80,6 +83,37 @@ f3096c7d and 7a09c596 (`return-rw` use-after-frees; ASan sees the pools' frees).
   found them only once it could see the engine's own pools free memory
   (f3096c7d: an ASan build now hands every slab and list block back to the
   allocator).
+- **Right after `await start {…}`, a worker still exiting counted as running
+  code** (578572c6). For as long as its thread took to tear down:
+  - `my $b := $a` would not share `$a`'s cell, and `$b.VAR.default` died;
+  - a callee did not see a `my $*X` declared later in its caller's frame.
+
+  Both depended on timing, which is why CI's Linux legs failed
+  `scalar-alias-keeps-type.raku` or `dynamic-var-memo.raku` now and then.
+  The checks that ask whether another thread can be running code now count
+  worker bodies, which end when the body returns.
+  `t/regression/worker-teardown-is-not-a-running-body.raku` makes the
+  teardown slow on purpose (`RAKUPP_WORKER_EXIT_DELAY`).
+- **Under `--exe`, a `do { … }` or `try { … }` block in an expression was not
+  a scope of its own** (37935a34), as a bare block is. Two things came of it:
+  - At the top level, a `my` inside one that shared a top-level variable's
+    name assigned that variable. `my $j = 7; my $r = do { my $j = 100; $j }`
+    left `$j` at 100 compiled, and at 7 interpreted.
+  - A C-style `loop (my $a = 0; …)` inside one did not build, with or without
+    `-O`: the generated C++ assigned `v_sa` and never declared it.
+
+  A top-level `do` block that declares a dynamic (`my $*x`) now runs bundled
+  with the interpreter, as a bare block there already did. Compiled natively,
+  it died with `Undefined routine` when the block also declared the sub that
+  read the dynamic. `t/regression/exe-do-try-block-scope.raku`.
+- **A `for` loop over an array that another thread was pushing to could crash**
+  (9b7a9824). Before looping, `for` checks the list for a literal `IterationEnd`.
+  It read the array without the lock `push` takes, so a push that moved the
+  buffer left the check reading freed memory. The values a loop sees while
+  another thread grows its array are still unspecified, but the runtime no
+  longer crashes. It crashed now and then on linux-aarch64-musl in
+  `t/stress/ub-iterate-during-push.raku`, and an ASan build with the pools off
+  reported it in 1 of 12 runs; it now runs 40 of 40 clean.
 
 - **A `constant` naming a type is that type in a signature** (28257097;
   issue #220). `my constant Alias = Foo::Bar; sub g(Alias $x) { }` gave a

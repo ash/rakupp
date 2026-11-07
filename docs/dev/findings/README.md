@@ -319,6 +319,22 @@ logs and the reviews. This page is the complete list.
     licenses frames without an `Env`.
   - Two defects: a written `num` compiles to an `int` lane (49× on a float
     loop), and a compiled `$obj.attr` is slower than an interpreted one.
+- **[JSC-VALUES-2026-11-07.md](JSC-VALUES-2026-11-07.md)** *(2026-11-07, at
+  5.6.3-46-gf402eeb2, against Bun 1.4.4 / WebKit d6375c72)* — how Bun runs
+  untyped JavaScript near C, read from JavaScriptCore's sources and graph
+  dumps, on the review's kernels ported to JS and timed under each JSC tier.
+  Kernels and scripts in [`jsc-values-2026-11/`](jsc-values-2026-11/).
+  - The NaN-boxed value is not the reason. JSC's interpreter uses it and is
+    2–9× slower than Raku++'s on scalar loops and calls. The speed is the
+    FTL's unboxed int32, int52 and double code, with its checks at function
+    entry or hoisted out of the loop.
+  - On scalar loops and recursion Raku++ already matches or beats Bun.
+    `intloop` (integers past 2³¹) runs 11× faster under `--exe -O`, because
+    JS falls back to doubles and `fmod`.
+  - The gap is arrays (36–48× compiled) and objects (150–280×). JSC's arrays
+    record their element kind and its objects their layout in their own
+    headers, so one check at entry licenses the fast loop. An
+    ahead-of-time compiler can use that without profiling.
 
 ## One-off bug reports
 

@@ -632,7 +632,7 @@ static std::string signalNameOfNumber(int sig) {
 Value Interpreter::spawnSupplyTimer(double secs, Value blk, std::shared_ptr<SupplyTapCtx> ctx) {
     engageGil();
     ctx->pending++;
-    liveWorkers_++;
+    workerStarting();
     auto fin = std::make_shared<std::atomic<bool>>(false);
     auto spawnScope = tctx().cur ? tctx().cur : global_;
     Interpreter* self = this;
@@ -807,7 +807,7 @@ Value Interpreter::spawnSupplyChannel(Value chan, Value blk, std::shared_ptr<Sup
     };
     readerDelta(chan, 1);
     ctx->pending++;
-    liveWorkers_++;
+    workerStarting();
     auto fin = std::make_shared<std::atomic<bool>>(false);
     auto spawnScope = tctx().cur ? tctx().cur : global_;
     Interpreter* self = this;
@@ -889,7 +889,7 @@ Value Interpreter::spawnSupplyInterval(double interval, double delay, Value blk,
                                        std::shared_ptr<SupplyTapCtx> ctx) {
     engageGil();
     ctx->pending++;
-    liveWorkers_++;
+    workerStarting();
     auto fin = std::make_shared<std::atomic<bool>>(false);
     auto spawnScope = tctx().cur ? tctx().cur : global_;
     Interpreter* self = this;
@@ -979,7 +979,7 @@ void Interpreter::spawnDelayedNative(double secs, std::function<void()> fn) {
         return;
     }
     engageGil();
-    liveWorkers_++;
+    workerStarting();
     auto fin = std::make_shared<std::atomic<bool>>(false);
     if (secs < 0) secs = 0;
     throttleSpawn();
@@ -1013,7 +1013,7 @@ void Interpreter::spawnDelayedNative(double secs, std::function<void()> fn) {
 // and gives up a stalled send only once the program is ending.
 void Interpreter::startSocketWriter(std::shared_ptr<AsyncSockWriter> w) {
     engageGil();
-    liveWorkers_++;
+    workerStarting();
     auto fin = std::make_shared<std::atomic<bool>>(false);
     auto spawnScope = tctx().cur ? tctx().cur : global_;
     Interpreter* self = this;
@@ -1079,7 +1079,7 @@ void Interpreter::startSocketWriter(std::shared_ptr<AsyncSockWriter> w) {
 Value Interpreter::spawnTimerWhenever(double secs, Value blk, std::shared_ptr<ReactCtx> ctx) {
     engageGil();
     if (ctx) { std::lock_guard<std::mutex> lk(ctx->m); ctx->liveSources++; }
-    liveWorkers_++;
+    workerStarting();
     auto fin = std::make_shared<std::atomic<bool>>(false);
     auto spawnScope = tctx().cur ? tctx().cur : global_;
     Interpreter* self = this;
@@ -1144,7 +1144,7 @@ Value Interpreter::spawnIntervalWhenever(double interval, double delay, Value bl
                                          Value doneCb) {
     engageGil();
     if (ctx) { std::lock_guard<std::mutex> lk(ctx->m); ctx->liveSources++; }
-    liveWorkers_++;
+    workerStarting();
     auto fin = std::make_shared<std::atomic<bool>>(false);
     auto spawnScope = tctx().cur ? tctx().cur : global_;
     Interpreter* self = this;
@@ -1241,7 +1241,7 @@ Value Interpreter::spawnIntervalWhenever(double interval, double delay, Value bl
 Value Interpreter::spawnChannelWhenever(Value chan, Value blk, std::shared_ptr<ReactCtx> ctx) {
     engageGil();
     if (ctx) { std::lock_guard<std::mutex> lk(ctx->m); ctx->liveSources++; }
-    liveWorkers_++;
+    workerStarting();
     auto fin = std::make_shared<std::atomic<bool>>(false);
     auto spawnScope = tctx().cur ? tctx().cur : global_;
     Interpreter* self = this;
@@ -1358,7 +1358,7 @@ Value Interpreter::tapSignal(const std::vector<int>& sigs, Value emitCb, Value d
     auto spawnScope = tctx().cur ? tctx().cur : global_;
     std::call_once(pipeOnce, [&] {
         if (::pipe(g_sigPipe) != 0) { g_sigPipe[0] = g_sigPipe[1] = -1; return; }
-        liveWorkers_++;
+        workerStarting();
         auto fin = std::make_shared<std::atomic<bool>>(false);
         throttleSpawn();
         addWorker(BigStackThread([self, spawnScope, fin]() mutable {
@@ -2523,7 +2523,7 @@ Value Interpreter::tapSupply(const Value& s, Value emitCb, Value doneCb, Value q
         };
         tapSupply(src, inEmit, inDone, inQuit);
         engageGil();
-        liveWorkers_++;
+        workerStarting();
         auto fin = std::make_shared<std::atomic<bool>>(false);
         auto spawnScope = tctx().cur ? tctx().cur : global_;
         Interpreter* self = this;
@@ -2663,7 +2663,7 @@ Value Interpreter::tapSupply(const Value& s, Value emitCb, Value doneCb, Value q
             }
             ::shutdown(lfd, SHUT_RDWR); ::close(lfd);
         });
-        liveWorkers_++;
+        workerStarting();
         auto fin = std::make_shared<std::atomic<bool>>(false);
         auto spawnScope = tctx().cur ? tctx().cur : global_;
         Interpreter* self = this;
@@ -2733,7 +2733,7 @@ Value Interpreter::tapSupply(const Value& s, Value emitCb, Value doneCb, Value q
         // second time — and the reader then closed the fd on its way out. The
         // loop polls with a timeout instead and notices handle->closed itself.
         // Log::Timeline's socket test is exactly this shape.
-        liveWorkers_++;
+        workerStarting();
         auto fin = std::make_shared<std::atomic<bool>>(false);
         auto spawnScope = tctx().cur ? tctx().cur : global_;
         bool bin = h.count("bin") && h.at("bin").truthy();
@@ -2941,7 +2941,7 @@ Value Interpreter::tapSupply(const Value& s, Value emitCb, Value doneCb, Value q
         }
         const int fd = st->fd;
         engageGil();
-        liveWorkers_++;
+        workerStarting();
         auto fin = std::make_shared<std::atomic<bool>>(false);
         auto spawnScope = tctx().cur ? tctx().cur : global_;
         const bool bin = h.count("bin") && h.at("bin").truthy();
