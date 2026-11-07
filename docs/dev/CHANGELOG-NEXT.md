@@ -8,11 +8,30 @@ what changed, what it measured and how, with the commit — so the entry starts
 from this page. Move each item into CHANGELOG.md at the tag and delete it
 here.*
 
-*Covered so far: 28257097 (a `constant` type alias in a signature, issue #220).*
+*Covered so far: 28257097 (a `constant` type alias in a signature, issue #220),
+02e52fa2 (`Value` 80 → 64 bytes).*
 
 ---
 
 ### Faster
+
+- **Less memory: a `Value` is 64 bytes, not 80** (02e52fa2; VALUE32-PLAN
+  design C). A Str of up to 15 bytes now lives in the value's own 16-byte
+  string slot, and a longer one is a pointer to a shared body. The slot held a
+  32-byte `std::string` and a pointer before. Peak memory, measured against
+  the commit before:
+  - a million Ints built by `.map`: 164 → 134 MB;
+  - a million short Strs: 164 → 134 MB;
+  - a million Rats: 242 → 164 MB;
+  - 200,000 two-element arrays: 82 → 72 MB;
+  - `hashfill`: 52 → 45 MB.
+
+  perf-guard is level (geomean −0.49% over 27 kernels; instructions −0.04%).
+  Roast's allocations are within run-to-run noise. A string of 16 to 22 bytes
+  now costs an allocation where it cost none: `textsplit`, which keeps 20,000
+  of them, uses 26.3 MB where it used 23.6, and runs 9% faster.
+  t/run.raku 1,992 of 1,992; Roast 1,425 of 1,425; Roast under ASan finds
+  nothing new.
 
 ### Fixed: silent wrong answers
 
