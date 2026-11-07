@@ -1002,6 +1002,7 @@ Value* Interpreter::lvalueThroughRw(Expr* e) {
     struct DepthG { int& d; ~DepthG() { --d; } };
     if (rwThroughDepth_ == 0) {
         tctx().rwMirror.clear(); tctx().rwMirrorSigil = 0; tctx().lvalueOutLocal = false;
+        tctx().rwMirrorFrames.clear();   // (the last write-back has happened)
         tctx().lvalueOutCell.reset();
     }
     ++rwThroughDepth_;
@@ -1044,10 +1045,18 @@ Value* Interpreter::lvalueThroughRw(Expr* e) {
                 // leaves THIS frame's copy of the parameter behind: Crane's
                 // `set` does `Crane::In.in(container, @path) = $value; container`
                 // and returned the pre-assignment `{}`. Mirror the write into
-                // the copies it travelled past — they are still live, and their
-                // own return-time write-back would otherwise carry the stale
-                // value back down over it.
+                // the copies it travelled past: their own return-time write-back
+                // would otherwise carry the stale value back down over it. The
+                // first hop's copy is in the routine doing the `return-rw`, whose
+                // frame is released when it returns, BEFORE the assignment
+                // writes the mirror — so each slot keeps its frame (a frame held
+                // elsewhere is not recycled: FramePool::release). Without it the
+                // write landed in a recycled frame's variables, which musl's
+                // allocator answered with SIGSEGV (rw-sub-lvalue.raku, linux-aarch64-musl).
+                std::shared_ptr<Env> frame = tctx().cur;
+                while (frame && frame.get() != en) frame = frame->parent;
                 tctx().rwMirror.push_back(en->local(nm));
+                tctx().rwMirrorFrames.push_back(std::move(frame));
                 return out;
             }
             break;                                  // the caller's arg is no lvalue
@@ -1095,7 +1104,16 @@ Value* Interpreter::lvalueThroughRw(Expr* e) {
             break;
         }
     }
-    return lvalue(e);
+    Value* out = lvalue(e);
+    // The caller copies a local's VALUE out (lvalueOutLocal), but only once
+    // the call has returned, and by then the frame is back in the pool with
+    // its variables cleared (FramePool::release): the copy read freed memory.
+    // Take it now, while the frame is alive, into a cell the context holds.
+    if (out && tctx().lvalueOutLocal) {
+        tctx().lvalueOutCell = makePayload<Value>(*out);
+        return tctx().lvalueOutCell.get();
+    }
+    return out;
 }
 
 // `$p.VAR.attr` where the container is a stamped Proxy SUBCLASS instance

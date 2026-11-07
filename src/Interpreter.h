@@ -1878,6 +1878,12 @@ struct ExecContext {
     // travelled PAST on its way to the caller's container. Filled by
     // lvalueThroughRw, applied and cleared by the assignment that consumes it.
     std::vector<Value*> rwMirror;
+    // …and the frames those slots live in, held until the next return-rw: the
+    // first hop's copy is in the routine that is returning, whose frame would
+    // otherwise go back to the pool (its variables cleared) before the
+    // assignment writes the mirror. Kept apart from rwMirror so the guard every
+    // assignment builds stays a vector of plain pointers.
+    std::vector<std::shared_ptr<Env>> rwMirrorFrames;
     // …and whether that lvalue resolved to a `%`/`@` VARIABLE. Writing straight
     // into the slot skips the sigil's de-itemize rule, so `%h` came back as an
     // itemized `${…}` and `@a` as `$( … )` rather than an Array.
