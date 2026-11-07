@@ -550,6 +550,7 @@ disabled hooks cost nothing measurable, so there is no separate
 | `--target=parse\|ast\|rakuast\|js\|cpp\|raku` | one spelling for every backend — see [Choosing a backend](#choosing-a-backend) |
 | `--ast-roundtrip` | prove the AST survives the precomp cache format |
 | `--highlight` | syntax-highlight to HTML (`--ansi` for terminals) |
+| `--doc-links` | every construct of the program, linked to its page on docs.raku.org: a list, or the program annotated (`--html`, `--ansi`), or `--json` — see [Linking a program to its documentation](#linking-a-program-to-its-documentation---doc-links) |
 | `--precomp-*` | the parsed-module cache (see [CACHING.md](CACHING.md)) |
 | `--ffi-info` | which FFI backend NativeCall will use (see [FFI.md](FFI.md)) |
 | `--exe-info BIN` | a compiled binary's embedded build manifest (version, mode, `--slim` cuts, `--static`) |
@@ -732,6 +733,73 @@ An unknown symbol exits 1. Like the installer, the command is a Raku program
 the two guides with it, so `rakupp doc` answers from an executable with
 nothing beside it. `RAKUPP_DOCS=DIR` reads them from that directory instead,
 which is how you check an edit to `REFERENCE.md` before rebuilding.
+
+## Linking a program to its documentation: `--doc-links`
+
+`rakupp doc SYMBOL` answers about one name. `rakupp --doc-links prog.raku`
+answers about a whole program: every keyword, routine, method, operator, type,
+special variable, quoting form and regex construct in it, each with the page
+on [docs.raku.org](https://docs.raku.org) that documents it. Nothing runs, and
+nothing is fetched — it works offline.
+
+```
+$ rakupp --doc-links examples/wordcount.raku
+examples/wordcount.raku: 27 pages on docs.raku.org for 46 constructs (index of 2026-11-07)
+
+Syntax
+  my                  9, 18, 20, 21  https://docs.raku.org/syntax/my
+  heredoc :to         9              https://docs.raku.org/syntax/heredocs%20%3Ato
+  …
+Routines
+  Str.lc     18          https://docs.raku.org/type/Str#routine_lc
+  Seq.Bag    18          https://docs.raku.org/type/Any#method_Bag  (documented on Any)
+  Bag.total  20          https://docs.raku.org/type/Baggy#method_total  (documented on Baggy)
+  .value     28, 29      https://docs.raku.org/routine/value  (invocant not known: Pair, Enumeration)
+  …
+Operators
+  infix <=>          28             https://docs.raku.org/language/operators#infix_%3C=%3E
+  prefix ^           28             https://docs.raku.org/language/operators#prefix_%5E
+  …
+```
+
+The list is grouped — Syntax, Types, Routines, Operators, Variables, and the
+program's own declarations last — and each group is in the order the program
+first uses its entries. `rakupp doc prog.raku` is the same list: when the
+argument to `doc` is a Raku file that exists, it is a program, not a symbol.
+
+| Format | |
+|---|---|
+| (default) | the list above |
+| `--html` | one self-contained page: the program highlighted, every construct a link (its tooltip says what it is), the list beside it; pointing at a construct lights up its other uses and its list entry |
+| `--ansi` | the program in the terminal with each construct a clickable link (OSC 8 — iTerm2, kitty, WezTerm, GNOME Terminal, the VS Code terminal), then the list |
+| `--json` | every linked span (`line`, `col`, byte `start`/`end`, UTF-16 `from`/`to`, `label`, `url`, `note`, `exact`) and the deduplicated `pages`; what the playground's Docs tab reads |
+
+**How a construct is resolved.** The highlighter's tokens say where each
+construct is and what kind of word it is; the parser says what it means where
+a word cannot — that this `-` is prefix and that one infix, that `=` is an
+item or a list assignment, that `Point` is the program's own class. A method
+links to the page of its invocant's type when that type is known without
+running anything — a literal, a declared type (`my Int $n`), a sigil (`@a` is
+an Array), `T.new`, or a chain of methods whose result type is fixed
+(`$text.lc.comb(…).Bag` is a Bag) — and walks up the type's parents to the one
+that documents it: `@a.sort` is List's, `.total` on a Bag is Baggy's. When the
+type is not known it links the page that lists every type's version of the
+method, and the note names them; the HTML underlines those links dashed. A
+method, sub or class the program declares links to the line that declares it.
+A built-in with no page on docs.raku.org (a Raku++ extension) is listed at the
+end. A program that does not parse still gets the links the tokens alone can
+give, with a note saying so.
+
+**Where the links come from.** docs.raku.org publishes the index its own search
+uses (`/assets/searchData.json`): every page, every routine on every type with
+the anchor the site gives it, every operator heading. Anchors cannot be
+derived from names — on the Str page `uc` is `#routine_uc` and `contains` is
+`#method_contains` — so the binary carries a copy of that index,
+`src/raku_docs_index_gen.cpp`, and every URL it prints is one the site itself
+links to. The index date is in the summary line. `tools/gen-raku-docs-index.raku`
+regenerates the copy (`--fetch` downloads a new index with curl; nothing else
+touches the network). The pages describe Rakudo; where Raku++ behaves
+differently, its own guides say so.
 
 ## Shell completion
 

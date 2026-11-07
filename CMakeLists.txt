@@ -151,6 +151,13 @@ list(REMOVE_ITEM RAKUPP_SOURCES "${RAKUPP_ARDUINO}")
 # jit::g_emitKernel now, installed by main.cpp, so the edge is gone with it.
 set(RAKUPP_CODEGEN "${CMAKE_CURRENT_SOURCE_DIR}/src/Codegen.cpp")
 list(REMOVE_ITEM RAKUPP_SOURCES "${RAKUPP_CODEGEN}")
+# `--doc-links` and the docs.raku.org index it resolves against (~300 KB of
+# rows) belong to the CLI as well: no `--exe` binary links a program to its
+# documentation. Raku.js compiles them in — the playground's Docs pane is
+# the same code (rakujs/build.sh takes every src/*.cpp).
+set(RAKUPP_DOCLINKS "${CMAKE_CURRENT_SOURCE_DIR}/src/DocLinks.cpp"
+                    "${CMAKE_CURRENT_SOURCE_DIR}/src/raku_docs_index_gen.cpp")
+list(REMOVE_ITEM RAKUPP_SOURCES ${RAKUPP_DOCLINKS})
 # `rakupp install`, `rakupp doc` and `rakupp upgrade` are Raku programs
 # compiled into the CLI: cmake/EmbedTools.cmake turns tools/install.raku,
 # tools/doc.raku, tools/upgrade.raku and the two guides `doc` reads into byte
@@ -526,7 +533,7 @@ if(RAKUPP_BUILD_SHARED OR RAKUPP_LINK_SHARED)
 endif()
 
 add_executable(rakupp "${RAKUPP_MAIN}" "${RAKUPP_REPL}" ${RAKUPP_JS} "${RAKUPP_ARDUINO}"
-                      "${RAKUPP_CODEGEN}" ${RAKUPP_TOOLS})
+                      "${RAKUPP_CODEGEN}" ${RAKUPP_DOCLINKS} ${RAKUPP_TOOLS})
 # The blob is a GENERATED source, so the generator has to have run before this
 # target compiles; nothing else links it.
 add_dependencies(rakupp rakupp_embed_tools)

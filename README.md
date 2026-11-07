@@ -168,6 +168,7 @@ rakupp --exe app.raku -o app     # compile it
 | `--target=js SRC -o OUT.js` | Transpile to JavaScript for Node, Bun, Deno or a browser (`--verify` checks it against the interpreter; see [JS.md](docs/guide/JS.md), walked through in [JS-TUTORIAL.md](docs/guide/JS-TUTORIAL.md)) |
 | `--target=arduino SRC -o OUT.ino` | Transpile a `use Arduino` program to an Arduino sketch; constants and `BEGIN` run while building. `--sim` builds it for this computer on a simulated board, and `rakupp SRC` runs it on the same board in the interpreter (see [ARDUINO.md](docs/guide/ARDUINO.md)) |
 | `--highlight [SRC]` | Syntax-highlight Raku to HTML (`--html`) or terminal (`--ansi`) |
+| `--doc-links [SRC]` | Every construct of the program linked to its docs.raku.org page: a list, the program annotated (`--html`, `--ansi`), or `--json`; offline |
 | `--mcp` | Serve the interpreter over the Model Context Protocol for AI agent clients |
 | `--jupyter FILE` | Run as a Jupyter kernel (`--jupyter-install` registers it with Jupyter) |
 | `--lint SRC` | Static-analyze without running: unused variables, unreachable code, etc. |
