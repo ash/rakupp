@@ -13,7 +13,8 @@ here.*
 f0376fa6 (kernels share stored strings; `"…"` literals cached),
 9b294b72 (`%h.elems` without listing the hash),
 f3096c7d and 7a09c596 (`return-rw` use-after-frees; ASan sees the pools' frees),
-578572c6 (a finished worker is not a running one).*
+578572c6 (a finished worker is not a running one),
+37935a34 (`--exe`: a `do`/`try` block is a scope of its own).*
 
 ---
 
@@ -92,6 +93,18 @@ f3096c7d and 7a09c596 (`return-rw` use-after-frees; ASan sees the pools' frees),
   worker bodies, which end when the body returns.
   `t/regression/worker-teardown-is-not-a-running-body.raku` makes the
   teardown slow on purpose (`RAKUPP_WORKER_EXIT_DELAY`).
+- **Under `--exe`, a `do { … }` or `try { … }` block in an expression was not
+  a scope of its own** (37935a34), as a bare block is. Two things came of it:
+  - At the top level, a `my` inside one that shared a top-level variable's
+    name assigned that variable. `my $j = 7; my $r = do { my $j = 100; $j }`
+    left `$j` at 100 compiled, and at 7 interpreted.
+  - A C-style `loop (my $a = 0; …)` inside one did not build, with or without
+    `-O`: the generated C++ assigned `v_sa` and never declared it.
+
+  A top-level `do` block that declares a dynamic (`my $*x`) now runs bundled
+  with the interpreter, as a bare block there already did. Compiled natively,
+  it died with `Undefined routine` when the block also declared the sub that
+  read the dynamic. `t/regression/exe-do-try-block-scope.raku`.
 
 - **A `constant` naming a type is that type in a signature** (28257097;
   issue #220). `my constant Alias = Foo::Bar; sub g(Alias $x) { }` gave a

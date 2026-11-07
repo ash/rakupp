@@ -2836,7 +2836,7 @@ struct Codegen {
                     std::string body;
                     struct Iife { int& n; explicit Iife(int& x) : n(x) { n++; } ~Iife() { n--; } } __iife{iife_};
                     LoopJumpBarrier __bar{this};   // the body is a lambda: no break/continue/goto out of it
-                    if (u->operand->kind == NK::BlockExpr) {
+                    if (u->operand->kind == NK::BlockExpr) { CellScope __cs{this}; DeclScope __ds{this};   // …and a block, whose `my`s are its own
                         auto* be = static_cast<BlockExpr*>(u->operand.get());
                         body = capture([&]() {
                             for (size_t i = 0; i < be->body.size(); i++) {
