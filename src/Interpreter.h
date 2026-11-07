@@ -6416,9 +6416,13 @@ inline bool rtNumWords(Interpreter& I, const Value& a, int64_t*& p, size_t& n, b
 inline double rtWordN(const int64_t* p, long long i) { double d; std::memcpy(&d, p + i, 8); return d; }
 inline void rtSetWordN(int64_t* p, long long i, double d) { std::memcpy(p + i, &d, 8); }
 // …and what a lane's stores overwrote, for a bail to put back before the boxed
-// loop runs from the lane's entry: a log of words until it outgrows the arrays
-// it covers, then a copy of each as it was at the entry (IntKernel's undo has
-// the same two forms)
+// loop runs from the lane's entry: a log of words until it holds a sixteenth as
+// many entries as the arrays it covers hold words, then a copy of each as it was
+// at the entry (IntKernel's undo has the same two forms). Copying a word costs
+// a fraction of logging one, so the copy pays well before the log matches the
+// arrays: a loop storing each of 10M elements once logged all of them and never
+// switched (32 ms a pass; 30 switching at half; 16-22 at a sixteenth), while a
+// loop storing a few elements of a big array still only logs.
 struct RtWordUndo {
     struct Arr { int64_t* p; size_t n; std::vector<int64_t> saved; };
     std::vector<Arr> arrs;
@@ -6429,7 +6433,7 @@ struct RtWordUndo {
     void note(int64_t* w) {
         if (whole) return;
         log.emplace_back(w, *w);
-        if (log.size() <= cap) return;
+        if (log.size() * 16 <= cap) return;
         for (auto& a : arrs) a.saved.assign(a.p, a.p + a.n);
         for (auto it = log.rbegin(); it != log.rend(); ++it)
             for (auto& a : arrs) if (it->first >= a.p && it->first < a.p + a.n) a.saved[it->first - a.p] = it->second;
