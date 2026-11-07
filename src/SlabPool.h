@@ -81,7 +81,7 @@ class SlabPool {
 
 public:
     static void* alloc(std::size_t n) {
-        if (n == 0 || n > kMaxSize) return ::operator new(n ? n : 1);
+        if (!RAKUPP_POOLS || n == 0 || n > kMaxSize) return ::operator new(n ? n : 1);
         Lists& l = tl;
         if (!l.armed) { l.armed = true; ensureReaper(); }
         std::size_t c = cls(n);
@@ -96,7 +96,7 @@ public:
     }
     static void dealloc(void* v, std::size_t n) noexcept {
         if (!v) return;
-        if (n == 0 || n > kMaxSize) { ::operator delete(v); return; }
+        if (!RAKUPP_POOLS || n == 0 || n > kMaxSize) { ::operator delete(v); return; }
         std::size_t c = cls(n);
         Lists& l = tl;
         if (l.count[c] < kPoolMax) {

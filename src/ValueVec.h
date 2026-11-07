@@ -192,7 +192,7 @@ class RVec {
     }
 
     static T* alloc(std::size_t k) {
-        if (k <= kPooled) {
+        if (RAKUPP_POOLS && k <= kPooled) {
             BlockPool& p = pool();
             FreeBlock*& h = p.head[k - 1];
             if (h) {
@@ -213,7 +213,7 @@ class RVec {
         if (!p) return;
         if (cap && cap <= kPooled) {
             BlockPool& bp = pool();
-            if (bp.n[cap - 1] < kPoolMax) {
+            if (RAKUPP_POOLS && bp.n[cap - 1] < kPoolMax) {
                 FreeBlock* b = reinterpret_cast<FreeBlock*>(p);
                 b->next = bp.head[cap - 1];
                 bp.head[cap - 1] = b;

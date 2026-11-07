@@ -21,3 +21,20 @@
 #else
 #define RAKUPP_CONSTINIT
 #endif
+
+// RAKUPP_POOLS: 0 under AddressSanitizer, else 1. SlabPool and RVec keep freed
+// blocks on free lists of their own and hand them out again, which ASan sees
+// as memory never freed, so a dangling pointer into a recycled block reads
+// someone else's object without a report. With the pools off every block goes
+// back to the allocator, and ASan's quarantine catches the read. (Here, beside
+// the other build-wide switch, because both pools' headers include it.)
+#if defined(__SANITIZE_ADDRESS__)
+#define RAKUPP_POOLS 0
+#elif defined(__has_feature)
+#if __has_feature(address_sanitizer)
+#define RAKUPP_POOLS 0
+#endif
+#endif
+#ifndef RAKUPP_POOLS
+#define RAKUPP_POOLS 1
+#endif
