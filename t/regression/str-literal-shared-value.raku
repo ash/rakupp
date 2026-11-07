@@ -3,7 +3,9 @@
 #
 # A StrLit builds its Value once and copies it on every later evaluation
 # (StrLit::evalState in src/Ast.h, VALUE32-PLAN "A string literal keeps its
-# Value"). A literal over 15 bytes is a shared body, and every evaluation's copy
+# Value"), and so does a "…" with nothing interpolated, whose one part is a
+# StrLit (Interpreter::evalInterp). The integer kernels share the same body when
+# they store one (KConts::scow). A literal over 15 bytes is a shared body, and every evaluation's copy
 # holds that same body, so a write made in place on a copy would change the
 # literal for the rest of the run. Each write below goes through a copy, then
 # the literal is evaluated again.
@@ -14,11 +16,13 @@ sub check($got, $want, $what) {
 
 constant LONG  = 'a literal of more than fifteen bytes';
 constant SHORT = 'short';
-sub long()  { "a literal of more than fifteen bytes" }
+sub long()  { "a literal of more than fifteen bytes" }   # an InterpStr of one StrLit
 sub short() { "short" }
+sub long1()  { 'a literal of more than fifteen bytes' }  # a StrLit
+sub short1() { 'short' }
 sub accent() { "héllo wörld, long enough to share" }
 
-for &long, LONG, &short, SHORT -> &lit, $want {
+for &long, LONG, &short, SHORT, &long1, LONG, &short1, SHORT -> &lit, $want {
     my $x = lit(); $x ~= "!";                  check lit(), $want, "~= on a copy";
     my $y = lit(); $y ~~ s/l/L/;               check lit(), $want, "s/// on a copy";
     my $z = lit(); $z.substr-rw(0, 1) = "Z";   check lit(), $want, "substr-rw on a copy";
@@ -36,6 +40,19 @@ for &long, LONG, &short, SHORT -> &lit, $want {
 my $c = accent(); $c ~= "\x[0301]";
 check accent(), "héllo wörld, long enough to share", "a non-ASCII literal after a join on a copy";
 check accent().chars, 33, "its .chars";
+
+# a kernel-compiled loop storing a literal and a variable, then a write to
+# what it stored
+my @k;
+my $kv = lit-var();
+sub lit-var() { "a variable's text, over fifteen bytes" }
+for ^3 { @k.push("a literal pushed by a loop, over fifteen"); @k.push($kv) }
+@k[0] ~= "!"; @k[1] ~~ s/var/VAR/;
+check @k[2], "a literal pushed by a loop, over fifteen", "a kernel's pushed literal beside a written one";
+check @k[3], "a variable's text, over fifteen bytes", "a kernel's pushed variable beside a written one";
+check $kv, "a variable's text, over fifteen bytes", "the variable a kernel pushed";
+for ^1 { @k.push("a literal pushed by a loop, over fifteen") }
+check @k[*-1], "a literal pushed by a loop, over fifteen", "the kernel's literal, pushed again";
 
 # first evaluations from many threads at once: every thread gets the same text
 sub fresh() { "evaluated first by several threads at the same time" }

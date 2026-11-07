@@ -969,8 +969,73 @@ off (`RAKUPP_NO_KERNELS=1`), a 36-byte literal evaluated 200,000 times:
 With the kernels on, a loop such as `@a.push("…")` runs in IntKernel.cpp. Its
 string lane works in `std::string` and makes a new `Value` for each element it
 stores (`scpushFn`, `csappFn`). That is two mallocs per element for a long
-string, before this change and after it. Left open: the kernel's string lane
-on `CowStr`.
+string, before this change and after it. The next section closes it.
+
+### The kernels' string lane shares, and so does `"…"` (2026-11-07)
+
+**The kernels' stores share what they store.** A kernel keeps its strings
+in `std::string` slots. A variable is copied into one when the kernel is
+entered, and a literal is the kernel's own text. Each store (`push`, an
+element or key assignment, a `~=` into an empty element) made a new Str from
+the text. Rewriting the lane on `CowStr` would have reached into its in-place
+NFC appends and its `.chars` bookkeeping. Instead each slot also keeps
+(`KConts::scow`) the `CowStr` its text came from, while it is still that
+text:
+- what the variable held at entry;
+- the element `SCGet` read;
+- what `SSet` or `SGiven` copied in, from a literal or a slot that has one.
+
+Every other write to the slot (`SApp`, a computing op's own temporary) empties
+it. A store whose source has one (`shareOf`: an `SLit`'s `cow`, or an `SVar`
+or `SCGet` slot) writes it, so the body is shared. So does the write-back of an
+outer variable at exit. Every value the lane takes in passed `plainStrValue`,
+so a shared body is never a Buf's.
+
+**A `"…"` with nothing interpolated was never the cached literal.** The
+parser makes it an `InterpStr` whose one part is the `StrLit`.
+`Interpreter::evalInterp` evaluated that part, which is the cached `Value`
+since the last section, and then `interpolate` built a new string from it:
+two mallocs for a long one. Only `'…'` reached the cache. `evalInterp` now
+answers the part's `Value` itself when the one part is a `StrLit`. That covers
+most string literals in Raku code.
+
+Measured against 8026d109, one sitting, a 36-byte literal or a 40-byte
+variable stored 200,000 times. "Kernel" means the loop compiles to one,
+`RAKUPP_NO_KERNELS` unset. Peak RSS is from `/usr/bin/time -l`.
+
+| loop | mallocs | time | peak RSS |
+|---|---|---|---|
+| `@a.push("…")`, kernel | 404,533 → 4,536 | 15.3 → 5.9 ms | 47.8 → 23.1 MB |
+| `@a.push("…")`, interpreter | 604,514 → 4,512 | 45.3 → 22.5 ms | |
+| `@a.push($s)`, kernel | 404,691 → 4,690 | 15.3 → 5.8 ms | 48.4 → 23.6 MB |
+| `$x = "…"` (`my $x;` is Any, so no kernel) | 404,461 → 4,458 | 26.8 → 10.3 ms | |
+| `"…" xx 200_000` | 604,575 → 4,573 | 27.8 → 6.3 ms | 55.7 → 22.9 MB |
+| `(^200_000).map({ "…" })` | 604,639 → 4,637 | 59.0 → 36.7 ms | 69.3 → 36.6 MB |
+| `%h{$_} = "…19 bytes…"`, kernel | 404,588 → 204,590 | 34.5 → 28.9 ms | |
+
+The hash row's remaining malloc per entry is not the store. It is `say
+%h.elems`, which goes through `toList` and builds a Pair for every entry
+(`hashEntryPair` → `ValueHash::aliasOf`): an O(n) `.elems` on a hash, left as
+found.
+
+| gate | |
+|---|---|
+| `t/run.raku`, Roast | 1,993 of 1,993; 1,425 of 1,425 |
+| `t/jit/run.raku` | the main baseline: 1,359 agree, the same 8 timing and native-function diffs, 17 of 22 tier-up cases entering a kernel |
+| perf-guard time, 27 kernels × 3 interleaved rounds | geomean −1.32%; `prepend` −19.7%, `sharedappend` −19.0%; `loopsum` +14.5% with the same instructions (placement, as in step 2) |
+| instructions retired, 26 kernels | geomean −2.04%: `prepend` −27.1%, `sharedappend` −20.4%, `intcat` +1.6% |
+| `tools/malloc-census.raku`, 8 workloads | identical |
+| mallocs, 44 bench + example programs | −0.05% |
+| ThreadSanitizer: `t/stress/run.raku` and the guard | 37 pass, 14 known-bad, no new failures, no report |
+
+- **`intcat`'s +1.6% is the check every `~=` makes.** It asks whether its slot
+  still holds a shared value, about five instructions on each of its three
+  million appends; its time is level. A compile-time map of the slots that can
+  ever hold one would drop the check where none can. That analysis was not
+  worth the risk at this size.
+- **`t/regression/str-literal-shared-value.raku` now covers both literal kinds
+  and the kernels.** It writes through what a kernel loop stored and checks the
+  literal and the variable behind it.
 
 ## Why 16 bytes is an architecture change, not a layout change
 

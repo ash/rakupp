@@ -900,6 +900,10 @@ std::vector<ClassInfo*> c3Linearize(ClassInfo* c, bool& ok) {
 }
 
 Value Interpreter::evalInterp(InterpStr* s) {
+    // "…" with nothing interpolated is one literal part: its own Value, built
+    // once (StrLit::evalState), not a string made again from it every time
+    if (s->parts.size() == 1 && s->parts[0]->kind == NK::StrLit)
+        return strLitValue(static_cast<StrLit*>(s->parts[0].get()));
     ValueList vals;
     vals.reserve(s->parts.size());
     for (auto& p : s->parts) vals.push_back(eval(p.get()));

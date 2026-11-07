@@ -159,7 +159,7 @@ struct KNode {
     KNode* a = nullptr;
     KNode* b = nullptr;
     KNode* c = nullptr;
-    union { IKernel* callee = nullptr; int64_t den; };   // Call / XLit: the denominator
+    union { IKernel* callee = nullptr; int64_t den; const CowStr* cow; };   // Call / XLit: the denominator / SLit: its text, to share
     KNode** kids = nullptr;     // Call: nargs arguments; Seq: nargs statements
 };
 
@@ -176,6 +176,7 @@ struct IKernel {
     std::vector<std::unique_ptr<KNode>> nodes;
     std::vector<std::unique_ptr<KNode*[]>> lists;
     std::vector<std::unique_ptr<std::string>> strs;   // SLit texts
+    std::vector<std::unique_ptr<CowStr>> cows;        // …and the same texts as a store shares them
     std::vector<IKernel*> callees;         // direct, may include this
     std::vector<Value> keepAlive;          // the callees' Code values (not this one)
     std::vector<Callable*> calleeOwners;   // the routines `callees` run (alive: keepAlive, or this one's caller)
@@ -192,6 +193,13 @@ struct IKernel {
     KNode* node(KOp op) { nodes.emplace_back(new KNode{}); nodes.back()->op = op; return nodes.back().get(); }
     KNode** list(size_t n) { lists.emplace_back(new KNode*[n]); return lists.back().get(); }
     const std::string* text(std::string s) { strs.emplace_back(new std::string(std::move(s))); return strs.back().get(); }
+    KNode* slit(std::string s) {
+        KNode* n = node(KOp::SLit);
+        n->str = text(std::move(s));
+        cows.emplace_back(new CowStr(*n->str));
+        n->cow = cows.back().get();
+        return n;
+    }
 };
 
 // --- compiling ---------------------------------------------------------------
@@ -272,8 +280,8 @@ struct Compiler {
         if (t == KT::Str) return n;
         if (t == KT::Bool && L && !L->sub) {   // "True" or "False", as Bool.Str
             KNode* s = k.node(KOp::SCond); s->a = n;
-            s->b = k.node(KOp::SLit); s->b->str = k.text("True");
-            s->c = k.node(KOp::SLit); s->c->str = k.text("False");
+            s->b = k.slit("True");
+            s->c = k.slit("False");
             return s;
         }
         if ((t != KT::Int && t != KT::Num && t != KT::Exact) || !L || L->sub) return nullptr;
@@ -640,7 +648,7 @@ KNode* Compiler::expr(IKernel& k, const Callable* c, Expr* e, bool cond, KT& t) 
         }
         case NK::StrLit: {
             if (!L || L->sub) return refuse("a string in a sub");
-            KNode* n = k.node(KOp::SLit); n->str = k.text(static_cast<StrLit*>(e)->v); t = KT::Str;
+            KNode* n = k.slit(static_cast<StrLit*>(e)->v); t = KT::Str;
             return n;
         }
         case NK::InterpStr: {
@@ -676,7 +684,7 @@ KNode* Compiler::expr(IKernel& k, const Callable* c, Expr* e, bool cond, KT& t) 
             for (auto& p : is->parts) s += static_cast<StrLit*>(p.get())->v;
             if (is->parts.size() > 1)
                 for (unsigned char ch : s) if (ch >= 0x80) return refuse("a non-ASCII string in parts");
-            KNode* n = k.node(KOp::SLit); n->str = k.text(std::move(s)); t = KT::Str;
+            KNode* n = k.slit(std::move(s)); t = KT::Str;
             return n;
         }
         case NK::VarExpr: {
@@ -1730,11 +1738,48 @@ struct KConts {
     // `~=` renormalizes only where the two texts meet when it is (nfcAppend),
     // so it is checked once, not on every append. The same three keep it.
     signed char* snfc = nullptr;
+    // …and the CowStr the slot's text came from, while it is still that text:
+    // what the variable held when the kernel was entered, the element SCGet
+    // read, or what SSet or SGiven copied in with it. Empty otherwise, and
+    // every other write to the slot empties it. A store of the slot shares it
+    // (one body for a long text) where it would make a new string from the
+    // text (VALUE32-PLAN: the kernels' string lane).
+    CowStr* scow = nullptr;
 };
 [[gnu::always_inline]] inline bool stopped(const KRun& R) { return R.bail | R.ret | R.next | R.last | R.succeed; }
 
 inline int64_t krun(const KNode* n, int64_t* fr, KRun& R) { return n->fn(n, fr, R); }
 inline const std::string& srun(const KNode* n, int64_t* fr, KRun& R) { return n->sfn(n, fr, R); }
+
+// The CowStr a store can share for what `n` yields, or null: a literal's, or
+// a slot's while it still holds the text it was given (KConts::scow).
+inline const CowStr* shareOf(const KNode* n, KRun& R) {
+    if (n->op == KOp::SLit) return n->cow;
+    if (n->op == KOp::SVar || n->op == KOp::SCGet) {
+        const CowStr& c = R.cc->scow[n->slot];
+        return c.empty() ? nullptr : &c;
+    }
+    return nullptr;
+}
+// The Str a store writes for text `t`, which `src` yielded
+inline Value storedStr(const KNode* src, const std::string& t, KRun& R) {
+    Value v;
+    v.t = VT::Str;
+    if (const CowStr* c = shareOf(src, R)) v.s = *c;
+    else v.s = t;
+    return v;
+}
+// Slot `slot` now holds text of its own
+inline void unshare(int32_t slot, KRun& R) {
+    CowStr& c = R.cc->scow[slot];
+    if (!c.empty()) c.clear();
+}
+// Slot `slot` now holds what `src` yielded
+inline void shareFrom(int32_t slot, const KNode* src, KRun& R) {
+    if ((src->op == KOp::SVar || src->op == KOp::SCGet) && src->slot == slot) return;   // (itself)
+    if (const CowStr* c = shareOf(src, R)) R.cc->scow[slot] = *c;
+    else unshare(slot, R);
+}
 
 // operand kinds a fused operator reads in place
 enum { kP = 0, kL = 1, kX = 2 };
@@ -1984,6 +2029,7 @@ int64_t givenFn(const KNode* n, int64_t* fr, KRun& R) {
 int64_t sgivenFn(const KNode* n, int64_t* fr, KRun& R) {
     const std::string& t = srun(n->a, fr, R);
     if (&t != &R.sfr[n->slot]) R.sfr[n->slot] = t;
+    shareFrom(n->slot, n->a, R);
     R.cc->sinfo[n->slot] = -1;
     R.cc->snfc[n->slot] = -1;
     const int64_t v = krun(n->c, fr, R);
@@ -2068,6 +2114,7 @@ int64_t ssetFn(const KNode* n, int64_t* fr, KRun& R) {
     if (ao == KOp::SCat || ao == KOp::SInt || ao == KOp::SNum || ao == KOp::Uc || ao == KOp::Lc || ao == KOp::Substr)
         std::swap(dst, R.sfr[n->a->slot]);
     else if (&v != &dst) dst = v;
+    shareFrom(n->slot, n->a, R);
     R.cc->sinfo[n->slot] = ao == KOp::SVar ? R.cc->sinfo[n->a->slot] : -1;
     R.cc->snfc[n->slot] = ao == KOp::SVar || ao == KOp::SCat ? R.cc->snfc[n->a->slot] : -1;
     return 0;
@@ -2075,6 +2122,7 @@ int64_t ssetFn(const KNode* n, int64_t* fr, KRun& R) {
 int64_t sappFn(const KNode* n, int64_t* fr, KRun& R) {
     const std::string& v = srun(n->a, fr, R);
     std::string& dst = R.sfr[n->slot];
+    unshare(n->slot, R);
     int64_t& info = R.cc->sinfo[n->slot];
     if (allAscii(v) && !(info >= 0 && !(info & 1))) {
         // plain text joined to plain text stays plain, one character a byte
@@ -2487,8 +2535,9 @@ int64_t cgetFn(const KNode* n, int64_t* fr, KRun& R) {
 const std::string& scgetFn(const KNode* n, int64_t* fr, KRun& R) {
     std::string& out = R.sfr[n->slot];
     const Value* el = contSlot(n, fr, R, false);
-    if (!el || !plainStrValue(*el)) { R.bail = true; out.clear(); return out; }
+    if (!el || !plainStrValue(*el)) { R.bail = true; out.clear(); unshare(n->slot, R); return out; }
     out = el->s.str();
+    R.cc->scow[n->slot] = el->s;
     return out;
 }
 int64_t celemsFn(const KNode* n, int64_t*, KRun& R) {
@@ -2506,10 +2555,10 @@ int64_t csetFn(const KNode* n, int64_t* fr, KRun& R) {
 int64_t scsetFn(const KNode* n, int64_t* fr, KRun& R) {
     const std::string& v = srun(n->b, fr, R);
     if (R.bail) return 0;
-    std::string text = v;   // (contSlot builds a hash key over a buffer of its own)
+    Value sv = storedStr(n->b, v, R);   // (before contSlot, which builds a hash key over a buffer of its own)
     Value* el = contStore(n, fr, R);
     if (!el) return 0;
-    *el = Value::str(std::move(text));
+    *el = std::move(sv);
     return 0;
 }
 // `op=` and ++/-- on an element: a hole or a missing key starts from the
@@ -2543,7 +2592,7 @@ int64_t csappFn(const KNode* n, int64_t* fr, KRun& R) {
     if (R.bail) return 0;
     Value* el = contStore(n, fr, R);
     if (!el) return 0;
-    if (el->t == VT::Any) { *el = Value::str(std::move(v)); return 0; }
+    if (el->t == VT::Any) { *el = storedStr(n->b, v, R); return 0; }
     if (el->t != VT::Str) { R.bail = true; return 0; }
     // appended in place: the element's own text, detached once from any
     // other Value that shares it, then grown, not rebuilt each time
@@ -2560,11 +2609,12 @@ int64_t cpushFn(const KNode* n, int64_t* fr, KRun& R) {
     return 0;
 }
 int64_t scpushFn(const KNode* n, int64_t* fr, KRun& R) {
-    std::string v = srun(n->a, fr, R);
+    const std::string& t = srun(n->a, fr, R);
     if (R.bail) return 0;
+    Value v = storedStr(n->a, t, R);
     ValueList& a = *R.cc->conts[n->lit]->arr();
     logWrite(*R.cc, (int)n->lit, {CUndo::Size, 0, &a, a.size(), nullptr, Value()});
-    a.push_back(Value::str(std::move(v)));
+    a.push_back(std::move(v));
     return 0;
 }
 
@@ -3238,6 +3288,9 @@ bool Interpreter::tryLoopKernel(Stmt* loop, const std::string& var, long long lo
     std::string stackStrs[8];
     std::unique_ptr<std::string[]> heapStrs;
     std::string* strs = L->nstr <= 8 ? stackStrs : (heapStrs.reset(new std::string[L->nstr]), heapStrs.get());
+    CowStr stackCows[8];
+    std::unique_ptr<CowStr[]> heapCows;
+    CowStr* scow = L->nstr <= 8 ? stackCows : (heapCows.reset(new CowStr[L->nstr]), heapCows.get());
     int64_t stackInfo[16];
     std::unique_ptr<int64_t[]> heapInfo;
     int64_t* sinfo = L->nstr <= 16 ? stackInfo : (heapInfo.reset(new int64_t[L->nstr]), heapInfo.get());
@@ -3259,6 +3312,7 @@ bool Interpreter::tryLoopKernel(Stmt* loop, const std::string& var, long long lo
         }
         else {
             strs[o.slot] = cells[i]->s.str();
+            scow[o.slot] = cells[i]->s;
             if (const StrBody* b = cells[i]->s.body()) snfc[o.slot] = b->nfc.load(std::memory_order_relaxed);
         }
     }
@@ -3281,6 +3335,7 @@ bool Interpreter::tryLoopKernel(Stmt* loop, const std::string& var, long long lo
     kc.n = nc;
     kc.sinfo = sinfo;
     kc.snfc = snfc;
+    kc.scow = scow;
     if (nc) kc.size(nc);
     R.cc = &kc;
     krun(L->k.body, fr, R);
@@ -3309,7 +3364,9 @@ bool Interpreter::tryLoopKernel(Stmt* loop, const std::string& var, long long lo
         }
 #endif
         else {
-            cells[i]->s = std::move(strs[o.slot]);
+            // what it was given, shared, when it holds that still (KConts::scow)
+            if (!scow[o.slot].empty()) cells[i]->s = scow[o.slot];
+            else cells[i]->s = std::move(strs[o.slot]);
             if (const StrBody* b = cells[i]->s.body()) b->nfc.store(snfc[o.slot], std::memory_order_relaxed);
         }
     }
