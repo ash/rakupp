@@ -10,7 +10,8 @@ here.*
 
 *Covered so far: 28257097 (a `constant` type alias in a signature, issue #220),
 02e52fa2 (`Value` 80 → 64 bytes), 5d52a248 (string literals keep their Value),
-f0376fa6 (kernels share stored strings; `"…"` literals cached).*
+f0376fa6 (kernels share stored strings; `"…"` literals cached),
+9b294b72 (`%h.elems` without listing the hash).*
 
 ---
 
@@ -52,6 +53,12 @@ f0376fa6 (kernels share stored strings; `"…"` literals cached).*
     404,533, 5.9 ms where it took 15.3, and 23 MB of memory where it took 48.
   - `"…" xx 200_000` takes 6.3 ms where it took 27.8.
   - perf-guard −1.32% (`prepend` −19.7%, `sharedappend` −19.0%).
+- **`%h.elems` is the hash's size** (9b294b72). `.elems`, `.end` and `.Numeric`
+  of a hash built a Pair for every entry to count them, one allocation each,
+  on every call. `say %h.elems` of a 200,000-key hash makes 4,595 mallocs
+  where it made 204,626. A Map, Set, Bag or Mix, a role mixed in, a subclass
+  and an augmented `Hash.elems` answer as before.
+  `t/regression/hash-elems-size.raku`.
 
 ### Fixed: silent wrong answers
 
