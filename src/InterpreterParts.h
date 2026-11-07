@@ -1134,6 +1134,7 @@ bool typeNameConforms(const std::string& lnIn, const std::string& rn,
 // The same role, and each argument of `have` conforms to the matching one of
 // `want` — role parameters are covariant (`R1[Cool] ~~ R1[Any]`).
 bool roleArgsCovariant(const std::string& have, const std::string& want);
+bool roleArgAccepts(const std::string& have, const std::string& want);   // `Positional[Int] ~~ Positional[Mu]`'s arguments
 
 // Does a container's parameter list satisfy a parameterized ROLE's - is an
 // `Array[Int]` a `Positional[Cool]`? Its element type conforms to the role's

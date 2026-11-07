@@ -951,11 +951,15 @@ void rtSetAliasView(const StrMap<std::string>* a,
 // with their definedness smileys reattached. A type object keeps `Array[Int:D]`
 // as "Int,D" - the smiley rides as a trailing pseudo-parameter - and a hash's
 // value and key types as "Int,Str", so "Int,D,Str" reads back as {"Int:D", "Str"}.
+// A comma inside a nested parameter stays in it: "Hash[Int,Str]" is one part.
 std::vector<std::string> typeParamParts(const std::string& ofType) {
     std::vector<std::string> out;
     size_t pos = 0;
     while (pos <= ofType.size()) {
-        size_t c = ofType.find(',', pos);
+        size_t c = pos;
+        for (int d = 0; c < ofType.size() && (d > 0 || ofType[c] != ','); c++)
+            d += ofType[c] == '[' ? 1 : ofType[c] == ']' ? -1 : 0;
+        if (c == ofType.size()) c = std::string::npos;
         std::string part = ofType.substr(pos, c == std::string::npos ? std::string::npos : c - pos);
         if ((part == "D" || part == "U" || part == "_") && !out.empty()) out.back() += ":" + part;
         else if (!part.empty()) out.push_back(part);
@@ -990,6 +994,32 @@ bool roleArgsCovariant(const std::string& have, const std::string& want) {
         if (ha[i].find('[') != std::string::npos && roleArgsCovariant(ha[i], wa[i])) continue;
         if (!typeNameConforms(ha[i], wa[i], std::string(), std::string())) return false;
     }
+    return true;
+}
+// Does an argument of a built-in parameterized ROLE's type object, `have`, match
+// the same role's argument `want` on the right of `~~` (#222)? Rakudo asks
+// `want.ACCEPTS(have)`, and `have` is a type object, never defined: a `:D`
+// argument takes only itself (`Positional[Int:D] !~~ Positional[Numeric:D]`), a
+// `:U` or a bare one the nominal type (`Positional[Int:D] ~~ Positional[Int]`).
+// A parameterized argument asks again a level down; a class's stays exact there,
+// as at the top (`Positional[Array[Int]] !~~ Positional[Array[Numeric]]`).
+bool roleArgAccepts(const std::string& have, const std::string& want) {
+    if (have == want) return true;
+    std::string hb, hs, wb, ws;
+    splitTypeSmiley(have, hb, hs); splitTypeSmiley(want, wb, ws);
+    if (ws == "D") return false;
+    if (wb == "Mu") return true;
+    if (wb == "Any") return hb != "Mu" && hb != "Junction";
+    const size_t hbr = hb.find('['), wbr = wb.find('[');
+    if (wbr == std::string::npos || wb.back() != ']') return typeNameConforms(hb, wb, std::string(), std::string());
+    if (hbr == std::string::npos || hb.back() != ']') return false;   // a bare `Array` is no `Positional[Mu]`
+    const std::string hBase = hb.substr(0, hbr), wBase = wb.substr(0, wbr);
+    const std::string hp = hb.substr(hbr + 1, hb.size() - hbr - 2), wp = wb.substr(wbr + 1, wb.size() - wbr - 2);
+    if (hBase != wBase) return typeNameConforms(hBase, wBase, hp, wp);
+    const auto ha = typeParamParts(hp), wa = typeParamParts(wp);
+    if (!isBuiltinRole(hBase) || ha.size() != wa.size()) return ha == wa;
+    for (size_t i = 0; i < ha.size(); i++)
+        if (!roleArgAccepts(ha[i], wa[i])) return false;
     return true;
 }
 // Does the TYPE NAME `ln` conform to `rn`? The built-in "does" table, the
