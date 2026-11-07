@@ -135,24 +135,24 @@ engines currently stand:
 | `HTTP::Tiny` over `http://` | `200`, 559 bytes | `200`, 559 bytes |
 | `HTTP::Tiny` over `https://` | **`599 Internal Exception`** — see below | `200` |
 | `Cro::HTTP::Client` over `http://` | `200` | `200` |
-| `Cro::HTTP::Client` over `https://` | **hangs** | `200` |
+| `Cro::HTTP::Client` over `https://` | `200`, over HTTP/2 or HTTP/1.1 | `200` |
 | `Cro::HTTP::Server` + `Cro::HTTP::Router` | serves, routes, answers | same |
 
 The Cro server is a live regression here — `t/regression/cro-live-server.raku`
 starts a real `Cro::HTTP::Server` with a router and fetches from it over real
 sockets in the same process.
 
-The two failures are both Raku++ gaps, and neither is in the TLS transport:
+The one failure is a Raku++ gap, and it is not in the TLS transport.
+**`HTTP::Tiny` over https** reports `HTTPS requests not supported:
+IO::Socket::SSL:ver<0.0.2+> must be installed` even when that module is
+installed and `use IO::Socket::SSL` loads it. Its `can-ssl` probe asks
+`$*REPO.repo-chain.map(*.?candidates: 'IO::Socket::SSL', :ver<0.0.2+>)`, and
+Raku++ has no `.candidates` method on a `CompUnit::Repository` — the `.?`
+call answers `Nil`, so the probe reads as "not installed".
 
-- **`HTTP::Tiny` over https** reports `HTTPS requests not supported:
-  IO::Socket::SSL:ver<0.0.2+> must be installed` even when that module is
-  installed and `use IO::Socket::SSL` loads it. Its `can-ssl` probe asks
-  `$*REPO.repo-chain.map(*.?candidates: 'IO::Socket::SSL', :ver<0.0.2+>)`, and
-  Raku++ has no `.candidates` method on a `CompUnit::Repository` — the `.?`
-  call answers `Nil`, so the probe reads as "not installed".
-- **`Cro::HTTP::Client` over https** hangs. The layers under it do not:
-  `IO::Socket::Async::SSL.connect` returns a verified connection, and
-  `Cro::TLS::Connector.connect` returns its transform.
+Use **`Cro::HTTP::Client`** for https. It negotiates HTTP/2 with a server that
+offers it and HTTP/1.1 with one that does not, so it needs no `http => '1.1'`;
+[the cookbook](../../cookbook/http.md#https) has the program.
 
 ## TLS
 

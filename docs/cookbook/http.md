@@ -222,7 +222,7 @@ into three times the load on someone else's server.
 ```raku
 use Cro::HTTP::Client;
 
-my $resp = await Cro::HTTP::Client.get($url, http => '1.1');
+my $resp = await Cro::HTTP::Client.get($url);
 say 'status : ', $resp.status;
 say 'type   : ', $resp.header('Content-Type');
 say 'bytes  : ', (await $resp.body-text).chars;
@@ -235,28 +235,28 @@ rakupp tls.raku
 ```output
 status : 200
 type   : text/html; charset=utf-8
-bytes  : 67813
+bytes  : 76140
 ```
 
-The program is [http/tls.raku](http/tls.raku). Two notes for Raku++ 3.27, both
-of which a first attempt runs straight into:
+The program is [http/tls.raku](http/tls.raku). The client offers HTTP/2 in the
+TLS handshake and falls back to HTTP/1.1 when the server does not take it;
+`$resp.http-version` says which one it got. Older Raku++ releases hung on an
+HTTP/2 answer, so programs written for them pass `http => '1.1'`. That still
+works, and is no longer needed.
 
-- **`http => '1.1'` is not optional here.** Left to itself the client offers
-  HTTP/2 in the TLS handshake, and against a server that accepts it the request
-  then hangs rather than answering.
-- **`HTTP::Tiny` will not do HTTPS under Raku++**, whatever is installed. It
-  decides by asking the module repository for candidates of
-  `IO::Socket::SSL:ver<0.0.2+>`, and Raku++'s installation repository does not
-  answer that question yet, so the check concludes the module is missing:
+**`HTTP::Tiny` will not do HTTPS under Raku++**, whatever is installed. It
+decides by asking the module repository for candidates of
+`IO::Socket::SSL:ver<0.0.2+>`, and Raku++'s installation repository does not
+answer that question yet, so the check concludes the module is missing:
 
-  ```output
-  599 Internal Exception
-  HTTPS requests not supported: IO::Socket::SSL:ver<0.0.2+> must be installed
-  ```
+```output
+599 Internal Exception
+HTTPS requests not supported: IO::Socket::SSL:ver<0.0.2+> must be installed
+```
 
-  The module is installed and TLS itself works — `IO::Socket::SSL` used
-  directly connects and returns `HTTP/1.1 200 OK`. Use `Cro::HTTP::Client` for
-  TLS until the repository answers.
+The module is installed and TLS itself works — `IO::Socket::SSL` used directly
+connects and returns `HTTP/1.1 200 OK`. Use `Cro::HTTP::Client` for TLS until
+the repository answers.
 
 ## Three things that bite
 

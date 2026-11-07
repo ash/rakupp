@@ -26,7 +26,7 @@ Both run Raku++. Natively, Raku code gets what the browser build cannot give it:
 | | native library | Raku.js in a web view |
 |---|---|---|
 | `start`, `await`, `hyper` | work: real threads | no: the WebAssembly build is single-threaded |
-| recursion depth | as deep as the stack you give it | about 200 nested calls |
+| recursion depth | as deep as the stack you give it | set by the web view's stack ([measured](../../../rakujs/INTERNALS.md#known-limitations-single-threaded-browser-build)); WebKit's worker is the shallowest |
 | speed | the `rakupp` interpreter | the same interpreter, as WebAssembly |
 | between the UI and the engine | a C call | JavaScript and a message bridge |
 | added size | 16–20 MB per architecture | about 7 MB of `.wasm`, plus the web view |

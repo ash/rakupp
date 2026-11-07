@@ -48,9 +48,8 @@ clicks and reconciliations on stderr.
 AppKit accepts windows only on the process main thread, which is what
 `RAKUPP_MAIN_THREAD=1` provides under Raku++; under Rakudo the mainline is
 already the main thread. The API floor is macOS 10.12.2 (tested on 15.7), arm64
-and x86-64 alike; the Raku++ side needs a build from current `main` — release
-binaries predate the main-thread hook — while any recent Rakudo works as
-released.
+and x86-64 alike; the Raku++ side needs v3.20.0 or later, the first release
+with the main-thread hook, while any recent Rakudo works as released.
 
 Neither program mentions Cocoa, so neither is macOS-only: `GUI::Wings` splits
 into a toolkit-free front and `GUI::Wings::Backend::{Cocoa,Gtk,Win32}`, chosen
