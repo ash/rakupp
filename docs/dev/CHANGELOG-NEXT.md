@@ -18,7 +18,8 @@ f3096c7d and 7a09c596 (`return-rw` use-after-frees; ASan sees the pools' frees),
 9b7a9824 (`for` over an array a worker is growing),
 a3246b12 (an untyped Array of Nums packs itself into doubles),
 59764c5a (a loop in a top-level block types the top-level variables),
-a516dd92 and b4bf1dc9 (`--doc-links`: a program linked to its documentation).*
+a516dd92 and b4bf1dc9 (`--doc-links`: a program linked to its documentation),
+b9e35683 (the store undo log copies the arrays at a sixteenth).*
 
 ---
 
@@ -143,6 +144,18 @@ a516dd92 and b4bf1dc9 (`--doc-links`: a program linked to its documentation).*
     blocks inside it.
 
   `t/regression/exe-lane-top-types-in-blocks.raku`.
+- **A loop that stores into a big packed array no longer logs every store**
+  (b9e35683). A loop kernel or `-O` lane that bails puts back the array
+  elements it stored, so it logs what each store overwrote. The log used to
+  switch to a copy of the arrays only once it held more entries than they hold
+  words. Now it switches at a sixteenth, since copying a word costs a fraction
+  of logging one.
+  - FORTRAN-LESSONS' axpy, `c[i] = 2*a[i] + b[i]` over ten million doubles:
+    26.4 → 13.8 ms compiled and 82.3 → 71.4 ms interpreted. gfortran takes
+    2.55 ms.
+  - A loop that stores a few elements still only logs.
+  - docs/dev/findings/FORTRAN-PACKING-2026-11-07.md has the kernels against
+    gfortran 16.2.
 
 ### Fixed: silent wrong answers
 

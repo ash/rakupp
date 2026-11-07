@@ -335,6 +335,17 @@ logs and the reviews. This page is the complete list.
     record their element kind and its objects their layout in their own
     headers, so one check at entry licenses the fast loop. An
     ahead-of-time compiler can use that without profiling.
+- **[FORTRAN-PACKING-2026-11-07.md](FORTRAN-PACKING-2026-11-07.md)**
+  *(2026-11-07, at 5.6.3-66 with self-packing arrays, against a native
+  gfortran 16.2)* — the FORTRAN-LESSONS array kernels (sum, dot, axpy over
+  ten million doubles, a 200×200 matmul) in Fortran, C, untyped Raku and
+  native-typed Raku. Sources and `run.sh` in
+  [`fortran-packing-2026-11/`](fortran-packing-2026-11/).
+  - Compiled, untyped Raku runs sum and dot at gfortran's speed, matmul at
+    3.3× its loop and axpy at 5.4×; boxed, it took 23–136×.
+  - gfortran's `matmul` intrinsic is 18× Raku's loop.
+  - The store undo log now copies the arrays at 1/16 of their size: compiled
+    axpy 26.4 → 13.8 ms.
 
 ## One-off bug reports
 
