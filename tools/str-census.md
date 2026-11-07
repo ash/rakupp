@@ -17,7 +17,9 @@ or more bytes.
   would allocate and that today costs nothing. A write to a string that has
   been copied counts again, because B would detach there. A string that grows
   past 22 bytes and is promoted does not count, because today pays for that
-  body too.
+  body too. (Since VALUE32-PLAN design C step 2, 2026-11-07, `CowStr` keeps up
+  to 15 bytes inline, so "today" here is the 23-byte threshold of the
+  measurement, and the build counts inline texts of up to 15 bytes.)
 - **literal evals**: strings made while a string literal or a bareword Pair key
   is being evaluated. B could share these from one body kept on the AST node.
 

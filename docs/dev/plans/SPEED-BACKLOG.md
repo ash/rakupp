@@ -45,7 +45,7 @@ theme the rows are sorted by complexity, largest first.
 
 | # | Item | Complexity | Next step / source |
 |---|---|---|---|
-| 4 | Values stop being refcounted, which also answers reference cycles | XL | B or C was measured 2026-10-15: C. B adds 7–17% allocations (+357% on one Roast file), C 0.5%. C step 1, every `CowStr` reader on `string_view` with the storage unchanged, landed 2026-11-06 level on time and allocations (816 sites). Next is step 2, the 16-byte string, `Value` 80 -> 64; then the refcount question — [VALUE32-PLAN.md](VALUE32-PLAN.md) "B versus C, measured", V6 P3.10 |
+| 4 | Values stop being refcounted, which also answers reference cycles | XL | B or C was measured 2026-10-15: C. B adds 7–17% allocations (+357% on one Roast file), C 0.5%. C step 1, every `CowStr` reader on `string_view` with the storage unchanged, landed 2026-11-06 level on time and allocations (816 sites). Step 2, the 16-byte string, landed 2026-11-07: `Value` 80 -> 64, perf-guard −0.49%, peak RSS −6% to −32%. Next is the refcount question — [VALUE32-PLAN.md](VALUE32-PLAN.md) "B versus C, measured", V6 P3.10 |
 | 29 | Tail: UNBOX P3–P5 (`--exe` lanes across inlined calls, `my int` lanes, Rat lanes) | M–L | Which backend gets this, now that `--cnp` is to be the default, is the maintainer's decision — [UNBOX-PLAN.md](UNBOX-PLAN.md) |
 
 ## 3. Compiled tiers: `--cnp`, `--exe`, kernels, `--types`

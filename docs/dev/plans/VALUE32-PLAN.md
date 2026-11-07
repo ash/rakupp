@@ -798,6 +798,119 @@ ac66e898 and both binaries are Release builds from one sitting.
 
 The change is 45 source files, `src/StrMap.h` the one new one.
 
+### C, step 2: the 16-byte `CowStr` (2026-11-07)
+
+**`sizeof(Value)` is 64**, and `CowStr` is 16 bytes. Nothing in it is a
+`std::string` now; it holds the text in one of two forms, and its last byte
+says which:
+
+- **Inline**, up to 15 bytes. The text is at the front and the bytes after it
+  are zero. The last byte holds 15 minus the length, so a 15-byte text's NUL is
+  that byte, and every text stays NUL-terminated as step 1 promised. With the
+  tail kept at zero, two inline texts are equal exactly when their 16 bytes
+  are, so `sameRep` and `==` on two short strings compare two words.
+- **A body.** The first word is a `StrBody*` that holds one count, and the last
+  byte is a tag. `Ref.h` gained `leak`, `adopt` and `releaseRaw` so `CowStr`
+  can keep the count by hand in bytes it shares with the inline form.
+
+A text over 15 bytes is always a body. That moves the 16–22-byte band, which
+the old 23-byte promote threshold kept inline, into bodies: 2.6% of short texts
+in the census above. The field order is the old one. Every field after `s`
+moved 16 bytes forward, and the struct has the same 3 + 4 bytes of padding it
+had at 80. `ExecContext`, which holds four `Value`s, went from 1,528 to 1,464
+bytes.
+
+**What changed in the code:**
+
+- **Writes to an inline text happen where it is.** These are `+=` while the
+  text fits, `pop_back`, `resize`, `erase` and `mutInPlace`. An append that
+  overflows moves the text into a body, which takes over `grown()`'s job.
+- **`edit(f)` of an inline text** hands `f` a copy and stores back what it
+  leaves.
+- **A shared body is copied into a new body** before a write. It used to be
+  copied into the inline `std::string`, which no longer exists.
+- **`Value::str` and `typeObj` take a `string_view`,** so a short text never
+  becomes a `std::string` on the way in.
+- **Short copies make no library call.** `setInline` copies with two
+  fixed-size copies that overlap in the middle, and `copyText()` of an inline
+  text builds its `std::string` at the fixed length of 15 and shrinks it.
+  Without them, every short string written paid a call to `memmove`. That was
+  `prepend` +5.1% instructions; with them it is +2.1%.
+
+`Value` is now trivially relocatable on every standard library. Until step 2
+it held a libstdc++ `std::string` that pointed at itself, so `ValueVec`'s
+bitwise grow was off on Linux. The probe that turns it off is still there;
+dropping it is a change to measure on Linux.
+
+**Measured 2026-11-07**, Darwin 25.6 / arm64, Apple clang 21. The base is the
+step-1 branch at 34a2b80f, and both binaries are Release builds from one
+sitting.
+
+| gate | base | step 2 |
+|---|---|---|
+| `t/run.raku` | | 1,992 of 1,992 |
+| Roast cf28a323c, files fully passing | 1,425 of 1,425 | 1,425 of 1,425 |
+| Roast mallocs, two runs each | 63.54M, 63.21M | 63.19M, 63.41M |
+| mallocs, 44 bench + example programs | 4,505,437 | 4,523,047 (+0.39%) |
+| `tools/malloc-census.raku`, 8 workloads | | the same mallocs per operation; bytes ×0.80–0.86 where `Value`s are built |
+| perf-guard time, 27 kernels × 3 interleaved rounds | | geomean −0.49% |
+| instructions retired, 26 kernels, the least of 3 | | geomean −0.04% |
+
+- **The allocations are the band the census priced.** 40 of the 44 programs
+  make 6 to 14 more mallocs, at startup. Of the rest, `append-shapes` makes 147
+  fewer, `precomp-table` the same, and `life` moves ±1% from run to run.
+  `textsplit` makes 6.25% more: it keeps
+  20,000 `tag12345:field12345` strings, each 16–22 bytes and each now a body,
+  and `SlabPool` makes its blocks one at a time (it keeps only 64 freed ones per
+  size). It still runs faster, 100.3 → 91.3 ms. The census above predicted
+  +0.4% for C across this corpus and none over 10%.
+- **`asg` and `loopsum` measure +4% and +7% in time with the same
+  instructions** (−0.00% and −0.02%). That is placement, not work. Built
+  with `-falign-functions=64` they take 66.9 and 63.9 ms (`asg`) and 47.6 and
+  47.2 ms (`loopsum`). This was measured on the build before the call-free
+  copies, which touch no integer kernel.
+- **`prepend` +2.1% instructions** is the rest of the inline copies. Its time is
+  3.5% faster.
+- **tools/value32-probe.cpp** (it now needs `-liconv` to link) reports `Value`
+  64 and `CowStr` 16. In section D, a 14-byte Str value made and copied three
+  times takes 14.4 ms where it took 26.1. Section G shows the band: an 8-byte
+  string costs half as much as before, and a 16- or 22-byte string costs 1.6x,
+  being a body.
+
+Peak RSS (`/usr/bin/time -l`), the same programs on both binaries:
+
+| program | base | step 2 | |
+|---|---:|---:|---:|
+| a million Ints from `.map` | 164.2 MB | 134.4 MB | −18% |
+| a million short Strs from `.map` | 164.2 MB | 134.3 MB | −18% |
+| a million Rats from `.map` | 242.3 MB | 164.0 MB | −32% |
+| 200,000 two-element arrays | 82.1 MB | 72.4 MB | −12% |
+| 200,000 two-attribute objects | 137.0 MB | 124.2 MB | −9% |
+| a 200,000-key hash | 59.3 MB | 55.8 MB | −6% |
+| `tools/bench/hashfill.raku` | 51.6 MB | 45.1 MB | −12.5% |
+| `tools/bench/textsplit.raku` | 23.6 MB | 26.3 MB | +11% |
+
+**Roast under AddressSanitizer** fails the same five files as step 1's ASan
+build, with the same kinds of report:
+- `let.t`, `temp.t` and `clone.t` fail on the `evalAssignInner` use-after-free
+  at InterpreterCore.cpp:17089. `let.t`, rerun alone, gives the same stack.
+- `deep-recursion-initing-native-array.t` fails on a stack-buffer-overflow.
+- `system.t` fails on the libffi SEGV.
+
+Roast's allocations stay inside run-to-run noise. The +0.5% the census
+predicted for C is smaller than the 0.5% that one binary moves between two
+runs.
+
+**Left open:**
+
+- **A string literal could keep its `CowStr` on the AST node,** so evaluating
+  it is a 16-byte copy rather than a `string_view` written into a fresh one.
+  Literals were 7.2M of Roast's 12.2M short strings.
+- **The 16–22-byte band costs a malloc per live string**, because
+  `SlabPool` keeps few blocks. A pool that carves `StrBody`s from chunks would
+  take that back without widening `Value`.
+- **Bitwise relocation on libstdc++**, above.
+
 ## Why 16 bytes is an architecture change, not a layout change
 
 Slim16 measures 24x on the array build. It is worth saying plainly what that

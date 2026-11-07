@@ -67,6 +67,15 @@ public:
     Ref& operator=(std::nullptr_t) noexcept { reset(); return *this; }
 
     void reset() noexcept { release(); p_ = nullptr; }
+    // The count, by hand, for a holder that keeps the pointer in bytes it
+    // shares with something else (CowStr: VALUE32-PLAN design C). leak() hands
+    // this Ref's count to the raw pointer, adopt() takes one back, and
+    // releaseRaw() drops one.
+    T* leak() noexcept { T* p = p_; p_ = nullptr; return p; }
+    static Ref adopt(T* p) noexcept { return Ref(p); }
+    static void releaseRaw(T* p) noexcept {
+        if (p && p->refs_.fetch_sub(1, std::memory_order_acq_rel) == 1) destroy(p);
+    }
     T* get() const noexcept { return p_; }
     T& operator*() const noexcept { return *p_; }
     T* operator->() const noexcept { return p_; }

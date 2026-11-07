@@ -248,43 +248,44 @@ bool g_strViewsForced = [] {
 Ref<const StrBody> CowStr::forcedView(const std::string& x) { return freshView(x.data(), x.size(), nullptr, 0); }
 
 void CowStr::appendTextSlow(const char* x, size_t n) {
-    if (!p_) { RAKUPP_STR_CEN(cenWrite();) s_.append(x, n); grown(); return; }
-    if (p_->view) {
-        const StrView& v = *p_->view;
+    if (!isBody()) { append(x, n); return; }
+    const StrBody* b = bodyRaw();
+    if (b->view) {
+        const StrView& v = *b->view;
         // a view nothing else holds grows where it is, without a new body
-        if (p_->refs_.load(std::memory_order_acquire) == 1 && claimBack(*v.buf, v.off + v.len, x, n)) {
-            StrBody* b = const_cast<StrBody*>(p_.get());
-            b->invalidate();
-            delete b->view->flat.exchange(nullptr, std::memory_order_acq_rel);
-            b->view->len += n;
+        if (b->refs_.load(std::memory_order_acquire) == 1 && claimBack(*v.buf, v.off + v.len, x, n)) {
+            StrBody* w = const_cast<StrBody*>(b);
+            w->invalidate();
+            delete w->view->flat.exchange(nullptr, std::memory_order_acq_rel);
+            w->view->len += n;
             if (v.buf->clean.load(std::memory_order_acquire)) {
-                b->allAscii.store(1, std::memory_order_relaxed);
-                b->crFree.store(1, std::memory_order_relaxed);
-                b->nGraphemes.store((long long)b->view->len, std::memory_order_relaxed);
+                w->allAscii.store(1, std::memory_order_relaxed);
+                w->crFree.store(1, std::memory_order_relaxed);
+                w->nGraphemes.store((long long)w->view->len, std::memory_order_relaxed);
             }
             return;
         }
-        p_ = viewAppend(v, x, n);
+        setBody(viewAppend(v, x, n));
         return;
     }
-    if (p_->refs_.load(std::memory_order_acquire) == 1) {   // the flat case, as `+=` has it
-        StrBody* b = const_cast<StrBody*>(p_.get());
-        b->invalidate();
-        b->text.append(x, n);
+    if (b->refs_.load(std::memory_order_acquire) == 1) {   // the flat case, as `+=` has it
+        StrBody* w = const_cast<StrBody*>(b);
+        w->invalidate();
+        w->text.append(x, n);
         return;
     }
     // a body others hold keeps its text for them
-    if (p_->text.size() + n >= kViewMin) { p_ = freshView(p_->text.data(), p_->text.size(), x, n); return; }
-    s_ = p_->text;
-    s_.append(x, n);
-    p_.reset();
+    if (b->text.size() + n >= kViewMin) { setBody(freshView(b->text.data(), b->text.size(), x, n)); return; }
+    std::string t;
+    t.reserve(b->text.size() + n);
+    t.append(b->text).append(x, n);
     RAKUPP_STR_CEN(cenWrite();)
-    grown();
+    store(std::move(t));
 }
 
 void CowStr::spliceTail(size_t keep, const std::string& mid, const char* x, size_t n) {
-    if (p_ && !p_->view && p_->refs_.load(std::memory_order_acquire) == 1) {
-        StrBody* b = const_cast<StrBody*>(p_.get());
+    if (isBody() && !bodyRaw()->view && bodyRaw()->refs_.load(std::memory_order_acquire) == 1) {
+        StrBody* b = const_cast<StrBody*>(bodyRaw());
         b->invalidate();
         b->text.resize(keep);
         b->text += mid;
@@ -300,56 +301,64 @@ void CowStr::spliceTail(size_t keep, const std::string& mid, const char* x, size
 }
 
 void CowStr::prependText(const char* x, size_t n) {
-    if (!p_) {
-        if (s_.size() + n < kViewMin) { RAKUPP_STR_CEN(cenWrite();) s_.insert(0, x, n); grown(); return; }
+    if (!isBody()) {
+        const size_t l = ilen();
+        if (l + n < kViewMin) {
+            std::string t;
+            t.reserve(l + n);
+            t.append(x, n).append(raw_, l);
+            RAKUPP_STR_CEN(cenWrite();)
+            store(std::move(t));
+            return;
+        }
         RAKUPP_STR_CEN(cenEnd();)
-        p_ = freshView(x, n, s_.data(), s_.size());
-        s_.clear();
+        setBody(freshView(x, n, raw_, l));
         return;
     }
-    if (p_->view) {
-        const StrView& v = *p_->view;
-        if (p_->refs_.load(std::memory_order_acquire) == 1 && claimFront(*v.buf, v.off, x, n)) {
-            StrBody* b = const_cast<StrBody*>(p_.get());
-            b->invalidate();
-            delete b->view->flat.exchange(nullptr, std::memory_order_acq_rel);
-            b->view->off -= n;
-            b->view->len += n;
+    const StrBody* b = bodyRaw();
+    if (b->view) {
+        const StrView& v = *b->view;
+        if (b->refs_.load(std::memory_order_acquire) == 1 && claimFront(*v.buf, v.off, x, n)) {
+            StrBody* w = const_cast<StrBody*>(b);
+            w->invalidate();
+            delete w->view->flat.exchange(nullptr, std::memory_order_acq_rel);
+            w->view->off -= n;
+            w->view->len += n;
             if (v.buf->clean.load(std::memory_order_acquire)) {
-                b->allAscii.store(1, std::memory_order_relaxed);
-                b->crFree.store(1, std::memory_order_relaxed);
-                b->nGraphemes.store((long long)b->view->len, std::memory_order_relaxed);
+                w->allAscii.store(1, std::memory_order_relaxed);
+                w->crFree.store(1, std::memory_order_relaxed);
+                w->nGraphemes.store((long long)w->view->len, std::memory_order_relaxed);
             }
             return;
         }
-        p_ = viewPrepend(x, n, v);
+        setBody(viewPrepend(x, n, v));
         return;
     }
-    p_ = freshView(x, n, p_->text.data(), p_->text.size());
+    setBody(freshView(x, n, b->text.data(), b->text.size()));
 }
 
 bool CowStr::joinPrepend(CowStr& out, const char* x, size_t n, const CowStr& r) {
-    if (!r.p_ || r.p_->size() + n < kViewMin) return false;
-    const StrBody& b = *r.p_;
-    Ref<const StrBody> nb = b.view ? viewPrepend(x, n, *b.view) : freshView(x, n, b.text.data(), b.text.size());
+    const StrBody* b = r.body();
+    if (!b || b->size() + n < kViewMin) return false;
+    Ref<const StrBody> nb = b->view ? viewPrepend(x, n, *b->view) : freshView(x, n, b->text.data(), b->text.size());
     RAKUPP_STR_CEN(out.cenEnd();)
-    out.s_.clear();
-    out.p_ = std::move(nb);
+    out.setBody(std::move(nb));
     return true;
 }
 
 bool CowStr::joinAppend(CowStr& out, const CowStr& l, const char* x, size_t n) {
-    if (!l.p_ || !l.p_->view || l.p_->view->len + n < kViewMin) return false;
-    Ref<const StrBody> nb = viewAppend(*l.p_->view, x, n);
+    const StrBody* b = l.body();
+    if (!b || !b->view || b->view->len + n < kViewMin) return false;
+    Ref<const StrBody> nb = viewAppend(*b->view, x, n);
     RAKUPP_STR_CEN(out.cenEnd();)
-    out.s_.clear();
-    out.p_ = std::move(nb);
+    out.setBody(std::move(nb));
     return true;
 }
 
 bool CowStr::sub(CowStr& out, const CowStr& s, size_t off, size_t len) {
-    if (!s.p_ || len < kViewMin) return false;
-    const StrBody& b = *s.p_;
+    const StrBody* sb = s.body();
+    if (!sb || len < kViewMin) return false;
+    const StrBody& b = *sb;
     if (off > b.size() || len > b.size() - off) return false;
     Ref<const StrBody> nb;
     if (b.view) {
@@ -365,8 +374,7 @@ bool CowStr::sub(CowStr& out, const CowStr& s, size_t off, size_t len) {
         nb = freshView(b.text.data() + off, len, nullptr, 0);
     }
     RAKUPP_STR_CEN(out.cenEnd();)
-    out.s_.clear();
-    out.p_ = std::move(nb);
+    out.setBody(std::move(nb));
     return true;
 }
 

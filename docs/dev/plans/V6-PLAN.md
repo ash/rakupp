@@ -448,7 +448,9 @@ In order of evidence per cost:
       times that on string programs. C adds 0.5%. C's 16-byte string takes
       `Value` from 80 to 64 bytes. Its step 1, the readers on `string_view`
       with the storage unchanged, landed 2026-11-06, level on time and
-      allocations. Step 2, the storage, is next
+      allocations. Step 2, the storage, landed 2026-11-07: `Value` is 64
+      bytes, perf-guard −0.49%, peak RSS −6% to −32% (a million Rats
+      242 → 164 MB)
     - then the question the plan leaves open, whether values stop being
       refcounted; that is also the answer to reference cycles
 
