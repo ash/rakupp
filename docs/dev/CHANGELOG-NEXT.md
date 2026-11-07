@@ -9,7 +9,8 @@ from this page. Move each item into CHANGELOG.md at the tag and delete it
 here.*
 
 *Covered so far: 28257097 (a `constant` type alias in a signature, issue #220),
-02e52fa2 (`Value` 80 → 64 bytes), 5d52a248 (string literals keep their Value).*
+02e52fa2 (`Value` 80 → 64 bytes), 5d52a248 (string literals keep their Value),
+f0376fa6 (kernels share stored strings; `"…"` literals cached).*
 
 ---
 
@@ -41,6 +42,16 @@ here.*
   `prepend` gets back the 2% of instructions the 64-byte `Value` cost it.
   `t/regression/str-literal-shared-value.raku` checks that a write through a
   copy never reaches the literal.
+- **A long string stored many times is stored once** (f0376fa6).
+  - The integer kernels used to build a new string for every element they
+    stored. Now they share the one they read, from a variable, an element or
+    a literal.
+  - A double-quoted `"…"` with nothing interpolated is now the cached literal
+    as well; until this change only `'…'` was.
+  - Pushing a 36-byte literal 200,000 times takes 4,536 mallocs where it took
+    404,533, 5.9 ms where it took 15.3, and 23 MB of memory where it took 48.
+  - `"…" xx 200_000` takes 6.3 ms where it took 27.8.
+  - perf-guard −1.32% (`prepend` −19.7%, `sharedappend` −19.0%).
 
 ### Fixed: silent wrong answers
 
