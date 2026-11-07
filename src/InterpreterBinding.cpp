@@ -380,7 +380,7 @@ Value Interpreter::makeTypedEx(const std::string& type,
     // then neither registers a class nor extends one: it carries a class of
     // its own. Four workers failing one bind at once inserted the same name
     // into classes_ concurrently and died (t/race/evalcall.raku).
-    const bool shared = parallelMode_ && liveWorkers_.load(std::memory_order_relaxed) > 0;
+    const bool shared = parallelMode_ && runningBodies_.load(std::memory_order_acquire) > 0;
     std::shared_ptr<ClassInfo> cls;
     auto it = classes_.find(type);
     if (it == classes_.end()) {
@@ -4345,7 +4345,7 @@ Value* Interpreter::dynCallerFrame(Env* e, const std::string& name, const Env* s
         if (e->declStmts)
             if (const VarExpr* v = dynDeclaredLater(e, name)) {
                 Interpreter* I = liveTarget();
-                if (I && !(I->parallelMode_ && I->liveWorkers_.load(std::memory_order_acquire) > 0))
+                if (I && !(I->parallelMode_ && I->runningBodies_.load(std::memory_order_acquire) > 0))
                     return e->define(name, typedDefault(v->d().declType, name[0])).deref();
                 t_dynPendingSkips++;
             }
