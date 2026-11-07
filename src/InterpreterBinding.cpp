@@ -4855,6 +4855,13 @@ static inline void detonateFailureKeyAt(const Value& key) {
 }
 Value rtIndexGet(const Value& base, const Value& key, bool isHash) {
     detonateFailureKeyAt(key);
+    // a packed array's element from its word, a self-packed one's too
+    // (rtIndexGetP's test): arr() below would unpack it for good
+    if (!isHash && base.pk_ == PK::Packed && key.t == VT::Int && base.t == VT::Array && base.packedLive() &&
+        !key.big() && key.hashKind.empty() && key.enumName.empty() && base.hashKind.empty() && !base.elemDefault()) {
+        const PackedArr* pa = base.packed();
+        if (key.i >= 0 && key.i < (long long)pa->w.size()) return pa->at((size_t)key.i);
+    }
     // A Whatever — or a WhateverCode such as `*-1` — is an END-RELATIVE
     // subscript however it arrived. Native codegen picks idxW when it can SEE
     // the star written in the subscript; when the star came through a variable

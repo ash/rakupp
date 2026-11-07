@@ -6372,6 +6372,53 @@ inline void rtIndexStore(Interpreter& I, Value& base, const Value& key, Value v)
 // long way; anything else as rtIndexGet. (Codegen asks for these two only
 // for an array declared native: an ordinary one pays nothing for them.)
 Value rtIndexGet(const Value& base, const Value& key, bool isHash);
+// `my @a = …` compiled: an untyped Array of plain Nums packs itself (selfPack)
+inline Value rtSelfPack(Value v) { selfPack(v); return v; }
+// …`@a[$i] = v;` into one: the word, when v is a plain Num in range (rtPackedStore)
+inline bool rtSelfPackedStore(Interpreter& I, Value& base, const Value& key, const Value& v) {
+    return base.pk_ == PK::Packed && base.packedLive() && base.packed()->selfPacked && rtPackedStore(I, base, key, v);
+}
+// -O unboxed loop lanes: a packed Num array's words, read (and with `write`
+// stored) in place while a lane runs. Nothing in a lane calls out, so nothing
+// there can unpack, grow or replace the array; a worker thread could, so none
+// may be running.
+inline bool rtNumWords(Interpreter& I, const Value& a, int64_t*& p, size_t& n, bool write) {
+    if (a.t != VT::Array || a.pk_ != PK::Packed || !a.packedLive() || !a.hashKind.empty() || a.elemDefault() ||
+        (write && a.readonly) || (I.parallelMode_ && I.liveWorkers_.load(std::memory_order_acquire) > 0))
+        return false;
+    PackedArr* pa = a.packed();
+    if (!pa->isNum) return false;
+    p = pa->w.data(); n = pa->w.size();
+    return true;
+}
+inline double rtWordN(const int64_t* p, long long i) { double d; std::memcpy(&d, p + i, 8); return d; }
+inline void rtSetWordN(int64_t* p, long long i, double d) { std::memcpy(p + i, &d, 8); }
+// …and what a lane's stores overwrote, for a bail to put back before the boxed
+// loop runs from the lane's entry: a log of words until it outgrows the arrays
+// it covers, then a copy of each as it was at the entry (IntKernel's undo has
+// the same two forms)
+struct RtWordUndo {
+    struct Arr { int64_t* p; size_t n; std::vector<int64_t> saved; };
+    std::vector<Arr> arrs;
+    std::vector<std::pair<int64_t*, int64_t>> log;
+    size_t cap = 0;
+    bool whole = false;
+    void add(int64_t* p, size_t n) { arrs.push_back({p, n, {}}); cap += n; }
+    void note(int64_t* w) {
+        if (whole) return;
+        log.emplace_back(w, *w);
+        if (log.size() <= cap) return;
+        for (auto& a : arrs) a.saved.assign(a.p, a.p + a.n);
+        for (auto it = log.rbegin(); it != log.rend(); ++it)
+            for (auto& a : arrs) if (it->first >= a.p && it->first < a.p + a.n) a.saved[it->first - a.p] = it->second;
+        log.clear();
+        whole = true;
+    }
+    void undo() {
+        if (whole) { for (auto& a : arrs) std::copy(a.saved.begin(), a.saved.end(), a.p); return; }
+        for (auto it = log.rbegin(); it != log.rend(); ++it) *it->first = it->second;
+    }
+};
 inline Value rtIndexGetP(const Value& base, const Value& key) {
     if (base.pk_ == PK::Packed && key.t == VT::Int && base.t == VT::Array && base.packedLive() && !key.big() &&
         key.hashKind.empty() && key.enumName.empty() && base.hashKind.empty() && !base.elemDefault()) {

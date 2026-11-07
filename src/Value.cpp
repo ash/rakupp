@@ -452,6 +452,61 @@ PRef<ValueList> Value::packedUnpackS() const {
     return p->boxed;
 }
 
+// Self-packing Arrays (JSC-VALUES-2026-11-07, a prototype). JavaScriptCore
+// keeps a JS array whose every element is a double as raw doubles
+// (ArrayWithDouble) and converts it, once, when anything else is stored. An
+// untyped Raku Array of plain Nums does the same here, on the packed body a
+// `my num @a` uses: the lanes that read and write its words serve both, and
+// whatever asks for an element as a Value (a bind, an rw element, a store of
+// anything but a plain Num, every path that knows nothing of words) unpacks it
+// through arr() into exactly the Array it would have been.
+bool selfPackOn() {
+    static const bool on = std::getenv("RAKUPP_NO_SELFPACK") == nullptr;
+    return on;
+}
+static size_t selfPackMin() {
+    static const size_t m = [] {
+        const char* e = std::getenv("RAKUPP_SELFPACK_MIN");
+        return e && *e ? (size_t)std::strtoul(e, nullptr, 10) : (size_t)8;
+    }();
+    return m;
+}
+// `a`, a fresh Array no container shares yet: when it has nothing beside its
+// elements (no type, default, shape, laziness, bound element or tag) and
+// those are at least selfPackMin() plain Nums, its payload becomes their words
+bool selfPack(Value& a) {
+    if (!selfPackOn() || a.t != VT::Array || a.pk_ != PK::List || a.isList || a.itemized || !a.hashKind.empty() ||
+        !a.s.empty() || !a.enumName.empty() || !a.enumType.empty() || a.ext() || a.shape() || !a.ofType().empty() ||
+        a.elemDefault() || a.holdsContainers())
+        return false;
+    const ValueList* l = a.arr();
+    if (!l || l->size() < selfPackMin()) return false;
+    for (const Value& e : *l)
+        if (!plainWordValue(e, true)) return false;
+    auto pa = makePayload<PackedArr>();
+    pa->isNum = pa->selfPacked = true;
+    pa->w.reserve(l->size());
+    for (const Value& e : *l) pa->w.push_back(e.i);   // (`i` and `n` share one word)
+    a.setPacked(pa);
+    return true;
+}
+// …and `my @v = @u` from a packed Num array, @u's own or a `my num` one: the
+// words, into a fresh self-packed Array, where the general copy reads @u's
+// Values and so unpacks it for good
+bool selfPackCopy(const Value& src, Value& out) {
+    if (!selfPackOn() || src.t != VT::Array || src.itemized || src.isList || !src.packedLive() ||
+        !src.hashKind.empty() || src.ext() || src.shape())
+        return false;
+    const PackedArr* sp = src.packed();
+    if (!sp->isNum || sp->w.size() < selfPackMin()) return false;
+    auto pa = makePayload<PackedArr>();
+    pa->isNum = pa->selfPacked = true;
+    pa->w = sp->w;
+    out = Value::array();
+    out.setPacked(pa);
+    return true;
+}
+
 const CallableCold kNoCallableCold{};   // what a Callable without a cold block reads (Value.h)
 CodeInfo kNoCodeInfo;   // …and what one with no code of its own reads
 

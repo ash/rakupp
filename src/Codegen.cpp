@@ -4450,6 +4450,21 @@ struct Codegen {
                                   lvalueExpr(bv) + ", " + ex(ix->index.get()) + ", std::move(" + sv + ")); }");
                         return;
                     }
+                    // …and into an untyped one, when the general store is the
+                    // element's place and nothing more: a self-packed array
+                    // takes a Num as its word (rtSelfPackedStore), where that
+                    // place would unpack it
+                    if (bv && !ix->isHash && !ix->multiDim && !bv->declare && !bv->name.empty() && bv->name[0] == '@') {
+                        const std::string g = assign(a), pf = "rtIndexRef(" + lvalueExpr(bv) + ", ";
+                        const size_t m = g.find(", false) = ");   // (a key holding an assignment: as it was)
+                        if (g.compare(0, pf.size(), pf) == 0 && m != std::string::npos &&
+                            g.substr(pf.size(), m - pf.size()).find(" = ") == std::string::npos)
+                            line(ind, "{ Value __sv = " + g.substr(m + 11) + "; Value __sk = " + g.substr(pf.size(), m - pf.size()) +
+                                      "; if (!rtSelfPackedStore(RT, " + lvalueExpr(bv) + ", __sk, __sv)) rtIndexRef(" +
+                                      lvalueExpr(bv) + ", __sk, false) = std::move(__sv); }");
+                        else line(ind, g + ";");
+                        return;
+                    }
                 }
                 if (e->kind == NK::Assign) { line(ind, assign(static_cast<Assign*>(e)) + ";"); return; } // `my $x = ..` / `$x = ..`
                 if (e->kind == NK::VarExpr && static_cast<VarExpr*>(e)->declare) { // bare `my $x;` / `my @a;` / `my %h;`
@@ -4889,7 +4904,7 @@ struct Codegen {
                 if (!v->declare && !moduleMode_)
                     return "rtArrayAssignTo(RT, " + varRef(n) + ", " + rhs + ", " + cesc(n) + ", " +
                            (dollar ? "true" : "false") + ")";
-                return "rtArrayVal(rtNilToAny(" + rhs + "))";
+                return std::string(v->declare && v->d().declType.empty() ? "rtSelfPack(" : "(") + "rtArrayVal(rtNilToAny(" + rhs + ")))";
             }
             if (!n.empty() && n[0] == '%') return "rtCoerceHash(" + rhs + ")"; // my %h = a=>1,…
             // A store into a NATIVE scalar converts, checks and wraps as the
@@ -7804,6 +7819,9 @@ struct Codegen {
         std::map<std::string, std::set<Expr*>> readNodes;
         std::set<Expr*> floatReads;
         std::set<std::string> dualRead;
+        // `@a[I]` read as a packed Num array's word (selfPack), and whether the
+        // lane stores into one: checked once at the lane's entry (rtNumWords)
+        std::map<std::string, bool> arrs;
         bool ok = true;
         void fail() { ok = false; }
     };
@@ -7821,6 +7839,20 @@ struct Codegen {
         if (n.find("::") != std::string::npos) return false;
         name = n;
         return true;
+    }
+
+    // `@name[I]`, one subscript of a plain `@` variable, which a lane reads
+    // (and stores) as a packed Num array's word: the name
+    bool uWordIndex(Expr* e, std::string& an) const {
+        if (!e || e->kind != NK::Index) return false;
+        auto* ix = static_cast<Index*>(e);
+        if (ix->isHash || ix->multiDim || ix->zen || ix->semicolonSub || !ix->adverb.empty() || !ix->index ||
+            !ix->base || ix->base->kind != NK::VarExpr)
+            return false;
+        auto* v = static_cast<VarExpr*>(ix->base.get());
+        an = v->name;
+        return !v->declare && an.size() > 1 && an[0] == '@' && (nameLetterAt(an, 1) || an[1] == '_') &&
+               an.find("::") == std::string::npos && !(moduleMode_ && aotFree_.count(an));
     }
 
     // The Str lane's operators: `~` yields a string, the six comparisons a
@@ -7910,6 +7942,13 @@ struct Codegen {
                 if (!ops.count(a->op) || a->containerSigil || a->userOp) { U.fail(); return; }
                 if (a->op != "=" && opShadows("infix:<" + a->op.substr(0, a->op.size() - 1) + ">")) { U.fail(); return; }
                 std::string nm;
+                if (a->target && a->target->kind == NK::Index) {   // `@a[I] = E` into a word (selfPack)
+                    if (a->op != "=" || !uWordIndex(a->target.get(), nm)) { U.fail(); return; }
+                    U.arrs[nm] = true;
+                    uCollectExpr(static_cast<Index*>(a->target.get())->index.get(), U);
+                    uCollectExpr(a->value.get(), U);
+                    return;
+                }
                 if (!uScalar(a->target.get(), nm)) { U.fail(); return; }
                 if (laxVars_.count(nm) || cellVars_.count(nm)) { U.fail(); return; }
                 if (U.topics.count(nm)) { U.fail(); return; }   // `for` ALIASES its variable
@@ -7985,6 +8024,13 @@ struct Codegen {
             case NK::ListExpr:   // a comma sequence in a loop header; see JIT-PLAN
                 for (auto& it : static_cast<ListExpr*>(e)->items) uCollectExpr(it.get(), U);
                 return;
+            case NK::Index: {    // a packed Num array's element, read as its word (selfPack)
+                std::string an;
+                if (!uWordIndex(e, an)) { U.fail(); return; }
+                U.arrs.emplace(an, false);
+                uCollectExpr(static_cast<Index*>(e)->index.get(), U);
+                return;
+            }
             default: U.fail(); return;
         }
     }
@@ -8211,6 +8257,11 @@ struct Codegen {
             case NK::Assign: {
                 auto* a = static_cast<Assign*>(e);
                 std::string nm;
+                if (a->target && a->target->kind == NK::Index) {   // (uSideEffect wants a Num at an I64)
+                    uTypeOf(static_cast<Index*>(a->target.get())->index.get(), U, changed);
+                    if (uTypeOf(a->value.get(), U, changed) == LT::STR) U.fail();
+                    return LT::F64;
+                }
                 if (!uScalar(a->target.get(), nm)) { U.fail(); return LT::I64; }
                 // `~=`, and `=` of a string, make a Str slot; a Str slot takes
                 // nothing else
@@ -8300,6 +8351,9 @@ struct Codegen {
                 for (auto& it : static_cast<ListExpr*>(e)->items) last = uTypeOf(it.get(), U, changed);
                 return last;
             }
+            case NK::Index:   // a word: a Num (its subscript must come out an I64: uWordAt)
+                if (uTypeOf(static_cast<Index*>(e)->index.get(), U, changed) == LT::STR) U.fail();
+                return LT::F64;
             default: return LT::I64;
         }
     }
@@ -8405,6 +8459,8 @@ struct Codegen {
     std::map<std::string, LT> uType_;
     std::set<std::string> uEscape_;     // names declared in a loop header
     std::string uBail_, uBailLabel_;    // "an operation left the lane", and where it lands
+    std::map<std::string, std::pair<std::string, std::string>> uArr_;   // @a -> its words' pointer and length
+    std::string uUndo_;                 // the lane's RtWordUndo, when it stores into words
 
     std::string uCast(const std::string& expr, LT from, LT to) {
         if (from == to) return expr;
@@ -8566,8 +8622,23 @@ struct Codegen {
                             + ")) { " + uBail_ + " = true; goto " + uBailLabel_ + "; }");
                 return uCast(tv, LT::I64, want);
             }
+            case NK::Index: {   // a word of a packed Num array; out of range leaves the lane
+                std::string an, k = uWordAt(e, an, pre);
+                return k.empty() || want == LT::STR ? "" : uCast("rtWordN(" + uArr_[an].first + ", " + k + ")", LT::F64, want);
+            }
             default: return "";
         }
+    }
+    // The subscript of a word `@a[I]` the lane holds, checked against the
+    // array's length (a bail past it: the boxed loop answers): a C++ local
+    std::string uWordAt(Expr* e, std::string& an, std::vector<std::string>& pre) {
+        auto* ix = static_cast<Index*>(e);
+        if (!uWordIndex(e, an) || !uArr_.count(an) || uNodeType(ix->index.get()) != LT::I64) return "";
+        std::string k = uExpr(ix->index.get(), LT::I64, pre), tv = gensym("__ut");
+        if (k.empty()) return "";
+        pre.push_back("const long long " + tv + " = " + k + "; if ((unsigned long long)" + tv + " >= " +
+                      uArr_[an].second + ") { " + uBail_ + " = true; goto " + uBailLabel_ + "; }");
+        return tv;
     }
 
     // The settled lane type of a node, for choosing operand width. The fixpoint
@@ -8591,7 +8662,9 @@ struct Codegen {
                 if (b->op == "%") return LT::I64;
                 return (uNodeType(b->lhs.get()) == LT::F64 || uNodeType(b->rhs.get()) == LT::F64)
                            ? LT::F64 : LT::I64; }
+            case NK::Index: return LT::F64;   // a word (uWordAt)
             case NK::Assign: { auto* a = static_cast<Assign*>(e); std::string nm;
+                               if (a->target && a->target->kind == NK::Index) return LT::F64;
                                if (!uScalar(a->target.get(), nm)) return LT::I64;
                                auto it = uType_.find(nm); return it == uType_.end() ? LT::I64 : it->second; }
             default: return LT::I64;
@@ -8783,6 +8856,19 @@ struct Codegen {
         if (e->kind != NK::Assign) return false;
         auto* a = static_cast<Assign*>(e);
         std::string nm;
+        if (a->target && a->target->kind == NK::Index) {
+            // `@a[I] = E`: a Num into the word, what it held logged for a bail
+            // (an Int would be stored as one, which unpacks the array: boxed)
+            std::vector<std::string> pre;
+            if (a->op != "=" || uNodeType(a->value.get()) != LT::F64) return false;
+            std::string r = uExpr(a->value.get(), LT::F64, pre);
+            std::string an, k = r.empty() ? r : uWordAt(a->target.get(), an, pre);
+            if (k.empty() || uUndo_.empty()) return false;
+            for (auto& p2 : pre) line(ind, p2);
+            line(ind, uUndo_ + ".note(" + uArr_[an].first + " + " + k + "); rtSetWordN(" + uArr_[an].first + ", " + k +
+                      ", " + r + ");");
+            return true;
+        }
         if (!uScalar(a->target.get(), nm)) return false;
         LT t = uType_[nm];
         std::string lv = uLocal_[nm];
@@ -8878,7 +8964,9 @@ struct Codegen {
 
         ULoop U;
         uCollectStmt(loop, U);
-        if (!U.ok || U.slots.empty() || U.written.empty()) return false;
+        bool arrStores = false;
+        for (auto& kv : U.arrs) arrStores = arrStores || kv.second;
+        if (!U.ok || U.slots.empty() || (U.written.empty() && !arrStores)) return false;
         for (auto& w : U.written) if (readonlyVars_.count(w)) return false;   // the boxed path refuses it
         if (loop->kind == NK::ForStmt)   // …and so its own read-only variable (forStmt marks it)
             for (auto& v : static_cast<ForStmt*>(loop)->vars) if (U.written.count(v)) return false;
@@ -8944,7 +9032,7 @@ struct Codegen {
             }
             else if (!U.local.count(kv.first)) names.push_back(kv.first);
         }
-        if (names.empty() && escStore.empty()) return false;  // nothing outside the loop to speed up
+        if (names.empty() && escStore.empty() && !arrStores) return false;  // nothing outside the loop to speed up
         uBail_ = gensym("__ubail");
         uBailLabel_ = gensym("__ubl");
         std::string ok = gensym("__ulane");
@@ -8967,6 +9055,18 @@ struct Codegen {
                                                                                        : "rtIntSlot(") + varRef(n) + ")");
         }
         if (!guards.empty()) line(ind + 1, "if (!(" + joinAnd(guards) + ")) break;");
+        // each array read or written by word: a live packed body of Nums,
+        // checked once here (nothing in the lane can unpack it), and the
+        // words' place and length kept in locals; a store's undo log
+        uArr_.clear(); uUndo_.clear();
+        if (arrStores) { uUndo_ = gensym("__uu"); line(ind + 1, "RtWordUndo " + uUndo_ + ";"); }
+        for (auto& kv : U.arrs) {
+            const std::string p = gensym("__uw"), n = gensym("__un");
+            uArr_[kv.first] = {p, n};
+            line(ind + 1, "int64_t* " + p + " = nullptr; size_t " + n + " = 0; if (!rtNumWords(RT, " + varRef(kv.first) +
+                          ", " + p + ", " + n + ", " + (kv.second ? "true" : "false") + ")) break;");
+            if (kv.second) line(ind + 1, uUndo_ + ".add(" + p + ", " + n + ");");
+        }
         for (auto& n : names) {
             if (U.dualRead.count(n)) {
                 line(ind + 1, std::string(uCType(LT::F64)) + uLocal_[n] + " = " + varRef(n) + ".t == VT::Num ? " +
@@ -9013,6 +9113,7 @@ struct Codegen {
         // the one use of goto this codebase has, and it is the correct one.
         line(ind + 1, uBailLabel_ + ": ;");
         line(ind + 1, "if (" + uBail_ + ") {");
+        if (!uUndo_.empty()) line(ind + 2, uUndo_ + ".undo();");
         for (size_t i = 0; i < names.size(); i++)
             if (uType_[names[i]] != LT::STR && U.written.count(names[i]))
                 line(ind + 2, varRef(names[i]) + (uType_[names[i]] == LT::F64 ? ".n = " : ".i = ") + entry[i] + ";");
