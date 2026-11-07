@@ -7,7 +7,10 @@ board, on a simulated one, under the interpreter or compiled for this computer.
 
 New to it? [examples/arduino](../../examples/arduino/README.md) walks from a
 blinking LED to the Uno R4 WiFi's LED matrix and its network, with a program
-for each step.
+for each step. Writing your own?
+[The Arduino FAQ](faq/arduino.md) has the tips: which native type to use,
+fixed-size arrays, what string interpolation can and cannot do, tables
+instead of hashes, and the `millis()` wrap.
 
 > **Phase A0 of [ARDUINO-PLAN.md](../dev/plans/ARDUINO-PLAN.md), with A1's
 > constants.** The sketch and both simulators are implemented and checked
