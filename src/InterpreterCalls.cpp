@@ -4595,8 +4595,10 @@ Value setOp(const std::string& op, const Value& l, const Value& r) {
             }
             return false;
         }
+        // the list's own elements, as Rakudo walks them: an itemized Array in it
+        // is one element, and `2 ∈ (1, (2, 3))` is False
         if (hay.t == VT::Array || hay.t == VT::Range) {
-            for (auto& x : hay.flatten()) {
+            for (auto& x : toList(hay)) {
                 if (x.t == VT::Pair) { // pair→weight reading, as setWeights has it
                     if (!(x.pairVal() && x.pairVal()->truthy())) continue;
                     Value el = x.pairKeyV();
