@@ -4588,10 +4588,11 @@ static std::string renderParam(const Param& p, bool inSignature = false, const s
         // `:(Int(Cool) $a).raku` came back `:(Int $a)` and read as an ordinary
         // type constraint (roast S02-names-vars/signature.t). `.type` already
         // answered the coercion; this is the rendering catching up with it.
-        if (p.coerce)
-            o += "(" + (p.coerceFrom.empty() ? std::string("Any") : p.coerceFrom) + ")";
+        // A smiley is the target's, ahead of the source: `Str:D(Int)`.
         if (p.defConstraint == 1) o += ":D";
         else if (p.defConstraint == 2) o += ":U";
+        if (p.coerce)
+            o += "(" + (p.coerceFrom.empty() ? std::string("Any") : p.coerceFrom) + ")";
         o += " ";
     }
     // `|c` is a capture, not a `*`-slurpy — it renders with its own leading `|`
@@ -4814,6 +4815,12 @@ static std::string paramTypeName(const Param& p, const Callable* c) {
         return p.type;
     return li->typeAliasIn(p.type, c->closure.get());
 }
+// …and how a signature's TEXT names it, as its `.raku` does: NativeCall's Pointer
+// is `NativeCall::Types::Pointer` (#220's follow-up), a program's own `class Pointer` itself
+static std::string sigTypeShown(const std::string& t) {
+    Interpreter* li = Interpreter::liveTarget();
+    return li && li->classes_.count(t) ? t : ncQualifiedName(t);
+}
 
 Value makeSignature(const Callable* c) {
     // A multi group's signature is its PROTO's: `proto method relpath(Mu $path)`
@@ -4912,7 +4919,7 @@ Value makeSignature(const Callable* c) {
         else if (p.pastDoubleSemi) { sig += ";; "; rsig += ";; "; }   // `(;; $x)`: nothing before the `;;`
         first = false;
         prevPastSemi = p.pastDoubleSemi;
-        const std::string pt = paramTypeName(p, c);
+        const std::string pt = sigTypeShown(paramTypeName(p, c));
         sig += renderParam(p, /*inSignature=*/true, &pt);
         rsig += renderParam(p, false, &pt);
         // `*%opts` slurps NAMED arguments and takes no positional at all, so it
@@ -4963,8 +4970,9 @@ Value makeSignature(const Callable* c) {
     Interpreter* li = Interpreter::liveTarget();
     const std::string retT = c && li ? li->retTypeAliased(*c) : c ? c->cold().retType : std::string();
     if (!retT.empty()) {
-        std::string rt = retT;
-        if (char sm = retTypeSmiley(rt)) rt = retTypeName(rt) + ":" + std::string(1, sm);
+        std::string rt = sigTypeShown(retTypeName(retT));
+        if (char sm = retTypeSmiley(retT)) rt += ":" + std::string(1, sm);
+        if (retTypeCoerces(retT)) rt += "(" + (retTypeCoerceFrom(retT).empty() ? "Any" : retTypeCoerceFrom(retT)) + ")";
         sig += " --> " + rt; rsig += " --> " + rt;
     }
     else if (c) {   // `--> Nil` / `--> True`: a return value written as one
@@ -5004,8 +5012,8 @@ Value makeSignature(const Callable* c) {
         Value pv = Value::makeHash(); pv.hashKind = "Parameter";
         // how the parameter renders on its own — Value::gist reads this, so a
         // `say $sig.params[0]` shows `Int $one` rather than the attribute dump
-        const std::string pt = paramTypeName(p, c);
-        (*pv.hash())["str"] = Value::str(renderParam(p, false, &pt));
+        const std::string pt = paramTypeName(p, c), shown = sigTypeShown(pt);
+        (*pv.hash())["str"] = Value::str(renderParam(p, false, &shown));
         // an ANONYMOUS parameter has an empty .name, not its bare sigil
         // (a sigilless `\x` or capture `|c` carries no sigil: its name is it)
         const bool sigilless = p.sigil == '|' || p.sigil == '\\';

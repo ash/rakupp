@@ -1401,6 +1401,10 @@ std::string Parser::retTypeSpecHere() const {
         }
         if (d == 0) return base + (sm.empty() ? "" : "\x01" + sm) + "(" + src + ")";
     }
+    // `--> Int:D`, after a parameter too: the smiley rides as a `\x01D`/`\x01U` suffix (retTypeName strips it)
+    if (q + 1 < toks_.size() && toks_[q].kind == Tok::Op && toks_[q].text == ":" && !toks_[q].spaceBefore &&
+        toks_[q + 1].kind == Tok::Ident && (toks_[q + 1].text == "D" || toks_[q + 1].text == "U"))
+        return base + "\x01" + toks_[q + 1].text;
     return base + retCoercionMark(peek());
 }
 
@@ -12053,16 +12057,14 @@ std::vector<Param> Parser::parseSignature(Tok closeTok) {
                                           cur().text == "Empty"))
                 sigRetLiteral_ = parsePrimary(); // `--> True` : a literal Bool/Nil return value
             else if (isKind(Tok::Ident)) {
-                sigRetType_ = retTypeSpecHere(); // remember the return type
-                // `--> Int:D` / `--> Int:U` — the definedness rides along as a
-                // `\x01D`/`\x01U` suffix (retTypeName strips it); `:foo` is refused
+                sigRetType_ = retTypeSpecHere(); // remember the return type, its smiley too
+                // `--> Int:foo` is refused
                 if (peek().kind == Tok::Op && peek().text == ":" && !peek().spaceBefore &&
                     peek(2).kind == Tok::Ident && !peek(2).spaceBefore) {
                     const std::string sm = peek(2).text;
                     if (sm != "D" && sm != "U" && sm != "_")
                         throw ParseError("Invalid type smiley ':" + sm + "' used, only ':D', ':U' and ':_' are allowed",
                                          cur().line, "X::InvalidTypeSmiley", {{"name", sm}});
-                    if (sm != "_" && sigRetType_.find('(') == std::string::npos) sigRetType_ += "\x01" + sm;
                 }
                 // `--> Bool, Int $x` — parameters after the return constraint
                 {
