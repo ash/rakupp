@@ -183,7 +183,9 @@ took, as of 5.4.1.
 Native rather than WebAssembly for three reasons. Raku code gets threads
 (`start`, `await`, `hyper`), which the single-threaded WebAssembly build does
 not have. Recursion goes as deep as the stack you give it, where the
-WebAssembly build stops at about 200 nested calls ([rakujs/build.sh](../../rakujs/build.sh)).
+WebAssembly build stops where the browser's stack does: about 1,350 nested
+calls in a Chrome Web Worker, fewer in WebKit's
+([rakujs/INTERNALS.md](../../rakujs/INTERNALS.md#known-limitations-single-threaded-browser-build)).
 And there is no JavaScript bridge between the app's UI and the engine.
 
 ### Building the library

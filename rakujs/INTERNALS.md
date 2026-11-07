@@ -171,13 +171,21 @@ download (cached thereafter).
   browser's own stack, which a page cannot grow (unlike the native build's
   1 GiB thread stack). `-sSTACK_SIZE` is linear memory, holding only what C++
   takes the address of, so it does **not** help — verified. How deep a program
-  gets depends on the browser and the thread. For
-  `sub f($n) { $n == 0 ?? 0 !! 1 + f($n - 1) }` on the v4.0.1 engine:
+  gets depends on the browser, the thread and the release. For
+  `sub f($n) { $n == 0 ?? 0 !! 1 + f($n - 1) }`:
 
   | | Web Worker | Page's main thread |
   |---|---|---|
-  | Chrome 152 | 59 | 115 |
-  | Safari 27 (WebKit) | 32 | 419 |
+  | Chrome 152, v5.6.3 | ~1,350 | ~2,700 |
+  | Chrome 152, v4.0.1 | 59 | 115 |
+  | Safari 27 (WebKit), v4.0.1 | 32 | 419 |
+
+  The v5.6.3 row is the released `rakujs.wasm` from raku.online, a fresh
+  instance per run. `build.sh`'s flags are the same as at v4.0.1, but CI builds
+  with Emscripten `latest`, so the 23-fold gain is not yet attributed to the
+  engine or the toolchain. koans.app measured 1,000 in Chrome and 2,000 in
+  Firefox on v5.4.1. Safari has not been measured since v4.0.1; the next
+  paragraph explains its figures there.
 
   Safari's worker is the shallow extreme because two costs multiply. WebKit
   gives a worker thread a sixteenth of its main thread's stack (a trivial

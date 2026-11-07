@@ -95,9 +95,11 @@ throws `X::Recursion` before it overflows, so this is safe rather than merely
 lucky.
 
 The honest consequence is a much lower ceiling, and the browser sets it rather
-than the build. A plain recursive sub reaches **58 levels in a Chrome Web Worker
-and 115 on Chrome's main thread; in Safari, 32 and 419**. The next section is
-most of the reason in Chrome; the worker section below is the reason in Safari.
+than the build. On v4.0.1 a plain recursive sub reached **58 levels in a Chrome
+Web Worker and 115 on Chrome's main thread; in Safari, 32 and 419**. The next
+section is most of the reason in Chrome; the worker section below is the reason
+in Safari. By v5.6.3, with the same build flags, Chrome reaches about 1,350 in
+a worker and 2,700 on the main thread; Safari has not been measured again.
 
 ## Exceptions: `-fexceptions`, not `-fwasm-exceptions`
 
@@ -525,7 +527,7 @@ Nothing is sent anywhere. The program runs in the visitor's browser.
 
 | | |
 |---|---|
-| **deep recursion** | 58 Raku levels in a Chrome worker, 32 in a Safari one; an overflowed run goes again on the page's main thread (115 in Chrome, 419 in Safari), and past that the page reports a recursion-limit message and recovers |
+| **deep recursion** | about 1,350 Raku levels in a Chrome worker on v5.6.3 (58 on v4.0.1), 32 in a Safari one on v4.0.1; an overflowed run goes again on the page's main thread (about 2,700 in Chrome, 419 in Safari), and past that the page reports a recursion-limit message and recovers |
 | **`start` / `Promise`** | needs real threads; a threaded build needs cross-origin isolation headers, awkward for static hosting (Chapter 38) |
 | **sockets** | not available in the browser sandbox |
 | **NativeCall** | takes its no-libffi fallback path by construction — there is no shared library to open (Chapter 36) |

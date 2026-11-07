@@ -96,16 +96,19 @@ a planted exfiltration in a test file fails closed, gated.
   `web,worker` only, so its CI loads it under Node through Emscripten's
   `instantiateWasm` (a `RAKUJS_ENV=node` build exists and is not released);
   `rakupp_run()` cannot be stopped by the host, so a watchdog kills the
-  worker; and recursion in a Web Worker is shallow — 59 levels in Chrome and
-  32 in Safari on v4.0.1 ([rakujs/INTERNALS.md](../../../rakujs/INTERNALS.md)),
-  1,000 in Chrome and 2,000 in Firefox on v5.4.1 by koans.app's own measure —
-  with no main-thread retry of the kind the playground has.
+  worker; and recursion in a Web Worker was shallow — 59 levels in Chrome and
+  32 in Safari on v4.0.1 — with no main-thread retry of the kind the playground
+  has. Later releases go deeper: 1,000 in Chrome and 2,000 in Firefox on v5.4.1
+  by koans.app's own measure, about 1,350 in a Chrome worker on v5.6.3
+  ([rakujs/INTERNALS.md](../../../rakujs/INTERNALS.md)); Safari has not been
+  measured again.
 - **More hosts on the one C API.** The JavaScript binding is Bun-only
   (`bun:ffi`); Node needs N-API. Emacs Lisp is requested (issue #44, with
   raku-mode and org-babel named). Ruby, PHP, Java, .NET, Swift and Lua each cost
   one thin binding over `rakupp.h`.
-- **Distribution channels.** A Homebrew tap and the curl-pipe installer exist;
-  deb/rpm, AUR, nix, Scoop and winget do not. The `setup-rakupp` GitHub Action
+- **Distribution channels.** A Homebrew tap, the curl-pipe installer, a `.deb`,
+  a Nix flake and a Guix channel exist ([INSTALL.md](../../guide/INSTALL.md));
+  rpm, AUR, Scoop and winget do not. The `setup-rakupp` GitHub Action
   is staged locally and not pushed. The glibc-2.28 floor and the manylinux
   container are unproven in CI until pushed.
 
@@ -131,9 +134,12 @@ behind every cell.
 
 ## 9. Developer experience
 
-- **The language server is diagnostics only** and flagged "needs review" since
-  it left its side worktree. Completion, hover, go-to-definition and rename are
-  what an editor expects, and RakuAST now carries the tree they would walk.
+- **The language server stops at go-to-definition.** It gives diagnostics,
+  hover, completion and go-to-definition within one file
+  ([LSP.md](../../guide/integrations/LSP.md)), and GRAND-REVIEW-PLAN still
+  lists it as "needs review". Find references, rename, signature help and
+  formatting are not written; RakuNavigator, the community's language server,
+  has all four. RakuAST carries the tree they would walk.
 - **A debugger is a deliberate non-borrow** — the replay debugger for the
   playground was probed and parked (`MY::` came back empty, the AST dump carried
   no line numbers, ~20× probe cost), and CLI-BORROW-PLAN says not to reopen it

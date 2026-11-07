@@ -64,8 +64,8 @@ mismatches the interpreter's by-value control-flow catches).
 | interpreter, inside `start` | ~12,700 levels | ~20 KB | catchable `X::Recursion` |
 | `--exe`, interpreter-dispatched calls | as interpreter | ~21 KB | catchable `X::Recursion` |
 | `--exe`, direct native sub calls | ~1,270,000 levels | ~0.83 KB | **process death (SIGBUS), not catchable** |
-| wasm, Web Worker | 58 (Chrome 152), 32 (Safari 27) | browser-engine frames | host `RangeError`; the playground re-runs the program on the main thread |
-| wasm, page's main thread | 115 (Chrome 152), 419 (Safari 27) | browser-engine frames | host `RangeError`, reported by the playground |
+| wasm, Web Worker | ~1,350 (Chrome 152, v5.6.3); 32 (Safari 27, v4.0.1) | browser-engine frames | host `RangeError`; the playground re-runs the program on the main thread |
+| wasm, page's main thread | ~2,700 (Chrome 152, v5.6.3); 419 (Safari 27, v4.0.1) | browser-engine frames | host `RangeError`, reported by the playground |
 
 The interpreter's guard (`DepthGuard`, src/InterpreterCore.cpp) fires while
 about **2 MiB of headroom** remains on the current thread's stack, so the
