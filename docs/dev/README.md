@@ -20,13 +20,16 @@ The user-facing documentation is one level up, in [../](../README.md).
   reinvented. Each feature has dated tables: Perl 6's proposed, specified and
   implemented dates beside each adopter's version and release date, and a
   verdict from the adopter's own records (borrowed, cited as prior art,
-  independent, common ancestor, or flowed into Perl 6). Only four borrowings
-  outside the Perl family are documented: Ruby's `->`, PHP 8.3 string
-  increment, Swift regex at the design stage, and Joose via Moose. Perl 5 is
-  the one real importer, and smartmatch is its cautionary tale. Also covers
-  what nobody adopted (junctions, hyper-operators, Whatever, NFG, slangs).
-  Includes a November 2026 full-text search of the Swift, Rust, Kotlin, C#,
-  Scala and Dart proposal archives and the JEPs.
+  independent, common ancestor, or flowed into Perl 6). Only five borrowings
+  outside the Perl family are documented: Swift 4's closing-delimiter heredoc
+  rule (the one that shipped intact), Ruby's `->`, PHP 8.3 string increment,
+  Swift regex at the design stage, and Joose via Moose. Perl 5 is the one real
+  importer, credited openly on perl5-porters, and smartmatch is its
+  cautionary tale. Also covers what nobody adopted (junctions,
+  hyper-operators, Whatever, NFG, slangs). Includes a November 2026 full-text
+  search of the Swift, Rust, Kotlin, C#, Scala and Dart proposal archives and
+  the JEPs, and of design forums, mailing lists (perl5-porters, python-3000,
+  es-discuss), twenty more design repositories and seventeen issue trackers.
 
 ## Process
 
