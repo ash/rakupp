@@ -48,12 +48,12 @@ my $keep       = so @args.grep('--keep');
 # killed, which is how a non-terminating generated program is caught rather
 # than waited on forever.
 my $LIMIT = 20;
-sub bounded(*@cmd) {
+sub bounded(*@cmd, :%env) {
     my $p = Proc::Async.new(|@cmd);
     my ($o, $e) = '', '';
     $p.stdout.tap({ $o ~= $_ });
     $p.stderr.tap({ $e ~= $_ });
-    my $done = $p.start;
+    my $done = %env ?? $p.start(:ENV(%env)) !! $p.start;
     my $killed = False;
     await Promise.anyof($done, Promise.in($LIMIT));
     unless $done {
@@ -260,10 +260,9 @@ for @progs -> (:key($name), :value($src)) {
     my $gen = $cpp.out.slurp(:close); $cpp.err.slurp(:close);
     $laned++ if $gen.contains('unboxed loop lane');
 
-    # (an array program's oracle is the boxed Array: packing off. `env` sets it,
-    # since this engine's Proc::Async does not take :ENV)
+    # (an array program's oracle is the boxed Array: packing off)
     my ($irc, $want, $ierr) = %arrays{$name}
-        ?? bounded('env', 'RAKUPP_NO_SELFPACK=1', $rakupp.Str, $f.Str)
+        ?? bounded($rakupp.Str, $f.Str, :env(%(|%*ENV, RAKUPP_NO_SELFPACK => '1')))
         !! bounded($rakupp.Str, $f.Str);
     unless $irc.defined {
         # The GENERATOR produced a program that does not terminate. That is a

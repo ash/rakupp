@@ -58,11 +58,12 @@ Raku Array of Nums.*
   - perf-guard is level. Best of two rounds per kernel, most are within ±3%.
     fib and asg read +6% and +8%, but they retire the same instructions as on
     main (1,137M against 1,139M, and 1,720M both), so that is layout or load.
-- **The prototype found two bugs that predate it.**
-  - A C-style `loop (my $a = 0; …)` inside an expression `try { … }` does not
-    build under `--exe`, with or without `-O`: the generated C++ names `v_sa`,
-    which it never declared. main's binary fails the same way.
-  - `Proc::Async.new(…, :ENV(…))` ignores `:ENV`. Rakudo honours it.
+- **The prototype found a bug that predates it.** A C-style
+  `loop (my $a = 0; …)` inside an expression `try { … }` or `do { … }` did not
+  build under `--exe`, with or without `-O`: the generated C++ named `v_sa`
+  and never declared it. The same missing scope made
+  `my $j = 7; my $r = do { my $j = 100; $j }` leave `$j` at 100, compiled.
+  Both are fixed on their own branch, `claude/exe-do-try-block-scope`.
 
 ## What the prototype does
 
