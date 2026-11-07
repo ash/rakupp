@@ -13,7 +13,8 @@ here.*
 f0376fa6 (kernels share stored strings; `"…"` literals cached),
 9b294b72 (`%h.elems` without listing the hash),
 f3096c7d and 7a09c596 (`return-rw` use-after-frees; ASan sees the pools' frees),
-578572c6 (a finished worker is not a running one).*
+578572c6 (a finished worker is not a running one),
+9b7a9824 (`for` over an array a worker is growing).*
 
 ---
 
@@ -92,6 +93,14 @@ f3096c7d and 7a09c596 (`return-rw` use-after-frees; ASan sees the pools' frees),
   worker bodies, which end when the body returns.
   `t/regression/worker-teardown-is-not-a-running-body.raku` makes the
   teardown slow on purpose (`RAKUPP_WORKER_EXIT_DELAY`).
+- **A `for` loop over an array that another thread was pushing to could crash**
+  (9b7a9824). Before looping, `for` checks the list for a literal `IterationEnd`.
+  It read the array without the lock `push` takes, so a push that moved the
+  buffer left the check reading freed memory. The values a loop sees while
+  another thread grows its array are still unspecified, but the runtime no
+  longer crashes. It crashed now and then on linux-aarch64-musl in
+  `t/stress/ub-iterate-during-push.raku`, and an ASan build with the pools off
+  reported it in 1 of 12 runs; it now runs 40 of 40 clean.
 
 - **A `constant` naming a type is that type in a signature** (28257097;
   issue #220). `my constant Alias = Foo::Bar; sub g(Alias $x) { }` gave a
