@@ -9,7 +9,7 @@ from this page. Move each item into CHANGELOG.md at the tag and delete it
 here.*
 
 *Covered so far: 28257097 (a `constant` type alias in a signature, issue #220),
-02e52fa2 (`Value` 80 → 64 bytes).*
+02e52fa2 (`Value` 80 → 64 bytes), 5d52a248 (string literals keep their Value).*
 
 ---
 
@@ -32,6 +32,15 @@ here.*
   of them, uses 26.3 MB where it used 23.6, and runs 9% faster.
   t/run.raku 1,992 of 1,992; Roast 1,425 of 1,425; Roast under ASan finds
   nothing new.
+- **A string literal is built once** (5d52a248). Its value is made on the
+  literal's first evaluation and copied after that, so a literal over 15 bytes
+  no longer allocates each time it runs. Evaluating a 36-byte literal 200,000
+  times takes 200,000 fewer mallocs and 12–19% fewer instructions in the
+  interpreter. Loops the integer kernels compile are unchanged: their string
+  lane still makes a new value per element stored. perf-guard is level, and
+  `prepend` gets back the 2% of instructions the 64-byte `Value` cost it.
+  `t/regression/str-literal-shared-value.raku` checks that a write through a
+  copy never reaches the literal.
 
 ### Fixed: silent wrong answers
 
