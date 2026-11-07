@@ -294,7 +294,7 @@ std::optional<Value> Interpreter::methodCallPart1c(const Value& inv, const MName
         if (m == "Int") return methodCall(bare, "Int", args);
     }
     if (inv.t == VT::Type && m == "bits") { // native int/num width (2026.06 addition)
-        static const std::map<std::string, int> widths = {
+        static const std::map<std::string, int, std::less<>> widths = {
             {"int",64},{"uint",64},{"int64",64},{"uint64",64},{"num",64},{"num64",64},
             {"int32",32},{"uint32",32},{"num32",32},{"int16",16},{"uint16",16},
             {"int8",8},{"uint8",8},{"byte",8}};
@@ -1069,7 +1069,7 @@ std::optional<Value> Interpreter::methodCallPart1c(const Value& inv, const MName
             // S-08: a bare string is the payload of an X::AdHoc; an exception
             // object travels as it is.
             Value ex = args.empty() ? Value::any() : args[0];
-            if (ex.t == VT::Str) ex = exceptionFor(RakuError{Value::typeObj("X::AdHoc"), ex.s.str(), RakuError::NoCapture{}});
+            if (ex.t == VT::Str) ex = exceptionFor(RakuError{Value::typeObj("X::AdHoc"), ex.s.copyText(), RakuError::NoCapture{}});
             if (preserve("quit", ex)) return Value::boolean(true);
             ValueList snap = tapSnapshot();
             for (auto& t : snap) {

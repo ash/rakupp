@@ -1103,7 +1103,7 @@ static std::string podTableText(const Value& v) {
 }
 
 std::string pod2text(const Value& v) {
-    if (v.t == VT::Str) return v.s.str();
+    if (v.t == VT::Str) return v.s.copyText();
     if (v.t == VT::Array && v.arr()) {
         std::string out; bool first = true;
         for (auto& k : *v.arr()) {
@@ -1116,7 +1116,7 @@ std::string pod2text(const Value& v) {
     }
     if (v.t != VT::Hash || v.hashKind != "Pod" || !v.hash()) return v.toStr();
     auto pcIt = v.hash()->find("podclass");
-    std::string pc = pcIt == v.hash()->end() ? std::string() : pcIt->second.s.str();
+    std::string pc = pcIt == v.hash()->end() ? std::string() : pcIt->second.s.copyText();
     auto level = [&]() -> long long {
         auto l = v.hash()->find("level");
         return l == v.hash()->end() ? 1 : l->second.toInt();
@@ -1131,7 +1131,7 @@ std::string pod2text(const Value& v) {
         return std::string(2 * (size_t)std::max(0LL, level()), ' ') + "* " + podKids(v, false);
     if (pc == "Pod::Block::Named") {
         auto n = v.hash()->find("name");
-        std::string name = n == v.hash()->end() ? std::string() : n->second.s.str();
+        std::string name = n == v.hash()->end() ? std::string() : n->second.s.copyText();
         // (Pod::To::Text renders a `nested` or `config` block as nothing)
         if (name == "nested" || name == "config") return "";
         std::string kids = podKids(v, true);

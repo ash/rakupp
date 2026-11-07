@@ -2,6 +2,7 @@
 #include "Ast.h"
 #include "Token.h"   // TokenXform — P1-L10N's `.AST($lang)` seam
 #include "Value.h"
+#include "StrMap.h"  // classes_: a string-keyed table looked up by a view
 #include "Cycle.h"   // the backup cycle collector: Env notes what a scope exit drops
 #include "IntOps.h"
 #include "ConstInit.h"  // RAKUPP_CONSTINIT on the thread_local declarations below
@@ -97,8 +98,8 @@ bool coreEnumValue(const std::string& n, Value& out);
 // (null for a name that is none), for a NameTerm to keep (see coreVal)
 const Value* coreEnumValueRef(const std::string& n);
 bool isCoreEnumMemberName(const std::string& n);   // …is there one by this name (cheaply)
-bool isKnownTypeName(const std::string& n); // core type-name set (Int, Str, …)
-bool isSettingMetamodelName(const std::string& n); // `Metamodel::ClassHOW` and the rest of the setting's
+bool isKnownTypeName(std::string_view n); // core type-name set (Int, Str, …)
+bool isSettingMetamodelName(std::string_view n); // `Metamodel::ClassHOW` and the rest of the setting's
 // a channel's send/close wakes its parallel-mode readers (BuiltinsSupply.cpp)
 void chanWake();
 uint64_t chanWakeGen();
@@ -159,12 +160,12 @@ Value makeBaggy(const ValueList& items, const std::string& kind,
 
 // Numify a string with Raku-correct result type (Int/Rat/Num), BigInt-aware
 // (defined in Interpreter.cpp). Non-numeric input yields an undefined value.
-Value numifyStr(const std::string& in);
+Value numifyStr(std::string_view in);
 // numifyStr, but a string that isn't a number THROWS X::Str::Numeric the way
 // Rakudo does in numeric context (`"a" + 1`), instead of silently reading as 0.
-Value numifyStrOrThrow(const std::string& in);
+Value numifyStrOrThrow(std::string_view in);
 // The quiet form: a non-numeric string becomes an unthrown Failure (Rakudo's `+"a"`).
-Value numifyStrFailure(const std::string& in);
+Value numifyStrFailure(std::string_view in);
 // An ARMED Failure: payload type + diagnostic, throwing the moment it is used.
 // A negative subscript is out of range (see the definitions in InterpreterBinding.cpp).
 Value negIndexFailure(long long i);            // reads: the armed X::OutOfRange Failure
@@ -257,22 +258,22 @@ inline std::string nfcDecoded(std::string text) { nfcDecodeInPlace(text); return
 // answer on its body; nfcKnown(v) is 1/0 for a plain Str, -1 for anything
 // else, whose string form has to be checked. (Builtins.cpp)
 bool isNfcText(const char* s, size_t n);
-inline bool isNfcText(const std::string& s) { return isNfcText(s.data(), s.size()); }
+inline bool isNfcText(std::string_view s) { return isNfcText(s.data(), s.size()); }
 bool cowIsNfc(const CowStr& s);
 int nfcKnown(const Value& v);
 // `a ~ b`: exactly nfcNormalize(a + b), but when a is NFC the text is
 // renormalized only where the two meet, at the cost of b and not of a. aNfc
 // and bNfc say what is known of each side: 1 NFC, 0 not, -1 check it here.
-std::string nfcConcat(const std::string& a, const std::string& b, int aNfc = -1, int bNfc = -1);
+std::string nfcConcat(std::string_view a, std::string_view b, int aNfc = -1, int bNfc = -1);
 Value nfcConcatStr(const CowStr& a, const CowStr& b);   // …two Strs, into a Str known to be NFC
 // dst ~= v, the same way. `chars` is dst's grapheme count, -1 for unknown, and
 // is kept up to date across the join; `dstNfc` is what is known of dst (1, 0,
 // -1), and is kept too — without one, dst is checked every time.
-void nfcAppend(std::string& dst, const std::string& v, long long* chars = nullptr, signed char* dstNfc = nullptr);
+void nfcAppend(std::string& dst, std::string_view v, long long* chars = nullptr, signed char* dstNfc = nullptr);
 // dst ~= v on a Str's own storage: in place wherever appendText would be,
 // with the body's grapheme count and NFC flag carried across. And x ~ dst.
 void nfcAppendCow(CowStr& dst, const char* v, size_t nv, int vNfc = -1);
-inline void nfcAppendCow(CowStr& dst, const std::string& v) { nfcAppendCow(dst, v.data(), v.size()); }
+inline void nfcAppendCow(CowStr& dst, std::string_view v) { nfcAppendCow(dst, v.data(), v.size()); }
 inline void nfcAppendCow(CowStr& dst, const CowStr& v) { nfcAppendCow(dst, v.bytes(), v.size(), cowIsNfc(v) ? 1 : 0); }
 void nfcPrependCow(CowStr& dst, const char* x, size_t nx);
 // One part of a join or an interpolation onto `out`, which only these build,
@@ -280,16 +281,16 @@ void nfcPrependCow(CowStr& dst, const char* x, size_t nx);
 // afterwards made `$s = "$s…"` re-read all of $s. `partNfc` as above; an ASCII
 // part (most of them: every `"literal"` is interpolated) is NFC and joins as
 // it is, so the second form asks value `v` whether it is NFC only otherwise.
-void nfcAppendPartSlow(std::string& out, const std::string& part, int partNfc);
-inline bool nfcAsciiPart(const std::string& part) {
+void nfcAppendPartSlow(std::string& out, std::string_view part, int partNfc);
+inline bool nfcAsciiPart(std::string_view part) {
     for (unsigned char c : part) if (c >= 0x80) return false;
     return true;
 }
-inline void nfcAppendPart(std::string& out, const std::string& part, int partNfc = -1) {
+inline void nfcAppendPart(std::string& out, std::string_view part, int partNfc = -1) {
     if (nfcAsciiPart(part)) out += part;
     else nfcAppendPartSlow(out, part, partNfc);
 }
-inline void nfcAppendPart(std::string& out, const std::string& part, const Value& v) {
+inline void nfcAppendPart(std::string& out, std::string_view part, const Value& v) {
     if (nfcAsciiPart(part)) out += part;
     else nfcAppendPartSlow(out, part, nfcKnown(v));
 }
@@ -1324,7 +1325,7 @@ struct RakuError {
 // type, or an instance carrying `.dispatcher` and `.capture`. The callers that
 // fall back to a built-in on it ask here.
 inline bool isMultiNoMatch(const RakuError& e) {
-    return (e.payload.t == VT::Type ? std::string(e.payload.s.str()) : e.payload.typeName()) == "X::Multi::NoMatch";
+    return (e.payload.t == VT::Type ? e.payload.s.copyText() : e.payload.typeName()) == "X::Multi::NoMatch";
 }
 
 // The `self` of a grammar method reached through a `<.method>` subrule call
@@ -3392,7 +3393,7 @@ public:
                         // so a `state` inside it persists across checks, as in Rakudo
                         std::shared_ptr<Value> whereBlock;
                         Value howObj; };                   // its own .HOW, made on first ask (or by new_type)
-    std::unordered_map<std::string, SubsetInfo> subsets_;
+    StrMap<SubsetInfo> subsets_;
     // operator → the not-yet-declared type names of each candidate that armed
     // it provisionally (noteUserInfixCandidate); decided again as classes and
     // subsets are declared (reviewUserInfixPending, InterpreterBinding.cpp)
@@ -3669,7 +3670,7 @@ public:
     std::vector<PkgExport>* loadExports_ = nullptr;   // everything the module being loaded exports, once each
     Value hyperQualifiedCall(const std::string& method, ClassInfo* qual, const Value& inv, ValueList& args);
     void refuseUnknownQualifier(const std::string& qual, const std::string& method, const Value& inv);
-    bool userShadowsCoreRole(const std::string& type);                    // `role Numeric { }` hides the core one
+    bool userShadowsCoreRole(std::string_view type);                    // `role Numeric { }` hides the core one
     // whether any user role takes a core role's name, decided per symbol
     // generation: (generation + 1) << 1 | answer, 0 = not decided
     DecidedOnce<uint64_t> coreRoleShadowKey_{0};
@@ -3879,7 +3880,7 @@ public:
     std::string interpP5Pattern(const std::string& in); // :P5 — $vars splice as raw regex source
     // Bake regex-valued variables into an `rx//` source at construction time.
     std::string spliceRegexVars(const std::string& pat);
-    Value regexMatch(const std::string& subject, const std::string& pattern,
+    Value regexMatch(const std::string& subject, std::string_view pattern,
                      const Value* rxVal = nullptr,
                      const std::string& declKind = std::string());
     // The `<NAME>` subrule resolver over the lexical `my regex/token/rule`
@@ -3931,7 +3932,7 @@ public:
                        const ValueList* ruleArgs = nullptr, long startPos = 0,
                        long* consumedEnd = nullptr); // consumedEnd: where matching stopped (differs from .to under `<( )>`)
 
-    std::unordered_map<std::string, std::shared_ptr<ClassInfo>> classes_;
+    StrMap<std::shared_ptr<ClassInfo>> classes_;   // looked up by a Value's text, a view (StrMap.h)
     // Metamodel::Primitives: types whose metaobject is a USER object
     // (`Metamodel::Primitives.create_type($how)`), keyed by the type's
     // internal name. CustomHow.cpp; haveCustomHows_ gates every hook.
@@ -3957,7 +3958,7 @@ public:
     std::shared_ptr<ClassInfo> howClsInfo_; // shared class of persistent .HOW metaobjects (see m == "HOW")
     std::shared_ptr<ClassInfo> howSubsetClsInfo_; // …and of a subset's (Metamodel::SubsetHOW)
     std::shared_ptr<ClassInfo> howGrammarClsInfo_;   // …a grammar's: Metamodel::GrammarHOW, a ClassHOW
-    std::unordered_map<std::string, std::string> classAliases_;
+    StrMap<std::string> classAliases_;
     // …the ones the PROGRAM's own declarations made (not a module's): those
     // answer only inside their package (see the NameTerm arm)
     std::unordered_set<std::string> programAliases_;
@@ -4039,12 +4040,15 @@ public:
         Value* v = tctx().cur->find(n);
         return v && (v->t == VT::Type || (v->t == VT::Array && !v->enumType.empty()));
     }
-    const std::string& resolveClassAlias(const std::string& n) {
+    const std::string& resolveClassAlias(const std::string& n) { const std::string* a = classAliasOf(n); return a ? *a : n; }
+    std::string_view resolveClassAlias(std::string_view n) { const std::string* a = classAliasOf(n); return a ? std::string_view(*a) : n; }
+    // what resolveClassAlias answers when that is not `n` itself, else null
+    const std::string* classAliasOf(std::string_view n) {
         // NativeCall's legacy untyped-pointer name, still written by real
         // dists (OpenSSL's suite) — one static alias, so every Pointer
         // special-case downstream just works
-        if (n == "OpaquePointer") { static const std::string P = "Pointer"; return P; }
-        if (classes_.count(n)) return n;
+        if (n == "OpaquePointer") { static const std::string P = "Pointer"; return &P; }
+        if (classes_.count(n)) return nullptr;
         // …and a SUBSET of that exact name beats the package-relative alias, for
         // the same reason a class of that name does: Rakudo looks lexically
         // first and only then in the enclosing package's stash. Inside `unit
@@ -4052,7 +4056,7 @@ public:
         // is 'ind-obj') is what `method ast returns IndObj` names — resolving it
         // to the surrounding class instead made every `.ast` die on its own
         // return value.
-        if (subsets_.count(n)) return n;
+        if (subsets_.count(n)) return nullptr;
         // NativeCall's types under their QUALIFIED spelling. A module that does
         // not import them still names them in full — `NativeCall::Types::void`
         // is how a signature says "void *" without `use NativeCall` in scope —
@@ -4060,8 +4064,8 @@ public:
         // short type object the imported spelling gives, so a Pointer built
         // either way is the same Pointer.
         if (n.rfind("NativeCall::", 0) == 0) {
-            static const std::map<std::string, std::string> ncq = [] {
-                std::map<std::string, std::string> m;
+            static const std::map<std::string, std::string, std::less<>> ncq = [] {
+                std::map<std::string, std::string, std::less<>> m;
                 for (const char* t : {"void", "bool", "long", "longlong", "ulong",
                                       "ulonglong", "size_t", "ssize_t",
                                       "Pointer", "CArray", "OpaquePointer"})
@@ -4071,14 +4075,14 @@ public:
                 return m;
             }();
             auto q = ncq.find(n);
-            if (q != ncq.end()) return q->second;
+            if (q != ncq.end()) return &q->second;
         }
         // A name that is itself a module or package is that, not a class whose
         // name ends with it: `Cro::RPC::JSON` is the module, not the
         // X::Cro::RPC::JSON role its dist declares (whose tails are aliases)
-        if (pkgKind_.count(n)) return n;
+        if (pkgKind_.count(n)) return nullptr;
         auto it = classAliases_.find(n);
-        if (it != classAliases_.end()) return it->second;
+        if (it != classAliases_.end()) return &it->second;
         // A nested type named by a PARTIAL path from inside its own package:
         // `Globber::Match` inside `unit class IO::Glob` is IO::Glob::Globber::Match.
         // Rakudo resolves it lexically; here the registry is flat, so accept the
@@ -4089,17 +4093,17 @@ public:
         // beside the dist's own Cro::RPC::JSON::Metamodel::ClassHOW, and means
         // the setting's, as Rakudo resolves it.
         if (n.find("::") != std::string::npos && !isSettingMetamodelName(n)) {
-            const std::string suffix = "::" + n;
-            const std::string* hit = nullptr;
+            const std::string suffix = strCat("::", n);
+            const std::string_view* hit = nullptr;
             for (auto& kv : classes_) {
                 if (kv.first.size() <= suffix.size()) continue;
                 if (kv.first.compare(kv.first.size() - suffix.size(), suffix.size(), suffix) != 0) continue;
-                if (hit) return n;   // ambiguous — leave it alone
+                if (hit) return nullptr;   // ambiguous — leave it alone
                 hit = &kv.first;
             }
-            if (hit) return classAliases_.emplace(n, *hit).first->second;
+            if (hit) return &classAliases_.emplace(n, *hit).first->second;
         }
-        return n;
+        return nullptr;
     }
     // A bare RETURN type names the enclosing package's own class before any
     // imported one. `unit class CSV::Table` declares `class Line` and uses
@@ -4701,7 +4705,7 @@ public:
     // `class` — 1 = module, 2 = package. They are NOT in `classes_` (a module
     // is a namespace here, not a type), so `.HOW` has nowhere else to learn it,
     // and Rakudo answers a different metaobject for each.
-    std::unordered_map<std::string, signed char> pkgKind_;
+    StrMap<signed char> pkgKind_;
     std::set<std::string> rightAssocOps_; // user infixes declared `is assoc<right>`
     // The most recent declaration of each package name, stub or full, class or
     // package: a later `my package A` hides an earlier `my class A` as a type.
@@ -6016,8 +6020,8 @@ inline bool rtGeSB(const Value& l, const Value& r) { if (rtPlainStr(l) && rtPlai
 // plain Str took the in-place path, so `$s ~= $_` over Ints rebuilt the whole
 // string every time (issue #130: 40,000 appends 0.7 s), and over Nums or Bools
 // still did.
-void rtCatAppendText(Value& l, const std::string& r);
-void rtCatPrependText(Value& l, const std::string& x);
+void rtCatAppendText(Value& l, std::string_view r);
+void rtCatPrependText(Value& l, std::string_view x);
 // `$s = x ~ $s` (native codegen, cnp): in front of a plain Str in place — into a
 // shared buffer's free space (APPEND-PLAN.md) — and the ordinary `~` otherwise.
 inline void rtCatPrepend(Value& l, const Value& x) {

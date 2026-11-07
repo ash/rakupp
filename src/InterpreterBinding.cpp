@@ -326,7 +326,7 @@ std::pair<long, long> Interpreter::dynQuantLimits(const Value& v, bool unbounded
         ok = true;
         if (e.t == VT::Whatever) return INFINITY;
         if (e.t == VT::Str) {
-            const std::string s = e.s.str();
+            const std::string s = e.s.copyText();
             char* end = nullptr;
             double d = std::strtod(s.c_str(), &end);
             size_t b = s.find_first_not_of(" \t");
@@ -479,7 +479,7 @@ void Interpreter::throwUndeclaredVar(const std::string& name, const std::vector<
         for (auto& kv : classes_)
             if (kv.first.find("::") == std::string::npos && !kv.first.empty() &&
                 ascii::isupper((unsigned char)kv.first[0]) && kv.second && !kv.second->isRole)
-                typeCands.push_back(kv.first);
+                typeCands.emplace_back(kv.first);
         if (typeCands.size() < 2000)
             for (auto& t : suggestNames(name.substr(1), typeCands)) sug.push_back(t);
     }
@@ -637,7 +637,7 @@ bool Interpreter::coerceViaTypeVar(const Param& p, Value& v, Env* env) {
         return false;
     Value* tv = env->find(p.type);
     if (!tv || tv->t != VT::Type || tv->s == p.type) return false;
-    const std::string ts = tv->s.str();
+    const std::string ts = tv->s.copyText();
     const size_t o = ts.find('(');
     if (o == std::string::npos || o == 0 || ts.back() != ')') return false;
     std::string target = ts.substr(0, o), from = ts.substr(o + 1, ts.size() - o - 2);
@@ -816,7 +816,7 @@ std::string typeCheckMessageFor(const std::string& t, const ValueList& args) {
         "X::TypeCheck::Return", "X::TypeCheck::Assignment", "X::TypeCheck::Splice", "X::TypeCheck::Argument"};
     if (!kinds.count(t)) return "";
     std::map<std::string, Value> a;
-    for (auto& v : args) if (v.t == VT::Pair && v.pairVal()) a[v.s] = *v.pairVal();
+    for (auto& v : args) if (v.t == VT::Pair && v.pairVal()) a[v.s.copyText()] = *v.pairVal();
     auto str = [&](const char* k) {
         auto it = a.find(k);
         return it != a.end() && isDefined(it->second) ? it->second.toStr() : std::string();
@@ -836,7 +836,7 @@ std::string typeCheckMessageFor(const std::string& t, const ValueList& args) {
     const Value exp = a.count("expected") ? a["expected"] : Value::nil();
     const char sm = exp.t == VT::Type && exp.i ? (exp.i == 1 ? 'D' : 'U') : 0;   // `Int:D` is no Int
     const bool same = !sm && got.typeName() == exp.typeName();
-    const bool expAssoc = exp.t == VT::Type && typeNameConforms(exp.s, "Associative", std::string(), std::string());
+    const bool expAssoc = exp.t == VT::Type && typeNameConforms(exp.s.copyText(), "Associative", std::string(), std::string());
     const std::string gotn = same ? typeCheckRepr(got) : expAssoc ? got.typeName() : got.typeName() + " (" + typeCheckRepr(got) + ")";
     const std::string expn = same ? typeCheckRepr(exp) : exp.typeName() + (sm ? std::string(":") + sm : "");
     const bool itself = same && got.t == VT::Type && exp.t == VT::Type;   // `expected Int, got Int`
@@ -940,10 +940,10 @@ bool Interpreter::codeSigAccepts(const Param& p, const Value& code, Env* sigEnv)
 // Package-relative short-name view for the type matchers (free/static functions):
 // set by the Interpreter so `has Path $.path` accepts a URI::Path object when
 // `Path` is an alias. Null in the compiled-runtime path (no aliasing there).
-const std::unordered_map<std::string, std::string>* s_classAliases = nullptr;
-const std::unordered_map<std::string, std::shared_ptr<ClassInfo>>* s_classesForAlias = nullptr;
-void rtSetAliasView(const std::unordered_map<std::string, std::string>* a,
-                    const std::unordered_map<std::string, std::shared_ptr<ClassInfo>>* c) {
+const StrMap<std::string>* s_classAliases = nullptr;
+const StrMap<std::shared_ptr<ClassInfo>>* s_classesForAlias = nullptr;
+void rtSetAliasView(const StrMap<std::string>* a,
+                    const StrMap<std::shared_ptr<ClassInfo>>* c) {
     s_classAliases = a; s_classesForAlias = c;
 }
 
@@ -1356,7 +1356,7 @@ Value Interpreter::subsetNewType(const Value& inv, const ValueList& args) {
         if (a.t != VT::Pair || !a.pairVal()) continue;
         const Value& pv = *a.pairVal();
         if (a.s == "name") name = pv.toStr();
-        else if (a.s == "refinee") si.base = pv.t == VT::Type ? std::string(pv.s) : pv.typeName();
+        else if (a.s == "refinee") si.base = pv.t == VT::Type ? pv.s.copyText() : pv.typeName();
         else if (a.s == "refinement") si.whereBlock = std::make_shared<Value>(pv);
     }
     // a name already taken keeps its type (a sub-model is named after its model)
@@ -1829,21 +1829,21 @@ Value Interpreter::elemAliasGuard(const Value& container, bool isHash, const std
 Value Interpreter::elemAliasStore(const Value& guard, Value v) {
     if (guard.t != VT::Array || !guard.arr() || guard.arr()->size() < 6) return v;
     const ValueList& g = *guard.arr();
-    const std::string& want = g[0].s.str();
-    const std::string& smiley = g[4].s.str();
+    const std::string want = g[0].s.copyText();   // (the type checks read a std::string)
+    const std::string_view smiley = g[4].s.str();
     if (v.t == VT::Nil || v.t == VT::Any) v = g[2];
     else if (want.empty() || (g[5].b && typeOrSubsetMatches(v, want))) {}   // (the common store: it fits)
     else {
         coerceElemValue(*this, want, v, 'o');
-        checkElemType(want, v, g[1].s.str());
+        checkElemType(want, v, g[1].s.copyText());
     }
     if (smiley.empty()) return v;
     const bool def = isDefined(v);
     if (def == (smiley == "D")) return v;
-    const std::string w = (want.empty() ? std::string("Any") : want) + ":" + smiley;
+    const std::string w = (want.empty() ? std::string("Any") : want) + ":" + std::string(smiley);
     throwTypedV("X::TypeCheck::Assignment",
                 {{"got", v}, {"expected", Value::typeObj(w)}, {"symbol", g[1]}},
-                "Type check failed for an element of " + g[1].s.str() + "; expected " + w + " but got " +
+                "Type check failed for an element of " + g[1].s + "; expected " + w + " but got " +
                     v.typeName() + (def ? " (" + typeCheckRepr(v) + ")" : " (" + v.typeName() + ")") +
                     (def ? "" : " (perhaps Nil was assigned to a :D which had no default?)"));
 }
@@ -2167,7 +2167,7 @@ bool Interpreter::typeMatchesResolved(const Value& v, const std::string& type) {
         }
         return n;
     };
-    std::string have = resolve(v.s);
+    std::string have = resolve(v.s.copyText());
     std::string want = type == "UInt" ? "Int" : type;
     if (have == v.s && want == type) return typeMatchesArg(v, type);
     return typeMatchesArg(Value::typeObj(have), want);
@@ -4667,7 +4667,7 @@ int Interpreter::mainProtocol(Value& mainSub, ValueList& margs) {
     auto listifyNamed = [&](ValueList& as) {
         if (listNamed.empty()) return;
         for (auto& a : as) {
-            if (!isNamedArg(a) || !listNamed.count(a.s)) continue;
+            if (!isNamedArg(a) || !listNamed.count(a.s.copyText())) continue;
             Value v = a.pairVal() ? *a.pairVal() : Value::boolean(true);
             if (v.t == VT::Array || v.t == VT::Range) continue;
             Value lst = Value::array({v}); lst.isList = true;
@@ -6163,7 +6163,7 @@ void Interpreter::enforceTypedValue(const std::string& nm, const std::string& wa
         "Int", "UInt", "Num", "Rat", "Complex", "Str", "Bool",
     };
     auto undefOk = [&](const std::string& w) {
-        std::string tn = rhs.t == VT::Type ? rhs.s : rhs.typeName();
+        std::string tn = rhs.t == VT::Type ? rhs.s.copyText() : rhs.typeName();
         if (tn == w) return true;
         if (isEnumTypeObject(rhs)) return rtTypeMatch(rhs, w);   // `my Int $v = Color`
         if (w == "Int" && tn == "IntStr") return true;
@@ -6279,12 +6279,12 @@ Value Interpreter::stepValue(const Value& cur, bool up) {
     if (cur.natBits) wrapNative(n, cur.natBits, cur.natSigned, cur.natFloat);   // native int wraparound
     return n;
 }
-void rtCatAppendText(Value& l, const std::string& r) {
+void rtCatAppendText(Value& l, std::string_view r) {
     for (unsigned char c : r)
         if (c >= 0x80) { nfcAppendCow(l.s, r); return; }
     l.s.appendAscii(r);   // (a body others hold grows a buffer, not a copy: APPEND-PLAN.md)
 }
-void rtCatPrependText(Value& l, const std::string& x) {
+void rtCatPrependText(Value& l, std::string_view x) {
     // ASCII at the join (the string's own first byte) cannot combine with what
     // goes in front of it; anything else is renormalized where they meet
     if (l.s.firstByte() >= 0x80) { nfcPrependCow(l.s, x.data(), x.size()); return; }
@@ -7080,7 +7080,7 @@ std::string Interpreter::resolveAttrTypeAlias(const std::string& t, const std::s
         (classes_.count(pkg + "::" + t) || subsets_.count(pkg + "::" + t))) return pkg + "::" + t;
     if (classes_.count(t) || subsets_.count(t)) return t;
     Value* v = tctx().cur ? tctx().cur->find(t) : nullptr;
-    if (v && v->t == VT::Type && !v->s.empty() && v->s != t) return v->s;
+    if (v && v->t == VT::Type && !v->s.empty() && v->s != t) return v->s.copyText();
     return t;
 }
 
@@ -7150,7 +7150,7 @@ std::string Interpreter::ncResolveTypeAlias(ClassInfo* ci, const std::string& t)
     Value* v = (ci && ci->declEnv) ? ci->declEnv->find(t) : nullptr;
     // Accept the alias only when it names a native SCALAR — anything else keeps
     // the pointer-sized default it had.
-    if (v && v->t == VT::Type && v->s != t && ncScalarWidth(v->s, sgn, isF)) return v->s;
+    if (v && v->t == VT::Type && v->s != t && ncScalarWidth(v->s.copyText(), sgn, isF)) return v->s.copyText();
     return t;
 }
 // The struct a `HAS` member inlines, looked up when the OUTER class is declared.
@@ -7732,7 +7732,7 @@ Value Interpreter::callNative(Callable& c, ValueList& args, const std::vector<Ex
             if (it2 != classes_.end()) return it2->second;
         }
         for (auto& kv : classes_) { // a qualified name ending in ::tn
-            const std::string& nm = kv.first;
+            const std::string_view nm = kv.first;
             if (nm.size() > tn.size() + 2 && nm.compare(nm.size() - tn.size() - 2, tn.size() + 2, "::" + tn) == 0)
                 return kv.second;
         }
@@ -7841,7 +7841,7 @@ Value Interpreter::callNative(Callable& c, ValueList& args, const std::vector<Ex
                 Value* av = c.closure ? c.closure->find(pt) : nullptr;
                 if (av && av->t == VT::Type && av->s != pt) {
                     bool bsgn, bflt;
-                    if (ncScalarWidth(av->s.str(), bsgn, bflt)) pt = av->s.str();
+                    if (ncScalarWidth(av->s.copyText(), bsgn, bflt)) pt = av->s.str();
                 }
             }
         }
@@ -7892,7 +7892,7 @@ Value Interpreter::callNative(Callable& c, ValueList& args, const std::vector<Ex
         }
         else if (v.t == VT::Str && v.hashKind == "CArray") {
             if (char* d = sharedBuf(v)) putPtr(s, d);
-            else { keep.push_back(v.s); putPtr(s, keep.back().data()); cabacks.push_back({i, keep.size() - 1}); }
+            else { keep.emplace_back(v.s); putPtr(s, keep.back().data()); cabacks.push_back({i, keep.size() - 1}); }
         }
         else if (v.t == VT::Str && (v.hashKind == "Buf" || v.hashKind == "Blob" || v.hashKind == "utf8")) {
             // A Buf/blob8 is a mutable native buffer that C fills in place
@@ -7920,7 +7920,7 @@ Value Interpreter::callNative(Callable& c, ValueList& args, const std::vector<Ex
                 // buffer under CowStr's promotion threshold is the one case this
                 // still gets wrong; fixing it means giving blob-ish values a
                 // shared body at construction, in all 22 places that make one.
-                keep.push_back(v.s); putPtr(s, keep.back().data());
+                keep.emplace_back(v.s); putPtr(s, keep.back().data());
                 if (v.hashKind == "Buf") cabacks.push_back({i, keep.size() - 1});
             }
         }
@@ -7958,7 +7958,7 @@ Value Interpreter::callNative(Callable& c, ValueList& args, const std::vector<Ex
         if (Value* cv = c.closure->find(retTypeName(c.cold().retType)))
             if (cv->t == VT::Type && !cv->s.empty())
                 rtAlias = (!cv->ofType().empty() && cv->s.find('[') == std::string::npos)
-                        ? cv->s.str() + "[" + std::string(cv->ofType()) + "]" : cv->s.str();
+                        ? cv->s + "[" + std::string(cv->ofType()) + "]" : cv->s.copyText();
     const std::string rt = rtAlias.empty() ? retTypeName(c.cold().retType) : rtAlias;
     bool retFP  = ncIsFloatType(rt);
     bool retF32 = (rt == "num32");
@@ -8151,7 +8151,7 @@ Value Interpreter::callNative(Callable& c, ValueList& args, const std::vector<Ex
             const Value& v = args[i];
             char b[32];
             if (v.t == VT::Str && v.hashKind.empty())
-                line += "\"" + esc(v.s.size() > 24 ? v.s.substr(0, 24) + "..." : v.s) + "\"";
+                line += "\"" + esc(v.s.size() > 24 ? v.s.substr(0, 24) + "..." : v.s.copyText()) + "\"";
             else if (slots[i].fbFloat) { cnum::snprintf(b, sizeof b, "%g", slots[i].fbNum); line += b; }
             else if (slots[i].fbPtr)   { std::snprintf(b, sizeof b, "0x%llx", (unsigned long long)slots[i].fbInt); line += b; }
             else                       line += std::to_string(slots[i].fbInt);
@@ -8368,7 +8368,7 @@ void Interpreter::typeCheckBind(const Param& p, const Value& v, bool blockParam,
     catch (RakuError& e) {
         const Value& pl = e.payload;
         const bool isObj = pl.t == VT::Object && pl.obj() && pl.obj()->cls;
-        const std::string tn = isObj ? pl.obj()->cls->name : pl.t == VT::Type ? pl.s.str() : std::string();
+        const std::string tn = isObj ? pl.obj()->cls->name : pl.t == VT::Type ? pl.s.copyText() : std::string();
         if (tn == "X::TypeCheck::Binding::Parameter") {
             Value po = paramObjectFor(p);
             if (po.t == VT::Hash) {
@@ -8672,7 +8672,7 @@ bool Interpreter::cmpEndlessLazy(const Value& l, const Value& r, Value& out) {
 // mixes its own role into it from a method trait and reads it back through
 // `.^json-rpc-add-method` and `.^candidates[0].HOW`.
 static const void* roleDeclOf(const Value& inv,
-                              const std::unordered_map<std::string, std::shared_ptr<ClassInfo>>& classes) {
+                              const StrMap<std::shared_ptr<ClassInfo>>& classes) {
     if (inv.ext()) {
         auto rc = std::static_pointer_cast<RoleCandidateRef>(inv.ext());
         if (rc->ci && rc->ci->decl) return rc->ci->decl;
@@ -8804,7 +8804,7 @@ void Interpreter::refuseValueMixin(const Value& v, const Value& base) {
                                       v.s == "Num" || v.s == "Rat" || v.s == "Complex")))
         throwTypedV("X::Mixin::NotComposable",
                     {{"target", base}, {"rolish", undef ? Value::typeObj("Any") : v}},
-                    "Cannot mix in non-composable type " + (undef ? std::string("Any") : v.s.str()) +
+                    "Cannot mix in non-composable type " + (undef ? std::string("Any") : v.s.copyText()) +
                     " into object of type " + base.typeName());
 }
 
@@ -9012,7 +9012,7 @@ bool Interpreter::typeObjectUserAccepts(const Value& l, const Value& r, Value& o
     if (!(k & 1)) return false;
     try { out = methodCall(r, "ACCEPTS", ValueList{l}); }
     catch (RakuError& e) {
-        const std::string tn = e.payload.t == VT::Type ? e.payload.s.str()
+        const std::string tn = e.payload.t == VT::Type ? e.payload.s.copyText()
                              : e.payload.t == VT::Object && e.payload.obj() && e.payload.obj()->cls
                                  ? e.payload.obj()->cls->name : std::string();
         if (tn == "X::Multi::NoMatch" || tn == "X::Parameter::InvalidConcreteness" ||
@@ -9188,12 +9188,12 @@ void Interpreter::refuseUnknownQualifier(const std::string& qual, const std::str
 
 // A user ROLE declared with a core role's name (`role Numeric { }`) shadows
 // it: the built-in values do not do the new role (`3.5 ~~ Numeric` is False).
-bool Interpreter::userShadowsCoreRole(const std::string& type) {
+bool Interpreter::userShadowsCoreRole(std::string_view type) {
     if (type.empty() || !ascii::isupper((unsigned char)type[0])) return false;
-    static const std::set<std::string> kCoreRoles = {
+    static const std::set<std::string, std::less<>> kCoreRoles = {
         "Numeric", "Real", "Stringy", "Positional", "Associative", "Callable", "Iterable",
         "Rational", "Dateish", "QuantHash", "Setty", "Baggy", "Mixy"};
-    auto shadows = [&](const std::string& t) {
+    auto shadows = [&](std::string_view t) {
         auto it = classes_.find(t);
         return it != classes_.end() && it->second && it->second->isRole && it->second->decl;
     };

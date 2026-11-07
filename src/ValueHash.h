@@ -40,6 +40,7 @@
 #include <mutex>
 #include <stdexcept>
 #include <string>
+#include <string_view>
 #include <vector>
 
 namespace rakupp {
@@ -241,7 +242,8 @@ private:
     // payload's shared_ptr, so every copy of the Value sees them. Empty, and
     // never touched, for an ordinary string-keyed hash (Cold::objKeys).
 
-    static uint64_t hashKey(const std::string& k) { return std::hash<std::string>{}(k) & ~kDead; }
+    // (a string_view hashes as the std::string of its text does: [string.view.hash])
+    static uint64_t hashKey(std::string_view k) { return std::hash<std::string_view>{}(k) & ~kDead; }
 
 public:
     // The object a key was subscripted with, when this hash is object-keyed.
@@ -285,7 +287,7 @@ private:
     // The entry holding `key`, or -1; *insertAt as findSlot gives it (SIZE_MAX
     // for a hash with no index). The probe comes first and the scan is out of
     // line, so an indexed hash's lookup costs what it did before.
-    int32_t findEntry(const std::string& key, uint64_t h, size_t* insertAt = nullptr) const {
+    int32_t findEntry(std::string_view key, uint64_t h, size_t* insertAt = nullptr) const {
         if (!index_.empty()) {
             int32_t s = findSlot(key, h, insertAt);
             return s < 0 ? -1 : index_[s];
@@ -296,7 +298,7 @@ private:
 #if defined(__GNUC__) || defined(__clang__)
     __attribute__((noinline))
 #endif
-    int32_t scanSmall(const std::string& key, uint64_t h) const {
+    int32_t scanSmall(std::string_view key, uint64_t h) const {
         int32_t found = -1;
         size_t base = 0;
         E().runs([&](const Entry* p, size_t m) {
@@ -310,7 +312,7 @@ private:
 
     // The probe slot holding `key`, or the first insertable slot (EMPTY or
     // the earliest tombstone on the path) when absent.
-    int32_t findSlot(const std::string& key, uint64_t h, size_t* insertAt = nullptr) const {
+    int32_t findSlot(std::string_view key, uint64_t h, size_t* insertAt = nullptr) const {
         if (index_.empty()) { if (insertAt) *insertAt = SIZE_MAX; return -1; }
         size_t s = h & mask();
         size_t firstTomb = SIZE_MAX;
@@ -329,10 +331,10 @@ private:
         }
     }
 
-    Value& insertNew(const std::string& key, uint64_t h, Value v, size_t slot) {
+    Value& insertNew(std::string_view key, uint64_t h, Value v, size_t slot) {
         if (index_.empty() && E().size() < kSmall) {   // still small: no index to keep
             ChunkList<Entry>& es = E();
-            es.emplace_back(key, std::move(v), h);
+            es.emplace_back(std::string(key), std::move(v), h);
             live_++;
             return es.back().kv.second;
         }
@@ -343,7 +345,7 @@ private:
             slot = s2;
         }
         ChunkList<Entry>& es = E();
-        es.emplace_back(key, std::move(v), h);
+        es.emplace_back(std::string(key), std::move(v), h);
         if (index_[slot] == EMPTY) used_++;   // a tombstone reused does not grow `used_`
         index_[slot] = (int32_t)(es.size() - 1);
         live_++;
@@ -477,36 +479,36 @@ public:
     }
     bool holdsNothing() const { return E().size() == 0 && !hasObjKeys(); }
 
-    iterator find(const std::string& key) {
+    iterator find(std::string_view key) {
         int32_t e = findEntry(key, hashKey(key));
         return e < 0 ? end() : iterator(this, (size_t)e);
     }
-    const_iterator find(const std::string& key) const {
+    const_iterator find(std::string_view key) const {
         int32_t e = findEntry(key, hashKey(key));
         return e < 0 ? end() : const_iterator(this, (size_t)e);
     }
-    size_t count(const std::string& key) const { return findEntry(key, hashKey(key)) >= 0 ? 1 : 0; }
+    size_t count(std::string_view key) const { return findEntry(key, hashKey(key)) >= 0 ? 1 : 0; }
 
     // For the engine's fixed-shape hashes (a Proxy's hidden keys, read on every
     // access through a binding): the caller hashes its constant key ONCE
     // (keyHash) and looks it up by that, and builds the hash by appending keys
     // it knows are absent.
-    static uint64_t keyHash(const std::string& k) { return hashKey(k); }
-    Value* findPre(const std::string& key, uint64_t h) {
+    static uint64_t keyHash(std::string_view k) { return hashKey(k); }
+    Value* findPre(std::string_view key, uint64_t h) {
         int32_t e = findEntry(key, h);
         return e < 0 ? nullptr : &E()[e].kv.second;
     }
-    const Value* findPre(const std::string& key, uint64_t h) const {
+    const Value* findPre(std::string_view key, uint64_t h) const {
         int32_t e = findEntry(key, h);
         return e < 0 ? nullptr : &E()[e].kv.second;
     }
-    Value& addFresh(const std::string& key, uint64_t h, Value v) {
+    Value& addFresh(std::string_view key, uint64_t h, Value v) {
         size_t slot = SIZE_MAX;
         if (!index_.empty()) findSlot(key, h, &slot);
         return insertNew(key, h, std::move(v), slot);
     }
 
-    Value& operator[](const std::string& key) {
+    Value& operator[](std::string_view key) {
         uint64_t h = hashKey(key);
         size_t slot;
         int32_t e = findEntry(key, h, &slot);
@@ -514,14 +516,14 @@ public:
         return insertNew(key, h, Value{}, slot);
     }
 
-    Value& at(const std::string& key) {
+    Value& at(std::string_view key) {
         int32_t e = findEntry(key, hashKey(key));
-        if (e < 0) throw std::out_of_range("ValueHash::at: " + key);
+        if (e < 0) throw std::out_of_range(std::string("ValueHash::at: ").append(key));
         return E()[e].kv.second;
     }
-    const Value& at(const std::string& key) const {
+    const Value& at(std::string_view key) const {
         int32_t e = findEntry(key, hashKey(key));
-        if (e < 0) throw std::out_of_range("ValueHash::at: " + key);
+        if (e < 0) throw std::out_of_range(std::string("ValueHash::at: ").append(key));
         return E()[e].kv.second;
     }
 
@@ -531,7 +533,7 @@ public:
     // 300 MB). Not while a Pair or a binding aliases an entry (aliasOf): it
     // may be reading this one. `dropped` is released after the bookkeeping,
     // so a DESTROY it runs sees a consistent hash.
-    size_t erase(const std::string& key) {
+    size_t erase(std::string_view key) {
         Value dropped;
         int32_t e;
         if (index_.empty()) {   // a small hash: the entry is only marked

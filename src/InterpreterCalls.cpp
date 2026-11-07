@@ -900,6 +900,10 @@ std::vector<ClassInfo*> c3Linearize(ClassInfo* c, bool& ok) {
 }
 
 Value Interpreter::evalInterp(InterpStr* s) {
+    // "…" with nothing interpolated is one literal part: its own Value, built
+    // once (StrLit::evalState), not a string made again from it every time
+    if (s->parts.size() == 1 && s->parts[0]->kind == NK::StrLit)
+        return strLitValue(static_cast<StrLit*>(s->parts[0].get()));
     ValueList vals;
     vals.reserve(s->parts.size());
     for (auto& p : s->parts) vals.push_back(eval(p.get()));
@@ -1173,14 +1177,15 @@ static void rejectObsoleteRegex(const std::string& pat) {
             "Unsupported use of " + obs + "; this Perl 5 metacharacter is gone in Raku"};
 }
 static Value regexClosingOver(std::string pat, const std::shared_ptr<Env>& sc) {
-    Value v = Value::regex(std::move(pat));
+    const std::string& p = pat;   // (read before it moves into the Value)
     // (…and a CODE block, `{ … }` / `<?{ … }>`, reads the scope the regex was
     // written in, wherever it is matched: a lexical sub or variable there is
     // the one it calls (#147))
-    const bool interp = rxNeedsScalarPass(v.s.str()) || v.s.find('@') != std::string::npos;
-    if (sc && (interp || rxHasCodeBlock(v.s.str())))
-        v.extM() = std::static_pointer_cast<void>(sc);
-    if (!sc || !interp) rejectObsoleteRegex(v.s.str());
+    const bool interp = rxNeedsScalarPass(p) || p.find('@') != std::string::npos;
+    const bool closes = sc && (interp || rxHasCodeBlock(p));
+    if (!sc || !interp) rejectObsoleteRegex(p);
+    Value v = Value::regex(std::move(pat));
+    if (closes) v.extM() = std::static_pointer_cast<void>(sc);
     return v;
 }
 
@@ -1196,7 +1201,7 @@ Value Interpreter::regexLitValue(RegexLit* rl) {
     Value v = regexClosingOver(spliceRegexVars(rl->pattern), tctx().cur);
     if (!v.ext() && !rxNeedsScalarPass(rl->pattern) &&
         rl->pattern.find('@') == std::string::npos && !rxHasCodeBlock(rl->pattern)) {
-        auto* mine = new std::string(v.s.str());
+        auto* mine = new std::string(v.s.copyText());
         if (rl->closedPat.publish(mine) != mine) delete mine; // another thread won
     }
     return v;
@@ -2321,8 +2326,8 @@ Value Interpreter::coerceToType(const Value& v, const std::string& type) {
                 bool hit = (v.t == VT::Str && !v.isAllomorph()) ? p.s.str() == v.s.str()
                                                                   : (pv && valueEq(*pv, v));
                 if (!hit) continue;
-                if (Value* ev = tctx().cur->find(type + "::" + p.s.str())) return *ev;
-                if (Value* ev = tctx().cur->find(p.s.str())) return *ev;
+                if (Value* ev = tctx().cur->find(type + "::" + p.s)) return *ev;
+                if (Value* ev = tctx().cur->find(p.s.copyText())) return *ev;
             }
     }
     throw RakuError{Value::typeObj("X::Coerce::Impossible"),
@@ -3130,23 +3135,23 @@ Value Interpreter::keptTypedStore(const Value& proxy, Value v) {
     const Value* g = keptRecord(proxy);
     if (!g) return v;
     const ValueList& k = *g->arr();
-    const std::string& nm = k[0].s.str();
-    const std::string& type = k[2].s.str();
-    const std::string& sm = k[3].s.str();
-    const std::string& coerce = k[4].s.str();
+    const std::string_view nm = k[0].s;
+    const std::string type = k[2].s.copyText();   // (rtTypeMatch and the rest read a std::string)
+    const std::string_view sm = k[3].s;
+    const std::string_view coerce = k[4].s;
     // Nil — or the undefined hole a callee's `$x = Nil` leaves — resets it
     if (v.t == VT::Nil || v.t == VT::Any) v = k[1];
     else if (k[6].b && rtIsDefined(v) && rtTypeMatch(v, type)) {}   // (the common store: it fits)
     else {
-        if (!coerce.empty() && v.typeName() != coerce) v = coerceVarValue(v, coerce, k[5].s.str(), nm);
-        if (!type.empty()) enforceTypedValue(nm, type, v, global_.get());
+        if (!coerce.empty() && v.typeName() != coerce) v = coerceVarValue(v, std::string(coerce), k[5].s.copyText(), std::string(nm));
+        if (!type.empty()) enforceTypedValue(std::string(nm), type, v, global_.get());
     }
     if (sm.empty() || isDefined(v) == (sm == "D")) return v;
     const bool def = isDefined(v);
-    const std::string want = (type.empty() ? std::string("Any") : type) + ":" + sm;
+    const std::string want = (type.empty() ? std::string("Any") : type) + ":" + std::string(sm);
     throwTypedV("X::TypeCheck::Assignment",
         {{"got", v}, {"expected", Value::typeObj(want)}, {"symbol", k[0]}},
-        "Type check failed in assignment to " + nm + "; expected " + want + " but got " + v.typeName() +
+        "Type check failed in assignment to " + std::string(nm) + "; expected " + want + " but got " + v.typeName() +
             (def ? " (" + typeCheckRepr(v) + ")" : " (" + v.typeName() + ") (perhaps Nil was assigned to a :D which had no default?)"));
 }
 // The container an ALIAS of the variable `nm` (declared in `own`) holds: its
@@ -3179,8 +3184,8 @@ Value Interpreter::keptScalarRecord(const Value& proxy, const Value& value) {
     if (!g) return Value::nil();
     const ValueList& k = *g->arr();
     // (a coercion type is named whole, `Int(Any)`, as Rakudo's `.of` names it)
-    Value of = Value::typeObj(!k[4].s.str().empty() ? k[4].s.str() + "(" + (k[5].s.str().empty() ? std::string("Any") : k[5].s.str()) + ")"
-                              : k[2].s.str().empty() ? std::string("Mu") : k[2].s.str());
+    Value of = Value::typeObj(!k[4].s.empty() ? k[4].s + "(" + (k[5].s.empty() ? std::string("Any") : k[5].s.copyText()) + ")"
+                              : k[2].s.empty() ? std::string("Mu") : k[2].s.copyText());
     if (!k[3].s.str().empty()) of.i = k[3].s.str() == "D" ? 1 : 2;
     Value sc = Value::makeHash(); sc.hashKind = "Scalar";
     (*sc.hash())["name"] = k[0];
@@ -4417,7 +4422,7 @@ std::map<std::string, double> setWeights(const Value& v, int tier) {
                 double w = x.pairVal() ? x.pairVal()->toNum() : 0;
                 if (tier == 0) { if (!(x.pairVal() && x.pairVal()->truthy())) continue; w = 1; }
                 if (tier == 2 ? w == 0 : w <= 0) continue;
-                m[x.s] += w;
+                m[x.s.copyText()] += w;
             }
             // type objects ARE elements. They must key through baggyKeyStr like every
             // other element, or an operator result and a `set(…)` literal holding the
@@ -4431,8 +4436,8 @@ std::map<std::string, double> setWeights(const Value& v, int tier) {
         }
     } else if (v.t == VT::Pair) {
         double w = v.pairVal() ? v.pairVal()->toNum() : 0;
-        if (tier == 0) { if (v.pairVal() && v.pairVal()->truthy()) m[v.s] = 1; }
-        else if (!(tier == 2 ? w == 0 : w <= 0)) m[v.s] = w;
+        if (tier == 0) { if (v.pairVal() && v.pairVal()->truthy()) m[v.s.copyText()] = 1; }
+        else if (!(tier == 2 ? w == 0 : w <= 0)) m[v.s.copyText()] = w;
     } else if (v.t == VT::Type || v.t == VT::Any) {
         std::string k = baggyKeyStr(v); setRep(k, v);
         m[k] = 1; // (Set) (&) (Set) — the type object is a one-element set
@@ -4824,7 +4829,7 @@ Value Interpreter::enumCoerce(const Value& ty, const Value& a) {
         const Value& pv = *pr.pairVal();
         const bool hit = pv.t == VT::Int ? pv.toInt() == want : pv.toStr() == a.toStr();
         if (!hit) continue;
-        if (Value* mv = tctx().cur->find(std::string(ty.enumType.str()) + "::" + pr.s.str())) return *mv;
+        if (Value* mv = tctx().cur->find(std::string(ty.enumType.str()) + "::" + pr.s)) return *mv;
         Value ev = Value::enumVal(pr.s, want); ev.enumType = ty.enumType; return ev;
     }
     // no member with that value → a FAILURE, as Rakudo's X::Enum::NoValue:
@@ -6629,10 +6634,10 @@ bool Interpreter::typeCallCore(const std::string& name, ValueList& args, bool pa
         {
             Value bt;
             if ((args.empty() || typeArg) && boundTypeFor(*this, name, bt))
-                { out = Value::typeObj(bt.s.str() + "(" + (args.empty() ? "Any" : args[0].s.str()) + ")"); return true; }
+                { out = Value::typeObj(bt.s + "(" + (args.empty() ? std::string("Any") : args[0].s.copyText()) + ")"); return true; }
             if (args.size() == 1 && !args[0].namedArg && !classes_.count(name) &&
                 capturedType(*this, tctx().cur.get(), name, bt))
-                { out = coerceToType(args[0], bt.s.str()); return true; }
+                { out = coerceToType(args[0], bt.s.copyText()); return true; }
         }
         // A MODULE or PACKAGE is a type here too. It is registered in
         // pkgKind_ rather than classes_, so `module foo {}; foo()` was
@@ -6643,7 +6648,7 @@ bool Interpreter::typeCallCore(const std::string& name, ValueList& args, bool pa
              pkgKind_.count(name))) {
             std::string tgt = classes_.count(resolveClassAlias(name))
                                   ? resolveClassAlias(name) : name;
-            { out = Value::typeObj(tgt + "(" + (args.empty() ? "Any" : args[0].s.str()) + ")"); return true; }
+            { out = Value::typeObj(tgt + "(" + (args.empty() ? std::string("Any") : args[0].s.copyText()) + ")"); return true; }
         }
     }
     // `Hash(…)` / `Map(…)`: the whole argument list becomes ONE hash, later

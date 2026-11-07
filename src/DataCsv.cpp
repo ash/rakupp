@@ -225,7 +225,7 @@ HeaderMode headerMode(const Value* h, std::vector<std::string>& names, const cha
     names.clear();
     if (!h || !rtIsDefined(*h)) return H_NONE;
     if (h->t == VT::Bool) return h->b ? H_FIRST_ROW : H_NONE;
-    if (h->t == VT::Str && h->hashKind.empty()) { names.push_back(h->s); return H_NAMED; }
+    if (h->t == VT::Str && h->hashKind.empty()) { names.emplace_back(h->s); return H_NAMED; }
     if (h->t == VT::Array && h->arr()) {
         for (auto& e : *h->arr()) names.push_back(e.toStr());
         return H_NAMED;

@@ -7,7 +7,7 @@
 
 namespace rakupp {
 
-void jsonSkipWs(const std::string& s, size_t& i, const JsonCfg& cfg) {
+void jsonSkipWs(std::string_view s, size_t& i, const JsonCfg& cfg) {
     for (;;) {
         while (i < s.size() && (s[i] == ' ' || s[i] == '\t' || s[i] == '\n' || s[i] == '\r')) i++;
         if (!cfg.jsonc || i + 1 >= s.size() || s[i] != '/') return;
@@ -31,7 +31,7 @@ void jsonSkipWs(const std::string& s, size_t& i, const JsonCfg& cfg) {
         else return; // a lone '/' is the next token's parse error, not whitespace
     }
 }
-static bool jsonParseString(const std::string& s, size_t& i, std::string& out) {
+static bool jsonParseString(std::string_view s, size_t& i, std::string& out) {
     if (i >= s.size() || s[i] != '"') return false;
     i++;
     out.clear();
@@ -100,7 +100,7 @@ static bool jsonParseString(const std::string& s, size_t& i, std::string& out) {
     }
     return true;
 }
-bool jsonParseValue(const std::string& s, size_t& i, Value& out, JsonCfg cfg) {
+bool jsonParseValue(std::string_view s, size_t& i, Value& out, JsonCfg cfg) {
     if (++cfg.depth > 20000) return false; // ~3 MB of C++ frames; no real document nests this deep
     jsonSkipWs(s, i, cfg);
     if (i >= s.size()) return false;
@@ -185,7 +185,7 @@ bool jsonParseValue(const std::string& s, size_t& i, Value& out, JsonCfg cfg) {
         }
         if (ok && p == e) {
             if (expo) {
-                out = Value::number(cnum::stod(s.substr(st, i - st)));
+                out = Value::number(cnum::stod(std::string(s.substr(st, i - st))));
                 return true;
             }
             if (intDigits + fracDigits <= 18) {

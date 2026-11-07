@@ -389,7 +389,7 @@ bool ioSpecMethod(Interpreter& I, const std::string& cls, const std::string& m, 
     bool qnxish = cls == "IO::Spec::QNX" || cyg;
     if (cyg) {
         for (auto& a : args)
-            if (a.t == VT::Str) for (auto& c : a.s.mut()) { if (c == '\\') c = '/'; }
+            if (a.t == VT::Str) a.s.edit([](std::string& t) { for (auto& c : t) if (c == '\\') c = '/'; });
         // drive "c:" (case kept) or UNC "//server/share" volume prefix
         auto cygVol = [](const std::string& p, std::string& vol, std::string& rest) {
             vol.clear(); rest = p;
@@ -453,7 +453,7 @@ bool ioSpecMethod(Interpreter& I, const std::string& cls, const std::string& m, 
         }
         if (m == "is-absolute") {
             static const std::string kNoPath;
-            const std::string& p = args.empty() ? kNoPath : args[0].s.str();
+            const std::string p = args.empty() ? kNoPath : args[0].s.copyText();
             out = Value::boolean(isAbs(p) ||
                 (p.size() >= 3 && ascii::isalpha((unsigned char)p[0]) && p[1] == ':' && p[2] == '/'));
             return true;

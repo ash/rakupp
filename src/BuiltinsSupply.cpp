@@ -3216,7 +3216,7 @@ std::string Interpreter::ioFsPath(const Value& v) {
     // still refused before it can open anything. `-` is standard input.
     if (g_sandboxChecks && v.toStr() != "-") sandboxRefuse(*this, "file access", SandboxCap::Read);
     if (v.hashKind != "IO" || v.t != VT::Str) return v.toStr();
-    const std::string& p = v.s;
+    std::string p = v.s.copyText();
     if (p.empty() || p[0] == '/') return p;
 #ifdef _WIN32
     // absolute here too: `D:\x`, `D:/x`, `\\host\x`, `\x`. A resolved path carries
@@ -3436,10 +3436,10 @@ Value inetSocketRead(Interpreter& I, const Value& sock, const std::string& m, co
     };
     if (bin) {
         std::string out;
-        {   std::string& lb = lbv.s.mut();
+        {   const std::string_view lb = lbv.s.str();
             size_t take = std::min(want, lb.size());
-            out.assign(lb, 0, take);
-            lb.erase(0, take); }
+            out.assign(lb.data(), take);
+            lbv.s.erase(0, take); }
         // `.read($n)` is EXACTLY $n, blocking until it has them or the peer
         // closes; `.recv` is up to $n, and what the buffer held is enough
         while (out.size() < want && (m == "read" || out.empty())) {
@@ -3455,7 +3455,7 @@ Value inetSocketRead(Interpreter& I, const Value& sock, const std::string& m, co
     // has that many: `all` counts the one at the end, `!all` holds it back
     // (and an incomplete UTF-8 sequence is never counted).
     auto chars = [&](bool all, size_t& bytes) -> bool {
-        const std::string& lb = lbv.s.str();
+        const std::string_view lb = lbv.s.str();
         size_t end = utf8TextPrefixLen(lb);
         if (all) {
             end = lb.size();
@@ -3477,12 +3477,11 @@ Value inetSocketRead(Interpreter& I, const Value& sock, const std::string& m, co
         std::string more;
         ssize_t n = pull(65536, more);
         if (n < 0 && lbv.s.str().empty()) return Value::nil();
-        if (n > 0) lbv.s.mut().append(more);
+        if (n > 0) lbv.s += more;
         if (!chars(false, bytes)) chars(true, bytes);
     }
-    std::string& lb = lbv.s.mut();
-    std::string out = lb.substr(0, bytes);
-    lb.erase(0, bytes);
+    std::string out(lbv.s.str().substr(0, bytes));
+    lbv.s.erase(0, bytes);
     nfcDecodeInPlace(out);
     return Value::str(out);
 }

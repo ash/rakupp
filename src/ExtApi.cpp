@@ -37,7 +37,7 @@ std::unordered_set<Value*> g_roots;
 // in the arena as a Str Value and its bytes borrowed from there.
 const char* borrow(ExtCtx* x, std::string s, size_t* len) {
     x->arena.push_back(Value::str(std::move(s)));
-    const std::string& kept = x->arena.back().s.str();
+    const CowStr& kept = x->arena.back().s;   // (a deque: the Value, and its text, stay put)
     if (len) *len = kept.size();
     return kept.c_str();
 }

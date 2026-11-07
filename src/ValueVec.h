@@ -24,16 +24,18 @@
 // to a new address and NOT destroying the source is equivalent to
 // move-constructing then destroying — which is exactly what a reallocation
 // does. Nothing in a `Value` points at itself: `i`/`n` are scalars, `IStr` is
-// an interned pointer, `p_`/`x_` and `CowStr::p_` are `shared_ptr` pairs, and
-// `CowStr::s_` is a `std::string`…
+// an index, `p_`/`x_` are counted pointers, and `CowStr` is 16 bytes holding
+// either a short text or a counted pointer (VALUE32-PLAN design C).
 //
-// …which is the one member that is NOT relocatable everywhere. libstdc++'s
-// `std::string` points `_M_p` at its own inline buffer for short strings, so a
-// bitwise move leaves it dangling. libc++ and MSVC's STL keep no such
-// self-pointer. `bitwiseRelocOk()` decides this by asking the library at run
-// time rather than by trusting a macro, and the slow path is exactly what
-// `std::vector` does today — so a stdlib that fails the probe keeps the
-// behaviour it has, and only loses the speedup.
+// Until design C, `CowStr` held a `std::string`, which is NOT relocatable
+// everywhere: libstdc++'s points `_M_p` at its own inline buffer for short
+// strings, so a bitwise move leaves it dangling (libc++ and MSVC's STL keep no
+// such self-pointer). `bitwiseRelocOk()` asks the library that at run time,
+// and the slow path is exactly what `std::vector` does — so a stdlib that
+// fails the probe keeps the behaviour it had, and only loses the speedup. A
+// `Value` holds no `std::string` now, so on libstdc++ the probe is more
+// careful than it needs to be; dropping it there is a change to measure on
+// Linux, where it would apply.
 //
 // Everything else is `std::vector`: the API is the subset the tree actually
 // uses on `ValueList`, and the semantics are the standard's — raw-pointer

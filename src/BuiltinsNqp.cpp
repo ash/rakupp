@@ -60,7 +60,7 @@ static void nqpBufWrite(std::string& bytes, long long off, const Value& val,
         bytes[off + i] = (char)raw[src];
     }
 }
-static Value nqpBufRead(const std::string& bytes, long long off,
+static Value nqpBufRead(std::string_view bytes, long long off,
                         int nbytes, int endian, char kind) {
     // Reading past the end THROWS; it does not answer zero. A decoder driving
     // itself off a buffer relies on that to stop — CBOR::Simple catches this
@@ -466,7 +466,7 @@ Value Interpreter::evalNqpOp(NqpOp* n) {
             if (lv) { // the buffer is FILLED in place (`my $bytes := Buf.new`)
                 if (lv->t != VT::Str) { lv->t = VT::Str; lv->s.clear(); }
                 if (lv->hashKind.empty() || lv->t != VT::Str) lv->hashKind = "Buf";
-                lv->s = lv->s.str() + bytes;
+                lv->s += bytes;
                 return *lv;
             }
             Value b = Value::str(std::move(bytes)); b.hashKind = "Buf";
@@ -568,7 +568,7 @@ Value Interpreter::evalNqpOp(NqpOp* n) {
                 if (lv) {
                     if (lv->t != VT::Str) { lv->t = VT::Str; lv->s.clear(); }
                     if (lv->hashKind.empty()) { lv->hashKind = "Buf"; identify(*lv); }
-                    nqpBufWrite(lv->s.mut(), off, val, nb, en, kind);
+                    lv->s.edit([&](std::string& t) { nqpBufWrite(t, off, val, nb, en, kind); });
                 }
                 return val;
             }
@@ -620,13 +620,12 @@ Value Interpreter::evalNqpOp(NqpOp* n) {
                 Value    src = a.size() > 1 ? eval(a[1].get()) : Value::str("");
                 long long off = a.size() > 2 ? eval(a[2].get()).toInt() : 0;
                 long long cnt = a.size() > 3 ? eval(a[3].get()).toInt() : 0;
-                if (lv) {
-                    std::string& t = lv->s.mut();
+                if (lv) lv->s.edit([&](std::string& t) {
                     if (off < 0) off = 0;
                     if (off > (long long)t.size()) t.resize(off, '\0');
                     if (cnt < 0 || off + cnt > (long long)t.size()) cnt = t.size() - off;
-                    t.replace(off, cnt, src.s);
-                }
+                    t.replace(off, cnt, src.s.str());
+                });
                 return lv ? *lv : src0;
             }
             break; // array splice: eager path (shared backing)
@@ -716,7 +715,7 @@ Value Interpreter::evalNqpOp(NqpOp* n) {
         return Value::integer(code == v[pi + 1].toInt() ? 1 : 0);
     }
     if (n->op == NqpOpc::Create && v.size() == 1 && v[0].t == VT::Type) {
-        std::string tn = v[0].s;
+        std::string tn = v[0].s.copyText();
         auto it = classes_.find(tn);
         if (it == classes_.end()) it = classes_.find(resolveClassAlias(tn));
         if (it != classes_.end() && it->second) {
@@ -755,7 +754,7 @@ Value Interpreter::evalNqpOp(NqpOp* n) {
     // so it numifies as the value and still answers its own methods.
     if ((n->op == O::BoxI || n->op == O::BoxN || n->op == O::P6BoxS) &&
         v.size() > 1 && v[1].t == VT::Type) {
-        std::string tn = v[1].s;
+        std::string tn = v[1].s.copyText();
         auto it = classes_.find(tn);
         if (it == classes_.end()) it = classes_.find(resolveClassAlias(tn));
         if (it != classes_.end() && it->second) {
@@ -932,7 +931,7 @@ Value rtNqpOp(NqpOpc op, ValueList& v) {
         // once per string — see its definition above.
         case O::Ordat: {
             const CowStr& cs = S(0);
-            const std::string& s = cs.str();
+            const std::string_view s = cs.str();
             long long i = I(1);
             if (i < 0) return Value::integer(-1);
             if (cowAllAscii(cs))
@@ -947,8 +946,8 @@ Value rtNqpOp(NqpOpc op, ValueList& v) {
         case O::Eqat: {
             const CowStr& hc0 = S(0);
             const CowStr& ndc0 = S(1);
-            const std::string& h = hc0.str();
-            const std::string& nd = ndc0.str();
+            const std::string_view h = hc0.str();
+            const std::string_view nd = ndc0.str();
             long long at = I(2);
             if (at < 0) return Value::integer(0);
             size_t want = (size_t)at + nd.size();
@@ -972,7 +971,7 @@ Value rtNqpOp(NqpOpc op, ValueList& v) {
         }
         case O::Substr: {
             const CowStr& cs = S(0);
-            const std::string& s = cs.str();
+            const std::string_view s = cs.str();
             long long from = I(1);
             if (cowAllAscii(cs)) {
                 long long len = v.size() > 2 ? I(2) : (long long)s.size() - from;
@@ -1013,9 +1012,9 @@ Value rtNqpOp(NqpOpc op, ValueList& v) {
         }
         // The digest of the string's UTF-8 bytes, in UPPERCASE hex — the
         // spelling MoarVM answers with, which App::RaCoCo asserts literally.
-        case O::Sha1: return Value::str(sha1hex(S(0).str()));
+        case O::Sha1: return Value::str(sha1hex(std::string(S(0))));
         case O::Join: {
-            const std::string sep = nfcNormalize(S(0).str());
+            const std::string sep = nfcNormalize(std::string(S(0)));
             std::string out;
             if (v.size() > 1 && v[1].t == VT::Array && v[1].arr()) {   // NFG: composing across the joins
                 bool first = true;
@@ -1034,7 +1033,7 @@ Value rtNqpOp(NqpOpc op, ValueList& v) {
         case O::Indexic:
         case O::Indexim:
         case O::Indexicim: {
-            std::string hs = S(0).str(), nds = S(1).str();
+            std::string hs(S(0).str()), nds(S(1).str());
             bool fold = op != O::Indexim;      // `indexim` keeps case, drops marks
             if (op != O::Indexic) { hs = markFold(hs); nds = markFold(nds); }
             std::vector<uint32_t> hc, nc;
@@ -1054,8 +1053,8 @@ Value rtNqpOp(NqpOpc op, ValueList& v) {
         case O::Index: {
             const CowStr& hcs = S(0);
             const CowStr& ncs = S(1);
-            const std::string& hs = hcs.str();
-            const std::string& nds = ncs.str();
+            const std::string_view hs = hcs.str();
+            const std::string_view nds = ncs.str();
             long long from = v.size() > 2 ? I(2) : 0;
             if (from < 0) from = 0;
             if (cowAllAscii(hcs) && cowAllAscii(ncs)) {   // byte search — std::string::find is vectorized
@@ -1124,7 +1123,7 @@ Value rtNqpOp(NqpOpc op, ValueList& v) {
         }
         case O::FindNotCClass: {
             const CowStr& cs = S(1);
-            const std::string& s = cs.str();
+            const std::string_view s = cs.str();
             long long mask = I(0), start = I(2), len = I(3);
             long long from = std::max<long long>(start, 0);
             long long want = start + len;
@@ -1149,7 +1148,7 @@ Value rtNqpOp(NqpOpc op, ValueList& v) {
         }
         case O::IsCClass: {
             const CowStr& cs = S(1);
-            const std::string& s = cs.str();
+            const std::string_view s = cs.str();
             long long i = I(2);
             if (i < 0) return Value::integer(0);
             if (cowAllAscii(cs))
@@ -1256,7 +1255,7 @@ Value rtNqpOp(NqpOpc op, ValueList& v) {
             if (v.size() >= 2 && v[0].t == VT::Hash && v[0].hash()) v[0].hash()->erase(S(1));
             return v.empty() ? Value::nil() : v[0];
         case O::Create: {
-            std::string tn = v[0].t == VT::Type ? v[0].s : v[0].typeName();
+            std::string tn = v[0].t == VT::Type ? v[0].s.copyText() : v[0].typeName();
             // a `my class IterationMap is repr("VMHash")` declared INSIDE a module
             // carries the package prefix (JSON::Fast::IterationMap) — the repr is
             // what matters, and the base name is our only proxy for it
@@ -1320,7 +1319,7 @@ Value rtNqpOp(NqpOpc op, ValueList& v) {
         // treats as an int too).
         case O::ObjPrimSpec: {
             if (v.empty() || v[0].t != VT::Type) return Value::integer(0);
-            const std::string& n = v[0].s;
+            const std::string_view n = v[0].s;
             if (n == "str") return Value::integer(3);
             if (n == "num" || n == "num32" || n == "num64") return Value::integer(2);
             if (n == "int" || n == "int8" || n == "int16" || n == "int32" || n == "int64" ||
@@ -1340,7 +1339,7 @@ Value rtNqpOp(NqpOpc op, ValueList& v) {
         case O::HllBool:
             return Value::boolean(!v.empty() && v[0].truthy());
         case O::Istype: {
-            std::string tn = v[1].t == VT::Type ? v[1].s : v[1].typeName();
+            std::string tn = v[1].t == VT::Type ? v[1].s.copyText() : v[1].typeName();
             // `nqp::istype(Mu, Any)` is 0: Any sits BELOW Mu, so the Mu type
             // object conforms only to Mu — the same rule `~~` applies. CBOR::Simple
             // tells CBOR null (Any:U) from CBOR undefined (Mu) by exactly this.
@@ -1348,12 +1347,12 @@ Value rtNqpOp(NqpOpc op, ValueList& v) {
             return Value::integer(rtTypeMatch(v[0], tn) ? 1 : 0);
         }
         case O::Getattr: {
-            const std::string& nm = S(2);
+            const std::string_view nm = S(2);
             // a stamped Proxy-subclass instance (AttrProxy) keeps its attrs as
             // prefixed keys on the proxy hash itself
             if (v[0].t == VT::Hash && v[0].hashKind == "Proxy" && v[0].hash() &&
                 v[0].hash()->count("\x01cls")) {
-                auto it = v[0].hash()->find("\x01" "a" + nm);
+                auto it = v[0].hash()->find(strCat("\x01" "a", nm));
                 return it != v[0].hash()->end() ? it->second : Value::nil();
             }
             // '$!reified' / '$!storage' name the container's own backing store
@@ -1377,23 +1376,23 @@ Value rtNqpOp(NqpOpc op, ValueList& v) {
                     if (c->name == "Metamodel::ConcreteRoleHOW")
                         return Interpreter::liveTarget()->concreteRoleRoles(v[0]);
             if (v[0].t == VT::Object && v[0].obj()) {
-                std::string bare = nm.size() > 2 ? nm.substr(2) : nm;
+                std::string bare(nm.size() > 2 ? nm.substr(2) : nm);
                 auto it = v[0].obj()->attrs.find(bare);
                 if (it != v[0].obj()->attrs.end()) return it->second;
             }
             return Value::nil();
         }
         case O::Bindattr: case O::P6BindAttrInvRes: {
-            const std::string& nm = S(2);
+            const std::string_view nm = S(2);
             if (v[0].t == VT::Hash && v[0].hashKind == "Proxy" && v[0].hash() &&
                 v[0].hash()->count("\x01cls")) { // stamped Proxy-subclass instance
-                (*v[0].hash())["\x01" "a" + nm] = v[3];
+                (*v[0].hash())[strCat("\x01" "a", nm)] = v[3];
             } else if ((v[0].t == VT::Array && v[3].t == VT::Array && v[0].arr() && v[3].arr())) {
                 *v[0].arr() = *v[3].arr();             // rebind the backing buffer
             } else if (v[0].t == VT::Hash && v[3].t == VT::Hash && v[0].hash() && v[3].hash()) {
                 *v[0].hash() = *v[3].hash();           // (hashKind stays the invocant's: a Map keeps being a Map)
             } else if (v[0].t == VT::Object && v[0].obj()) {
-                std::string bare = nm.size() > 2 ? nm.substr(2) : nm;
+                std::string bare(nm.size() > 2 ? nm.substr(2) : nm);
                 // the readonly flag marks the CONTAINER the value came from (a
                 // parameter, here `$iterator` in String::Utils' Paragraphs.new);
                 // the attribute is a fresh slot, or its later `$!iterator :=
@@ -1452,7 +1451,7 @@ Value rtNqpOp(NqpOpc op, ValueList& v) {
         // Failure to open THROWS: the caller wraps the op in nqp::handle.
         case O::OpenDir: {
             if (g_sandboxChecks) sandboxRefuseBare("nqp::opendir", SandboxCap::Read);
-            const std::string path = S(0).str();
+            const std::string path(S(0).str());
             DIR* d = ::opendir(path.c_str());
             if (!d) throw RakuError{Value::typeObj("X::AdHoc"),
                                     "Failed to open dir: " + path + ": " + std::strerror(errno)};
@@ -1482,7 +1481,7 @@ Value rtNqpOp(NqpOpc op, ValueList& v) {
         case O::FileReadable: case O::FileWritable: case O::FileExecutable: {
             if (g_sandboxChecks) sandboxRefuseBare("nqp::filereadable", SandboxCap::Read);
             int mode = op == O::FileReadable ? R_OK : op == O::FileWritable ? W_OK : X_OK;
-            return Value::integer(::access(S(0).str().c_str(), mode) == 0 ? 1 : 0);
+            return Value::integer(::access(S(0).c_str(), mode) == 0 ? 1 : 0);
         }
         case O::FileIsLink: {
             if (g_sandboxChecks) sandboxRefuseBare("nqp::fileislink", SandboxCap::Read);
@@ -1492,7 +1491,7 @@ Value rtNqpOp(NqpOpc op, ValueList& v) {
             return Value::integer(0);
 #else
             struct ::stat st;
-            return Value::integer(::lstat(S(0).str().c_str(), &st) == 0 && S_ISLNK(st.st_mode) ? 1 : 0);
+            return Value::integer(::lstat(S(0).c_str(), &st) == 0 && S_ISLNK(st.st_mode) ? 1 : 0);
 #endif
         }
         // nqp::rindex(haystack, needle, ?from) — the LAST occurrence at or
@@ -1500,8 +1499,8 @@ Value rtNqpOp(NqpOpc op, ValueList& v) {
         // splits a path at its last separator with it
         case O::Rindex: {
             const CowStr& hcs = S(0);
-            const std::string& hs = hcs.str();
-            const std::string& nd = S(1).str();
+            const std::string_view hs = hcs.str();
+            const std::string_view nd = S(1).str();
             if (cowAllAscii(hcs) && cowAllAscii(S(1))) {
                 size_t from = v.size() > 2 ? (size_t)std::max<long long>(I(2), 0) : std::string::npos;
                 auto at = hs.rfind(nd, from);
@@ -1520,7 +1519,7 @@ Value rtNqpOp(NqpOpc op, ValueList& v) {
         case O::X: { // nqp::x(str, count) — the string that many times (String::Utils pads with it)
             long long cnt = I(1);
             std::string out;
-            if (cnt > 0) { const std::string& s = S(0).str(); out.reserve(s.size() * (size_t)cnt); for (long long k = 0; k < cnt; k++) out += s; }
+            if (cnt > 0) { const std::string_view s = S(0).str(); out.reserve(s.size() * (size_t)cnt); for (long long k = 0; k < cnt; k++) out += s; }
             return Value::str(std::move(out));
         }
         case O::Flip: { // nqp::flip(str) — reversed by codepoint
@@ -1530,8 +1529,8 @@ Value rtNqpOp(NqpOpc op, ValueList& v) {
             return Value::str(std::move(out));
         }
         case O::Split: { // nqp::split(separator, string) — note the order
-            const std::string& sep = S(0).str();
-            const std::string& s = S(1).str();
+            const std::string_view sep = S(0).str();
+            const std::string_view s = S(1).str();
             Value out = Value::array();
             if (sep.empty()) { for (uint32_t cp : utf8cp(s)) out.arr()->push_back(Value::str(cpToU8(cp))); return out; }
             size_t at = 0;
@@ -1569,7 +1568,7 @@ Value rtNqpOp(NqpOpc op, ValueList& v) {
         // mirror image of findnotcclass above)
         case O::FindCClass: {
             const CowStr& cs = S(1);
-            const std::string& s = cs.str();
+            const std::string_view s = cs.str();
             long long mask = I(0), start = I(2), len = I(3);
             long long from = std::max<long long>(start, 0);
             long long want = start + len;
@@ -1619,7 +1618,7 @@ Value rtNqpOp(NqpOpc op, ValueList& v) {
             return out;
         }
         case O::Decode: // nqp::decode(buf, 'utf8') — bytes → Str (rakupp strings are UTF-8)
-            return Value::str(v.empty() ? std::string() : v[0].s);
+            return Value::str(v.empty() ? std::string() : v[0].s.copyText());
         case O::AddBigI: { // nqp::add_I(a, b, Int) — bignum-safe add
             if (!v.empty() && (v[0].big() || (v.size() > 1 && v[1].big()))) {
                 BigInt a = v[0].big() ? *v[0].big() : BigInt(v[0].toInt());

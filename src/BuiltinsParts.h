@@ -248,7 +248,7 @@ std::string procSpawnMissing(const Value& proc);
 // (LF, TAB, NUL), which is why a line arrives whole; CR is NOT one of those,
 // because CR LF is a single cluster, and neither is a space, because a mark
 // can attach to it. Oracle-checked against Rakudo's own stream decoder.
-size_t utf8TextPrefixLen(const std::string& b);
+size_t utf8TextPrefixLen(std::string_view b);
 
 // flatten all args (used by say/join/etc.)
 static inline ValueList flattenArgs(ValueList& args) {
@@ -323,8 +323,8 @@ struct JsonCfg {
     bool jsonc     = false; // JSON::Fast :allow-jsonc — // and /* */ comments
     int  depth     = 0;     // recursion guard: hostile nesting must die, not crash
 };
-void jsonSkipWs(const std::string& s, size_t& i, const JsonCfg& cfg);
-bool jsonParseValue(const std::string& s, size_t& i, Value& out, JsonCfg cfg);
+void jsonSkipWs(std::string_view s, size_t& i, const JsonCfg& cfg);
+bool jsonParseValue(std::string_view s, size_t& i, Value& out, JsonCfg cfg);
 
 // ---- the writer ------------------------------------------------------------
 // ONE writer too, JSON::Fast-exact (jfEncode, Builtins.cpp), behind every
@@ -430,7 +430,7 @@ static inline std::exception_ptr runSupplyLast(Interpreter& I, const ValueList& 
 // the `$!` after a `try react` (S-60).
 static inline Value causeException(Interpreter& I, const Value& cause, const std::string& msg) {
     if (cause.t == VT::Object) return cause;
-    std::string m = cause.t == VT::Str ? cause.s.str() : msg;
+    std::string m = cause.t == VT::Str ? cause.s.copyText() : msg;
     if (m.empty()) m = "Promise broken";
     if (cause.t == VT::Type) return I.exceptionFor(RakuError{cause, m, RakuError::NoCapture{}});
     return I.exceptionFor(RakuError{Value::typeObj("X::AdHoc"), m, RakuError::NoCapture{}});
@@ -444,7 +444,7 @@ Value makeSignalEnumValueFwd(int sig);
 // A signal value passed to `signal()`: the Signal type-object (`SIGINT`, s=name),
 // an Int-backed enum value, or a plain integer.
 static inline int signalNumberOf(const Value& v) {
-    if (v.t == VT::Type) return signalNumberOfName(v.s);
+    if (v.t == VT::Type) return signalNumberOfName(v.s.copyText());
     if (v.t == VT::Int && !v.enumName.empty()) { int n = signalNumberOfName(v.enumName); if (n > 0) return n; }
     if (v.isNumeric()) return (int)v.toInt();
     return -1;

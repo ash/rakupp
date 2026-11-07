@@ -51,7 +51,7 @@ static std::string rxArgEncode(const Value& v, RxArgTable* tab = nullptr,
     if (v.t == VT::Bool) return std::string("\x04" "B") + (v.b ? "True" : "False");
     if (v.t == VT::Int && plain && v.s.empty()) return "\x04I" + v.toStr();
     if (v.t == VT::Num && plain) return "\x04N" + v.toStr();
-    if (v.t == VT::Type && !v.s.empty()) return "\x04T" + v.s.str();
+    if (v.t == VT::Type && !v.s.empty()) return "\x04T" + v.s;
     if (tab && !(v.t == VT::Str && plain)) {
         // the same object again (a recursive rule handing its argument on)
         // reuses its slot, so the packrat key it folds into stays the same
@@ -288,7 +288,7 @@ static Value rxLiteralAlternatives(const Value& v) {
 // source alone left `sub g { my @k = …; rx{@k} }` to resolve @k where it is
 // spliced, which usually has no @k at all (IO::Glob's character classes).
 std::string Interpreter::closedRegexSource(const Value& v) {
-    std::string src = v.s.str();
+    std::string src = v.s.copyText();
     if (!v.ext() || isP5Pattern(src)) return src;
     // (a declared `token {…}` keeps its $vars for the match-time hook)
     const bool arr = src.find('@') != std::string::npos,
@@ -360,7 +360,7 @@ std::string Interpreter::rxInterpArrays(const std::string& pat) {
             if (depth == 0) {
                 Value v = evalString(pat.substr(i, j - i));
                 std::vector<std::pair<std::string, bool>> els;
-                auto add = [&](const Value& e) { els.push_back({e.t == VT::Regex ? e.s.str() : e.toStr(), e.t == VT::Regex}); };
+                auto add = [&](const Value& e) { els.push_back({e.t == VT::Regex ? e.s.copyText() : e.toStr(), e.t == VT::Regex}); };
                 if (v.arr()) for (auto& e : *v.arr()) add(e);
                 else add(v);
                 std::stable_sort(els.begin(), els.end(),
@@ -448,7 +448,7 @@ std::string Interpreter::rxInterpArrays(const std::string& pat) {
                 for (auto& e : *v->arr()) els.push_back(e.toStr());
                 {
                     std::vector<std::pair<std::string, bool>> tagged;
-                    for (auto& e : *v->arr()) tagged.push_back({e.t == VT::Regex ? e.s.str() : e.toStr(), e.t == VT::Regex});
+                    for (auto& e : *v->arr()) tagged.push_back({e.t == VT::Regex ? e.s.copyText() : e.toStr(), e.t == VT::Regex});
                     std::stable_sort(tagged.begin(), tagged.end(),
                         [](const std::pair<std::string, bool>& a, const std::pair<std::string, bool>& b) {
                             return a.first.size() > b.first.size(); });
@@ -484,7 +484,7 @@ std::string Interpreter::rxInterpArrays(const std::string& pat) {
                 }
                 if (seqAlt) {
                     std::vector<std::pair<std::string, bool>> orig;
-                    for (auto& e : *v->arr()) orig.push_back({e.t == VT::Regex ? e.s.str() : e.toStr(), e.t == VT::Regex});
+                    for (auto& e : *v->arr()) orig.push_back({e.t == VT::Regex ? e.s.copyText() : e.toStr(), e.t == VT::Regex});
                     out += "[";
                     for (size_t k = 0; k < orig.size(); k++) {
                         if (k) out += "||";
@@ -530,7 +530,7 @@ std::string Interpreter::rxInterpArrays(const std::string& pat) {
 // Shared by `~~` and by every builtin that compiles a raw pattern (`.split`).
 // A `:P5`/`:Perl5` adverb among the leading `:adv ` tokens the lexer bakes into
 // a regex literal — the whole pattern is Perl 5 syntax.
-bool isP5Pattern(const std::string& pat) {
+bool isP5Pattern(std::string_view pat) {
     size_t p = 0;
     while (p < pat.size() && pat[p] == ':') {
         size_t j = p + 1;
@@ -538,7 +538,7 @@ bool isP5Pattern(const std::string& pat) {
         size_t ns = j;
         while (j < pat.size() && ascii::isalnum((unsigned char)pat[j])) j++;
         if (j == ns) return false;
-        std::string name = pat.substr(ns, j - ns);
+        const std::string_view name = pat.substr(ns, j - ns);
         if (j < pat.size() && pat[j] == '(') {
             int d = 0;
             while (j < pat.size()) { char c = pat[j++]; if (c == '(') d++; else if (c == ')' && --d == 0) break; }
@@ -593,7 +593,7 @@ static std::string spliceRegexValueP5(const std::string& src) { // …into a PER
 static std::string rxSourceOf(const Value& v, bool& p5) {
     if (v.t == VT::Hash && (v.hashKind.empty() || v.hashKind == "Hash"))   // `<$h>` — reserved
         throw RakuError{Value::typeObj("X::Syntax::Reserved"), "The use of a hash as a regex assertion is reserved"};
-    std::string src = v.t == VT::Regex ? v.s.str() : v.toStr();
+    std::string src = v.t == VT::Regex ? v.s.copyText() : v.toStr();
     p5 = isP5Pattern(src);
     if (p5) src = src.substr(src.find(' ') + 1);
     return src;
@@ -740,7 +740,7 @@ std::string Interpreter::interpP5Pattern(const std::string& in) {
             size_t j = i + 1;
             while (j < in.size() && (ascii::isalnum((unsigned char)in[j]) || in[j] == '_')) j++;
             if (Value* v = tctx().cur->find("$" + in.substr(i + 1, j - i - 1))) {
-                out += v->t == VT::Regex ? spliceRegexValueP5(v->s) : v->toStr();
+                out += v->t == VT::Regex ? spliceRegexValueP5(v->s.copyText()) : v->toStr();
                 i = j - 1;
                 continue;
             }
@@ -1732,7 +1732,7 @@ std::string Interpreter::substSelect(const std::string& subj, const std::string&
         else throw RakuError{Value::typeObj("X::Syntax::Regex::Adverb"), "Unrecognized regex adverb: :" + k};
     };
     for (auto& a : args)
-        if (a.t == VT::Pair) setAdverb(a.s, a.pairVal() ? *a.pairVal() : Value::boolean(true), false);
+        if (a.t == VT::Pair) setAdverb(a.s.copyText(), a.pairVal() ? *a.pairVal() : Value::boolean(true), false);
     // leading `:name` / `:name(arg)` adverbs baked into the pattern (s///, ss///)
     //
     // A LITERAL needle has none: `.subst(':ver<1.2>')` is asking for that text,
@@ -1844,7 +1844,7 @@ std::string Interpreter::substSelect(const std::string& subj, const std::string&
                         // LITERAL "regex Regex" and so found no header name at all.
                         // The match path already spliced it; only this copy did not.
                         if (v->t == VT::Regex) {
-                            ip += p5 ? spliceRegexValueP5(v->s) : spliceRegexValue(v->s);
+                            ip += p5 ? spliceRegexValueP5(v->s.copyText()) : spliceRegexValue(v->s.copyText());
                             i = j - 1; continue;
                         }
                         // P5 pattern: Perl interpolates a variable as regex SOURCE,
@@ -2373,7 +2373,7 @@ std::string Interpreter::substSelect(const std::string& subj, const std::string&
     // because Nil was answering for every shape. Both are falsy, so only code that
     // counts or iterates the result could tell — which `.elems` does.
     if (haveAs && !selMatches.empty()) {
-        const std::string want = asVal.t == VT::Type ? asVal.s.str() : asVal.typeName();
+        const std::string want = asVal.t == VT::Type ? asVal.s.copyText() : asVal.typeName();
         for (auto& mv : selMatches) mv = coerceToType(mv, want);
     }
     if (selMatches.empty())
@@ -3457,10 +3457,10 @@ Value Interpreter::hyperCore(Value& l, Value& r, bool strictL, bool strictR,
         [&](const Value& x, const Value& y, Value* xs, Value* ys) -> Value {
         bool xP = x.t == VT::Pair, yP = y.t == VT::Pair;
         if (xP || yP) {
-            const std::string& key = xP ? x.s : y.s;
+            const std::string_view key = xP ? x.s : y.s;
             const Value& xv = xP && x.pairVal() ? *x.pairVal() : x;
             const Value& yv = yP && y.pairVal() ? *y.pairVal() : y;
-            return Value::pair(key, deepApply(xv, yv, nullptr, nullptr));
+            return Value::pair(std::string(key), deepApply(xv, yv, nullptr, nullptr));
         }
         bool xC = (x.t == VT::Array && x.arr()) || x.t == VT::Range || (x.t == VT::Hash && x.hash());
         bool yC = (y.t == VT::Array && y.arr()) || y.t == VT::Range || (y.t == VT::Hash && y.hash());
@@ -4218,7 +4218,7 @@ bool Interpreter::pairAccepts(const Value& topic, const Value& pair) {
         if (got.t == VT::Pair && got.pairVal()) got = *got.pairVal();
         return matcherAccepts(*this, got, want);
     }
-    try { return methodCall(topic, pair.s, {}).truthy() == want.truthy(); }
+    try { return methodCall(topic, pair.s.copyText(), {}).truthy() == want.truthy(); }
     catch (RakuError& e) {
         if (e.payload.t == VT::Type && e.payload.s == "X::Method::NotFound")
             throwTypedV("X::Method::NotFound",

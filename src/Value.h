@@ -11,7 +11,9 @@
 #include <memory>
 #include <mutex>
 #include <set>
+#include <stdexcept>
 #include <string>
+#include <string_view>
 #include <type_traits>
 #include <vector>
 
@@ -33,9 +35,9 @@ struct Value;
 // 421 KB document that Rakudo parses in 50 ms, and the profile was all copying,
 // not parsing.
 //
-// So: short strings stay inline, where std::string's own small-buffer
-// optimisation already makes a copy free, and anything longer is promoted ONCE,
-// at construction, into a shared immutable body. Copying then costs a refcount
+// So: short strings stay inline, up to 15 bytes in the CowStr's own 16, where
+// a copy is the 16 bytes, and anything longer is promoted ONCE, at
+// construction, into a shared immutable body. Copying then costs a refcount
 // bump. Promotion is eager rather than lazy-on-first-copy precisely because
 // rakupp runs work in parallel — a lazy promotion would have to mutate the
 // source from a const copy constructor, and two threads copying the same Value
@@ -80,7 +82,7 @@ struct StrView {
     ~StrView() { delete flat.load(std::memory_order_relaxed); }
 };
 
-struct StrBody : RefCounted {   // owned by CowStr, through a Ref (batch 4)
+struct StrBody : RefCounted {   // owned by CowStr, which keeps its count by hand (design C)
     std::string text;           // the text — empty for a view, which reads `view`
     StrView* view = nullptr;    // owned; set for a range of a StrBuf
     // All -1 until computed, then 0/1. Racing threads may each compute one of
@@ -153,222 +155,359 @@ struct StrCenLit { StrCenLit(); ~StrCenLit(); };
 #define RAKUPP_STR_CEN(...)
 #endif
 class CowStr {
-    // Exactly one of these carries the value: `p_` when set, otherwise `s_`.
-    std::string s_;
-    Ref<const StrBody> p_;   // 8 bytes: CowStr is 32 where it was 40
-    // Below this, a copy is a couple of words and sharing would cost more than
-    // it saves (an allocation per string). Above it, copying is the thing we are
-    // here to avoid.
-    static constexpr size_t kPromote = 23;
+    // 16 bytes (VALUE32-PLAN design C, step 2), in one of two forms that the
+    // last byte tells apart:
+    // - INLINE, a text of up to kInline bytes: raw_[0, len) is the text, the
+    //   bytes after it are zero, and raw_[15] is kInline - len — so a 15-byte
+    //   text's NUL is that byte, and every text is NUL-terminated as c_str()
+    //   promises. With the tail zeroed, two inline texts are equal exactly
+    //   when their 16 bytes are.
+    // - a BODY: raw_[0, sizeof(void*)) is a StrBody* that holds one count, the
+    //   rest is zero, and raw_[15] is kBody.
+    // A text longer than kInline is always a body. A shorter one is a body only
+    // when promote() asked for one (a Buf handed to C), or when a body nothing
+    // else held was rewritten in place and shrank. Nothing in the 16 bytes
+    // points at them, so a CowStr may be moved bitwise (ValueVec relies on it).
+    static constexpr size_t kInline = 15;
+    static constexpr unsigned char kBody = 0x80;
+    alignas(8) char raw_[16];
 #ifdef RAKUPP_STR_CENSUS
     // `fresh_`: this instance wrote its inline text (B would hold a body for
     // it). `shared_`: copied since, so B's next write detaches into another.
     bool fresh_ = false;
     mutable bool shared_ = false;
-    void cenEnd() { if (fresh_ && !p_ && !s_.empty()) strCensusLife(s_.size()); fresh_ = shared_ = false; }
+    void cenEnd() { if (fresh_ && !isBody() && ilen()) strCensusLife(ilen()); fresh_ = shared_ = false; }
     void cenWrite() { if (shared_ || !fresh_) { cenEnd(); fresh_ = true; } }
 #endif
+
+    unsigned char tag() const { return (unsigned char)raw_[15]; }
+    bool isBody() const { return tag() == kBody; }
+    size_t ilen() const { return kInline - tag(); }   // (inline only)
+    const StrBody* bodyRaw() const {                    // (body only)
+        const StrBody* b;
+        std::memcpy(&b, raw_, sizeof b);
+        return b;
+    }
+    void setEmptyRaw() { std::memset(raw_, 0, 15); raw_[15] = (char)kInline; }
+    // Drop the body's count, if this holds one; the bytes are left as they are.
+    void drop() noexcept { if (isBody()) Ref<const StrBody>::releaseRaw(bodyRaw()); }
+    // Copy n <= kInline bytes without a call: two fixed-size copies that
+    // overlap in the middle. A memcpy of a variable length is a call to the
+    // library's, and every short string written paid one (perf-guard's
+    // `prepend` +5% instructions, re-evaluating its literal each turn).
+    static void copySmall(char* d, const char* x, size_t n) {
+        if (n >= 8) {
+            std::uint64_t a, b;
+            std::memcpy(&a, x, 8); std::memcpy(&b, x + n - 8, 8);
+            std::memcpy(d, &a, 8); std::memcpy(d + n - 8, &b, 8);
+        }
+        else if (n >= 4) {
+            std::uint32_t a, b;
+            std::memcpy(&a, x, 4); std::memcpy(&b, x + n - 4, 4);
+            std::memcpy(d, &a, 4); std::memcpy(d + n - 4, &b, 4);
+        }
+        else if (n) { d[0] = x[0]; d[n / 2] = x[n / 2]; d[n - 1] = x[n - 1]; }
+    }
+    // n <= kInline. `x` may point into this string's own text, inline or in the
+    // body about to be dropped: it is copied out first.
+    void setInline(const char* x, size_t n) {
+        char t[16] = {};
+        copySmall(t, x, n);
+        t[15] = (char)(kInline - n);
+        drop();
+        std::memcpy(raw_, t, 16);
+    }
+    void setBody(Ref<const StrBody> b) {
+        const StrBody* p = b.leak();
+        drop();
+        std::memset(raw_, 0, 16);
+        std::memcpy(raw_, &p, sizeof p);
+        raw_[15] = (char)kBody;
+    }
 public:
     // The same string, cheaply: one shared body, or the same short text.
-    bool sameRep(const CowStr& o) const {
-        return p_ ? p_.get() == o.p_.get() : (!o.p_ && s_ == o.s_);
-    }
+    bool sameRep(const CowStr& o) const { return std::memcmp(raw_, o.raw_, 16) == 0; }
 private:
 
+    // The text, kept the way its length asks for. take() is what the census
+    // counts as a string made; store() is the same without the count.
+    void store(std::string x) {
+        if (x.size() > kInline) setBody(g_strViewsForced ? forcedView(x) : makeRef<const StrBody>(std::move(x)));
+        else setInline(x.data(), x.size());
+    }
     void take(std::string x) {
-#ifdef RAKUPP_STR_CENSUS
-        strCensusTake(x.size());
-        cenEnd();
-#endif
-        if (x.size() >= kPromote) {
-            p_ = g_strViewsForced ? forcedView(x) : makeRef<const StrBody>(std::move(x));
-            s_.clear();
-        }
-        else { s_ = std::move(x); p_.reset(); }
-        RAKUPP_STR_CEN(fresh_ = !p_;)
+        RAKUPP_STR_CEN(strCensusTake(x.size()); cenEnd();)
+        store(std::move(x));
+        RAKUPP_STR_CEN(fresh_ = !isBody();)
+    }
+    // take() of a view, which needs no std::string when the text is short
+    void takeView(std::string_view x) {
+        if (x.size() > kInline) { take(std::string(x)); return; }
+        RAKUPP_STR_CEN(strCensusTake(x.size()); cenEnd();)
+        setInline(x.data(), x.size());
+        RAKUPP_STR_CEN(fresh_ = true;)
     }
     static Ref<const StrBody> forcedView(const std::string& x);
 
 public:
-    CowStr() = default;
+    CowStr() noexcept { setEmptyRaw(); }
     // Both converting constructors are explicit ON PURPOSE. With an implicit
-    // std::string -> CowStr alongside the CowStr -> const std::string& below,
+    // std::string -> CowStr alongside the CowStr -> std::string_view below,
     // every `cond ? value.s : someString` became an ambiguous conversion in
     // both directions. Assignment (operator= just below) covers the cases that
     // actually want to convert.
-    explicit CowStr(const char* x) { take(std::string(x)); }
-    explicit CowStr(std::string x) { take(std::move(x)); }
-#ifdef RAKUPP_STR_CENSUS
-    CowStr(const CowStr& o) : s_(o.s_), p_(o.p_) { strCensusCopy(o.size(), (bool)o.p_); o.shared_ = true; }
-    CowStr& operator=(const CowStr& o) {
-        if (this == &o) return *this;
-        cenEnd(); s_ = o.s_; p_ = o.p_; strCensusCopy(o.size(), (bool)o.p_); o.shared_ = true; return *this;
+    explicit CowStr(const char* x) { setEmptyRaw(); takeView(x); }
+    explicit CowStr(std::string x) { setEmptyRaw(); take(std::move(x)); }
+    // A copy is its 16 bytes and, for a body, one more count.
+    CowStr(const CowStr& o) noexcept {
+        std::memcpy(raw_, o.raw_, 16);
+        if (isBody()) bodyRaw()->refs_.fetch_add(1, std::memory_order_relaxed);
+        RAKUPP_STR_CEN(strCensusCopy(o.size(), o.isBody()); o.shared_ = true;)
     }
-    CowStr(CowStr&& o) noexcept : s_(std::move(o.s_)), p_(std::move(o.p_)), fresh_(o.fresh_), shared_(o.shared_) {
-        o.fresh_ = o.shared_ = false;
+    CowStr& operator=(const CowStr& o) noexcept {
+        if (this == &o) return *this;
+        if (o.isBody()) o.bodyRaw()->refs_.fetch_add(1, std::memory_order_relaxed);
+        RAKUPP_STR_CEN(cenEnd(); strCensusCopy(o.size(), o.isBody()); o.shared_ = true;)
+        drop();
+        std::memcpy(raw_, o.raw_, 16);
+        return *this;
+    }
+    CowStr(CowStr&& o) noexcept {
+        std::memcpy(raw_, o.raw_, 16);
+        o.setEmptyRaw();
+        RAKUPP_STR_CEN(fresh_ = o.fresh_; shared_ = o.shared_; o.fresh_ = o.shared_ = false;)
     }
     CowStr& operator=(CowStr&& o) noexcept {
         if (this == &o) return *this;
-        cenEnd(); s_ = std::move(o.s_); p_ = std::move(o.p_); fresh_ = o.fresh_; shared_ = o.shared_;
-        o.fresh_ = o.shared_ = false; return *this;
+        RAKUPP_STR_CEN(cenEnd();)
+        drop();
+        std::memcpy(raw_, o.raw_, 16);
+        o.setEmptyRaw();
+        RAKUPP_STR_CEN(fresh_ = o.fresh_; shared_ = o.shared_; o.fresh_ = o.shared_ = false;)
+        return *this;
     }
-    ~CowStr() { cenEnd(); }
-#else
-    CowStr(const CowStr&) = default;
-    CowStr& operator=(const CowStr&) = default;
-    CowStr(CowStr&&) noexcept = default;
-    CowStr& operator=(CowStr&&) noexcept = default;
-#endif
-    CowStr& operator=(std::string x) { take(std::move(x)); return *this; }
-    CowStr& operator=(const char* x) { take(std::string(x)); return *this; }
+    ~CowStr() { RAKUPP_STR_CEN(cenEnd();) drop(); }
+    CowStr& operator=(const std::string& x) { takeView(x); return *this; }
+    CowStr& operator=(std::string&& x) { take(std::move(x)); return *this; }
+    CowStr& operator=(const char* x) { takeView(x); return *this; }
+    CowStr& operator=(std::string_view x) { takeView(x); return *this; }
 
-    const std::string& str() const { return p_ ? p_->str() : s_; }
-    operator const std::string&() const { return str(); }         // NOLINT(google-explicit-constructor)
-    // The shared body, when the string is promoted (null for inline smalls).
+    // The text, as a VIEW: all a reader needs, and what a CowStr can answer
+    // however it keeps the text. Valid while this CowStr is unchanged and
+    // where it is (an inline text moves with it); NUL-terminated, as c_str().
+    std::string_view str() const {
+        return isBody() ? std::string_view(bodyRaw()->str()) : std::string_view(raw_, ilen());
+    }
+    operator std::string_view() const { return str(); }           // NOLINT(google-explicit-constructor)
+    // The text as a std::string of its own — what std::string(str()) makes,
+    // by the faster road for a body: a short std::string is copied whole,
+    // where one built from a view calls memmove for its bytes (+4% of the
+    // instructions in perf-guard's `prepend`).
+    std::string copyText() const {
+        if (isBody()) return bodyRaw()->str();
+        std::string r(raw_, kInline);   // (a fixed length copies without a call; the tail is zeros)
+        r.resize(ilen());
+        return r;
+    }
+    // The shared body, when there is one (null for an inline text).
     // NativeHelpers::Blob's pointer-to retains it so a pointer handed to C
     // outlives the Value copy it was taken from.
-    Ref<const StrBody> bodyPtr() const { return p_; }
+    Ref<const StrBody> bodyPtr() const {
+        if (!isBody()) return nullptr;
+        bodyRaw()->refs_.fetch_add(1, std::memory_order_relaxed);
+        return Ref<const StrBody>::adopt(bodyRaw());
+    }
 
-    // Force the shared body even below kPromote. A Buf built by `allocate` (or
-    // `Buf.new`) is a NATIVE BUFFER: its address is handed to C, which writes
-    // through it, so the storage must be shared with every copy of the value and
-    // must outlive the call. Left inline, a short buffer could only give C a
-    // pointer to a temporary COPY — mysql_stmt_bind_result filled memory no one
-    // read, and the copy was recycled underneath the driver.
-    void promote() { if (!p_) { p_ = makeRef<const StrBody>(std::move(s_)); s_.clear(); RAKUPP_STR_CEN(fresh_ = shared_ = false;) } }
+    // Force the shared body even for an inline text. A Buf built by `allocate`
+    // (or `Buf.new`) is a NATIVE BUFFER: its address is handed to C, which
+    // writes through it, so the storage must be shared with every copy of the
+    // value and must outlive the call. Left inline, a short buffer could only
+    // give C a pointer to a temporary COPY — mysql_stmt_bind_result filled
+    // memory no one read, and the copy was recycled underneath the driver.
+    void promote() {
+        if (isBody()) return;
+        setBody(makeRef<const StrBody>(std::string(raw_, ilen())));
+        RAKUPP_STR_CEN(fresh_ = shared_ = false;)
+    }
 
     // Write access that KEEPS the shared body. A Buf is a reference-semantics
     // container in Raku — `my $c = $b; $c[0] = 9` is visible through `$b` — and
     // its storage may also be bound into C, which writes through the same
     // address (mysql_stmt_bind_result fills a length array the Raku side then
-    // reads). `mut()` detaches, which forks both of those. Only the cheap
-    // scanning flags are invalidated: the byte-offset index tables are built by
-    // positional STRING ops, which no byte buffer runs.
+    // reads). The other writers detach, which forks both of those. Only the
+    // cheap scanning flags are invalidated: the byte-offset index tables are
+    // built by positional STRING ops, which no byte buffer runs. An inline
+    // text is written where it is: the bytes past its end are not the caller's.
     char* mutInPlace() {
-        if (!p_) { RAKUPP_STR_CEN(cenWrite();) return s_.empty() ? nullptr : &s_[0]; }
-        if (p_->view) p_ = makeRef<const StrBody>(std::string(p_->str()));   // (a Buf is never a view)
-        StrBody* b = const_cast<StrBody*>(p_.get());
+        if (!isBody()) { RAKUPP_STR_CEN(cenWrite();) return ilen() ? raw_ : nullptr; }
+        if (bodyRaw()->view) setBody(makeRef<const StrBody>(std::string(bodyRaw()->str())));   // (a Buf is never a view)
+        StrBody* b = const_cast<StrBody*>(bodyRaw());
         b->allAscii.store(-1, std::memory_order_relaxed);
         b->crFree.store(-1, std::memory_order_relaxed);
         b->nGraphemes.store(-1, std::memory_order_relaxed);
         b->nfc.store(-1, std::memory_order_relaxed);
         return b->text.empty() ? nullptr : &b->text[0];
     }
-    // …and the same storage as a string, for a write that keeps its length
-    // (Interpreter::bufBitOp's `write-uint16` and the rest)
-    std::string& textInPlace() {
-        mutInPlace();
-        return p_ ? const_cast<StrBody*>(p_.get())->text : s_;
+
+    // A write through a std::string: `f(std::string&)` rewrites the text. The
+    // reference is good for the call only: an inline text has no std::string,
+    // so f gets a copy, and what it leaves is stored back.
+    template <class F> void edit(F&& f) {
+        if (isBody()) { std::forward<F>(f)(ownText()); return; }
+        std::string t(raw_, ilen());
+        std::forward<F>(f)(t);
+        RAKUPP_STR_CEN(cenWrite();)
+        store(std::move(t));
     }
 
-    // Write access. A SHARED body is detached from first, so a mutation never
-    // reaches another Value holding the same text; the copy stays inline until
-    // it is next assigned — which is where promotion happens again.
+private:
+    // A body's text to write, held by this CowStr alone. A SHARED body is
+    // copied into a new one first, so a mutation never reaches another Value
+    // holding the same text, and a view is flattened into one.
     //
     // A body nothing else holds is not shared, so there is nothing to protect:
-    // it is written where it is, keeping the string promoted (a later copy of
-    // the value stays a count bump). Detaching it anyway copied the whole text
-    // on every `~=` past kPromote and left it inline, and from then on every
-    // copy of the value — the result of a closure, a method or an rw sub that
-    // ends in `$s ~= …` — copied the text again: 40,000 appends through a
-    // closure took 0.07 s, through an `is rw` parameter 0.27 s (issue #130).
-    std::string& mut() {
-        if (p_) {
-            if (!p_->view && p_->refs_.load(std::memory_order_acquire) == 1) {
-                StrBody* b = const_cast<StrBody*>(p_.get());
-                b->invalidate();
-                return b->text;
-            }
-            s_ = p_->str(); p_.reset();
+    // it is written where it is, keeping the string a body (a later copy of the
+    // value stays a count bump). Detaching it anyway copied the whole text on
+    // every `~=` and left it unshared, and from then on every copy of the
+    // value — the result of a closure, a method or an rw sub that ends in
+    // `$s ~= …` — copied the text again: 40,000 appends through a closure took
+    // 0.07 s, through an `is rw` parameter 0.27 s (issue #130).
+    std::string& ownText() {   // (body only)
+        const StrBody* b = bodyRaw();
+        if (b->view || b->refs_.load(std::memory_order_acquire) != 1) {
+            setBody(makeRef<const StrBody>(std::string(b->str())));
+            b = bodyRaw();
         }
-        RAKUPP_STR_CEN(cenWrite();)
-        return s_;
+        else const_cast<StrBody*>(b)->invalidate();
+        return const_cast<StrBody*>(b)->text;
     }
-    // The cache lives on the shared body, so it survives only for promoted
+    // An append to an inline text: where it is while it fits, else into a
+    // body. Moving it into a body is how a string grows past kInline, and the
+    // next append writes into that body in place (ownText, above).
+    void append(const char* x, size_t n) {
+        if (isBody()) { ownText().append(x, n); return; }
+        const size_t l = ilen();
+        if (l + n <= kInline) {
+            RAKUPP_STR_CEN(cenWrite();)
+            if (n) std::memmove(raw_ + l, x, n);   // (x may be this text)
+            raw_[15] = (char)(kInline - l - n);
+            return;
+        }
+        std::string t;
+        t.reserve(l + n);
+        t.append(raw_, l).append(x, n);
+        store(std::move(t));
+    }
+public:
+    // The cache lives on the shared body, so it survives only for body
     // strings — which is exactly the case that needs it. Short strings are
     // cheap to rescan.
-    const StrBody* body() const { return p_.get(); }
+    const StrBody* body() const { return isBody() ? bodyRaw() : nullptr; }
 
-    // const std::string forwarding — keeps the ~1,100 read sites unchanged.
-    size_t size()  const { return p_ ? p_->size() : s_.size(); }   // (a view is not flattened for it)
-    bool   empty() const { return size() == 0; }
-    const char* c_str() const { return str().c_str(); }
+    // the read forwards, through str()
+    size_t size()  const { return isBody() ? bodyRaw()->size() : ilen(); }   // (a view is not flattened for it)
+    bool   empty() const { return isBody() ? bodyRaw()->size() == 0 : tag() == kInline; }
+    const char* c_str() const { return str().data(); }   // (str() is NUL-terminated)
     const char* data()  const { return str().data(); }
     char   back()  const { return str().back(); }
     char operator[](size_t i) const { return str()[i]; }
-    std::string substr(size_t p = 0, size_t n = std::string::npos) const { return str().substr(p, n); }
-    size_t find(const std::string& x, size_t p = 0) const { return str().find(x, p); }
+    std::string substr(size_t p = 0, size_t n = std::string::npos) const { return std::string(str().substr(p, n)); }
+    size_t find(std::string_view x, size_t p = 0) const { return str().find(x, p); }
     size_t find(char x, size_t p = 0) const { return str().find(x, p); }
     size_t find(const char* x, size_t p = 0) const { return str().find(x, p); }
-    size_t rfind(const std::string& x, size_t p = std::string::npos) const { return str().rfind(x, p); }
+    size_t rfind(std::string_view x, size_t p = std::string::npos) const { return str().rfind(x, p); }
     size_t rfind(char x, size_t p = std::string::npos) const { return str().rfind(x, p); }
     size_t rfind(const char* x, size_t p = std::string::npos) const { return str().rfind(x, p); }
     size_t find_first_not_of(const char* x, size_t p = 0) const { return str().find_first_not_of(x, p); }
-    int compare(const std::string& x) const { return str().compare(x); }
-    int compare(size_t p, size_t n, const std::string& x) const { return str().compare(p, n, x); }
-    std::string::const_iterator begin() const { return str().begin(); }
-    std::string::const_iterator end()   const { return str().end(); }
+    int compare(std::string_view x) const { return str().compare(x); }
+    int compare(size_t p, size_t n, std::string_view x) const { return str().compare(p, n, x); }
+    std::string_view::const_iterator begin() const { return str().begin(); }
+    std::string_view::const_iterator end()   const { return str().end(); }
 
-    // Mutating forwards — each detaches.
-    void clear() { RAKUPP_STR_CEN(cenEnd();) p_.reset(); s_.clear(); }
-    void pop_back() { mut().pop_back(); }
-    void resize(size_t n) { mut().resize(n); }
-    void resize(size_t n, char c) { mut().resize(n, c); }
-    void erase(size_t p, size_t n = std::string::npos) { mut().erase(p, n); }
-    void replace(size_t p, size_t n, const std::string& x) { mut().replace(p, n, x); }
-    // An append is how a string grows past kPromote without ever being
-    // assigned, so it promotes there too. Left inline, the accumulator of
-    // `$s ~= …` stayed a plain std::string however long it grew, and every copy
-    // of its value — a closure's or a method's result, an argument — copied the
-    // whole text (issue #130). Moving it into a body costs no copy, and the
-    // next append writes into that body in place (mut, above).
-    CowStr& operator+=(const std::string& x) { mut() += x; grown(); return *this; }
-    CowStr& operator+=(const char* x) { mut() += x; grown(); return *this; }
-    CowStr& operator+=(char x) { mut() += x; grown(); return *this; }
+    // Mutating forwards — each detaches a shared body. An inline text is
+    // rewritten where it is, keeping its tail zero.
+    void clear() { RAKUPP_STR_CEN(cenEnd();) drop(); setEmptyRaw(); }
+    void pop_back() {
+        if (isBody()) { ownText().pop_back(); return; }
+        RAKUPP_STR_CEN(cenWrite();)
+        const size_t l = ilen();   // (> 0, as std::string's pop_back asks)
+        raw_[l - 1] = 0;
+        raw_[15] = (char)(kInline - l + 1);
+    }
+    void resize(size_t n) { resize(n, '\0'); }
+    void resize(size_t n, char c) {
+        if (isBody()) { ownText().resize(n, c); return; }
+        const size_t l = ilen();
+        if (n > kInline) { std::string t(raw_, l); t.resize(n, c); store(std::move(t)); return; }
+        RAKUPP_STR_CEN(cenWrite();)
+        if (n > l) std::memset(raw_ + l, c, n - l);
+        else std::memset(raw_ + n, 0, l - n);
+        raw_[15] = (char)(kInline - n);
+    }
+    void erase(size_t p, size_t n = std::string::npos) {
+        if (isBody()) { ownText().erase(p, n); return; }
+        const size_t l = ilen();
+        if (p > l) throw std::out_of_range("CowStr::erase");   // (as std::string's)
+        if (n > l - p) n = l - p;
+        RAKUPP_STR_CEN(cenWrite();)
+        std::memmove(raw_ + p, raw_ + p + n, l - p - n);
+        std::memset(raw_ + l - n, 0, n);
+        raw_[15] = (char)(kInline - (l - n));
+    }
+    void replace(size_t p, size_t n, const std::string& x) { edit([&](std::string& t) { t.replace(p, n, x); }); }
+    CowStr& operator+=(const std::string& x) { append(x.data(), x.size()); return *this; }
+    CowStr& operator+=(std::string_view x) { append(x.data(), x.size()); return *this; }   // (a CowStr's text, its own included)
+    CowStr& operator+=(const char* x) { append(x, std::strlen(x)); return *this; }
+    CowStr& operator+=(char x) { append(&x, 1); return *this; }
     // The Str-building paths, which may answer with a view (see StrBuf above).
     // appendText is `+=` for a Str: in place into a sole-owned flat body as
     // before, into the free space after a view, and — for a body others hold —
     // into a new buffer rather than a copy that the next shared append would
     // make again. The others answer false for "do it the flat way", with `out`
     // untouched: joinPrepend is `x ~ r`, joinAppend is `l ~ x` (only when `l` is
-    // a view already), sub is a byte range of a promoted string. The caller
-    // keeps Raku's text rules (NFC at the join, grapheme indexing): these only
-    // move bytes.
+    // a view already), sub is a byte range of a body string. The caller keeps
+    // Raku's text rules (NFC at the join, grapheme indexing): these only move
+    // bytes.
     void appendText(const char* x, size_t n) {
         // the common case first, inline: a flat body nothing else holds grows
         // where it is, exactly as `+=` does
-        if (p_ && !p_->view && p_->refs_.load(std::memory_order_acquire) == 1) {
-            StrBody* b = const_cast<StrBody*>(p_.get());
-            b->invalidate();
-            b->text.append(x, n);
-            return;
+        if (isBody()) {
+            const StrBody* b = bodyRaw();
+            if (!b->view && b->refs_.load(std::memory_order_acquire) == 1) {
+                StrBody* w = const_cast<StrBody*>(b);
+                w->invalidate();
+                w->text.append(x, n);
+                return;
+            }
         }
         appendTextSlow(x, n);
     }
-    void appendText(const std::string& x) { appendText(x.data(), x.size()); }
+    void appendText(std::string_view x) { appendText(x.data(), x.size()); }
     void appendTextSlow(const char* x, size_t n);
     // appendText of text the caller knows is ASCII. An ASCII tail cannot change
     // whether the text is NFC, so the body keeps saying so (StrBody::nfc), and
     // the next non-ASCII join need not read the whole string to find out.
-    void appendAscii(const std::string& x) {
-        const signed char nfc = p_ ? p_->nfc.load(std::memory_order_relaxed) : -1;
+    void appendAscii(std::string_view x) {
+        const signed char nfc = isBody() ? bodyRaw()->nfc.load(std::memory_order_relaxed) : -1;
         appendText(x.data(), x.size());
-        if (nfc >= 0 && p_) p_->nfc.store(nfc, std::memory_order_relaxed);
+        if (nfc >= 0 && isBody()) bodyRaw()->nfc.store(nfc, std::memory_order_relaxed);
     }
     // `$s = x ~ $s`: into the free space before a view; a flat body (whose
     // front cannot grow) moves into a buffer with room in front, once.
     void prependText(const char* x, size_t n);
-    void prependText(const std::string& x) { prependText(x.data(), x.size()); }
+    void prependText(std::string_view x) { prependText(x.data(), x.size()); }
     // the first byte, 0 for an empty string — without flattening a view
     unsigned char firstByte() const {
-        if (p_ && p_->view) return p_->view->len ? (unsigned char)p_->view->buf->data[p_->view->off] : 0;
-        const std::string& s = str();
-        return s.empty() ? 0 : (unsigned char)s[0];
+        if (!isBody()) return (unsigned char)raw_[0];   // (an empty text's NUL)
+        const StrBody* b = bodyRaw();
+        if (b->view) return b->view->len ? (unsigned char)b->view->buf->data[b->view->off] : 0;
+        return b->text.empty() ? 0 : (unsigned char)b->text[0];
     }
     // the bytes, without flattening a view (str() copies a view out, once)
     const char* bytes() const {
-        if (p_ && p_->view) return p_->view->buf->data + p_->view->off;
-        return str().data();
+        if (!isBody()) return raw_;
+        const StrBody* b = bodyRaw();
+        return b->view ? b->view->buf->data + b->view->off : b->text.data();
     }
     // Keep the first `keep` bytes, then write mid and x[0, n): a join that
     // renormalized where the two texts met (nfcAppendCow). In place for a flat
@@ -377,31 +516,36 @@ public:
     static bool joinPrepend(CowStr& out, const char* x, size_t n, const CowStr& r);
     static bool joinAppend(CowStr& out, const CowStr& l, const char* x, size_t n);
     static bool sub(CowStr& out, const CowStr& s, size_t off, size_t len);
-    bool isView() const { return p_ && p_->view; }
-private:
-    void grown() { if (!p_ && s_.size() >= kPromote) promote(); }
+    bool isView() const { return isBody() && bodyRaw()->view; }
 };
 
-// The implicit CowStr -> const std::string& conversion does not apply when BOTH
+// The implicit CowStr -> std::string_view conversion does not apply when BOTH
 // operands are CowStr (no conversion is considered for a built-in operator with
 // no candidate), so the comparisons and concatenation are spelled out.
 // Two copies of one value share its body: equal without reading a byte of it
 // (binding an `is rw` argument compared the whole text of the caller's string
 // with the parameter's copy of it, on every call).
 inline bool operator==(const CowStr& a, const CowStr& b) {
-    return (a.body() && a.body() == b.body()) || a.str() == b.str();
+    if (a.sameRep(b)) return true;
+    return (a.body() || b.body()) && a.str() == b.str();   // (two inline texts differ in their bytes)
 }
 inline bool operator!=(const CowStr& a, const CowStr& b) { return !(a == b); }
 inline bool operator<(const CowStr& a, const CowStr& b)  { return a.str() <  b.str(); }
 inline bool operator>(const CowStr& a, const CowStr& b)  { return a.str() >  b.str(); }
 inline bool operator<=(const CowStr& a, const CowStr& b) { return a.str() <= b.str(); }
 inline bool operator>=(const CowStr& a, const CowStr& b) { return a.str() >= b.str(); }
-inline std::string operator+(const CowStr& a, const CowStr& b) { return a.str() + b.str(); }
-inline std::string operator+(const CowStr& a, const std::string& b) { return a.str() + b; }
-inline std::string operator+(const std::string& a, const CowStr& b) { return a + b.str(); }
-inline std::string operator+(const CowStr& a, const char* b) { return a.str() + b; }
-inline std::string operator+(const char* a, const CowStr& b) { return a + b.str(); }
-inline std::string operator+(const CowStr& a, char b) { return a.str() + b; }
+inline std::string strCat(std::string_view a, std::string_view b) {
+    std::string r;
+    r.reserve(a.size() + b.size());
+    r.append(a).append(b);
+    return r;
+}
+inline std::string operator+(const CowStr& a, const CowStr& b) { return strCat(a.str(), b.str()); }
+inline std::string operator+(const CowStr& a, const std::string& b) { return strCat(a.str(), b); }
+inline std::string operator+(const std::string& a, const CowStr& b) { return strCat(a, b.str()); }
+inline std::string operator+(const CowStr& a, const char* b) { return strCat(a.str(), b); }
+inline std::string operator+(const char* a, const CowStr& b) { return strCat(a, b.str()); }
+inline std::string operator+(const CowStr& a, char b) { return strCat(a.str(), std::string_view(&b, 1)); }
 // std::string's own comparisons are templates, and template deduction never
 // considers a user-defined conversion — so `value.s == "Int"` needs real
 // candidates rather than the conversion operator above.
@@ -461,7 +605,7 @@ inline std::enable_if_t<std::is_same_v<P, const char*> || std::is_same_v<P, char
 operator!=(const P& a, const CowStr& b) { return a != b.str(); }
 template <std::size_t N>
 inline bool operator==(const CowStr& a, const char (&lit)[N]) {
-    const std::string& s = a.str();
+    const std::string_view s = a.str();
     return s.size() == N - 1 && std::memcmp(s.data(), lit, N - 1) == 0;
 }
 template <std::size_t N>
@@ -492,12 +636,12 @@ inline std::string cpToU8(uint32_t cp) {
 // …and back. Str ranges and the `...` string sequence both dispatch on the
 // CODEPOINT count (Rakudo tests `.codes` there, not bytes), so both live here
 // rather than as a lambda re-declared at each site.
-inline long long u8CpLen(const std::string& s) {
+inline long long u8CpLen(std::string_view s) {
     long long n = 0;
     for (unsigned char ch : s) if ((ch & 0xC0) != 0x80) n++;
     return n;
 }
-inline uint32_t u8FirstCp(const std::string& s) {
+inline uint32_t u8FirstCp(std::string_view s) {
     if (s.empty()) return 0;
     unsigned char c0 = s[0];
     if (c0 < 0x80) return c0;
@@ -1454,7 +1598,12 @@ struct Value {
     }
     static Value number(double x) { Value v; v.t = VT::Num; v.n = x; return v; }
     static Value complex(double re, double imag) { Value v; v.t = VT::Complex; v.n = re; v.imM() = imag; return v; }
-    static Value str(std::string x) { Value v; v.t = VT::Str; v.s = std::move(x); return v; }
+    static Value str(std::string&& x) { Value v; v.t = VT::Str; v.s = std::move(x); return v; }
+    static Value str(std::string_view x) { Value v; v.t = VT::Str; v.s = x; return v; }
+    static Value str(const std::string& x) { return str(std::string_view(x)); }
+    // (a copy of the text, not a share of its body: a Buf's body is written in place)
+    static Value str(const CowStr& x) { return str(x.str()); }
+    static Value str(const char* x) { return str(std::string_view(x)); }
     static Value array() { Value v; v.t = VT::Array; v.setArr(makePayload<ValueList>()); return v; }
     static Value array(ValueList items) { Value v; v.t = VT::Array; v.setArr(makePayload<ValueList>(std::move(items))); return v; }
     // a List/Seq: same storage as Array but gists with (..) instead of [..]
@@ -1473,14 +1622,18 @@ struct Value {
         return v;
     }
     static Value makeHash(); // defined below ValueHash.h's include — the payload type must be complete
-    static Value typeObj(std::string name) { Value v; v.t = VT::Type; v.s = std::move(name); return v; }
+    static Value typeObj(std::string&& name) { Value v; v.t = VT::Type; v.s = std::move(name); return v; }
+    static Value typeObj(std::string_view name) { Value v; v.t = VT::Type; v.s = name; return v; }
+    static Value typeObj(const std::string& name) { return typeObj(std::string_view(name)); }
+    static Value typeObj(const CowStr& name) { return typeObj(name.str()); }
+    static Value typeObj(const char* name) { return typeObj(std::string_view(name)); }
     static Value whatever() { Value v; v.t = VT::Whatever; return v; }
     static Value object(PRef<ObjectData> o) { Value v; v.t = VT::Object; v.setObj(std::move(o)); return v; }
-    static Value enumVal(const std::string& name, long long val) { Value v; v.t = VT::Int; v.i = val; v.enumName = name; return v; }
+    static Value enumVal(std::string_view name, long long val) { Value v; v.t = VT::Int; v.i = val; v.enumName = name; return v; }
     // …and the same member carrying its enum's TYPE name, which is what makes
     // `.WHAT.^name` answer `Color` rather than `Int` and what the MAIN
     // command-line reader tests a looked-up name with.
-    static Value enumVal(const std::string& name, long long val, const std::string& type) {
+    static Value enumVal(std::string_view name, long long val, const std::string& type) {
         Value v = enumVal(name, val); v.enumType = type; return v;
     }
     // Order::Less/Same/More — the result of cmp/<=>/leg/unicmp/coll. Tagged with
@@ -1571,15 +1724,24 @@ struct Value {
     }
 };
 #if defined(__APPLE__) && defined(__aarch64__) && defined(_LIBCPP_VERSION) && !defined(RAKUPP_IN_AUDIT) && !defined(RAKUPP_PTR_CENSUS) && !defined(RAKUPP_STR_CENSUS)
-// 80 bytes (VALUE32-PLAN design A, batches 1-4; it was 128). The size is a
-// measured decision, not a packing accident: while the batches ran, every
-// freed byte was held so that each one was judged on its own — 120 bytes cost
-// ~1% against 128, and shifted field offsets alone cost `fib` 7% — and the
-// drop to 80 then measured −2.6% mean on perf-guard and a third less memory
-// (a million-element array 258 → 164 MB). Moving it is a deliberate step:
+// 64 bytes (VALUE32-PLAN: design A's batches 1-4 took it from 128 to 80, and
+// design C's 16-byte CowStr to 64). The size is a measured decision, not a
+// packing accident: while the batches ran, every freed byte was held so that
+// each one was judged on its own — 120 bytes cost ~1% against 128, and
+// shifted field offsets alone cost `fib` 7%. Moving it is a deliberate step:
 // measure the kernels and the field order with it.
-static_assert(sizeof(Value) == 80, "sizeof(Value) moved: see VALUE32-PLAN design A before changing it");
+static_assert(sizeof(Value) == 64, "sizeof(Value) moved: see VALUE32-PLAN before changing it");
 #endif
+
+// A string literal's Value: built once in the node, then copied (StrLit::evalState).
+static_assert(sizeof(Value) <= sizeof(StrLit::evalStore) && alignof(Value) <= 8,
+              "a Value no longer fits StrLit::evalStore (Ast.h)");
+Value strLitBuild(const StrLit* s);
+inline Value strLitValue(const StrLit* s) {
+    if (s->evalState.load(std::memory_order_acquire) == 2)
+        return *std::launder(reinterpret_cast<const Value*>(s->evalStore));
+    return strLitBuild(s);
+}
 
 // A Value payload's two bodies (Ref.h's ValueBodyBase): one that OWNS its
 // Value — a Pair's value, a container cell — and one that ALIASES a Value
@@ -1802,8 +1964,8 @@ int valueCmp(const Value& a, const Value& b);   // for <=> / cmp
 // `<NULL>` for the null one. Hex, as Rakudo prints it and as every C debugger
 // does — this is an ADDRESS, and it is read to be compared with one.
 std::string ncPointerText(const std::string& kind, const std::string& of, long long addr);
-std::string strSucc(const std::string& s);             // Raku magic string increment
-std::string strPred(const std::string& s, bool& ok);  // magic decrement (ok=false on underflow)
+std::string strSucc(std::string_view s);             // Raku magic string increment
+std::string strPred(std::string_view s, bool& ok);  // magic decrement (ok=false on underflow)
 
 // A shaped array's ELEMENT SEQUENCE is its LEAVES, in row-major order. Rakudo
 // iterates `my @a[3;2]` as six values — `my @flat = @a` is six elements, and so
@@ -2338,7 +2500,7 @@ struct ClassInfo {
         for (auto& p : extraParents) if (p) if (auto* r = p->findRuleLitCands(n)) return r;
         return nullptr;
     }
-    const ClassAttr* findAttr(const std::string& n) const {
+    const ClassAttr* findAttr(std::string_view n) const {
         for (auto& a : attrs) if (a.name == n) return &a;
         if (parent) { if (const ClassAttr* r = parent->findAttr(n)) return r; }
         for (auto& p : extraParents) if (p) { if (const ClassAttr* r = p->findAttr(n)) return r; }

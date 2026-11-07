@@ -42,7 +42,7 @@ static bool hashTypeParam(const Value& inv, bool key, Value& out) {
     out = Value::typeObj(key ? vk.substr(c + 1) : vk.substr(0, c));
     return true;
 }
-bool isP5Pattern(const std::string& pat);   // InterpreterRegex.cpp: a `:P5`/`:Perl5` regex
+bool isP5Pattern(std::string_view pat);   // InterpreterRegex.cpp: a `:P5`/`:Perl5` regex
 std::string sameCase(const std::string& s, const std::string& pat);   // Builtins.cpp: `.samecase`, by grapheme
 std::shared_ptr<const Regex> compileRegexCached(const std::string& pat, const std::string& flags);   // InterpreterCore.cpp
 // A pattern for one `.contains` / `.comb` / `.split` call: the per-thread
@@ -661,7 +661,7 @@ static long long combLimit(Interpreter& I, const Value& v, bool strict, bool& no
         Value n = numifyStr(v.s.str());
         if (n.t == VT::Any || n.t == VT::Nil)
             throw RakuError{Value::typeObj("X::AdHoc"),
-                "Cannot convert string to number: " + v.s.str()};
+                "Cannot convert string to number: " + v.s};
         return combLimit(I, n, strict, none);
     } else return -1;
     long long n = (long long)v.toNum();   // `.Int` truncates toward zero
@@ -730,7 +730,7 @@ static bool takesImplicitTopic(const ValueList& call) {
 // whole prefix forwards and keeps its last hit, so `$s.rindex($c)` cost time in
 // proportion to the start position on every call, even when the answer sat at
 // the very end (TODO-MISCELLANEOUS, 2026-09-02).
-static size_t backFind(const std::string& hay, const std::string& ndl, size_t from) {
+static size_t backFind(std::string_view hay, std::string_view ndl, size_t from) {
     if (ndl.size() > hay.size()) return std::string::npos;
     size_t b = std::min(from, hay.size() - ndl.size());
     if (ndl.empty()) return b;
@@ -950,13 +950,13 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
     // `Int.abs` / `UInt.abs`: the method wants an INSTANCE (UInt's is Int's)
     if (m == "abs" && inv.t == VT::Type &&
         (inv.s == "Int" || inv.s == "UInt" || inv.s == "Num" || inv.s == "Rat" || inv.s == "Complex")) {
-        std::string want = inv.s == "UInt" ? std::string("Int") : inv.s.str();
+        std::string want = inv.s == "UInt" ? std::string("Int") : inv.s.copyText();
         throwTypedV("X::Parameter::InvalidConcreteness",
-            {{"expected", Value::str(want)}, {"got", Value::str(inv.s.str())},
+            {{"expected", Value::str(want)}, {"got", Value::str(inv.s)},
              {"routine", Value::str("abs")}, {"param", Value::str("")},
              {"should-be-concrete", Value::boolean(true)}, {"param-is-invocant", Value::boolean(true)}},
             "Invocant of method 'abs' must be an object instance of type '" + want +
-            "', not a type object of type '" + inv.s.str() + "'.  Did you forget a '.new'?");
+            "', not a type object of type '" + inv.s + "'.  Did you forget a '.new'?");
     }
     if (m == "abs") {
         // A Str numifies to its OWN type before the abs: "5000000000000000000"
@@ -1770,12 +1770,12 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
     if (m == "isa" && !args.empty()) {
         // Foo.isa(Foo) / $obj.isa("Any") / 5.isa(Int) — walk the class chain, then
         // built-in ancestry. Works on any value via its type name.
-        std::string want = args[0].t == VT::Type ? args[0].s : args[0].toStr();
+        std::string want = args[0].t == VT::Type ? args[0].s.copyText() : args[0].toStr();
         // a parameterized type object carries its parameter separately
         if (args[0].t == VT::Type && !args[0].ofType().empty() &&
             want.find('[') == std::string::npos)
             want += "[" + args[0].ofType() + "]";
-        std::string tn = inv.t == VT::Type ? inv.s : (inv.obj() && inv.obj()->cls ? inv.obj()->cls->name : inv.typeName());
+        std::string tn = inv.t == VT::Type ? inv.s.copyText() : (inv.obj() && inv.obj()->cls ? inv.obj()->cls->name : inv.typeName());
         if (inv.t == VT::Type && !inv.ofType().empty() && tn.find('[') == std::string::npos)
             tn += "[" + inv.ofType() + "]";
         // `.isa` takes exactly ONE type; a second positional is an arity error,
@@ -1894,7 +1894,7 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
         return inv;
     }
     if (m == "of" && inv.t == VT::Type) { // array[int].of / Array[Str].of
-        if (const char* vt = quantValueType(inv.s)) return Value::typeObj(vt); // Bag.of is UInt
+        if (const char* vt = quantValueType(inv.s.copyText())) return Value::typeObj(vt); // Bag.of is UInt
         // An unparameterized byte buffer's element is uint8, as in Rakudo —
         // NativeHelpers::Blob asks `blob.of` to size the pointer it hands to C.
         if (inv.ofType().empty()) {
@@ -1903,9 +1903,9 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
 
             // the sized spellings carry their element in the NAME: blob32.of is uint32
             if (inv.s.rfind("buf", 0) == 0 || inv.s.rfind("blob", 0) == 0) {
-                const std::string& n = inv.s;
+                const std::string_view n = inv.s;
                 size_t d = n.find_first_of("0123456789");
-                if (d != std::string::npos) return Value::typeObj("uint" + n.substr(d));
+                if (d != std::string::npos) return Value::typeObj(strCat("uint", n.substr(d)));
             }
         }
         // A type MIXIN on a parameterized container keeps the element type:
@@ -1962,7 +1962,7 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
             return Value::typeObj(inv.ofType().empty() ? "Mu" : inv.ofType());
         if (inv.t == VT::Type) {
             static const std::set<std::string> qh = {"Set", "SetHash", "Bag", "BagHash", "Mix", "MixHash"};
-            if (qh.count(inv.s)) // Mix[Str].keyof is Str; unparameterized quanthashes key on Mu
+            if (qh.count(inv.s.copyText())) // Mix[Str].keyof is Str; unparameterized quanthashes key on Mu
                 return Value::typeObj(inv.ofType().empty() ? "Mu" : inv.ofType());
             if (Value t; hashTypeParam(inv, /*key=*/true, t)) return t;   // `Hash[V, K].keyof` is K
             return Value::typeObj("Str(Any)"); // `Hash.keyof`
@@ -2091,7 +2091,7 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
             if (idx >= 0) {
                 long long j = m == "succ" ? std::min<long long>(idx + 1, (long long)ps.size() - 1)
                                           : std::max<long long>(idx - 1, 0);
-                if (Value* mv = tctx().cur->find(inv.enumType.str() + "::" + ps[(size_t)j].s.str())) return *mv;
+                if (Value* mv = tctx().cur->find(inv.enumType.str() + "::" + ps[(size_t)j].s)) return *mv;
             }
         }
     }
@@ -2232,7 +2232,7 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
         throw RakuError{Value::typeObj("X::Method::NotFound"),
                         "No such method '" + (const std::string&)m +
                         "' for invocant of type '" +
-                        (inv.t == VT::Type ? inv.s : std::string("Any")) + "'"};
+                        (inv.t == VT::Type ? inv.s.copyText() : std::string("Any")) + "'"};
     }
     // a PIPE has no path: `.IO` is the IO::Path type object, and `.Str` is ""
     if ((m == "IO" || m == "Str") && args.empty() && inv.t == VT::Hash &&
@@ -2247,7 +2247,7 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
         if (inv.t == VT::Any || inv.t == VT::Type)
             throw RakuError{Value::typeObj("X::Method::NotFound"),
                             "No such method 'IO' for invocant of type '" +
-                            (inv.t == VT::Type ? inv.s : std::string("Any")) + "'"};
+                            (inv.t == VT::Type ? inv.s.copyText() : std::string("Any")) + "'"};
         if (inv.t == VT::Nil) return Value::nil();
         // An IO::Path is its own .IO: rebuilding it here re-stamped :CWD with
         // the current $*CWD, so a relative path taken inside `indir` resolved
@@ -2264,7 +2264,7 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
         // (`my $*SPEC = IO::Spec::Win32; 'C:\x'.IO` is an IO::Path::Win32)
         if (Value* sp = findDynamicLenient("$*SPEC")) {
             if (sp->t == VT::Type && sp->s.str().rfind("IO::Spec::", 0) == 0) {
-                std::string fl = sp->s.str().substr(10);
+                std::string fl(sp->s.str().substr(10));
                 if (fl == "Win32" || fl == "Cygwin" || fl == "QNX") p.enumName = fl;
             }
             // …and a user subclass of IO::Spec is the path's SPEC as it stands
@@ -2763,7 +2763,7 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
                 Value r;
                 if (ioSpecMethod(*this, spec, "split", sa, r) && r.t == VT::Hash && r.hash()) {
                     if (m == "parts") { r.hashKind = "IO::Path::Parts"; return r; }
-                    auto it = r.hash()->find(m);
+                    auto it = r.hash()->find(m.s);
                     if (it != r.hash()->end()) return it->second;
                 }
             }
@@ -2783,7 +2783,7 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
                     return m == "is-absolute" ? r : Value::boolean(!r.truthy());
             }
             if (m == "raku") {
-                std::string q = inv.s; // escape for a double-quoted literal
+                std::string q = inv.s.copyText(); // escape for a double-quoted literal
                 std::string esc; for (char ch : q) { if (ch == '"' || ch == '\\') esc += '\\'; esc += ch; }
                 return Value::str("IO::Path::" + inv.enumName + ".new(\"" + esc + "\")");
             }
@@ -2809,12 +2809,12 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
             if (m == "relative") {
                 std::string base = args.empty() || args[0].t == VT::Pair ? dynVar("$*CWD").toStr() : args[0].toStr();
                 std::string abs = specCall("is-absolute", {Value::str(inv.s)}).truthy()
-                    ? inv.s.str() : specCall("rel2abs", {Value::str(inv.s)}).toStr();
+                    ? inv.s.copyText() : specCall("rel2abs", {Value::str(inv.s)}).toStr();
                 return Value::str(specCall("abs2rel", {Value::str(abs), Value::str(base)}).toStr());
             }
             // .add / .child: the flavor's own separator, exactly one of it
             if ((m == "add" || m == "child") && inv.enumName == "Win32" && args.size() == 1 && args[0].t != VT::Pair) {
-                std::string b = inv.s, part = args[0].toStr();
+                std::string b(inv.s), part = args[0].toStr();
                 std::string r;
                 if (b == ".") r = part;   // `.child` of the cwd is just the part (io-path-win.t)
                 else if (!b.empty() && (b.back() == '\\' || b.back() == '/')) r = b + part;
@@ -2852,7 +2852,7 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
                     for (auto& seg : toList(specCall("splitdir", {Value::str(inv.s)})))
                         if (seg.toStr() != ".." && !seg.toStr().empty()) { allUp = false; break; }
                     if ((dir == "." && base == "..") || allUp)
-                        return flav(join(inv.s, ".."));
+                        return flav(join(inv.s.copyText(), ".."));
                     return flav(join(dir, ""));
                 }
             }
@@ -3471,7 +3471,7 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
         if (kTakesRest.count(m) || positional) {
             std::string rest = liveProcReadAll(this, tok, isErr);
             Value& buf = (*inv.hash())["buffer"];
-            buf = Value::str((buf.t == VT::Str ? buf.s : std::string()) + rest);
+            buf = Value::str((buf.t == VT::Str ? buf.s.copyText() : std::string()) + rest);
             inv.hash()->erase("live-tok");
             (*inv.hash())["captured"] = Value::boolean(true);
             if (m == "close") {
@@ -4038,14 +4038,14 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
                 (*inv.hash())["bytes"] = Value::str(ss.str());
                 if (!inv.hash()->count("bpos")) (*inv.hash())["bpos"] = Value::integer(0);   // (a seek may have set it)
             }
-            const std::string& all = (*inv.hash())["bytes"].s;
+            const std::string_view all = (*inv.hash())["bytes"].s;
             long long pos = (*inv.hash())["bpos"].toInt();
             if (pos < 0) pos = 0;
             if (want < 0) want = 0;
             if (pos >= (long long)all.size()) return binBuf(std::string());   // past the end: nothing, and the position stays
             long long take = std::min(want, (long long)all.size() - pos);
             (*inv.hash())["bpos"] = Value::integer(pos + take);
-            return binBuf(all.substr((size_t)pos, (size_t)take));
+            return binBuf(std::string(all.substr((size_t)pos, (size_t)take)));
         }
         // .flush — put what has been written on disk NOW, without closing. A
         // handle holds bytes back up to its out-buffer, so without this a
@@ -4075,19 +4075,19 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
                 inv.hash()->erase("rfd");   // (plainReadFd's copy of it)
             }
             std::string mode = (*inv.hash())["mode"].toStr();
-            const std::string& buf = (*inv.hash())["buffer"].s;
+            const std::string_view buf = (*inv.hash())["buffer"].s;
             bool wrote = (*inv.hash())["wrote"].truthy();   // a .flush already put some on disk
             // rw/update flush only when something was WRITTEN — an untouched
             // rw handle on an existing file must not wipe it with a trunc
             bool write = (mode == "w" || mode == "a" || ((mode == "rw" || mode == "update") && !buf.empty()));
             if (wrote && buf.empty()) write = false;      // everything is already there
             if (write && (mode == "rw" || mode == "update")) {
-                std::string pending = buf;                // in place, at the write position
+                std::string pending(buf);                // in place, at the write position
                 (*inv.hash())["buffer"] = Value::str("");
                 fhAppendToFile(inv.hashS(), pending);
             }
             else if (write) {
-                std::string pending = buf;                // through the handle's descriptor
+                std::string pending(buf);                // through the handle's descriptor
                 (*inv.hash())["buffer"] = Value::str("");
                 fhAppendToFile(inv.hashS(), pending);
             }
@@ -4135,13 +4135,13 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
             // writes `$fh.spurt($text, :close)` and then slurps the path back.
             if (wantClose) {
                 std::string mode = (*inv.hash())["mode"].toStr();
-                const std::string& buf = (*inv.hash())["buffer"].s;
+                const std::string_view buf = (*inv.hash())["buffer"].s;
                 bool wrote = (*inv.hash())["wrote"].truthy();
                 bool write = (mode == "w" || mode == "a" ||
                               ((mode == "rw" || mode == "update") && !buf.empty()));
                 if (wrote && buf.empty()) write = false;
                 if (write && (mode == "rw" || mode == "update")) {
-                    std::string pending = buf;
+                    std::string pending(buf);
                     (*inv.hash())["buffer"] = Value::str("");
                     fhAppendToFile(inv.hashS(), pending);
                 }
@@ -4256,7 +4256,7 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
                     auto bit = inv.hash()->find("bytes");
                     auto bp = inv.hash()->find("bpos");
                     if (sBin && bit != inv.hash()->end() && bp != inv.hash()->end() && bp->second.toInt() > 0) {
-                        const std::string all = bit->second.s.str();
+                        const std::string all = bit->second.s.copyText();
                         size_t p = (size_t)std::min<long long>(bp->second.toInt(), (long long)all.size());
                         (*inv.hash())["bpos"] = Value::integer((long long)all.size());
                         if (sClose) methodCall(inv, "close", ValueList{});
@@ -4514,20 +4514,20 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
                     // whole content in "buffer" — there is no file to reopen
                     auto capIt = inv.hash()->find("captured");
                     if (capIt != inv.hash()->end() && capIt->second.truthy()) {
-                        const std::string& content = (*inv.hash())["buffer"].s;
+                        const std::string_view content = (*inv.hash())["buffer"].s;
                         size_t start = 0;
                         while (start <= content.size()) {
                             size_t nl = content.find('\n', start);
                             if (nl == std::string::npos) {
                                 if (start < content.size()) {
-                                    std::string l = content.substr(start);
+                                    std::string l(content.substr(start));
                                     handleNfc(inv, l);
                                     lines.arr()->push_back(Value::str(l));
                                     eols.arr()->push_back(Value::str(""));
                                 }
                                 break;
                             }
-                            std::string l = content.substr(start, nl - start);
+                            std::string l(content.substr(start, nl - start));
                             bool crlf = !l.empty() && l.back() == '\r';
                             if (crlf) l.pop_back();
                             handleNfc(inv, l);
@@ -4922,7 +4922,7 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
     // byte as an integer; a count is a repeat, `*` is "all that remain".
     if (m == "unpack" && inv.t == VT::Str && (inv.hashKind == "Buf" || inv.hashKind == "Blob")) {
         const std::string tmpl = args.empty() ? "" : args[0].toStr();
-        const std::string& d = inv.s;
+        const std::string_view d = inv.s;
         Value out = Value::array(); out.isList = true;
         size_t pos = 0;
         for (size_t k = 0; k < tmpl.size(); k++) {
@@ -5128,7 +5128,7 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
             iconv_t cd = iconv_open("UTF-8", ic->second);
             if (cd == (iconv_t)-1)
                 throw RakuError{Value::typeObj("X::AdHoc"), "Error decoding " + rname + " string: no converter"};
-            std::string src = inv.s.str();
+            std::string src = inv.s.copyText();
             char* ip = src.empty() ? nullptr : &src[0];
             size_t il = src.size();
             while (il > 0) {
@@ -5258,7 +5258,7 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
                     throw RakuError{Value::typeObj("X::AdHoc"),
                         "Will not decode invalid ASCII (code point (" + std::to_string((int)(signed char)ch) +
                         ") < 0 found)"};
-            return Value::str(inv.s.str());
+            return Value::str(inv.s);
         }
         if (latin1) { // each byte is a codepoint
             std::string out;
@@ -5351,8 +5351,8 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
         // (Cro::HTTP's query-value test).
         if (inv.s.size() >= 3 && (unsigned char)inv.s[0] == 0xEF && (unsigned char)inv.s[1] == 0xBB &&
             (unsigned char)inv.s[2] == 0xBF)
-            return Value::str(nfcNormalize(inv.s.str().substr(3)));
-        return Value::str(nfcNormalize(inv.s.str()));
+            return Value::str(nfcNormalize(std::string(inv.s.str().substr(3))));
+        return Value::str(nfcNormalize(inv.s.copyText()));
     }
     if (m == "chars" || m == "codes" || m == "NFC" || m == "NFD" || m == "NFKC" || m == "NFKD") {
         if (m == "chars") return Value::integer(inv.t == VT::Str ? cowGraphemeCount(inv.s)
@@ -5873,7 +5873,7 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
         // flattened, and its slice is a view too (APPEND-PLAN.md) — so
         // `$s = $s.substr(5) while $s.chars` stops copying the rest each time.
         const std::string* rawp = cowOk ? nullptr : &rawCopy;
-        auto rawText = [&]() -> const std::string& { if (!rawp) rawp = &inv.s.str(); return *rawp; };
+        auto rawText = [&]() -> std::string_view { return rawp ? std::string_view(*rawp) : inv.s.str(); };
         const bool plain = cowStr ? cowByteIsGraphemeIndex(inv.s)
                                   : byteIsGraphemeIndex(rawText());
         // Non-ASCII text: take the grapheme→byte table cached on the body
@@ -5892,8 +5892,8 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
         auto sliceText = [&](long long lo, long long hi) { // [lo, hi) in graphemes
             std::string r;
             if (hi <= lo) return r;
-            if (plain) return rawText().substr((size_t)lo, (size_t)(hi - lo));
-            if (gt) { size_t a = (*gt)[(size_t)lo]; return rawText().substr(a, (*gt)[(size_t)hi] - a); }
+            if (plain) return std::string(rawText().substr((size_t)lo, (size_t)(hi - lo)));
+            if (gt) { size_t a = (*gt)[(size_t)lo]; return std::string(rawText().substr(a, (*gt)[(size_t)hi] - a)); }
             size_t a = gm->cpAt((size_t)lo), b = gm->cpAt((size_t)hi);
             for (size_t k = a; k < b; k++) r += cpToUtf8(cps[k]);
             return r;
@@ -6064,8 +6064,8 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
         std::string hayCopy, ndlCopy;
         if (!cowHay) { hayCopy = inv.toStr(); if (imark) hayCopy = markFold(hayCopy); }
         if (!cowNdl) { ndlCopy = a0().toStr(); if (imark) ndlCopy = markFold(ndlCopy); }
-        const std::string& hay = cowHay ? inv.s.str() : hayCopy;
-        const std::string& ndl = cowNdl ? args[0].s.str() : ndlCopy;
+        const std::string_view hay = cowHay ? inv.s.str() : std::string_view(hayCopy);
+        const std::string_view ndl = cowNdl ? args[0].s.str() : std::string_view(ndlCopy);
         if (smart && sixE()) icase = strHasNoUpper(ndl);
         // Plain needle in a plain haystack, no folding: positions are byte
         // positions and std::string::find is the whole algorithm. Worth taking
@@ -6210,7 +6210,7 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
     if (m == "match" && inv.t == VT::Str && inv.hashKind.empty() && !args.empty() &&
         ((args[0].t == VT::Str && args[0].hashKind.empty()) ||
          (args[0].t == VT::Array && args[0].arr()))) {
-        const std::string& subj = inv.s;
+        const std::string subj = inv.s.copyText();
         std::string needle;
         if (args[0].t == VT::Array) {
             for (auto& e : *args[0].arr()) { if (!needle.empty()) needle += " "; needle += e.toStr(); }
@@ -6218,7 +6218,7 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
         bool anyAdverb = false, allKnown = true;
         for (auto& a : args) if (a.t == VT::Pair && a.namedArg) {
             anyAdverb = true;
-            if (!substSelectKnowsAdverb(a.s)) allKnown = false;
+            if (!substSelectKnowsAdverb(a.s.copyText())) allKnown = false;
         }
         if (anyAdverb && allKnown) { // the adverbs mean the same thing for a literal needle
             long nsub = 0; Value mres;
@@ -6241,7 +6241,7 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
         for (auto& a : args) {
             if (a.t == VT::Pair && a.namedArg) {
                 if ((a.s == "k" || a.s == "v" || a.s == "kv" || a.s == "p") && (!a.pairVal() || a.pairVal()->truthy()))
-                    sel.push_back(Value::str(a.s.str()));
+                    sel.push_back(Value::str(a.s));
             }
             else anyPos = true;
         }
@@ -6280,7 +6280,7 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
         // A `:P5` pattern interpolates its variables as Perl SOURCE, as `~~`
         // does: `.subst(rx:P5/$pat/, …)` quoted `b+` into a literal `b\+`
         // and replaced nothing that the same regex matched under `~~`.
-        std::string pat = args[rxIdx].s;
+        std::string pat = args[rxIdx].s.copyText();
         const bool p5pat = isP5Pattern(pat);
         auto interp = [&](const std::string& p) {
             return p5pat ? interpP5Pattern(p) : rxInterpArrays(interpRegexPattern(p));
@@ -6306,7 +6306,7 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
             bool anyAdverb = false, allKnown = true;
             for (auto& a : args) if (a.t == VT::Pair && a.namedArg) {
                 anyAdverb = true;
-                if (!substSelectKnowsAdverb(a.s)) allKnown = false;
+                if (!substSelectKnowsAdverb(a.s.copyText())) allKnown = false;
             }
             // `:ex` / `:exhaustive` — every match at every position, as m:ex//
             // gives it. `:x(N)` rides along in the pattern; `:nth` picks ONE
@@ -6314,10 +6314,10 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
             bool ex = false; long exX = -1, exNth = 0, exFrom = -1;
             for (auto& a : args) if (a.t == VT::Pair && a.namedArg) {
                 const Value pv = a.pairVal() ? *a.pairVal() : Value::boolean(true);
-                const std::string& k = a.s;
+                const std::string_view k = a.s;
                 long lead = 0; size_t d = 0;
                 while (d < k.size() && ascii::isdigit((unsigned char)k[d])) lead = lead * 10 + (k[d++] - '0');
-                const std::string suf = k.substr(d);
+                const std::string suf(k.substr(d));
                 if (k == "ex" || k == "exhaustive") ex = pv.truthy();
                 else if (k == "x") exX = pv.toInt();
                 else if (d && suf == "x") exX = lead;
@@ -6468,7 +6468,7 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
                     if (Value* s2 = tctx().cur ? tctx().cur->find("$/") : nullptr) *s2 = savedSlash;
                     auto addOne = [&](const Value& m) {
                         if (limit >= 0 && (long long)out.arr()->size() >= limit) return;
-                        if (m.t == VT::Match && m.truthy()) out.arr()->push_back(Value::str(m.s.str()));
+                        if (m.t == VT::Match && m.truthy()) out.arr()->push_back(Value::str(m.s));
                     };
                     if (ms.t == VT::Array && ms.arr()) for (auto& m : *ms.arr()) addOne(m);
                     else addOne(ms);
@@ -6643,7 +6643,7 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
         // codepoint range — and "\r\n" is ONE character (a single grapheme in
         // Raku), which is what lets `"\n" => "\r\n"` mean "newline becomes
         // CRLF" instead of "newline becomes CR"
-        auto expandTrans = [](const std::string& str) -> std::vector<std::string> {
+        auto expandTrans = [](std::string_view str) -> std::vector<std::string> {
             std::vector<std::string> out;
             auto cps = utf8cp(str);
             bool afterRange = false; // `A..H..Z` chains: the second range starts after H
@@ -6719,7 +6719,7 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
         };
         for (auto& a : args) collect(a);
         auto isRxPair = [](const Value* pa) { return pa->hasPairKey() && pa->nonStrKey().t == VT::Regex; };
-        auto sideList = [&](const Value* side, const std::string& strForm,
+        auto sideList = [&](const Value* side, std::string_view strForm,
                             std::vector<Value>& out) -> bool {
             // an Array side may hold Range ELEMENTS (['a'..'c']); flatten()
             // descends into them, and a bare Range side flattens to its chars.
@@ -6900,8 +6900,8 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
             args[0].t == VT::Str && args[0].enumName.empty() &&
             (args.size() == 1 || m == "contains") &&
             !(args.size() == 2 && (args[1].t != VT::Int || args[1].big() || args[1].i < 0))) {
-            const std::string& s = inv.s.str();
-            const std::string& n = args[0].s.str();
+            const std::string_view s = inv.s.str();
+            const std::string_view n = args[0].s.str();
             if (m == "starts-with")
                 return Value::boolean(s.size() >= n.size() && s.compare(0, n.size(), n) == 0 &&
                                       atGraphemeBoundary(s, n.size()));
@@ -6989,8 +6989,8 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
         // the whole string on every call
         if (!icase && !imark && inv.t == VT::Str && inv.enumName.empty() && pargs[0].t == VT::Str &&
             (pargs.size() < 2 || pargs[1].t == VT::Int || pargs[1].t == VT::Code)) {
-            const std::string& hay = inv.s.str();
-            const std::string& ndl = pargs[0].s.str();
+            const std::string_view hay = inv.s.str();
+            const std::string_view ndl = pargs[0].s.str();
             const bool bytewise = cowByteIsGraphemeIndex(inv.s);
             const std::vector<uint32_t>* gi = bytewise ? nullptr : cowGraphemeIndex(inv.s);
             if (bytewise || gi) {
@@ -7054,7 +7054,7 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
         // must resolve $d the same way `~~ /$d+/` does. Compiling the raw source
         // instead matched a literal "$d" and split nothing.
         auto add = [&](const Value& d) {
-            if (d.t == VT::Regex) delims.push_back({true, interpRegexPattern(d.s)});
+            if (d.t == VT::Regex) delims.push_back({true, interpRegexPattern(d.s.copyText())});
             else delims.push_back({false, d.toStr()});
         };
         if (d0.t == VT::Array) { for (auto& e : *d0.arr()) add(e); } else add(d0);

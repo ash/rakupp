@@ -135,7 +135,7 @@ Value divZeroResult(const Value& lhs, const std::string& op) {
     // a TYPE OBJECT refused is named as one: `my \v = Int; v = 1` is "Cannot
     // modify an immutable 'Int' type object" in Rakudo, not "Int ((Int))"
     if (v.t == VT::Type || v.t == VT::Any) {
-        const std::string tn = v.t == VT::Type ? v.s.str() : v.typeName();
+        const std::string tn = v.t == VT::Type ? v.s.copyText() : v.typeName();
         const std::string msg = "Cannot modify an immutable '" + tn + "' type object";
         if (g_revInterp)
             g_revInterp->throwTypedV("X::Assignment::RO", {{"value", v}, {"typename", Value::str(tn)}}, msg);
@@ -171,7 +171,7 @@ Value rtUserInfix(Value (*fn)(ValueList), const char* op, const Value& l, const 
         // Only "no candidate took these operands" falls back. An error the
         // user's operator RAISED is its answer and must keep being raised.
         catch (RakuError& e) {
-            std::string en = e.payload.t == VT::Type ? e.payload.s : e.payload.typeName();
+            std::string en = e.payload.t == VT::Type ? e.payload.s.copyText() : e.payload.typeName();
             if (en != "X::Multi::NoMatch" && en != "X::Multi::Ambiguous") throw;
         }
     }
@@ -243,7 +243,7 @@ Value rtValueInfix(Interpreter& I, const Value& f, const char* op, const Value& 
             if (l.t == VT::Object || r.t == VT::Object || !l.enumType.empty() || !r.enumType.empty()) {
                 try { return I.callCallable(f, ValueList{l, r}); }
                 catch (RakuError& e) {
-                    std::string en = e.payload.t == VT::Type ? e.payload.s : e.payload.typeName();
+                    std::string en = e.payload.t == VT::Type ? e.payload.s.copyText() : e.payload.typeName();
                     if (en != "X::Multi::NoMatch" && en != "X::Multi::Ambiguous") throw;
                 }
             }
@@ -306,10 +306,10 @@ bool exprNamesContainer(const Expr* e) {
 // Str key simply does not find an Int one, so `%h<1>:exists` is False.
 // The payload index for one key of an object hash. See hashSubKey below.
 std::string objHashIndex(const Value& k) {
-    if (k.t == VT::Type) return "(" + k.s.str() + ")";
+    if (k.t == VT::Type) return "(" + k.s + ")";
     if (k.t == VT::Array && !k.enumType.empty() && k.enumName.empty())
         return "(" + std::string(k.enumType.str()) + ")";
-    if (k.t == VT::Str && k.hashKind.empty() && k.enumName.empty()) return k.s;
+    if (k.t == VT::Str && k.hashKind.empty() && k.enumName.empty()) return k.s.copyText();
     return whichOf(k);
 }
 
@@ -557,8 +557,8 @@ bool valueEqv(const Value& a, const Value& b) {
             if (a.typeName() == "Capture") {
                 std::vector<const Value*> ap, bp;
                 std::map<std::string, const Value*> an, bn;
-                for (auto& e : *a.arr()) { if (e.t == VT::Pair) an[e.s] = &e; else ap.push_back(&e); }
-                for (auto& e : *b.arr()) { if (e.t == VT::Pair) bn[e.s] = &e; else bp.push_back(&e); }
+                for (auto& e : *a.arr()) { if (e.t == VT::Pair) an[e.s.copyText()] = &e; else ap.push_back(&e); }
+                for (auto& e : *b.arr()) { if (e.t == VT::Pair) bn[e.s.copyText()] = &e; else bp.push_back(&e); }
                 if (ap.size() != bp.size() || an.size() != bn.size()) return false;
                 for (size_t i = 0; i < ap.size(); i++) if (!valueEqv(*ap[i], *bp[i])) return false;
                 for (auto& kv : an) {
@@ -657,11 +657,11 @@ bool valueEqv(const Value& a, const Value& b) {
 // Numify a string with Raku-correct result type (Int vs Num); undefined if non-numeric.
 // External linkage (declared in Interpreter.h) so Builtins.cpp's .Int/.Numeric can
 // reuse the BigInt-aware parse instead of the lossy long-long toInt().
-Value numifyStr(const std::string& in) {
+Value numifyStr(std::string_view in) {
     size_t a = in.find_first_not_of(" \t\n\r\f\v");
     if (a == std::string::npos) return Value::integer(0); // empty/whitespace -> 0
     size_t b = in.find_last_not_of(" \t\n\r\f\v");
-    std::string s = in.substr(a, b - a + 1);
+    std::string s(in.substr(a, b - a + 1));
     // Unicode MINUS SIGN (U+2212) is accepted as an ASCII '-' in numeric strings
     for (size_t k = 0; (k = s.find("\xE2\x88\x92", k)) != std::string::npos; )
         s.replace(k, 3, "-");
@@ -982,11 +982,11 @@ static void strNumericParts(const std::string& in, std::string& msg, std::string
 // Numeric coercion of a string: a non-numeric one yields a FAILURE carrying
 // X::Str::Numeric — an unthrown exception, exactly like Rakudo. `+"a"` is quiet
 // (`.defined` is False), but USING the value (say/arithmetic) throws.
-Value numifyStrFailure(const std::string& in) {
+Value numifyStrFailure(std::string_view in) {
     Value v = numifyStr(in);
     if (v.t != VT::Any && v.t != VT::Nil) return v; // Complex counts: numifyStr's failure signal is undefined
     std::string msg, reason, ind; long long pos = 0;
-    strNumericParts(in, msg, reason, ind, pos);
+    strNumericParts(std::string(in), msg, reason, ind, pos);
     Value f = rakuppNewFailure();
     if (g_revInterp)
         (*f.hash())["exception"] = g_revInterp->makeTypedEx("X::Str::Numeric",
@@ -998,11 +998,11 @@ Value numifyStrFailure(const std::string& in) {
 }
 // …and the throwing form, for contexts that must produce a number NOW
 // (an arithmetic operand: `"a" + 1` dies).
-Value numifyStrOrThrow(const std::string& in) {
+Value numifyStrOrThrow(std::string_view in) {
     Value v = numifyStr(in);
     if (v.t != VT::Any && v.t != VT::Nil) return v;
     std::string msg, reason, ind; long long pos = 0;
-    strNumericParts(in, msg, reason, ind, pos);
+    strNumericParts(std::string(in), msg, reason, ind, pos);
     if (g_revInterp)
         g_revInterp->throwTypedV("X::Str::Numeric",
             {{"source", Value::str(in)}, {"pos", Value::integer(pos)}, {"reason", Value::str(reason)},
@@ -1167,7 +1167,7 @@ Value rtTypedDefault(const char* type, char sigil) {
     return typedDefault(type ? type : "", sigil);
 }
 
-bool isKnownTypeName(const std::string& n);   // below
+bool isKnownTypeName(std::string_view n);   // below
 bool capturedType(Interpreter& I, Env* scope, const std::string& name, Value& out) {
     if (!scope || name.empty() || !typeNameLead(name[0])) return false;
     if (I.classes_.count(name) || I.subsets_.count(name) || isKnownTypeName(name)) return false;
@@ -1175,7 +1175,7 @@ bool capturedType(Interpreter& I, Env* scope, const std::string& name, Value& ou
     if (!tv || tv->t != VT::Type || tv->s.empty() || tv->s == name) return false;
     // a `constant` naming a NATIVE type (`constant MyTime = int64`) keeps the
     // native-container path it always had
-    if (isNativeTypeName(tv->s)) return false;
+    if (isNativeTypeName(tv->s.copyText())) return false;
     // the TYPE, not the binding: a constant's value carries its readonly flag
     out = Value::typeObj(tv->s);
     out.i = tv->i;
@@ -1451,7 +1451,7 @@ void nativeUndefCheck(const Value& rv, const Expr* target, const Value* slot) {
     }
     if (!kind && slot && slot->natBits) kind = slot->natFloat ? "num" : "int";
     if (!kind) return;
-    const std::string what = rv.t == VT::Nil ? std::string("Nil") : rv.t == VT::Any ? std::string("Any") : rv.s.str();
+    const std::string what = rv.t == VT::Nil ? std::string("Nil") : rv.t == VT::Any ? std::string("Any") : rv.s.copyText();
     throw RakuError{Value::typeObj("X::AdHoc"),
         "Cannot unbox a type object (" + what + ") to " +
         (std::string(kind) == "int" ? "int." : std::string("a ") + kind + ".")};
@@ -2119,7 +2119,7 @@ Value valAllomorph(const Value& v) {
         // word list word's letters by asking val). An imaginary NaN takes no
         // sign and no real part: `NaN\i` is one, `1+NaN\i` and `-NaN\i` are Str.
         case VT::Complex: {
-            const std::string w = v.s.str();
+            const std::string w = v.s.copyText();
             auto ends = [&](const std::string& t) { return w.size() >= t.size() && w.compare(w.size() - t.size(), t.size(), t) == 0; };
             if (ends("NaN\\i") ? w != "NaN\\i"
                                : w.find_first_of("0123456789") == std::string::npos && !ends("Inf\\i")) return v;
@@ -2282,7 +2282,7 @@ ValueList rtMainArgs(const std::vector<std::string>& argv, bool namedAnywhere, I
         Value to = scope->mainOption("coerce-allomorphs-to");
         if (to.t == VT::Type && !to.s.empty())
             for (auto& v : pos)
-                if (v.isAllomorph()) v = scope->methodCall(v, to.s.str(), ValueList{});
+                if (v.isAllomorph()) v = scope->methodCall(v, to.s.copyText(), ValueList{});
     }
     // positionals first, then the named args — the same capture shape the
     // RUN-MAIN builtin produces; named binding is by key, not position
@@ -2397,7 +2397,7 @@ Value Interpreter::seqOp(Value l, Value r, bool exclusive) {
             });
         }
         if (r.t == VT::Type && r.s != "Whatever" && r.s != "HyperWhatever") {
-            const std::string tn = r.s.str();
+            const std::string tn = r.s.copyText();
             Value tc = Value::closure([this, tn](ValueList& a) -> Value {
                 return Value::boolean(!a.empty() && typeOrSubsetMatches(a[0], tn));
             });
@@ -2446,7 +2446,7 @@ Value Interpreter::seqOp(Value l, Value r, bool exclusive) {
         }
         // String sequence: "a"..."e" climbs via strSucc, "E"..."A" descends via strPred.
         if (!hasGen && !infinite && r.t == VT::Str && seed.back().t == VT::Str) {
-            std::string end = r.s, cur = seed.back().s;
+            std::string end(r.s), cur(seed.back().s);
             bool desc = cur > end;
             if (cur == end) { if (exclusive) out.arr()->pop_back(); return out; }
             // Single-CODEPOINT endpoints step by codepoint, not by succ — the same
@@ -3036,7 +3036,7 @@ Value strRangeList(const std::string& min, const std::string& to, bool exFrom, b
 static ValueList strRangeElemsImpl(const Value& r) {
     const RangeEnds* re = rangeEnds(r);
     if (!re) return ValueList{};
-    Value l = strRangeList(re->from.s.str(), re->to.s.str(), r.rExFrom(), r.rExTo());
+    Value l = strRangeList(re->from.s.copyText(), re->to.s.copyText(), r.rExFrom(), r.rExTo());
     return l.arr() ? *l.arr() : ValueList{};
 }
 static const bool g_strRangeElemsInstalled = ((g_strRangeElems = &strRangeElemsImpl), true);
@@ -3184,7 +3184,7 @@ Value rtSliceFrom(const Value& base, long long from, bool exFrom) {
         if (!base.isList && isNativeScalarName(base.ofType())) { out.isList = false; out.ofTypeM() = base.ofType(); }
     }
     else if (base.t == VT::Str) { // "abc"[1..*] is rare but harmless to support: chars
-        std::string ss = base.s;
+        std::string ss = base.s.copyText();
         if (from + (exFrom ? 1 : 0) < (long long)ss.size()) return Value::str(ss.substr(from + (exFrom ? 1 : 0)));
     }
     return out;
@@ -3526,7 +3526,7 @@ Value& rtIndexRefW(Value& base, const Value& key) {
 }
 
 std::string rtInterpStr(const Value& v) {
-    if (v.t == VT::Str && v.hashKind.empty() && v.enumName.empty()) return v.s;
+    if (v.t == VT::Str && v.hashKind.empty() && v.enumName.empty()) return v.s.copyText();
     if ((v.t == VT::Int && !v.big()) && v.hashKind.empty() && v.enumName.empty()) return v.toStr();
     if (Interpreter* I = Interpreter::liveTarget()) return I->strOf(v);
     return v.toStr();
@@ -4295,9 +4295,9 @@ Value coerceHash(const Value& v, bool store, bool objKeyed) {
     // a type object (and an enum's bare type) by "(Name)", the same convention
     // the subscript paths use, instead of the empty stringification that
     // collapsed Getopt::Long's whole converter table onto one key.
-    auto keyStr = [&](const Value& k, const std::string& fallback) -> std::string {
+    auto keyStr = [&](const Value& k, std::string_view fallback) -> std::string {
         if (objKeyed) return objHashIndex(k);   // by identity (sheet HM-04)
-        return fallback;   // the pair's own key string (empty stays empty)
+        return std::string(fallback);   // the pair's own key string (empty stays empty)
     };
     for (size_t i = 0; i < items.size(); i++) {
         if (items[i].t == VT::Pair) {
@@ -4442,12 +4442,12 @@ thread_local int Interpreter::threadDepth_ = 0;
 
 // the live interpreter's class registry, for free-function smartmatch on user
 // type objects (applyArith has no Interpreter&); the newest instance wins
-std::unordered_map<std::string, std::shared_ptr<ClassInfo>>* g_matchClasses = nullptr;
+StrMap<std::shared_ptr<ClassInfo>>* g_matchClasses = nullptr;
 // …and the alias table beside it, for the identity operators (free functions)
-const std::unordered_map<std::string, std::string>* g_classAliases = nullptr;
+const StrMap<std::string>* g_classAliases = nullptr;
 // subset check for free-function ~~ (`5 ~~ Five`): returns true and sets `out`
 // when the RHS names a live subset; the newest interpreter instance wins
-std::function<bool(const std::string&, const Value&, bool&)> g_subsetCheck;
+std::function<bool(std::string_view, const Value&, bool&)> g_subsetCheck;
 // A Proxy is a CONTAINER: anything that renders a value has to read it first.
 // rakuRepr is a free function with no interpreter to call FETCH with, so the
 // interpreter publishes one here — same shape as g_subsetCheck above.
@@ -4642,9 +4642,9 @@ void Interpreter::adoptProcessStatics() {
         return true;
     };
     g_lexInfixLookup = [this](const std::string& op) -> Value* { return lexInfixLookup(op); };
-    g_subsetCheck = [this](const std::string& name, const Value& v, bool& out) {
+    g_subsetCheck = [this](std::string_view name, const Value& v, bool& out) {
         if (!subsets_.count(name)) return false;
-        out = subsetMatches(name, v);
+        out = subsetMatches(std::string(name), v);
         return true;
     };
 }
@@ -7480,7 +7480,7 @@ void Interpreter::flushOpenWriteHandles() {
         std::string mode = (*h)["mode"].toStr();
         // A COPY: the lookups below can insert into the map, and an insert can
         // rehash it out from under a reference to a value in it.
-        std::string buf = (*h)["buffer"].s;
+        std::string buf = (*h)["buffer"].s.copyText();
         if ((mode == "rw" || mode == "update") && buf.empty()) continue; // nothing written — leave the file alone
         // A handle that was .flush-ed already has part of its output on disk:
         // append the rest, and write nothing at all when there is no rest.

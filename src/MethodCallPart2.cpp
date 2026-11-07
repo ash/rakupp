@@ -704,12 +704,14 @@ static Value nilResetForAttr(const Value& v, const ClassAttr& a) {
 // Without this the typed container refused EVERY value put into it, in
 // R[Int] and R[Str] alike, and `.of` answered the literal "TYPE"
 // (Concurrent::PriorityQueue is built on exactly that shape).
-static const std::string& roleTypeIn(ClassInfo* ci, const std::string& t) {
+// A resolved name is copied into `held`, which the caller keeps alive while it
+// uses the result: a CowStr lends no std::string.
+static const std::string& roleTypeIn(ClassInfo* ci, const std::string& t, std::string& held) {
     if (t.empty()) return t;
     for (ClassInfo* c = ci; c; c = c->parent.get())
         for (auto& b : c->roleParamBindings)
             if (b.first == t && b.second.t == VT::Type && !b.second.s.empty())
-                return b.second.s;
+                return held = b.second.s.copyText();
     return t;
 }
 
@@ -791,7 +793,7 @@ static void checkAttrStore(Interpreter& I, Value& v, const ClassAttr& at,
         // program answers to the name globally (S11-modules/export.t).
         if (!ok && scope)
             if (Value* tv = scope->find(ty); tv && tv->t == VT::Type && tv->s.str() != ty)
-                ok = conforms(tv->s.str());
+                ok = conforms(tv->s.copyText());
         if (ok && at.defConstraint) ok = (at.defConstraint == 1) == defined(v);
     }
     if (!ok)
@@ -810,7 +812,8 @@ static Value typedAttrContainer(Interpreter& I, Value v, const ClassAttr& at, Cl
     if ((at.sigil != '@' && at.sigil != '%') || at.type.empty()) return v;
     if (v.t != VT::Array && v.t != VT::Hash) return v;
     if (v.t == VT::Hash && !v.hashKind.empty()) return v; // a Set/Bag keys on ofType
-    if (v.ofType().empty()) v.ofTypeM() = roleTypeIn(ci, at.type);
+    std::string held;
+    if (v.ofType().empty()) v.ofTypeM() = roleTypeIn(ci, at.type, held);
     std::string want = I.elemTypeOf(v);
     // `has P() %.props` COERCES each element it is given (P's COERCE, or
     // the built-in conversion) rather than refusing what is not one yet
@@ -848,7 +851,8 @@ void Interpreter::checkAttrParamStore(Value& v, const Value& self, const std::st
     const ClassAttr* at = ci->findAttr(bare);
     if (!at) return;
     if (at->sigil == '@' || at->sigil == '%') { v = typedAttrContainer(*this, std::move(v), *at, ci); return; }
-    checkAttrStore(*this, v, *at, roleTypeIn(ci, at->type), wasNil, ci->declEnv.get());
+    std::string held;
+    checkAttrStore(*this, v, *at, roleTypeIn(ci, at->type, held), wasNil, ci->declEnv.get());
 }
 
 // Park a tap on a Proc::Async stream Supply ({proc, stream, split?, bin?}).
@@ -1064,7 +1068,7 @@ void Interpreter::runAttrDefaults(const PRef<ObjectData>& od,
     // end of this function does not repeat the findAttr, and a `bound` flag so
     // it does not repeat the BINDING either.
     struct ProvidedArg {
-        const std::string* name;
+        std::string_view name;   // (the named argument's own key)
         const Value* val;
         const ClassAttr* at;
         bool bound = false;
@@ -1116,16 +1120,17 @@ void Interpreter::runAttrDefaults(const PRef<ObjectData>& od,
                 if (pat && !buildable(*pat)) pat = nullptr;
             }
             if (pat) {
-                const std::string& k = arg.s;
+                const std::string_view k = arg.s;
                 bool seen = false;
                 for (auto& pv : providedArgs)
-                    if (*pv.name == k) { pv.val = arg.pairVal(); pv.at = pat; seen = true; break; }
-                if (!seen) providedArgs.push_back(ProvidedArg{&k, arg.pairVal(), pat, false});
+                    if (pv.name == k) { pv.val = arg.pairVal(); pv.at = pat; seen = true; break; }
+                if (!seen) providedArgs.push_back(ProvidedArg{k, arg.pairVal(), pat, false});
             }
         }
     // a role's type-capture parameter, resolved per object (see roleTypeIn)
+    std::string roleHeld;
     auto resolveRoleType = [&](const std::string& t) -> const std::string& {
-        return roleTypeIn(ci.get(), t);
+        return roleTypeIn(ci.get(), t, roleHeld);
     };
     // What a NAMED argument puts in its attribute: a Nil resets it to the
     // attribute's `is default` when it has one, and anything else is checked
@@ -1186,7 +1191,7 @@ void Interpreter::runAttrDefaults(const PRef<ObjectData>& od,
             const std::string& slot = attrStoreKey(chain, lvlIx, at, slotBuf);
             ProvidedArg* provided = nullptr;
             for (auto& pv : providedArgs)
-                if (*pv.name == at.name) { provided = &pv; break; }
+                if (pv.name == at.name) { provided = &pv; break; }
             if (provided && (!buildable(at) || levelOwnsBuild(lvlIx))) provided = nullptr;
             if (provided) {
                 // (an `is default` is evaluated in this level's scope, as a default is)
@@ -1338,7 +1343,7 @@ void Interpreter::runAttrDefaults(const PRef<ObjectData>& od,
     // through a SECOND parent, since the walk follows `parent` alone.
     for (auto& pv : providedArgs)
         if (!pv.bound)
-            od->attrs[*pv.name] = typedContainer(
+            od->attrs[pv.name] = typedContainer(
                 coerceToSigil(namedStore(pv.val, *pv.at, ci->declEnv.get()), pv.at->sigil), *pv.at);
     if (RAKUPP_UNLIKELY(g_attrLayoutCheck != nullptr)) attrLayoutCheck(*od, ci.get(), chain, attrsWereEmpty);
 }
@@ -1508,8 +1513,9 @@ Value* Interpreter::attrAssignLane(const VarExpr* tv, Expr* value) {
     // construction's behalf) does not: a type object that is not of the
     // attribute's type (`has Cool $.c; $!c = Any`), and a Failure, named as
     // the value it is
+    std::string held;
     if (!wasNil && !ty.empty() && ty != "Mu") {
-        const std::string& rt = roleTypeIn(ci, ty);
+        const std::string& rt = roleTypeIn(ci, ty, held);
         const bool failure = v.t == VT::Hash && v.hashKind == "Failure";
         if (failure || ((v.t == VT::Type || v.t == VT::Any) && rt != "Any" && !typeOrSubsetMatches(v, rt))) {
             const std::string got = failure ? std::string("Failure") : v.typeName();
@@ -1520,7 +1526,7 @@ Value* Interpreter::attrAssignLane(const VarExpr* tv, Expr* value) {
                         " but got " + got + " (" + got + ")");
         }
     }
-    checkAttrStore(*this, v, *at, roleTypeIn(ci, ty), wasNil, ci->declEnv.get());
+    checkAttrStore(*this, v, *at, roleTypeIn(ci, ty, held), wasNil, ci->declEnv.get());
     if (v.natBits) { v.natBits = 0; v.natSigned = v.natFloat = false; }   // a boxed slot takes the VALUE
     // a `$` container itemizes what it holds
     if ((v.t == VT::Array || v.t == VT::Hash) && !v.itemized) v.itemized = true;
@@ -1878,7 +1884,7 @@ static Value coolOnlyOnPlainClass(Interpreter& I, const Value& inv, const MName&
 // as in Rakudo, so it answers nullopt.
 std::optional<Value> Interpreter::nominalizeType(const Value& t) {
     if (t.t != VT::Type) return std::nullopt;
-    std::string n = t.s;
+    std::string n = t.s.copyText();
     bool wrapped = t.i != 0;
     size_t o = n.find('(');
     if (o != std::string::npos && o > 0 && n.back() == ')') { n.erase(o); wrapped = true; }
@@ -2389,7 +2395,7 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
             auto strCall = [&](Value inv2, const char* meth, ValueList a2) {
                 return methodCall(inv2, meth, a2);
             };
-            auto charsOf = [&](const std::string& t) {
+            auto charsOf = [&](std::string_view t) {
                 Value sv = Value::str(t); ValueList na;
                 return strCall(sv, "chars", na).toInt();
             };
@@ -3279,8 +3285,8 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
     }
     if (inv.t == VT::Hash && inv.hashKind == "Tap") {
         // a listening socket's tap knows where it listens (Promises, as in Rakudo)
-        if ((m == "socket-host" || m == "socket-port") && inv.hash() && inv.hash()->count(m))
-            return (*inv.hash())[m];
+        if ((m == "socket-host" || m == "socket-port") && inv.hash() && inv.hash()->count(m.s))
+            return (*inv.hash())[m.s];
         // .close removes the tap from its source: mark it closed so emit skips it;
         // a wired tap (on-demand supply / async socket) also tears down its
         // inner taps, CLOSE phasers, and I/O workers via the TapHandle.
@@ -3325,11 +3331,11 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
             std::vector<const Value*> order;
             if (rit != h.end() && rit->second.t == VT::Array && rit->second.arr()) {
                 auto& lst = *rit->second.arr();
-                auto composedByOther = [&](const std::string& nm) {
+                auto composedByOther = [&](std::string_view nm) {
                     for (auto& other : lst) {
                         if (other.s == nm) continue;
                         auto oc = classes_.find(other.s);
-                        if (oc != classes_.end() && oc->second && oc->second->doneRoles.count(nm)) return true;
+                        if (oc != classes_.end() && oc->second && oc->second->doneRoles.count(std::string(nm))) return true;
                     }
                     return false;
                 };
@@ -3345,7 +3351,7 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
                     // mixin seeded in this very map, not by its generated
                     // accessor: that accessor would read `%!args` off a `self`
                     // that is this Hash, and find nothing.
-                    if (args.empty() && cit->second->findAttr(m) && h.count(m)) return h[m];
+                    if (args.empty() && cit->second->findAttr(m.s) && h.count(m.s)) return h[m.s];
                     if (Value* rm = cit->second->findMethod(m))
                         return invokeMethod(*rm, inv, args, rwArgs);
                     // …and a `handles` on one of the role's ATTRIBUTES, whose value
@@ -3368,7 +3374,7 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
         if (m == "gist" && args.empty()) {
             std::string nm = h.count("name") ? h["name"].toStr() : std::string();
             Value t = h.count("type") ? h["type"] : Value::typeObj("Mu");
-            return Value::str((t.t == VT::Type ? t.s.str() : t.typeName()) + " " + nm);
+            return Value::str((t.t == VT::Type ? t.s.copyText() : t.typeName()) + " " + nm);
         }
         if (m == "Str" && args.empty()) return Value::str(h.count("name") ? h["name"].toStr() : std::string());
         if (m == "type" || m == "of" || m == "returns") return h.count("type") ? h["type"] : Value::typeObj("Mu");
@@ -3566,7 +3572,7 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
         // into this same map): `$a.where` after META6's `is customary`. Last,
         // so it can never shadow a real Attribute method.
         {
-            auto ai = h.find(m);
+            auto ai = h.find(m.s);
             if (ai != h.end()) return ai->second;
         }
     }
@@ -3718,7 +3724,7 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
         if (m == "Str" || m == "gist" || m == "raku") {
             // stringify to the concatenated text of the contents (paragraphs/children)
             std::function<std::string(const Value&)> flat = [&](const Value& v) -> std::string {
-                if (v.t == VT::Str) return v.s;
+                if (v.t == VT::Str) return v.s.copyText();
                 if (v.t == VT::Hash && v.hashKind == "Pod" && v.hash()->count("contents")) {
                     std::string o; for (auto& c : *(*v.hash())["contents"].arr()) o += flat(c); return o;
                 }
@@ -4419,7 +4425,7 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
                 } else in.push_back((uint32_t)a.toInt());
             }
             if (inv.s != "Uni") in = uniNormalize(in, inv.s == "NFD" ? 0 : inv.s == "NFC" ? 1 : inv.s == "NFKD" ? 2 : 3);
-            Value out = Value::array(); out.s = (inv.s == "Uni" ? std::string("Uni") : inv.s.str()); for (uint32_t c : in) out.arr()->push_back(Value::integer((long long)c));
+            Value out = Value::array(); out.s = (inv.s == "Uni" ? std::string("Uni") : inv.s.copyText()); for (uint32_t c : in) out.arr()->push_back(Value::integer((long long)c));
             return out;
         }
     }
@@ -4514,7 +4520,7 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
     // them for `.Range.int-bounds` and could not get past line 24 without this;
     // `Bool.Range` is Int's and `Rational.Range` is Rat's (RG-32).
     if (inv.t == VT::Type && m == "Range") {
-        static const std::map<std::string, std::pair<const char*, const char*>> kNativeSpan = {
+        static const std::map<std::string, std::pair<const char*, const char*>, std::less<>> kNativeSpan = {
             {"int8",   {"-128", "127"}},
             {"uint8",  {"0", "255"}},
             {"byte",   {"0", "255"}},
@@ -4758,7 +4764,7 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
             for (auto& a : args)
                 if (!(a.t == VT::Pair && a.namedArg) && (a.t == VT::Type || a.t == VT::Any || a.t == VT::Nil))
                     throw RakuError{Value::typeObj("X::Multi::NoMatch"),
-                        "Cannot resolve caller new(" + inv.s.str() + ", " + a.typeName() + ", …); none of these signatures matches"};
+                        "Cannot resolve caller new(" + inv.s + ", " + a.typeName() + ", …); none of these signatures matches"};
         // a `:formatter(&code)` is stored and applied by .Str (Rakudo's stringifier hook)
         Value formatter; bool haveFmt = false;
         // A formatter need not be a bare Code: `does Callable` + `method CALL-ME`
@@ -4910,7 +4916,7 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
                     // (#208): the reading below is sscanf's, which took "" and
                     // "2020-01-01 " and "2020-01-01T10:00" for dates. A string
                     // among several positionals with no dash is a y/m/d field.
-                    if (!isoTemporalShape(a.s, inv.s == "DateTime")) {
+                    if (!isoTemporalShape(a.s.copyText(), inv.s == "DateTime")) {
                         const char* fmt = inv.s == "Date" ? "yyyy-mm-dd"
                             : "an ISO 8601 timestamp (yyyy-mm-ddThh:mm:ssZ or yyyy-mm-ddThh:mm:ss+01:00)";
                         throwTypedV("X::Temporal::InvalidFormat",
@@ -4919,12 +4925,12 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
                             "Invalid " + inv.s + " string '" + a.s + "'; use " + fmt + " instead");
                     }
                     isoStr = true;
-                    const std::string& is = a.s;
+                    const std::string_view is = a.s;
                     double fs = 0;
-                    (void)sscanf(is.c_str(), "%lld-%lld-%lld", &y, &mo, &d);
+                    (void)sscanf(a.s.c_str(), "%lld-%lld-%lld", &y, &mo, &d);
                     size_t tp = is.find_first_of("Tt"); // ISO 8601 allows a lowercase 't'
                     if (tp != std::string::npos) {
-                        std::string tstr = is.substr(tp + 1);
+                        std::string tstr(is.substr(tp + 1));
                         for (auto& c : tstr) if (c == ',') c = '.'; // comma decimal separator for seconds
                         (void)sscanf(tstr.c_str(), "%lld:%lld", &h, &mi);
                         // seconds via cnum, not sscanf %lf: the host's LC_NUMERIC
@@ -4967,7 +4973,7 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
                             if (is[zp] == 'Z' || is[zp] == 'z') tz = 0;
                             else {
                                 // ±HH, ±HHMM or ±HH:MM: isoTemporalShape saw to that
-                                std::string off = is.substr(zp + 1);
+                                std::string off(is.substr(zp + 1));
                                 long long oh = (off[0] - '0') * 10 + (off[1] - '0');
                                 long long om = off.size() == 4 ? (off[2] - '0') * 10 + (off[3] - '0')
                                              : off.size() == 5 ? (off[3] - '0') * 10 + (off[4] - '0') : 0;
@@ -5855,7 +5861,7 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
         return h;
     }
     if (inv.t == VT::Type && m == "new") {
-        const std::string& t = inv.s;
+        const std::string_view t = inv.s;
         // Bool is an ENUM: there is nothing to instantiate
         if (t == "Bool" && inv.ofType().empty())
             throwTypedV("X::Constructor::BadType", {{"type", Value::typeObj("Bool")}},
@@ -5880,7 +5886,7 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
             if (given->t == VT::Type || given->t == VT::Any || given->t == VT::Nil)
                 throw RakuError{Value::typeObj("X::AdHoc"),
                     "Cannot create an Int from a '" +
-                    (given->t == VT::Type ? given->s.str() : given->typeName()) +
+                    (given->t == VT::Type ? given->s.copyText() : given->typeName()) +
                     "' type object"};
             if (given->t == VT::Str && !given->isAllomorph())
                 return numifyStrOrThrow(given->s.str());   // `Int.new("abc")` is X::Str::Numeric
@@ -5928,7 +5934,7 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
             std::map<std::string, std::string> at;
             for (auto& a : args)
                 if (a.t == VT::Pair && a.pairVal() && rtIsDefined(*a.pairVal()))
-                    at[a.s] = a.pairVal()->toStr();
+                    at[a.s.copyText()] = a.pairVal()->toStr();
             std::string syn;
             if (t == "X::OutOfRange" && at.count("what")) {
                 syn = at["what"] + " out of range. Is: " +
@@ -5938,7 +5944,7 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
             }
             else if (t == "X::NYI" && at.count("feature"))
                 syn = at["feature"] + " not yet implemented. Sorry.";
-            else syn = typeCheckMessageFor(t, args);   // X::TypeCheck and its family
+            else syn = typeCheckMessageFor(std::string(t), args);   // X::TypeCheck and its family
             // The rendered message WINS over an explicit `message` argument, as
             // Rakudo's `method message` does — it is a method there, so an
             // attribute of the same name never gets a say.
@@ -5955,7 +5961,7 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
             ci->nativeParent = "Exception";
             std::set<std::string> seen;
             for (auto& a : args)
-                if (a.t == VT::Pair && seen.insert(a.s).second) {
+                if (a.t == VT::Pair && seen.emplace(a.s).second) {
                     ClassAttr ca; ca.name = a.s; ca.sigil = '$'; ca.pub = true;
                     ci->attrs.push_back(ca);
                 }
@@ -6311,7 +6317,7 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
         return v;
     }
     if (inv.t == VT::Type) {
-        if (inv.s.rfind("IO::Spec", 0) == 0) { Value r; if (ioSpecMethod(*this, inv.s, m, args, r)) return r; }
+        if (inv.s.rfind("IO::Spec", 0) == 0) { Value r; if (ioSpecMethod(*this, inv.s.copyText(), m, args, r)) return r; }
         // `.CREATE` is the low-level allocator: an instance whose attributes hold
         // their empty CONTAINERS, with no BUILD/TWEAK and no initializer run.
         // Delegating to .new/.bless would pass the one documented example
@@ -6435,7 +6441,7 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
                 if (a.t == VT::Pair && a.s == "roles" && (!a.pairVal() || a.pairVal()->truthy()))
                     withRoles = true;
             Value out = Value::array(); out.isList = true;
-            for (auto& a : typeAncestry(inv.s)) if (withRoles || !isBuiltinRole(a)) out.arr()->push_back(Value::typeObj(a));
+            for (auto& a : typeAncestry(inv.s.copyText())) if (withRoles || !isBuiltinRole(a)) out.arr()->push_back(Value::typeObj(a));
             if (out.arr()->empty()) { out.arr()->push_back(Value::typeObj(inv.s)); out.arr()->push_back(Value::typeObj("Any")); out.arr()->push_back(Value::typeObj("Mu")); }
             return out;
         }
@@ -6446,8 +6452,8 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
             // `.^mro` arm above is that list with the class in front. A class
             // with no ancestors (RakuAST::Node, the punned roots) answers the
             // empty list there too, so nothing special is needed for it.
-            if (isRakuAstName(inv.s)) {
-                const auto& anc = rakuAstAncestry(inv.s);
+            if (isRakuAstName(inv.s.copyText())) {
+                const auto& anc = rakuAstAncestry(inv.s.copyText());
                 for (size_t i = 1; i + 2 < anc.size(); i++)   // minus self, minus Any/Mu
                     out.arr()->push_back(Value::typeObj(anc[i]));
                 return out;
@@ -6461,14 +6467,14 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
             // `Str.^parents(:local)` is (Cool)
             if (local) {
                 bool self = true;
-                for (auto& a : typeAncestry(inv.s)) {
+                for (auto& a : typeAncestry(inv.s.copyText())) {
                     if (self) { self = false; continue; }
                     if (!isBuiltinRole(a)) { out.arr()->push_back(Value::typeObj(a)); break; }
                 }
                 return out;
             }
             if (all) { bool self = true;
-                for (auto& a : typeAncestry(inv.s)) { if (self) { self = false; continue; } if (!isBuiltinRole(a)) out.arr()->push_back(Value::typeObj(a)); } }
+                for (auto& a : typeAncestry(inv.s.copyText())) { if (self) { self = false; continue; } if (!isBuiltinRole(a)) out.arr()->push_back(Value::typeObj(a)); } }
             return out;
         }
         // The whole MOP-mutator surface below is gated on the invocant being a
@@ -6477,10 +6483,10 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
         // what method dispatch consults for every non-Object invocant. Only the
         // writer was missing. Kept to CORE types — isKnownTypeName blanket-accepts
         // any X::/Metamodel::/IO:: prefix, which would let a typo mint a method.
-        if (!classes_.count(inv.s) && isCoreTypeName(inv.s)) {
+        if (!classes_.count(inv.s) && isCoreTypeName(inv.s.copyText())) {
             if (m == "add_method" && args.size() >= 2) {
                 noteSymbolMutation("runtime .^add_method on a built-in type");
-                builtinExt_[inv.s][args[0].toStr()] = args[1];
+                builtinExt_[inv.s.copyText()][args[0].toStr()] = args[1];
                 return args[1];
             }
             if (m == "compose" || m == "publish_method_cache" || m == "invalidate_method_caches")
@@ -6538,7 +6544,7 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
                                {{"method", m}, {"typename", "Perl6::Metamodel::PackageHOW"}},
                                "No such method '" + m + "' for invocant of type 'Perl6::Metamodel::PackageHOW'");
             }
-            auto pit = pkgMeta_.find(inv.s);
+            auto pit = pkgMeta_.find(inv.s.copyText());
             std::string v = pit == pkgMeta_.end() ? std::string()
                           : (m == "ver" ? pit->second.ver : m == "auth" ? pit->second.auth : pit->second.api);
             if (!classes_.count(inv.s) || pit != pkgMeta_.end()) {
@@ -6563,7 +6569,7 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
         // torn down whether or not it is ever used — measured as ~4% on object
         // construction.)
         const std::shared_ptr<ClassInfo>* astCi =
-            cit == classes_.end() && isRakuAstName(inv.s) ? rakuAstClass(inv.s) : nullptr;
+            cit == classes_.end() && isRakuAstName(inv.s.copyText()) ? rakuAstClass(inv.s.copyText()) : nullptr;
         if (cit != classes_.end() || astCi) {
             auto ci = cit != classes_.end() ? cit->second : *astCi;
             // `R.new` on a role GROUP puns its default candidate (the one a
@@ -6821,7 +6827,7 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
                 return it != ci->methods.end() ? it->second : Value::boolean(false);
             }
             if (m == "find_method_qualified" && args.size() >= 2) { // ($type, $name)
-                std::string tn = args[0].t == VT::Type ? args[0].s : args[0].typeName();
+                std::string tn = args[0].t == VT::Type ? args[0].s.copyText() : args[0].typeName();
                 std::string mn = args[1].toStr();
                 auto tit = classes_.find(tn);
                 if (tit != classes_.end()) { auto mit = tit->second->methods.find(mn); if (mit != tit->second->methods.end()) return mit->second; }
@@ -6919,7 +6925,7 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
                 // Method::Protected reparents a class the same way. A user parent
                 // becomes the class's parent (or an extra parent if it already has
                 // one); a built-in becomes its native parent (`is Str`-style).
-                std::string pn = args[0].t == VT::Type ? args[0].s : args[0].typeName();
+                std::string pn = args[0].t == VT::Type ? args[0].s.copyText() : args[0].typeName();
                 if (pn.empty() || pn == "Any" || pn == "Mu") return inv;
                 noteSymbolMutation("runtime .^add_parent");
                 auto pit = classes_.find(pn);
@@ -6940,7 +6946,7 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
                 // conflicts; a runtime add takes the simple child-wins merge, which
                 // is what the trait-time uses in the wild need (JSON::Class tags its
                 // exception wrappers with Rakudo's X::Wrapper this way).
-                std::string rn = args[0].t == VT::Type ? args[0].s : args[0].typeName();
+                std::string rn = args[0].t == VT::Type ? args[0].s.copyText() : args[0].typeName();
                 auto rit = classes_.find(rn);
                 if (rit == classes_.end()) rit = classes_.find(resolveClassAlias(rn));
                 // A BUILT-IN role — Iterable, Positional, Associative — has no
@@ -7471,7 +7477,7 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
                     else if (!want) want = &a;
                 }
                 if (want && want->t == VT::Type) {
-                    const std::string wn = want->s;
+                    const std::string wn = want->s.copyText();
                     const size_t pk = wn.find("\x01pun");
                     const std::string group = pk == std::string::npos ? wn : wn.substr(0, pk);
                     ClassInfo* pun = nullptr;
@@ -7608,7 +7614,7 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
                     std::set<std::string> seen;
                     ValueList uniq;
                     for (auto& t : *out.arr())
-                        if (seen.insert(t.t == VT::Type ? t.s : t.typeName()).second) uniq.push_back(t);
+                        if (seen.insert(t.t == VT::Type ? t.s.copyText() : t.typeName()).second) uniq.push_back(t);
                     *out.arr() = std::move(uniq);
                 }
                 out.arr()->push_back(Value::typeObj("Any"));
@@ -7701,7 +7707,7 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
                 return methodCall(target, m, std::move(args), rwArgs);
             }
             // accessing an attribute (public accessor) on a type object is illegal
-            if (const ClassAttr* at = ci->findAttr(m)) {
+            if (const ClassAttr* at = ci->findAttr(m.s)) {
                 if (at->pub) throw RakuError{Value::typeObj("X::Method::NotFound"),
                     "Cannot look up attributes in a " + inv.s + " type object"};
             }
@@ -7746,7 +7752,7 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
                     for (auto& g : args)
                         if (g.t == VT::Pair) {
                             if (g.s == "message") haveMsg = true;
-                            a[g.s] = g.pairVal() ? g.pairVal()->toStr() : "";
+                            a[g.s.copyText()] = g.pairVal() ? g.pairVal()->toStr() : "";
                             if (g.s == "mode" && g.pairVal()) { // '0o755', octal, 3 digits
                                 char buf[32]; snprintf(buf, sizeof buf, "%03llo",
                                                        (unsigned long long)g.pairVal()->toInt());
@@ -7787,7 +7793,7 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
                     od->attrs["__cstruct_owned"] = Value::boolean(true);
                     Value self = Value::object(od);
                     for (auto& arg : args) if (arg.t == VT::Pair && arg.pairVal()) {
-                        std::string type; long long off = Interpreter::ncFieldOffset(ci.get(), arg.s, type);
+                        std::string type; long long off = Interpreter::ncFieldOffset(ci.get(), arg.s.copyText(), type);
                         if (off >= 0) Interpreter::ncWriteElem((long long)(uintptr_t)mem + off, type, 0, *arg.pairVal());
                     }
                     runBuildChain(ci.get(), self, args);
@@ -8124,7 +8130,7 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
                 }
             }
             if (m == "raku") { // type-object .raku is the bare name (a pun: its display one)
-                std::string d = g_typeDispName ? g_typeDispName(inv.s) : std::string();
+                std::string d = g_typeDispName ? g_typeDispName(inv.s.copyText()) : std::string();
                 return Value::str(d.empty() ? inv.s.str() : d);
             }
             if (m == "gist") return Value::str(inv.gist()); // `(ShortName)` — see Value::gist
@@ -8248,7 +8254,7 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
             // the accessor must win over executing the stub
             bool stubOverAttr = um0->t == VT::Code && um0->code() && um0->code()->ci().isStub;
             if (stubOverAttr) {
-                const ClassAttr* at0 = ci->findAttr(m);
+                const ClassAttr* at0 = ci->findAttr(m.s);
                 stubOverAttr = at0 && at0->pub;
             }
             // `self.new(:$name)` from inside a method, where the class writes only
@@ -8311,7 +8317,8 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
                 const bool wasNil = pv && pv->t == VT::Nil;
                 Value v = nilResetForAttr(pv ? *pv : Value::any(), *at);
                 if (wasNil && at->defaultTrait && at->sigil == '$') v = eval(const_cast<Expr*>(at->defaultTrait));
-                checkAttrStore(*this, v, *at, roleTypeIn(ci.get(), at->type), wasNil, ci->declEnv.get());
+                std::string held;
+                checkAttrStore(*this, v, *at, roleTypeIn(ci.get(), at->type, held), wasNil, ci->declEnv.get());
                 ni->attrs[a.s] = coerceToSigil(std::move(v), at->sigil);
             }
             nv.setObj(ni); return nv;
@@ -8330,7 +8337,7 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
         // The registry carries no ClassAttr list, so the lookup is the node's
         // own attribute map, which only ever holds syntax-bearing keys.
         if (args.empty() && isRakuAstName(ci->name)) {
-            auto it = inv.obj()->attrs.find(m);
+            auto it = inv.obj()->attrs.find(m.s);
             if (it != inv.obj()->attrs.end()) return it->second;
         }
         const std::string* slot = nullptr;
@@ -8549,7 +8556,7 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
             if (inv.code()->ci().params || inv.code()->cold().hasPrimed) {
                 ValueList posArgs; std::map<std::string, Value> namedBound;
                 for (auto& a : pre) {
-                    if (a.t == VT::Pair) namedBound[a.s] = a.pairVal() ? *a.pairVal() : Value::any();
+                    if (a.t == VT::Pair) namedBound[a.s.copyText()] = a.pairVal() ? *a.pairVal() : Value::any();
                     else posArgs.push_back(a); // a `*` here is a hole, not a value
                 }
                 // `::T $a` primed with an Int makes every later `T` an Int
@@ -8676,7 +8683,7 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
         // a multi's arity/count are its PROTO's, which `.signature` renders
         if ((m == "arity" || m == "count") && inv.code()->ci().isMultiDispatcher) {
             Value sig = methodCall(inv, "signature", ValueList{});
-            if (sig.t == VT::Hash && sig.hash() && sig.hash()->count(m)) return (*sig.hash())[m];
+            if (sig.t == VT::Hash && sig.hash() && sig.hash()->count(m.s)) return (*sig.hash())[m.s];
         }
         if (m == "arity") {
             if (inv.code()->ci().isWhateverCode) return Value::integer(std::max(1LL, inv.code()->ci().whateverArity));
@@ -9034,7 +9041,7 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
     // CompUnit::DependencySpecification accessors.
     if (inv.t == VT::Hash && inv.hashKind == "DependencySpec") {
         if (m == "short-name" || m == "version-matcher" || m == "auth-matcher" || m == "api-matcher")
-            return inv.hash()->count(m) ? (*inv.hash())[m] : Value::any();
+            return inv.hash()->count(m.s) ? (*inv.hash())[m.s] : Value::any();
     }
     // IO::Socket::INET connection/listener methods.
     if (inv.t == VT::Hash && inv.hashKind == "Socket") {
@@ -9052,7 +9059,7 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
             // a UNIX-domain socket has a PATH, no port
             if (inv.hash()->count("unix")) {
                 if (m == "localport" || m == "peerport") return Value::integer(0);
-                auto given = inv.hash()->find(m);
+                auto given = inv.hash()->find(m.s);
                 return given != inv.hash()->end() ? given->second : Value::str("");
             }
             sockaddr_in sa{};
@@ -9062,7 +9069,7 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
                           : ::getsockname(fd, (sockaddr*)&sa, &sl);
             if (rc < 0) return Value::nil();
             if (m == "localport" || m == "peerport") return Value::integer(ntohs(sa.sin_port));
-            auto given = inv.hash()->find(m);   // the name as the caller wrote it
+            auto given = inv.hash()->find(m.s);   // the name as the caller wrote it
             if (given != inv.hash()->end()) return given->second;
             char buf[INET_ADDRSTRLEN] = {0};
             inet_ntop(AF_INET, &sa.sin_addr, buf, sizeof(buf));
@@ -9097,7 +9104,7 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
             { auto cit = inv.hash()->find("chomp"); if (cit != inv.hash()->end()) chompIt = cit->second.truthy(); }
             auto getOne = [&](bool& eof) -> Value {
                 for (;;) {
-                    std::string& lb = lbv.s.mut();
+                    const std::string_view lb = lbv.s.str();   // (read here; written through lbv.s)
                     if (!seps.empty()) {
                         size_t best = std::string::npos, blen = 0;
                         for (auto& sp : seps) {
@@ -9106,15 +9113,15 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
                             if (at != std::string::npos && (at < best || (at == best && sp.size() > blen))) { best = at; blen = sp.size(); }
                         }
                         if (best != std::string::npos) {
-                            std::string line = lb.substr(0, chompIt ? best : best + blen);
-                            lb.erase(0, best + blen);
+                            std::string line(lb.substr(0, chompIt ? best : best + blen));
+                            lbv.s.erase(0, best + blen);
                             return Value::str(nfcDecoded(line));
                         }
                     }
                     size_t nl = seps.empty() ? lb.find('\n') : std::string::npos;
                     if (nl != std::string::npos) {
-                        std::string line = lb.substr(0, nl);
-                        lb.erase(0, nl + 1);
+                        std::string line(lb.substr(0, nl));
+                        lbv.s.erase(0, nl + 1);
                         if (!line.empty() && line.back() == '\r') line.pop_back();
                         return Value::str(nfcDecoded(line));
                     }
@@ -9125,12 +9132,12 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
                     if (n <= 0) {
                         eof = true;
                         if (lb.empty()) return Value::nil();
-                        std::string line = std::move(lb);
-                        lb.clear();
+                        std::string line(lb);
+                        lbv.s.clear();
                         if (!line.empty() && line.back() == '\r') line.pop_back();
                         return Value::str(nfcDecoded(line));
                     }
-                    lb.append(buf, (size_t)n);
+                    lbv.s += std::string_view(buf, (size_t)n);
                 }
             };
             bool eof = false;
@@ -9245,7 +9252,7 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
         auto& attrs = inv.obj()->attrs;
         auto getBuf = [&]() {
             auto it = attrs.find("__io-rbuf");
-            return it == attrs.end() || it->second.t != VT::Str ? std::string() : it->second.s.str();
+            return it == attrs.end() || it->second.t != VT::Str ? std::string() : it->second.s.copyText();
         };
         auto setBuf = [&](std::string b) { attrs["__io-rbuf"] = Value::str(std::move(b)); };
         auto classEof = [&]() { return em && invokeMethod(*em, inv, ValueList{}).truthy(); };
@@ -9255,7 +9262,7 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
         };
         // everything READ still has, onto the buffer
         auto drain = [&]() {
-            std::string b = getBuf();
+            std::string b(getBuf());
             for (int guard = 0; guard < 1000000 && !classEof(); guard++) {
                 Value r = invokeMethod(*rm, inv, ValueList{Value::integer(65536)});
                 if (!isBytes(r) || r.s.str().empty()) break;
@@ -9274,7 +9281,7 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
         if (m == "eof") return Value::boolean(getBuf().empty() && classEof());
         if (m == "read") {
             long long n = args.empty() ? 65536 : args[0].toInt();
-            std::string b = getBuf();
+            std::string b(getBuf());
             while ((long long)b.size() < n && !classEof()) {
                 Value r = invokeMethod(*rm, inv, ValueList{Value::integer(n - (long long)b.size())});
                 if (!isBytes(r) || r.s.str().empty()) break;
@@ -9346,8 +9353,8 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
     // `.say` appends (IO::Blob, which 14 dists name, tests exactly that). The
     // Any fallback answers the constant "\n", which no assignment can move.
     if (isUserHandle && (m == "nl-out" || m == "nl-in") && inv.obj()) {
-        auto it = inv.obj()->attrs.find(m);
-        if (!args.empty()) { inv.obj()->attrs[m] = args[0]; return args[0]; }
+        auto it = inv.obj()->attrs.find(m.s);
+        if (!args.empty()) { inv.obj()->attrs[m.s] = args[0]; return args[0]; }
         if (it != inv.obj()->attrs.end()) return it->second;
         if (m == "nl-out") return Value::str("\n");
         Value d = Value::array();                 // nl-in: Rakudo's default pair
@@ -9361,8 +9368,8 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
     // its gist — Text::CSV's `my Bool $chomped = $io.chomp` then type-checked
     // a Str against Bool.
     if (isUserHandle && m == "chomp" && inv.obj()) {
-        auto it = inv.obj()->attrs.find(m);
-        if (!args.empty()) { inv.obj()->attrs[m] = args[0]; return args[0]; }
+        auto it = inv.obj()->attrs.find(m.s);
+        if (!args.empty()) { inv.obj()->attrs[m.s] = args[0]; return args[0]; }
         return it != inv.obj()->attrs.end() ? it->second : Value::boolean(true);
     }
     if (m == "say" && !isFH && !isUserHandle) return ioEmit(gistOf(inv) + "\n", "$*OUT", false);
@@ -9548,7 +9555,7 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
     // is undefined and answers its type's zero (Complex is not Real: .Real on
     // it is the Num zero). A class doing Numeric/Real makes itself with .new.
     if ((m == "Numeric" || m == "Real") && inv.t == VT::Type && args.empty()) {
-        static const std::map<std::string, int> zeroKind = {
+        static const std::map<std::string, int, std::less<>> zeroKind = {
             {"Int", 0}, {"IntStr", 0}, {"Num", 1}, {"NumStr", 1}, {"Rat", 2}, {"RatStr", 2},
             {"FatRat", 3}, {"Complex", 4}, {"ComplexStr", 4},
             {"Mu", 0}, {"Any", 0}, {"Cool", 0}};   // (Mu.Numeric is 0, with the warning)
@@ -9717,7 +9724,7 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
     }
     // the Archetypes value itself: every query is a stored boolean (absent = False)
     if (inv.t == VT::Hash && inv.hashKind == "Archetypes") {
-        auto it = inv.hash()->find(m);
+        auto it = inv.hash()->find(m.s);
         return it != inv.hash()->end() ? it->second : Value::boolean(false);
     }
     if (m == "can") { // Mu.can($name): list of matching methods ([] if none)
@@ -9826,7 +9833,7 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
         // type: `Str.can('Int')` is True (the .Int conversion method), which is
         // how DBDish::TypeConverter picks `$type($datum)` over `$type.new(...)`
         Value probeInv = inv;
-        if (!ci && inv.t == VT::Type && !classes_.count(inv.s)) probeInv = probeSentinel(inv.s);
+        if (!ci && inv.t == VT::Type && !classes_.count(inv.s)) probeInv = probeSentinel(inv.s.copyText());
         // (a Failure throws what it holds at any call, which a probe reads as "found":
         // its own methods are its and the rest an Any's — Red's `try $*RED-DB.^can(…)`)
         const bool failure = !ci && inv.t == VT::Hash && inv.hashKind == "Failure", failureOwn = failure && failureOwnMethod(mn);
@@ -9878,7 +9885,7 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
     }
     if (inv.t == VT::Type && m == "raku") { // Int.raku -> "Int" (no parens)
         // …and a role pun by the name it was written with, `Foo[Int]`
-        std::string d = g_typeDispName ? g_typeDispName(inv.s) : std::string();
+        std::string d = g_typeDispName ? g_typeDispName(inv.s.copyText()) : std::string();
         if (!d.empty()) return Value::str(d);
         return Value::str(rakuRepr(inv));   // (a parameterized one names its parameter: array[str])
     }
@@ -10167,7 +10174,7 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
         for (auto& e : *inv.arr()) {
             if (e.t != VT::Pair) continue;
             Value k = Value::str(e.s), v = e.pairVal() ? *e.pairVal() : Value::any();
-            if (m == "pairs") o.arr()->push_back(Value::pair(e.s, v));
+            if (m == "pairs") o.arr()->push_back(Value::pair(e.s.copyText(), v));
             else if (m == "keys") o.arr()->push_back(k);
             else if (m == "values") o.arr()->push_back(v);
             else if (m == "kv") { o.arr()->push_back(k); o.arr()->push_back(v); }
@@ -10216,7 +10223,7 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
         // a match against a non-Str topic answers that topic as .orig (keepMatchOrig);
         // .target is always the string that was matched
         if (m == "orig" && inv.hasPairKey()) return inv.nonStrKey();
-        std::string orig = inv.ext() ? *std::static_pointer_cast<std::string>(inv.ext()) : inv.s;
+        std::string orig = inv.ext() ? *std::static_pointer_cast<std::string>(inv.ext()) : inv.s.copyText();
         if (m == "orig" || m == "target") return Value::str(orig);
         if (m == "prematch") return Value::str(orig.substr(0, std::min((size_t)inv.rFrom(), orig.size())));
         return Value::str((size_t)inv.rTo() <= orig.size() ? orig.substr(inv.rTo()) : "");
@@ -10252,7 +10259,7 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
                          });
         Value o = Value::array(); o.isList = true;
         for (auto& e : entries) {
-            Value p = Value::pair(e.first.t == VT::Str ? e.first.s : e.first.toStr(), e.second);
+            Value p = Value::pair(e.first.t == VT::Str ? e.first.s.copyText() : e.first.toStr(), e.second);
             if (e.first.t != VT::Str) p.setPairKey(e.first);
             o.arr()->push_back(std::move(p));
         }
@@ -10263,7 +10270,7 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
     // .chunks: the .caps pairs with the text BETWEEN them as `~ => Str` pairs,
     // covering the whole match
     if (inv.t == VT::Match && m == "chunks") {
-        std::string orig = inv.ext() ? *std::static_pointer_cast<std::string>(inv.ext()) : inv.s;
+        std::string orig = inv.ext() ? *std::static_pointer_cast<std::string>(inv.ext()) : inv.s.copyText();
         Value caps = methodCall(inv, "caps", ValueList{});
         Value o = Value::array(); o.isList = true;
         long long pos = inv.rFrom();
@@ -10359,7 +10366,7 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
         const void* id = inv.t == VT::Object && inv.obj() ? (const void*)inv.obj()
                        : inv.hash() ? (const void*)inv.hash()
                        : inv.arr()  ? (const void*)inv.arr() : nullptr;
-        std::string nm = args[0].t == VT::Type ? args[0].s : args[0].toStr();
+        std::string nm = args[0].t == VT::Type ? args[0].s.copyText() : args[0].toStr();
         if (id && inProgress.count(id)) return Value::str(nm + ".new(...)");
         if (id) inProgress.insert(id);
         struct Pop { std::set<const void*>& s; const void* k;
@@ -10448,7 +10455,7 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
         if (inv.t == VT::Array && (inv.s == "HyperSeq" || inv.s == "RaceSeq") && inv.arr()) {
             auto buf = inv.arrS();
             if (buf.body()->pflags_.fetch_or(kPayHyperIterTaken, std::memory_order_acq_rel) & kPayHyperIterTaken)
-                throwTypedV("X::Seq::Consumed", {{"kind", Value::typeObj(inv.s.str())}},
+                throwTypedV("X::Seq::Consumed", {{"kind", Value::typeObj(inv.s)}},
                             "The iterator of this Seq is already in use/consumed by another Seq\n"
                             "(you might solve this by adding .cache on usages of the Seq, or\n"
                             "by assigning the Seq into an array)");
@@ -10510,7 +10517,7 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
         // the formatter travels with the clone, like every other conversion
         for (const char* k : {"year", "month", "day", "hour", "minute", "second", "timezone", "formatter"})
             if (inv.hash()->count(k)) merged[k] = (*inv.hash())[k];
-        for (auto& a : args) if (a.t == VT::Pair && a.pairVal()) merged[a.s] = *a.pairVal();
+        for (auto& a : args) if (a.t == VT::Pair && a.pairVal()) merged[a.s.copyText()] = *a.pairVal();
         ValueList na; for (auto& kv : merged) na.push_back(Value::pair(kv.first, kv.second));
         return methodCall(Value::typeObj(inv.hashKind), "new", na);
     }
@@ -10580,7 +10587,7 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
         // A second buffer is a second object too (`$b.clone === $b` is False).
         if (inv.t == VT::Str && inv.hashKind == "Buf") {
             Value nv = inv;
-            nv.s = std::string(inv.s.str());
+            nv.s = inv.s.copyText();
             nv.s.promote();
             return identify(nv);
         }
@@ -10737,8 +10744,8 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
         Value resolved;
         if (inv.t == VT::Array && !inv.enumType.empty() && inv.enumName.empty()) elist = &inv;
         else if (inv.t == VT::Type) {
-            Value* ev = tctx().cur ? tctx().cur->find(inv.s) : nullptr;
-            if (!ev && global_) ev = global_->find(inv.s);
+            Value* ev = tctx().cur ? tctx().cur->find(inv.s.copyText()) : nullptr;
+            if (!ev && global_) ev = global_->find(inv.s.copyText());
             if (ev && ev->t == VT::Array && !ev->enumType.empty() && ev->enumName.empty())
                 { resolved = *ev; elist = &resolved; }
         }
@@ -10777,8 +10784,8 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
         if (inv.t == VT::Type) {
             if (inv.s == "Order" || inv.s == "Endian" || inv.s == "Bool")
                 return Value::typeObj("Metamodel::EnumHOW");
-            Value* ev = tctx().cur ? tctx().cur->find(inv.s) : nullptr;
-            if (!ev && global_) ev = global_->find(inv.s);
+            Value* ev = tctx().cur ? tctx().cur->find(inv.s.copyText()) : nullptr;
+            if (!ev && global_) ev = global_->find(inv.s.copyText());
             if (ev && ev->t == VT::Array && !ev->enumType.empty() && ev->enumName.empty())
                 return Value::typeObj("Metamodel::EnumHOW");
         }
@@ -10819,7 +10826,7 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
         }
         // a SUBSET (UInt among them) is made by SubsetHOW — one of its own (subsetsHow)
         if (inv.t == VT::Type && !classes_.count(inv.s) && (subsets_.count(inv.s) || inv.s == "UInt"))
-            return subsetsHow(inv.s);
+            return subsetsHow(inv.s.copyText());
         ClassInfo* hci = nullptr;
         if (inv.t == VT::Type) { auto it = classes_.find(inv.s); if (it != classes_.end()) hci = it->second.get(); }
         else if (inv.t == VT::Object && inv.obj() && inv.obj()->cls) hci = inv.obj()->cls.get();
@@ -10876,7 +10883,7 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
         return Value::typeObj("Metamodel::ClassHOW"); // metaclass (its own .HOW returns a HOW too)
     }
     if (m == "WHO") { // package stash — the PERSISTENT one, see pkgStashes_
-        std::string pkg = inv.t == VT::Type ? inv.s : inv.typeName();
+        std::string pkg = inv.t == VT::Type ? inv.s.copyText() : inv.typeName();
         // `MY.WHO`, `LEXICAL.WHO`, `CALLER.WHO`: the pseudo-package's stash
         if (inv.t == VT::Type && pkg != "OUR" && pkg != "GLOBAL" && isPseudoChain(pkg))
             return makePseudoStash(pkg);
@@ -10903,7 +10910,7 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
                 (*stash)[kv.first.substr(pkg.size() + 2)] = Value::typeObj(kv.first);
         // …and its subsets and modules, which have tables of their own
         // (`AllKinds::.keys` has its `subset Pos`, `UM::.keys` its `module Sub1`)
-        auto child = [&](const std::string& fq) {
+        auto child = [&](std::string_view fq) {
             return fq.size() > pkg.size() + 2 && fq.compare(0, pkg.size(), pkg) == 0 &&
                    fq.compare(pkg.size(), 2, "::") == 0 && fq.find("::", pkg.size() + 2) == std::string::npos;
         };
@@ -10957,7 +10964,7 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
             if (et->t == VT::Array && et->arr() && !et->enumType.empty() && et->enumName.empty())
                 for (auto& pr : *et->arr())
                     if (pr.t == VT::Pair)
-                        if (Value* ev = tctx().cur->find(pr.s)) (*stash)[pr.s] = *ev;
+                        if (Value* ev = tctx().cur->find(pr.s.copyText())) (*stash)[pr.s] = *ev;
         }
         Value st; st.t = VT::Hash; st.setHash(stash); st.hashKind = "Stash"; st.s = pkg;
         return st;
@@ -11020,7 +11027,7 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
             return Value::str("VMArray");
         return Value::str("P6opaque");
     }
-    if (m == "DUMP") return Value::str(inv.t == VT::Type ? inv.s : inv.gist()); // debug snapshot (loose form)
+    if (m == "DUMP") return Value::str(inv.t == VT::Type ? inv.s.copyText() : inv.gist()); // debug snapshot (loose form)
     if (m == "does") { // .does(Role/Type) — role/type membership introspection
         if (args.empty()) return Value::boolean(false);
         if (inv.t == VT::Hash && inv.hashKind == "Distribution" && args[0].t == VT::Type && args[0].s == "Distribution")
@@ -11036,9 +11043,9 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
         // a user `role Numeric { }` hides the core role: a built-in value does
         // not do the user's one (`5.does(Numeric)` is False), as with `~~`
         if (!howInv && args[0].t == VT::Type && inv.t != VT::Object && inv.t != VT::Type &&
-            userShadowsCoreRole(args[0].s))
+            userShadowsCoreRole(args[0].s.copyText()))
             return Value::boolean(false);
-        std::string rn = args[0].t == VT::Type ? args[0].s : args[0].typeName();
+        std::string rn = args[0].t == VT::Type ? args[0].s.copyText() : args[0].typeName();
         if (rn == "Any" || rn == "Mu") return Value::boolean(true);
         // a SUBSET answers by its constraint: `1.does(PosReal)` is True
         if (args[0].t == VT::Type && subsets_.count(rn))
@@ -11099,7 +11106,7 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
             static const std::set<std::string> natNum = {
                 "int","int8","int16","int32","int64","uint","uint8","uint16","uint32","uint64",
                 "byte","atomicint","num","num32","num64"};
-            if (natNum.count(inv.s) && (rn == "Real" || rn == "Numeric")) res = true;
+            if (natNum.count(inv.s.copyText()) && (rn == "Real" || rn == "Numeric")) res = true;
             else if (inv.s == "str" && rn == "Stringy") res = true;
         }
         return Value::boolean(res);
@@ -11113,7 +11120,7 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
                 const std::string tn = args[0].typeName();
                 return Value::str(classes_.count(tn) && args[0].t == VT::Object ? tn : ncQualifiedName(tn));
             }
-            return Value::str("Perl6::" + std::string(inv.s.str()));
+            return Value::str("Perl6::" + inv.s.copyText());
         }
         // A typed container names its PARAMETER: `my Int @a; @a.^name` is
         // `Array[Int]`, and `my Int %h` is `Hash[Int]` (sheet LA-21). Only

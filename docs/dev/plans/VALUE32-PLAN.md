@@ -717,6 +717,328 @@ length byte or a `Ref<const StrBody>`, which brings `Value` from 80 to 64. It
 is measured the way A was, with the field order included, because field offsets
 alone moved kernels by several percent in batch 2.
 
+### C, step 1: the read API, with the storage unchanged (2026-11-06)
+
+C was split in two so that its two costs are measured apart. Step 1 changes
+every reader and writer and leaves `CowStr` at 32 bytes, so the change should
+be level on time and on allocations, and any cost it has comes from the sweep.
+Step 2 changes the storage and measures the layout.
+
+- **Reads are views.** `CowStr::str()` answers a `std::string_view`, and the
+  implicit conversion to `const std::string&` is gone. A `CowStr` converts
+  implicitly only to a view. `c_str()` and `data()` stay and are
+  NUL-terminated, a promise step 2 has to keep.
+- **Writes do not hand out a `std::string&`.** `mut()` is private and
+  `textInPlace()` is gone. `edit(f)` gives `f` a `std::string&` for the call
+  only. The 14 writers use it, or `CowStr`'s own `+=`, `erase` and `resize`,
+  or `mutInPlace()` for a Buf's bytes.
+- **Lookups by a view.** C++17's unordered containers have no lookup by
+  `string_view` (P0919 is C++20, and `--exe` compiles a user's program as
+  C++17), so the transparent hashing is done three ways. `ValueHash` and
+  `AttrTable` take `std::string_view` keys, and `std::hash<string_view>` is
+  `std::hash<string>` by the standard. [src/StrMap.h](../../../src/StrMap.h)
+  is an `unordered_map<string_view, V>` over keys it owns in a deque, and
+  serves `classes_`, `subsets_`, `classAliases_` and `pkgKind_`. Static name
+  tables became `std::set`/`std::map` with `std::less<>`, or sets of views of
+  literals.
+- **Text helpers that only read take a view**: `utf8cp`, `graphemeCount`,
+  `nfcConcat` and the NFC appends, `numifyStr*`, the JSON reader,
+  `strSucc`/`strPred`, `regexMatch`'s pattern, `findAttr`, `isKnownTypeName`,
+  and `resolveClassAlias`, which has a view overload over the same body.
+- **Where a callee still reads a `const std::string&`, the site makes one.**
+  These are the type checker (`typeMatchesArg`, `typeNameConforms`,
+  `rtTypeMatch`, `typeOrSubsetMatches`), `Env::find` and `methodCall`'s name.
+  They are type and method names, short enough for the small buffer, so the
+  copy makes no allocation. The census below checks that.
+- **A copy is `copyText()`, not `std::string(s.str())`.** libc++ copies a
+  short `std::string` whole, without a call. A string built from a view calls
+  `memmove` for its bytes, however short. `Value::toStr` on a Str and the
+  ~300 copies the sweep wrote took the slow road until `copyText()` existed.
+  perf-guard's `prepend` measured +3.8% instructions with them and +1.8%
+  after. In step 2, `copyText()` is where an inline text becomes a
+  `std::string` in its small buffer.
+
+**The recount.** The compiler found 816 distinct sites that no longer built.
+The 1,549 counted on 2026-09-02 measured something else. There are 3,164
+textual `.s` uses today, and most still compile through `CowStr`'s forwarding
+members.
+
+**Measured 2026-11-06**, Darwin 25.6 / arm64, Apple clang 21. Base is
+ac66e898 and both binaries are Release builds from one sitting.
+
+| gate | base | step 1 |
+|---|---|---|
+| `t/run.raku` | | 1,992 of 1,992 |
+| Roast cf28a323c, files fully passing | 1,425 of 1,425 | 1,425 of 1,425, the same files |
+| Roast mallocs, two runs each | 62.98M, 63.22M | 63.15M, 63.13M |
+| mallocs, 44 bench + example programs | 4,501,434 | 4,505,709 (all in `life.raku`, which moves ±1% run to run; the other 43 identical) |
+| `tools/malloc-census.raku`, 8 workloads | | identical per operation |
+| perf-guard time, 27 kernels × 3 interleaved rounds | | geomean +0.13% |
+| instructions retired, 26 kernels | | geomean −0.11% |
+
+- **Roast under AddressSanitizer** finds nothing new. The same four files fail
+  under an ASan build of the base and of step 1, with the same reports.
+  `let.t`, `temp.t` and `clone.t` show a heap-use-after-free: `lvalue()` holds
+  a pointer into a hash that `Env::define` then replaces, in `evalAssignInner`.
+  `deep-recursion-initing-native-array.t` shows a stack-buffer-overflow.
+  These four are bugs of their own, older than this step. Under load,
+  `system.t` timed out once, and it passes 41/41 alone on both builds. The
+  196 `t/regression` files on strings, Bufs and hashes give no report on
+  either build.
+- **`multidecline` measures +10% in time and +0.24% in instructions.** That is
+  where the base binary's code happened to land, not work. Its hot function
+  (`~ScoreVec`) has identical machine code in both builds at a different
+  alignment. Built with `-g`, the two take 87.5 and 87.8 ms. Built with
+  `-falign-functions=64`, they take 91.2 and 90.5 ms. A layout that moves one
+  kernel by 10% is worth remembering when step 2 measures its field order.
+- **The gates found two costs, and both are fixed.** `.trans` copied its
+  pair key, three mallocs per call for `cipher`'s 52-byte keys, and now reads
+  it as a view. Copies made from a view took the slow road, which is
+  `copyText()` above.
+
+The change is 45 source files, `src/StrMap.h` the one new one.
+
+### C, step 2: the 16-byte `CowStr` (2026-11-07)
+
+**`sizeof(Value)` is 64**, and `CowStr` is 16 bytes. Nothing in it is a
+`std::string` now; it holds the text in one of two forms, and its last byte
+says which:
+
+- **Inline**, up to 15 bytes. The text is at the front and the bytes after it
+  are zero. The last byte holds 15 minus the length, so a 15-byte text's NUL is
+  that byte, and every text stays NUL-terminated as step 1 promised. With the
+  tail kept at zero, two inline texts are equal exactly when their 16 bytes
+  are, so `sameRep` and `==` on two short strings compare two words.
+- **A body.** The first word is a `StrBody*` that holds one count, and the last
+  byte is a tag. `Ref.h` gained `leak`, `adopt` and `releaseRaw` so `CowStr`
+  can keep the count by hand in bytes it shares with the inline form.
+
+A text over 15 bytes is always a body. That moves the 16–22-byte band, which
+the old 23-byte promote threshold kept inline, into bodies: 2.6% of short texts
+in the census above. The field order is the old one. Every field after `s`
+moved 16 bytes forward, and the struct has the same 3 + 4 bytes of padding it
+had at 80. `ExecContext`, which holds four `Value`s, went from 1,528 to 1,464
+bytes.
+
+**What changed in the code:**
+
+- **Writes to an inline text happen where it is.** These are `+=` while the
+  text fits, `pop_back`, `resize`, `erase` and `mutInPlace`. An append that
+  overflows moves the text into a body, which takes over `grown()`'s job.
+- **`edit(f)` of an inline text** hands `f` a copy and stores back what it
+  leaves.
+- **A shared body is copied into a new body** before a write. It used to be
+  copied into the inline `std::string`, which no longer exists.
+- **`Value::str` and `typeObj` take a `string_view`,** so a short text never
+  becomes a `std::string` on the way in.
+- **Short copies make no library call.** `setInline` copies with two
+  fixed-size copies that overlap in the middle, and `copyText()` of an inline
+  text builds its `std::string` at the fixed length of 15 and shrinks it.
+  Without them, every short string written paid a call to `memmove`. That was
+  `prepend` +5.1% instructions; with them it is +2.1%.
+
+`Value` is now trivially relocatable on every standard library. Until step 2
+it held a libstdc++ `std::string` that pointed at itself, so `ValueVec`'s
+bitwise grow was off on Linux. The probe that turns it off is still there;
+dropping it is a change to measure on Linux.
+
+**Measured 2026-11-07**, Darwin 25.6 / arm64, Apple clang 21. The base is the
+step-1 branch at 34a2b80f, and both binaries are Release builds from one
+sitting.
+
+| gate | base | step 2 |
+|---|---|---|
+| `t/run.raku` | | 1,992 of 1,992 |
+| Roast cf28a323c, files fully passing | 1,425 of 1,425 | 1,425 of 1,425 |
+| Roast mallocs, two runs each | 63.54M, 63.21M | 63.19M, 63.41M |
+| mallocs, 44 bench + example programs | 4,505,437 | 4,523,047 (+0.39%) |
+| `tools/malloc-census.raku`, 8 workloads | | the same mallocs per operation; bytes ×0.80–0.86 where `Value`s are built |
+| perf-guard time, 27 kernels × 3 interleaved rounds | | geomean −0.49% |
+| instructions retired, 26 kernels, the least of 3 | | geomean −0.04% |
+
+- **The allocations are the band the census priced.** 40 of the 44 programs
+  make 6 to 14 more mallocs, at startup. Of the rest, `append-shapes` makes 147
+  fewer, `precomp-table` the same, and `life` moves ±1% from run to run.
+  `textsplit` makes 6.25% more: it keeps
+  20,000 `tag12345:field12345` strings, each 16–22 bytes and each now a body,
+  and `SlabPool` makes its blocks one at a time (it keeps only 64 freed ones per
+  size). It still runs faster, 100.3 → 91.3 ms. The census above predicted
+  +0.4% for C across this corpus and none over 10%.
+- **`asg` and `loopsum` measure +4% and +7% in time with the same
+  instructions** (−0.00% and −0.02%). That is placement, not work. Built
+  with `-falign-functions=64` they take 66.9 and 63.9 ms (`asg`) and 47.6 and
+  47.2 ms (`loopsum`). This was measured on the build before the call-free
+  copies, which touch no integer kernel.
+- **`prepend` +2.1% instructions** is the rest of the inline copies. Its time is
+  3.5% faster.
+- **tools/value32-probe.cpp** (it now needs `-liconv` to link) reports `Value`
+  64 and `CowStr` 16. In section D, a 14-byte Str value made and copied three
+  times takes 14.4 ms where it took 26.1. Section G shows the band: an 8-byte
+  string costs half as much as before, and a 16- or 22-byte string costs 1.6x,
+  being a body.
+
+Peak RSS (`/usr/bin/time -l`), the same programs on both binaries:
+
+| program | base | step 2 | |
+|---|---:|---:|---:|
+| a million Ints from `.map` | 164.2 MB | 134.4 MB | −18% |
+| a million short Strs from `.map` | 164.2 MB | 134.3 MB | −18% |
+| a million Rats from `.map` | 242.3 MB | 164.0 MB | −32% |
+| 200,000 two-element arrays | 82.1 MB | 72.4 MB | −12% |
+| 200,000 two-attribute objects | 137.0 MB | 124.2 MB | −9% |
+| a 200,000-key hash | 59.3 MB | 55.8 MB | −6% |
+| `tools/bench/hashfill.raku` | 51.6 MB | 45.1 MB | −12.5% |
+| `tools/bench/textsplit.raku` | 23.6 MB | 26.3 MB | +11% |
+
+**Roast under AddressSanitizer** fails the same five files as step 1's ASan
+build, with the same kinds of report:
+- `let.t`, `temp.t` and `clone.t` fail on the `evalAssignInner` use-after-free
+  at InterpreterCore.cpp:17089. `let.t`, rerun alone, gives the same stack.
+- `deep-recursion-initing-native-array.t` fails on a stack-buffer-overflow.
+- `system.t` fails on the libffi SEGV.
+
+Roast's allocations stay inside run-to-run noise. The +0.5% the census
+predicted for C is smaller than the 0.5% that one binary moves between two
+runs.
+
+**The ThreadSanitizer stress matrix** (`t/stress/run.raku` under a
+`-fsanitize=thread` build, as the linux-tsan CI job runs it) gives 51 cases:
+37 pass, 14 are on the known-bad list, there are no new failures, and TSan
+reports nothing. This is the risk register's parallelism gate, and a body's
+count is still the atomic one `Ref` keeps.
+
+**Left open:**
+
+- **The 16–22-byte band costs a malloc per live string**, because
+  `SlabPool` keeps few blocks. A pool that carves `StrBody`s from chunks would
+  take that back without widening `Value`.
+- **Bitwise relocation on libstdc++**, above.
+
+### A string literal keeps its `Value` (2026-11-07)
+
+The first item step 2 left open. Literals were 7.2M of Roast's 12.2M short
+strings. Until this change each evaluation built a new `Value` from the AST's
+`std::string`, and a literal over 15 bytes allocated a body every time.
+
+- **The `Value` is built once, inside the node.** A `StrLit` builds its `Value`
+  into 64 bytes it holds for it, on its first evaluation, and every evaluation
+  after that copies it. `evalState` publishes it, because every thread shares
+  the tree:
+  - 0 means it is not built;
+  - 1 means one thread is building it, and the others make their own meanwhile;
+  - 2 means it is ready.
+- **The first version kept it behind a pointer.** That cost every program a
+  malloc per distinct literal it evaluated (+0.06% over the 44 programs,
+  `roman` +29).
+- **Sound because a literal's text never changes once the node can run.** The
+  constructor sets it, or the deserialiser and `normalize()` do before any
+  evaluation; nothing else writes `StrLit::v`.
+- **A long literal's body is now shared by every evaluation.** No writer can
+  reach it in place. `mutInPlace` serves only CArray/Buf values, and turning a
+  Str into a Buf appends with `+=`, which copies a shared body first. Every
+  other in-place write checks that the body has one owner.
+
+Measured against step 2's tip (ed7a7d98), one sitting:
+
+| gate | |
+|---|---|
+| `t/run.raku`, Roast | 1,992 of 1,992; 1,425 of 1,425 |
+| perf-guard time, 27 kernels × 3 interleaved rounds | geomean −0.08%, none past 5% |
+| instructions retired, 26 kernels | geomean −0.09%: `prepend` −1.7% (step 2's +2.1% back), `sharedappend` −1.3% |
+| `tools/malloc-census.raku`, 8 workloads | identical |
+| mallocs, 44 bench + example programs | +0.015%: 3 to 5 each at startup, the bodies of long literals now kept |
+
+**Under ThreadSanitizer** the stress matrix gives the same 37 passes and 14
+known-bad, with no new failures. A test in which 16 threads, repeatedly, each
+evaluate a literal for its first time at once gives no report.
+`t/regression/str-literal-shared-value.raku` guards the shared value. It
+writes through a copy of a short and a long literal every way a Str is written
+in place, and makes a Buf from one; after each write the literal must still
+read the same. It also checks a literal first evaluated by eight threads. It
+passes on both binaries, under TSan, and in Rakudo.
+
+**Where it pays is the interpreter's own evaluation.** With the integer kernels
+off (`RAKUPP_NO_KERNELS=1`), a 36-byte literal evaluated 200,000 times:
+
+| loop | mallocs | instructions |
+|---|---|---|
+| `$x = "…"` | 604,457 → 404,460 | −17.9% |
+| `@a.push("…")` | 804,510 → 604,513 | −11.8% |
+| `"…" xx 200_000` | 804,579 → 604,582 | −18.7% |
+
+With the kernels on, a loop such as `@a.push("…")` runs in IntKernel.cpp. Its
+string lane works in `std::string` and makes a new `Value` for each element it
+stores (`scpushFn`, `csappFn`). That is two mallocs per element for a long
+string, before this change and after it. The next section closes it.
+
+### The kernels' string lane shares, and so does `"…"` (2026-11-07)
+
+**The kernels' stores share what they store.** A kernel keeps its strings
+in `std::string` slots. A variable is copied into one when the kernel is
+entered, and a literal is the kernel's own text. Each store (`push`, an
+element or key assignment, a `~=` into an empty element) made a new Str from
+the text. Rewriting the lane on `CowStr` would have reached into its in-place
+NFC appends and its `.chars` bookkeeping. Instead each slot also keeps
+(`KConts::scow`) the `CowStr` its text came from, while it is still that
+text:
+- what the variable held at entry;
+- the element `SCGet` read;
+- what `SSet` or `SGiven` copied in, from a literal or a slot that has one.
+
+Every other write to the slot (`SApp`, a computing op's own temporary) empties
+it. A store whose source has one (`shareOf`: an `SLit`'s `cow`, or an `SVar`
+or `SCGet` slot) writes it, so the body is shared. So does the write-back of an
+outer variable at exit. Every value the lane takes in passed `plainStrValue`,
+so a shared body is never a Buf's.
+
+**A `"…"` with nothing interpolated was never the cached literal.** The
+parser makes it an `InterpStr` whose one part is the `StrLit`.
+`Interpreter::evalInterp` evaluated that part, which is the cached `Value`
+since the last section, and then `interpolate` built a new string from it:
+two mallocs for a long one. Only `'…'` reached the cache. `evalInterp` now
+answers the part's `Value` itself when the one part is a `StrLit`. That covers
+most string literals in Raku code.
+
+Measured against 8026d109, one sitting, a 36-byte literal or a 40-byte
+variable stored 200,000 times. "Kernel" means the loop compiles to one,
+`RAKUPP_NO_KERNELS` unset. Peak RSS is from `/usr/bin/time -l`.
+
+| loop | mallocs | time | peak RSS |
+|---|---|---|---|
+| `@a.push("…")`, kernel | 404,533 → 4,536 | 15.3 → 5.9 ms | 47.8 → 23.1 MB |
+| `@a.push("…")`, interpreter | 604,514 → 4,512 | 45.3 → 22.5 ms | |
+| `@a.push($s)`, kernel | 404,691 → 4,690 | 15.3 → 5.8 ms | 48.4 → 23.6 MB |
+| `$x = "…"` (`my $x;` is Any, so no kernel) | 404,461 → 4,458 | 26.8 → 10.3 ms | |
+| `"…" xx 200_000` | 604,575 → 4,573 | 27.8 → 6.3 ms | 55.7 → 22.9 MB |
+| `(^200_000).map({ "…" })` | 604,639 → 4,637 | 59.0 → 36.7 ms | 69.3 → 36.6 MB |
+| `%h{$_} = "…19 bytes…"`, kernel | 404,588 → 204,590 | 34.5 → 28.9 ms | |
+
+The hash row's remaining malloc per entry is not the store. It is `say
+%h.elems`, which went through `toList` and built a Pair for every entry
+(`hashEntryPair` → `ValueHash::aliasOf`): an O(n) `.elems` on a hash. The
+commit after this one answers a plain Hash's `.elems`, `.end` and `.Numeric`
+from its size, in methodCallEntry. That row's program then makes 4,595
+mallocs, where it made 204,626 (`t/regression/hash-elems-size.raku`).
+
+| gate | |
+|---|---|
+| `t/run.raku`, Roast | 1,993 of 1,993; 1,425 of 1,425 |
+| `t/jit/run.raku` | the main baseline: 1,359 agree, the same 8 timing and native-function diffs, 17 of 22 tier-up cases entering a kernel |
+| perf-guard time, 27 kernels × 3 interleaved rounds | geomean −1.32%; `prepend` −19.7%, `sharedappend` −19.0%; `loopsum` +14.5% with the same instructions (placement, as in step 2) |
+| instructions retired, 26 kernels | geomean −2.04%: `prepend` −27.1%, `sharedappend` −20.4%, `intcat` +1.6% |
+| `tools/malloc-census.raku`, 8 workloads | identical |
+| mallocs, 44 bench + example programs | −0.05% |
+| ThreadSanitizer: `t/stress/run.raku` and the guard | 37 pass, 14 known-bad, no new failures, no report |
+
+- **`intcat`'s +1.6% is the check every `~=` makes.** It asks whether its slot
+  still holds a shared value, about five instructions on each of its three
+  million appends; its time is level. A compile-time map of the slots that can
+  ever hold one would drop the check where none can. That analysis was not
+  worth the risk at this size.
+- **`t/regression/str-literal-shared-value.raku` now covers both literal kinds
+  and the kernels.** It writes through what a kernel loop stored and checks the
+  literal and the variable behind it.
+
 ## Why 16 bytes is an architecture change, not a layout change
 
 Slim16 measures 24x on the array build. It is worth saying plainly what that

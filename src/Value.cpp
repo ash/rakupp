@@ -248,43 +248,44 @@ bool g_strViewsForced = [] {
 Ref<const StrBody> CowStr::forcedView(const std::string& x) { return freshView(x.data(), x.size(), nullptr, 0); }
 
 void CowStr::appendTextSlow(const char* x, size_t n) {
-    if (!p_) { RAKUPP_STR_CEN(cenWrite();) s_.append(x, n); grown(); return; }
-    if (p_->view) {
-        const StrView& v = *p_->view;
+    if (!isBody()) { append(x, n); return; }
+    const StrBody* b = bodyRaw();
+    if (b->view) {
+        const StrView& v = *b->view;
         // a view nothing else holds grows where it is, without a new body
-        if (p_->refs_.load(std::memory_order_acquire) == 1 && claimBack(*v.buf, v.off + v.len, x, n)) {
-            StrBody* b = const_cast<StrBody*>(p_.get());
-            b->invalidate();
-            delete b->view->flat.exchange(nullptr, std::memory_order_acq_rel);
-            b->view->len += n;
+        if (b->refs_.load(std::memory_order_acquire) == 1 && claimBack(*v.buf, v.off + v.len, x, n)) {
+            StrBody* w = const_cast<StrBody*>(b);
+            w->invalidate();
+            delete w->view->flat.exchange(nullptr, std::memory_order_acq_rel);
+            w->view->len += n;
             if (v.buf->clean.load(std::memory_order_acquire)) {
-                b->allAscii.store(1, std::memory_order_relaxed);
-                b->crFree.store(1, std::memory_order_relaxed);
-                b->nGraphemes.store((long long)b->view->len, std::memory_order_relaxed);
+                w->allAscii.store(1, std::memory_order_relaxed);
+                w->crFree.store(1, std::memory_order_relaxed);
+                w->nGraphemes.store((long long)w->view->len, std::memory_order_relaxed);
             }
             return;
         }
-        p_ = viewAppend(v, x, n);
+        setBody(viewAppend(v, x, n));
         return;
     }
-    if (p_->refs_.load(std::memory_order_acquire) == 1) {   // the flat case, as `+=` has it
-        StrBody* b = const_cast<StrBody*>(p_.get());
-        b->invalidate();
-        b->text.append(x, n);
+    if (b->refs_.load(std::memory_order_acquire) == 1) {   // the flat case, as `+=` has it
+        StrBody* w = const_cast<StrBody*>(b);
+        w->invalidate();
+        w->text.append(x, n);
         return;
     }
     // a body others hold keeps its text for them
-    if (p_->text.size() + n >= kViewMin) { p_ = freshView(p_->text.data(), p_->text.size(), x, n); return; }
-    s_ = p_->text;
-    s_.append(x, n);
-    p_.reset();
+    if (b->text.size() + n >= kViewMin) { setBody(freshView(b->text.data(), b->text.size(), x, n)); return; }
+    std::string t;
+    t.reserve(b->text.size() + n);
+    t.append(b->text).append(x, n);
     RAKUPP_STR_CEN(cenWrite();)
-    grown();
+    store(std::move(t));
 }
 
 void CowStr::spliceTail(size_t keep, const std::string& mid, const char* x, size_t n) {
-    if (p_ && !p_->view && p_->refs_.load(std::memory_order_acquire) == 1) {
-        StrBody* b = const_cast<StrBody*>(p_.get());
+    if (isBody() && !bodyRaw()->view && bodyRaw()->refs_.load(std::memory_order_acquire) == 1) {
+        StrBody* b = const_cast<StrBody*>(bodyRaw());
         b->invalidate();
         b->text.resize(keep);
         b->text += mid;
@@ -300,56 +301,64 @@ void CowStr::spliceTail(size_t keep, const std::string& mid, const char* x, size
 }
 
 void CowStr::prependText(const char* x, size_t n) {
-    if (!p_) {
-        if (s_.size() + n < kViewMin) { RAKUPP_STR_CEN(cenWrite();) s_.insert(0, x, n); grown(); return; }
+    if (!isBody()) {
+        const size_t l = ilen();
+        if (l + n < kViewMin) {
+            std::string t;
+            t.reserve(l + n);
+            t.append(x, n).append(raw_, l);
+            RAKUPP_STR_CEN(cenWrite();)
+            store(std::move(t));
+            return;
+        }
         RAKUPP_STR_CEN(cenEnd();)
-        p_ = freshView(x, n, s_.data(), s_.size());
-        s_.clear();
+        setBody(freshView(x, n, raw_, l));
         return;
     }
-    if (p_->view) {
-        const StrView& v = *p_->view;
-        if (p_->refs_.load(std::memory_order_acquire) == 1 && claimFront(*v.buf, v.off, x, n)) {
-            StrBody* b = const_cast<StrBody*>(p_.get());
-            b->invalidate();
-            delete b->view->flat.exchange(nullptr, std::memory_order_acq_rel);
-            b->view->off -= n;
-            b->view->len += n;
+    const StrBody* b = bodyRaw();
+    if (b->view) {
+        const StrView& v = *b->view;
+        if (b->refs_.load(std::memory_order_acquire) == 1 && claimFront(*v.buf, v.off, x, n)) {
+            StrBody* w = const_cast<StrBody*>(b);
+            w->invalidate();
+            delete w->view->flat.exchange(nullptr, std::memory_order_acq_rel);
+            w->view->off -= n;
+            w->view->len += n;
             if (v.buf->clean.load(std::memory_order_acquire)) {
-                b->allAscii.store(1, std::memory_order_relaxed);
-                b->crFree.store(1, std::memory_order_relaxed);
-                b->nGraphemes.store((long long)b->view->len, std::memory_order_relaxed);
+                w->allAscii.store(1, std::memory_order_relaxed);
+                w->crFree.store(1, std::memory_order_relaxed);
+                w->nGraphemes.store((long long)w->view->len, std::memory_order_relaxed);
             }
             return;
         }
-        p_ = viewPrepend(x, n, v);
+        setBody(viewPrepend(x, n, v));
         return;
     }
-    p_ = freshView(x, n, p_->text.data(), p_->text.size());
+    setBody(freshView(x, n, b->text.data(), b->text.size()));
 }
 
 bool CowStr::joinPrepend(CowStr& out, const char* x, size_t n, const CowStr& r) {
-    if (!r.p_ || r.p_->size() + n < kViewMin) return false;
-    const StrBody& b = *r.p_;
-    Ref<const StrBody> nb = b.view ? viewPrepend(x, n, *b.view) : freshView(x, n, b.text.data(), b.text.size());
+    const StrBody* b = r.body();
+    if (!b || b->size() + n < kViewMin) return false;
+    Ref<const StrBody> nb = b->view ? viewPrepend(x, n, *b->view) : freshView(x, n, b->text.data(), b->text.size());
     RAKUPP_STR_CEN(out.cenEnd();)
-    out.s_.clear();
-    out.p_ = std::move(nb);
+    out.setBody(std::move(nb));
     return true;
 }
 
 bool CowStr::joinAppend(CowStr& out, const CowStr& l, const char* x, size_t n) {
-    if (!l.p_ || !l.p_->view || l.p_->view->len + n < kViewMin) return false;
-    Ref<const StrBody> nb = viewAppend(*l.p_->view, x, n);
+    const StrBody* b = l.body();
+    if (!b || !b->view || b->view->len + n < kViewMin) return false;
+    Ref<const StrBody> nb = viewAppend(*b->view, x, n);
     RAKUPP_STR_CEN(out.cenEnd();)
-    out.s_.clear();
-    out.p_ = std::move(nb);
+    out.setBody(std::move(nb));
     return true;
 }
 
 bool CowStr::sub(CowStr& out, const CowStr& s, size_t off, size_t len) {
-    if (!s.p_ || len < kViewMin) return false;
-    const StrBody& b = *s.p_;
+    const StrBody* sb = s.body();
+    if (!sb || len < kViewMin) return false;
+    const StrBody& b = *sb;
     if (off > b.size() || len > b.size() - off) return false;
     Ref<const StrBody> nb;
     if (b.view) {
@@ -365,9 +374,25 @@ bool CowStr::sub(CowStr& out, const CowStr& s, size_t off, size_t len) {
         nb = freshView(b.text.data() + off, len, nullptr, 0);
     }
     RAKUPP_STR_CEN(out.cenEnd();)
-    out.s_.clear();
-    out.p_ = std::move(nb);
+    out.setBody(std::move(nb));
     return true;
+}
+
+Value strLitBuild(const StrLit* s) {
+    RAKUPP_STR_CEN(StrCenLit lit_;)
+    unsigned char state = 0;
+    if (!s->evalState.compare_exchange_strong(state, 1, std::memory_order_acquire)) {
+        if (state == 2) return *std::launder(reinterpret_cast<const Value*>(s->evalStore));
+        return Value::str(s->v);   // another thread is building it: this one makes its own
+    }
+    const Value* v;
+    try { v = ::new (static_cast<void*>(s->evalStore)) Value(Value::str(s->v)); }
+    catch (...) { s->evalState.store(0, std::memory_order_release); throw; }
+    s->evalState.store(2, std::memory_order_release);
+    return *v;
+}
+StrLit::~StrLit() {
+    if (evalState.load(std::memory_order_acquire) == 2) std::launder(reinterpret_cast<Value*>(evalStore))->~Value();
 }
 
 // A packed array unpacks once (PACKED-ARRAY-PLAN): the first arr()/arrS() on
@@ -655,7 +680,7 @@ long long Value::toInt() const {
                 try {
                     double d = s[pos] == '/' ? (cnum::stod(s.substr(pos + 1)) == 0.0 ? 0.0
                                                 : (double)v / cnum::stod(s.substr(pos + 1)))
-                                             : cnum::stod(s);
+                                             : cnum::stod(std::string(s));
                     if (std::isnan(d)) return 0;
                     if (d >= 9223372036854775807.0) return 9223372036854775807LL;
                     if (d <= -9223372036854775808.0) return -9223372036854775807LL - 1;
@@ -717,17 +742,18 @@ long long Value::toInt() const {
 
 // Parse a leading number the way `std::stod` does, but WITHOUT throwing: an
 // unparseable string is 0.0, which is what every caller here wanted anyway.
-static double strToNumOr0(const std::string& s) {
-    if (s.empty()) return 0.0;
+// (`p` ends in a NUL at p[n], as a CowStr's c_str() and a std::string's do:
+// strtod reads to the first byte that is not part of a number)
+static double strToNumOr0(const char* p, size_t n) {
+    if (n == 0) return 0.0;
     // A leading Unicode MINUS SIGN (U+2212) counts as a minus, the way the full
     // numeric-string grammar already treats it — strtod stops dead at it, so
     // `"−0".Num` came back as +0e0 where `"-0".Num` was -0e0 and Roast tells
     // the two zeros apart through atan2 (S32-num/negative-zero.t).
-    if (s.compare(0, 3, "\xE2\x88\x92") == 0) {
-        std::string ascii = "-" + s.substr(3);
-        return strToNumOr0(ascii);
+    if (n >= 3 && std::memcmp(p, "\xE2\x88\x92", 3) == 0) {
+        std::string ascii = "-" + std::string(p + 3, n - 3);
+        return strToNumOr0(ascii.c_str(), ascii.size());
     }
-    const char* p = s.c_str();
     char* end = nullptr;
     errno = 0;
     double d = cnum::strtod(p, &end);
@@ -774,8 +800,8 @@ double Value::toNum() const {
         // `end == data()` and costs nothing.
         case VT::Str:
             if (hashKind == "Blob" || hashKind == "Buf") return (double)blobElems(); // element count, like .Int
-            return strToNumOr0(s);
-        case VT::Match: return strToNumOr0(s);
+            return strToNumOr0(s.c_str(), s.size());
+        case VT::Match: return strToNumOr0(s.c_str(), s.size());
         // a DateTime's instant keeps its fractional seconds — toInt would truncate them
         case VT::Hash:
             if ((hashKind == "Date" || hashKind == "DateTime") && hash()) return dateNumeric(*this);
@@ -880,13 +906,13 @@ std::string Value::toStr() const {
         if (t == VT::Str && hashKind == "CArray" && g_carrayStr) return g_carrayStr(*this);
         // a Str-VALUED member stringifies to its value (`enum E (x => "val")`:
         // ~x is "val"), an Int-valued one to its key — Rakudo-verified both ways
-        if (t == VT::Int && pairVal() && pairVal()->t == VT::Str) return pairVal()->s;
+        if (t == VT::Int && pairVal() && pairVal()->t == VT::Str) return pairVal()->s.copyText();
         return enumName;
     }
     // …and the enum's TYPE OBJECT, undefined, is "" (the interpreter's strOf
     // warns about it first)
     if (t == VT::Array && !enumType.empty() && isEnumTypeObject(*this)) return "";
-    if (isAllomorph()) return s; // the allomorph's source string ("0123", "1/3", …)
+    if (isAllomorph()) return std::string(s); // the allomorph's source string ("0123", "1/3", …)
     // an Instant says what it is: `say now` and `~now` are "Instant:1704067274"
     // in Rakudo, both .Str and .gist (its number is .Numeric / .tai / .to-posix)
     if ((t == VT::Int || t == VT::Rat || t == VT::Num) && hashKind == "Instant") {
@@ -948,7 +974,7 @@ std::string Value::toStr() const {
                                             : Value::typeObj("X::Numeric::DivideByZero"), msg};
             }
             return (ratN() && ratD()) ? ratToStr(*ratN(), *ratD(), fatRat()) : "0";
-        case VT::Str:  return s;
+        case VT::Str:  return std::string(s);
         // IterationEnd is a SENTINEL, not a type object — it stringifies bare.
         //
         // A type object STRINGIFIES EMPTY (Rakudo warns and yields ""); the
@@ -962,7 +988,7 @@ std::string Value::toStr() const {
         // files. baggyKeyStr now opens with its own `v.t == VT::Type` arm that
         // keys on the gist, which is exactly the "give makeBaggy its own key
         // function first" the old note asked for — so the blocker is gone.
-        case VT::Type: return s == "IterationEnd" ? s.str() : std::string();
+        case VT::Type: return s == "IterationEnd" ? std::string(s) : std::string();
         case VT::Pair: return s + "\t" + (pairVal() ? pairVal()->toStr() : "");
         case VT::Range: {
             // a finite Range stringifies to its elements (`put 1..5` → 1 2 3 4 5);
@@ -1130,15 +1156,15 @@ std::string Value::toStr() const {
             if (obj() && obj()->hasBoxed) return obj()->boxed().toStr(); // but/does mixin over a value
             if (obj() && obj()->cls && obj()->cls->name.rfind("X::", 0) == 0) { // exceptions stringify to their message
                 auto it = obj()->attrs.find("message");
-                if (it != obj()->attrs.end() && it->second.t == VT::Str) return it->second.s;
+                if (it != obj()->attrs.end() && it->second.t == VT::Str) return it->second.s.copyText();
             }
             // Rakudo's default Mu.Str is `Name<identity>` — DISTINCT per object.
             // `isnt $a, $a.clone` is a string compare and must see two objects.
             return obj() && obj()->cls
                 ? obj()->cls->name + "<" + std::to_string((uintptr_t)obj()) + ">"
                 : "Object";
-        case VT::Regex: return s;
-        case VT::Match: return s;
+        case VT::Regex: return std::string(s);
+        case VT::Match: return std::string(s);
     }
     return "";
 }
@@ -1182,7 +1208,7 @@ std::string Value::gist() const {
         // been pulled (sheet LA-02).
         return isList ? "(...)" : "[...]";
     }
-    if (isAllomorph()) return s; // IntStr `<0123>`.gist is "0123"
+    if (isAllomorph()) return std::string(s); // IntStr `<0123>`.gist is "0123"
     // a HANDLED Failure gists as its message, marked (an unhandled one
     // detonates before anything asks it for a gist)
     if (t == VT::Hash && hashKind == "Failure" && hash()) {
@@ -1203,7 +1229,7 @@ std::string Value::gist() const {
     // for the gist made a standard handle's path indistinguishable from a file
     // literally named "<STDIN>".
     if (t == VT::Str && hashKind == "IO::Special")
-        return "IO::Special.new(\"" + s.str() + "\")";
+        return "IO::Special.new(\"" + s + "\")";
     // A CArray gists (and `.raku`s) as Rakudo's does, element type and all —
     // its enumName is that type, and the enum arm below printed just "int32".
     if (t == VT::Str && hashKind == "CArray")
@@ -1227,7 +1253,7 @@ std::string Value::gist() const {
         case VT::Any:  return "(Any)";
         case VT::Type:
             // IterationEnd is a SENTINEL, not a type object — it gists bare
-            if (s == "IterationEnd") return s;
+            if (s == "IterationEnd") return std::string(s);
             // A type object gists by its SHORT name — Rakudo renders `.^shortname`,
             // the last `::` segment: `IO::Path` is `(Path)`, `X::AdHoc` is
             // `(AdHoc)`, `Hash::Ordered` is `(Ordered)`. The parameterization stays
@@ -1236,7 +1262,7 @@ std::string Value::gist() const {
             {
                 // a ROLE PUN gists under the name it was written with, not the
                 // registry key that keeps two `Foo[Int]` the same type
-                std::string short_ = g_typeDispName ? g_typeDispName(s) : std::string();
+                std::string short_ = g_typeDispName ? g_typeDispName(std::string(s)) : std::string();
                 if (short_.empty()) short_ = s;
                 auto sep = short_.rfind("::", short_.find('['));
                 if (sep != std::string::npos) short_ = short_.substr(sep + 2);
@@ -1246,7 +1272,7 @@ std::string Value::gist() const {
             }
         // a Regex gists as the literal that makes it, `rx/a/` — not as its bare
         // pattern text (which is what .Str answers, and what the engine consumes)
-        case VT::Regex: if (g_rakuRepr) return g_rakuRepr(*this); return s;
+        case VT::Regex: if (g_rakuRepr) return g_rakuRepr(*this); return std::string(s);
         case VT::Array: {
             seqTouch();   // …and its gist (SeqToken)
             ReprDepthGuard g; if (g.tooDeep()) return isList ? "(...)" : "[...]";
@@ -1294,7 +1320,7 @@ std::string Value::gist() const {
             // rendering (`(1 2) => 3`), and a Pair key is parenthesised so the two
             // arrows do not run together (`(red => 2) => apples`). Only the KEY —
             // Rakudo leaves a Pair VALUE bare.
-            std::string k = hasPairKey() ? (nonStrKey().t == VT::Nil ? std::string("Nil") : nonStrKey().gist()) : s;
+            std::string k = hasPairKey() ? (nonStrKey().t == VT::Nil ? std::string("Nil") : nonStrKey().gist()) : std::string(s);
             if (hasPairKey() && nonStrKey().t == VT::Pair) k = "(" + k + ")";
             return k + " => " + (pairVal() ? pairVal()->gist() : "");
         }
@@ -1320,7 +1346,7 @@ std::string Value::gist() const {
                 }
                 return h + ">";
             }
-            return s;
+            return std::string(s);
         case VT::Range: { // gist keeps the endpoint form (Str expands the elements)
             const char* exF = rExFrom() ? "^" : "";
             const char* exT = rExTo() ? "^" : "";
@@ -1355,8 +1381,8 @@ std::string Value::gist() const {
             // families: Kind(elems). Everything else (Date, Failure, …) keeps
             // its toStr form via the default below.
             if (hashKind == "Attribute" && hash()) { // Str $!name
-                std::string tn = hash()->count("type") ? hash()->at("type").s.str() : std::string("Mu");
-                std::string nm = hash()->count("name") ? hash()->at("name").s.str() : std::string();
+                std::string tn = hash()->count("type") ? hash()->at("type").s.copyText() : std::string("Mu");
+                std::string nm = hash()->count("name") ? hash()->at("name").s.copyText() : std::string();
                 return (tn.empty() ? "Mu" : tn) + " " + nm;
             }
             // $*RAKU / $*RAKU.compiler. These carry no data of their own — every
@@ -1484,7 +1510,7 @@ std::string Value::gist() const {
             // attribute lines.
             if ((hashKind == "Signature" || hashKind == "Parameter") && hash()) {
                 auto it = hash()->find("str");
-                if (it != hash()->end()) return it->second.s;
+                if (it != hash()->end()) return it->second.s.copyText();
             }
             // a Label: `Label<FOO>(at -e:1, '<HERE>FOO: for 1 { …')`
             if (hashKind == "Label" && hash()) {
@@ -1544,7 +1570,7 @@ std::string Value::typeName() const {
         // enumName, which is what makes the parameterized spelling possible.
         case VT::Str:  return hashKind == "IO" ? (enumName.empty() ? "IO::Path" : "IO::Path::" + enumName) : hashKind == "Version" ? "Version" : hashKind == "Blob" ? (enumName.empty() ? std::string("Blob") : enumName.str()) : hashKind == "Buf" ? (ofType().empty() ? std::string("Buf") : "Buf[" + ofType() + "]") : hashKind == "IO::Special" ? "IO::Special" : hashKind == "CArray" ? (enumName.empty() ? "CArray" : "CArray[" + enumName + "]") : hashKind == "ObjAt" ? "ObjAt" : hashKind == "ValueObjAt" ? "ValueObjAt" : "Str";
         case VT::Array:
-            if (s == "Uni" || s == "NFC" || s == "NFD" || s == "NFKC" || s == "NFKD") return s;
+            if (s == "Uni" || s == "NFC" || s == "NFD" || s == "NFKC" || s == "NFKD") return std::string(s);
             if (enumName == "any" || enumName == "all" || enumName == "one" || enumName == "none") return "Junction";
             if (hashKind == "Capture") return "Capture"; // \(…) literal
             // a native array names its element: `array[uint8]` — the type
@@ -1557,7 +1583,7 @@ std::string Value::typeName() const {
             }
             return !isList ? "Array" : s == "Seq" ? "Seq" : s == "Slip" ? "Slip" : s == "Backtrace" ? "Backtrace" : s == "WalkList" ? "WalkList" :
                    s == "HyperSeq" ? "HyperSeq" : s == "RaceSeq" ? "RaceSeq" : "List";
-        case VT::Hash:  if (hashKind == "Pod" && hash() && hash()->count("podclass")) return hash()->at("podclass").s;
+        case VT::Hash:  if (hashKind == "Pod" && hash() && hash()->count("podclass")) return hash()->at("podclass").s.copyText();
                         // a connected async socket is an IO::Socket::Async (Rakudo's
                         // type); the internal "AsyncSocket" kind only drives dispatch.
                         if (hashKind == "AsyncSocket") return "IO::Socket::Async";
@@ -1611,7 +1637,7 @@ std::string Value::typeName() const {
         case VT::Rat:   return fatRat() ? "FatRat" : "Rat";
         case VT::Range: return "Range";
         case VT::Pair:  return "Pair";
-        case VT::Type:  return ofType().empty() ? s : s + "[" + ofType() + "]";
+        case VT::Type:  return ofType().empty() ? std::string(s) : s + "[" + ofType() + "]";
         case VT::Whatever: return b ? "HyperWhatever" : "Whatever"; // `**` marks hyper via .b
         case VT::Object: return obj() && obj()->cls ? obj()->cls->name : "Object";
         case VT::Regex: return "Regex";
@@ -1753,7 +1779,7 @@ ValueList Value::flatten() const {
 // segments are skipped — "abc.txt"++ is "abd.txt", "foo.tar.gz"++ is
 // "fop.tar.gz", "v1.2.3"++ is "v2.2.3". Returns false when nothing in the
 // string is incrementable (".txt", "🐧.txt", "") — the string stays unchanged.
-static bool succWindow(const std::string& s, int& lo, int& hi) {
+static bool succWindow(std::string_view s, int& lo, int& hi) {
     auto alnum = [](unsigned char c) {
         return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z');
     };
@@ -1829,7 +1855,7 @@ static bool succStepable(uint32_t cp) {
     const SuccSet* g = nullptr;
     return succRangeOf(cp) || succSetIndex(cp, g) >= 0;
 }
-static std::vector<uint32_t> sxDecode(const std::string& s) {
+static std::vector<uint32_t> sxDecode(std::string_view s) {
     std::vector<uint32_t> out;
     for (size_t i = 0; i < s.size();) {
         unsigned char c = s[i];
@@ -1877,7 +1903,7 @@ static bool succWindowCp(const std::vector<uint32_t>& c, int& lo, int& hi) {
     }
     return false;
 }
-static bool sxAscii(const std::string& s) {
+static bool sxAscii(std::string_view s) {
     for (unsigned char c : s) if (c >= 0x80) return false;
     return true;
 }
@@ -1890,11 +1916,11 @@ std::string ncPointerText(const std::string& kind, const std::string& of, long l
     return out + buf + ">";
 }
 
-std::string strSucc(const std::string& s) {
+std::string strSucc(std::string_view s) {
     if (sxAscii(s)) { // fast byte path for the overwhelmingly common case
         int lo, hi;
-        if (!succWindow(s, lo, hi)) return s; // nothing incrementable: unchanged (Rakudo)
-        std::string r = s;
+        if (!succWindow(s, lo, hi)) return std::string(s); // nothing incrementable: unchanged (Rakudo)
+        std::string r(s);
         int pos = hi - 1;
         for (; pos >= lo; --pos) {
             char c = r[pos];
@@ -1910,7 +1936,7 @@ std::string strSucc(const std::string& s) {
     }
     std::vector<uint32_t> c = sxDecode(s);
     int lo, hi;
-    if (!succWindowCp(c, lo, hi)) return s;
+    if (!succWindowCp(c, lo, hi)) return std::string(s);
     for (int pos = hi - 1; pos >= lo; --pos) {
         const SuccSet* g = nullptr;
         int gi = succSetIndex(c[pos], g);
@@ -1933,12 +1959,12 @@ std::string strSucc(const std::string& s) {
     return sxEncode(c);
 }
 
-std::string strPred(const std::string& s, bool& ok) {
+std::string strPred(std::string_view s, bool& ok) {
     ok = true;
     if (sxAscii(s)) {
         int lo, hi;
-        if (!succWindow(s, lo, hi)) return s; // nothing decrementable: unchanged
-        std::string r = s;
+        if (!succWindow(s, lo, hi)) return std::string(s); // nothing decrementable: unchanged
+        std::string r(s);
         int pos = hi - 1;
         for (; pos >= lo; --pos) {
             char c = r[pos];
@@ -1947,11 +1973,11 @@ std::string strPred(const std::string& s, bool& ok) {
             else { if (c != 'A') { r[pos] = c - 1; return r; } r[pos] = 'Z'; }
         }
         ok = false; // borrowed past the window start: "Decrement out of range"
-        return s;
+        return std::string(s);
     }
     std::vector<uint32_t> c = sxDecode(s);
     int lo, hi;
-    if (!succWindowCp(c, lo, hi)) return s;
+    if (!succWindowCp(c, lo, hi)) return std::string(s);
     for (int pos = hi - 1; pos >= lo; --pos) {
         const SuccSet* g = nullptr;
         int gi = succSetIndex(c[pos], g);
@@ -1970,7 +1996,7 @@ std::string strPred(const std::string& s, bool& ok) {
         c[pos] = r->hi == r->skip ? r->hi - 1 : r->hi; // borrow (skip can't sit at hi in our table)
     }
     ok = false; // borrowed past the window start
-    return s;
+    return std::string(s);
 }
 
 bool valueEq(const Value& a, const Value& b) {
@@ -2086,7 +2112,7 @@ int valueCmp(const Value& a, const Value& b) {
     // two ALLOMORPHS of equal value order by their STRINGS: IntStr 123 "00123"
     // sorts before IntStr 123 "123" (Rakudo's Allomorph cmp)
     if (c == 0 && a.isAllomorph() && b.isAllomorph()) {
-        const std::string sa = a.s.str(), sb = b.s.str();
+        const std::string_view sa = a.s.str(), sb = b.s.str();
         return sa < sb ? -1 : sa > sb ? 1 : 0;
     }
     return c;

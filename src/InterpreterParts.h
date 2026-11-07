@@ -232,7 +232,7 @@ static inline std::string lexicalTypeName(Interpreter& I, const std::string& n) 
     if (n.empty() || !Interpreter::tctx().cur) return n;
     Value* tv = Interpreter::tctx().cur->find(n);
     if (tv && tv->t == VT::Type && !tv->s.empty() && tv->s != n && I.classes_.count(tv->s))
-        return tv->s;
+        return tv->s.copyText();
     return n;
 }
 bool capturedType(Interpreter& I, Env* scope, const std::string& name, Value& out);
@@ -670,7 +670,7 @@ Value strRangeList(const std::string& min, const std::string& to, bool exFrom, b
 static inline Value strRangeVal(const Value& from, const Value& to, bool exFrom, bool exTo) {
     Value r = Value::range(u8FirstCp(from.s), u8FirstCp(to.s), exFrom, exTo);
     r.ofTypeM() = "Str";
-    attachRangeEnds(r, Value::str(from.s.str()), Value::str(to.s.str()));
+    attachRangeEnds(r, Value::str(from.s), Value::str(to.s));
     return r;
 }
 
@@ -687,7 +687,7 @@ static inline Value strLeftRange(const Value& from, const Value& to, bool exFrom
         attachRangeEnds(r, from, to);
         return r;
     }
-    return strRangeList(from.s.str(), tos, exFrom, exTo);
+    return strRangeList(from.s.copyText(), tos, exFrom, exTo);
 }
 
 static inline void checkRangeEndpoint(const Value& v) {
@@ -747,19 +747,19 @@ extern Interpreter* g_cbInterp;
 
 // the live interpreter's class registry, for free-function smartmatch on user
 // type objects (applyArith has no Interpreter&); the newest instance wins
-extern std::unordered_map<std::string, std::shared_ptr<ClassInfo>>* g_matchClasses;
+extern StrMap<std::shared_ptr<ClassInfo>>* g_matchClasses;
 // …and the alias table beside it, for the identity operators (free functions)
-extern const std::unordered_map<std::string, std::string>* g_classAliases;
+extern const StrMap<std::string>* g_classAliases;
 // subset check for free-function ~~ (`5 ~~ Five`): returns true and sets `out`
 // when the RHS names a live subset; the newest interpreter instance wins
-extern std::function<bool(const std::string&, const Value&, bool&)> g_subsetCheck;
+extern std::function<bool(std::string_view, const Value&, bool&)> g_subsetCheck;
 // applyArith is a free function, but the Whatever-curry it builds has to resolve
 // a shadowing `&infix:<op>` in the scope it is being written in — same shape as
 // g_deproxy, and set from the same place.
 extern std::function<Value*(const std::string&)> g_lexInfixLookup;
 
-void rtSetAliasView(const std::unordered_map<std::string, std::string>* a,
-                    const std::unordered_map<std::string, std::shared_ptr<ClassInfo>>* c); // defined near typeMatchesArg
+void rtSetAliasView(const StrMap<std::string>* a,
+                    const StrMap<std::shared_ptr<ClassInfo>>* c); // defined near typeMatchesArg
 
 // ---- a block's lexicals exist from the moment the block is ENTERED ---------
 //
@@ -1067,10 +1067,10 @@ bool typeNameConforms(const std::string& lnIn, const std::string& rn,
 // Package-relative short-name view for the type matchers (free/static functions):
 // set by the Interpreter so `has Path $.path` accepts a URI::Path object when
 // `Path` is an alias. Null in the compiled-runtime path (no aliasing there).
-extern const std::unordered_map<std::string, std::string>* s_classAliases;
-extern const std::unordered_map<std::string, std::shared_ptr<ClassInfo>>* s_classesForAlias;
-void rtSetAliasView(const std::unordered_map<std::string, std::string>* a,
-                    const std::unordered_map<std::string, std::shared_ptr<ClassInfo>>* c);
+extern const StrMap<std::string>* s_classAliases;
+extern const StrMap<std::shared_ptr<ClassInfo>>* s_classesForAlias;
+void rtSetAliasView(const StrMap<std::string>* a,
+                    const StrMap<std::shared_ptr<ClassInfo>>* c);
 // resolve a type-constraint name through the alias table — only when no REAL
 // class claims the short name (a later genuine `class Path` wins over the alias)
 static inline const std::string& aliasType(const std::string& type) {
@@ -1260,7 +1260,7 @@ static inline std::string vmName() {
 // as opposed to a `{` inside a quoted atom (`"{NAME}"`, interpolated where it
 // is spliced), an escape, or a repetition count (`** {2..3}`)? Such a regex
 // runs its blocks in the scope it was written in (#147, regexClosingOver).
-static inline bool rxHasCodeBlock(const std::string& p) {
+static inline bool rxHasCodeBlock(std::string_view p) {
     char q = 0;
     for (size_t i = 0; i < p.size(); i++) {
         char c = p[i];
@@ -1639,7 +1639,7 @@ Value composeCode(const Value& fV, const Value& gV);
 // Shared by `~~` and by every builtin that compiles a raw pattern (`.split`).
 // A `:P5`/`:Perl5` adverb among the leading `:adv ` tokens the lexer bakes into
 // a regex literal — the whole pattern is Perl 5 syntax.
-bool isP5Pattern(const std::string& pat);
+bool isP5Pattern(std::string_view pat);
 // Whether interpRegexPattern has anything to do in a pattern: a `$` (a variable,
 // `$( … )`), or a `{` after a `"` (a qq `{ … }` inside a double-quoted atom).
 // Every caller that skips the pass for a cheap reason asks this one question.

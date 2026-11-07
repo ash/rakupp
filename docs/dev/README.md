@@ -83,6 +83,12 @@ Next up:
 
   It also gives the fact layer that would answer all of them, the question
   of width that only the board asks, and the first steps.
+- **[plans/CXX20-PLAN.md](plans/CXX20-PLAN.md)**: **moving to C++20, later**
+  (a note for later, 2026-11-07; staying on C++17 for now). The tree already
+  compiles as C++20, and the users' compilers mostly support it. One language
+  mode must cover the build, `--exe` and the JIT. In C++20 mode the
+  `--exe`/JIT header parse costs +21%, and what it buys is convenience. It
+  also lists the steps for when the move comes.
 - **[plans/V5-IDEAS.md](plans/V5-IDEAS.md)** — the candidate list both plans
   were chosen from (collecting, 2026-09-17). What it still holds is
   unscheduled: platforms and hosts, the capability sandbox, modules and the

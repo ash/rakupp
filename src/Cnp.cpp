@@ -576,7 +576,7 @@ int rk_cnp_natchk(RkCnpFrame* f, uint64_t reg, uint64_t kind, uint64_t name, uin
             return 0;
         }
         const auto& consts = *static_cast<const std::vector<Value>*>(f->consts);
-        nativeAssignCheck(v, 64, isFloat, consts[name].s.str(), true);
+        nativeAssignCheck(v, 64, isFloat, consts[name].s.copyText(), true);
         // …and what the check accepts is stored as the interpreter stores it
         if (isFloat) setReg(f, reg, Value::number(v.toNum()));
         else if (v.t == VT::Int && v.big()) setReg(f, reg, Value::integer((long long)v.big()->toU64Wrap()));

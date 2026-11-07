@@ -49,10 +49,10 @@ static void nfcCheckReport(const std::string& what) {
     std::fputs(msg.c_str(), f ? f : stderr);
     if (f) std::fclose(f);
 }
-static void nfcCheckJoin(const std::string& a, const std::string& b, const std::string& got) {
-    if (nfcNormalize(a + b) == got) return;
+static void nfcCheckJoin(std::string_view a, std::string_view b, std::string_view got) {
+    if (nfcNormalize(strCat(a, b)) == got) return;
     nfcCheckReport("join differs from the whole-string pass: left " +
-                   nfcCheckShow(a.size() > 96 ? a.substr(a.size() - 96) : a) + ", right " + nfcCheckShow(b.substr(0, 96)));
+                   nfcCheckShow(std::string(a.size() > 96 ? a.substr(a.size() - 96) : a)) + ", right " + nfcCheckShow(std::string(b.substr(0, 96))));
 }
 
 void nfcDecodeInPlace(std::string& text) {
@@ -79,7 +79,7 @@ bool cowIsNfc(const CowStr& s) {
         b->nfc.store(c, std::memory_order_relaxed);
     }
     else if (g_nfcCheck && c == 1 && !isNfcText(s.bytes(), s.size()))
-        nfcCheckReport("a Str marked NFC is not: " + nfcCheckShow(s.str().substr(0, 96)));
+        nfcCheckReport("a Str marked NFC is not: " + nfcCheckShow(std::string(s.str().substr(0, 96))));
     return c == 1;
 }
 int nfcKnown(const Value& v) {
@@ -90,7 +90,7 @@ static void markNfc(const CowStr& s) {
 }
 
 // the join itself, for two NFC sides
-static std::string joinNfc(const std::string& a, const std::string& b) {
+static std::string joinNfc(std::string_view a, std::string_view b) {
     const UniNfcJoin J = uniNfcJoin(a.data(), a.size(), b.data(), b.size());
     std::string out;
     if (!J.changed) {
@@ -107,10 +107,10 @@ static std::string joinNfc(const std::string& a, const std::string& b) {
     return out;
 }
 
-std::string nfcConcat(const std::string& a, const std::string& b, int aNfc, int bNfc) {
+std::string nfcConcat(std::string_view a, std::string_view b, int aNfc, int bNfc) {
     std::string na, nb;
-    const std::string& A = aNfc == 1 || (aNfc < 0 && isNfcText(a)) ? a : (na = nfcNormalize(a));
-    const std::string& B = bNfc == 1 || (bNfc < 0 && isNfcText(b)) ? b : (nb = nfcNormalize(b));
+    const std::string_view A = aNfc == 1 || (aNfc < 0 && isNfcText(a)) ? a : std::string_view(na = nfcNormalize(std::string(a)));
+    const std::string_view B = bNfc == 1 || (bNfc < 0 && isNfcText(b)) ? b : std::string_view(nb = nfcNormalize(std::string(b)));
     std::string out = joinNfc(A, B);
     if (g_nfcCheck) nfcCheckJoin(a, b, out);
     return out;
@@ -121,19 +121,21 @@ Value nfcConcatStr(const CowStr& a, const CowStr& b) {
     return out;
 }
 
-void nfcAppend(std::string& dst, const std::string& v, long long* chars, signed char* dstNfc) {
-    if (&v == &dst) { const std::string copy = v; nfcAppend(dst, copy, chars, dstNfc); return; }
+void nfcAppend(std::string& dst, std::string_view v, long long* chars, signed char* dstNfc) {
+    if (v.data() < dst.data() + dst.size() && dst.data() < v.data() + v.size()) {   // its own text, or part of it
+        const std::string copy(v); nfcAppend(dst, copy, chars, dstNfc); return;
+    }
     std::string before;
     if (g_nfcCheck) before = dst;
     const bool dn = dstNfc && *dstNfc >= 0 ? *dstNfc == 1 : isNfcText(dst);
     if (dstNfc) *dstNfc = 1;   // whichever way it goes, the result is NFC
     if (!dn) {   // the old way, once: all of it
-        dst = nfcNormalize(dst + v);
+        dst = nfcNormalize(strCat(dst, v));
         if (chars) *chars = -1;
     }
     else {
         std::string nv;
-        const std::string& V = isNfcText(v) ? v : (nv = nfcNormalize(v));
+        const std::string_view V = isNfcText(v) ? v : std::string_view(nv = nfcNormalize(std::string(v)));
         const UniNfcJoin J = uniNfcJoin(dst.data(), dst.size(), V.data(), V.size());
         UniGraphemeJoin G;
         if (chars && *chars >= 0) G = uniGraphemeJoin(dst.data(), dst.size(), J, V.data(), V.size());
@@ -166,7 +168,7 @@ void nfcAppendCow(CowStr& dst, const char* v, size_t nv, int vNfc) {
     std::string before;
     if (g_nfcCheck) before.assign(d, nd);
     if (!cowIsNfc(dst)) {   // the old way, once: all of it
-        dst = nfcNormalize(dst.str() + std::string(v, nv));
+        dst = nfcNormalize(strCat(dst.str(), std::string_view(v, nv)));
         markNfc(dst);
         if (g_nfcCheck) nfcCheckJoin(before, std::string(v, nv), dst.str());
         return;
@@ -218,7 +220,7 @@ void nfcPrependCow(CowStr& dst, const char* x, size_t nx) {
         x = nxText.data();
         nx = nxText.size();
     }
-    if (!cowIsNfc(dst)) dst = nfcNormalize(std::string(x, nx) + dst.str());
+    if (!cowIsNfc(dst)) dst = nfcNormalize(strCat(std::string_view(x, nx), dst.str()));
     else {
         const UniNfcJoin J = uniNfcJoin(x, nx, d, nd);
         if (!J.changed) dst.prependText(x, nx);
@@ -235,9 +237,9 @@ void nfcPrependCow(CowStr& dst, const char* x, size_t nx) {
     if (g_nfcCheck) nfcCheckJoin(nxText.empty() ? std::string(x, nx) : nxText, before, dst.str());
 }
 
-void nfcAppendPartSlow(std::string& out, const std::string& part, int partNfc) {
+void nfcAppendPartSlow(std::string& out, std::string_view part, int partNfc) {
     std::string np;
-    const std::string& P = partNfc == 1 || (partNfc < 0 && isNfcText(part)) ? part : (np = nfcNormalize(part));
+    const std::string_view P = partNfc == 1 || (partNfc < 0 && isNfcText(part)) ? part : std::string_view(np = nfcNormalize(std::string(part)));
     if (out.empty() || P.empty() || (unsigned char)P[0] < 0x80) { out += P; return; }
     signed char known = 1;   // (out is built by these joins alone)
     nfcAppend(out, P, nullptr, &known);

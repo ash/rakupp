@@ -251,17 +251,17 @@ inline void fillArrayHoles(const Value& arr, ValueList& items) {
 Value outOfRangePos(Interpreter& I, const std::string& method, const Value& got,
                     const std::string& subject);
 Value outOfRangePos(Interpreter& I, const std::string& method, const Value& got, long long chars);
-std::vector<uint32_t> utf8cp(const std::string& s);
+std::vector<uint32_t> utf8cp(std::string_view s);
 long long strDistance(const std::string& before, const std::string& after);
 // Leading ASCII bytes of `s`, capped at `limit`; over such a run a codepoint
 // index and a byte index are the same thing, so utf8cp() can be skipped.
-size_t asciiRun(const std::string& s, size_t limit);
-bool allAscii(const std::string& s);
+size_t asciiRun(std::string_view s, size_t limit);
+bool allAscii(std::string_view s);
 // True when a byte index into `s` is also a grapheme index — ASCII and CR-free,
 // so Raku's grapheme-indexed string methods can work on bytes without decoding.
-bool byteIsGraphemeIndex(const std::string& s);
-bool atGraphemeBoundary(const std::string& s, size_t p);                       // Builtins.cpp
-size_t graphemeFind(const std::string& hay, const std::string& ndl, size_t from); // find on cluster boundaries
+bool byteIsGraphemeIndex(std::string_view s);
+bool atGraphemeBoundary(std::string_view s, size_t p);                       // Builtins.cpp
+size_t graphemeFind(std::string_view hay, std::string_view ndl, size_t from); // find on cluster boundaries
 // The GRAPHEME offset of byte `b` in a Match's subject (its ext(), the string
 // every Match of one parse or one :g search shares) — what .from/.to/.pos say.
 // Past a short prefix the subject's table is built once and kept per thread,
@@ -292,7 +292,7 @@ long long cowGraphemeCount(const CowStr& s);
 // nullptr for short (unpromoted) strings — rescanning those is free.
 const std::vector<uint32_t>* cowCpIndex(const CowStr& s);
 const std::vector<uint32_t>* cowGraphemeIndex(const CowStr& s);
-uint32_t cpAtByte(const std::string& s, size_t b); // decode ONE codepoint at byte b
+uint32_t cpAtByte(std::string_view s, size_t b); // decode ONE codepoint at byte b
 
 bool deepEq(const Value& a, const Value& b);
 bool matcherAccepts(Interpreter& I, const Value& v, const Value& mt);
@@ -314,7 +314,7 @@ uint32_t toLowerCp(uint32_t c);
 // a needle spelled in lower case matches either case, one with a capital in it
 // means that spelling exactly. "Does it carry case" is "does folding change it",
 // which is the same question the fold already answers.
-bool strHasNoUpper(const std::string& s);
+bool strHasNoUpper(std::string_view s);
 // Unicode whitespace, the `\s` set: category Z plus the ASCII controls Raku
 // counts (tab, LF, VT, FF, CR) and NEL. `.words` and friends split on this —
 // `std::istream >>` only knows the C locale's ASCII notion of it.
@@ -447,7 +447,7 @@ Value jsonParseDoc(const std::string& text);
 const char* quantValueType(const std::string& kind);
 void rejectNulPath(const std::string& path);
 
-long long graphemeCount(const std::string& s);
+long long graphemeCount(std::string_view s);
 [[noreturn]] void throwFailedOpen(const std::string& path);
 
 // The canonical spelling of an encoding name, as the registry answers it:

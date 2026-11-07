@@ -772,7 +772,7 @@ bool uniGraphemeLeadIsOdd(uint32_t cp) {
 // continuation bytes are not all there, is a codepoint of its own — so index i
 // here is index i there. Empty when there are none, which is found without
 // allocating: the common case.
-static std::vector<bool> syntheticMask(const std::string& s) {
+static std::vector<bool> syntheticMask(std::string_view s) {
     std::vector<bool> mask;
     size_t i = 0, n = s.size(), idx = 0;
     while (i < n) {
@@ -811,7 +811,7 @@ std::vector<size_t> uniGraphemeStarts(const std::vector<uint32_t>& cps) {
     return graphemeStarts(cps, {});
 }
 
-std::vector<size_t> uniGraphemeStarts(const std::vector<uint32_t>& cps, const std::string& src) {
+std::vector<size_t> uniGraphemeStarts(const std::vector<uint32_t>& cps, std::string_view src) {
     std::vector<bool> synth = syntheticMask(src);
     if (synth.size() != cps.size()) synth.clear();   // not utf8cp(src) after all
     return graphemeStarts(cps, synth);
@@ -845,7 +845,7 @@ static inline size_t decUtf8Before(const char* s, size_t q, uint32_t& cp) {
 // Byte offset of the end of the grapheme cluster beginning at UTF-8 byte `pos`
 // (which must be a codepoint boundary). Walks forward applying the UAX #29
 // pairwise rules — O(cluster length), the regex engine's grapheme-atom stride.
-size_t uniClusterEndUtf8(const std::string& s, size_t pos, size_t len) {
+size_t uniClusterEndUtf8(std::string_view s, size_t pos, size_t len) {
     auto dec = [&](size_t p, uint32_t& cp) -> size_t { return decUtf8(s.data(), p, len, cp); };
     if (pos >= len) return pos;
     uint32_t cp; size_t p = pos + dec(pos, cp);
@@ -933,7 +933,7 @@ bool uniGraphemeBreakCertain(uint32_t prev, uint32_t cur) {
     return gbBreakBefore(st, gbProp(cur), incbProp(cur));
 }
 
-size_t uniGraphemeCount(const std::vector<uint32_t>& cps, const std::string& src) {
+size_t uniGraphemeCount(const std::vector<uint32_t>& cps, std::string_view src) {
     return uniGraphemeStarts(cps, src).size();
 }
 
@@ -950,7 +950,7 @@ GraphemeMap::GraphemeMap(const std::vector<uint32_t>& cps) : ncps_(cps.size()) {
 // A synthetic sits below U+0300 itself, but only clusters differently when
 // something at or above U+0300 (or a CR) is around it — so the same pre-check
 // decides whether the walk is needed at all.
-GraphemeMap::GraphemeMap(const std::vector<uint32_t>& cps, const std::string& src) : ncps_(cps.size()) {
+GraphemeMap::GraphemeMap(const std::vector<uint32_t>& cps, std::string_view src) : ncps_(cps.size()) {
     for (uint32_t cp : cps) {
         if (cp >= 0x300 || cp == 0x0D) { starts_ = uniGraphemeStarts(cps, src); return; }
     }
