@@ -240,6 +240,12 @@ std::optional<Value> Interpreter::methodCallEntry(const Value& inv, const std::s
             // `.values` of a plain Hash: a Seq of its values, as the hash arm and
             // methodCall's kv-family step make it
             case VT::Hash:
+                // `.elems` (and `.end`) of a plain Hash: its size. The general
+                // arm counted what toList made of it, a Pair built for every entry.
+                if ((opEq(m, "elems") || opEq(m, "end")) && inv.hash() && !inv.ext()) {
+                    raceKeys(inv.hash(), RaceAcc::Read);
+                    return Value::integer((long long)inv.hash()->size() - (m[0] == 'e' && m[1] == 'n'));
+                }
                 if (opEq(m, "values") && inv.hash()) {
                     Value out = Value::array(); out.isList = true; out.s = "Seq"; raceKeys(inv.hash(), RaceAcc::Read);
                     out.arr()->reserve(inv.hash()->size());

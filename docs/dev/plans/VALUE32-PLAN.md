@@ -1014,9 +1014,11 @@ variable stored 200,000 times. "Kernel" means the loop compiles to one,
 | `%h{$_} = "…19 bytes…"`, kernel | 404,588 → 204,590 | 34.5 → 28.9 ms | |
 
 The hash row's remaining malloc per entry is not the store. It is `say
-%h.elems`, which goes through `toList` and builds a Pair for every entry
-(`hashEntryPair` → `ValueHash::aliasOf`): an O(n) `.elems` on a hash, left as
-found.
+%h.elems`, which went through `toList` and built a Pair for every entry
+(`hashEntryPair` → `ValueHash::aliasOf`): an O(n) `.elems` on a hash. The
+commit after this one answers a plain Hash's `.elems`, `.end` and `.Numeric`
+from its size, in methodCallEntry. That row's program then makes 4,595
+mallocs, where it made 204,626 (`t/regression/hash-elems-size.raku`).
 
 | gate | |
 |---|---|
