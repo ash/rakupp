@@ -5682,7 +5682,7 @@ static bool packedRhsPure(const Expr* e, int depth = 0) {
             auto* ix = static_cast<const Index*>(e);
             return !ix->isHash && !ix->multiDim && !ix->semicolonSub && !ix->zen && ix->adverb.empty() &&
                    ix->base && lex(ix->base.get(), '@') && ix->index &&
-                   (ix->index->kind == NK::IntLit || lex(ix->index.get(), '$'));
+                   (ix->index->kind == NK::IntLit || packedRhsPure(ix->index.get(), depth + 1));
         }
         default: return false;
     }
@@ -5745,8 +5745,10 @@ PackedArr* Interpreter::packedWordAt(Index* ix, size_t& at, bool grow) {
         i = k.i;
     }
     PackedArr* pa = bp->packed();
+    // (a self-packed array grows only at its end: a gap holds no 0e0 but holes)
     if (i < 0 || (i >= (long long)pa->w.size() &&
-                  (!grow || bp->shape() || i - (long long)pa->w.size() >= kPackedGrowGap)))
+                  (!grow || bp->shape() || i - (long long)pa->w.size() >= kPackedGrowGap ||
+                   (pa->selfPacked && i != (long long)pa->w.size()))))
         return nullptr;
     at = (size_t)i;
     return pa;
@@ -5783,6 +5785,7 @@ bool Interpreter::packedComputedRead(Index* ix, const Value& base, std::optional
 // where the same loop over an array built by `»*»` takes 65). False for
 // anything else, a shaped or itemized source among it.
 bool Interpreter::packedCopy(const Value& rhs, const std::string& keepType, Value& out) {
+    if (keepType.empty()) return selfPackCopy(rhs, out);   // (an untyped @c: a self-packing copy)
     if (rhs.t != VT::Array || rhs.itemized || !rhs.packedLive() || !rhs.hashKind.empty() || rhs.ext() || rhs.shape())
         return false;
     const PackedArr* src = rhs.packed();
@@ -5981,6 +5984,11 @@ void Interpreter::arrayStore(Value& lvRef, Value& rhs, bool isAssign, bool dolla
                 packedNow = true;
             }
         }
+        // …and an UNTYPED one packs itself, on the same terms, when every
+        // element is a plain Num (selfPack, JSC-VALUES-2026-11-07)
+        if (!packedNow && isAssign && rhs.t != VT::Nil && keepType.empty() && !keepDefault && nv.arr() &&
+            lv->t == VT::Array && lv->payloadUnique() && !lv->elemDefault() && !lv->shape() && lv->hashKind.empty())
+            packedNow = selfPack(nv);
         // `=` REFILLS the same container (Raku identity): anything bound
         // to @a — a `-> $x` capture, `:=` alias, closure — tracks the change.
         // When the coerced buffer has NO other owner (coerceArray built it

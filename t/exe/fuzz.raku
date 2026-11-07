@@ -31,6 +31,7 @@
 #   rakupp t/exe/fuzz.raku              # both matrices
 #   rakupp t/exe/fuzz.raku --ops        # operators only
 #   rakupp t/exe/fuzz.raku --shapes     # shapes only
+#   rakupp t/exe/fuzz.raku --arrays     # array bodies only (self-packed arrays' words)
 #   rakupp t/exe/fuzz.raku --keep       # leave the generated programs on disk
 #
 # Exit 1 on any mismatch or compile failure.
@@ -40,18 +41,19 @@ my $rakupp = $*EXECUTABLE;
 my @args = @*ARGS;
 my $onlyOps    = so @args.grep('--ops');
 my $onlyShapes = so @args.grep('--shapes');
+my $onlyArrays = so @args.grep('--arrays');
 my $keep       = so @args.grep('--keep');
 
 # Run a command with a wall-clock bound. Returns (Nil, …) if it had to be
 # killed, which is how a non-terminating generated program is caught rather
 # than waited on forever.
 my $LIMIT = 20;
-sub bounded(*@cmd) {
+sub bounded(*@cmd, :%env) {
     my $p = Proc::Async.new(|@cmd);
     my ($o, $e) = '', '';
     $p.stdout.tap({ $o ~= $_ });
     $p.stderr.tap({ $e ~= $_ });
-    my $done = $p.start;
+    my $done = %env ?? $p.start(:ENV(%env)) !! $p.start;
     my $killed = False;
     await Promise.anyof($done, Promise.in($LIMIT));
     unless $done {
@@ -69,7 +71,7 @@ END { if !$keep && $tmp.e { for $tmp.dir { .unlink }; $tmp.rmdir } }
 my @progs;   # (name => source)
 
 # ---- the operator matrix ---------------------------------------------------
-unless $onlyShapes {
+unless $onlyShapes || $onlyArrays {
     my @bin = « + - * / % '<' '<=' '>' '>=' == != '&&' '||' »;
     my @cmp = '+=', '-=', '*=', '/=', '%=';
     my @un  = '-', '+', '!';
@@ -136,7 +138,7 @@ unless $onlyShapes {
 }
 
 # ---- the shape matrix ------------------------------------------------------
-unless $onlyOps {
+unless $onlyOps || $onlyArrays {
     # The counter is advanced at the TOP for `while` and `until`, and the body
     # reads a copy. Advancing it at the bottom — the obvious way to write it —
     # makes any body containing a `next` an INFINITE LOOP, because `next` skips
@@ -196,6 +198,55 @@ unless $onlyOps {
     }
 }
 
+# ---- the array matrix ------------------------------------------------------
+# An untyped Array of Nums packs itself (selfPack), and a lane reads and
+# stores its words (docs/dev/experiments/SELFPACK-EXPERIMENT.md). Every loop
+# kind against every array body, flat and nested: reads, stores, a store then a
+# read past the end (the lane bails and undoes its stores), an Int stored (no
+# lane), a negative subscript (the generic path refuses it). The oracle for
+# these is the interpreter with packing off (RAKUPP_NO_SELFPACK=1): the boxed
+# Array every packed one must answer as.
+my %arrays;   # names of the array programs
+unless $onlyOps || $onlyShapes {
+    my %abodies =
+        read   => '$t = $t + @x[$V] * @x[$V + 1];',
+        store  => '@y[$V] = @x[$V] * 2e0; $t = $t + @y[$V];',
+        stencil => '@y[$V + 1] = 5e-1 * (@x[$V] + @x[$V + 2]);',
+        bail   => '@y[$V] = @x[$V * 3] + 1e0; $t = $t + @y[$V];',
+        int    => '@y[$V] = $V; $t = $t + 1e0;',
+        neg    => '$t = $t + @x[$V - 1];',
+        self   => '@x[$V] = @x[$V] + @x[$V + 4];',
+        ;
+    my $pre = 'my @x = (1 .. 8).map(* * 1e0); my @y = 0e0 xx 8; my $t = 0e0;' ~ "\n";
+    my $post = "\n" ~ 'say "$t"; say @x; say @y;' ~ "\n";
+    for <while until cloop forin forex> -> $k {
+        for %abodies.keys.sort -> $bn {
+            my $b = %abodies{$bn};
+            my $inner = $b.subst('$V', '$a', :g).lines.map({ '    ' ~ $_ }).join("\n");
+            my $flat = mkloop2($k, 'a', $inner);
+            # (a block with a CATCH, not an expression `try`: `try { loop (my $a …) … }`
+            # does not build under --exe, with or without -O, which this matrix found)
+            @progs.push: "arr-$k-$bn" => $pre ~ "\{ $flat; say 'ran'; CATCH \{ default \{ say \"died: \{.^name}\" } } }" ~ $post;
+            %arrays{"arr-$k-$bn"} = True;
+            my $deep = $b.subst('$V', '$b', :g).lines.map({ '    ' ~ $_ }).join("\n");
+            my $mid = mkloop2($k, 'b', $deep).lines.map({ '    ' ~ $_ }).join("\n");
+            @progs.push: "arr-$k-{$bn}-nested" =>
+                $pre ~ "\{ {mkloop2($k, 'a', $mid)}; say 'ran'; CATCH \{ default \{ say \"died: \{.^name}\" } } }" ~ $post;
+            %arrays{"arr-$k-{$bn}-nested"} = True;
+        }
+    }
+}
+# (mkloop of the shape matrix, which that block keeps to itself)
+sub mkloop2($kind, $v, $body) {
+    given $kind {
+        when 'while' { "my \$c$v = -1;\nwhile \$c$v < 3 \{\n    \$c$v = \$c$v + 1;\n    my \$$v = \$c$v;\n$body\n}" }
+        when 'until' { "my \$c$v = -1;\nuntil \$c$v >= 3 \{\n    \$c$v = \$c$v + 1;\n    my \$$v = \$c$v;\n$body\n}" }
+        when 'cloop' { "loop (my \$$v = 0; \$$v < 4; \$$v++) \{\n$body\n}" }
+        when 'forin' { "for 0 .. 3 -> \$$v \{\n$body\n}" }
+        when 'forex' { "for 0 ..^ 4 -> \$$v \{\n$body\n}" }
+    }
+}
+
 # ---- run them --------------------------------------------------------------
 my ($agree, $mismatch, $cfail, $laned) = 0, 0, 0, 0;
 my @bad;
@@ -209,7 +260,10 @@ for @progs -> (:key($name), :value($src)) {
     my $gen = $cpp.out.slurp(:close); $cpp.err.slurp(:close);
     $laned++ if $gen.contains('unboxed loop lane');
 
-    my ($irc, $want, $ierr) = bounded($rakupp.Str, $f.Str);
+    # (an array program's oracle is the boxed Array: packing off)
+    my ($irc, $want, $ierr) = %arrays{$name}
+        ?? bounded($rakupp.Str, $f.Str, :env(%(|%*ENV, RAKUPP_NO_SELFPACK => '1')))
+        !! bounded($rakupp.Str, $f.Str);
     unless $irc.defined {
         # The GENERATOR produced a program that does not terminate. That is a
         # bug in this file, not in the compiler, and it must be loud: an earlier

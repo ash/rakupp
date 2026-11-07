@@ -321,6 +321,12 @@ to look when what you want is not listed here.
   measured, reverted; the record exists so it does not have to be rediscovered.
 - **[experiments/MANDEL.md](experiments/MANDEL.md)** — notes on the Mandelbrot
   example and its performance history.
+- **[experiments/SELFPACK-EXPERIMENT.md](experiments/SELFPACK-EXPERIMENT.md)** —
+  an untyped `@a` of Nums kept as doubles, JSC's `ArrayWithDouble` on the
+  packed body `my num @a` has, with the interpreter's loop kernels and
+  `--exe -O`'s lanes reading the words. Prototyped on a branch: the review's
+  array kernels go 15–54× faster, compiled `dot` beats Bun's top tier, and the
+  suite, the lane fuzz and Rakudo agree on every answer.
 - **[experiments/STALE-ELEMENT-POINTER.md](experiments/STALE-ELEMENT-POINTER.md)** —
   the element pointer `lvalue()` hands out, racing a sibling's growth: a lane
   under the array's stripe versus retired buffers, both prototyped, crash rates

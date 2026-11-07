@@ -1784,6 +1784,10 @@ namespace rakupp {
 // that shares it (the words stay: see packedUnpackBody).
 struct PackedArr {
     bool isNum = false;
+    // An UNTYPED Array that packed itself (selfPack): its words are plain Nums
+    // only. No lane converts a value into it or pads it past its end, as one
+    // does for a `my num @a`; anything else unpacks it.
+    bool selfPacked = false;
     std::vector<int64_t> w;
     PRef<ValueList> boxed;
     std::atomic<bool> unpacked{false};
@@ -1800,6 +1804,13 @@ inline bool plainWordValue(const Value& v, bool asNum) {
            !v.isList && !v.objKeyed && !v.immutableBind && !v.pairValRO && !v.namedArg &&
            v.enumName.empty() && v.enumType.empty() && v.hashKind.empty() && v.s.empty();
 }
+// A self-packing Array (JSC-VALUES-2026-11-07; Value.cpp): selfPack turns a
+// fresh untyped Array of plain Nums into the words of one, and selfPackCopy
+// copies a packed Num array's words into a fresh one. RAKUPP_NO_SELFPACK=1
+// turns both off; RAKUPP_SELFPACK_MIN=n is the fewest elements packed (8).
+bool selfPackOn();
+bool selfPack(Value& a);
+bool selfPackCopy(const Value& src, Value& out);
 // Callable::ColdPtr's members that copy or free a CallableCold, which holds
 // Values and so is complete only from here
 inline CodeInfo::ColdPtr::ColdPtr(const ColdPtr& o) { if (o.own) { p = new CallableCold(*o.p); own = true; } }

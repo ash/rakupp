@@ -134,6 +134,7 @@ enum class KOp : uint8_t {
     // `a` the subscript, `nargs` the kFlag bits below. Every write is logged
     // first, so a bail can put the container back (KRun::undo).
     CGet, SCGet,          // @a[i] / %h{k} as an Int / a Str (`slot`: a string temporary)
+    PNGet, PNSet,         // @a[i] of a packed Num array, its word; … = b (plainPackedNum)
     CElems,               // @a.elems / %h.elems
     CSet, SCSet,          // … = b
     CAddTo, CSubTo, CMulTo, CSApp,
@@ -218,7 +219,7 @@ struct LOuter { std::string name; KT t; int slot; bool written; bool nat = false
 // A container of the program the loop reads or writes in place: `@a` or `%h`,
 // and the kind of element it holds (Int or Str, from its contents or from the
 // first value the loop stores; Void while neither has said).
-struct LCont { std::string name; bool hash; KT elem; bool written; };
+struct LCont { std::string name; bool hash; KT elem; bool written; bool packed = false; };   // (packed: plainPackedNum)
 struct LoopCx {
     Env* env = nullptr;                      // where the loop's free names resolve (this entry)
     // other threads are live (PARALLEL-SCALING-PLAN P5): a variable another
@@ -450,6 +451,14 @@ inline bool plainContainer(const Value& v, bool hash) {
     }
     return true;
 }
+// …or a packed Num array (a self-packed one, JSC-VALUES-2026-11-07, or a
+// `my num @a`), whose words a kernel reads and stores in place as Nums
+// (PNGet, PNSet): nothing in a kernel can unpack, grow or replace it
+inline bool plainPackedNum(const Value& v) {
+    return v.t == VT::Array && v.packedLive() && v.packed()->isNum && !v.isList && !v.itemized && !v.objKeyed &&
+           v.hashKind.empty() && v.s.empty() && v.enumName.empty() && v.enumType.empty() && !v.elemDefault() &&
+           !v.shape();
+}
 // …and an element a container store may simply replace: a plain Int or Str,
 // or the Any of a hole
 inline bool plainAnyValue(const Value& v) {
@@ -543,6 +552,10 @@ int Compiler::cont(const std::string& name, bool hash, std::string& why) {
     Value* raw = L->env->findRaw(name);
     if (!raw) { why = "container " + name + " is not in scope"; return -1; }
     const Value& cv = *raw->deref();
+    if (!hash && plainPackedNum(cv)) {   // its words, Nums (PNGet, PNSet)
+        L->conts.push_back({name, false, KT::Num, false, true});
+        return (int)L->conts.size() - 1;
+    }
     if (!plainContainer(cv, hash)) { why = "container " + name + " of a kind a plain store would not honour"; return -1; }
     const Value* first = nullptr;
     if (hash) { for (auto& kv : *cv.hash()) { first = &kv.second; break; } }
@@ -764,6 +777,7 @@ KNode* Compiler::expr(IKernel& k, const Callable* c, Expr* e, bool cond, KT& t) 
             if (et == KT::Void)
                 return refuse("container " + L->conts[n->lit].name + " holds neither a plain Int nor a plain Str yet");
             if (et == KT::Str) { n->op = KOp::SCGet; n->slot = L->nstr++; }
+            if (L->conts[n->lit].packed) n->op = KOp::PNGet;
             t = et;
             return n;
         }
@@ -778,7 +792,7 @@ KNode* Compiler::expr(IKernel& k, const Callable* c, Expr* e, bool cond, KT& t) 
                 KNode* n = contRef(k, c, static_cast<Index*>(u->operand.get()), KOp::CPreInc, et);
                 if (!n) return nullptr;
                 LCont& ct = L->conts[n->lit];
-                if (et == KT::Str) return refuse("++/-- on a Str element");
+                if (et == KT::Str || ct.packed) return refuse("++/-- on a Str or a packed element");
                 ct.elem = KT::Int; ct.written = true;
                 n->op = u->postfix ? (u->op == "++" ? KOp::CPostInc : KOp::CPostDec)
                                    : (u->op == "++" ? KOp::CPreInc : KOp::CPreDec);
@@ -969,6 +983,13 @@ KNode* Compiler::expr(IKernel& k, const Callable* c, Expr* e, bool cond, KT& t) 
                 if (!v) return nullptr;
                 LCont& ct = L->conts[ci];
                 KOp op;
+                if (ct.packed) {   // a packed Num array takes a Num as its word, and nothing else
+                    if (a->op != "=" || vt != KT::Num) return refuse("a store into a packed array of this form");
+                    ct.written = true;
+                    n->op = KOp::PNSet; n->b = v;
+                    t = KT::Num;
+                    return n;
+                }
                 if (a->op == "=") {
                     if (vt != KT::Int && vt != KT::Str) return refuse("an element store of this type");
                     if (ct.elem != KT::Void && ct.elem != vt) return refuse("a store that would change a container's element type");
@@ -1727,6 +1748,7 @@ struct KConts {
         savedHashHeap.reset(new std::unique_ptr<ValueHash>[nc]);
         logged = loggedHeap.get(); savedList = savedListHeap.get(); savedHash = savedHashHeap.get();
     }
+    RtWordUndo words;             // what PNSet overwrote in packed arrays' words
     std::string key;              // a hash key being built
     // Per string slot, what `.chars` and `.substr` need of a variable's text,
     // so a scanner does not rescan it on every call: -1 not yet known, else
@@ -2540,8 +2562,29 @@ const std::string& scgetFn(const KNode* n, int64_t* fr, KRun& R) {
     R.cc->scow[n->slot] = el->s;
     return out;
 }
+// a packed Num array's word, as a Num travels in a kernel (its bits), and a
+// store of one, logged for a bail (KConts::words); out of range bails
+int64_t pngetFn(const KNode* n, int64_t* fr, KRun& R) {
+    const int64_t i = krun(n->a, fr, R);
+    if (R.bail) return 0;
+    const std::vector<int64_t>& w = R.cc->conts[n->lit]->packed()->w;
+    if ((uint64_t)i >= w.size()) { R.bail = true; return 0; }
+    return w[(size_t)i];
+}
+int64_t pnsetFn(const KNode* n, int64_t* fr, KRun& R) {
+    const int64_t v = krun(n->b, fr, R);
+    if (R.bail) return 0;
+    const int64_t i = krun(n->a, fr, R);
+    if (R.bail) return 0;
+    std::vector<int64_t>& w = R.cc->conts[n->lit]->packed()->w;
+    if ((uint64_t)i >= w.size()) { R.bail = true; return 0; }
+    R.cc->words.note(&w[(size_t)i]);
+    w[(size_t)i] = v;
+    return v;
+}
 int64_t celemsFn(const KNode* n, int64_t*, KRun& R) {
     const Value& c = *R.cc->conts[n->lit];
+    if (c.pk_ == PK::Packed) return (int64_t)c.packed()->w.size();   // (arr() would unpack it)
     return (n->nargs & kCHash) ? (int64_t)c.hash()->size() : (int64_t)c.arr()->size();
 }
 int64_t csetFn(const KNode* n, int64_t* fr, KRun& R) {
@@ -2722,6 +2765,8 @@ void link(KNode* n) {
         case KOp::Lc: n->sfn = caseFn<false>; break;
         case KOp::Substr: n->sfn = substrFn; break;
         case KOp::CGet: n->fn = cgetFn; break;
+        case KOp::PNGet: n->fn = pngetFn; break;
+        case KOp::PNSet: n->fn = pnsetFn; break;
         case KOp::SCGet: n->sfn = scgetFn; break;
         case KOp::CElems: n->fn = celemsFn; break;
         case KOp::CSet: n->fn = csetFn; break;
@@ -3277,7 +3322,7 @@ bool Interpreter::tryLoopKernel(Stmt* loop, const std::string& var, long long lo
         Env* owner = nullptr;
         Value* cell = outerCell(env, L->conts[i].name, &owner);
         if (!cell) return notEntered("no container", L->conts[i].name);
-        if (!plainContainer(*cell, L->conts[i].hash))
+        if (L->conts[i].packed ? !plainPackedNum(*cell) : !plainContainer(*cell, L->conts[i].hash))
             return notEntered("a container of another kind:", L->conts[i].name);
         conts[i] = cell;
     }
@@ -3337,10 +3382,16 @@ bool Interpreter::tryLoopKernel(Stmt* loop, const std::string& var, long long lo
     kc.snfc = snfc;
     kc.scow = scow;
     if (nc) kc.size(nc);
+    for (size_t i = 0; i < nc; i++)
+        if (L->conts[i].packed && L->conts[i].written) {
+            std::vector<int64_t>& w = conts[i]->packed()->w;
+            kc.words.add(w.data(), w.size());
+        }
     R.cc = &kc;
     krun(L->k.body, fr, R);
     if (R.bail) {
         undoContainers(kc);
+        kc.words.undo();
         // the loop runs again the ordinary way, from the start; one that keeps
         // bailing (its numbers outgrow int64) stops trying
         const unsigned char b = L->bails.load(std::memory_order_relaxed);

@@ -3901,6 +3901,8 @@ Value rtArrayVal(const Value& v) {
     // `my @a = %h` / `my @a = set(1)` is an ARRAY of the pairs — hashToPairs
     // builds the List form its other callers want, so untag it here (LA-04).
     if (v.t == VT::Hash && v.hash()) { Value a = hashToPairs(v); a.isList = false; return a; }
+    // a packed Num array's words, copied, where arr() would unpack the source (selfPackCopy)
+    if (v.t == VT::Array && v.pk_ == PK::Packed) { Value r; if (selfPackCopy(v, r)) return r; }
     if (v.t == VT::Array && v.arr()) {
         // …and so is an itemized Array, as coerceArray has it for the interpreter:
         // `my $x = [1, 2, 3]; my @a = $x` is [[1 2 3]], and compiled it was three
@@ -4067,6 +4069,7 @@ void Interpreter::runDestroyChain(const PRef<ObjectData>& od) {
 // Slip to splice, a lazy tail, shape, or a shared buffer takes the copying
 // path, whose semantics stay authoritative.
 Value rtArrayVal(Value&& v) {
+    if (v.pk_ == PK::Packed) return rtArrayVal(static_cast<const Value&>(v));   // (arr() unpacks it)
     if (v.t == VT::Array && v.arr() && v.isList && !v.ext() && !v.itemized && !v.holdsContainers() &&
         !(v.shape() && !v.shape()->empty()) && v.payloadUnique()) {
         for (auto& it : *v.arr())
