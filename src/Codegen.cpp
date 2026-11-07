@@ -2102,6 +2102,7 @@ struct Codegen {
     }
     std::string declVar(const std::string& rakuName, const std::string& init) {
         if (declRecord_) declRecord_->insert(rakuName);   // (emitSeq: what a LEAVE may not read early)
+        if (mainline_ && !atTopLevel_ && topVars_.count(rakuName)) shadowedTop_.insert(rakuName);   // (topNameHere)
         if (rakuName.size() > 1 && rakuName[1] == '*') return dynDecl(rakuName) + " = " + init;
         // A sigilless name (`my \x`, `sub f(\x)`) is read back as a bare term,
         // which resolves through the RUNTIME scope — where a C++ local is not.
@@ -3643,8 +3644,8 @@ struct Codegen {
     }
     std::map<std::string, std::string> topVarTypes_; // …and their declared types, if any
     // Top-level `my $x = 0.5e0` (every top-level declaration of the name has a
-    // Num literal for its initializer): a loop lane at the top level types the
-    // slot F64 from the start. The type pass only sees the loop, so a Num that
+    // Num literal for its initializer): a loop lane there, or in a block nested
+    // in it (topNameHere), types the slot F64 from the start. The type pass only sees the loop, so a Num that
     // reaches it only from outside was an I64 slot whose guard always failed.
     // The guard still decides at run time.
     std::set<std::string> topNumInit_;
@@ -3656,6 +3657,17 @@ struct Codegen {
     // whole sub off its kernel: 8.4 ns a call against 1.5 for the literal.
     std::map<std::string, const Expr*> litConsts_;
     bool atTopLevel_ = false;         // emitting the mainline (not a sub body)
+    // …and the mainline or a block nested in it (a bare block, a `do`/`try`
+    // block), outside every routine and closure: a name there is the top-level
+    // variable unless a block between declared its own (shadowedTop_, which
+    // DeclScope keeps), so a loop lane types it from its top-level declaration
+    // (uSeed, floatDeclared). A wrong answer costs only the lane: the slot's
+    // guard sends anything else to the boxed loop.
+    bool mainline_ = false;
+    std::set<std::string> shadowedTop_;
+    bool topNameHere(const std::string& nm) const {
+        return atTopLevel_ || (mainline_ && !curParams_ && !inClosure() && !shadowedTop_.count(nm));
+    }
 
     void emitPhaserBody(Block* b, int ind) {
         line(ind, "{");
@@ -3892,19 +3904,19 @@ struct Codegen {
     // after the block, and named a C++ local that was out of scope.
     struct DeclScope {
         Codegen* g;
-        std::set<std::string> savedHoist, savedCodeVars, savedEnvSubs;
+        std::set<std::string> savedHoist, savedCodeVars, savedEnvSubs, savedShadow;
         std::map<std::string, LexDirect> savedLexDirect;
         bool savedTop;
         explicit DeclScope(Codegen* c)
             : g(c), savedHoist(c->hoisted), savedCodeVars(c->codeVars), savedEnvSubs(c->envSubs),
-              savedLexDirect(c->lexDirect_), savedTop(c->atTopLevel_) {
+              savedShadow(c->shadowedTop_), savedLexDirect(c->lexDirect_), savedTop(c->atTopLevel_) {
             c->hoisted.clear();
             c->atTopLevel_ = false;
         }
         ~DeclScope() {
             g->hoisted = std::move(savedHoist); g->atTopLevel_ = savedTop;
             g->codeVars = std::move(savedCodeVars); g->envSubs = std::move(savedEnvSubs);
-            g->lexDirect_ = std::move(savedLexDirect);
+            g->lexDirect_ = std::move(savedLexDirect); g->shadowedTop_ = std::move(savedShadow);
         }
         DeclScope(const DeclScope&) = delete;
         DeclScope& operator=(const DeclScope&) = delete;
@@ -7884,7 +7896,7 @@ struct Codegen {
     // as I64 and a Num literal is the only thing that seeds F64 directly.
     // A program variable's starting lane type (see topNumInit_).
     LT uSeed(const std::string& nm) const {
-        return atTopLevel_ && topNumInit_.count(nm) ? LT::F64 : LT::I64;
+        return topNameHere(nm) && topNumInit_.count(nm) ? LT::F64 : LT::I64;
     }
     // Is `$name` DECLARED a float: a `num`/`Num` parameter of the routine being
     // emitted, or a top-level `my num`/`my Num`? (A wrong answer costs only the
@@ -7894,7 +7906,7 @@ struct Codegen {
         if (curParams_)
             for (const Param& p : *curParams_)
                 if (p.name == nm) return isFloat(p.type) && !p.coerce;
-        if (!atTopLevel_) return false;
+        if (!topNameHere(nm)) return false;
         auto it = topVarTypes_.find(nm);
         return it != topVarTypes_.end() && isFloat(it->second);
     }
@@ -10177,10 +10189,10 @@ std::string transpileToCpp(Program& prog, bool optimize, const std::string& srcP
         for (ClassDecl* cd : classes) g.classRegister(cd);
     });
     std::string body = g.capture([&]() {
-        g.atTopLevel_ = true;
+        g.atTopLevel_ = g.mainline_ = true;
         g.analyzeCells(prog.stmts, {});
         g.emitSeq(prog.stmts, 2, /*topLevel=*/true);
-        g.atTopLevel_ = false;
+        g.atTopLevel_ = g.mainline_ = false;
         // auto-invoke MAIN through the interpreter's own command-line protocol
         // (pairing, candidate scoring, usage/--help) via the metadata that
         // __rakupp_register adopted — see mainSigBlob above. Without a blob
