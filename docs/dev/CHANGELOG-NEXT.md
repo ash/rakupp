@@ -15,7 +15,8 @@ f0376fa6 (kernels share stored strings; `"…"` literals cached),
 f3096c7d and 7a09c596 (`return-rw` use-after-frees; ASan sees the pools' frees),
 578572c6 (a finished worker is not a running one),
 37935a34 (`--exe`: a `do`/`try` block is a scope of its own),
-9b7a9824 (`for` over an array a worker is growing).*
+9b7a9824 (`for` over an array a worker is growing),
+a3246b12 (an untyped Array of Nums packs itself into doubles).*
 
 ---
 
@@ -63,6 +64,39 @@ f3096c7d and 7a09c596 (`return-rw` use-after-frees; ASan sees the pools' frees),
   where it made 204,626. A Map, Set, Bag or Mix, a role mixed in, a subclass
   and an augmented `Hash.elems` answer as before.
   `t/regression/hash-elems-size.raku`.
+- **An untyped Array of Nums keeps them as doubles** (a3246b12;
+  docs/dev/experiments/SELFPACK-EXPERIMENT.md). JavaScriptCore keeps a JS
+  array of doubles that way, and checks the kind once in compiled code
+  (docs/dev/findings/JSC-VALUES-2026-11-07.md). Here:
+  - `my @a = LIST` of 8 or more plain Nums stores their bits, in the packed
+    body a `my num @a` has, and `my @v = @u` copies them.
+  - The interpreter's loop kernels and `--exe -O`'s unboxed loop lanes read
+    and store those words. Each array is checked once on entry, and a bail
+    puts back the words a loop stored.
+  - Storing anything that is not a plain Num, a bind, an `is rw` element and
+    every path that knows nothing of words unpack the array into the Array it
+    would have been.
+  - `RAKUPP_NO_SELFPACK=1` turns it off.
+
+  ns per operation for the perf review's untyped kernels, off → on:
+
+  | kernel | interpreted | `--exe -O` |
+  |---|--:|--:|
+  | dot | 100 → 4.9 | 25.7 → 0.48 |
+  | matmul | 216 → 9.3 | 34.8 → 1.10 |
+  | stencil | 272 → 7.1 | 39.2 → 2.56 |
+
+  Bun's top tier runs the same three at 0.69, 0.81 and 0.79 ns.
+  - Peak memory is not lower: the words are built beside the Values.
+  - The tree-walker alone, where no kernel takes the loop, runs matmul 16%
+    slower.
+  - `src/Codegen.cpp`'s ceiling is 10,620 lines, up from 10,500, for the
+    lane code.
+
+  t/run.raku passes 1,997 of 1,997, and 1,997 of 1,997 with
+  `RAKUPP_SELFPACK_MIN=1`, which packs every Num array. `t/exe/fuzz.raku`
+  passes 326 of 326, 70 of them new array programs held to the interpreter with
+  packing off. `t/regression/selfpack-arrays.raku` agrees with Rakudo.
 
 ### Fixed: silent wrong answers
 
