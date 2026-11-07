@@ -115,9 +115,11 @@ behind every cell.
 ## 8. Modules and the supply chain
 
 - **`rakupp.lock`** — [LOCKFILE-PLAN.md](LOCKFILE-PLAN.md) is written and nothing
-  is built. Note that CLI-BORROW-PLAN, three days earlier, listed lockfiles as a
-  deliberate non-borrow ("machinery the ecosystem's size doesn't justify yet");
-  the two documents disagree and one has to be right.
+  is built. It is the plan: CLI-BORROW-PLAN, three days earlier, had listed
+  lockfiles as a deliberate non-borrow, and that entry was reversed on
+  2026-11-07 in its favour. What exists today is the per-script pin records of
+  [DEPS-PLAN.md](DEPS-PLAN.md), which names them the natural seed of a script's
+  `rakupp.lock`.
 - **The wishlist.** Twelve Tier-A modules, every one pure-Raku-feasible and
   therefore both engines' ([ecosystem/MODULE-WISHLIST.md](../ecosystem/MODULE-WISHLIST.md)):
   `HTTP::Simple`, `Data::Schema`, `JSON::Schema`, `Log`, `CLI`, `Terminal::Rich`,
