@@ -226,8 +226,28 @@ with Bun.
 
 ## Reproduce
 
+The quickest look is [selfpack/demo.raku](selfpack/demo.raku). It runs one
+untyped matrix product four ways with one binary: interpreted and as an
+`--exe -O` binary, each with packing off and on. Bun runs the same program in
+JavaScript beside them when it is on `PATH`. The script checks that every
+answer agrees. At 5.6.3-62 it printed:
+
+```
+untyped Raku: a 200×200 matrix product, 8,000,000 multiply-adds
+
+                          packing off   packing on   speed-up
+  interpreted                    1693           60        28×
+  --exe -O                        260          6.1        42×
+  Bun (JavaScript)                             6.4
+
+every run answers 5999750
+```
+
+The times are milliseconds spent in the loops, best of 3.
+
 ```bash
 cmake --build build -j10
+build/rakupp docs/dev/experiments/selfpack/demo.raku   # the demo above (--n=300 for a bigger matrix)
 docs/dev/experiments/selfpack/perop.sh               # the per-operation table
 build/rakupp t/run.raku                              # the suite
 RAKUPP_SELFPACK_MIN=1 build/rakupp t/run.raku        # …with every Num array packed
