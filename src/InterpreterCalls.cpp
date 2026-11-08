@@ -3694,7 +3694,7 @@ void Interpreter::runHoistedInit(Block* b) {
     };
     try {
         if (b->stmtForm) execBlock(b, tctx().cur); // `INIT my $x = …` declares in the enclosing scope
-        else { auto sc = makeSlabShared<Env>(); sc->parent = tctx().cur; execBlock(b, sc); }
+        else { auto sc = makeSlabShared<Env>(); sc->parent = tctx().cur; initValues_[b] = execBlock(b, sc, /*sink=*/false); }
     }
     catch (ReturnEx&) { escaped(); }
     if (tctx().returning) escaped();

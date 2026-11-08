@@ -3041,6 +3041,7 @@ public:
     // gather (honoring its lazy-probe take cap and time budget) or die outside one.
     // Run one program-init-hoisted INIT phaser. See the definition in InterpreterCalls.cpp.
     void runHoistedInit(Block* b);
+    std::unordered_map<const Block*, Value> initValues_;   // a hoisted INIT's value: one written last is its body's
     // Bind a unit's top-level `constant` ahead of its mainline, for the phasers
     // that run first (#171). See the definition in InterpreterModules.cpp.
     bool bindConstantEarly(Stmt* s, std::set<std::string>& bound);

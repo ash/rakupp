@@ -966,6 +966,7 @@ struct Callable {
         std::shared_ptr<Env> env;                  // persistent storage for `state` vars (across calls)
         std::once_flag init;                       // env is created exactly once (thread-safe under parallel calls)
         std::atomic<bool> firstDone{false};        // the body's FIRST phasers have run (once per clone)
+        std::shared_ptr<Value> firstValue;         // …and a FIRST written last answered this, every pass's value
         StateSlot() = default;
         StateSlot(const StateSlot&) {}             // a clone starts with no state env of its own, FIRST not yet run
     };

@@ -757,7 +757,7 @@ static int stmtsEntryWork(const std::vector<StmtPtr>& stmts) {
             auto* blk = static_cast<const Block*>(s.get());
             const std::string& ph = blk->phaser;
             if (blk->isCatch) m |= 1;
-            if (ph == "PRE" || ph == "ENTER" || ph == "FIRST") m |= 2;
+            if (ph == "PRE" || ph == "ENTER" || ph == "FIRST" || ph == "INIT") m |= 2;
             if (ph == "LEAVE" || ph == "KEEP" || ph == "UNDO" || ph == "POST") m |= 4;
             if (blk->isCatch || !ph.empty()) m |= 32;
         }
@@ -889,25 +889,32 @@ void Interpreter::runEnterPhasers(const std::vector<StmtPtr>& stmts, Callable* f
                 throwTypedV("X::Phaser::PrePost", {{"phaser", Value::str("PRE")}, {"condition", Value::str(r.gist())}},
                             "Precondition '" + r.gist() + "' failed");
         } }
-    // ENTER fires on every block entry; FIRST once per closure clone. In a loop
-    // body the loop drives FIRST (t_hot.poll.firstBody); a called closure runs it on
-    // its FIRST call only (`my &b = { FIRST … }; b() for 1..3` says it once —
-    // rak calls a pattern per item and counts on that); and a block run in
-    // place is a fresh clone every time it runs, so its FIRST runs every time
-    // (`for 1..3 { { FIRST … } }` says it three times).
+    // ENTER fires on every block entry; FIRST once per closure clone, before any ENTER. In a
+    // loop body the loop drives FIRST (t_hot.poll.firstBody); a called closure runs it on
+    // its FIRST call only (`my &b = { FIRST … }; b() for 1..3` says it once — rak calls
+    // a pattern per item and counts on that); and a block run in place is a fresh clone
+    // every time it runs, so its FIRST runs every time (`for 1..3 { { FIRST … } }`: thrice).
     const bool runFirst = &stmts != t_hot.poll.firstBody &&
         (!firstOnce || !firstOnce->state.firstDone.exchange(true, std::memory_order_acq_rel));
-    for (auto& s : stmts) if (s->kind == NK::Block) { auto* b = static_cast<Block*>(s.get());
-        if (b->phaser == "ENTER" || (b->phaser == "FIRST" && runFirst)) {
+    for (int pass = runFirst ? 0 : 1; pass < 2; pass++) for (auto& s : stmts) if (s->kind == NK::Block) {
+        auto* b = static_cast<Block*>(s.get());
+        if (b->phaser == (pass ? "ENTER" : "FIRST")) {
             auto sc = makeSlabShared<Env>(); sc->parent = tctx().cur;
             // an ENTER written LAST is the block's value, computed at entry:
-            // `sub f { ENTER 'SANDMAN' }` returns SANDMAN (enter-leave.t)
-            if (b->phaser == "ENTER" && &s == &stmts.back() && tctx().cur) {
+            // `sub f { ENTER 'SANDMAN' }` returns SANDMAN (enter-leave.t), and a FIRST's too, kept
+            if (&s == &stmts.back() && tctx().cur) {
                 Value ev = execBlock(b, sc, /*sink=*/false);
                 tctx().cur->define("\x01enter-tail", ev);
+                if (b->phaser == "FIRST" && firstOnce) firstOnce->state.firstValue = std::make_shared<Value>(ev);
             }
             else execBlock(b, sc);
-        } }
+        }   // …on every later pass too, as a hoisted INIT written last is (Rakudo keeps both values)
+        else if (pass && &s == &stmts.back() && tctx().cur && ((b->phaser == "FIRST" && !runFirst) || (b->phaser == "INIT" && b->initHoisted))) {
+            const Value* lv = b->phaser == "FIRST" ? tctx().cur->find("\x01first-tail") : nullptr;   // (a loop's)
+            tctx().cur->define("\x01enter-tail", b->phaser == "INIT" ? initValues_[b] :
+                               firstOnce && firstOnce->state.firstValue ? *firstOnce->state.firstValue : lv ? *lv : Value::nil());
+        }
+    }
 }
 // Every END nested anywhere in a routine's body runs at exit in THIS call's
 // scope — which is why the capture is at ENTRY and not at the phaser's own
@@ -1419,6 +1426,8 @@ Value Interpreter::execBlockFull(Block* b, std::shared_ptr<Env> scope, bool sink
     }
     if (leaving) raiseHanded(*leaving);   // (the exit is done: see `exiting`)
     if (trailingCatch && !tcx.returning && !tcx.loopCtl && !tcx.givenCtl) last = Value::nil();
+    else if ((entryWork & 2) && !tcx.returning && !tcx.loopCtl && tcx.cur && isBlockPhaser(b->stmts.back().get()))
+        if (Value* ev = tcx.cur->local("\x01enter-tail")) last = *ev;   // (ENTER, FIRST or INIT written last: its value)
     // KEEP runs on a SUCCESSFUL exit, UNDO otherwise — and success is the
     // block's outgoing value being defined (Nil, a Failure, the undefined
     // result of an `if`/`for` are not) and no cooperative `next`/`last` in
@@ -9483,10 +9492,10 @@ resumeBody:
         if (resumeAt == 0) {
             captureBodyEnds(c);   // an END anywhere in the body binds to THIS call's scope
             if (c.ci().body && lpc) {
+                if (lpc & 1) runFirstPhasers(*c.ci().body);   // (before ENTER, as Rakudo runs them)
                 const std::vector<StmtPtr>* savedSF = t_hot.poll.firstBody; t_hot.poll.firstBody = c.ci().body;
                 runEnterPhasers(*c.ci().body); // ENTER only; FIRST suppressed
                 t_hot.poll.firstBody = savedSF;
-                if (lpc & 1) runFirstPhasers(*c.ci().body);
             }
             else if (c.ci().body && (bodyWork & 2)) runEnterPhasers(*c.ci().body, &c);
         }
