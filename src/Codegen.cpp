@@ -4906,7 +4906,8 @@ struct Codegen {
             const std::string& n = v->name;
             // (`@a = Nil` is one element, the default: [Any], as coerceArray has it)
             // A native array is filled as the interpreter fills it (arrayStore),
-            // and so is `@a = …` into any array that turns out typed
+            // and so is `@a = …` into any array that turns out typed, through the
+            // place the store writes (lvalueExpr: `@!a` is no C++ local, nor `@*a`)
             if (!n.empty() && n[0] == '@') {
                 const bool dollar = value && value->kind == NK::VarExpr &&
                                     !static_cast<VarExpr*>(value)->name.empty() && static_cast<VarExpr*>(value)->name[0] == '$';
@@ -4914,7 +4915,7 @@ struct Codegen {
                     return "rtNativeArrayNew(RT, " + cesc(v->d().declType) + ", " + cesc(n) + ", " + rhs + ", " +
                            (dollar ? "true" : "false") + ")";
                 if (!v->declare && !moduleMode_)
-                    return "rtArrayAssignTo(RT, " + varRef(n) + ", " + rhs + ", " + cesc(n) + ", " +
+                    return "rtArrayAssignTo(RT, " + lvalueExpr(tgt) + ", " + rhs + ", " + cesc(n) + ", " +
                            (dollar ? "true" : "false") + ")";
                 return std::string(v->declare && v->d().declType.empty() ? "rtSelfPack(" : "(") + "rtArrayVal(rtNilToAny(" + rhs + ")))";
             }
@@ -4933,7 +4934,7 @@ struct Codegen {
                 if (!v->declare && (v->nativeIntRead || v->nativeNumRead)) {
                     const char k = fullWidthNative(v);
                     if (k && freshNative(value, k)) return rhs;
-                    return "rtNativeStoreLike(" + varRef(n) + ", " + rhs + ", " + cesc(n) + ", " + src + ")";
+                    return "rtNativeStoreLike(" + lvalueExpr(tgt) + ", " + rhs + ", " + cesc(n) + ", " + src + ")";
                 }
                 // a `$` container ITEMIZES a list it holds, as the interpreter's
                 // `=` does: `my $a = [1, 2]; for $a { … }` is one iteration, and
