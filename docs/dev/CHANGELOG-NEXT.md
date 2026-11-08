@@ -35,7 +35,9 @@ and twelve more: 483370b7, 422df3d1, a63dab44, 53837aa5, ae41bc63, 8660ca95,
 and thirteen more: 592afa33, 75326b8b, e82801e8, a797a3c6, 1c681ec5, d6c9e30c,
 cd191fb1, 21111219, 6c0c4fa1, e89a0e1e, fa0cc7aa, bc6faf15, ea460d2a;
 and nine more: 853b606b, 34e48087, 79b70d34, 0cee5c8f, 8f0b138e, 8e5b2dc0,
-e1bd580c, 0ca4968e, c7c4e564.*
+e1bd580c, 0ca4968e, c7c4e564;
+and ten more: cae1cb63, a72b133c, c2dcfeb9, 25f02957, b8d8799d, 1c8c779c, 01673b79,
+846ae003, 1695a062, 75213a10.*
 
 ---
 
@@ -420,6 +422,20 @@ e1bd580c, 0ca4968e, c7c4e564.*
   `t/regression/fail-in-mainline-block-throws.raku`.
 - **Closing a supply block's tap calls no `done`** (e1bd580c), as Rakudo's; the
   inner taps the close ended called it. `t/regression/closed-tap-calls-no-done.raku`.
+- **`~` of two buffers of one type keeps it** (a72b133c): utf8 ~ utf8 was a Buf,
+  Blob ~ Blob a Buf, and a utf16 beside another buffer a Str or an error;
+  any other pair is a plain Buf, and `~=` answers the same.
+  `t/regression/buffer-concat-keeps-type.raku`.
+- **A program's `multi` on a built-in prefix joins the built-in** (25f02957):
+  `multi prefix:<->(Str $x)` was never asked for `-"a"`, which died, and
+  `prefix:<->(3)` reached it alone; `&postfix:<++>` and its kin were Any.
+  `t/regression/user-multi-on-builtin-prefix.raku`.
+- **Two imports of one name in a block keep the last** (b8d8799d), as the
+  mainline did: `{ use A; use B; f() }` called A's.
+  `t/regression/block-import-last-wins.raku`.
+- **A block's or an EVAL's `constant` does not shadow a CORE term outside it**
+  (1c8c779c): after `{ constant Less = 42 }`, `Less` was 42 everywhere.
+  `t/regression/block-constant-not-over-core-term.raku`.
 
 ### Fixed: crashes
 
@@ -563,6 +579,23 @@ e1bd580c, 0ca4968e, c7c4e564.*
   rw)` at compile time, a named `&c` given an Int, `Int %h` given an untyped
   hash, `given 5 -> @a`; `%h is copy` is a plain Hash, and `my %h := (a =>
   1)` binds the Pair. `t/regression/params-refuse-what-sigil-refuses.raku`.
+- **A call with a named argument and the wrong positionals is refused in the
+  run's words** (cae1cb63), "Too few positionals passed; …", where it said
+  Rakudo's compile-time "will never work".
+  `t/regression/arity-with-named-arg-at-run-time.raku`.
+- **A compile-time X::AdHoc does X::Comp** (c2dcfeb9), `X::AdHoc+{X::Comp}`, and
+  `class GLOBAL {}` is refused as every pseudo-package is.
+  `t/regression/compile-adhoc-does-x-comp.raku`.
+- **A package declaration is a term an infix may follow** (01673b79): `class A {}
+  === A` and `class D {} ~~ D` were refused.
+  `t/regression/package-declaration-is-term.raku`.
+- **Two roles' clashes are refused in Rakudo's words** (846ae003): the roles last
+  first, a multi by its signature (X::Role::Unresolved::Multi), and an only
+  method beside a multi, which was taken. `t/regression/role-conflict-message.raku`.
+- **X::Cannot::Map's message ends with its suggestion** (1695a062).
+  `t/regression/cannot-map-message-suggestion.raku`.
+- **A misspelled type's suggestions take in the native types and `Inf`** (75213a10):
+  `Strr` suggests str too. `t/regression/type-suggestions-native-and-terms.raku`.
 
 ### Platforms and packaging
 
@@ -609,9 +642,8 @@ e1bd580c, 0ca4968e, c7c4e564.*
 
 - Found with eb574770, the same before it (each in TODO-FOLLOW-UPS.md): a
   `my &f`, a `my $v` or a class beside an import of its name compiles, where
-  Rakudo refuses it; and two imports of one name in a block keep the first,
-  where Rakudo keeps the last (the mainline keeps the last). (`use Test; sub
-  ok(…)` is fixed by 483370b7, above.)
+  Rakudo refuses it. (`use Test; sub ok(…)` and two imports of one name in
+  a block are fixed by 483370b7 and b8d8799d, above.)
 
 - Found with 28257097, the same before it: an attribute typed by a
   parameterized alias, `constant AI = Array[Int]; has AI $.a`, takes an
@@ -634,8 +666,8 @@ e1bd580c, 0ca4968e, c7c4e564.*
   and 853b606b, above.)
 - Found with b9c337a0 to 84afd3c1, the same before them (each in
   TODO-FOLLOW-UPS.md): a WhateverCode gists as `WhateverCode.new` where
-  Rakudo shows its source; and a multi-role conflict says less than
-  Rakudo's. (`start 5`'s deparse, the unknown-parent wording, a Whatever
+  Rakudo shows its source. (A multi-role conflict's message is fixed by
+  846ae003; `start 5`'s deparse, the unknown-parent wording, a Whatever
   key and `.substr`'s messages are fixed by a63dab44, 53837aa5, ae41bc63 and
   8660ca95, an itemized Range and a `{…}`'s line by 21111219 and e89a0e1e,
   above.)
@@ -648,18 +680,24 @@ e1bd580c, 0ca4968e, c7c4e564.*
   interval's or a Channel's value, are fixed by bc6faf15 and ea460d2a,
   above.)
 - Found with 592afa33 to ea460d2a, the same before them (each in
-  TODO-FOLLOW-UPS.md): a user `multi` on a built-in operator hides the built-in
-  candidates, and `&postfix:<++>` is Any; `.^roles` of a class doing a
+  TODO-FOLLOW-UPS.md): `.^roles` of a class doing a
   value-parameterized role names it as written, `R2[1]`, where Rakudo names
   it `R2[Int]`; and an element store into `Array[Str:D]` still checks the
-  nominal type alone. (A FIRST or INIT written last is fixed by 8e5b2dc0,
-  above.)
+  nominal type alone. (A FIRST or INIT written last, and a user `multi` on
+  a built-in operator, are fixed by 8e5b2dc0 and 25f02957, above.)
 - Found with 853b606b to c7c4e564, the same before them (each in
   TODO-FOLLOW-UPS.md): Any's methods a plain object lacks here (`.max`,
   `.Seq`, `.is-lazy`, `.push` …) die "No such method", and on an object with
   a FALLBACK still reach it; a Failure has no `.mess` or `.backtrace`, and a
   `fail`'s backtrace leaves out its routine; an INIT in a routine that reads
-  an outer variable runs on each call; `~` of two utf8 values is a Buf; an
-  `@` parameter given only a named argument says the compile-time message;
-  a compile-time X::AdHoc is no X::Comp; and a `for` loop's `-> @a` still
-  binds an Int.
+  an outer variable runs on each call; and a `for` loop's `-> @a` still
+  binds an Int. (`~` of two utf8 values, the named-argument arity message
+  and a compile-time X::AdHoc's X::Comp are fixed by a72b133c, cae1cb63 and c2dcfeb9,
+  above.)
+- Found with cae1cb63 to 75213a10, the same before them (each in
+  TODO-FOLLOW-UPS.md): what dies at BEGIN time, in a CHECK or in a constant
+  is not wrapped as Rakudo's X::Comp::BeginTime; `.map` with an `is rw`
+  routine writes nothing back; an undeclared variable's message lacks
+  Rakudo 2026.09's "Perhaps you forgot a 'sub'" hint and suggests more; an
+  only and a multi a role gets from a role it does pass; and a module's
+  exported variables and types reach past the block that `use`d it.

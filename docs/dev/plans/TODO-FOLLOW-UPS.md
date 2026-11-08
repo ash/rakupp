@@ -47,55 +47,14 @@ moves to [TODO.md](TODO.md).
   `my &f` is not hoisted, so it lands on the import afterwards, and a pad may
   hold its slot before the `use` runs. Variables come in through
   importPackageExports, which skips a local; types through the import loops.
+  Found 2026-11-08 (with b8d8799d): a module's exported variables and types are
+  not lexical imports at all. loadModuleImpl publishes them to global_ even
+  from a block, so `{ use M }; say $shared` says 1 and `K` is M::K after
+  the block, where Rakudo refuses both as undeclared, and a `my $shared` in
+  the block is a different variable from the one the import made. And
+  `my $shared = 7; use M; say $shared` says 1 (the import wins). A lexical
+  road for them is the first step; the clash check follows from it.
 
-- [ ] **Two imports of one name in a block keep the first** (found
-  2026-11-08 fixing #230, eb574770):
-
-  ```raku
-  { use Other; use Other2; say run-word("a") }   # other:a, Rakudo other2:a
-  ```
-
-  The mainline keeps the last, as Rakudo does, because it publishes to
-  global_. In a block or a module, the lexical import roads in loadModuleImpl
-  skip a name the scope holds (`if (!saved->local(k))`, and the repeat-use
-  and `import` loops), even one that only an earlier import put there.
-
-- [ ] **A plain `constant` leaks out of its block and out of an EVAL** (found
-  2026-10-20 while caching the bare `Less` term, b35718ba; the leak predates
-  that cache):
-
-  ```raku
-  sub mention { Less }
-  { constant Less = 42; say Less }       # 42 in both
-  say Less.raku;                          # 42, Rakudo Order::Less
-  say mention().raku;                     # 42, Rakudo Order::Less
-  say EVAL('constant Less = 42; Less'); say Less.raku;   # leaks here too
-  ```
-
-  `my constant` in a block is already right. An our-scoped constant belongs
-  in the package stash plus a lexical alias in the declaring scope, so a
-  bare name outside that scope should not see it. Also check an ordinary
-  name (`{ constant FOO = 1 }; say FOO`) against the oracle.
-
-- [ ] **A package declaration that starts a statement does not take an
-  infix after it** (found 2026-10-27 while fixing issue #206, 2b9494ae; on
-  4083b26b too):
-
-  ```raku
-  say quietly { class A {} === A }   # ===SORRY!=== unexpected operator in term position, Rakudo True
-  say quietly { class D {} ~~ D }    # ===SORRY!=== Expected a term, but found either infix ~~ …, Rakudo True
-  say quietly { class {} ~ "x" }     # x in both, but here as `class {}; ~"x"`
-  ```
-
-  A package declaration is a term in Rakudo. The statement parser's
-  `class`/`role`/`grammar`/`module` branch (parseStatementInner,
-  src/Parser.cpp, "…and the built-in package declarators") wraps the
-  declaration as a term only before a tight `.` or before `but`/`does`, and
-  otherwise ends the statement at its `}`, so the infix starts a statement
-  of its own. checkTextAfterBlock lets an operator after a package's `}`
-  through (lastPkgClose_) because of it: Roast's S03-operators/u2212-minus.t
-  has `class {} − class {}`. Done when the three lines answer as in Rakudo
-  2026.09 and that exemption is gone.
 - [ ] **A module sees what the program imported before it** (found
   2026-10-28 while fixing issue #211, 0e44c5a6; on v5.5.0 too):
 
@@ -231,9 +190,70 @@ moves to [TODO.md](TODO.md).
   The class and role declarations (src/InterpreterModules.cpp, around
   unknownParentMessage) and applySubsetTraits (src/InterpreterBinding.cpp)
   run with the declaration, after any `trait_mod:<is>` candidate has had
-  the name.
+  the name. A method two roles bring (X::Role::Unresolved::Method and
+  ::Multi) and an only method beside a role's multi are the same: Rakudo
+  refuses them at compile time, here the class declaration refuses them as
+  it runs (refuseRoleClashes, since 846ae003), and an EVAL's is no
+  `+{X::Comp}`.
 
 ## Operators and types
+
+- [ ] **What dies at BEGIN time is not wrapped as Rakudo wraps it** (found
+  2026-11-08 making a compile-time X::AdHoc an X::Comp, c2dcfeb9; on its parent
+  too):
+
+  ```raku
+  try EVAL q[BEGIN die "b"]; say $!.^name     # X::AdHoc, Rakudo X::Comp::BeginTime
+  BEGIN die "b"                               # "An exception occurred while evaluating a BEGIN: b"
+  # Rakudo: ===SORRY!=== An exception X::AdHoc+{X::Comp} occurred while evaluating a BEGIN:⏎b
+  try EVAL q[CHECK die "k"]; say $!.^name     # X::AdHoc, Rakudo X::Comp::BeginTime ("… a CHECK:⏎k")
+  try EVAL q[constant C = die "x"]; say $!.^name             # X::AdHoc, Rakudo X::Comp::BeginTime ("… a BEGIN")
+  try EVAL q[constant C = (1,2).sum(3)]; say $!.^name        # Nil (it lives), Rakudo X::Comp::BeginTime
+  ```
+
+  Rakudo's message names the inner exception's type and puts its message
+  on a line of its own; rakupp's four wrappers (execBareBlockRare and
+  runBegin in src/InterpreterModules.cpp, the static-phaser runner in
+  src/InterpreterOperators.cpp, a constant's in src/InterpreterCore.cpp)
+  say "An exception occurred while …: msg", and an EVAL's BEGIN takes none
+  of them.
+
+- [ ] **`.map` with an `is rw` routine writes nothing back** (found
+  2026-11-08 making `&postfix:<++>` a routine, 25f02957; on its parent too):
+
+  ```raku
+  sub inc($x is rw) { $x++ }; my @a = 1, 2; @a.map(&inc); say @a   # [1 2], Rakudo [2 3]
+  my @b = 1, 2; @b.map(&postfix:<++>); say @b                       # the same
+  ```
+
+  A `for @a { inc($_) }` and a call through a variable write back.
+
+- [ ] **An undeclared variable's message: Rakudo 2026.09's hint and
+  suggestions** (found 2026-11-08 checking the line of one, which is right
+  now):
+
+  ```raku
+  say $x;                       # Variable '$x' is not declared
+  # Rakudo: Variable '$x' is not declared. Perhaps you forgot a 'sub' if this was intended to be part of a signature?
+  my $foo = 1; say $fo;         # no suggestion in both, and Rakudo's hint
+  my $foo = 1; try EVAL q[say $fo]; say $!.message   # "Did you mean '$foo'?", Rakudo the hint
+  my $y = "a $x b";             # "Did you mean '$y'?" and at run time, Rakudo the hint at compile time
+  ```
+
+  Rakudo adds the hint whenever it has no suggestion, and suggests less
+  than rakupp (`$foO` gets '$foo', `$fo` nothing). Fifteen files under t/
+  mention "is not declared"; check each against the oracle.
+
+- [ ] **Role clashes Rakudo refuses that pass here** (found 2026-11-08 with
+  846ae003; on its parent too):
+
+  ```raku
+  role S { multi method m($a) { } }; role R does S { method m { } }; class E does R { }   # runs, Rakudo: Cannot have a multi candidate for 'm' …
+  role A[$t] { method m { } }; class E does A[1] does A[2] { }   # … roles (A[2], A[1]), Rakudo (A, A)
+  ```
+
+  refuseRoleClashes sees the methods each composed role holds; a role
+  composed by a role has merged its methods into that role's by then.
 
 - [ ] **Any's methods a plain object lacks here** (found 2026-11-08 making a
   FALLBACK leave Any's methods to Any, 34e48087; on its parent too):
@@ -267,16 +287,6 @@ moves to [TODO.md](TODO.md).
   Rakudo's "Earlier failure:". Done when the three lines answer as in
   Rakudo 2026.09.
 
-- [ ] **An `@` parameter given only a named argument says the compile-time
-  message at run time** (found 2026-11-08 with 0cee5c8f; on its parent too):
-
-  ```raku
-  sub g2(@l) { }; g2(a => 1)   # Calling g2() will never work with declared signature (@l), Rakudo: Too few positionals passed; expected 1 argument but got 0
-  ```
-
-- [ ] **`~` of two utf8 values is a Buf** (found 2026-11-08 with 79b70d34; on its
-  parent too): `("ab".encode ~ "c".encode).^name` is Buf, Rakudo utf8.
-
 - [ ] **An INIT in a routine that reads an outer variable runs on each call**
   (found 2026-11-08 with 8e5b2dc0; on its parent too):
 
@@ -288,27 +298,6 @@ moves to [TODO.md](TODO.md).
   Rakudo runs every INIT once, at program start, before the mainline's
   `my $n = 0` runs. Here an INIT that names an outer lexical is not hoisted
   (runHoistedInit, src/InterpreterCalls.cpp) and runs where it is written.
-
-- [ ] **A compile-time X::AdHoc is no X::Comp** (found 2026-11-08 with 0ca4968e;
-  the same for every compile-time X::AdHoc): `try EVAL q[sub f(%h is rw)
-  {}]; say $! ~~ X::Comp` is False, Rakudo True (its type is
-  `X::AdHoc+{X::Comp}`). Nothing here mixes X::Comp into an X::AdHoc a
-  ParseError raises.
-
-- [ ] **A user `multi` on a built-in operator hides the built-in candidates,
-  and `&postfix:<++>` is Any** (found 2026-10-19 while fixing undeclared
-  operator names, 145cddbf; the rest of that item fixed 2026-11-08):
-
-  ```raku
-  multi prefix:<->(Str $x) { "str" }; say -"a", -3;   # dies, Rakudo str-3
-  say prefix:<->("a");                                 # the same, called by name
-  say &postfix:<++>;                                   # (Any), Rakudo &postfix:<++>
-  ```
-
-  A declared operator of a built-in's name is called as the routine alone,
-  without the built-in candidates beside it. `&postfix:<++>` needs a
-  Callable that steps the container it is handed (the call form now
-  rewrites to the operator, ParserWordPairs.cpp builtinOpCall).
 
 - [ ] **A write through a `$_` that aliases a typed variable skips its type
   check** (found 2026-10-20 while fixing issue #185; andthen now shares the
@@ -472,17 +461,6 @@ moves to [TODO.md](TODO.md).
   isWhateverCode = true`), none of which keeps the expression it curried.
   Each would carry its Expr, and the gist and `.raku` deparse it through the
   RakuAST view (RakuAstView.cpp) as `.AST.DEPARSE` does.
-
-- [ ] **Two roles' conflicting multi says less than Rakudo** (found
-  2026-11-08 checking the role candidate key):
-
-  ```raku
-  role A2 { multi method m($a, :$x!) { "A" } }; role B2 { multi method m($a, :$x!) { "B" } }
-  class E does A2 does B2 { }
-  # Method 'm' must be resolved by class E because it exists in multiple roles (A2, B2)
-  # Rakudo: Multi method 'm' with signature :(E $:: $a, :$x!, *%_)' must be resolved by class E
-  #         because it exists in multiple roles (B2, A2)   — at compile time
-  ```
 
 ## Control flow and containers
 
@@ -755,11 +733,6 @@ moves to [TODO.md](TODO.md).
 - [ ] **Smaller differences met on the way** (2026-10-30):
   - `Kid.^find_method('foo').candidates` lists a role's multi candidate
     twice when Kid and a parent both declare candidates (Rakudo: once);
-  - `.signature.raku` prints `Hash(List:D(Pair:D)):D :$x!` for
-    `Hash:D(List:D(Pair:D)) :$x!`, and `List(Pair:D):D` for
-    `List:D(Pair:D)`: the smiley goes after the coercion;
-  - `R.^candidates.map(*.HOW.^name)` dies "Cannot map a List using a Str":
-    `.^name` after `*.HOW` is not curried into the WhateverCode;
   - Cro::HTTP's t/http2-request-parser.rakutest fails now and then (3 runs
     in 20 at 12a8fee3, 2 in 20 after it): the "Header1 + Continuation1 +
     Header2 + Data1" case passes as soon as its second request is checked,
@@ -790,12 +763,10 @@ moves to [TODO.md](TODO.md).
   - `.^roles` of a class that does a value-parameterized role names it as
     written, `(R2[1])`, where Rakudo names it by type, `(R2[Int])`; and
     `R2[1].^roles` is `((R2[1]))`, Rakudo `()`;
-  - an unknown parent's suggestions leave out Rakudo's native types and
-    terms: `class C is Strr {}` suggests 'Str', Rakudo 'str' and 'Str';
-    `class C is Iny {}` 'Any' and 'Int', Rakudo 'Int', 'Inf' and 'Any';
   - a class refused for an unknown parent leaves its name behind: after
     `try EVAL 'class C is nosuch {}'`, `EVAL 'class C {}'` is a
-    redeclaration (Rakudo: none; a refused role's name stays in both);
+    redeclaration, and so for a role (Rakudo 2026.09: neither; it refuses a
+    subset redeclared after `subset S is nosuch of Int`, which runs here);
   - a program that `use`s a module other than Test is not checked for a
     gobbled block, since the module may export the name; Rakudo knows its
     exports and refuses `use JSON::Fast; if Nope { }`. And `given 1 { when
@@ -1272,10 +1243,3 @@ moves to [TODO.md](TODO.md).
   one, from an overlay of Roast) finds the breaking rules in two minutes.
   Under Rakudo, kill S12-enums/thorough.t by hand in the names parts (see
   "run-roast leaves grandchildren behind" in TODO.md).
-
-- [ ] **An undeclared variable is named where its spelling first appears,
-  inside a literal too**: in names-v1's integration/advent2014-day16.t,
-  `$a` is undeclared in `Q:s/foo $a\n/` (line 22, where Rakudo names it),
-  and Raku++ names line 16, where `say Q/foo $a \n/` holds the spelling in a
-  literal that interpolates nothing. Both refuse the file; only the line
-  differs (found 2026-10-23). Likely DeclCheck's textual scan.
