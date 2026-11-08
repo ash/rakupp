@@ -588,6 +588,7 @@ public:
     bool importsTypes() const { return importsTypes_; }   // (a `use` that may bring type names in)
     std::vector<GobbleSite> gobbleSites_;
     void noteGobbleSite(const Expr* cond);
+    int stopColumn(int line) const;   // a parse error's column, where the parse stopped (ParserWordPairs.cpp)
     bool inEmbedded_ = false; // parsing an interpolated `"{…}"`/`"$!x"` piece of a larger unit
     int routineDepth_ = 0;   // nesting of sub/method bodies (&?ROUTINE legality)
     int selfDepth_ = 0;      // nesting of method/submethod bodies: a `self` a nested sub's `$!x` parameter binds into

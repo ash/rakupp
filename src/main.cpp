@@ -3034,6 +3034,21 @@ static bool docArgsNameProgram(int argc, char** argv, int from) {
     return false;
 }
 
+// A parse error under `-c` or `--lint`, as a run reports it: the line read
+// from the source in hand (`-e` code has no file to read it from) and the `^`.
+static void reportParseErrorIn(const ParseError& e, const std::string& src, const std::string& fileName) {
+    std::string sl;
+    if (e.file.empty() && e.line > 0) {
+        size_t b = 0;
+        for (int l = 1; l < e.line && b != std::string::npos; l++) {
+            b = src.find('\n', b);
+            if (b != std::string::npos) b++;
+        }
+        if (b != std::string::npos && b <= src.size()) sl = src.substr(b, src.find('\n', b) - b);
+    }
+    printParseError(e, sl, e.file.empty() ? fileName : e.file);
+}
+
 int main(int argc, char** argv) {
     rakupp::setupConsole();  // Windows: UTF-8 output and live escape sequences (no-op elsewhere)
     rakupp::registerShadowModules();  // NativeHelpers::Blob & co. answer from the binary, not a rakulib/ beside it
@@ -4514,7 +4529,7 @@ int main(int argc, char** argv) {
             }
         } catch (const ParseError& e) {
             if (jsonOut) { printJsonFindings({jsonFinding(fileName, e.line, "error", "parse-error", e.what())}); return 2; }
-            std::cerr << "===SORRY!=== Parse error at line " << e.line << ": " << e.what() << "\n";
+            reportParseErrorIn(e, src, fileName);
             return 2;
         }
         // Syntax is only half of "does this compile": an undeclared variable is
@@ -4566,7 +4581,7 @@ int main(int argc, char** argv) {
             prog = parser.parseProgram();
         } catch (const ParseError& e) {
             if (jsonOut) { printJsonFindings({jsonFinding(fileName, e.line, "error", "parse-error", e.what())}); return 2; }
-            std::cerr << "===SORRY!=== Parse error at line " << e.line << ": " << e.what() << "\n";
+            reportParseErrorIn(e, src, fileName);
             return 2;
         }
         auto findings = lintProgram(prog);

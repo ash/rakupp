@@ -365,6 +365,7 @@ int rakuppRunOn(Interpreter& interp, const std::string& src, std::vector<std::st
         parser.src_ = &src;          // a `use Slang::X` re-reads the rest of the file through the slang
         if (const char* rl = std::getenv("RAKULIB"))
             for (auto& d : splitSearchPath(rl)) parser.libPaths_.push_back(d);
+        interp.seedSrcLines(fileName, src);   // --trace and the parse-error excerpt for -e code
         Program prog = parser.parseProgram();
         // `CATCH { when X::Y {} }` is refused here as in an EVAL, when no import
         // can bring the name in (it ran, and the `when` never matched)
@@ -385,8 +386,7 @@ int rakuppRunOn(Interpreter& interp, const std::string& src, std::vector<std::st
         interp.srcFileAbs_ = absSrcPath(fileName);
         interp.execPath_ = exePath;
         interp.progName_ = g_progName;
-        // srcFile_ and the -I lib dirs are set above, before the L10N rewrite
-        interp.seedSrcLines(fileName, src);   // --trace and the parse-error excerpt for -e code
+        // srcFile_, the -I lib dirs and the source lines are set above, before the parse
         if (g_ctApply) g_ctApply(prog);   // …after the cache took the tree as parsed
         if (int rc = declCheckRc(prog); rc >= 0) return rc;
         stage.lap("check");
@@ -395,29 +395,11 @@ int rakuppRunOn(Interpreter& interp, const std::string& src, std::vector<std::st
         stage.lap("run");
         return rc;
     } catch (const ParseError& e) {
-        std::cerr << "===SORRY!=== Parse error at line " << e.line << ": " << e.what() << "\n";
-        // …and the line itself. A syntax error names a position the reader has
-        // to go and look at; showing it here saves the trip (issue #67).
         // A module that failed during `use` names its own file: the line is
         // the module's, not the loading script's.
         std::string sl = !e.file.empty() ? interp.srcLineOf(e.file, e.line)
                        : interp.srcLineOf(interp.srcFileAbs_.empty() ? fileName : interp.srcFileAbs_, e.line);
-        if (!sl.empty()) std::cerr << "      " << e.line << " | " << sl << "\n";
-        // …with a `^` under the column the error names, when it names one: a
-        // tab stays a tab, so the mark lines up however the terminal sets them
-        if (!sl.empty() && e.col > 0 && (size_t)e.col <= sl.size() + 1) {
-            std::string pad;
-            for (size_t i = 0; i + 1 < (size_t)e.col; i++) {
-                const unsigned char c = (unsigned char)sl[i];
-                if (c == '\t') pad += '\t';
-                else if ((c & 0xC0) != 0x80) pad += ' ';   // one per character, not per byte
-            }
-            std::cerr << "      " << std::string(std::to_string(e.line).size(), ' ') << " | " << pad << "^\n";
-        }
-        // …and where, as FILE:LINE — the spelling editors and Rakudo's own
-        // "at FILE:LINE" both jump to (integration/error-reporting.t)
-        std::string at = !e.file.empty() ? btDisplayPath(e.file, interp.srcFileAbs_, fileName) : fileName;
-        std::cerr << "  at " << at << ":" << e.line << "\n";
+        printParseError(e, sl, !e.file.empty() ? btDisplayPath(e.file, interp.srcFileAbs_, fileName) : fileName);
         return 1; // a compile-time (syntax) error exits 1, like Rakudo
     } catch (const RakuError& e) {
         // the same diagnostic the mainline handler prints — this is the path a
@@ -429,6 +411,27 @@ int rakuppRunOn(Interpreter& interp, const std::string& src, std::vector<std::st
         std::cerr << "Internal error: " << e.what() << "\n";
         return 3;
     }
+}
+
+void printParseError(const ParseError& e, const std::string& sl, const std::string& at) {
+    std::cerr << "===SORRY!=== Parse error at line " << e.line << ": " << e.what() << "\n";
+    // …and the line itself. A syntax error names a position the reader has
+    // to go and look at; showing it here saves the trip (issue #67).
+    if (!sl.empty()) std::cerr << "      " << e.line << " | " << sl << "\n";
+    // …with a `^` under the column the error names, when it names one: a
+    // tab stays a tab, so the mark lines up however the terminal sets them
+    if (!sl.empty() && e.col > 0 && (size_t)e.col <= sl.size() + 1) {
+        std::string pad;
+        for (size_t i = 0; i + 1 < (size_t)e.col; i++) {
+            const unsigned char c = (unsigned char)sl[i];
+            if (c == '\t') pad += '\t';
+            else if ((c & 0xC0) != 0x80) pad += ' ';   // one per character, not per byte
+        }
+        std::cerr << "      " << std::string(std::to_string(e.line).size(), ' ') << " | " << pad << "^\n";
+    }
+    // …and where, as FILE:LINE — the spelling editors and Rakudo's own
+    // "at FILE:LINE" both jump to (integration/error-reporting.t)
+    std::cerr << "  at " << at << ":" << e.line << "\n";
 }
 
 // Interpret an already-parsed Program (used by real AOT: the AST was built at

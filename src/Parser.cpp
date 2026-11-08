@@ -17901,12 +17901,13 @@ Program Parser::parseProgram() {
             if (isKind(Tok::Comma) && prog.stmts.back() && prog.stmts.back()->kind == NK::SubDecl) { advance(); continue; }
             if (!matchKind(Tok::Semicolon)) enforceStmtSep();
         }
-    } catch (ParseError&) {
+    } catch (ParseError& e) {
         // A tolerant lex (Lexer::tokenize) stopped at a construct it could not
         // read; whatever the parser then tripped over AT that end is a symptom
         // (`say "abc` reads as a bare `say` before End). The lex error is the
         // unit's. An error raised BEFORE the end is the parser's own.
         if (isKind(Tok::End) && cur().flag) throw Lexer::storedLexError((size_t)cur().ival);
+        if (!e.col && e.file.empty()) e.col = stopColumn(e.line);   // (where the excerpt's `^` goes)
         throw;
     }
     // the lex stopped early (Lexer::tokenize, tolerant): no slang re-read the

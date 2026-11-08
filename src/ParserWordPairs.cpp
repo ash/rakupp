@@ -204,6 +204,25 @@ bool Parser::takeWordPair(std::vector<ExprPtr>& pairs, std::vector<std::string>&
     return true;
 }
 
+// The column a parse error raised on `line` names, when it names none: where
+// the token the parse stopped on starts, or, when that one is on a later line
+// or is the end, just past the token before it (`say 1 +` ran out after the
+// `+`). Read off the source by each token's end offset, and 0 when the token's
+// text is not what the source holds there (a string, a fudged file).
+int Parser::stopColumn(int line) const {
+    auto colAt = [&](size_t i, bool after) -> int {
+        const Token& t = toks_[i];
+        if (!src_ || t.off == 0 || t.off > src_->size() || t.off < t.text.size() ||
+            src_->compare(t.off - t.text.size(), t.text.size(), t.text) != 0) return 0;
+        const size_t at = after ? t.off : t.off - t.text.size();
+        const size_t nl = at == 0 ? std::string::npos : src_->rfind('\n', at - 1);
+        return (int)(at - (nl == std::string::npos ? 0 : nl + 1)) + 1;
+    };
+    if (pos_ < toks_.size() && toks_[pos_].kind != Tok::End && toks_[pos_].line == line) return colAt(pos_, false);
+    if (pos_ > 0 && pos_ - 1 < toks_.size() && toks_[pos_ - 1].line == line) return colAt(pos_ - 1, true);
+    return 0;
+}
+
 // `use Test` imports its routines into the scope it stands in, so a plain `sub
 // ok` or a `my &ok` beside it redeclares one, in either order, as on Rakudo (a
 // multi joins them; `use Test ()` imports nothing). Test's routines are built
