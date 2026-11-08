@@ -4178,6 +4178,12 @@ Value Interpreter::makePseudoStash(const std::string& chainIn) {
                     (*snap.hash())[dn] = kv.second;
                 }
     }
+    // GLOBAL:: lists the package-scoped names every unit declared (`class A::B`
+    // gives it A), as the per-unit stash trees know them; it listed nothing
+    if (mode == 'G')
+        for (auto& [unit, U] : unitStash_)
+            for (auto& [name, node] : U.globalish)
+                if (node && !snap.hash()->count(name)) (*snap.hash())[name] = Value::typeObj(node->fq);
     od->attrs["snap"] = snap;
     return Value::object(od);
 }

@@ -6491,6 +6491,10 @@ Value Interpreter::methodCall(const Value& inv, const std::string& m, ValueList 
             if (!(a.t == VT::Pair && a.namedArg))
                 throwTypedV("X::Constructor::Positional", {{"type", inv}},
                             "Default constructor for '" + inv.s + "' only takes named arguments");
+    // …and a package or a module has no instances at all (Rakudo's PackageHOW)
+    if ((opEq(m, "new") || opEq(m, "bless")) && inv.t == VT::Type && pkgKind_.count(inv.s.copyText()) &&
+        !classes_.count(inv.s))
+        throw RakuError{Value::typeObj("X::AdHoc"), "You cannot create an instance of this type (" + inv.s + ")"};
     // A handle's lazy `.lines` is read in full before a list method works on
     // it (`$fh.lines.grep(…)`): only `for` and subscripts walk it line by line
     // (…but not for its INDEX views: `.kv`/`.pairs`/`.antipairs` pull as they

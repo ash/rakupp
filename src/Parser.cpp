@@ -17784,12 +17784,19 @@ void Parser::checkRedeclarations(const std::vector<StmtPtr>& stmts, bool unitSco
             completedPkgs_.insert(cd->name);  // …wherever the body stands (see the unit check)
             // the body is a scope of its own: `package P { sub p {…}; sub p {…} }` redeclares
             checkRedeclarations(cd->body);
-            // A bare `package`/`module` is a WEAK namespace declaration: it only
-            // opens the name to hold `our`-scoped symbols and may coexist with a
-            // later `class`/`role`/`grammar` of the same name that refines it
+            // A bare `package` is a WEAK namespace declaration: it only opens the
+            // name to hold `our`-scoped symbols and may coexist with a later
+            // `class`/`role`/`grammar` of the same name that refines it
             // (Cro::ResourceIdentifier does exactly this). Don't count it, and
-            // don't let it trip the redeclaration check for the real type below.
-            if (cd->isPackage) continue;
+            // don't let it trip the redeclaration check for the real type below
+            // — but after a module or a class it is one, as a second `module`
+            // is, which Rakudo refuses in either order with a class
+            if (cd->isPackage && !cd->isModuleDecl) {
+                if (types.count(cd->name))
+                    throw ParseError("Redeclaration of symbol '" + cd->name + "'", cd->line,
+                                     "X::Redeclaration", {{"symbol", cd->name}});
+                continue;
+            }
             if (types[cd->name]++)
                 throw ParseError("Redeclaration of symbol '" + cd->name + "'", cd->line,
                                  "X::Redeclaration", {{"symbol", cd->name}});
