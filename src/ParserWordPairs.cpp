@@ -106,7 +106,9 @@ void Parser::inheritSyntax(Parser& p) const {
 
 ExprPtr Parser::parseEmbeddedExpr(const std::string& src, bool ownScope) {
     Lexer lx(src);
-    Parser p(lx.tokenize());
+    std::vector<Token> toks = lx.tokenize();
+    if (embedLineBase_ > 1) for (auto& t : toks) t.line += embedLineBase_ - 1;   // (the file's lines)
+    Parser p(std::move(toks));
     // Inherit user-defined operators so `"{ 4! }"` sees this program's `postfix:<!>`
     // (and custom infix/prefix/circumfix) just as top-level code does.
     inheritSyntax(p);

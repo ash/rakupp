@@ -10807,6 +10807,21 @@ ExprPtr Parser::parseInterpString(const std::string& rawIn) {
             fF = feats.find('f') != std::string::npos;
         }
     }
+    // An embedded expression is parsed by a parser of its own, whose tokens are
+    // numbered from the string's line, the newlines before it counted: `"$nope"`
+    // on line 301 is reported there, where it was line 1 (DeclCheck then looked
+    // only 200 lines on) and a `{…}` block's runtime errors named its own line 1
+    // (a string token records the line it ENDS on, a heredoc's its marker's)
+    auto lineAt = [&](size_t at) {
+        const Token& st = pos_ > 0 ? toks_[pos_ - 1] : cur();
+        const int start = st.heredoc ? st.line + 1 : st.line - (int)std::count(st.text.begin(), st.text.end(), '\n');
+        return start + (int)std::count(raw.begin(), raw.begin() + (long)std::min(at, raw.size()), '\n');
+    };
+    auto embedAt = [&](size_t at, const std::string& src, bool own = false) {
+        embedLineBase_ = lineAt(at);
+        struct Reset { int& b; ~Reset() { b = 0; } } reset{embedLineBase_};
+        return parseEmbeddedExpr(src, own);
+    };
     // A `$` that starts no variable must be backslashed: `"$"`, `"a $, b"`;
     // and `"${۳}"` is Perl 5's capture spelling. Top-level text only — a
     // `{ … }` closure in the string is code.
@@ -11057,12 +11072,9 @@ ExprPtr Parser::parseInterpString(const std::string& rawIn) {
             // term after infix). It was dropped without a word, and the string
             // read on as if the block had been empty. The error names the line
             // the block is on, not its line within the block's own text.
-            try { result->parts.push_back(parseEmbeddedExpr(inner, declares())); }
+            try { result->parts.push_back(embedAt(i, inner, declares())); }
             catch (ParseError& pe) {
-                const Token& st = pos_ > 0 ? toks_[pos_ - 1] : cur();
-                const int at = st.line + (st.heredoc ? 1 : 0) +
-                               (int)std::count(raw.begin(), raw.begin() + (long)i, '\n');
-                pe.line = at + (pe.line > 0 ? pe.line - 1 : 0);
+                if (pe.line <= 0) pe.line = lineAt(i);   // (a line of its own tokens is the file's now)
                 throw;
             }
             catch (...) { rethrowIfObsolete(); }
@@ -11190,7 +11202,7 @@ ExprPtr Parser::parseInterpString(const std::string& rawIn) {
             scanChain(j, var); // a bare `.message` stays literal, as after any variable
             flush();
             if (var.size() == 2) result->parts.push_back(std::make_unique<VarExpr>(var));
-            else try { result->parts.push_back(parseEmbeddedExpr(var)); } catch (...) { rethrowIfObsolete(); lit += var; }
+            else try { result->parts.push_back(embedAt(i, var)); } catch (...) { rethrowIfObsolete(); lit += var; }
             i = j;
             continue;
         }
@@ -11207,7 +11219,7 @@ ExprPtr Parser::parseInterpString(const std::string& rawIn) {
             }
             scanChain(j, var); // postfix chain on the capture: $0[1] $<k>{...} $0.uc()
             flush();
-            try { result->parts.push_back(parseEmbeddedExpr(var)); } catch (...) { rethrowIfObsolete(); lit += var; }
+            try { result->parts.push_back(embedAt(i, var)); } catch (...) { rethrowIfObsolete(); lit += var; }
             i = j;
             continue;
         }
@@ -11235,7 +11247,7 @@ ExprPtr Parser::parseInterpString(const std::string& rawIn) {
                 // in code: `&` says "the routine of this name", and dropping it
                 // let a TYPE of that name answer instead once a bare `Bar(…)`
                 // started resolving to the type's coercion.
-                try { result->parts.push_back(parseEmbeddedExpr("&" + fname + "(" + argsrc + ")")); }
+                try { result->parts.push_back(embedAt(i, "&" + fname + "(" + argsrc + ")")); }
                 catch (...) { rethrowIfObsolete(); }
                 i = k2 + 1;
                 continue;
@@ -11250,7 +11262,7 @@ ExprPtr Parser::parseInterpString(const std::string& rawIn) {
                 if (scanChain(k2, var)) {
                     lit.pop_back();
                     flush();
-                    try { result->parts.push_back(parseEmbeddedExpr(var)); }
+                    try { result->parts.push_back(embedAt(i, var)); }
                     catch (...) { rethrowIfObsolete(); throw; }
                     i = k2;
                     continue;
@@ -11266,7 +11278,7 @@ ExprPtr Parser::parseInterpString(const std::string& rawIn) {
             std::string inner = scanInterpBlock(raw, j, '(', ')');
             if (j < n) {
                 flush();
-                try { result->parts.push_back(parseEmbeddedExpr("$(" + inner + ")")); }
+                try { result->parts.push_back(embedAt(i, "$(" + inner + ")")); }
                 catch (...) { rethrowIfObsolete(); lit += raw.substr(i, j + 1 - i); }
                 i = j + 1;
                 continue;
@@ -11327,7 +11339,7 @@ ExprPtr Parser::parseInterpString(const std::string& rawIn) {
                                      {{"old", old}, {"replacement", repl}});
                 }
                 flush();
-                try { result->parts.push_back(parseEmbeddedExpr(std::string(1, sig) + "(" + inner + ")")); }
+                try { result->parts.push_back(embedAt(i, std::string(1, sig) + "(" + inner + ")")); }
                 catch (...) { rethrowIfObsolete(); }
                 i = j + 1;
                 continue;
@@ -11376,15 +11388,12 @@ ExprPtr Parser::parseInterpString(const std::string& rawIn) {
             }
             flush();
             try {
-                ExprPtr part = parseEmbeddedExpr(var);
+                ExprPtr part = embedAt(i, var);
                 // a compile-time magical reads its NODE's line — stamp the
                 // string's own position, not the sub-parser's line 1
                 // ("line $?LINE" — Log::Async's context test)
-                if (part && part->kind == NK::VarExpr && var.rfind("$?", 0) == 0) {
-                    int base = pos_ > 0 ? toks_[pos_ - 1].line : cur().line;
-                    for (size_t nl = 0; nl < i; nl++) if (raw[nl] == '\n') base++;
-                    static_cast<VarExpr*>(part.get())->line = base;
-                }
+                if (part && part->kind == NK::VarExpr && var.rfind("$?", 0) == 0)
+                    static_cast<VarExpr*>(part.get())->line = lineAt(i);
                 result->parts.push_back(std::move(part));
             } catch (...) { rethrowIfObsolete(); lit += var; }
             i = j;

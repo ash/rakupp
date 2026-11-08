@@ -367,6 +367,7 @@ private:
     bool declTypesOpaque_ = false;
     bool importsModules_ = false;   // a non-pragma `use`/`need` anywhere in the unit
     bool sawEndPhaser_ = false;   // an END anywhere in the unit (Program::mayHaveEnd)
+    int embedLineBase_ = 0;       // parseEmbeddedExpr: the file line its text starts on (0: line 1)
     bool sawRoutineUse_ = false;  // a `use`/`need` inside a routine body (Program::mayHaveRoutineUse)
     // (pendingStmts_), flushed after the current statement by the block loops
     std::string lastWillPhaser_;
