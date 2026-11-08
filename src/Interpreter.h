@@ -5003,6 +5003,7 @@ public:
     // The frames a caught exception object carries (`__bt`), materialized into
     // a Backtrace list on first ask and cached back onto the object.
     Value backtraceOf(const Value& exObj);
+    Value failureBacktrace(const Value& failure, bool mess);   // a Failure's `.backtrace` / `.mess` (InterpreterBinding.cpp)
     std::string srcLineOf(const std::string& file, int line); // one source line, cached ("" = unavailable)
     // The whole diagnostic an uncaught error prints: message, type, frames, and
     // the alt section when there is one. Also what `warn` and the REPL render.

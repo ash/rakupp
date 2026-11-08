@@ -421,14 +421,12 @@ void Interpreter::throwTypedV(const std::string& type,
                               const std::string& message) {
     // A type check that refused a FAILURE says what that failure was first, as
     // Rakudo's X::TypeCheck.priors does with its `.mess`, the message and the
-    // backtrace: "Earlier failure:\n boom\n  in block <unit> …\n\nFinal error:\n …"
+    // backtrace of where it was made: "Earlier failure:\n boom\n  in sub f …\n\nFinal error:\n …"
     if (type.rfind("X::TypeCheck", 0) == 0)
         for (auto& kv : attrs)
             if (kv.first == "got" && kv.second.t == VT::Hash && kv.second.hashKind == "Failure" && kv.second.hash()) {
-                auto mi = kv.second.hash()->find("message"), ei = kv.second.hash()->find("exception");
-                std::string was = (mi != kv.second.hash()->end() ? mi->second.toStr() : std::string()) + "\n";
-                if (ei != kv.second.hash()->end() && ei->second.t == VT::Object)
-                    try { was += methodCall(methodCall(ei->second, "backtrace", {}), "Str", {}).toStr(); } catch (...) {}
+                std::string was;
+                try { was = failureBacktrace(kv.second, true).toStr(); } catch (...) {}
                 const std::string full = "Earlier failure:\n " + was + "\nFinal error:\n " + message;
                 Value ex = makeTypedEx(type, std::move(attrs), full);
                 throw RakuError{ex, full};
@@ -5975,6 +5973,18 @@ Value Interpreter::backtraceOf(const Value& exObj) {
     }
     at["__bt"] = bt;   // cached: a program that walks it twice pays once
     return bt;
+}
+
+// A Failure's `.backtrace`: where it was made (rakuppNewFailure kept the frames in
+// its ext), as Rakudo's Failure holds its own; and `.mess`, its message and that.
+Value Interpreter::failureBacktrace(const Value& failure, bool mess) {
+    Value holder; holder.t = VT::Object; holder.setObj(makePayload<ObjectData>());
+    Value hd = Value::any(); hd.extM() = failure.ext(); holder.obj()->attrs["__bt"] = hd;
+    Value bt = backtraceOf(holder);
+    if (!mess) return bt;
+    auto mm = failure.hash() ? failure.hash()->find("message") : decltype(failure.hash()->end()){};
+    return Value::str((failure.hash() && mm != failure.hash()->end() ? mm->second.toStr() : std::string()) + "\n" +
+                      methodCall(bt, "Str", {}).toStr());
 }
 
 // The call chain as a list of BacktraceFrame values, innermost first — what

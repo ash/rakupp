@@ -3586,6 +3586,7 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
         if (m == "not") { (*inv.hash())["handled"] = Value::boolean(true); return Value::boolean(true); }
         if (m == "handled") return inv.hash()->count("handled") ? (*inv.hash())["handled"] : Value::boolean(false);
         if (m == "self" || m == "Failure") return inv;
+        if ((m == "backtrace" || m == "mess") && args.empty()) return failureBacktrace(inv, m == "mess");
         // Mu's print/say/put take no arguments: `$failure.print: 42` finds no
         // candidate, and the capture it reports holds the Failure itself
         if ((m == "print" || m == "say" || m == "put") && !args.empty()) {
@@ -3605,10 +3606,9 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
             if (ex.t == VT::Object) throw RakuError{ex, msg};
             throw RakuError{ex.t == VT::Type ? ex : Value::typeObj("X::AdHoc"), msg};
         }
-        // .message reads the diagnostic without detonating; .Str/.gist USE the
-        // value, so an UNHANDLED Failure throws there (Rakudo). The NUMERIC
-        // coercions use it just as much — `.Int` on an unhandled Failure used to
-        // return the hash's element count, a 2 out of nowhere.
+        // .message reads the diagnostic without detonating; .Str/.gist USE the value, so an
+        // UNHANDLED Failure throws there (Rakudo). The NUMERIC coercions use it just as much —
+        // `.Int` on an unhandled Failure used to return the hash's element count, a 2 out of nowhere.
         // (`.raku` is deliberately NOT in this list, though Rakudo detonates
         // there too. Two Roast files reach it on a Failure that Rakudo never
         // makes — a failed `Grammar.parse` under 6.e and a missing symbol in
@@ -8240,12 +8240,12 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
             return Value::str("Something went wrong in (" + tn + ")");
         }
     }
-    // `.backtrace` on an exception object: the frames its .throw recorded
-    // (captured NOW for a never-thrown one). A class defining its own
-    // backtrace method still wins — this only fills the built-in gap.
+    // `.backtrace` on an exception object: the frames its .throw recorded (Nil for
+    // a never-thrown one, as Rakudo's: a Failure's exception too). A class defining
+    // its own backtrace method still wins — this only fills the built-in gap.
     if (m == "backtrace" && inv.t == VT::Object && inv.obj() &&
         !(!m.skipOwn && inv.obj()->cls && inv.obj()->cls->findMethod("backtrace"))) {
-        return backtraceOf(inv);   // materializes the throw-time chain, once
+        return inv.obj()->attrs.count("__bt") ? backtraceOf(inv) : Value::nil();   // (materialized once)
     }
     // user object: dispatch to class methods / public accessors first
     if (inv.t == VT::Object && inv.obj() && inv.obj()->cls) {
