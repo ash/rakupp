@@ -5940,10 +5940,8 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
         // is the range, and `chars` itself is in it (Str sheet ST-35).
         if (start < 0 || start > n)
             return armedFailure("X::OutOfRange", "Start argument to substr out of range. Is: " +
-                std::to_string(start) + ", should be in 0.." + std::to_string(n) +
-                (start < 0 ? "; use *" + std::to_string(start) +
-                             " if you want to index relative to the end"
-                           : ""));
+                std::to_string(start) + ", should be in 0.." + std::to_string(n) + "; " + (-start > n ? "" :
+                "use *-" + std::to_string(start < 0 ? -start : start) + " if you want to index relative to the end"));   // (Rakudo's)
         // The length may be a Whatever/WhateverCode: `*` means "to the end" and
         // `*-1` etc. is called with the max available length (n - start).
         long long len;
@@ -5967,9 +5965,9 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
             return armedFailure("X::OutOfRange",
                 "Number of characters argument to substr out of range. Is: NaN, should be in 0..^Inf");
         if (len < 0) // Rakudo: X::OutOfRange (this counted back from the end)
-            return armedFailure("X::OutOfRange", "Length argument to substr out of range. Is: " +
-                std::to_string(len) + ", should be in 0.." + std::to_string(n - start) +
-                "; use *" + std::to_string(len) + " if you want to index relative to the end");
+            return armedFailure("X::OutOfRange", "Number of characters argument to substr out of range. Is: " +
+                std::to_string(len) + ", should be in 0..^Inf; use *" + std::to_string(len) +
+                " if you want to index relative to the end");
         if (start + len > n) len = n - start;
         return slice(start, start + len);
     }
