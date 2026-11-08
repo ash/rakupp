@@ -2766,6 +2766,9 @@ public:
     // …and a multi an EXPORT sub hands over joins the scope's own group of that
     // name instead of replacing it; true when it did (see the definition)
     bool importJoinsLocalMulti(const std::string& key, const Value& val);
+    int importClashesWithLocal(Env* scope, const std::string& key, const Value& val);   // issue #230
+    void refuseDeclOverImport(const SubDecl* sd, const std::string& sname, const Value& code);   // …the other order
+    [[noreturn]] void throwImportClash(const std::string& key, int clash);             // …its X::Redeclaration
     struct GrammarHooks codeAssertHooks();
     static bool patHasCodeAssert(const std::string& pat);
     // The pattern a `<{ … }>` block's value stands for, compiled once per

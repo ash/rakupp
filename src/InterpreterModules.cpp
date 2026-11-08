@@ -577,6 +577,54 @@ bool Interpreter::importJoinsLocalMulti(const std::string& key, const Value& val
     return true;
 }
 
+// A `use` bringing `key` into a scope that DECLARES that routine itself is
+// Rakudo's X::Redeclaration, in either order (issue #230). The import used to
+// step aside and leave the local one, without a word, and the clash surfaced
+// as a wrong answer. Not a clash: two multis (they merge — but a `proto` the
+// scope wrote is a second one beside the group's own), an imported stub
+// (`sub f { ... }`, which the local one completes), and a name only an earlier
+// import put there (the last one wins). 0 when there is no clash, 1 for a
+// symbol's, 2 for a local multi's or proto's. Asked before the merge.
+int Interpreter::importClashesWithLocal(Env* scope, const std::string& key, const Value& val) {
+    if (!scope || key.size() < 2 || key[0] != '&' || val.t != VT::Code || !val.code() || val.code()->ci().isStub)
+        return 0;
+    Value* have = scope->local(key);
+    if (!have || have->t != VT::Code || !have->code() || have->code() == val.code()) return 0;
+    // (the program's own routines are the mainline's: global_ holds published imports too)
+    if (scope == global_.get() && !mainlineSubNames_.count(key)) return 0;
+    // declared HERE: a group may also hold the outer candidates it started from
+    auto here = [&](const Value& c) { return c.t == VT::Code && c.code() && c.code()->closure.get() == scope; };
+    if (!have->code()->ci().isMultiDispatcher) return here(*have) ? 1 : 0;
+    const bool both = val.code()->ci().isMultiDispatcher;
+    for (auto& c : have->code()->cold().candidates)
+        if (here(c) && (!both || c.code()->ci().isProto || c.code()->ci().isProtoBody)) return 2;
+    return 0;
+}
+// …and a declaration that runs AFTER the import (an EVAL hoists only the subs
+// something names early): a sub over an imported routine, a multi over an
+// imported sub, a proto over an imported group. An imported stub (`sub f { ... }`
+// exported by the module) is the local one's to complete.
+void Interpreter::refuseDeclOverImport(const SubDecl* sd, const std::string& sname, const Value& code) {
+    if (hoistingSubs_ || sd->isMethod || !sd->altParams.empty()) return;
+    Value* v = tctx().cur->local("&" + sname);
+    if (!v || v->t != VT::Code || !v->code() || v->code()->ci().isStub) return;
+    const bool group = v->code()->ci().isMultiDispatcher;
+    if (group ? v->code()->cold().candidates.empty() : !v->code()->ci().body || !routineFromElsewhere(*v)) return;
+    if (group) for (auto& c : v->code()->cold().candidates) if (!routineFromElsewhere(c)) return;
+    if (!sd->isMulti) {
+        if (code.code() && v->code()->ci().body != code.code()->ci().body) throwImportClash("&" + sname, 1);
+    }
+    else if (sd->isProto || !group) throwImportClash("&" + sname, 2);
+}
+void Interpreter::throwImportClash(const std::string& key, int clash) {
+    const std::string name = key.substr(1);
+    if (clash == 2)
+        throwTypedV("X::Redeclaration", {{"symbol", Value::str(name)}, {"what", Value::str("routine")}},
+                    "Redeclaration of routine '" + name + "'. Did you mean to declare a multi-sub?");
+    throwTypedV("X::Redeclaration", {{"symbol", Value::str(key)}, {"what", Value::str("symbol")}},
+                "Redeclaration of symbol '" + key + "'.");
+}
+
 // Does a class body declare (not `my`) a subset named `t`? Its attributes are
 // built before the body runs, so `class Cro::HTTP::Request { subset Method of
 // Str …; has Method $.method }` would otherwise read the core Method.
@@ -1092,6 +1140,9 @@ void Interpreter::loadModuleImpl(const std::string& name, const std::vector<std:
     // now, before the module's own `use` statements run through here again
     const ValueList useExtra = std::move(useExprArgs_);
     useExprArgs_.clear();
+    // where the `use` stands, for an error that is the importer's, not the module's
+    const int useLine = curLine_;
+    const std::string useFile = curDeclFile_;
     // …and the `:auth<…>` it was written with, before a nested `use` resets it
     const std::string useAuth = std::move(pendingUseAuth_);
     pendingUseAuth_.clear();
@@ -1166,6 +1217,8 @@ void Interpreter::loadModuleImpl(const std::string& name, const std::vector<std:
                         want = tag == "MANDATORY" || (tag == "DEFAULT" ? reqDefault : reqTags.count(tag) != 0) ||
                                (tag == "ALL" && reqNames.count(bare));
                     }
+                    if (int c = want ? importClashesWithLocal(tctx().cur.get(), se.key, se.value) : 0)
+                        throwImportClash(se.key, c);
                     if (want && joinImportedMulti(tctx().cur->local(se.key), se.value)) continue;
                     // a routine is kept off a name the PROGRAM declared only
                     // when it lands in the mainline; inside a block or routine
@@ -1183,10 +1236,13 @@ void Interpreter::loadModuleImpl(const std::string& name, const std::vector<std:
             ValueList eargs;
             for (auto& s : importArgs) eargs.push_back(Value::str(s));
             for (auto& v : useExtra) eargs.push_back(v);
+            std::string clashKey; int clash = 0;   // (see the first-load site)
             try {
                 Value res = callCallable(it->second, eargs);
                 if (res.t == VT::Hash && res.hash())
-                    for (auto& kv : *res.hash())
+                    for (auto& kv : *res.hash()) {
+                        if (!clash && (clash = importClashesWithLocal(tctx().cur.get(), kv.first, kv.second)))
+                            clashKey = kv.first;
                         if (!importWouldShadowRoutine(kv.first, kv.second) &&
                             !importJoinsLocalMulti(kv.first, kv.second)) {
                             // (a package variable's container: see the first-load site)
@@ -1195,6 +1251,7 @@ void Interpreter::loadModuleImpl(const std::string& name, const std::vector<std:
                             if (kv.second.t == VT::Type && kv.second.s.str() != kv.first)
                                 g_lexTypeAlias.store(true, std::memory_order_relaxed);   // (see the first-load site)
                         }
+                    }
             } catch (RakuError& e) {
                 // For `use`/`need` a module's own refusal is the `use` failing,
                 // and it propagates — Rakudo aborts compilation and exits 1.
@@ -1237,6 +1294,7 @@ void Interpreter::loadModuleImpl(const std::string& name, const std::vector<std:
                     std::cerr << "===WARNING=== Module " << name
                               << " EXPORT failed: " << e.message << "\n";
             }
+            if (clash) { curLine_ = useLine; throwImportClash(clashKey, clash); }
         }
         return;
     }
@@ -1431,6 +1489,12 @@ void Interpreter::loadModuleImpl(const std::string& name, const std::vector<std:
             ~LoadExportsScope() { p = saved; }
         } loadExportsScope{loadExports_, loadExports_};
         loadExports_ = &unitExports;
+        // the first import that lands on a routine the importing scope declares
+        // itself, refused once the load has put the interpreter back (#230)
+        std::string clashKey; int clash = 0;
+        auto noteClash = [&](Env* scope, const std::string& k, const Value& v) {
+            if (!clash && (clash = importClashesWithLocal(scope, k, v))) clashKey = k;
+        };
         auto publish = [&] {
             // A `unit module M;` file's EXPORT: what the rest of the file declared
             // `is export`, as a braced package's body records its own. A module
@@ -1565,6 +1629,8 @@ void Interpreter::loadModuleImpl(const std::string& name, const std::vector<std:
                 // module's scope is its own business.
                 // an exported MULTI joins the importing scope's own multi of the
                 // same name (`use Foo; multi waz($x) {…}` dispatches to both)
+                if (k.size() > 1 && k[0] == '&' && exported.count(k.substr(1)) && doImport && saved)
+                    noteClash(saved.get(), k, kv.second);   // a routine the importing scope declares
                 if (k.size() > 1 && k[0] == '&' && exported.count(k.substr(1)) && doImport && saved &&
                     joinImportedMulti(saved->local(k), kv.second))
                     continue;
@@ -1574,7 +1640,8 @@ void Interpreter::loadModuleImpl(const std::string& name, const std::vector<std:
                     // ITSELF. Compress::Zlib's `need Compress::Zlib::Raw` sits
                     // in the module mainline beside its own `our sub uncompress`,
                     // and replacing that with Raw's four-argument NATIVE of the
-                    // same name segfaulted on the first call.
+                    // same name segfaulted on the first call. (A `use` of it
+                    // there is a redeclaration, noted above.)
                     if (!saved->local(k)) saved->define(k, kv.second);
                     // …and ONLY there. The import ends with the block or routine
                     // that made it: published to GLOBAL as well, `{ use Foo }`
@@ -1685,6 +1752,7 @@ void Interpreter::loadModuleImpl(const std::string& name, const std::vector<std:
                 if (!want || !doImport || !saved) continue;
                 // a placeholder never displaces a routine (see importWouldShadowRoutine)
                 if (key[0] == '&' && v.t != VT::Code) continue;
+                noteClash(saved.get(), key, v);
                 if (key[0] == '&' && joinImportedMulti(saved->local(key), v)) continue;
                 if (saved.get() != global_.get()) {
                     if (!saved->local(key)) saved->define(key, v);
@@ -1893,6 +1961,7 @@ void Interpreter::loadModuleImpl(const std::string& name, const std::vector<std:
                             // real export of a real container (roast's gh2979.t).
                             if (kv.second.t == VT::Any && !kv.first.empty() && kv.first[0] == '&')
                                 continue;
+                            noteClash(tctx().cur.get(), kv.first, kv.second);
                             if (importWouldShadowRoutine(kv.first, kv.second) ||
                                 importJoinsLocalMulti(kv.first, kv.second)) continue;
                             // A package variable a Stash hands over is its CONTAINER
@@ -1924,6 +1993,7 @@ void Interpreter::loadModuleImpl(const std::string& name, const std::vector<std:
                 }
             }
         }
+        if (clash) { curLine_ = useLine; curDeclFile_ = useFile; throwImportClash(clashKey, clash); }
     };
 
     // Obtain the tree for a module we found on disk — from the precomp cache when
@@ -5535,6 +5605,8 @@ static void mergeParentRoleMultis(ClassInfo* ci, const SigKey& sigKeyParams) {
                                 continue;
                             Value* have = tctx().cur->find(bare);
                             if (!have) { tctx().cur->define(bare, kv.second); continue; }
+                            if (int c = importClashesWithLocal(tctx().cur.get(), bare, kv.second))
+                                throwImportClash(bare, c);
                             // an imported MULTI joins the multi already in scope:
                             // this scope's own group, or a new one here that starts
                             // from the outer group's candidates
@@ -5907,6 +5979,7 @@ static void mergeParentRoleMultis(ClassInfo* ci, const SigKey& sigKeyParams) {
                 for (auto& c : altCands) share(c);
             }
             if (!sname.empty()) {
+                refuseDeclOverImport(sd, sname, code);   // a name a `use` brought here (#230)
                 if (sd->isMulti || !sd->altParams.empty()) {
                     std::string key = "&" + sname;
                     Value* existing = tctx().cur->find(key);
@@ -5985,17 +6058,6 @@ static void mergeParentRoleMultis(ClassInfo* ci, const SigKey& sigKeyParams) {
                         ci->second->methods[sname] = code;
                     }
                 }
-                // a routine IMPORTED into this scope may be replaced only when it is
-                // a stub (`sub f { ... }` exported by the module): overriding a real
-                // one is X::Redeclaration, as it is for a local one
-                if (!sd->isMulti && !sd->isProto && !sd->isMethod && !hoistingSubs_)
-                    if (Value* prev = tctx().cur->local("&" + sname))
-                        if (prev->t == VT::Code && prev->code() && code.code() && routineFromElsewhere(*prev) &&
-                            !prev->code()->ci().isStub && !prev->code()->ci().isMultiDispatcher &&
-                            prev->code()->ci().body && prev->code()->ci().body != code.code()->ci().body)
-                            throwTypedV("X::Redeclaration",
-                                {{"symbol", Value::str(sname)}, {"what", Value::str("routine")}},
-                                "Redeclaration of routine '" + sname + "'");
                 tctx().cur->define("&" + sname, code);
                 // `our sub` is package-scoped: also install globally so a sibling block
                 // (or an `our &name;` re-declaration) can reach it.
