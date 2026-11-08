@@ -20897,8 +20897,8 @@ Value Interpreter::regexMatch(const std::string& subject, std::string_view patte
     // Interpolate $scalar variables into the pattern as their literal (quotemeta'd)
     // value — `/$x/` matches the contents of $x. Leaves $0.. backrefs, $<name>,
     // special vars, escaped \$, and the end-anchor $ untouched.
-    // (wired mode: no textual interpolation — $vars inside code blocks belong
-    // to the code, and pattern atoms resolve at match time via the str hook)
+    // (wired mode too, in the match scope under its closure: nothing answers a `$var`
+    // atom at match time here, so `regex { a $w }` matched nothing; code blocks keep theirs)
     // Repeated until stable: splicing a regex VALUE inserts that regex's own
     // source, which may itself name further regexes (`rx/$lit$lit/` spliced into
     // `rx/^$two$/`). The pass count is a guard against a self-referential value.
@@ -20920,7 +20920,7 @@ Value Interpreter::regexMatch(const std::string& subject, std::string_view patte
         if (!p5pat) pat = rxInterpArrays(pat);
         tctx().cur = savedOuter;
     }
-    if (!wired) pat = p5pat ? interpP5Pattern(pat) : interpRegexPattern(pat);
+    if (!wired || !p5pat) pat = p5pat ? interpP5Pattern(pat) : interpRegexPattern(pat);
     if (!wired && !p5pat) pat = rxInterpArrays(pat); // `/@alpha/` — array elements as longest-first alternation
     // Wired mode leaves `$var` atoms to the match-time str hook, but an
     // `@array` atom is an ALTERNATION of the elements — a shape no atom hook
