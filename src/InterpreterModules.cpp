@@ -4339,6 +4339,9 @@ void Interpreter::throwInvalidParamType(const std::string& type) {
 
 std::vector<std::string> Interpreter::typeSuggestions(const std::string& name) {
     std::vector<std::string> cands(coreTypeNames().begin(), coreTypeNames().end());
+    // (…and the native types and the numeric terms, which Rakudo's CORE names too: `Strr` → str, `Iny` → Inf)
+    for (const char* n : {"int", "int8", "int16", "int32", "int64", "uint", "uint8", "uint16", "uint32", "uint64",
+                          "num", "num32", "num64", "str", "byte", "atomicint", "Inf", "NaN"}) cands.emplace_back(n);
     for (auto& kv : classes_)
         if (!kv.first.empty() && kv.first.rfind("X::", 0) != 0 && kv.first.find('[') == std::string::npos)
             cands.emplace_back(kv.first);
