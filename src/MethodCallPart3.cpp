@@ -4868,7 +4868,9 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
     // string
     // Str/Blob byte views. rakupp stores a Blob/Buf as a Str tagged hashKind="Blob";
     // its raw UTF-8 bytes are the buffer, so encode/decode are (tagged) identity.
-    if (m == "new" && inv.t == VT::Str) return Value::str(""); // "literal".new — a fresh empty Str
+    // "literal".new is Str.new: a fresh Str, `:value` its text, no positionals
+    if (m == "new" && inv.t == VT::Str)
+        return inv.hashKind.empty() ? methodCall(Value::typeObj("Str"), "new", args) : Value::str("");
     if (inv.t == VT::Str && (inv.hashKind == "Blob" || inv.hashKind == "Buf")) {
         if (m.rfind("read-", 0) == 0) { // read-(u)bits / read-num* / read-(u)int*
             Value tmp = inv;

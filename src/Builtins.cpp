@@ -6472,12 +6472,14 @@ Value Interpreter::methodCall(const Value& inv, const std::string& m, ValueList 
             if (mm == tn) return inv;   // `Int.Int`, `Num.Num`: the type object itself
         }
     }
-    // `Mu.new(1)` — the default constructor takes named arguments only
-    if (opEq(m, "new") && inv.t == VT::Type && inv.s == "Mu")
+    // `Mu.new(1)`, `Str.new(1)` — the default constructor takes named arguments
+    // only, and these core types have no `new` of their own
+    if (opEq(m, "new") && inv.t == VT::Type && (inv.s == "Mu" || inv.s == "Str" || inv.s == "Any" ||
+        inv.s == "Cool" || inv.s == "Match" || inv.s == "Exception" || inv.s == "Capture" || inv.s == "Signature"))
         for (auto& a : args)
             if (!(a.t == VT::Pair && a.namedArg))
-                throwTypedV("X::Constructor::Positional", {{"type", Value::typeObj("Mu")}},
-                            "Default constructor for 'Mu' only takes named arguments");
+                throwTypedV("X::Constructor::Positional", {{"type", inv}},
+                            "Default constructor for '" + inv.s + "' only takes named arguments");
     // A handle's lazy `.lines` is read in full before a list method works on
     // it (`$fh.lines.grep(…)`): only `for` and subscripts walk it line by line
     // (…but not for its INDEX views: `.kv`/`.pairs`/`.antipairs` pull as they

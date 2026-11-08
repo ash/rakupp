@@ -8074,6 +8074,9 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
                         ValueList builtinArgs;   // attribute pairs stay with the object
                         for (auto& a : args)
                             if (!(a.t == VT::Pair && ci->findAttr(a.s))) builtinArgs.push_back(a);
+                        // (a coercion, `Sym("b")`, hands its value on positionally: Str.new takes it as :value)
+                        if (nb == "Str" && builtinArgs.size() == 1 && !(builtinArgs[0].t == VT::Pair && builtinArgs[0].namedArg))
+                            { Value v = Value::pair("value", builtinArgs[0]); v.namedArg = true; builtinArgs[0] = v; }
                         od->boxed() = methodCall(Value::typeObj(nb), "new", builtinArgs);
                         runAttrDefaults(od, ci, args);
                         Value self = Value::object(od);
