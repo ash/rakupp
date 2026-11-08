@@ -83,7 +83,9 @@ compatibility.
 - `--watch` — rerun on change; see [The developer loop](#the-developer-loop---watch).
 - `rakupp doc SYMBOL` — look a builtin, method or operator up offline; see
   [Looking things up](#looking-things-up-rakupp-doc).
-- `--doc` — after the run, render the program's POD to stdout.
+- `--doc` — render the program's POD to stdout instead of running it: as in
+  Rakudo, BEGIN, CHECK and INIT run (and `DOC` phasers, which run only
+  under `--doc`), the mainline, MAIN and END do not.
 - `-q` / `--quiet` — drop what a mode says about itself; see
   [Quiet](#quiet-mode) below.
 - `-v` / `--version`, `-V` / `--info` / `--version-full`, `-h` / `--help` —
