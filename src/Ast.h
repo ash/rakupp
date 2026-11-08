@@ -97,6 +97,10 @@ struct Node {
     // upstream, and without it the rendering was `1 + 2 * 3`. It sits in the
     // two bytes a 16-bit NK leaves before `line`, so no node grows.
     bool inParens = false;
+    // A string's `{…}` part, inlined as its one expression: it runs as a block of
+    // its own, so a runtime error in it names its own line, not the statement's
+    // (evalInterp). The byte after inParens, so no node grows.
+    bool blockPart = false;
     int line = 0;
     explicit Node(NK k) : kind(k) {}
     virtual ~Node() = default;

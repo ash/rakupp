@@ -906,7 +906,12 @@ Value Interpreter::evalInterp(InterpStr* s) {
         return strLitValue(static_cast<StrLit*>(s->parts[0].get()));
     ValueList vals;
     vals.reserve(s->parts.size());
-    for (auto& p : s->parts) vals.push_back(eval(p.get()));
+    for (auto& p : s->parts) {
+        // a `{…}` part is a block: an error in it names its own line (left set when it throws)
+        if (!p->blockPart || p->line <= 0) { vals.push_back(eval(p.get())); continue; }
+        const int stmtLine = curLine_;
+        curLine_ = p->line; vals.push_back(eval(p.get())); curLine_ = stmtLine;
+    }
     // An undefined part warns naming where it came from (`$u`, `@a[2]`), as does
     // an array with an undefined element (`@a`): converted here, with its
     // expression in hand, and handed on as the "" it stands for.

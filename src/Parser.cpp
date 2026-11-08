@@ -11078,7 +11078,7 @@ ExprPtr Parser::parseInterpString(const std::string& rawIn) {
             // term after infix). It was dropped without a word, and the string
             // read on as if the block had been empty. The error names the line
             // the block is on, not its line within the block's own text.
-            try { result->parts.push_back(embedAt(i, inner, declares())); }
+            try { auto& bp = result->parts.emplace_back(embedAt(i, inner, declares())); bp->blockPart = true; if (!bp->line) bp->line = lineAt(i); }
             catch (ParseError& pe) {
                 if (pe.line <= 0) pe.line = lineAt(i);   // (a line of its own tokens is the file's now)
                 throw;
