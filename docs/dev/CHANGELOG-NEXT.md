@@ -23,7 +23,7 @@ b9e35683 (the store undo log copies the arrays at a sixteenth),
 and issues #221-#229: 1a3f36d1 (#223, #224), 28824bb7 (#222), 32b1ea01
 (#220's follow-up), 266d37c6 and 92561fe1 (#221), e7bbb97c (#225),
 20f0691d (#228), 17d28f81 (#229); eb574770 (#230);
-e1245a6c (`raku++`, the engine's second command).*
+e1245a6c and 6785ecda (`raku++`, a symlink to the engine).*
 
 ---
 
@@ -310,25 +310,29 @@ e1245a6c (`raku++`, the engine's second command).*
 
 ### Platforms and packaging
 
-- **`raku++` is a command of its own in every distribution** (e1245a6c).
-  The product is Raku++; the command was only `rakupp`. `cmake --install`
-  now puts `bin/raku++`, a relative link to `rakupp`, beside the binary, so
-  every POSIX archive, the `.deb` (`/usr/bin/raku++`), the Docker image,
-  Nix, Guix and a source install have it, and `raku++ --exe` compiles as
-  `rakupp --exe` does. Nothing else claims the name, so unlike `raku` it is
-  not a question. The Windows zips carry no second `.exe` (a zip stores no
-  links, and the copy would be about 7 MB more to download):
-  `install-windows.ps1` makes `raku++.exe` a hard link and the wizard
-  installs a copy. `install.sh`, the Dockerfile and `rakupp upgrade` make
-  the link when an older archive has none. Found on the way: `rakupp
-  upgrade` run as `raku` on Windows looked in the zip for a `bin\raku.exe`
-  it never had, and remade the `raku` name with `cp -p`, which plain Windows
-  cannot run; it looks for `rakupp.exe` and uses the engine's own hard link
-  and copy now. t/unix/install.sh passes 44/44 here against a tarball
-  packed from the build; `rakupp upgrade` was run end to end against local
-  archives. The PowerShell scripts, the wizard, the `.deb` and the image
-  were not run here; CI's legs run each. The Homebrew tap's prebuilt
-  formula installs `bin/rakupp` alone and is unchanged.
+- **`raku++` is a command of its own in every distribution** (e1245a6c,
+  6785ecda). The product is Raku++; the command was only `rakupp`.
+  `rakupp` is still the one engine binary, and `raku++` is a symlink to it
+  or nothing, never a copy or a hard link. `cmake --install` now puts
+  `bin/raku++`, a relative link, beside the binary, so every POSIX archive,
+  the `.deb` (`/usr/bin/raku++`), the Docker image, Nix, Guix and a source
+  install have it, and `raku++ --exe` compiles as `rakupp --exe` does.
+  Nothing else claims the name, so unlike `raku` it is not a question. The
+  Windows zips carry none, a zip storing no links: `install-windows.ps1`
+  (with mklink), the wizard (with CreateSymbolicLinkW) and `rakupp upgrade`
+  make the symlink, which Windows allows an ordinary user only with
+  Developer Mode on; without it, or on a filesystem with no symlinks, the
+  install goes ahead without `raku++` and says how to get it. `install.sh`,
+  the Dockerfile and `rakupp upgrade` make the link when an older archive
+  has none. Found on the way: `rakupp upgrade` run as `raku` on Windows
+  looked in the zip for a `bin\raku.exe` it never had, and remade the
+  `raku` name with `cp -p`, which plain Windows cannot run; it looks for
+  `rakupp.exe` and uses the engine's own hard link and copy now.
+  t/unix/install.sh passes 47/47 here against a tarball packed from the
+  build; `rakupp upgrade` was run end to end against local archives, with
+  and without a working `ln`. The PowerShell scripts, the wizard, the
+  `.deb` and the image were not run here; CI's legs run each. The Homebrew
+  tap's prebuilt formula installs `bin/rakupp` alone and is unchanged.
 
 ### Tools
 
