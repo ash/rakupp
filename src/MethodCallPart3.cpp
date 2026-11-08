@@ -4883,6 +4883,12 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
             return bufBitOp(tmp, m, args);
         }
     }
+    // `.Buf` and `.Blob`: the bytes as a new buffer of that kind, as Rakudo coerces
+    // one (`"xy".encode.Buf` is Buf.new(120,121)); a Buf for a `Buf` parameter
+    if ((m == "Buf" || m == "Blob") && args.empty() && inv.t == VT::Str && (inv.hashKind == "Buf" || inv.hashKind == "Blob")) {
+        ValueList els; for (auto& e : inv.blobList()) els.push_back(Value::integer(e.toInt()));
+        return methodCall(Value::typeObj(m), "new", els);
+    }
     if ((m == "subbuf" || m == "subbuf-rw") && inv.t == VT::Str && (inv.hashKind == "Buf" || inv.hashKind == "Blob")) {
         // rvalue subbuf-rw reads like subbuf (the writable form is an assignment target)
         long long n = (long long)inv.s.size(), from, len;

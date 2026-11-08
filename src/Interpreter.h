@@ -1811,6 +1811,7 @@ struct ExecContext {
     uint64_t frameTop = 0;        // incremented per callCallableRaw activation
     size_t redispatchFloor = 0;   // frames below this index are another routine's (callsame/nextsame can't see them)
     uint64_t curRoutineFrame = 0; // frameTop at the nearest enclosing ROUTINE entry
+    uint64_t evalRoutineFrame = 0; // …and the one an eval-lives-ok string runs as (evalAsRoutine): its top level's
     Env* curRoutineEnv = nullptr; // …and that activation's own scope (identity: frame numbers repeat)
     // The BUILT-IN standing behind the user method currently running, for
     // callsame/nextsame. A user method that overrides a built-in (`method clone
@@ -3040,6 +3041,7 @@ public:
     // gather (honoring its lazy-probe take cap and time budget) or die outside one.
     // Run one program-init-hoisted INIT phaser. See the definition in InterpreterCalls.cpp.
     void runHoistedInit(Block* b);
+    std::unordered_map<const Block*, Value> initValues_;   // a hoisted INIT's value: one written last is its body's
     // Bind a unit's top-level `constant` ahead of its mainline, for the phasers
     // that run first (#171). See the definition in InterpreterModules.cpp.
     bool bindConstantEarly(Stmt* s, std::set<std::string>& bound);
@@ -5375,7 +5377,11 @@ public:
         return v;
     }
     Value defaultScheduler_; // the ONE $*SCHEDULER (copies share .hash(), so attr writes persist)
+    [[noreturn]] void refuseNotPositional(const Param& p, const Value& v);   // bindParams' refusal (InterpreterBinding.cpp)
     std::string podRaku(const Value& v);   // a Pod block's `.raku`: its constructor (MethodCallEntry.cpp)
+    [[noreturn]] void refuseNotCallable(const Param& p, const Value& v);     // …and its `&` and `Int %h` ones (the same)
+    bool notCallableArg(const Value& v);
+    void refuseUntypedHash(const Param& p, const Value& v);   // `Int %h` given an untyped hash
     void toSchedulerUncaught(const RakuError& e);   // a tapper's error on an interval's or a Channel's value
 private:
     // `$obj!meth` is legal only lexically inside the declaring class; throws otherwise.

@@ -2341,7 +2341,8 @@ std::string rakuReprImpl(const Value& v, int depth, std::set<const void*>& seen)
             }
             return o + ")";
         }
-        case VT::Regex:
+        case VT::Regex:   // (an anonymous `rule { … }` names its declarator, as Rakudo's does)
+            if (v.hashKind == "rule" || v.hashKind == "token" || v.hashKind == "regex") return v.hashKind + " {" + v.s + "}";
             return v.s.find('/') == std::string::npos ? "rx/" + v.s + "/" : "rx{" + v.s + "}";
         case VT::Complex: {
             // An INFINITE or NaN imaginary part needs the `\i` spelling to read
@@ -8230,6 +8231,12 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
             for (ClassInfo* ci = inv.obj()->cls.get(); ci; ci = ci->parent.get())
                 if (ci->nativeParent == m) return inv;
     }
+    // `.throw`, `.rethrow`, `.resume` and `.backtrace` are Exception's, not Any's: an
+    // object that is no Exception hands them to its FALLBACK, as Rakudo's does
+    if ((m == "throw" || m == "rethrow" || m == "resume" || m == "backtrace") && inv.t == VT::Object && inv.obj() &&
+        inv.obj()->cls && !inv.obj()->cls->findMethod(m) && inv.obj()->cls->findMethod("FALLBACK") &&
+        !typeOrSubsetMatches(inv, "Exception"))
+        return methodCallUnresolved(inv, m, args, rwArgs);
     // `.resume` inside a CATCH: unwind to the enclosing block, which continues
     // execution at the statement after the one that threw. With NO handler on
     // the stack a ResumeEx would escape to std::terminate — die catchably.
@@ -10102,19 +10109,23 @@ Value Interpreter::methodCallUnresolved(const Value& inv, const MName& m, ValueL
     // FALLBACK: a class may catch every unresolved method itself, receiving the
     // NAME first and then the original arguments (Terminal::ANSI::OO turns each
     // colour name into a method this way). Looked up last, so it never shadows
-    // a real method, and skipped for FALLBACK itself to avoid a loop.
-    if (m != "FALLBACK") {
+    // a real method, and skipped for FALLBACK itself to avoid a loop. A method
+    // Any has, which Rakudo finds first (`.first`, `.elems`, `.map` on the object
+    // as a one-item list), reaches it only when nothing below answers it here.
+    auto fallback = [&]() -> Value* {
         ClassInfo* fci = nullptr;
         if (inv.t == VT::Object && inv.obj()) fci = inv.obj()->cls.get();
         else if (inv.t == VT::Type) { auto it = classes_.find(inv.s); if (it != classes_.end()) fci = it->second.get(); }
-        if (fci)
-            if (Value* fb = fci->findMethod("FALLBACK")) {
-                ValueList fargs; fargs.reserve(args.size() + 1);
-                fargs.push_back(Value::str(m));
-                for (auto& a : args) fargs.push_back(a);
-                return invokeMethod(*fb, inv, fargs);
-            }
-    }
+        return m != "FALLBACK" && fci ? fci->findMethod("FALLBACK") : nullptr;
+    };
+    auto callFallback = [&](Value* fb) {
+        ValueList fargs; fargs.reserve(args.size() + 1);
+        fargs.push_back(Value::str(m));
+        for (auto& a : args) fargs.push_back(a);
+        return invokeMethod(*fb, inv, fargs);
+    };
+    const bool anyHas = tabledTypeHasMethod("Any", m) > 0;
+    if (!anyHas) if (Value* fb = fallback()) return callFallback(fb);
     // …and the fallbacks `.^add_fallback` registered, for the invocant's type
     // or any class it inherits from: the first whose condition takes the name
     // computes the method, which is then called like any other
@@ -10343,6 +10354,7 @@ Value Interpreter::methodCallUnresolved(const Value& inv, const MName& m, ValueL
             if (!tn.empty() && isKnownTypeName(tn)) return methodCall(Value::typeObj(tn), "new", args);
         }
     }
+    if (anyHas) if (Value* fb = fallback()) return callFallback(fb);
     if (std::getenv("RAKUPP_TRACE"))
         std::cerr << "[NoMethod] ." << m << " on " << inv.typeName()
                   << " at " << (srcFile_.empty() ? "?" : srcFile_) << ":" << curLine_ << "\n";

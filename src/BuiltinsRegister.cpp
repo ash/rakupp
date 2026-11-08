@@ -677,10 +677,13 @@ void Interpreter::registerBuiltins() {
         // another routine runs — `sub q { ap({ fail "x" }); … }` — it returned
         // from ap, whose caller sank the Failure and died. Once that routine
         // has gone (a block it handed out), there is nothing to return from,
-        // and Rakudo throws the exception.
+        // and Rakudo throws the exception — as it does for a block written at
+        // the mainline, which no routine encloses (`ap({ fail "x" })`), save
+        // the top level of an eval-lives-ok string, which Test runs as one.
         const uint64_t lf = I.lexicalRoutineFrame();
         if (I.tctx().curRoutineFrame == 0 || I.fatalHere() || I.tctx().compiledTry > 0 ||
-            (lf && !I.lexicalRoutineLive()) || I.lexicalRoutineIsBlock())
+            (lf && !I.lexicalRoutineLive()) || I.lexicalRoutineIsBlock() ||
+            (lf == 0 && I.tctx().curRoutineFrame != I.tctx().evalRoutineFrame))
             throw RakuError{(*f.hash())["exception"], (*f.hash())["message"].toStr()};
         if (lf && lf < I.tctx().curRoutineFrame) throw ReturnEx{f, lf};
         throw ReturnEx{f};
@@ -1682,9 +1685,9 @@ void Interpreter::registerBuiltinsPart2() {
         ExecContext& t = I.tctx();
         ++t.frameTop;
         struct Frame {
-            ExecContext& t; uint64_t top, rf;
-            Frame(ExecContext& x) : t(x), top(x.frameTop), rf(x.curRoutineFrame) { x.curRoutineFrame = x.frameTop; }
-            ~Frame() { t.frameTop = top - 1; t.curRoutineFrame = rf; }
+            ExecContext& t; uint64_t top, rf, ef;   // (the frame is this string's own: evalRoutineFrame)
+            Frame(ExecContext& x) : t(x), top(x.frameTop), rf(x.curRoutineFrame), ef(x.evalRoutineFrame) { x.curRoutineFrame = x.evalRoutineFrame = x.frameTop; }
+            ~Frame() { t.frameTop = top - 1; t.curRoutineFrame = rf; t.evalRoutineFrame = ef; }
         } frame{t};
         try { I.evalOwnScope(code); }
         catch (ReturnEx& r) { returned = r.v; return true; }

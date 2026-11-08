@@ -204,6 +204,16 @@ bool Parser::takeWordPair(std::vector<ExprPtr>& pairs, std::vector<std::string>&
     return true;
 }
 
+// `sub f(%h is rw)`: only a `$` parameter can be `is rw`, as Rakudo refuses the
+// rest at compile time; an `@`, `%` or `&` container is writable already.
+void Parser::refuseRwContainer(const Param& p, int line) {
+    if (!p.isRw || p.name.empty() || p.name[0] == '$') return;
+    const std::string msg = (p.name[0] == '@' || p.name[0] == '%' ? "For parameter '" + p.name + "', '" + p.name[0] +
+        "' sigil containers don't need 'is rw' to be writable\n" : std::string()) +
+        "Can only use 'is rw' on a scalar ('$' sigil) parameter, not '" + p.name + "'";
+    throw ParseError(msg, line, "X::AdHoc", {{"payload", msg}});
+}
+
 // The column a parse error raised on `line` names, when it names none: where
 // the token the parse stopped on starts, or, when that one is on a later line
 // or is the end, just past the token before it (`say 1 +` ran out after the

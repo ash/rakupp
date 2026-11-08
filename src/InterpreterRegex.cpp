@@ -287,13 +287,20 @@ static Value rxLiteralAlternatives(const Value& v) {
 // A regex value's variables belong to the scope it was WRITTEN in: pasting the
 // source alone left `sub g { my @k = …; rx{@k} }` to resolve @k where it is
 // spliced, which usually has no @k at all (IO::Glob's character classes).
+// An anonymous `rule` or `token` keeps its own adverbs wherever its source goes
+// (`<$r>`, `/ $r /`): a rule's sigspace and ratchet, a token's ratchet. They are
+// the value's kind, not text in its source, as regexRoutineAsRegex's are.
+static std::string rxKindAdverbs(const Value& v) {
+    return v.t != VT::Regex ? "" : v.hashKind == "rule" ? ":r :s " : v.hashKind == "token" ? ":r " : "";
+}
 std::string Interpreter::closedRegexSource(const Value& v) {
     std::string src = v.s.copyText();
-    if (!v.ext() || isP5Pattern(src)) return src;
+    if (isP5Pattern(src)) return src;
+    if (!v.ext()) return rxKindAdverbs(v) + src;
     // (a declared `token {…}` keeps its $vars for the match-time hook)
     const bool arr = src.find('@') != std::string::npos,
                sc = v.hashKind.empty() && rxNeedsScalarPass(src);
-    if (!arr && !sc) return src;
+    if (!arr && !sc) return rxKindAdverbs(v) + src;
     auto savedOuter = tctx().cur;
     tctx().cur = std::static_pointer_cast<Env>(v.ext());
     try {
@@ -302,7 +309,7 @@ std::string Interpreter::closedRegexSource(const Value& v) {
     }
     catch (...) { tctx().cur = savedOuter; throw; }
     tctx().cur = savedOuter;
-    return src;
+    return rxKindAdverbs(v) + src;
 }
 
 // Interpolate @array variables into a regex as an LTM `|` alternation of the
@@ -596,7 +603,7 @@ static std::string rxSourceOf(const Value& v, bool& p5) {
     std::string src = v.t == VT::Regex ? v.s.copyText() : v.toStr();
     p5 = isP5Pattern(src);
     if (p5) src = src.substr(src.find(' ') + 1);
-    return src;
+    return p5 ? src : rxKindAdverbs(v) + src;
 }
 
 // A declared `my regex/token/rule NAME` bound to a variable (`my $p = &NAME`)

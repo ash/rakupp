@@ -757,7 +757,7 @@ static int stmtsEntryWork(const std::vector<StmtPtr>& stmts) {
             auto* blk = static_cast<const Block*>(s.get());
             const std::string& ph = blk->phaser;
             if (blk->isCatch) m |= 1;
-            if (ph == "PRE" || ph == "ENTER" || ph == "FIRST") m |= 2;
+            if (ph == "PRE" || ph == "ENTER" || ph == "FIRST" || ph == "INIT") m |= 2;
             if (ph == "LEAVE" || ph == "KEEP" || ph == "UNDO" || ph == "POST") m |= 4;
             if (blk->isCatch || !ph.empty()) m |= 32;
         }
@@ -889,25 +889,32 @@ void Interpreter::runEnterPhasers(const std::vector<StmtPtr>& stmts, Callable* f
                 throwTypedV("X::Phaser::PrePost", {{"phaser", Value::str("PRE")}, {"condition", Value::str(r.gist())}},
                             "Precondition '" + r.gist() + "' failed");
         } }
-    // ENTER fires on every block entry; FIRST once per closure clone. In a loop
-    // body the loop drives FIRST (t_hot.poll.firstBody); a called closure runs it on
-    // its FIRST call only (`my &b = { FIRST … }; b() for 1..3` says it once —
-    // rak calls a pattern per item and counts on that); and a block run in
-    // place is a fresh clone every time it runs, so its FIRST runs every time
-    // (`for 1..3 { { FIRST … } }` says it three times).
+    // ENTER fires on every block entry; FIRST once per closure clone, before any ENTER. In a
+    // loop body the loop drives FIRST (t_hot.poll.firstBody); a called closure runs it on
+    // its FIRST call only (`my &b = { FIRST … }; b() for 1..3` says it once — rak calls
+    // a pattern per item and counts on that); and a block run in place is a fresh clone
+    // every time it runs, so its FIRST runs every time (`for 1..3 { { FIRST … } }`: thrice).
     const bool runFirst = &stmts != t_hot.poll.firstBody &&
         (!firstOnce || !firstOnce->state.firstDone.exchange(true, std::memory_order_acq_rel));
-    for (auto& s : stmts) if (s->kind == NK::Block) { auto* b = static_cast<Block*>(s.get());
-        if (b->phaser == "ENTER" || (b->phaser == "FIRST" && runFirst)) {
+    for (int pass = runFirst ? 0 : 1; pass < 2; pass++) for (auto& s : stmts) if (s->kind == NK::Block) {
+        auto* b = static_cast<Block*>(s.get());
+        if (b->phaser == (pass ? "ENTER" : "FIRST")) {
             auto sc = makeSlabShared<Env>(); sc->parent = tctx().cur;
             // an ENTER written LAST is the block's value, computed at entry:
-            // `sub f { ENTER 'SANDMAN' }` returns SANDMAN (enter-leave.t)
-            if (b->phaser == "ENTER" && &s == &stmts.back() && tctx().cur) {
+            // `sub f { ENTER 'SANDMAN' }` returns SANDMAN (enter-leave.t), and a FIRST's too, kept
+            if (&s == &stmts.back() && tctx().cur) {
                 Value ev = execBlock(b, sc, /*sink=*/false);
                 tctx().cur->define("\x01enter-tail", ev);
+                if (b->phaser == "FIRST" && firstOnce) firstOnce->state.firstValue = std::make_shared<Value>(ev);
             }
             else execBlock(b, sc);
-        } }
+        }   // …on every later pass too, as a hoisted INIT written last is (Rakudo keeps both values)
+        else if (pass && &s == &stmts.back() && tctx().cur && ((b->phaser == "FIRST" && !runFirst) || (b->phaser == "INIT" && b->initHoisted))) {
+            const Value* lv = b->phaser == "FIRST" ? tctx().cur->find("\x01first-tail") : nullptr;   // (a loop's)
+            tctx().cur->define("\x01enter-tail", b->phaser == "INIT" ? initValues_[b] :
+                               firstOnce && firstOnce->state.firstValue ? *firstOnce->state.firstValue : lv ? *lv : Value::nil());
+        }
+    }
 }
 // Every END nested anywhere in a routine's body runs at exit in THIS call's
 // scope — which is why the capture is at ENTRY and not at the phaser's own
@@ -1419,6 +1426,8 @@ Value Interpreter::execBlockFull(Block* b, std::shared_ptr<Env> scope, bool sink
     }
     if (leaving) raiseHanded(*leaving);   // (the exit is done: see `exiting`)
     if (trailingCatch && !tcx.returning && !tcx.loopCtl && !tcx.givenCtl) last = Value::nil();
+    else if ((entryWork & 2) && !tcx.returning && !tcx.loopCtl && tcx.cur && isBlockPhaser(b->stmts.back().get()))
+        if (Value* ev = tcx.cur->local("\x01enter-tail")) last = *ev;   // (ENTER, FIRST or INIT written last: its value)
     // KEEP runs on a SUCCESSFUL exit, UNDO otherwise — and success is the
     // block's outgoing value being defined (Nil, a Failure, the undefined
     // result of an `if`/`for` are not) and no cooperative `next`/`last` in
@@ -4817,9 +4826,12 @@ void Interpreter::bindParams(const std::vector<Param>& params, ValueList& args,
     // bound by a call that passes too many (laxOverflow) coerces whatever came.
     auto bindAssocArg = [&](const Param& p, Value& v, bool positional) {
         if (notAssociativeArg(v) && !(positional && laxOverflow())) refuseNotAssociative(p, v);
+        if (!p.type.empty() && !(positional && laxOverflow())) refuseUntypedHash(p, v);   // (`Int %h`)
         if (v.t == VT::Type || (v.t == VT::Pair && !p.isCopy) ||
             (v.t == VT::Object && v.obj() && v.obj()->cls && typeOrSubsetMatches(v, "Associative"))) { /* raw */ }
         else if (!(v.t == VT::Hash && v.hash() && !p.isCopy)) v = coerceHash(v);
+        // …and `is copy` makes a plain Hash of whatever came, as Rakudo's does: a Map, a Bag ({:a(2)}), a typed hash
+        if (p.isCopy && v.t == VT::Hash && (!v.hashKind.empty() || !v.ofType().empty())) { v = methodCall(v, "Hash", {}); v.ofTypeM() = ""; }
         v.itemized = false;   // `%h` holds the hash, never an item of one
     };
     // Fast path: every parameter is a plain mandatory positional scalar and no
@@ -5347,11 +5359,7 @@ void Interpreter::bindParams(const std::vector<Param>& params, ValueList& args,
                     if (isCArrayValue(bv)) { bv.itemized = false; }
                     // …and the same refusal: `sub f(:@a)` given 42, a Str or Nil
                     // is a binding failure, not a one-element array
-                    else if (!p.isCopy && notPositionalArg(bv))
-                        throwTypedV("X::TypeCheck::Binding::Parameter",
-                            {{"got", bv}, {"expected", Value::typeObj("Positional")}, {"symbol", Value::str(p.name)}},
-                            "Type check failed in binding to parameter '" + paramShownName(p) + "'; expected Positional but got " +
-                            bv.typeName() + " (" + typeCheckRepr(bv) + ")");
+                    else if (!p.isCopy && notPositionalArg(bv)) refuseNotPositional(p, bv);
                     // …and the same List-vs-Array rule as the positional arm below:
                     // binding never itemises, so `sub f(:@c)` called with a List
                     // keeps a List, whose slots are bare and therefore spread under
@@ -5373,6 +5381,7 @@ void Interpreter::bindParams(const std::vector<Param>& params, ValueList& args,
                     }
                 }
                 else if (p.sigil == '%') bindAssocArg(p, bv, false);
+                else if (p.sigil == '&' && p.type.empty() && notCallableArg(bv)) refuseNotCallable(p, bv);
                 // coercion type on a NAMED param (`IO:D() :$cwd`) — the positional
                 // arm has always done this; without it `:cwd("/tmp")` stayed a Str
                 // and every downstream `IO:D()` candidate refused it (TAP's
@@ -5512,11 +5521,7 @@ void Interpreter::bindParams(const std::vector<Param>& params, ValueList& args,
                 // a definite scalar is no Positional: `sub f(@a) {}; f(1)` is a
                 // binding failure, not a one-element array — and nor is Nil, Any
                 // or a non-Positional type object (`f(Nil)` refuses in Rakudo)
-                else if (!p.isCopy && !laxOverflow() && notPositionalArg(v))
-                    throwTypedV("X::TypeCheck::Binding::Parameter",
-                        {{"got", v}, {"expected", Value::typeObj("Positional")}, {"symbol", Value::str(p.name)}},
-                        "Type check failed in binding to parameter '" + paramShownName(p) + "'; expected Positional but got " +
-                        v.typeName() + " (" + typeCheckRepr(v) + ")");
+                else if (!p.isCopy && !laxOverflow() && notPositionalArg(v)) refuseNotPositional(p, v);
                 else {
                     v = coerceArray(v);
                     // a LAZY Seq stays lazy, and binds as the List it caches
@@ -5545,21 +5550,7 @@ void Interpreter::bindParams(const std::vector<Param>& params, ValueList& args,
             }
             // `sub f(&c)` takes a Callable: `f(5)` or `f(A)` (a type that is no
             // Callable) is a binding failure
-            else if (p.sigil == '&' && p.type.empty() && !laxOverflow() &&
-                     v.t != VT::Code && v.t != VT::Regex && v.t != VT::Nil && v.t != VT::Any &&
-                     !(v.t == VT::Hash && v.hashKind == "Failure") &&
-                     ((v.t == VT::Type && !typeOrSubsetMatches(v, "Callable") &&
-                       !(v.s == "Code" || v.s == "Block" || v.s == "Sub" || v.s == "Method" || v.s == "Submethod" ||
-                         v.s == "Routine" || v.s == "Macro" || v.s == "Regex" || v.s == "WhateverCode" ||
-                         v.s == "Callable" || v.s == "Mu" || v.s == "Any")) ||
-                      v.t == VT::Int || v.t == VT::Num || v.t == VT::Rat || v.t == VT::Bool ||
-                      (v.t == VT::Str && v.hashKind.empty()) ||
-                      (v.t == VT::Object && v.obj() && v.obj()->cls && !v.obj()->cls->findMethod("CALL-ME") &&
-                       !typeOrSubsetMatches(v, "Callable"))))
-                throwTypedV("X::TypeCheck::Binding::Parameter",
-                    {{"got", v}, {"expected", Value::typeObj("Callable")}, {"symbol", Value::str(p.name)}},
-                    "Type check failed in binding to parameter '" + paramShownName(p) + "'; expected Callable but got " +
-                    v.typeName() + " (" + typeCheckRepr(v) + ")");
+            else if (p.sigil == '&' && p.type.empty() && !laxOverflow() && notCallableArg(v)) refuseNotCallable(p, v);
             else if (p.sigil == '%') bindAssocArg(p, v, true);
             // coercion type `Int() \x` / `Str(Cool) $s`: coerce the bound value via
             // its .Type method — which FAILS where the method does (Int on <1/0>)
@@ -6167,6 +6158,8 @@ bool typeMatchesArg(const Value& arg, const std::string& type) {
                 static const std::set<std::string> bufTypes = {
                     "Blob", "Buf", "blob8", "buf8", "blob16", "buf16", "blob32", "buf32",
                     "blob64", "buf64", "utf8", "utf16", "utf32", "Positional"};
+                // (an immutable Blob is no Buf: `sub f(Buf $b)` refuses one, as Rakudo's does)
+                if (arg.hashKind == "Blob" && (type == "Buf" || type.rfind("buf", 0) == 0)) return false;
                 return bufTypes.count(type) > 0 || (type == "Stringy" && arg.hashKind != "CArray");
             }
             // an IO::Path is Cool but NOT Stringy — a `Str:D $path` candidate must
@@ -6265,7 +6258,7 @@ bool typeMatchesArg(const Value& arg, const std::string& type) {
             if (type == "Cool") return isCoolValue(arg);
             if (!hashKindIsAssociative(arg.hashKind)) return false;
             if (type == "Associative") return true;
-            return (type == "Hash" || type == "Map") && hashKindIsMap(arg.hashKind);
+            return (type == "Map" || (type == "Hash" && arg.hashKind != "Map")) && hashKindIsMap(arg.hashKind);   // (a Map is no Hash)
         // a Pair DOES Associative in Raku: `(a => 1) ~~ Associative` is True,
         // and Crane's traversal dispatches its whole `at`/`in` family on
         // `Associative:D`, so a Pair in a path missed every candidate and came
@@ -9489,10 +9482,10 @@ resumeBody:
         if (resumeAt == 0) {
             captureBodyEnds(c);   // an END anywhere in the body binds to THIS call's scope
             if (c.ci().body && lpc) {
+                if (lpc & 1) runFirstPhasers(*c.ci().body);   // (before ENTER, as Rakudo runs them)
                 const std::vector<StmtPtr>* savedSF = t_hot.poll.firstBody; t_hot.poll.firstBody = c.ci().body;
                 runEnterPhasers(*c.ci().body); // ENTER only; FIRST suppressed
                 t_hot.poll.firstBody = savedSF;
-                if (lpc & 1) runFirstPhasers(*c.ci().body);
             }
             else if (c.ci().body && (bodyWork & 2)) runEnterPhasers(*c.ci().body, &c);
         }
@@ -16980,8 +16973,8 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
             // `%a := %b` BINDS: both names are the same hash from then on, so a
             // write through either is visible through the other. The coercion
             // below copies (which is right for `=`), and that copy is why an
-            // aliased hash silently diverged.
-            if (opEq(a->op, ":=") && rhs.t == VT::Hash && rhs.hash()) {
+            // aliased hash silently diverged. A Pair binds as itself, as on Rakudo.
+            if (opEq(a->op, ":=") && ((rhs.t == VT::Hash && rhs.hash()) || rhs.t == VT::Pair)) {
                 // …but a TYPED hash variable binds only a hash typed to match:
                 // `my Int %h := :42foo.Set.Hash` dies, as does any untyped hash
                 // that merely happens to hold Ints (S02-types/set.t)
@@ -20904,8 +20897,8 @@ Value Interpreter::regexMatch(const std::string& subject, std::string_view patte
     // Interpolate $scalar variables into the pattern as their literal (quotemeta'd)
     // value — `/$x/` matches the contents of $x. Leaves $0.. backrefs, $<name>,
     // special vars, escaped \$, and the end-anchor $ untouched.
-    // (wired mode: no textual interpolation — $vars inside code blocks belong
-    // to the code, and pattern atoms resolve at match time via the str hook)
+    // (wired mode too, in the match scope under its closure: nothing answers a `$var`
+    // atom at match time here, so `regex { a $w }` matched nothing; code blocks keep theirs)
     // Repeated until stable: splicing a regex VALUE inserts that regex's own
     // source, which may itself name further regexes (`rx/$lit$lit/` spliced into
     // `rx/^$two$/`). The pass count is a guard against a self-referential value.
@@ -20927,7 +20920,7 @@ Value Interpreter::regexMatch(const std::string& subject, std::string_view patte
         if (!p5pat) pat = rxInterpArrays(pat);
         tctx().cur = savedOuter;
     }
-    if (!wired) pat = p5pat ? interpP5Pattern(pat) : interpRegexPattern(pat);
+    if (!wired || !p5pat) pat = p5pat ? interpP5Pattern(pat) : interpRegexPattern(pat);
     if (!wired && !p5pat) pat = rxInterpArrays(pat); // `/@alpha/` — array elements as longest-first alternation
     // Wired mode leaves `$var` atoms to the match-time str hook, but an
     // `@array` atom is an ALTERNATION of the elements — a shape no atom hook

@@ -717,6 +717,7 @@ private:
     static bool isTestExport(const std::string& n);                      // …and `use Test` beside a local `sub ok`
     static bool testImportedHere(const std::vector<StmtPtr>& stmts);    //    (ParserWordPairs.cpp)
     ExprPtr builtinOpCall(const std::string& name, std::vector<ExprPtr>& args);   // `prefix:<->(3)` (the same)
+    static void refuseRwContainer(const Param& p, int line);   // `sub f(%h is rw)` (the same)
     void inheritSyntax(Parser& p) const;          // a snippet's parser sees this unit's operators (ParserWordPairs.cpp)
     ExprPtr wordColonPair(const std::string& src, int line); // a qww/qqww word's colonpair, parsed as code (ParserWordPairs.cpp)
     ExprPtr angleColonPair(const std::string& w); // a word that is one whole colonpair → PairExpr (null if not one)

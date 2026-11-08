@@ -3564,7 +3564,13 @@ void Interpreter::registerEnds(const Program& prog) {
 }
 void Interpreter::runFirstPhasers(const std::vector<StmtPtr>& stmts) {
     for (auto& s : stmts) if (s->kind == NK::Block) { auto* b = static_cast<Block*>(s.get());
-        if (b->phaser == "FIRST") { auto sc = makeSlabShared<Env>(); sc->parent = tctx().cur; execBlock(b, sc); } }
+        if (b->phaser != "FIRST") continue;
+        auto sc = makeSlabShared<Env>(); sc->parent = tctx().cur;
+        // one written last is every iteration's value: kept where every iteration's scope
+        // can find it, the one around the loop (runEnterPhasers reads it)
+        if (&s == &stmts.back() && tctx().cur)
+            (tctx().cur->parent ? tctx().cur->parent : tctx().cur)->define("\x01first-tail", execBlock(b, sc, /*sink=*/false));
+        else execBlock(b, sc); }
 }
 void Interpreter::runLastPhasers(const std::vector<StmtPtr>& stmts) {
     for (auto& s : stmts) if (s->kind == NK::Block) { auto* b = static_cast<Block*>(s.get());

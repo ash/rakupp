@@ -419,6 +419,20 @@ Value Interpreter::makeTypedEx(const std::string& type,
 void Interpreter::throwTypedV(const std::string& type,
                               std::vector<std::pair<std::string, Value>> attrs,
                               const std::string& message) {
+    // A type check that refused a FAILURE says what that failure was first, as
+    // Rakudo's X::TypeCheck.priors does with its `.mess`, the message and the
+    // backtrace: "Earlier failure:\n boom\n  in block <unit> …\n\nFinal error:\n …"
+    if (type.rfind("X::TypeCheck", 0) == 0)
+        for (auto& kv : attrs)
+            if (kv.first == "got" && kv.second.t == VT::Hash && kv.second.hashKind == "Failure" && kv.second.hash()) {
+                auto mi = kv.second.hash()->find("message"), ei = kv.second.hash()->find("exception");
+                std::string was = (mi != kv.second.hash()->end() ? mi->second.toStr() : std::string()) + "\n";
+                if (ei != kv.second.hash()->end() && ei->second.t == VT::Object)
+                    try { was += methodCall(methodCall(ei->second, "backtrace", {}), "Str", {}).toStr(); } catch (...) {}
+                const std::string full = "Earlier failure:\n " + was + "\nFinal error:\n " + message;
+                Value ex = makeTypedEx(type, std::move(attrs), full);
+                throw RakuError{ex, full};
+            }
     Value ex = makeTypedEx(type, std::move(attrs), message);
     throw RakuError{ex, message};
 }
@@ -741,6 +755,21 @@ void Interpreter::coerceParam(const Param& p, Value& v, const std::string* typeO
             " of " + v.typeName());
 }
 
+// Refusals of bindParams (InterpreterCore.cpp), in Rakudo's words. A `@`
+// parameter given what is no Positional: as refuseNotAssociative does for `%`,
+// the hint about typed arrays when what came has an `.of` of Mu (a Hash, a
+// Map, a Pair), word-wrapped as X::TypeCheck.explain does.
+void Interpreter::refuseNotPositional(const Param& p, const Value& v) {
+    const bool ofMu = (v.t == VT::Hash && (v.hashKind.empty() || v.hashKind == "Map") &&
+                       (v.ofType().empty() || v.ofType() == "Mu")) || v.t == VT::Pair;
+    std::string why = "expected Positional but got " + v.typeName() + " (" + typeCheckRepr(v) + ")";
+    if (ofMu) why += ". You have to pass an explicitly typed array, not one that just might happen "
+                     "to contain elements of the correct type.";
+    throwTypedV("X::TypeCheck::Binding::Parameter",
+        {{"got", v}, {"expected", Value::typeObj("Positional")}, {"symbol", Value::str(p.name)}},
+        "Type check failed in binding to parameter '" + paramShownName(p) + "'; " +
+        (ofMu ? methodCall(Value::str(why), "naive-word-wrapper", {}).toStr() : why));
+}
 // A lone typed candidate rejects a mismatched argument (multi dispatch already
 // type-selects; without this a single `sub f(Int $x)` bound anything). Type
 // objects/undefined bind (no :D enforcement here) and junction kinds pass —
@@ -756,6 +785,42 @@ std::string typeCheckRepr(const Value& v) {
     // an itemised value reprs as `$(1, 2)`; the message shows the bare `(1, 2)`
     if (r.size() > 1 && r[0] == '$' && (r[1] == '(' || r[1] == '[' || r[1] == '{')) r.erase(0, 1);
     return r.size() > 23 ? r.substr(0, 20) + "..." : r;
+}
+// A typed `%` parameter, `Int %h`, binds an Associative[Int]: the hash must be
+// typed so, as `Int @a` wants a typed array. An untyped Hash or Map gets the
+// hint about typed hashes (its `.of` is Mu), a Bag or a Hash[Str] none.
+void Interpreter::refuseUntypedHash(const Param& p, const Value& v) {
+    if (p.type == "Any" || p.type == "Mu" || !isKnownTypeName(p.type) || p.type.find_first_of("[:(") != std::string::npos ||
+        v.t != VT::Hash || !v.hash() || v.hashKind == "Failure" || !hashKindIsAssociative(v.hashKind)) return;
+    const std::string et = v.ofType().substr(0, v.ofType().find(','));
+    if (!et.empty() && et != "Mu" && et != "Any" && (et == p.type || typeOrSubsetMatches(Value::typeObj(et), p.type))) return;
+    const bool ofMu = (v.hashKind.empty() || v.hashKind == "Map") && (et.empty() || et == "Mu");
+    std::string why = "expected Associative[" + p.type + "] but got " +
+                      (v.hashKind.empty() && !v.ofType().empty() ? "Hash[" + v.ofType() + "]" : v.typeName());
+    if (ofMu) why += ". You have to pass an explicitly typed hash, not one that just might happen "
+                     "to contain elements of the correct type.";
+    throwTypedV("X::TypeCheck::Binding::Parameter",
+        {{"got", v}, {"expected", Value::typeObj("Associative[" + p.type + "]")}, {"symbol", Value::str(p.name)}},
+        "Type check failed in binding to parameter '" + paramShownName(p) + "'; " +
+        methodCall(Value::str(why), "naive-word-wrapper", {}).toStr());
+}
+// A `&` parameter of bindParams takes a Callable: `f(5)` or `f(A)` (a type that is no Callable) is a
+// binding failure, positional or named (`sub r(:&c)`); a Failure, Nil and Any pass through
+bool Interpreter::notCallableArg(const Value& v) {
+    if (v.t == VT::Code || v.t == VT::Regex || v.t == VT::Nil || v.t == VT::Any || (v.t == VT::Hash && v.hashKind == "Failure"))
+        return false;
+    static const std::set<std::string, std::less<>> kCode = {"Code", "Block", "Sub", "Method", "Submethod", "Routine",
+        "Macro", "Regex", "WhateverCode", "Callable", "Mu", "Any"};
+    return (v.t == VT::Type && !typeOrSubsetMatches(v, "Callable") && !kCode.count(v.s.str())) ||
+           v.t == VT::Int || v.t == VT::Num || v.t == VT::Rat || v.t == VT::Bool || (v.t == VT::Str && v.hashKind.empty()) ||
+           (v.t == VT::Object && v.obj() && v.obj()->cls && !v.obj()->cls->findMethod("CALL-ME") &&
+            !typeOrSubsetMatches(v, "Callable"));
+}
+void Interpreter::refuseNotCallable(const Param& p, const Value& v) {
+    throwTypedV("X::TypeCheck::Binding::Parameter",
+        {{"got", v}, {"expected", Value::typeObj("Callable")}, {"symbol", Value::str(p.name)}},
+        "Type check failed in binding to parameter '" + paramShownName(p) + "'; expected Callable but got " +
+        v.typeName() + " (" + typeCheckRepr(v) + ")");
 }
 // What Failure declares itself (Rakudo 2026.09's `Failure.^methods(:local)`):
 // `.can` on a Failure answers these and Any's, never by calling it — every
@@ -927,6 +992,7 @@ int Interpreter::tabledTypeHasMethod(const std::string& tn, const std::string& m
         {"Stringy", {
         }},
     };
+    if (tn == "Any") return kAny.count(mn) ? 1 : -1;   // (what a FALLBACK never sees)
     auto it = kOwn.find(tn == "Sub" || tn == "Method" || tn == "Submethod" ? std::string("Routine") : tn);
     if (it == kOwn.end()) return 0;
     return it->second.count(mn) || kAny.count(mn) ? 1 : -1;

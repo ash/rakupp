@@ -218,19 +218,6 @@ moves to [TODO.md](TODO.md).
   all, so it needs the spelling recorded (an Ast.h field and a
   kAstSerialVersion bump). Done when each line matches Rakudo 2026.09, and
   t/regression/rakuast-view-declarations.raku carries them.
-- [ ] **An anonymous `rule` interpolated as `<$r>` matches nothing, and its
-  `.raku` is a `rx//`** (found 2026-11-08 making a stored `rule` keep its
-  sigspace; the same before it):
-
-  ```raku
-  my $r = rule { a b };
-  say "x a b" ~~ /<$r>/;   # Nil, Rakudo ｢a b｣
-  say $r.raku;             # rx/ a b /, Rakudo rule { a b }
-  ```
-
-  The value carries its kind (hashKind "rule" or "token") and the scope it
-  closed over; the `<$var>` assertion and the Regex `.raku` read neither.
-
 - [ ] **An unknown parent is refused when the declaration runs; Rakudo
   refuses it at compile time** (found 2026-11-08 making a subset's unknown
   trait an unknown parent, f59ff84c):
@@ -248,21 +235,65 @@ moves to [TODO.md](TODO.md).
 
 ## Operators and types
 
-- [ ] **A FALLBACK gets the list methods Any has, and an object keeps
-  Exception's** (found 2026-11-07 fixing #225, e7bbb97c):
+- [ ] **Any's methods a plain object lacks here** (found 2026-11-08 making a
+  FALLBACK leave Any's methods to Any, 34e48087; on its parent too):
 
   ```raku
-  class W { method FALLBACK($n, |) { "fb:$n" } }
-  say W.new.first;   # fb:first, Rakudo W.new (Any.first of one item)
-  say W.new.elems;   # fb:elems, Rakudo 1
-  say (try W.new.throw) // $!.^name;   # W, Rakudo fb:throw
+  class P { }; say P.new.max;        # No such method 'max', Rakudo P.new
+  say P.new.is-lazy, P.new.EXISTS-KEY("a");   # the same, Rakudo FalseFalse
   ```
 
-  `.first`, `.head`, `.keys`, `.elems`, `.grep`, `.map`, `.sort`, `.unique`,
-  `.Array` and the rest of Any's list methods reach methodCallUnresolved on
-  a user object, where Rakudo answers them from Any on the one-item list;
-  `.throw`, `.rethrow`, `.resume` and `.backtrace` answer on an object that
-  is no Exception, where Rakudo hands them to FALLBACK.
+  `.min`, `.minmax`, `.Seq`, `.AT-POS`, `.sum` (Rakudo: "Cannot resolve
+  caller Numeric"), `.hash`, `.push`, `.invert`, `.classify`, `.deepmap`,
+  `.flatmap`, `.repeated` and `.pairup` die the same way on a user object;
+  methodCallUnresolved's one-item list arm answers `.first`, `.elems`,
+  `.map`, `.list` and `.head` only. On an object with a FALLBACK these still
+  reach the FALLBACK (34e48087 leaves them there rather than die). Done when
+  each answers as Rakudo's Any does, and `tabledTypeHasMethod("Any", …)`
+  alone decides FALLBACK.
+
+- [ ] **A Failure has no `.mess` or `.backtrace`, and a `fail`'s backtrace
+  leaves out its routine** (found 2026-11-08 writing X::TypeCheck's priors,
+  0cee5c8f; on its parent too):
+
+  ```raku
+  sub fi { fail "inner" }; my $g = fi();
+  say $g.exception.backtrace;   # in block <unit>, Rakudo: in sub fi, then in block <unit>
+  say $g.mess;                  # the Failure explodes, Rakudo "inner" and the backtrace
+  say $g.backtrace.^name;       # the same, Rakudo Backtrace
+  ```
+
+  So a type check that refuses such a Failure says one frame fewer than
+  Rakudo's "Earlier failure:". Done when the three lines answer as in
+  Rakudo 2026.09.
+
+- [ ] **An `@` parameter given only a named argument says the compile-time
+  message at run time** (found 2026-11-08 with 0cee5c8f; on its parent too):
+
+  ```raku
+  sub g2(@l) { }; g2(a => 1)   # Calling g2() will never work with declared signature (@l), Rakudo: Too few positionals passed; expected 1 argument but got 0
+  ```
+
+- [ ] **`~` of two utf8 values is a Buf** (found 2026-11-08 with 79b70d34; on its
+  parent too): `("ab".encode ~ "c".encode).^name` is Buf, Rakudo utf8.
+
+- [ ] **An INIT in a routine that reads an outer variable runs on each call**
+  (found 2026-11-08 with 8e5b2dc0; on its parent too):
+
+  ```raku
+  my $n = 0; sub g { INIT { $n++ }; 1 }; g(); g(); say $n   # 2, Rakudo 0
+  sub h { INIT { say "init" }; 1 }; h(); h();               # init once in both
+  ```
+
+  Rakudo runs every INIT once, at program start, before the mainline's
+  `my $n = 0` runs. Here an INIT that names an outer lexical is not hoisted
+  (runHoistedInit, src/InterpreterCalls.cpp) and runs where it is written.
+
+- [ ] **A compile-time X::AdHoc is no X::Comp** (found 2026-11-08 with 0ca4968e;
+  the same for every compile-time X::AdHoc): `try EVAL q[sub f(%h is rw)
+  {}]; say $! ~~ X::Comp` is False, Rakudo True (its type is
+  `X::AdHoc+{X::Comp}`). Nothing here mixes X::Comp into an X::AdHoc a
+  ParseError raises.
 
 - [ ] **A user `multi` on a built-in operator hides the built-in candidates,
   and `&postfix:<++>` is Any** (found 2026-10-19 while fixing undeclared
@@ -325,42 +356,19 @@ moves to [TODO.md](TODO.md).
   answer as Rakudo does, the refusal is gone, and the Roast list is
   v5.5.0's.
 
-- [ ] **Some parameters still bind what their sigil or type refuses** (found
+- [ ] **A `for` loop's `-> @a` binds what its sigil refuses** (found
   2026-10-27 while fixing issue #207, 3ddcd58b, which made a `%` parameter take
-  an Associative only; on 170bb19a too):
+  an Associative only; the rest of that item fixed 2026-11-08, 0ca4968e):
 
   ```raku
   for (1,) -> @a { say @a.^name }               # Int, Rakudo: expected Positional but got Int (1)
-  given 5 -> @a { say @a.^name }                # Int, the same
-  sub r(:&c) { &c.^name }; say r(:c(1))         # Int, Rakudo: expected Callable but got Int (1)
-  sub t(Int %h) { %h.^name }; say t(%(a => 1))  # Hash, Rakudo: expected Associative[Int] but got Hash. You have to pass an explicitly typed hash, …
-  sub c(%h is copy) { %h.^name }; say c(Map.new((a => 1)))   # Map, Rakudo Hash (and a Bag copies to {:a(2)})
-  sub f(%h is rw) { }                           # accepted, Rakudo ===SORRY!=== Can only use 'is rw' on a scalar ('$' sigil) parameter
-  my %h := (a => 1); say %h.^name               # Hash, Rakudo Pair (a `%` parameter keeps it since 3ddcd58b)
   ```
 
-  The first two are the name-only loop binder: pointyParamNeedsBinding and
-  the given/with `anySub` test in src/Parser.cpp send `%` to bindParams
-  since 3ddcd58b and not `@`, because `for @rows -> @r` is common and full
-  binding costs it (see the Performance item). The named arm of bindParams
-  has no copy of the positional arm's Callable test; `Int %h` wants the
-  Associative[T] check that `Int @a` has (bindParams' "explicitly typed
-  array" test); `is copy` copies through coerceHash, which keeps a Map's or
-  a QuantHash's kind; the `:=` arms for a VarExpr target are in evalAssign.
-  Done when each line answers as in Rakudo 2026.09.
-
-- [ ] **A binding failure leaves out parts of Rakudo's message** (found
-  2026-10-27 while fixing issue #207, 3ddcd58b; on 170bb19a too):
-
-  ```raku
-  sub f(Int $x) { }; f(Failure.new("boom"))   # Rakudo opens "Earlier failure:\n boom\n\nFinal error:\n "
-  sub g(:@l) { }; g(l => {a => 1})            # Rakudo goes on ". You have to pass an explicitly typed array, …"
-  ```
-
-  Rakudo's X::TypeCheck.priors and .explain (its Exception.rakumod). The
-  hint is word-wrapped with the rest of the explanation; refuseNotAssociative
-  in bindParams does both for `%` and is the model. Done when the two
-  messages are Rakudo 2026.09's.
+  The name-only loop binder: pointyParamNeedsBinding (src/Parser.cpp) sends
+  `%` to bindParams since 3ddcd58b and not `@`, because `for @rows -> @r` is
+  common and full binding costs it (see the Performance item); `given` and
+  `with` send both since 0ca4968e. Done when the line answers as in Rakudo 2026.09
+  and the loop benchmarks hold.
 
 - [ ] **Date and DateTime strings: what is left of the semantics sheet's
   DT-08 and DT-19** (found 2026-10-28 while fixing issue #208, 0f19ab0e, which made
@@ -451,22 +459,6 @@ moves to [TODO.md](TODO.md).
   A declarator block keeps only its text and `declLine`: no WHEREFORE, no
   leading/trailing split. `$=pod` is held itemized.
 
-- [ ] **A `Buf` parameter takes a Blob, and a `Hash` one or variable a Map**
-  (found 2026-11-08 making `--> Buf` and `--> Hash` refuse them; `--> Rat`
-  and `my Rat $r` refuse a FatRat since):
-
-  ```raku
-  sub a(Buf $x) { 1 }; say a(Blob.new(1));      # 1, Rakudo: X::TypeCheck::Binding::Parameter
-  sub b(Hash $x) { 1 }; say b(Map.new);         # 1, the same
-  my Hash $h = Map.new; say $h.^name;           # Map, Rakudo: X::TypeCheck::Assignment
-  ```
-
-  typeMatchesArg (src/InterpreterCore.cpp) lets any buffer kind match any
-  buffer type name, and a Map match `Hash` (hashKindIsMap); `~~` answers
-  both right. Before narrowing it, check that no built-in answers a Blob or
-  a Map where Rakudo answers a Buf or a Hash (`.read`, `.subbuf`, `~` of two
-  Bufs, `%h.Map`), or a `Buf $b` parameter that took one starts refusing it.
-
 - [ ] **A WhateverCode gists as `WhateverCode.new`** (found 2026-11-08 making
   arithmetic on a Whatever value die):
 
@@ -537,20 +529,6 @@ moves to [TODO.md](TODO.md).
   answer (`my $n = 5; constant C = $n` is 5). Done when the program above
   prints Rakudo's order, and `BEGIN note nf()` prints nf.
 
-- [ ] **A FIRST or INIT written last does not give the block its value**
-  (found 2026-11-08 making every other phaser written last Nil):
-
-  ```raku
-  say (1, 2, 3).map({ $_; FIRST { 7 } });   # (1 2 3), Rakudo (7 7 7)
-  sub g { 1; INIT { 5 } }; say g();         # 1, Rakudo 5
-  ```
-
-  Both are r-value phasers: Rakudo keeps the value of the one run and
-  answers it on every pass. ENTER written last already answers its value
-  (runEnterPhasers' `\x01enter-tail`); FIRST runs once per closure clone
-  and a hoisted INIT before the mainline, so each needs a slot that keeps
-  its value for the body's tail to read (trailingCatchBlock leaves both out
-  of the Nil rule).
 - [ ] **A typed scalar's container handed out by an expression takes
   anything** (found 2026-10-28 while making scalar aliases keep their type,
   5f87f445; on v5.5.0 too). An alias of a typed variable refuses what the
@@ -671,39 +649,6 @@ moves to [TODO.md](TODO.md).
   0d089427 stopped for exception types; and `keep` inserts the promise
   hash's "vowed" key outside ps->m while another thread reads that hash
   (the react arm's `count("kind")`).
-- [ ] **An enum's type object is a list of its pairs** (found 2026-10-27
-  while making statement conditions Rakudo's xblock, 4af53b07; on daf9c03c
-  too). A type object is one item, and `Int` is, but an enum's is not:
-
-  ```raku
-  enum Col <red green>;
-  .say for Col;                     # red => 0, green => 1; Rakudo (Col)
-  for Col -> $c { say $c.^name }    # Pair Pair; Rakudo Col
-  say Col.elems; my @a = Col; say @a.elems;   # 2 2; Rakudo 1 1
-  say red.elems;                    # 2; Rakudo 1 (though `for red { }` runs once)
-  ```
-
-  Look for where an enum type, and a member's `.elems`, answer as the
-  enum's pairs. Done when the four lines answer as in Rakudo 2026.09.
-
-- [ ] **A `fail` in a block written at the mainline returns from the routine
-  that runs it** (found 2026-10-22 while making `fail` lexotic, 3e97932e; on
-  v5.5.0 too):
-
-  ```raku
-  sub ap(&b) { b() }
-  my $r = ap({ fail "x" }); say $r.^name   # Failure, Rakudo dies "x" at the mainline
-  ```
-
-  The builtin (B["fail"], src/BuiltinsRegister.cpp) now returns from the
-  routine the `fail` was written in, but with none (lexicalRoutineFrame 0)
-  it still returns from the dynamic one. Rakudo throws the exception there.
-  The catch: Test's `eval-lives-ok` runs its string in a routine of its own
-  (evalAsRoutine, same file), and a `fail` at the string's top level must
-  return from that. Give evalAsRoutine an Env that is a routine frame, so
-  the string's code has a lexical routine, then make lf == 0 die. Roast's
-  advent2009-day20.t is the case that relies on it.
-
 - [ ] **A List kept in a variable loses its containers when passed to a sub**
   (found 2026-10-22 while timing writes through bindings, e30e2827; on
   v5.5.0 too):
@@ -720,7 +665,11 @@ moves to [TODO.md](TODO.md).
   (src/InterpreterCalls.cpp) gives built-ins a List's values, and the
   binder's copy (bindParams' simple path, callPlainSub) may take that form
   or drop `holdsCells`. `f(($a, 2))` itself works since d7c6d9d5 (and on a
-  second call since 3e97932e).
+  second call since 3e97932e). Looked at again 2026-11-08: the read of `$kl`
+  goes through listOfContainersRead (src/InterpreterCore.cpp), which deconts
+  on every `$` read, and Rakudo writes through the containers by more roads
+  than the parameter: `my $l2 = $kl; $l2[0] = 7` (7), `sub v(@l) { @l[0] = 3 }`
+  (3) and `sub x(\l) { l[0] = 4 }` (4) all die here the same way.
 
 - [ ] **A write past a Buf's end grows a buffer only one holder sees**
   (found 2026-10-28 while fixing issue #186, 18ef8f73; the same before it):
@@ -811,9 +760,6 @@ moves to [TODO.md](TODO.md).
     `List:D(Pair:D)`: the smiley goes after the coercion;
   - `R.^candidates.map(*.HOW.^name)` dies "Cannot map a List using a Str":
     `.^name` after `*.HOW` is not curried into the WhateverCode;
-  - closing the tap of a supply block calls the tapper's `done` callback
-    (`supply { whenever Supply.interval(10) { } }.tap(done => { note
-    "done" }).close` says "done"; Rakudo says nothing);
   - Cro::HTTP's t/http2-request-parser.rakutest fails now and then (3 runs
     in 20 at 12a8fee3, 2 in 20 after it): the "Header1 + Continuation1 +
     Header2 + Data1" case passes as soon as its second request is checked,

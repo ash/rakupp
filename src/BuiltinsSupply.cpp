@@ -92,6 +92,9 @@ void Interpreter::closeOverRunningBody() {
 void Interpreter::maybeFinishSupply(const std::shared_ptr<SupplyTapCtx>& ctx) {
     if (!ctx || ctx->doneFired || ctx->done) return;
     if (!ctx->blockDone || ctx->pending > 0) return;
+    // …nor for a tap its tapper CLOSED: the inner taps that closing ends call
+    // their done hooks, which is no done of the supply's (Rakudo calls none)
+    if (ctx->tap) { std::lock_guard<std::mutex> lk(ctx->tap->m); if (ctx->tap->closed) return; }
     // the block's own thread and an inner tap's last delivery may both get
     // here; one of them fires
     if (ctx->doneFired.exchange(true)) return;
