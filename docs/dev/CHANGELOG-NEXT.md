@@ -37,7 +37,9 @@ cd191fb1, 21111219, 6c0c4fa1, e89a0e1e, fa0cc7aa, bc6faf15, ea460d2a;
 and nine more: 853b606b, 34e48087, 79b70d34, 0cee5c8f, 8f0b138e, 8e5b2dc0,
 e1bd580c, 0ca4968e, c7c4e564;
 and ten more: cae1cb63, a72b133c, c2dcfeb9, 25f02957, b8d8799d, 1c8c779c, 01673b79,
-846ae003, 1695a062, 75213a10.*
+846ae003, 1695a062, 75213a10;
+and nine more: 586a7f14, 1c32f010, a5cb94fa, 3f7f2856, d9fb551b, 0579b6c2, 2108a08b,
+de67ca59, c77965fc.*
 
 ---
 
@@ -436,6 +438,15 @@ and ten more: cae1cb63, a72b133c, c2dcfeb9, 25f02957, b8d8799d, 1c8c779c, 01673b
 - **A block's or an EVAL's `constant` does not shadow a CORE term outside it**
   (1c8c779c): after `{ constant Less = 42 }`, `Less` was 42 everywhere.
   `t/regression/block-constant-not-over-core-term.raku`.
+- **An INIT in a routine runs once, at program start** (a5cb94fa), though it reads
+  a mainline variable with an initializer: `my $n = 0; sub g { INIT { $n++ } }`
+  ran it on each call. `t/regression/init-in-routine-runs-once.raku`.
+- **A built-in that takes a slurpy or Mu takes a Junction whole** (3f7f2856):
+  `@b.append(1|2)` appended 1 and 2, `Set.new(1|2)` was a junction of Sets.
+  `t/regression/builtin-takes-junction-whole.raku`.
+- **`.map` binds an `is rw` parameter to the element** (0579b6c2): `@a.map(&inc)`
+  and `@a.map(&postfix:<++>)` left @a as it was.
+  `t/regression/map-rw-param-binds-element.raku`.
 
 ### Fixed: crashes
 
@@ -596,6 +607,21 @@ and ten more: cae1cb63, a72b133c, c2dcfeb9, 25f02957, b8d8799d, 1c8c779c, 01673b
   `t/regression/cannot-map-message-suggestion.raku`.
 - **A misspelled type's suggestions take in the native types and `Inf`** (75213a10):
   `Strr` suggests str too. `t/regression/type-suggestions-native-and-terms.raku`.
+- **A plain object answers Any's list methods** (586a7f14): `P.new.max`, `.Seq`,
+  `.is-lazy`, `.AT-POS`, `.classify` … died "No such method"; `.invert` says
+  "… in invert". `t/regression/plain-object-any-list-methods.raku`.
+- **A Failure answers `.backtrace` and `.mess`** (1c32f010), and an exception never
+  thrown has no backtrace; "Earlier failure:" is the Failure's `.mess`.
+  `t/regression/failure-mess-and-backtrace.raku`.
+- **What dies at BEGIN time is Rakudo's X::Comp::BeginTime** (d9fb551b), worded as
+  Rakudo's, an EVAL's statement-form BEGIN and CHECK and a dying constant
+  included. `t/regression/begin-time-failure-wrapped.raku`.
+- **An undeclared variable gets Rakudo 2026.09's suggestions or hint** (2108a08b),
+  "Perhaps you forgot a 'sub' …", at compile time too.
+  `t/regression/undeclared-variable-hint.raku`.
+- **Date and DateTime strings take any decimal digit** (de67ca59), and
+  X::Temporal::OutOfRange carries `.got` Int and `.comment`; a timezone's
+  minutes are "minutes of timezone". `t/regression/temporal-string-digits-and-ranges.raku`.
 
 ### Platforms and packaging
 
@@ -686,18 +712,20 @@ and ten more: cae1cb63, a72b133c, c2dcfeb9, 25f02957, b8d8799d, 1c8c779c, 01673b
   nominal type alone. (A FIRST or INIT written last, and a user `multi` on
   a built-in operator, are fixed by 8e5b2dc0 and 25f02957, above.)
 - Found with 853b606b to c7c4e564, the same before them (each in
-  TODO-FOLLOW-UPS.md): Any's methods a plain object lacks here (`.max`,
-  `.Seq`, `.is-lazy`, `.push` …) die "No such method", and on an object with
-  a FALLBACK still reach it; a Failure has no `.mess` or `.backtrace`, and a
-  `fail`'s backtrace leaves out its routine; an INIT in a routine that reads
-  an outer variable runs on each call; and a `for` loop's `-> @a` still
-  binds an Int. (`~` of two utf8 values, the named-argument arity message
-  and a compile-time X::AdHoc's X::Comp are fixed by a72b133c, cae1cb63 and c2dcfeb9,
-  above.)
+  TODO-FOLLOW-UPS.md): Any's mutators and `.sum` on a plain object die "No
+  such method"; and a `for` loop's `-> @a` still binds an Int. (`~` of two
+  utf8 values, the named-argument arity message and a compile-time
+  X::AdHoc's X::Comp are fixed by a72b133c, cae1cb63 and c2dcfeb9, and Any's
+  list methods on an object, a Failure's `.mess` and an INIT in a routine
+  by 586a7f14, 1c32f010 and a5cb94fa, above.)
 - Found with cae1cb63 to 75213a10, the same before them (each in
-  TODO-FOLLOW-UPS.md): what dies at BEGIN time, in a CHECK or in a constant
-  is not wrapped as Rakudo's X::Comp::BeginTime; `.map` with an `is rw`
-  routine writes nothing back; an undeclared variable's message lacks
-  Rakudo 2026.09's "Perhaps you forgot a 'sub'" hint and suggests more; an
-  only and a multi a role gets from a role it does pass; and a module's
-  exported variables and types reach past the block that `use`d it.
+  TODO-FOLLOW-UPS.md): an only and a multi a role gets from a role it does
+  pass; and a module's exported variables and types reach past the block
+  that `use`d it. (What dies at BEGIN time, `.map` with an `is rw` routine
+  and an undeclared variable's message are fixed by d9fb551b, 0579b6c2 and 2108a08b,
+  above.)
+- Found with 586a7f14 to de67ca59, the same before them (each in
+  TODO-FOLLOW-UPS.md): a Range of objects is `0..0`; a Hash's `.values.map`
+  with an `is rw` parameter writes nothing back; `polymod` threads a
+  Junction Rakudo takes whole; and an undeclared variable inside a string
+  is refused when the statement runs.
