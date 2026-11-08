@@ -644,8 +644,8 @@ install(TARGETS rakupp RUNTIME DESTINATION bin ARCHIVE DESTINATION lib)
 # engine and `raku++ --exe` compiles exactly as `rakupp --exe` does. Relative,
 # so a moved prefix keeps it; made here so every archive, the .deb, Docker,
 # Nix, Guix and a source install carry it with nothing else to remember.
-# Not on Windows: a zip stores no links, and a second rakupp.exe would add
-# ~7 MB to the download -- the installers make raku++.exe there instead.
+# Not on Windows: a zip stores no links, so the installers make the
+# raku++.exe symlink there instead, where Windows allows one. Never a copy.
 # Unlike `raku`, which Rakudo owns, nothing else claims this name, so it is
 # not a question.
 if(NOT WIN32)

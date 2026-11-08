@@ -648,14 +648,18 @@ do_install() {
     # The product's own name, always: nothing else claims it, so unlike `raku`
     # below it is not a question. The archive carries it -- the relative link
     # the CMake install rule makes -- and an archive from before that, which
-    # --version can still fetch, gets the same link here.
-    if [ ! -e "$PLUS" ]; then
-        rm -f "$PLUS"    # a DANGLING link is not -e, and ln will not replace it
-        ln -s rakupp "$PLUS" 2>/dev/null || cp "$EXE" "$PLUS" \
-            || fail "could not create $PLUS"
+    # --version can still fetch, gets the same link here. A symlink and
+    # nothing else: there is one engine file, and raku++ only points at it.
+    # Where the filesystem refuses a symlink there is no raku++, never a copy.
+    if [ ! -L "$PLUS" ]; then
+        rm -f "$PLUS"
+        ln -s rakupp "$PLUS" 2>/dev/null \
+            || note "could not make the symlink $PLUS; rakupp itself is installed"
     fi
-    _check=$("$PLUS" -e 'print 6 * 7' 2>&1 || true)
-    [ "$_check" = 42 ] || fail "$PLUS is there but answered [$_check] where 42 was due"
+    if [ -L "$PLUS" ]; then
+        _check=$("$PLUS" -e 'print 6 * 7' 2>&1 || true)
+        [ "$_check" = 42 ] || fail "$PLUS is there but answered [$_check] where 42 was due"
+    fi
 
     # ---- the second name --------------------------------------------------
     # rakupp resolves its runtime from its own executable's REAL path, so a
@@ -720,7 +724,10 @@ $_rc"; else RC_TOUCHED=$_rc; fi
     echo
     say "$VER"
     note "prefix    $PREFIX"
-    if [ "$_alias" = 1 ]; then note 'commands  rakupp, raku++, raku'; else note 'commands  rakupp, raku++'; fi
+    _cmds=rakupp
+    if [ -L "$PLUS" ];   then _cmds="$_cmds, raku++"; fi
+    if [ "$_alias" = 1 ]; then _cmds="$_cmds, raku"; fi
+    note "commands  $_cmds"
     note "PATH      $BIN -- $PATH_STATE"
     _oldifs=$IFS; IFS='
 '

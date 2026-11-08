@@ -305,16 +305,25 @@ sub rmtree($d --> Nil) {
 # Another name for the engine inside bin/: `raku++` always, `raku` when the
 # install had it. Remade after the swap, because a link left from before could
 # name a file that is gone, and because the Windows zip carries no raku++.exe
-# at all -- a zip stores no links, and a second rakupp.exe would be ~7 MB more
-# to download. Answers '' when the name is there AND runs, else what went wrong.
+# at all -- a zip stores no links. :symlink-only is raku++'s rule: a symlink to
+# the one engine file or nothing, never a hard link or a copy. Answers '' when
+# the name is there AND runs, else what went wrong.
 # ---------------------------------------------------------------------------
-sub make-name(IO::Path $bin, Str $exe-name, Str $name --> Str) {
+sub make-name(IO::Path $bin, Str $exe-name, Str $name, Bool :$symlink-only --> Str) {
     my $new   = $bin.add($exe-name);
     my $alias = $bin.add($*DISTRO.is-win ?? "$name.exe" !! $name);
     try $alias.unlink if $alias.e || $alias.l;   # .e is False for a DANGLING link
 
     my $made = False;
-    if $*DISTRO.is-win {
+    if $*DISTRO.is-win && $symlink-only {
+        # :!absolute stores the target as given, so the link is relative and
+        # survives a moved prefix. Windows makes one for an ordinary user only
+        # with Developer Mode on; an elevated prompt always can.
+        $made = so ((try $exe-name.IO.symlink($alias, :!absolute)) && $alias.e);
+        return "no $name: Windows makes the symlink only with Developer Mode on, "
+             ~ "or from an elevated prompt; rakupp itself is installed" unless $made;
+    }
+    elsif $*DISTRO.is-win {
         # A hard link needs neither a privilege nor a second copy, and is what
         # install-windows.ps1 makes; a copy where the volume refuses one. The
         # engine's own .link and .copy: there is no `ln` or `cp` to run here.
@@ -335,15 +344,17 @@ sub make-name(IO::Path $bin, Str $exe-name, Str $name --> Str) {
         if $p { $p.out.slurp(:close); $p.err.slurp(:close) }
         $made = so ($p && $p.exitcode == 0 && $alias.l);
         # A copy where a link is refused -- any filesystem that has no
-        # symlinks. `cp -p` because a plain copy can drop the executable bit,
-        # and a name that cannot be run is worse than no name at all.
-        unless $made {
+        # symlinks -- for `raku` alone. `cp -p` because a plain copy can drop
+        # the executable bit, and a name that cannot be run is worse than no
+        # name at all.
+        unless $made || $symlink-only {
             my $c = try run 'cp', '-p', $new.absolute, $alias.absolute, :out, :err;
             if $c { $c.out.slurp(:close); $c.err.slurp(:close) }
             $made = so ($c && $c.exitcode == 0 && $alias.e);
         }
     }
-    return "could not remake the name $name; rakupp itself is installed" unless $made;
+    return ($symlink-only ?? "could not make the symlink $name" !! "could not remake the name $name")
+         ~ '; rakupp itself is installed' unless $made;
 
     # It has to RUN, like the engine itself did: a link to the wrong place
     # and a copy without its executable bit both pass a file-exists check.
@@ -511,11 +522,12 @@ sub MAIN(
 
     # raku++ comes in with bin/ on POSIX -- the relative link the CMake install
     # rule makes. The Windows zip has none, and nor has an archive from before
-    # that rule, which --version can still fetch: either way it is made here.
+    # that rule, which --version can still fetch: either way it is made here,
+    # as a symlink or not at all.
     my $bin  = $prefix.add('bin');
     my $plus = $bin.add($*DISTRO.is-win ?? 'raku++.exe' !! 'raku++');
-    unless $plus.e {
-        my $why = make-name($bin, $exe-name, 'raku++');
+    unless $plus.l {
+        my $why = make-name($bin, $exe-name, 'raku++', :symlink-only);
         note $why if $why;
     }
     if $want-alias {
@@ -533,5 +545,5 @@ sub MAIN(
     step "$current -> $target";
     note $banner if $banner;
     note "prefix    {$prefix.absolute}";
-    note 'commands  ' ~ ('rakupp', ('raku++' if $plus.e), ('raku' if $want-alias)).join(', ');
+    note 'commands  ' ~ ('rakupp', ('raku++' if $plus.l), ('raku' if $want-alias)).join(', ');
 }

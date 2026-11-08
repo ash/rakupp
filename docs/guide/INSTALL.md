@@ -174,15 +174,17 @@ installer still has its old `PATH`. Open a new one, or run that line in it —
 the installer prints it for your shell (`source "$HOME/.rakupp/env.fish"` under
 fish).
 
-**The other names.** `rakupp` finds its runtime relative to its own
-executable's real path, so another name inside `bin/` is a complete engine and
-not a stub — `raku++ --exe prog.raku` compiles exactly as `rakupp --exe` does.
-`raku++`, the product's own name, is always there: nothing else claims it, so
-it is not a question, and it is in the release archive itself, as a relative
-link beside `rakupp`. `raku` is the one the installer asks about. Both links
-are relative, so the prefix can be moved afterwards. If a Rakudo `raku` is
-already on your `PATH`, the installer names it and says which of the two will
-win; `--prepend` swaps them.
+**The other names.** `rakupp` is the engine, the one binary; the other names
+are symlinks to it inside `bin/`. `rakupp` finds its runtime relative to its
+own executable's real path, so a link there is a complete engine and not a stub
+— `raku++ --exe prog.raku` compiles exactly as `rakupp --exe` does. `raku++`,
+the product's own name, is always there: nothing else claims it, so it is not a
+question, and it is in the release archive itself. It is a symlink or nothing —
+on a filesystem that refuses symlinks the installer says so and makes no copy.
+`raku` is the one the installer asks about. Both links are relative, so the
+prefix can be moved afterwards. If a Rakudo `raku` is already on your `PATH`,
+the installer names it and says which of the two will win; `--prepend` swaps
+them.
 
 **Undo.** The install leaves a copy of the script in the prefix:
 
@@ -270,10 +272,10 @@ same place by default, so pick one per machine rather than layering them.
 
 **[Download rakupp-setup-windows-x64.exe](https://github.com/ash/rakupp/releases/latest/download/rakupp-setup-windows-x64.exe)** — that link always
 resolves to the latest release — and run it. It asks for the install location,
-installs the engine as both `rakupp.exe` and `raku++.exe`, offers a checkbox for
-the command name `raku`, and another for putting `bin\` on your `PATH` — and it
-registers with Add/Remove Programs, so it comes off the way any other Windows
-program does.
+makes `raku++.exe` a symlink to `rakupp.exe` where Windows allows one (see
+below), offers a checkbox for the command name `raku`, and another for putting
+`bin\` on your `PATH` — and it registers with Add/Remove Programs, so it comes
+off the way any other Windows program does.
 
 The file is **not code-signed**, so SmartScreen will call the publisher unknown
 for as long as it takes the file to earn a reputation: **More info → Run
@@ -303,9 +305,10 @@ Windows Terminal. `irm` and `iex` are PowerShell's own aliases for
 
 It downloads the latest `rakupp-windows-x64.zip`, checks it against the
 published SHA-256, unpacks it into `%LOCALAPPDATA%\Programs\rakupp`, makes
-`raku++.exe` beside `rakupp.exe`, asks whether you want the engine under the
-name `raku` as well, and puts `bin\` on your user `PATH`. Then open a *new*
-terminal — a running one keeps the environment it started with.
+`raku++.exe` a symlink to `rakupp.exe` where Windows allows one, asks whether
+you want the engine under the name `raku` as well, and puts `bin\` on your user
+`PATH`. Then open a *new* terminal — a running one keeps the environment it
+started with.
 
 `| iex` cannot pass arguments. To give the script options, hand it to a script
 block instead:
@@ -331,13 +334,16 @@ where the one-liner cannot take arguments: `RAKUPP_VERSION`,
 `RAKUPP_INSTALL_DIR`, `RAKUPP_RAKU_ALIAS=1`, `RAKUPP_NO_PATH=1`.
 
 **The other names.** `rakupp` finds its runtime relative to its own executable,
-so another name inside `bin\` is a complete engine, not a stub. The script
-makes `raku++.exe` always, and `raku.exe` when asked, as hard links to
-`rakupp.exe` (a copy, where the filesystem refuses one); the wizard installs
-copies, which is what lets it own the files for upgrades and rollback. The zip
-itself carries no `raku++.exe`: a zip stores no links, and a second copy of the
-engine would be about 7 MB more to download, so the installers and `rakupp
-upgrade` make it. If a Rakudo `raku` is already on your `PATH`, the script
+so another name inside `bin\` is a complete engine, not a stub. `raku++.exe` is
+a symlink to `rakupp.exe` or nothing, never a copy: the zip carries none, since
+a zip stores no links, and the script, the wizard and `rakupp upgrade` make it.
+Windows lets an ordinary user make a symlink only with **Developer Mode** on
+(Settings → System → For developers); an elevated prompt always can. Where
+neither holds, the install goes ahead without `raku++.exe` and says so — turn
+Developer Mode on and re-run it to get the name. `raku.exe`, when asked for, is
+a hard link the script makes (a copy, where the filesystem refuses one) and a
+copy the wizard installs, which is what lets the wizard own the file for
+upgrades and rollback. If a Rakudo `raku` is already on your `PATH`, the script
 names it and says which of the two will win; `-Prepend` swaps them.
 
 Nothing is written outside the prefix and `HKCU\Environment`, so neither install
@@ -444,8 +450,8 @@ Every installer on this page is this section done for you — download, checksum
 unpack, `PATH`. To do it by hand, unpack keeping the `bin/ lib/ include/`
 layout together (that's what `--exe` uses) and put `bin/` on your `PATH`. A
 POSIX archive's `bin/` holds `raku++` too, a relative link to `rakupp`; a
-Windows zip holds `rakupp.exe` alone, and a copy or hard link of it named
-`raku++.exe` is the same engine under that name.
+Windows zip holds `rakupp.exe` alone, and `mklink raku++.exe rakupp.exe`, run in
+`bin\` with Developer Mode on or from an elevated prompt, adds the name.
 
 **Anywhere else** — another BSD, a Linux architecture not listed, a system too
 old for the archive — [build from source](#build-from-source). It needs CMake

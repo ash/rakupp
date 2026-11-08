@@ -173,14 +173,14 @@ function Copy-Tree ([string] $from, [string] $to) {
     }
 }
 
-# Another name for the engine inside bin\: raku++.exe always, raku.exe when
-# asked. rakupp finds its runtime relative to its own executable
-# (GetModuleFileNameW), so a name INSIDE bin\ resolves the prefix exactly as
-# rakupp.exe does -- link or copy, the engine cannot tell. Re-made on every
-# run: an upgrade may replace rakupp.exe with a new file, and a link to the old
-# one would go on serving the old engine. A hard link is the only one of the
-# three that needs neither a privilege nor a second copy; a symlink needs
-# Developer Mode or elevation, and a copy always works. Answers which it took.
+# Another name for the engine inside bin\: raku.exe, when asked. rakupp finds
+# its runtime relative to its own executable (GetModuleFileNameW), so a name
+# INSIDE bin\ resolves the prefix exactly as rakupp.exe does -- link or copy,
+# the engine cannot tell. Re-made on every run: an upgrade may replace
+# rakupp.exe with a new file, and a link to the old one would go on serving the
+# old engine. A hard link is the only one of the three that needs neither a
+# privilege nor a second copy; a symlink needs Developer Mode or elevation, and
+# a copy always works. Answers which it took.
 function New-EngineName ([string] $exe, [string] $name) {
     if (Test-Path -LiteralPath $name) { Remove-Item -LiteralPath $name -Force }
     $how = ''
@@ -196,6 +196,25 @@ function New-EngineName ([string] $exe, [string] $name) {
     $check = (& $name -e 'print 6 * 7' 2>&1 | Out-String).Trim()
     if ($check -ne '42') { Fail "$name was created but answered [$check] where 42 was due" }
     return $how.ToLowerInvariant()
+}
+
+# raku++.exe: a symlink to rakupp.exe and nothing else -- never a hard link or
+# a copy, so there is one engine file and the name only points at it. Windows
+# lets an ordinary user make one only with Developer Mode on; an elevated
+# prompt always can. mklink, run inside bin\, stores the target as given, so
+# the link is relative and survives a moved prefix, where New-Item in Windows
+# PowerShell 5.1 resolves the target to an absolute path first. Answers whether
+# the link is there; one that is there has to run.
+function New-EngineSymlink ([string] $binDir, [string] $name) {
+    $link = Join-Path $binDir $name
+    if (Test-Path -LiteralPath $link) { Remove-Item -LiteralPath $link -Force }
+    Push-Location -LiteralPath $binDir
+    try { & cmd.exe /d /c mklink $name 'rakupp.exe' 2>&1 | Out-Null } catch { }
+    finally { Pop-Location }
+    if (-not (Test-Path -LiteralPath $link)) { return $false }
+    $check = (& $link -e 'print 6 * 7' 2>&1 | Out-String).Trim()
+    if ($check -ne '42') { Fail "$link was created but answered [$check] where 42 was due" }
+    return $true
 }
 
 # This script's own path and source, read HERE at script scope: inside the
@@ -425,10 +444,13 @@ function Invoke-RakuppInstall {
 
     # ---- raku++ -------------------------------------------------------------
     # The product's own name, always: nothing else claims it, so unlike "raku"
-    # below it is not a question. Made here rather than shipped in the zip: a
-    # zip stores no links, and a second rakupp.exe would be ~7 MB more to
-    # download. (tools/upgrade.raku makes it the same way after an upgrade.)
-    New-EngineName $Exe $Plus | Out-Null
+    # below it is not a question. Made here rather than shipped in the zip, as
+    # a zip stores no links. (tools/upgrade.raku makes it the same way after
+    # an upgrade.)
+    if (-not (New-EngineSymlink $BinDir 'raku++.exe')) {
+        Note 'no raku++: Windows makes the symlink only with Developer Mode on, or'
+        Note 'from an elevated prompt -- turn one on and re-run this script for it'
+    }
 
     # ---- the second name ---------------------------------------------------
     $otherRaku = @()
@@ -493,7 +515,10 @@ function Invoke-RakuppInstall {
     Write-Host ''
     Say "$ver"
     Note "prefix    $Dir"
-    if ($wantAlias) { Note 'commands  rakupp, raku++, raku' } else { Note 'commands  rakupp, raku++' }
+    $cmds = @('rakupp')
+    if (Test-Path -LiteralPath $Plus) { $cmds += 'raku++' }
+    if ($wantAlias) { $cmds += 'raku' }
+    Note ('commands  ' + ($cmds -join ', '))
     Note "PATH      $BinDir -- $pathState"
     if ($wantAlias -and $otherRaku.Count -gt 0) {
         if ($Prepend) { Note "          raku here wins over $($otherRaku[0])" }

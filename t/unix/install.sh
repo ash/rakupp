@@ -9,7 +9,8 @@
 #
 #   * the engine it unpacked RUNS (6 * 7, not a file-exists check)
 #   * `raku++` is there with no question asked, a RELATIVE link that runs, and
-#     an archive from before it carried one still gets it
+#     an archive from before it carried one still gets it -- and where no
+#     symlink can be made there is no raku++ at all, never a copy
 #   * --no-raku-alias leaves no `raku`, --raku-alias makes one that runs -- and
 #     that is a COMPLETE engine, so `raku --exe` compiles through it
 #   * the `raku` link is RELATIVE, which is what lets the prefix be moved
@@ -199,6 +200,26 @@ is "$RC" 0 'an archive without raku++ installs'
 is "$(readlink "$ROOT/old-prefix/bin/raku++" 2>/dev/null || echo '(not a symlink)')" rakupp \
    'and the installer makes raku++ itself, relative'
 is "$(answer "$ROOT/old-prefix/bin/raku++")" 42 'and that raku++ runs'
+
+# ...and where no symlink can be made, no raku++ at all: a copy would be a
+# second engine file. An `ln` that always fails stands in for a filesystem
+# that has no symlinks.
+mkdir -p "$ROOT/noln"
+printf '#!/bin/sh\nexit 1\n' > "$ROOT/noln/ln"
+chmod +x "$ROOT/noln/ln"
+env -i HOME="$HOME_DIR" PATH="$ROOT/noln:$PATH" SHELL=/bin/sh TMPDIR="$ROOT" sh "$INSTALLER" \
+    --archive "$ROOT/old.tar.gz" --dir "$ROOT/noln-prefix" --no-raku-alias --no-path --yes \
+    > "$ROOT/out8" 2>&1 && RC=0 || RC=$?
+sed 's/^/# /' < "$ROOT/out8"
+is "$RC" 0 'with no symlink to be had, the install still succeeds'
+if [ -e "$ROOT/noln-prefix/bin/raku++" ] || [ -L "$ROOT/noln-prefix/bin/raku++" ]
+    then ok 0 'and makes no raku++, no copy in its place'
+    else ok 1 'and makes no raku++, no copy in its place'
+fi
+if grep -q 'could not make the symlink' "$ROOT/out8" && grep -q 'commands  rakupp$' "$ROOT/out8"
+    then ok 1 'and says so'
+    else ok 0 'and says so' "$(grep -E 'symlink|commands' "$ROOT/out8")"
+fi
 
 # ---- a binary that will not start ------------------------------------------
 # The loader says why on stderr, and the installer has to pass that on: a bare
