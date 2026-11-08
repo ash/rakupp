@@ -14308,14 +14308,11 @@ StmtPtr Parser::parseClass(bool isRole, bool isGrammar, bool isPackage, bool isU
     // Only the FIRST component counts — `module Foo::MY` is an ordinary name —
     // and `GLOBAL::` is the exception that proves it, being a real place to put
     // a declaration (`class GLOBAL::evo`, stripped just below). GLOBAL standing
-    // ALONE is still nothing to declare, and Rakudo says so in its own words.
+    // ALONE is still nothing to declare, refused in the same words as the rest.
     if (!cd->name.empty()) {
         size_t sep = cd->name.find("::");
         std::string first = sep == std::string::npos ? cd->name : cd->name.substr(0, sep);
-        if (first == "GLOBAL" && sep == std::string::npos)
-            throw ParseError("Cannot declare pseudo-package GLOBAL", cur().line,
-                             "X::AdHoc", {});
-        if (first != "GLOBAL" && isPseudoPkg(first))
+        if ((first != "GLOBAL" || sep == std::string::npos) && (first == "GLOBAL" || isPseudoPkg(first)))
             throw ParseError("Cannot use pseudo package " + first + " in package name",
                              cur().line, "X::PseudoPackage::InDeclaration",
                              {{"pseudo-package", first}, {"action", "package name"}});

@@ -2852,6 +2852,12 @@ Value Interpreter::evalString(const std::string& srcIn, bool mainlinePH, bool* i
                 bool haveLine = false;
                 for (auto& kv : at) if (kv.first == "line") haveLine = true;
                 if (!haveLine && e.line > 0) at.emplace_back("line", std::to_string(e.line));
+                // the compiler's own X::AdHoc does X::Comp, as Rakudo's `X::AdHoc+{X::Comp}`
+                if (e.exType == "X::AdHoc") {
+                    std::vector<std::pair<std::string, Value>> av;
+                    for (auto& kv : at) av.emplace_back(kv.first, kv.first == "line" ? Value::integer(std::stoll(kv.second)) : Value::str(kv.second));
+                    throw RakuError{mixinValue(makeTypedEx("X::AdHoc", std::move(av), e.what()), Value::typeObj("X::Comp"), true, false, nullptr), e.what()};
+                }
                 throwTyped(e.exType, at, e.what());
             }
             throw RakuError{Value::typeObj("X::Syntax::Confused"), std::string("EVAL parse error: ") + e.what()};
