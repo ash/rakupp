@@ -10320,11 +10320,25 @@ Value Interpreter::methodCallUnresolved(const Value& inv, const MName& m, ValueL
             "elems", "end", "list", "List", "Array", "flat", "cache", "eager",
             "values", "keys", "pairs", "antipairs", "kv", "head", "tail",
             "first", "map", "grep", "sort", "reverse", "reduce", "unique",
-            "squish", "skip", "batch", "rotor", "combinations", "permutations"};
+            "squish", "skip", "batch", "rotor", "combinations", "permutations",
+            "max", "min", "minmax", "maxpairs", "minpairs", "Seq", "invert", "classify", "categorize",
+            "deepmap", "nodemap", "duckmap", "flatmap", "repeated", "pairup", "produce", "collate",
+            "slice", "toggle", "hash", "Hash", "Map"};
         if (kOneElem.count(m)) {
             Value one = Value::array(); one.arr()->push_back(inv); one.isList = true;
             return methodCall(one, m, args);
         }
+        // …and its subscript protocol: position 0 is the object, a key is none, and nothing is deleted
+        const auto at0 = [&] { return !args.empty() && args[0].t == VT::Int && args[0].i == 0; };
+        if (m == "is-lazy" && args.empty()) return Value::boolean(false);
+        if ((m == "ZEN-KEY" || m == "serial") && args.empty()) return inv;
+        if (m == "EXISTS-KEY" && args.size() == 1) return Value::boolean(false);
+        if (m == "EXISTS-POS" && args.size() == 1) return Value::boolean(at0());
+        if (m == "AT-POS" && args.size() == 1)
+            return at0() ? inv : armedFailure("X::OutOfRange", "Index out of range. Is: " + args[0].toStr() + ", should be in 0..0");
+        if ((m == "DELETE-KEY" || m == "DELETE-POS") && args.size() == 1)
+            throw RakuError{Value::typeObj("X::AdHoc"), std::string("Can not remove ") + (m == "DELETE-KEY" ? "values" : "elements") +
+                                                        " from a " + inv.typeName()};
     }
     // `.CREATE` on an INSTANCE allocates another of its TYPE: Rakudo's CREATE is
     // Mu's, and nothing in it needs a type object. `$obj.CREATE` died here for

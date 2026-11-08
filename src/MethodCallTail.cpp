@@ -4957,12 +4957,11 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
                 if (v.t != VT::Str) p.setPairKey(v); // keep a numeric key numeric
                 out.arr()->push_back(std::move(p));
             };
-            // every element is bound to a Pair parameter: an Int dies
+            // every element must be a Pair: an Int dies, in Rakudo's words ("… in invert; …")
             for (auto& e : items)
                 if (e.t != VT::Pair)
-                    throwTypedV("X::TypeCheck::Binding", {{"got", e}, {"expected", Value::typeObj("Pair")}},
-                                "Type check failed in binding; expected Pair but got " + e.typeName() +
-                                " (" + e.gist() + ")");
+                    throwTypedV("X::TypeCheck", {{"operation", Value::str("invert")}, {"got", e}, {"expected", Value::typeObj("Pair")}},
+                                "Type check failed in invert; expected Pair but got " + e.typeName());
             for (auto& e : items) if (e.t == VT::Pair) {
                 Value val = e.pairVal() ? *e.pairVal() : Value::any();
                 Value key = e.pairKeyV();
