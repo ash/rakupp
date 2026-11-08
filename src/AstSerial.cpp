@@ -473,6 +473,7 @@ template <class IO> void visit(IO& io, SubDecl& n)  {
     // `is nodal`, parser-consumed as well: a hyper over a cached module's
     // nodal routine would descend into every node
     F(io, n.isNodal);
+    F(io, n.hiddenBt);
 }
 template <class IO> void visit(IO& io, ClassDecl& n) {
     F(io, n.name); F(io, n.parent); ioVec(io, n.extraParents); ioVec(io, n.roles);

@@ -5836,7 +5836,7 @@ static void mergeParentRoleMultis(ClassInfo* ci, const SigKey& sigKeyParams) {
                 c.code()->ciM().isMethod = sd->isMethod;
                 c.code()->ciM().isStub = stmtIsStub(sd->body);
                 c.code()->ciM().testAssertion = sd->testAssertion;
-                c.code()->ciM().isNodal = sd->isNodal;
+                c.code()->ciM().isNodal = sd->isNodal; c.code()->ciM().hiddenBt = sd->hiddenBt;
                 {   // `sub f { @_ }` — an @_/%_ reference implies a slurpy signature
                     std::set<std::string> ph2;
                     for (auto& s2 : sd->body) collectPHStmt(s2.get(), ph2);
@@ -6415,6 +6415,7 @@ static void mergeParentRoleMultis(ClassInfo* ci, const SigKey& sigKeyParams) {
                     code.code()->ciM().retRw = md->retRw;
                     code.code()->coldM().pod = md->pod; code.code()->coldM().podTrail = md->podTrail;
                     if (md->deprecated) code.code()->coldM().deprecated = deprecationFor(md);
+                    code.code()->ciM().hiddenBt = md->hiddenBt;   // (`is hidden-from-backtrace`)
                     code.code()->ciM().body = &md->body;
                     code.code()->ciM().langRev = langRev_;
                     code.code()->ciM().rakuAst = rakuAstPragma_;
@@ -7795,6 +7796,7 @@ static void mergeParentRoleMultis(ClassInfo* ci, const SigKey& sigKeyParams) {
                 // what `.^find_method('m').WHY` answers, exactly as a sub's is
                 code.code()->coldM().pod = md->pod; code.code()->coldM().podTrail = md->podTrail;
                 if (md->deprecated) code.code()->coldM().deprecated = deprecationFor(md.get());
+                code.code()->ciM().hiddenBt = md->hiddenBt;   // (`is hidden-from-backtrace`)
                 code.code()->ciM().declFile = declFileNowI();
                 code.code()->ciM().declLine = md->line;
                 code.code()->ciM().isStub = stmtIsStub(md->body);

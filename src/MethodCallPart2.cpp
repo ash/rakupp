@@ -5507,7 +5507,11 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
             auto it = inv.hash()->find(m.s);
             return it != inv.hash()->end() ? it->second : Value::any();
         }
-        if (m == "is-hidden") return Value::boolean(false);
+        if (m == "is-hidden") {   // a routine declared `is hidden-from-backtrace`
+            auto it = inv.hash()->find("code");
+            return Value::boolean(it != inv.hash()->end() && it->second.t == VT::Code && it->second.code() &&
+                                  it->second.code()->ci().hiddenBt);
+        }
         // the setting's own `throw` / `die` frames (see btCaptureNow)
         if (m == "is-setting") return Value::boolean(inv.hash()->count("setting") > 0);
         // a frame whose code is a SUB or METHOD (not a bare block, not the mainline)
@@ -8870,6 +8874,8 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
         }
         if (m == "signature") return makeSignature(inv.code());
         if (m == "yada") return Value::boolean(inv.code()->ci().isStub);   // a `{ ... }` / `{ !!! }` body
+        // (the trait's role brings the method: a routine without it has none)
+        if (m == "is-hidden-from-backtrace" && inv.code()->ci().hiddenBt) return Value::boolean(true);
         if (m == "multi" || m == "is_dispatcher") return Value::boolean(inv.code()->ci().isMultiDispatcher);
         // `$block.ACCEPTS($x)` is `$block($x)` — a Callable used as a matcher
         // (paths' `$!dir-matcher.ACCEPTS($name)` is how every directory is

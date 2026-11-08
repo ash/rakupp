@@ -914,6 +914,7 @@ struct CodeInfo : RefCounted {
     bool isStub = false;                              // body is a bare `...`/`!!!` stub (role requirement)
     bool testAssertion = false; // `is test-assertion` (see Interpreter::testAssertLine_)
     bool isNodal = false;       // `is nodal` (see the hyper callable path)
+    bool hiddenBt = false;      // `is hidden-from-backtrace` (btFrameHidden)
     bool usesArgs = false;                            // body references @_ / %_ (implicit slurpy signature)
     unsigned char implicitArgs = 0;                   // …which of them: 1 = @_, 2 = %_ (for .signature)
     bool isDefaultCand = false;                       // `multi … is default` — wins a dispatch tie

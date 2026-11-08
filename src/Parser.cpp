@@ -13743,6 +13743,8 @@ StmtPtr Parser::parseSub(bool isMulti, bool isProto, bool asMethod) {
             s->testAssertion = true;
         if (isIdent("is") && peek().kind == Tok::Ident && peek().text == "nodal")
             s->isNodal = true;
+        if (isIdent("is") && peek().kind == Tok::Ident && peek().text == "hidden-from-backtrace")
+            s->hiddenBt = true;
         // a non-built-in `is NAME` / `is NAME(expr)` trait: captured for dispatch
         // to a user `multi sub trait_mod:<is>` at declaration time
         if (isIdent("is") && peek().kind == Tok::Ident) {

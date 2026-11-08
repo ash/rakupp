@@ -5551,8 +5551,11 @@ static std::string btFrameName(const Callable* c, bool outermost) {
 // A frame the short form hides: the callables the RUNTIME makes up — Whatever
 // currying, `.assuming` wrappers, `wrap` shims. They are Rakudo's `is-hidden`
 // frames: real activations, but not places the reader wrote code.
+// …and a routine the program declared `is hidden-from-backtrace` (DBIish raises
+// its errors through two of them); `--ll-exception` shows every one.
 static bool btFrameHidden(const Callable* c) {
-    return c && (c->ci().isWhateverCode || (c->ci().name.empty() && c->ci().isBlock && c->ci().langRev == -1));
+    return c && (c->ci().isWhateverCode || c->ci().hiddenBt ||
+                 (c->ci().name.empty() && c->ci().isBlock && c->ci().langRev == -1));
 }
 
 Interpreter::BtStyle Interpreter::btStyleForStderr() {
