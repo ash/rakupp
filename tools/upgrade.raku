@@ -302,6 +302,71 @@ sub rmtree($d --> Nil) {
 }
 
 # ---------------------------------------------------------------------------
+# Another name for the engine inside bin/: `raku++` always, `raku` when the
+# install had it. Remade after the swap, because a link left from before could
+# name a file that is gone, and because the Windows zip carries no raku++.exe
+# at all -- a zip stores no links. :symlink-only is raku++'s rule: a symlink to
+# the one engine file or nothing, never a hard link or a copy. Answers '' when
+# the name is there AND runs, else what went wrong.
+# ---------------------------------------------------------------------------
+sub make-name(IO::Path $bin, Str $exe-name, Str $name, Bool :$symlink-only --> Str) {
+    my $new   = $bin.add($exe-name);
+    my $alias = $bin.add($*DISTRO.is-win ?? "$name.exe" !! $name);
+    try $alias.unlink if $alias.e || $alias.l;   # .e is False for a DANGLING link
+
+    my $made = False;
+    if $*DISTRO.is-win && $symlink-only {
+        # :!absolute stores the target as given, so the link is relative and
+        # survives a moved prefix. Windows makes one for an ordinary user only
+        # with Developer Mode on; an elevated prompt always can.
+        $made = so ((try $exe-name.IO.symlink($alias, :!absolute)) && $alias.e);
+        return "no $name: Windows makes the symlink only with Developer Mode on, "
+             ~ "or from an elevated prompt; rakupp itself is installed" unless $made;
+    }
+    elsif $*DISTRO.is-win {
+        # A hard link needs neither a privilege nor a second copy, and is what
+        # install-windows.ps1 makes; a copy where the volume refuses one. The
+        # engine's own .link and .copy: there is no `ln` or `cp` to run here.
+        $made = so ((try $new.link($alias)) && $alias.e);
+        $made ||= so ((try $new.copy($alias)) && $alias.e);
+    }
+    else {
+        # `ln -s` run INSIDE bin/, not the symlink builtin: Raku's `symlink`
+        # resolves a relative target against the CWD and stores the result, so
+        # symlink('rakupp', …/bin/raku) writes a link to <cwd>/rakupp -- which
+        # is not this prefix, and breaks the moment the prefix moves. `ln`
+        # stores its target verbatim, which is what makes the link relative and
+        # the prefix relocatable. tools/install.sh uses `ln` for the same
+        # reason. (Rakudo's `symlink` resolves identically; this is the
+        # language, not a divergence.)
+        my $p = try run 'ln', '-s', $exe-name, $alias.basename,
+                        :cwd($bin.absolute), :out, :err;
+        if $p { $p.out.slurp(:close); $p.err.slurp(:close) }
+        $made = so ($p && $p.exitcode == 0 && $alias.l);
+        # A copy where a link is refused -- any filesystem that has no
+        # symlinks -- for `raku` alone. `cp -p` because a plain copy can drop
+        # the executable bit, and a name that cannot be run is worse than no
+        # name at all.
+        unless $made || $symlink-only {
+            my $c = try run 'cp', '-p', $new.absolute, $alias.absolute, :out, :err;
+            if $c { $c.out.slurp(:close); $c.err.slurp(:close) }
+            $made = so ($c && $c.exitcode == 0 && $alias.e);
+        }
+    }
+    return ($symlink-only ?? "could not make the symlink $name" !! "could not remake the name $name")
+         ~ '; rakupp itself is installed' unless $made;
+
+    # It has to RUN, like the engine itself did: a link to the wrong place
+    # and a copy without its executable bit both pass a file-exists check.
+    my $p = run $alias.absolute, '-e', 'print 6 * 7', :out, :err;
+    my $said = $p.out.slurp(:close).trim;
+    $p.err.slurp(:close);
+    return "the name $name was remade but answered [$said]; rakupp itself is fine"
+        unless $p.exitcode == 0 && $said eq '42';
+    return '';
+}
+
+# ---------------------------------------------------------------------------
 sub rewrite-receipt(IO::Path $prefix, $r, Str $version, Str $asset --> Nil) {
     my %out = $r.hash;
     %out<version> = $version;
@@ -419,7 +484,10 @@ sub MAIN(
 
     my $un = $stage.add('unpacked');
     unpack($archive, $un);
-    my $exe-name = $exe.basename;
+    # The engine's own name, not the running one's: on Windows `raku++` and
+    # `raku` are hard links, which $*EXECUTABLE does not see through, and the
+    # archive has no bin/raku++.exe or bin/raku.exe to find.
+    my $exe-name = $*DISTRO.is-win ?? 'rakupp.exe' !! 'rakupp';
     my $root = payload-root($un, $exe-name);
 
     # The second name, before the swap: an upgrade keeps what the install had.
@@ -452,47 +520,19 @@ sub MAIN(
         die "the new binary did not run (it answered [$answer]); the previous one is back in place";
     }
 
+    # raku++ comes in with bin/ on POSIX -- the relative link the CMake install
+    # rule makes. The Windows zip has none, and nor has an archive from before
+    # that rule, which --version can still fetch: either way it is made here,
+    # as a symlink or not at all.
+    my $bin  = $prefix.add('bin');
+    my $plus = $bin.add($*DISTRO.is-win ?? 'raku++.exe' !! 'raku++');
+    unless $plus.l {
+        my $why = make-name($bin, $exe-name, 'raku++', :symlink-only);
+        note $why if $why;
+    }
     if $want-alias {
-        my $bin   = $prefix.add('bin');
-        my $alias = $bin.add($*DISTRO.is-win ?? 'raku.exe' !! 'raku');
-        try $alias.unlink if $alias.e || $alias.l;   # .e is False for a DANGLING link
-
-        # `ln -s` run INSIDE bin/, not the symlink builtin: Raku's `symlink`
-        # resolves a relative target against the CWD and stores the result, so
-        # symlink('rakupp', …/bin/raku) writes a link to <cwd>/rakupp -- which
-        # is not this prefix, and breaks the moment the prefix moves. `ln`
-        # stores its target verbatim, which is what makes the link relative and
-        # the prefix relocatable. tools/install.sh uses `ln` for the same
-        # reason. (Rakudo's `symlink` resolves identically; this is the
-        # language, not a divergence.)
-        my $made = False;
-        unless $*DISTRO.is-win {
-            my $p = try run 'ln', '-s', $exe-name, $alias.basename,
-                            :cwd($bin.absolute), :out, :err;
-            if $p { $p.out.slurp(:close); $p.err.slurp(:close) }
-            $made = so ($p && $p.exitcode == 0 && $alias.l);
-        }
-        # A copy where a link is refused -- Windows without Developer Mode, and
-        # any filesystem that has no symlinks. `cp -p` because a plain copy can
-        # drop the executable bit, and a raku that cannot be run is worse than
-        # no raku at all.
-        unless $made {
-            my $p = try run 'cp', '-p', $new.absolute, $alias.absolute, :out, :err;
-            if $p { $p.out.slurp(:close); $p.err.slurp(:close) }
-            $made = so ($p && $p.exitcode == 0 && $alias.e);
-        }
-        # It has to RUN, like the engine itself did: a link to the wrong place
-        # and a copy without its executable bit both pass a file-exists check.
-        if $made {
-            my $p = run $alias.absolute, '-e', 'print 6 * 7', :out, :err;
-            my $said = $p.out.slurp(:close).trim;
-            $p.err.slurp(:close);
-            note "the name raku was remade but answered [$said]; rakupp itself is fine"
-                unless $p.exitcode == 0 && $said eq '42';
-        }
-        else {
-            note 'could not remake the name raku; rakupp itself is installed';
-        }
+        my $why = make-name($bin, $exe-name, 'raku');
+        note $why if $why;
     }
 
     rewrite-receipt($prefix, $receipt, $target, $asset);
@@ -505,5 +545,5 @@ sub MAIN(
     step "$current -> $target";
     note $banner if $banner;
     note "prefix    {$prefix.absolute}";
-    note 'commands  ' ~ ($want-alias ?? 'rakupp, raku' !! 'rakupp');
+    note 'commands  ' ~ ('rakupp', ('raku++' if $plus.l), ('raku' if $want-alias)).join(', ');
 }

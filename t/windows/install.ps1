@@ -7,6 +7,8 @@
     rakupp-windows-x64.zip and asserts what it did, in TAP:
 
       * the engine it unpacked RUNS (6 * 7, not a file-exists check)
+      * raku++.exe is made on every run, asked about or not, as a SYMLINK that
+        runs -- or, where this user cannot make one, is not there at all
       * -NoRakuAlias leaves no raku.exe, -RakuAlias makes one that runs
       * a re-run keeps the name the install had, and does not add a second
         PATH entry
@@ -93,21 +95,44 @@ function Answer ([string] $exe) {
     if (-not (Test-Path -LiteralPath $exe)) { return '<missing>' }
     return (& $exe -e 'print 6 * 7' 2>&1 | Out-String).Trim()
 }
+# raku++.exe is a symlink or nothing, and only Developer Mode or an elevated
+# prompt lets this user make one. CI's runners are elevated; a machine that
+# allows neither expects no raku++.exe at all -- never a copy in its place.
+function Test-CanSymlink {
+    $t = Join-Path ([System.IO.Path]::GetTempPath()) ('rakupp-lnk-' + [guid]::NewGuid().ToString('N').Substring(0, 8))
+    New-Item -ItemType Directory -Path $t -Force | Out-Null
+    try {
+        Set-Content -LiteralPath (Join-Path $t 'a.txt') -Value 'x'
+        Push-Location -LiteralPath $t
+        try { & cmd.exe /d /c mklink b.txt a.txt 2>&1 | Out-Null } catch { }
+        finally { Pop-Location }
+        return (Test-Path -LiteralPath (Join-Path $t 'b.txt'))
+    }
+    finally { Remove-Item -LiteralPath $t -Recurse -Force -ErrorAction SilentlyContinue }
+}
+function Test-Symlink ([string] $p) {
+    if (-not (Test-Path -LiteralPath $p)) { return $false }
+    return ((Get-Item -LiteralPath $p -Force).LinkType -eq 'SymbolicLink')
+}
 
 $prefix  = Join-Path ([System.IO.Path]::GetTempPath()) ('rakupp-gate-' + [guid]::NewGuid().ToString('N').Substring(0, 8))
 $prefix2 = $prefix + '-sb'
 $bin     = Join-Path $prefix 'bin'
 $exe     = Join-Path $bin 'rakupp.exe'
+$plus    = Join-Path $bin 'raku++.exe'
 $alias   = Join-Path $bin 'raku.exe'
 # An entry that MUST come back unexpanded. %LOCALAPPDATA% is set on every
 # Windows, so an installer that expands PATH turns this into a literal path
 # and the last check fails.
 $probe  = '%LOCALAPPDATA%\rakupp-path-probe'
 
+$canLink = Test-CanSymlink
+
 $orig = Get-RawUserPath
 $want = $orig.TrimEnd(';') + ';' + $probe
 Set-RawUserPath $want
 Write-Host "# prefix $prefix"
+Write-Host "# symlinks for this user: $canLink"
 
 try {
     # ---- install, without the second name ----------------------------------
@@ -115,6 +140,11 @@ try {
     ok ($rc -eq 0) 'installer exits 0' "exit $rc"
     ok (Test-Path -LiteralPath $exe) 'bin\rakupp.exe is there'
     ok ((Answer $exe) -eq '42') 'the installed rakupp runs' (Answer $exe)
+    if ($canLink) {
+        ok (Test-Symlink $plus) 'raku++.exe is a symlink, made with no question asked'
+        ok ((Answer $plus) -eq '42') 'and it runs' (Answer $plus)
+    }
+    else { ok (-not (Test-Path -LiteralPath $plus)) 'no symlink for this user, so no raku++.exe -- and no copy' }
     ok (-not (Test-Path -LiteralPath $alias)) '-NoRakuAlias leaves no raku.exe'
 
     $after = Get-RawUserPath
@@ -132,6 +162,7 @@ try {
     $rc = Invoke-Installer @{ Archive = $Archive; Dir = $prefix; Yes = $true }
     ok ($rc -eq 0) 'a third run exits 0' "exit $rc"
     ok ((Answer $alias) -eq '42') 'an upgrade keeps the raku name it had' (Answer $alias)
+    if ($canLink) { ok ((Test-Symlink $plus) -and (Answer $plus) -eq '42') 'an upgrade remakes the raku++.exe symlink' (Answer $plus) }
 
     # ---- uninstall, through the copy the install left in the prefix ---------
     # Someone who installed through `irm | iex` has no file of their own, so

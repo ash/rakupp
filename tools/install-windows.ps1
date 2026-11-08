@@ -4,10 +4,11 @@
 
 .DESCRIPTION
     Downloads a release's rakupp-windows-x64.zip, checks it against the
-    published SHA-256, unpacks it into a per-user prefix, offers to install the
-    engine under the second name "raku", and puts the prefix's bin\ on the user
-    PATH. Nothing is written outside the prefix and HKCU\Environment, so no
-    elevation is needed and the whole thing comes off again with -Uninstall.
+    published SHA-256, unpacks it into a per-user prefix, where the engine is
+    both "rakupp" and "raku++", offers to install it under the name "raku" as
+    well, and puts the prefix's bin\ on the user PATH. Nothing is written
+    outside the prefix and HKCU\Environment, so no elevation is needed and the
+    whole thing comes off again with -Uninstall.
 
     This is the ENGINE installer. `rakupp install Foo` -- the MODULE installer,
     tools/install.raku -- is a different program that travels inside the binary.
@@ -172,6 +173,50 @@ function Copy-Tree ([string] $from, [string] $to) {
     }
 }
 
+# Another name for the engine inside bin\: raku.exe, when asked. rakupp finds
+# its runtime relative to its own executable (GetModuleFileNameW), so a name
+# INSIDE bin\ resolves the prefix exactly as rakupp.exe does -- link or copy,
+# the engine cannot tell. Re-made on every run: an upgrade may replace
+# rakupp.exe with a new file, and a link to the old one would go on serving the
+# old engine. A hard link is the only one of the three that needs neither a
+# privilege nor a second copy; a symlink needs Developer Mode or elevation, and
+# a copy always works. Answers which it took.
+function New-EngineName ([string] $exe, [string] $name) {
+    if (Test-Path -LiteralPath $name) { Remove-Item -LiteralPath $name -Force }
+    $how = ''
+    foreach ($h in @('HardLink', 'SymbolicLink', 'Copy')) {
+        try {
+            if ($h -eq 'Copy') { Copy-Item -LiteralPath $exe -Destination $name -Force }
+            else { New-Item -ItemType $h -Path $name -Target $exe -ErrorAction Stop | Out-Null }
+            $how = $h
+            break
+        } catch { }
+    }
+    if (-not $how) { Fail "could not create $name" }
+    $check = (& $name -e 'print 6 * 7' 2>&1 | Out-String).Trim()
+    if ($check -ne '42') { Fail "$name was created but answered [$check] where 42 was due" }
+    return $how.ToLowerInvariant()
+}
+
+# raku++.exe: a symlink to rakupp.exe and nothing else -- never a hard link or
+# a copy, so there is one engine file and the name only points at it. Windows
+# lets an ordinary user make one only with Developer Mode on; an elevated
+# prompt always can. mklink, run inside bin\, stores the target as given, so
+# the link is relative and survives a moved prefix, where New-Item in Windows
+# PowerShell 5.1 resolves the target to an absolute path first. Answers whether
+# the link is there; one that is there has to run.
+function New-EngineSymlink ([string] $binDir, [string] $name) {
+    $link = Join-Path $binDir $name
+    if (Test-Path -LiteralPath $link) { Remove-Item -LiteralPath $link -Force }
+    Push-Location -LiteralPath $binDir
+    try { & cmd.exe /d /c mklink $name 'rakupp.exe' 2>&1 | Out-Null } catch { }
+    finally { Pop-Location }
+    if (-not (Test-Path -LiteralPath $link)) { return $false }
+    $check = (& $link -e 'print 6 * 7' 2>&1 | Out-String).Trim()
+    if ($check -ne '42') { Fail "$link was created but answered [$check] where 42 was due" }
+    return $true
+}
+
 # This script's own path and source, read HERE at script scope: inside the
 # function below, $MyInvocation would describe the function instead. Either can
 # be empty (a script block has no path, and not every host hands back its
@@ -229,6 +274,7 @@ function Invoke-RakuppInstall {
     $Dir    = [System.IO.Path]::GetFullPath($Dir.TrimEnd('\', '/'))
     $BinDir = Join-Path $Dir 'bin'
     $Exe    = Join-Path $BinDir 'rakupp.exe'
+    $Plus   = Join-Path $BinDir 'raku++.exe'
     $Alias  = Join-Path $BinDir 'raku.exe'
 
     # Whether a question can be asked at all. `irm | iex` still has a console,
@@ -338,7 +384,7 @@ function Invoke-RakuppInstall {
         # ---- unpack --------------------------------------------------------
         # Overwriting a running rakupp.exe fails with a bare access-denied from
         # deep inside the copy; name the actual cause instead.
-        $busy = @(Get-Process -Name 'rakupp', 'raku' -ErrorAction SilentlyContinue |
+        $busy = @(Get-Process -Name 'rakupp', 'raku++', 'raku' -ErrorAction SilentlyContinue |
                   Where-Object { $_.Path -and $_.Path.StartsWith($Dir, [StringComparison]::OrdinalIgnoreCase) })
         if ($busy.Count -gt 0) {
             Fail "rakupp is running from $Dir (pid $($busy[0].Id)) -- close it and re-run"
@@ -396,10 +442,17 @@ function Invoke-RakuppInstall {
     } catch { }
     if (-not (Test-Path -LiteralPath $selfCopy)) { $selfCopy = '' }
 
+    # ---- raku++ -------------------------------------------------------------
+    # The product's own name, always: nothing else claims it, so unlike "raku"
+    # below it is not a question. Made here rather than shipped in the zip, as
+    # a zip stores no links. (tools/upgrade.raku makes it the same way after
+    # an upgrade.)
+    if (-not (New-EngineSymlink $BinDir 'raku++.exe')) {
+        Note 'no raku++: Windows makes the symlink only with Developer Mode on, or'
+        Note 'from an elevated prompt -- turn one on and re-run this script for it'
+    }
+
     # ---- the second name ---------------------------------------------------
-    # rakupp finds its runtime relative to its own executable
-    # (GetModuleFileNameW), so a second name INSIDE bin\ resolves the prefix
-    # exactly as rakupp.exe does -- link or copy, the engine cannot tell.
     $otherRaku = @()
     foreach ($d in ($env:PATH -split ';')) {
         if ([string]::IsNullOrWhiteSpace($d)) { continue }
@@ -427,26 +480,9 @@ function Invoke-RakuppInstall {
     }
     else { Note 'nobody to ask about the name "raku"; pass -RakuAlias to get it' }
 
-    $aliasHow = ''
     if ($wantAlias) {
-        # Re-made on every run: an upgrade may replace rakupp.exe with a new
-        # file, and a link to the old one would go on serving the old engine.
-        if (Test-Path -LiteralPath $Alias) { Remove-Item -LiteralPath $Alias -Force }
-        # A hard link is the only one of the three that needs neither a
-        # privilege nor a second copy; a symlink needs Developer Mode or
-        # elevation, and a copy always works.
-        foreach ($how in @('HardLink', 'SymbolicLink', 'Copy')) {
-            try {
-                if ($how -eq 'Copy') { Copy-Item -LiteralPath $Exe -Destination $Alias -Force }
-                else { New-Item -ItemType $how -Path $Alias -Target $Exe -ErrorAction Stop | Out-Null }
-                $aliasHow = $how
-                break
-            } catch { }
-        }
-        if (-not $aliasHow) { Fail "could not create $Alias" }
-        $check = (& $Alias -e 'print 6 * 7' 2>&1 | Out-String).Trim()
-        if ($check -ne '42') { Fail "$Alias was created but answered [$check] where 42 was due" }
-        Say "installed the name raku ($($aliasHow.ToLowerInvariant()))"
+        $aliasHow = New-EngineName $Exe $Alias
+        Say "installed the name raku ($aliasHow)"
     }
 
     # ---- PATH --------------------------------------------------------------
@@ -479,7 +515,10 @@ function Invoke-RakuppInstall {
     Write-Host ''
     Say "$ver"
     Note "prefix    $Dir"
-    if ($wantAlias) { Note 'commands  rakupp, raku' } else { Note 'commands  rakupp' }
+    $cmds = @('rakupp')
+    if (Test-Path -LiteralPath $Plus) { $cmds += 'raku++' }
+    if ($wantAlias) { $cmds += 'raku' }
+    Note ('commands  ' + ($cmds -join ', '))
     Note "PATH      $BinDir -- $pathState"
     if ($wantAlias -and $otherRaku.Count -gt 0) {
         if ($Prepend) { Note "          raku here wins over $($otherRaku[0])" }

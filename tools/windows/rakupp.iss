@@ -87,8 +87,15 @@ Source: "{#Layout}\LICENSE";   DestDir: "{app}";         Flags: ignoreversion sk
 ; almost nothing in the download -- solid compression stores the two identical
 ; streams once. rakupp resolves its runtime from GetModuleFileNameW, so any
 ; name inside bin\ is a whole engine.
+;
+; raku++.exe is NOT a [Files] entry: it is a symlink to rakupp.exe or nothing,
+; never a copy, and Inno installs files, not links. MakePlusLink in [Code]
+; makes it after the files are in place, and [UninstallDelete] takes it away.
 Source: "{#Layout}\bin\rakupp.exe"; DestDir: "{app}\bin"; DestName: "raku.exe"; \
     Flags: ignoreversion; Tasks: rakualias
+
+[UninstallDelete]
+Type: files; Name: "{app}\bin\raku++.exe"
 
 [Icons]
 Name: "{group}\Raku++ (REPL)"; Filename: "{app}\bin\rakupp.exe"; WorkingDir: "{userdocs}"
@@ -97,6 +104,36 @@ Name: "{group}\Raku++ (REPL)"; Filename: "{app}\bin\rakupp.exe"; WorkingDir: "{u
 const
   UserEnvKey    = 'Environment';
   MachineEnvKey = 'SYSTEM\CurrentControlSet\Control\Session Manager\Environment';
+  { Lets an ordinary user make a symlink when Developer Mode is on (Windows 10
+    1703 and later); older Windows rejects the flag, hence the plain retry. }
+  SymlinkAllowUnprivileged = 2;
+
+function CreateSymbolicLink(lpSymlinkFileName, lpTargetFileName: String; dwFlags: DWORD): Boolean;
+  external 'CreateSymbolicLinkW@kernel32.dll stdcall';
+
+var
+  PlusLinkMissing: Boolean;
+
+{ raku++.exe: a symlink to rakupp.exe and nothing else -- never a copy, so
+  there is one engine file and the name only points at it. The target is
+  relative, resolved against the link's own folder, so a moved install keeps
+  it. Windows lets an ordinary user make one only with Developer Mode on; setup
+  run as administrator always can. Where neither holds there is no raku++.exe,
+  and the Finished page says so. The return value of the API is a one-byte
+  BOOLEAN, so FileExists is what is read rather than it. }
+procedure MakePlusLink;
+var
+  Link: String;
+begin
+  Link := ExpandConstant('{app}\bin\raku++.exe');
+  DeleteFile(Link);
+  CreateSymbolicLink(Link, 'rakupp.exe', SymlinkAllowUnprivileged);
+  if not FileExists(Link) then
+    CreateSymbolicLink(Link, 'rakupp.exe', 0);
+  PlusLinkMissing := not FileExists(Link);
+  if PlusLinkMissing then
+    Log('raku++.exe not made: Windows refused the symlink (no Developer Mode, not elevated)');
+end;
 
 { Which PATH this install owns. A per-user install edits HKCU\Environment; an
   /ALLUSERS one edits the machine environment, which does NOT live under
@@ -214,8 +251,19 @@ end;
 
 procedure CurStepChanged(CurStep: TSetupStep);
 begin
+  if CurStep = ssPostInstall then
+    MakePlusLink;
   if (CurStep = ssPostInstall) and WizardIsTaskSelected('addtopath') then
     AddToPath(ExpandConstant('{app}\bin'));
+end;
+
+procedure CurPageChanged(CurPageID: Integer);
+begin
+  if (CurPageID = wpFinished) and PlusLinkMissing then
+    WizardForm.FinishedLabel.Caption := WizardForm.FinishedLabel.Caption + #13#10#13#10 +
+      'raku++ was not installed: Windows makes its symlink only with Developer ' +
+      'Mode on, or when setup runs as administrator. Turn one on and run setup ' +
+      'again to get it.';
 end;
 
 procedure CurUninstallStepChanged(CurUninstallStep: TUninstallStep);

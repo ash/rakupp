@@ -654,6 +654,17 @@ jobs:
           echo "got: [$out]"
           test "$out" = "42"
 
+      # bin/raku++, the second name the install rule makes beside rakupp: a
+      # RELATIVE link, so the layout can move, and a whole engine through it --
+      # --exe has to find lib/ and include/ from the link's real path.
+      - name: raku++ in the install layout (POSIX)
+        if: runner.os != 'Windows'
+        run: |
+          test "$(readlink dist/rakupp/bin/raku++)" = rakupp
+          test "$(dist/rakupp/bin/raku++ -e 'say 6 * 7')" = 42
+          dist/rakupp/bin/raku++ --exe -e 'say 6 * 7' -o dist-native-pp
+          test "$(./dist-native-pp)" = 42
+
       # The Linux floor gate: what the packaged binaries NEED, read back from
       # them -- glibc 2.18 at most for rakupp and librakupp.so, GCC 11's
       # libstdc++ at most, no __isoc23_* (the glibc 2.38 tell) in the
@@ -825,12 +836,14 @@ jobs:
           sha256sum "$deb" > "$deb.sha256"
           sudo apt-get install -y "./$deb"
           test "$(/usr/bin/rakupp -e 'say 6 * 7')" = "42"
+          test "$(/usr/bin/raku++ -e 'say 6 * 7')" = "42"
           test ! -e /usr/bin/raku
           (cd "$RUNNER_TEMP" && /usr/bin/rakupp --exe -e 'say 6 * 7' -o deb-native && test "$(./deb-native)" = "42")
           if /usr/bin/rakupp upgrade > upgrade.txt 2>&1; then cat upgrade.txt; exit 1; fi
           grep -q 'distribution package' upgrade.txt
           sudo apt-get remove -y rakupp
           test ! -e /usr/bin/rakupp
+          test ! -L /usr/bin/raku++
 
       - name: Package (Windows)
         if: runner.os == 'Windows'
@@ -1296,6 +1309,7 @@ jobs:
             # --exe FROM THE INSTALLED LAYOUT — the shape users download.
             dist/rakupp/bin/rakupp --exe -e 'say 6 * 7' -o dist-native
             test "$(./dist-native)" = "42"
+            test "$(dist/rakupp/bin/raku++ -e 'say 6 * 7')" = "42"
             cp README.md LICENSE dist/rakupp/ 2>/dev/null || true
             pkg=rakupp-openbsd-x86_64.tar.gz
             tar -C dist -czf "$pkg" rakupp

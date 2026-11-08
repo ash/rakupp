@@ -5,11 +5,11 @@
 #   curl -fsSL https://raku.online/install.sh | sh
 #
 # Downloads a release archive for this platform, checks it against the
-# published SHA-256, unpacks it into a per-user prefix, offers the engine under
-# the second name `raku`, and puts the prefix's bin/ on PATH by sourcing a
-# generated env file from your shell's startup file. Nothing is written outside
-# the prefix and those startup files, so no root is needed and the whole thing
-# comes off again with --uninstall.
+# published SHA-256, unpacks it into a per-user prefix, where the engine is
+# both `rakupp` and `raku++`, offers it under the name `raku` as well, and puts
+# the prefix's bin/ on PATH by sourcing a generated env file from your shell's
+# startup file. Nothing is written outside the prefix and those startup files,
+# so no root is needed and the whole thing comes off again with --uninstall.
 #
 # This is the ENGINE installer, and the POSIX counterpart of
 # tools/install-windows.ps1 -- one design in two spellings. `rakupp install
@@ -471,6 +471,7 @@ main() {
     PREFIX=$(printf '%s' "$DIR" | sed 's:/*$::')
     BIN="$PREFIX/bin"
     EXE="$BIN/rakupp"
+    PLUS="$BIN/raku++"
     ALIAS="$BIN/raku"
 
     if [ "$UNINSTALL" = 1 ]; then do_uninstall; else do_install; fi
@@ -643,6 +644,23 @@ do_install() {
             fi ;;
     esac
 
+    # ---- raku++ -----------------------------------------------------------
+    # The product's own name, always: nothing else claims it, so unlike `raku`
+    # below it is not a question. The archive carries it -- the relative link
+    # the CMake install rule makes -- and an archive from before that, which
+    # --version can still fetch, gets the same link here. A symlink and
+    # nothing else: there is one engine file, and raku++ only points at it.
+    # Where the filesystem refuses a symlink there is no raku++, never a copy.
+    if [ ! -L "$PLUS" ]; then
+        rm -f "$PLUS"
+        ln -s rakupp "$PLUS" 2>/dev/null \
+            || note "could not make the symlink $PLUS; rakupp itself is installed"
+    fi
+    if [ -L "$PLUS" ]; then
+        _check=$("$PLUS" -e 'print 6 * 7' 2>&1 || true)
+        [ "$_check" = 42 ] || fail "$PLUS is there but answered [$_check] where 42 was due"
+    fi
+
     # ---- the second name --------------------------------------------------
     # rakupp resolves its runtime from its own executable's REAL path, so a
     # symlink named raku inside bin/ is a complete engine and not a stub:
@@ -706,7 +724,10 @@ $_rc"; else RC_TOUCHED=$_rc; fi
     echo
     say "$VER"
     note "prefix    $PREFIX"
-    if [ "$_alias" = 1 ]; then note 'commands  rakupp, raku'; else note 'commands  rakupp'; fi
+    _cmds=rakupp
+    if [ -L "$PLUS" ];   then _cmds="$_cmds, raku++"; fi
+    if [ "$_alias" = 1 ]; then _cmds="$_cmds, raku"; fi
+    note "commands  $_cmds"
     note "PATH      $BIN -- $PATH_STATE"
     _oldifs=$IFS; IFS='
 '

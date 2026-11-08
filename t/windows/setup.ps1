@@ -7,6 +7,8 @@
     machine, in TAP:
 
       * the engine it installed RUNS (6 * 7, not a file-exists check)
+      * raku++.exe is installed with no task to ask for it, as a SYMLINK that
+        runs -- or, where this user cannot make one, is not there at all
       * the "raku" task is what decides whether raku.exe exists, and the copy
         it makes is a working engine
       * Add/Remove Programs gets an entry, and its version is the version the
@@ -72,6 +74,25 @@ function Answer ([string] $exe) {
     if (-not (Test-Path -LiteralPath $exe)) { return '<missing>' }
     return (& $exe -e 'print 6 * 7' 2>&1 | Out-String).Trim()
 }
+# raku++.exe is a symlink or nothing, and only Developer Mode or an elevated
+# prompt lets this user make one. CI's runners are elevated; a machine that
+# allows neither expects no raku++.exe at all -- never a copy in its place.
+function Test-CanSymlink {
+    $t = Join-Path ([System.IO.Path]::GetTempPath()) ('rakupp-lnk-' + [guid]::NewGuid().ToString('N').Substring(0, 8))
+    New-Item -ItemType Directory -Path $t -Force | Out-Null
+    try {
+        Set-Content -LiteralPath (Join-Path $t 'a.txt') -Value 'x'
+        Push-Location -LiteralPath $t
+        try { & cmd.exe /d /c mklink b.txt a.txt 2>&1 | Out-Null } catch { }
+        finally { Pop-Location }
+        return (Test-Path -LiteralPath (Join-Path $t 'b.txt'))
+    }
+    finally { Remove-Item -LiteralPath $t -Recurse -Force -ErrorAction SilentlyContinue }
+}
+function Test-Symlink ([string] $p) {
+    if (-not (Test-Path -LiteralPath $p)) { return $false }
+    return ((Get-Item -LiteralPath $p -Force).LinkType -eq 'SymbolicLink')
+}
 # The Add/Remove Programs record, found by name rather than by AppId: the GUID
 # would then live in two files and drift.
 function Get-ArpEntry {
@@ -100,14 +121,18 @@ function Run-Silent ([string] $exe, [string[]] $arguments) {
 $prefix = Join-Path ([System.IO.Path]::GetTempPath()) ('rakupp-setup-' + [guid]::NewGuid().ToString('N').Substring(0, 8))
 $bin    = Join-Path $prefix 'bin'
 $exe    = Join-Path $bin 'rakupp.exe'
+$plus   = Join-Path $bin 'raku++.exe'
 $alias  = Join-Path $bin 'raku.exe'
 $probe  = '%LOCALAPPDATA%\rakupp-path-probe'
 $silent = @('/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', '/NOCANCEL')
+
+$canLink = Test-CanSymlink
 
 $orig = Get-RawUserPath
 $want = $orig.TrimEnd(';') + ';' + $probe
 Set-RawUserPath $want
 Write-Host "# prefix $prefix"
+Write-Host "# symlinks for this user: $canLink"
 
 try {
     # ---- install, PATH only ------------------------------------------------
@@ -115,6 +140,11 @@ try {
     ok ($rc -eq 0) 'setup exits 0' "exit $rc"
     ok (Wait-For { Test-Path -LiteralPath $exe }) 'bin\rakupp.exe is there'
     ok ((Answer $exe) -eq '42') 'the installed rakupp runs' (Answer $exe)
+    if ($canLink) {
+        ok (Test-Symlink $plus) 'raku++.exe is a symlink, installed with no task'
+        ok ((Answer $plus) -eq '42') 'and it runs' (Answer $plus)
+    }
+    else { ok (-not (Test-Path -LiteralPath $plus)) 'no symlink for this user, so no raku++.exe -- and no copy' }
     ok (-not (Test-Path -LiteralPath $alias)) 'without the raku task there is no raku.exe'
 
     $after = Get-RawUserPath

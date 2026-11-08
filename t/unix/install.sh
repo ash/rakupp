@@ -8,6 +8,9 @@
 # and it checks the same properties that one does:
 #
 #   * the engine it unpacked RUNS (6 * 7, not a file-exists check)
+#   * `raku++` is there with no question asked, a RELATIVE link that runs, and
+#     an archive from before it carried one still gets it -- and where no
+#     symlink can be made there is no raku++ at all, never a copy
 #   * --no-raku-alias leaves no `raku`, --raku-alias makes one that runs -- and
 #     that is a COMPLETE engine, so `raku --exe` compiles through it
 #   * the `raku` link is RELATIVE, which is what lets the prefix be moved
@@ -66,6 +69,7 @@ PREFIX="$ROOT/home/.rakupp"
 PREFIX2="$ROOT/home/.rakupp2"
 BIN="$PREFIX/bin"
 EXE="$BIN/rakupp"
+PLUS="$BIN/raku++"
 ALIAS="$BIN/raku"
 mkdir -p "$HOME_DIR"
 echo "# prefix $PREFIX"
@@ -106,6 +110,8 @@ run_installer --archive "$ARCHIVE" --dir "$PREFIX" --no-raku-alias --yes
 is "$RC" 0 'installer exits 0'
 [ -x "$EXE" ] && ok 1 'bin/rakupp is there' || ok 0 'bin/rakupp is there'
 is "$(answer "$EXE")" 42 'the installed rakupp runs'
+is "$(answer "$PLUS")" 42 'raku++ is there with no question asked, and runs'
+is "$(readlink "$PLUS" 2>/dev/null || echo '(not a symlink)')" rakupp 'raku++ is a relative symlink to rakupp'
 [ -e "$ALIAS" ] && ok 0 '--no-raku-alias leaves no raku' || ok 1 '--no-raku-alias leaves no raku'
 [ -f "$PREFIX/rakupp-install.json" ] && ok 1 'the install left a receipt' || ok 0 'the install left a receipt'
 is "$(lines_matching "$PROFILE" '# rakupp')" 1 'the startup file gained exactly one line'
@@ -143,12 +149,14 @@ is "$( [ -x "$ROOT/g" ] && "$ROOT/g" 2>/dev/null || echo FAILED)" gate-exe-ok 'r
 # Moving the prefix must not break the name -- that is what relative buys.
 mv "$PREFIX" "$ROOT/moved"
 is "$(answer "$ROOT/moved/bin/raku")" 42 'the raku name survives a moved prefix'
+is "$(answer "$ROOT/moved/bin/raku++")" 42 'so does raku++'
 mv "$ROOT/moved" "$PREFIX"
 
 # ---- a run with no say either way keeps the name it had ---------------------
 run_installer --archive "$ARCHIVE" --dir "$PREFIX" --yes
 is "$RC" 0 'a third run exits 0'
 is "$(answer "$ALIAS")" 42 'an upgrade keeps the raku name it had'
+is "$(answer "$PLUS")" 42 'and raku++'
 
 # ---- the piped form, which is how the one-liner actually arrives ------------
 # `curl ... | sh` makes the SCRIPT standard input. A prompt that read stdin
@@ -178,6 +186,39 @@ is "$(lines_matching "$PROFILE" '# rakupp')" 0 'uninstall removed the startup li
 if diff -q "$ROOT/profile.orig" "$PROFILE" >/dev/null 2>&1
     then ok 1 'the startup file came back byte for byte'
     else ok 0 'the startup file came back byte for byte' "$(diff "$ROOT/profile.orig" "$PROFILE" | head -5)"
+fi
+
+# ---- an archive from before raku++ was in it -------------------------------
+# --version still fetches those, and the installer makes the same relative link
+# the CMake install rule puts in the newer ones.
+mkdir -p "$ROOT/old"
+tar -xzf "$ARCHIVE" -C "$ROOT/old"
+rm -f "$ROOT"/old/*/bin/raku++
+(cd "$ROOT/old" && tar -czf "$ROOT/old.tar.gz" *)
+run_installer --archive "$ROOT/old.tar.gz" --dir "$ROOT/old-prefix" --no-raku-alias --no-path --yes
+is "$RC" 0 'an archive without raku++ installs'
+is "$(readlink "$ROOT/old-prefix/bin/raku++" 2>/dev/null || echo '(not a symlink)')" rakupp \
+   'and the installer makes raku++ itself, relative'
+is "$(answer "$ROOT/old-prefix/bin/raku++")" 42 'and that raku++ runs'
+
+# ...and where no symlink can be made, no raku++ at all: a copy would be a
+# second engine file. An `ln` that always fails stands in for a filesystem
+# that has no symlinks.
+mkdir -p "$ROOT/noln"
+printf '#!/bin/sh\nexit 1\n' > "$ROOT/noln/ln"
+chmod +x "$ROOT/noln/ln"
+env -i HOME="$HOME_DIR" PATH="$ROOT/noln:$PATH" SHELL=/bin/sh TMPDIR="$ROOT" sh "$INSTALLER" \
+    --archive "$ROOT/old.tar.gz" --dir "$ROOT/noln-prefix" --no-raku-alias --no-path --yes \
+    > "$ROOT/out8" 2>&1 && RC=0 || RC=$?
+sed 's/^/# /' < "$ROOT/out8"
+is "$RC" 0 'with no symlink to be had, the install still succeeds'
+if [ -e "$ROOT/noln-prefix/bin/raku++" ] || [ -L "$ROOT/noln-prefix/bin/raku++" ]
+    then ok 0 'and makes no raku++, no copy in its place'
+    else ok 1 'and makes no raku++, no copy in its place'
+fi
+if grep -q 'could not make the symlink' "$ROOT/out8" && grep -q 'commands  rakupp$' "$ROOT/out8"
+    then ok 1 'and says so'
+    else ok 0 'and says so' "$(grep -E 'symlink|commands' "$ROOT/out8")"
 fi
 
 # ---- a binary that will not start ------------------------------------------

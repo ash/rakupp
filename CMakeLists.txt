@@ -639,6 +639,23 @@ endif()
 # `--exe` compile step needs the headers to build the generated C++. findRuntime()
 # in main.cpp looks for exactly this <prefix>/{bin,lib,include/rakupp} layout.
 install(TARGETS rakupp RUNTIME DESTINATION bin ARCHIVE DESTINATION lib)
+# raku++, the product's own name, as a second command: bin/raku++ -> rakupp.
+# findRuntime() resolves the executable's REAL path, so the link is a whole
+# engine and `raku++ --exe` compiles exactly as `rakupp --exe` does. Relative,
+# so a moved prefix keeps it; made here so every archive, the .deb, Docker,
+# Nix, Guix and a source install carry it with nothing else to remember.
+# Not on Windows: a zip stores no links, so the installers make the
+# raku++.exe symlink there instead, where Windows allows one. Never a copy.
+# Unlike `raku`, which Rakudo owns, nothing else claims this name, so it is
+# not a question.
+if(NOT WIN32)
+  install(CODE [[
+    set(_rk_link "$ENV{DESTDIR}${CMAKE_INSTALL_PREFIX}/bin/raku++")
+    message(STATUS "Installing: ${_rk_link} -> rakupp")
+    file(CREATE_LINK rakupp "${_rk_link}" SYMBOLIC)
+    list(APPEND CMAKE_INSTALL_MANIFEST_FILES "${_rk_link}")
+  ]])
+endif()
 install(TARGETS rakupp_rt ARCHIVE DESTINATION lib)
 # Two source directories, ONE destination. The split is public vs internal (see
 # include/README.md), and it is a source-tree distinction only: `--exe` compiles
