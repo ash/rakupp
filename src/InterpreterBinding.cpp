@@ -8782,7 +8782,18 @@ void Interpreter::metaComposeHooks(ClassInfo* ci, const ClassDecl* cd, const std
     auto call = [&](const Value& how, const char* m, ValueList a) {
         try { methodCall(how, m, a); }
         catch (RakuError& e) {
-            if (e.message.find("to redispatch to") == std::string::npos &&
+            // A `specialize_with` hook written for Rakudo's MOP may read the
+            // compiler's $*TYPE-ENV, which Rakudo sets around specialization and
+            // Raku++ does not run at all (see the Method::Also role-alias note in
+            // the declaration code: the aliases are carried by alsoRoleAliases
+            // instead). Method::Also's AliasableRoleHOW does exactly that, so the
+            // hook cannot complete — and PDF::Lite would not load. Rakudo's own
+            // answer for the shapes involved is "no alias from the MOP", which is
+            // what Raku++ produces on its own path, so the missing variable is not
+            // an error here.
+            const bool missingTypeEnv = e.message.find("Dynamic variable $*TYPE-ENV not found") != std::string::npos;
+            if (!(missingTypeEnv && std::strcmp(m, "specialize_with") == 0) &&
+                e.message.find("to redispatch to") == std::string::npos &&
                 e.message.find("not in the dynamic scope of a dispatcher") == std::string::npos)
                 throw;
         }
