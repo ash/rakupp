@@ -9417,6 +9417,9 @@ int Interpreter::run(Program& prog) {
         if (ctValues_) ctAfterCheck(*this, prog);   // a binary's build-time pass: no INIT, no ENTER
         else {
             for (auto* b : initP) runHoistedInit(b);                              // INIT: source order, program-wide
+            // `--doc` renders the Pod and stops there, as Rakudo's does (its DOC
+            // INIT exits): no mainline, no MAIN and no END. It ran the program first.
+            if (docMode_) { std::cout << docModeText(); std::cout.flush(); drainWorkers(); return 0; }
             for (auto* b : enterP) runPhaser(b);                                  // ENTER: on UNIT-block entry, before the mainline
         }
         // a mainline CONTROL {} is the outermost warn handler for the run
@@ -9547,7 +9550,6 @@ int Interpreter::run(Program& prog) {
             if (rc < 0) sinkReturnedValue(callCallable(*mainSub, margs));
             else { code = rc; exited = true; } // the usage path's exit status
         }
-        if (docMode_) std::cout << docModeText(); // --doc: print the rendered POD after the program runs
     } catch (ExitEx& e) {
         code = e.code;
         exited = true;

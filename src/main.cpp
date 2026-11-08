@@ -2662,7 +2662,7 @@ static const FlagDoc kFlagDocs[] = {
     {"--version", 0, nullptr, "version, build and platform, on one line"},
     {"--version-full", 0, nullptr, "the full build report"},
     {"--info", 0, nullptr, "the full build report"},
-    {"--doc", 0, nullptr, "render the Pod of the program after the run (--doc=Text names the renderer)"},
+    {"--doc", 0, nullptr, "render the Pod of the program instead of running it (--doc=Text names the renderer)"},
     {"--lint", 0, nullptr, "static analysis, no run"},
     {"--json", 0, nullptr, "machine-readable -c and --lint findings"},
     {"--ast", 0, nullptr, "print the parsed AST"},

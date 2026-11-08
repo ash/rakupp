@@ -196,6 +196,7 @@ static const std::unordered_set<std::string> kBlockKeywords = {
 // names listed here are affected, and only once THIS unit has declared a
 // routine of that name (Parser::kwNamedSubs_) — an undeclared `if(1) {…}` is
 // left to the reading, and the error, it had before.
+bool g_docPhasers = false;   // --doc is on: a `DOC` phaser is the phaser it prefixes (Runtime.cpp sets it)
 static const std::unordered_set<std::string> kNeedsEndKeyword = {
     "if", "unless", "while", "until", "for", "foreach", "loop", "repeat",
     "given", "when", "default", "has", "multi", "proto", "only", "subset",
@@ -17510,6 +17511,13 @@ StmtPtr Parser::parseStatementImpl() {
             !(peek().kind == Tok::LParen && !peek().spaceBefore)) {
             const size_t kwPos = pos_;
             advance();
+            // `DOC INIT { … }`, `DOC BEGIN { … }`: the phaser it prefixes under
+            // `--doc`, and nothing otherwise (it ran in every run, and its
+            // BEGIN never ran under --doc)
+            if (kw == "DOC") {
+                auto st = parseStatement();
+                return g_docPhasers ? std::move(st) : StmtPtr(std::make_unique<EmptyStmt>());
+            }
             auto b = std::make_unique<Block>();
             b->phaser = kw; // run-timing handled by the interpreter
             b->srcPos = (int)pos_;                 // source order, finer than the line

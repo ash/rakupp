@@ -1433,10 +1433,10 @@ section('the CLI surface (goldens for the v3 parser refactor)');
     is(run-rakupp($argsee.Str, '--lint', '-h')[0], "--lint,-h\n",
        'flags after the program file pass through untouched');
 
-    # --doc runs the program, then renders its pod
+    # --doc renders the pod and runs nothing past INIT, as Rakudo's does
     my $podp = $work.add('pod.raku');
-    $podp.spurt("=begin pod\nHello Pod\n=end pod\nsay 'ran';\n");
-    is(run-rakupp('--doc', $podp.Str)[0], "ran\nHello Pod\n", '--doc renders POD after running');
+    $podp.spurt("=begin pod\nHello Pod\n=end pod\nINIT say 'init';\nsay 'ran';\nEND say 'end';\n");
+    is(run-rakupp('--doc', $podp.Str)[0], "init\nHello Pod\n", '--doc renders POD instead of running');
 
     # help / version / ffi-info
     my ($ho, $hx) = run-rakupp('--help');

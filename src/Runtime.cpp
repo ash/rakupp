@@ -168,7 +168,8 @@ void bigStackClose(std::uintptr_t h) { ::CloseHandle((HANDLE)h); }
 #endif
 
 static bool g_docMode = false;
-void rakuppSetDocMode(bool on) { g_docMode = on; } // set by main when --doc is passed
+extern bool g_docPhasers;   // Parser.cpp: a `DOC` phaser is kept only under --doc
+void rakuppSetDocMode(bool on) { g_docMode = on; g_docPhasers = on; } // set by main when --doc is passed
 static bool g_llException = false;
 void rakuppSetLLException(bool on) { g_llException = on; } // --ll-exception (issue #67)
 // --stack-size=N: the big-stack thread's size. 1 GiB unless the CLI says
