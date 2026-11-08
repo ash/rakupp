@@ -8990,6 +8990,21 @@ static Value bufElemStore(Value& buf, const Value& key, Value v) {
     buf.s.promote();   // shared storage from here on, as the interpreter's arm leaves it
     return buf.blobElemAt(i);
 }
+// `$b[1]++`, `--$b[*-1]`: a Buf's element steps through the same store, wrapping
+// at its width, and one past the end grows it; a Blob's is no container
+Value bufElemStep(Interpreter& I, Value& buf, Value key, const std::string& op, bool post) {
+    if (buf.hashKind == "Blob")
+        throw RakuError{Value::typeObj("X::Multi::NoMatch"), "Cannot resolve caller " +
+            std::string(post ? "postfix" : "prefix") + ":<" + op +
+            ">(Int:D); the following candidates match the type but require mutable arguments"};
+    if (key.t == VT::Code && key.code() && key.code()->ci().isWhateverCode)
+        key = I.callCallable(key, ValueList{Value::integer((long long)buf.blobElems())});
+    const long long i = writeIndexInt(key);
+    if (i < 0) negIndexThrow(i);
+    Value old = i < (long long)buf.blobElems() ? buf.blobElemAt(i) : Value::integer(0);
+    Value nv = bufElemStore(buf, key, applyArith(op == "++" ? "+" : "-", old, Value::integer(1)));
+    return post ? old : nv;
+}
 Value rtElemStoreN(Interpreter& I, Value& base, const Value& key, Value v, char how) {
     if (rtIsBuf(base)) return bufElemStore(base, key, std::move(v));
     if (std::string t = I.nativeElemTypeOf(base); !t.empty())

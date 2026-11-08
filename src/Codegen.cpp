@@ -1013,8 +1013,9 @@ struct Codegen {
         noteIndexWrite(ix->base.get());
         const std::string base = lvalueExpr(ix->base.get());
         const std::string step = std::string("rtStep(_o, ") + (up ? "true" : "false") + ", [&]() -> Interpreter& { return RT; })";
-        const std::string native = "Value _o = rtIndexGetP(__b, __k); Value _n = rtElemStoreN(RT, __b, __k, " + step +
-                                   ", '+'); " + (postfix ? "return rtStepOld(std::move(_o));" : "return _n;");
+        const std::string native = "if (rtIsBuf(__b)) return bufElemStep(RT, __b, __k, " + cesc(up ? "++" : "--") + ", " +
+            (postfix ? "true" : "false") + "); Value _o = rtIndexGetP(__b, __k); Value _n = rtElemStoreN(RT, __b, __k, " +   // (a Buf's
+            step + ", '+'); " + (postfix ? "return rtStepOld(std::move(_o));" : "return _n;");   //  byte steps as the interpreter's)
         std::string other;   // (an array not native after all: the step as it was)
         if (ask)
             other = " Value& _r = rtIndexRef(__b, __k, false, " +

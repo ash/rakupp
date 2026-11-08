@@ -25592,6 +25592,8 @@ Value Interpreter::evalUnary(Unary* u) {
                     if (!(deproxiedBase.t == VT::Hash && deproxiedBase.hashKind == "Proxy"))
                         bp = &deproxiedBase;
                 }
+                if (bp && !ix->isHash && bp->t == VT::Str && (bp->hashKind == "Buf" || bp->hashKind == "Blob"))
+                    return bufElemStep(*this, *bp, subscriptKey(ix->index.get()), u->op, u->postfix);   // `$b[1]++`
                 // a SetHash element is its key's EXISTENCE: `$sh<k>++` answers
                 // False and adds k, `--` removes it — Bools, never counts. An
                 // undefined `my SetHash $sh` vivifies into one.

@@ -6392,6 +6392,7 @@ Value rtNativeArrayNew(Interpreter& I, const char* type, const char* name, Value
 Value rtArrayAssignTo(Interpreter& I, Value& lv, Value rhs, const char* name, bool dollarSource);
 bool rtPackedStore(Interpreter& I, Value& base, const Value& key, const Value& v);
 Value rtElemStoreN(Interpreter& I, Value& base, const Value& key, Value v, char how);
+Value bufElemStep(Interpreter& I, Value& buf, Value key, const std::string& op, bool post);   // `$b[1]++`
 // …and whether an array is native (a routine compiled in module mode asks:
 // the name it was told is native may be another array's where it runs). A Buf
 // counts: its elements are packed words too, stored by rtElemStoreN.
