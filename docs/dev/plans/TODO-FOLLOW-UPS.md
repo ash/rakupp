@@ -15,6 +15,23 @@ moves to [TODO.md](TODO.md).
 
 ## Names and parsing
 
+- [ ] **Four word-list spellings still read differently from Rakudo** (found
+  2026-11-08 fixing #231, 5f6d78e4; each the same before it):
+
+  ```raku
+  say « :x\<a ».raku;       # rakupp: couldn't find final '>'   Rakudo: (:x, "<a")
+  say « infix:<+> ».raku;   # rakupp: "infix:<+>"               Rakudo: ("infix", "+")
+  my $x = 5; say « :$x:y ».raku;  # rakupp: (:x(5), :y)        Rakudo: Variable '$x:y' is not declared
+  say qww« b' ».raku;       # rakupp: ("b", " ")                Rakudo: couldn't find final "'"
+  ```
+
+  The first is the lexer: it reads the `<` after a backslash in a «…» list
+  as an opening angle. The second is Rakudo's keyless colonpair, `:<+>`,
+  whose word-list reading is its value (`« :<a b> »` is ("a", "b")). The
+  third is the ordinary colonpair parser: `(:$x:y)` in code is two pairs
+  too, where Rakudo reads `$x:y` as one long name. The fourth is the qww
+  scan, which accepts a quoted span that never closes.
+
 - [ ] **A `my &f`, a variable or a class beside an import of its name
   compiles** (found 2026-11-08 fixing #230, eb574770): Rakudo refuses each
   with X::Redeclaration, in either order.

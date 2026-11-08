@@ -111,6 +111,10 @@ inline int langRevOfPragma(const std::string& module) {
 // unit's very first statement, and those injected statements do not count.
 extern int g_preludeCols;
 
+// Where a colonpair starting at s[i] ends in a quote-protected word list, or
+// npos when none starts there (ParserWordPairs.cpp).
+size_t colonPairEnd(const std::string& s, size_t i);
+
 class Parser {
 public:
     explicit Parser(std::vector<Token> toks);
@@ -706,12 +710,19 @@ private:
     size_t infixDotAt_ = (size_t)-1; // the dotty infix `EXPR . method` being applied (see parseExpr)
     ExprPtr computedOpName(const std::string& t); // `&infix:[EXPR]` / `&infix:<<$x>>` — a run-time operator name
     ExprPtr parseEmbeddedExpr(const std::string& src, bool ownScope = false); // parse a `{…}`/`$()` interpolation, inheriting user operators
-    ExprPtr angleColonPair(const std::string& w); // `:name(expr)` word in a «…»/qww list → PairExpr (null if not pair-shaped)
+    void inheritSyntax(Parser& p) const;          // a snippet's parser sees this unit's operators (ParserWordPairs.cpp)
+    ExprPtr wordColonPair(const std::string& src, int line); // a qww/qqww word's colonpair, parsed as code (ParserWordPairs.cpp)
+    ExprPtr angleColonPair(const std::string& w); // a word that is one whole colonpair → PairExpr (null if not one)
+    bool takeWordPair(std::vector<ExprPtr>& pairs, std::vector<std::string>& words); // a «…» list's colonpair, at cur()
     void qqwwAddWord(ArrayLit& arr, std::string& flags, const std::string& w, bool val); // one «…»/qqww word
     ExprPtr qqwwFinish(std::unique_ptr<ArrayLit> arr, const std::string& flags, bool val);
-    ExprPtr qqwwList(const std::vector<std::string>& words); // a whole «…»/<<…>> list, as Rakudo builds it
-    bool takeQqwwWords(std::vector<std::string>& words); // consume a «…»/<<…>> opener + words + closer, if one is here
-    std::vector<std::string> readAngleWords(const std::string& close); // <...>/«...» word list (opening delim already consumed)
+    // a whole «…»/<<…>> list, as Rakudo builds it; `pairs` holds the colonpairs
+    // readAngleWords parsed, which its "\x03N" words stand for
+    ExprPtr qqwwList(const std::vector<std::string>& words, std::vector<ExprPtr>* pairs = nullptr);
+    bool takeQqwwWords(std::vector<std::string>& words, std::vector<ExprPtr>* pairs = nullptr); // consume a «…»/<<…>> opener + words + closer, if one is here
+    // <...>/«...» word list (opening delim already consumed); with `pairs`, a
+    // «…»/<<…>> list's colonpairs are parsed as code into it (takeWordPair)
+    std::vector<std::string> readAngleWords(const std::string& close, std::vector<ExprPtr>* pairs = nullptr);
     // The EXTENDED NAME suffix glued to a variable: `:foo`, `:foo<a b>`,
     // `:foo«a b»`, `:foo['a','b']`, `:foo('a','b')`. All of them name the SAME
     // symbol, so the answer is canonical — Rakudo's angle spelling.

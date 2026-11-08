@@ -581,10 +581,12 @@ bool Interpreter::importJoinsLocalMulti(const std::string& key, const Value& val
 // Rakudo's X::Redeclaration, in either order (issue #230). The import used to
 // step aside and leave the local one, without a word, and the clash surfaced
 // as a wrong answer. Not a clash: two multis (they merge — but a `proto` the
-// scope wrote is a second one beside the group's own), an imported stub
-// (`sub f { ... }`, which the local one completes), and a name only an earlier
-// import put there (the last one wins). 0 when there is no clash, 1 for a
-// symbol's, 2 for a local multi's or proto's. Asked before the merge.
+// scope wrote AFTER the import is a second one beside the group's own, while
+// one written before it takes the imported candidates, Roast's
+// S11-modules/import-multi.t), an imported stub (`sub f { ... }`, which the
+// local one completes), and a name only an earlier import put there (the last
+// one wins). 0 when there is no clash, 1 for a symbol's, 2 for a local multi's
+// or proto's. Asked before the merge.
 int Interpreter::importClashesWithLocal(Env* scope, const std::string& key, const Value& val) {
     if (!scope || key.size() < 2 || key[0] != '&' || val.t != VT::Code || !val.code() || val.code()->ci().isStub)
         return 0;
@@ -596,6 +598,7 @@ int Interpreter::importClashesWithLocal(Env* scope, const std::string& key, cons
     auto here = [&](const Value& c) { return c.t == VT::Code && c.code() && c.code()->closure.get() == scope; };
     if (!have->code()->ci().isMultiDispatcher) return here(*have) ? 1 : 0;
     const bool both = val.code()->ci().isMultiDispatcher;
+    if (both && have->code()->ci().protoDeclared) return 0;   // (hoisted subs run before the `use` either way)
     for (auto& c : have->code()->cold().candidates)
         if (here(c) && (!both || c.code()->ci().isProto || c.code()->ci().isProtoBody)) return 2;
     return 0;
@@ -6013,6 +6016,7 @@ static void mergeParentRoleMultis(ClassInfo* ci, const SigKey& sigKeyParams) {
                     if (sd->isProto && code.code() && disp) {
                         disp->ciM().declFile = code.code()->ci().declFile;
                         disp->ciM().declLine = code.code()->ci().declLine;
+                        if (!hoistingSubs_) disp->ciM().protoDeclared = true;
                     }
                     // A declaration inside a block runs twice — hoisted at the
                     // block's entry, then again in sequence — and used to join
