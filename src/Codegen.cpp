@@ -858,7 +858,7 @@ struct Codegen {
         auto known = [&](std::string t) {
             if (t.size() > 2 && t[t.size() - 2] == ':') t.resize(t.size() - 2);   // `Numeric:D`
             return !t.empty() && t.find_first_of("[(:\x01") == std::string::npos && t != "Mu" &&
-                   t != "Any" && !isNativeTypeName(t) && (isKnownTypeName(t) || classNames.count(t));
+                   t != "Any" && (isKnownTypeName(t) || isNativeTypeName(t) || classNames.count(t));
         };
         if (!known(retTypeName(rt))) return "";
         if (retTypeCoerces(rt) && !retTypeCoerceFrom(rt).empty() && !known(retTypeCoerceFrom(rt))) return "";

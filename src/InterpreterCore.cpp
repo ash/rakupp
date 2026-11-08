@@ -7967,15 +7967,15 @@ static bool isElementPath(const Expr* e) {
 // an argument already of that type as the general binder does — typeCheckBind
 // passes it, bindNativeParam makes a native of it — and any other argument
 // declines the lean path for the call, so the general binder answers it. A
-// return of a native type is not checked (checkRetType: a boxed value has no
-// native tag); of a boxed one, a value of that type is what the check passes.
+// return of a value of the type, native or boxed, is what the check passes, and
+// anything else goes to checkRetType (`--> int` refuses a Str, as Rakudo's unbox does).
 enum LeanType : signed char { LeanNone = 0, LeanNum = 1, LeanInt = 2, LeanBoxNum = 3, LeanBoxInt = 4,
-                              LeanStr = 5, LeanNative = 6 /* a return of num, int or str */ };
+                              LeanStr = 5 };
 static signed char leanTypeOf(const std::string& t, bool ret) {
     if (t.empty()) return LeanNone;
-    if (t == "num" || t == "num64") return ret ? LeanNative : LeanNum;
-    if (t == "int" || t == "int64") return ret ? LeanNative : LeanInt;
-    if (ret && t == "str") return LeanNative;
+    if (t == "num" || t == "num64") return LeanNum;
+    if (t == "int" || t == "int64") return LeanInt;
+    if (ret && t == "str") return LeanStr;
     if (t == "Num") return LeanBoxNum;
     if (t == "Int") return LeanBoxInt;
     if (t == "Str") return LeanStr;
@@ -8037,7 +8037,7 @@ static signed char plainSubShape(Callable& c) {
 // passes as it is, or that check
 static inline Value leanReturn(Interpreter& I, const Callable& c, Value v) {
     const signed char k = c.ci().leanRet;
-    if (k == LeanNone || k == LeanNative || leanArgFits(v, k)) return v;
+    if (k == LeanNone || leanArgFits(v, k)) return v;
     return I.checkRetType(c, std::move(v));
 }
 
@@ -10015,6 +10015,19 @@ Value Interpreter::checkRetType(const Callable& c, Value v) {
     // …and so does NIL — the "no value" sentinel satisfies every return
     // constraint (roast: "Can return Nil through subset typecheck")
     if (v.t == VT::Nil) return v;
+    // A NATIVE return type unboxes what comes back, as a native parameter binds
+    // it: `--> num` a Num or a NumStr, answering the Num; `--> int` an Int (a
+    // Bool is 1); `--> str` a Str or an allomorph. It took anything.
+    if (const NatKind nk = classes_.count(retName) ? NatKind::None : nativeKindOf(retName); nk != NatKind::None) {
+        if (v.t == VT::Type)
+            throw RakuError{Value::typeObj("X::AdHoc"), "Cannot unbox a type object (" + v.typeName() + ") to " +
+                (nk == NatKind::Num ? "a num." : nk == NatKind::Str ? "a str." : nk == NatKind::UInt ? "an unsigned int." : "an int.")};
+        if (!nativeParamTakes(v, nk)) throwNativeUnbox(v, nk);
+        if (nk == NatKind::Num) return v.t == VT::Num && v.hashKind.empty() ? v : Value::number(v.toNum());
+        if (nk == NatKind::Str) return v;   // (an allomorph stays one, as on Rakudo)
+        return (v.t == VT::Int && v.hashKind.empty() && v.enumName.empty()) || (v.t != VT::Int && v.t != VT::Bool)
+            ? v : Value::integer(v.toInt());
+    }
     // a SUBSET return type constrains even an UNDEFINED value — its where
     // clause runs regardless, so `--> UInt` rejects a hash-miss Any
     // (Date::Event's etype(Str) on an unknown name; Rakudo dies the same way)
