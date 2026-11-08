@@ -16,8 +16,8 @@
 #
 # A ternary as a condition (`if False ?? /q/ !! /c/`) or as a statement takes
 # its branches apart, so the regex there still matches. Rakudo sinks a
-# statement's ternary into its branches; the interpreter does not, so that
-# last line is held for the compiled builds alone (TODO-FOLLOW-UPS.md).
+# statement's ternary into its branches, and so do both engines (the
+# interpreter since sunk-ternary-regex-matches.raku).
 #
 # Where a regex is asked whether it holds on the spot — under `?`, `!`,
 # `so`, `not`, either side of `&&`/`||` — the answer is that match too. A
@@ -104,13 +104,11 @@ my @want =
     '("cd",).Seq',        # a block's last statement, matched by .grep
     '("xy",).Seq',        # (before: none)
     'Regex',              # `return` of a ternary (before: Nil)
-    'sunk: c';            # …and as a statement (the interpreter: none)
-my $sunk = @want.end;
+    'sunk: c';            # …and as a statement
 
-sub held($what, $out, :$skip = -1) {
+sub held($what, $out) {
     my @got = $out.lines;
     for ^max(+@want, +@got) -> $k {
-        next if $k == $skip;
         @fail.push("$what, line {$k + 1}: got {(@got[$k] // '(nothing)').raku}, want {(@want[$k] // '(nothing)').raku}")
             if (@got[$k] // '') ne (@want[$k] // '');
     }
@@ -119,7 +117,7 @@ sub held($what, $out, :$skip = -1) {
 my $f = $dir.add("values.raku");
 $f.spurt($src);
 my $interp = run($bin, $f.absolute, :out, :err);
-held('interpreted', $interp.out.slurp(:close), :skip($sunk)); $interp.err.slurp(:close);
+held('interpreted', $interp.out.slurp(:close)); $interp.err.slurp(:close);
 
 for (('--exe', '-O'), ('--exe',)) -> @mode {
     my $exe = $dir.add("values-{+@mode}.bin");

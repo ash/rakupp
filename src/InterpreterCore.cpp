@@ -2019,6 +2019,18 @@ Value Interpreter::exec(Stmt* s, bool sink) {
             // the distinction Rakudo draws: `/b/;` sets `$/`, `do { /b/ }` does not.
             // (After the assignment fast path: that is the hot statement shape, and
             // a RegexLit is never an Assign.)
+            // …and so does the branch a sunk ternary takes: `False ?? /q/ !! /c/;`
+            // matches /c/, as Rakudo and compiled code do (the others evaluate as before)
+            if (sink && e->kind == NK::Ternary) {
+                auto rxIn = [](auto& self, const Expr* x) -> bool {   // (not into parentheses: they are a value)
+                    if (x->kind == NK::RegexLit) return !x->inParens;
+                    if (x->kind != NK::Ternary || x->inParens) return false;
+                    auto* t = static_cast<const Ternary*>(x); return self(self, t->then.get()) || self(self, t->els.get()); };
+                if (!e->inParens && rxIn(rxIn, e))
+                    while (e->kind == NK::Ternary && !e->inParens)
+                        e = boolify(eval(static_cast<Ternary*>(e)->cond.get())) ? static_cast<Ternary*>(e)->then.get()
+                                                                                : static_cast<Ternary*>(e)->els.get();
+            }
             if (sink && e->kind == NK::RegexLit) {
                 auto* rl = static_cast<RegexLit*>(e);
                 // (`rx/…/;` too: sunk, the Regex it makes is smartmatched the same way)
