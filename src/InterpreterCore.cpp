@@ -10407,7 +10407,8 @@ Value Interpreter::invokeMethodChain(const std::string& name, ClassInfo* startCl
                 for (auto& h : k->hides) if (h == c->name) return true;
             return false;
         };
-        while (nextStart && hiddenHere(nextStart)) nextStart = nextStart->parent.get();
+        // …and so is a role a role does (`role S does B`): S's method composed B's away
+        while (nextStart && (hiddenHere(nextStart) || (owner->isRole && nextStart->isRole))) nextStart = nextStart->parent.get();
     }
     bool userNext = nextStart && nextStart->findMethod(name);
     // Under MULTIPLE inheritance the next method is the next class in the
