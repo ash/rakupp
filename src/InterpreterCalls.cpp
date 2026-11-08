@@ -4775,7 +4775,7 @@ std::optional<Value> Interpreter::enumTypeObjectMethod(const Value& inv, const s
     const std::string tn = inv.enumType.str();
     // it renders as the TYPE it is: `day.gist` is (day), `.raku` day, and `.Str`
     // the empty string with the uninitialized warning any type object gives
-    if (m == "gist") return Value::str("(" + tn + ")");
+    if (m == "gist") return Value::str(inv.gist());   // by its short name: `B::Idx` is (Idx)
     if (m == "raku" || m == "perl") return Value::str(tn);
     if (m == "Str" || m == "Stringy") { warnUninitStr(inv); return Value::str(""); }
     // an undefined value is False

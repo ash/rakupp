@@ -1231,8 +1231,13 @@ std::string Value::gist() const {
     if (t == VT::Hash && hashKind == "Pointer" && hash() && hash()->count("addr"))
         return "NativeCall::Types::" + ncPointerText("Pointer", "", hash()->at("addr").toInt());
     // an enum's TYPE OBJECT is its pair list here, and gists as the type it is,
-    // nested too: `say (Color, 1)` is ((Color) 1)
-    if (t == VT::Array && !enumType.empty() && isEnumTypeObject(*this)) return "(" + std::string(enumType.str()) + ")";
+    // nested too: `say (Color, 1)` is ((Color) 1), by its short name as a class
+    // is: `B::Idx` is (Idx)
+    if (t == VT::Array && !enumType.empty() && isEnumTypeObject(*this)) {
+        std::string n = enumType.str();
+        auto sep = n.rfind("::");
+        return "(" + (sep == std::string::npos ? n : n.substr(sep + 2)) + ")";
+    }
     // an object of a class with its OWN `.gist` renders by it, nested too (and a Pod block)
     if ((t == VT::Object || t == VT::Type || (t == VT::Hash && hashKind == "Pod")) && g_objMethodStr) {
         std::string o; if (g_objMethodStr(*this, "gist", o)) return o;

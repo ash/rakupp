@@ -1976,7 +1976,7 @@ std::string Interpreter::gistOf(const Value& v, bool skipUser) {
         throwTypedV("X::Method::NotFound", {{"method", Value::str("gist")}, {"typename", Value::str(v.s)}},
                     "Method " + v.s + ".gist not found");
     // an enum's type object gists as any type object does: `say day` is (day)
-    if (isEnumTypeObject(v)) return "(" + std::string(v.enumType.str()) + ")";
+    if (isEnumTypeObject(v)) return v.gist();
     // An ENDLESS lazy sequence gists as Rakudo's "(...)", and a lazy ARRAY as
     // "[...]" — neither shows what happens to be reified, because say/print
     // must not pretend the cached prefix is the whole list (sheet LA-02).
