@@ -2017,7 +2017,7 @@ void Interpreter::registerBuiltinsPart2() {
         // "yes" for every un-adverbed run.
         bool haveOutSink = false, haveErrSink = false;
         for (auto& v : flattenArgs(a)) {
-            if (v.t == VT::Pair) {
+            if (v.t == VT::Pair && v.namedArg) {   // (a Pair passed as a positional is an argument: "a\t1")
                 if (v.s == "out") { wantOut = v.pairVal() ? v.pairVal()->truthy() : true; outMode = wantOut ? 1 : 0;
                                     if (asSink(v.pairVal())) { outSink = *v.pairVal(); haveOutSink = true; } }
                 else if (v.s == "err") { wantErr = v.pairVal() ? v.pairVal()->truthy() : true; errMode = wantErr ? 1 : 0;
