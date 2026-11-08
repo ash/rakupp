@@ -2341,7 +2341,8 @@ std::string rakuReprImpl(const Value& v, int depth, std::set<const void*>& seen)
             }
             return o + ")";
         }
-        case VT::Regex:
+        case VT::Regex:   // (an anonymous `rule { … }` names its declarator, as Rakudo's does)
+            if (v.hashKind == "rule" || v.hashKind == "token" || v.hashKind == "regex") return v.hashKind + " {" + v.s + "}";
             return v.s.find('/') == std::string::npos ? "rx/" + v.s + "/" : "rx{" + v.s + "}";
         case VT::Complex: {
             // An INFINITE or NaN imaginary part needs the `\i` spelling to read
