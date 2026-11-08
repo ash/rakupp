@@ -10019,7 +10019,9 @@ Value Interpreter::checkRetType(const Callable& c, Value v) {
     const bool checkable = kRet.count(retName) ||
         ((classes_.count(retName) || subsets_.count(retName) || isKnownTypeName(retName)) &&
          !isNativeTypeName(retName) && retName.find('[') == std::string::npos);
-    if (checkable && !(kRet.count(retName) ? rtTypeMatch(v, retName) : typeOrSubsetMatches(v, retName)))
+    // (a sibling the parameter matcher lets through is no match: a Blob is no Buf, a Map no Hash)
+    const bool sibling = (retName == "Buf" && v.hashKind == "Blob") || (retName == "Hash" && v.hashKind == "Map");
+    if (checkable && (sibling || !(kRet.count(retName) ? rtTypeMatch(v, retName) : typeOrSubsetMatches(v, retName))))
         throwTypedV("X::TypeCheck::Return",
                     {{"got", v}, {"expected", Value::typeObj(retName)}},
                     "Type check failed for return value; expected " + retName +

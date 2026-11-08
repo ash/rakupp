@@ -6315,7 +6315,7 @@ inline bool rtTypedFast(const Value& v, int fast) {
         case RTB_INT: return v.t == VT::Int;
         case RTB_STR: return v.t == VT::Str;
         case RTB_NUM: return v.t == VT::Num;
-        case RTB_RAT: return v.t == VT::Rat;
+        case RTB_RAT: return v.t == VT::Rat && !v.fatRat();   // (a FatRat is no Rat)
         case RTB_BOOL: return v.t == VT::Bool;
         case RTB_MACHINE_INT: return v.t == VT::Int && !v.big();   // into `int`: fits, nothing to wrap
         default: return false;

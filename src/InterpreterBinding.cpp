@@ -5251,8 +5251,8 @@ bool rtTypeMatch(const Value& v, const std::string& type) {
             if (v.hashKind == "Instant" || v.hashKind == "Duration")
                 return type == "Numeric" || type == "Real";
             return type == "Num" || type == "Numeric" || type == "Real";
-        case VT::Rat:     return type == "Rat" || type == "Rational" || type == "Numeric" || type == "Real" ||
-                                 (type == "FatRat" && v.fatRat());
+        case VT::Rat:     return (type == "Rat" && !v.fatRat()) || type == "Rational" || type == "Numeric" ||
+                                 type == "Real" || (type == "FatRat" && v.fatRat());   // (siblings)
         case VT::Complex: return type == "Complex" || type == "Numeric";
         case VT::Str:
             // tagged non-strings that ride on VT::Str (IO::Path, Version,
