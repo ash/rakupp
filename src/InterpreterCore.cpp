@@ -860,13 +860,14 @@ bool Interpreter::hoistSubs(const std::vector<StmtPtr>& stmts) {
 
 // ----------------- statements -----------------
 // A block-scoped phaser we run at entry/exit rather than in-place.
-// Is the body's LAST statement, in source order, a CATCH or CONTROL block?
+// Is the body's LAST statement, in source order, a CATCH or CONTROL block, or a phaser with no
+// value (not ENTER, FIRST or INIT, whose values are theirs)? Rakudo's body then answers Nil.
 static bool trailingCatchBlock(const std::vector<StmtPtr>& body) {
-    if (body.empty()) return false;
-    const Stmt* s = body.back().get();
-    if (s->kind != NK::Block) return false;
+    const Stmt* s = body.empty() ? nullptr : body.back().get();
+    if (!s || s->kind != NK::Block) return false;
     auto* b = static_cast<const Block*>(s);
-    return b->isCatch || b->phaser == "CONTROL";
+    return b->isCatch || b->phaser == "CONTROL" ||
+           (isBlockPhaser(s) && b->phaser != "ENTER" && b->phaser != "FIRST" && b->phaser != "INIT");
 }
 
 static bool isBlockPhaser(const Stmt* s) {
@@ -1204,7 +1205,7 @@ Value Interpreter::execBlockFull(Block* b, std::shared_ptr<Env> scope, bool sink
     // as it is a routine's: what precedes it is sunk, into that very CATCH, and
     // the block answers Nil. Woxi's `try { await $killed; CATCH { default { } } }`
     // threw the killed Proc's X::Proc::Unsuccessful from outside the try instead.
-    const bool trailingCatch = (entryWork & 1) && trailingCatchBlock(b->stmts);
+    const bool trailingCatch = (entryWork & 16) && trailingCatchBlock(b->stmts);
     if (trailingCatch) lastIdx = b->stmts.size();
     // a CATCH {} anywhere in the block handles exceptions from the whole
     // block; a CONTROL {} registers as the dynamic handler `warn` runs
