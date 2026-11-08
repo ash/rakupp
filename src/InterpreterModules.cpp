@@ -1138,6 +1138,15 @@ static bool pickPinnedDist(const std::string& shortDir, const std::string& ver, 
     return false;
 }
 
+// May a lexical import put `k` in `scope`? When the scope has none, or holds a
+// routine an earlier import put there (it closes over its module, not over the
+// scope): the last import wins, as Rakudo's does (`{ use A; use B; f() }` is B's).
+static bool importMayReplace(Env* scope, const std::string& k) {
+    const Value* have = scope->local(k);
+    return !have || (have->t == VT::Code && have->code() && !have->code()->ci().isMultiDispatcher &&
+                     have->code()->closure && have->code()->closure.get() != scope);
+}
+
 void Interpreter::loadModuleImpl(const std::string& name, const std::vector<std::string>& importArgs, bool doImport, bool quiet, const std::string& verReq, bool requireForm) {
     // the evaluated `use Mod EXPR, …` arguments belong to THIS load — take them
     // now, before the module's own `use` statements run through here again
@@ -1228,7 +1237,7 @@ void Interpreter::loadModuleImpl(const std::string& name, const std::vector<std:
                     // the import is lexical and shadows it there, as a first
                     // load's does — unless that scope declares the name itself
                     const bool lexicalRoutine = !se.key.empty() && se.key[0] == '&' && tctx().cur.get() != global_.get();
-                    if (want && (lexicalRoutine ? !tctx().cur->local(se.key) : !mainlineSubNames_.count(se.key)) &&
+                    if (want && (lexicalRoutine ? importMayReplace(tctx().cur.get(), se.key) : !mainlineSubNames_.count(se.key)) &&
                         !importWouldShadowRoutine(se.key, se.value))
                         tctx().cur->define(se.key, se.value);
                 }
@@ -1645,7 +1654,7 @@ void Interpreter::loadModuleImpl(const std::string& name, const std::vector<std:
                     // and replacing that with Raw's four-argument NATIVE of the
                     // same name segfaulted on the first call. (A `use` of it
                     // there is a redeclaration, noted above.)
-                    if (!saved->local(k)) saved->define(k, kv.second);
+                    if (importMayReplace(saved.get(), k)) saved->define(k, kv.second);
                     // …and ONLY there. The import ends with the block or routine
                     // that made it: published to GLOBAL as well, `{ use Foo }`
                     // left `foo()` callable after the block (S11-modules/lexical.t,
