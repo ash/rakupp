@@ -1401,6 +1401,10 @@ std::string Parser::retTypeSpecHere() const {
         }
         if (d == 0) return base + (sm.empty() ? "" : "\x01" + sm) + "(" + src + ")";
     }
+    // `--> Int:D`, after a parameter too: the smiley rides as a `\x01D`/`\x01U` suffix (retTypeName strips it)
+    if (q + 1 < toks_.size() && toks_[q].kind == Tok::Op && toks_[q].text == ":" && !toks_[q].spaceBefore &&
+        toks_[q + 1].kind == Tok::Ident && (toks_[q + 1].text == "D" || toks_[q + 1].text == "U"))
+        return base + "\x01" + toks_[q + 1].text;
     return base + retCoercionMark(peek());
 }
 
@@ -5550,14 +5554,7 @@ ExprPtr Parser::parseDeclarator(const std::string& scope) {
     // compile-time enclosing type as the declared type: `my ::?CLASS:U $c = …`
     // (Font::AFM). Signatures already accepted `::?CLASS`; declarations did not,
     // and stopped at the `::` with "expected variable after declarator".
-    else if (isOp("::") && peek().kind == Tok::Op && peek().text == "?" &&
-             peek(2).kind == Tok::Ident) {
-        advance(); advance();                                           // :: ?
-        const std::string which = advance().text;                       // CLASS / ROLE
-        type = which == "ROLE" && !enclosingRoleName().empty() ? enclosingRoleName()
-             : typeStack_.empty() ? "Mu" : typeStack_.back();
-        indirectType = true;
-    }
+    else if (enclosingTypeHere(type, "Mu")) indirectType = true;
     // the `:D` / `:U` / `:_` smiley that may follow either form
     if (indirectType && isOp(":") && peek().kind == Tok::Ident &&
         (peek().text == "D" || peek().text == "U" || peek().text == "_"))
@@ -10589,6 +10586,7 @@ ExprPtr Parser::parseEmbeddedExpr(const std::string& src, bool ownScope) {
     p.capSubNames_ = capSubNames_;       // …and its `sub Foo`, so `"{ Foo { 1 } }"` passes the block
     p.inEmbedded_ = true;                // (`"$!name"` in a method reaches the attribute)
     p.routineDepth_ = routineDepth_;     // `"{&?ROUTINE.name}"` inside a sub names that sub
+    p.selfDepth_ = selfDepth_;
     Program prog = p.parseProgram();
     if (p.sawEndPhaser_) sawEndPhaser_ = true;   // `"{ END { … } }"` needs the END walk too
     if (p.sawOur_) sawOur_ = true;
@@ -12059,16 +12057,14 @@ std::vector<Param> Parser::parseSignature(Tok closeTok) {
                                           cur().text == "Empty"))
                 sigRetLiteral_ = parsePrimary(); // `--> True` : a literal Bool/Nil return value
             else if (isKind(Tok::Ident)) {
-                sigRetType_ = retTypeSpecHere(); // remember the return type
-                // `--> Int:D` / `--> Int:U` — the definedness rides along as a
-                // `\x01D`/`\x01U` suffix (retTypeName strips it); `:foo` is refused
+                sigRetType_ = retTypeSpecHere(); // remember the return type, its smiley too
+                // `--> Int:foo` is refused
                 if (peek().kind == Tok::Op && peek().text == ":" && !peek().spaceBefore &&
                     peek(2).kind == Tok::Ident && !peek(2).spaceBefore) {
                     const std::string sm = peek(2).text;
                     if (sm != "D" && sm != "U" && sm != "_")
                         throw ParseError("Invalid type smiley ':" + sm + "' used, only ':D', ':U' and ':_' are allowed",
                                          cur().line, "X::InvalidTypeSmiley", {{"name", sm}});
-                    if (sm != "_" && sigRetType_.find('(') == std::string::npos) sigRetType_ += "\x01" + sm;
                 }
                 // `--> Bool, Int $x` — parameters after the return constraint
                 {
@@ -13467,7 +13463,9 @@ StmtPtr Parser::parseSub(bool isMulti, bool isProto, bool asMethod) {
         for (auto& ap : s->params) {
             if (ap.name.size() < 3 || (ap.name[1] != '.' && ap.name[1] != '!') ||
                 !std::strchr("$@%&", ap.name[0])) continue;
-            if (!asMethod && !s->isMethod && !s->isSubmethod)
+            // …but a sub nested in a method sees that method's `self`, as an
+            // anonymous `sub ($!x)` there does (#223: PDF::Content's `sub STORE($, $!text)`)
+            if (!asMethod && !s->isMethod && !s->isSubmethod && !selfDepth_ && !evalSelfInScope_)
                 throw ParseError("Variable " + ap.name + " used where no 'self' is available", cur().line,
                                  "X::Syntax::NoSelf", {{"variable", ap.name}});
             if ((asMethod || s->isSubmethod) && s->name == "BUILD" && ap.name[1] == '.')
@@ -13855,10 +13853,8 @@ StmtPtr Parser::parseSub(bool isMulti, bool isProto, bool asMethod) {
                    (peek(3).text == "CLASS" || peek(3).text == "ROLE")) {
             // `returns ::?CLASS` / `of ::?ROLE:D` — the enclosing type, as
             // `has ::?CLASS $.x` reads it
-            advance(); advance(); advance();                    // returns :: ?
-            const std::string which = advance().text;           // CLASS / ROLE
-            const std::string tn = which == "ROLE" ? enclosingRoleName()
-                                 : typeStack_.empty() ? std::string() : typeStack_.back();
+            advance();                                          // returns
+            std::string tn; enclosingTypeHere(tn, "");
             if (s->retType.empty() && !tn.empty()) s->retType = tn;
             if (isOp(":") && !cur().spaceBefore && peek().kind == Tok::Ident &&
                 (peek().text == "D" || peek().text == "U" || peek().text == "_")) {
@@ -13887,9 +13883,12 @@ StmtPtr Parser::parseSub(bool isMulti, bool isProto, bool asMethod) {
         // lexical, so propagate inReactBlock_ into the body (a top-level sub
         // still has it false and so still rejects a stray `whenever`).
         routineDepth_++; // &?ROUTINE is legal inside
+        const bool hasSelf = asMethod || s->isMethod || s->isSubmethod;
+        selfDepth_ += hasSelf;
         bool savedRw = sawReturnRw_; sawReturnRw_ = false;
         const size_t bodyAt = pos_;
         auto blk = parseBlock();
+        selfDepth_ -= hasSelf;
         checkNativeParamAssign(s->params, bodyAt);
         if (asMethod) refuseFreeMethodAttrs(bodyAt);
         // `return-rw` makes the routine container-returning even with no `is rw`
@@ -13974,6 +13973,10 @@ StmtPtr Parser::parseSubset() {
         if (isIdent("of")) {
             advance();
             if (isKind(Tok::Ident)) sd->baseType = advance().text;
+            // …or `::?CLASS:D` / `::?ROLE:D`: unread, it became a statement of
+            // its own and an `is export(…)` or `where` after it a routine call
+            // (#224: PDF::Content::FontObj's SubsetFontLike)
+            else enclosingTypeHere(sd->baseType, "Mu");
             // …and the base type's SMILEY: `subset LatinStr of Str:D` is a
             // subset of the DEFINITE Str. Unconsumed, the `:D` fell out of the
             // declaration and became a statement of its own ("Useless use of
@@ -14764,10 +14767,7 @@ StmtPtr Parser::parseClass(bool isRole, bool isGrammar, bool isPackage, bool isU
             int attrSmiley = 0; // :D=1, :U=2 (:_ / none = 0)
             bool attrSmileyExplicit = false;
             // `has ::?CLASS $.attr` — the enclosing class as the attribute's type
-            if (isOp("::") && peek().kind == Tok::Op && peek().text == "?" && peek(2).kind == Tok::Ident) {
-                advance(); advance();                                   // :: ?
-                const std::string which = advance().text;               // CLASS / ROLE
-                attrType = which == "ROLE" ? enclosingRoleName() : typeStack_.empty() ? std::string() : typeStack_.back();
+            if (enclosingTypeHere(attrType, "")) {
                 if (isOp(":") && peek().kind == Tok::Ident) {
                     advance(); std::string sm = advance().text;
                     if (sm == "D") attrSmiley = 1; else if (sm == "U") attrSmiley = 2;

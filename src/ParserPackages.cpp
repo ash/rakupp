@@ -78,4 +78,17 @@ void Parser::takeExportTrait(VarExpr* ve) {
     lastExportTags_.clear();
 }
 
+// `::?CLASS` / `::?ROLE` at cur() as a TYPE (`my ::?CLASS:U $c`, `has
+// ::?CLASS $.x`, `returns ::?CLASS`, `subset S of ::?ROLE:D`): consumed, and
+// `out` is the innermost role for ROLE, the innermost type for CLASS, or
+// `none` outside every type. False, with nothing consumed, when it is not here.
+bool Parser::enclosingTypeHere(std::string& out, const char* none) {
+    if (!(isOp("::") && peek().kind == Tok::Op && peek().text == "?" && peek(2).kind == Tok::Ident)) return false;
+    advance(); advance();                                   // :: ?
+    const bool role = advance().text == "ROLE";             // CLASS / ROLE
+    out = role && !enclosingRoleName().empty() ? enclosingRoleName()
+        : typeStack_.empty() ? std::string(none) : typeStack_.back();
+    return true;
+}
+
 } // namespace rakupp

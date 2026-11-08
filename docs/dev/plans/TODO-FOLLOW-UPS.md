@@ -1,6 +1,6 @@
 # Follow-ups
 
-*Collected 2026-10-20; added to 2026-11-03.*
+*Collected 2026-10-20; added to 2026-11-07.*
 
 Findings that sessions on 2026-10-19 and 2026-10-20 proposed as follow-up
 work and nobody started: gaps found in passing while doing something else.
@@ -14,6 +14,18 @@ moves to [TODO.md](TODO.md).
 ---
 
 ## Names and parsing
+
+- [ ] **A subset declared in a package is not named for it** (found
+  2026-11-07 fixing #224, 1a3f36d1):
+
+  ```raku
+  class K { my subset S of Int; method n { S.^name } }; say K.n;   # S, Rakudo K::S
+  role RR { my subset U of Int; method n { U.^name } }             # U, Rakudo RR::U
+  ```
+
+  `our` or `my`, in a class, a role or a `unit role` file
+  (PDF::Content::FontObj's SubsetFontLike is `PDF::Content::FontObj::SubsetFontLike`
+  on Rakudo). A SubsetDecl registers its bare name.
 
 - [ ] **A plain `constant` leaks out of its block and out of an EVAL** (found
   2026-10-20 while caching the bare `Less` term, b35718ba; the leak predates
@@ -282,6 +294,48 @@ moves to [TODO.md](TODO.md).
   Done when each line matches Rakudo 2026.09.
 
 ## Operators and types
+
+- [ ] **A value-parameterized role does not smartmatch its type argument**
+  (found 2026-11-07 fixing #222, 28824bb7):
+
+  ```raku
+  role R2[\x] { }
+  say R2[1] ~~ R2[Int];   # False, Rakudo True (Int.ACCEPTS(1))
+  say R2[Int] ~~ R2[1];   # False on both
+  ```
+
+  User roles go through roleArgsCovariant (src/InterpreterBinding.cpp),
+  which gives up on an argument that is not a type name. Both engines name
+  the pun `R2[Int]`, so the value is not in the name to compare. Done when
+  each argument asks `want.ACCEPTS(have)` as roleArgAccepts does for the
+  built-in roles.
+- [ ] **A parameterized type with a smiley names it as two parameters**
+  (found 2026-11-07 fixing #222):
+
+  ```raku
+  say Positional[Int:D].^name;   # Positional[Int,D], Rakudo Positional[Int:D]
+  role R[::T] { }; say R[Int:D].^name;   # R[Int,D]
+  say R[Int:D] ~~ R[Int];        # False, Rakudo True
+  ```
+
+  The type object keeps `Int:D` as "Int,D" (typeParamParts reads it back);
+  `.^name` and a role pun's display name print the raw form, and
+  roleArgsCovariant splits it into two arguments.
+- [ ] **A FALLBACK gets the list methods Any has, and an object keeps
+  Exception's** (found 2026-11-07 fixing #225, e7bbb97c):
+
+  ```raku
+  class W { method FALLBACK($n, |) { "fb:$n" } }
+  say W.new.first;   # fb:first, Rakudo W.new (Any.first of one item)
+  say W.new.elems;   # fb:elems, Rakudo 1
+  say (try W.new.throw) // $!.^name;   # W, Rakudo fb:throw
+  ```
+
+  `.first`, `.head`, `.keys`, `.elems`, `.grep`, `.map`, `.sort`, `.unique`,
+  `.Array` and the rest of Any's list methods reach methodCallUnresolved on
+  a user object, where Rakudo answers them from Any on the one-item list;
+  `.throw`, `.rethrow`, `.resume` and `.backtrace` answer on an object that
+  is no Exception, where Rakudo hands them to FALLBACK.
 
 - [ ] **`* ~~ T` does not curry when T is a user class with an ACCEPTS**
   (found 2026-11-01 writing t/regression/core-type-shortcuts.raku for #217;
@@ -705,6 +759,17 @@ moves to [TODO.md](TODO.md).
   passes.
 
 ## Control flow and containers
+
+- [ ] **`%h{@b.item} = 1` assigns a slice** (found 2026-11-07 fixing #221,
+  266d37c6):
+
+  ```raku
+  my @b = 1, 2; my %h; %h{@b.item} = 1; say %h.elems;   # 2, Rakudo 1
+  my %o{Any}; %o{@b.item} = 1; say %o.keys[0] === @b;   # False, Rakudo True
+  ```
+
+  A read, `%h{@b.item}`, and a store through a variable, `%h{$x} = 1`, take
+  the itemized array as one key; the assignment path flattens it.
 
 - [ ] **A top-level `use` and `constant` run in the mainline, after BEGIN,
   CHECK and INIT** (found 2026-10-30 checking what a #190 build runs; on

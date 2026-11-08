@@ -11139,6 +11139,12 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
             const std::string tn = inv.typeName();
             return Value::str(classes_.count(tn) && inv.t == VT::Object ? tn : ncQualifiedName(tn));
         }
+        // …and a user class's is an unknown name like any other: a `handles *`
+        // delegation, a FALLBACK or a `.^add_fallback` takes it (#225)
+        if (inv.t == VT::Object || (inv.t == VT::Type && classes_.count(inv.s))) {
+            if (auto r = catchAllDelegation(inv, m, args, rwArgs)) return *r;
+            return methodCallUnresolved(inv, m, args, rwArgs);
+        }
         throwTypedV("X::Method::NotFound",
                     {{"method", Value::str("name")}, {"typename", Value::str(inv.typeName())}, {"invocant", inv}},
                     "No such method 'name' for invocant of type '" + inv.typeName() + "'");

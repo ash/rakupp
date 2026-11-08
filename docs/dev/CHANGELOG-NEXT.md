@@ -19,7 +19,10 @@ f3096c7d and 7a09c596 (`return-rw` use-after-frees; ASan sees the pools' frees),
 a3246b12 (an untyped Array of Nums packs itself into doubles),
 59764c5a (a loop in a top-level block types the top-level variables),
 a516dd92 and b4bf1dc9 (`--doc-links`: a program linked to its documentation),
-b9e35683 (the store undo log copies the arrays at a sixteenth).*
+b9e35683 (the store undo log copies the arrays at a sixteenth),
+and issues #221-#229: 1a3f36d1 (#223, #224), 28824bb7 (#222), 32b1ea01
+(#220's follow-up), 266d37c6 (#221), e7bbb97c (#225), 20f0691d (#228),
+17d28f81 (#229).*
 
 ---
 
@@ -223,9 +226,76 @@ b9e35683 (the store undo log copies the arrays at a sixteenth).*
   agrees with Rakudo 2026.09, interpreted, under `--jit`, `--cnp` and
   `--exe`.
 
+- **`Array.WHICH` and `List.WHICH` are identity, as `===` is** (266d37c6;
+  issue #221). They were the type and the elements joined by a space:
+  `@a.push(3)` moved `@a.WHICH`, two arrays holding 1, 2 had one WHICH and
+  were one element of a Set or a Bag, and `[1,2]`, `["1","2"]` and
+  `["1 2"]` were all `Array|1 2`. An Array, a List or a Seq now identifies by
+  its payload, which every copy shares and a push or a refill leaves in
+  place; a typed one is `Array[Int]|…`, `Empty` is still one object, and a
+  Capture and a Junction are still values. Found beside it, `(elem)`
+  flattened the list it searched: `@b (elem) (@b.item,)` was False and
+  `2 ∈ (1, (2, 3))` True. `t/regression/issue-221-array-list-which-identity.raku`.
+- **`Positional[Int] ~~ Positional[Mu]` is True** (28824bb7; issue #222).
+  Two type objects of a built-in parameterized role matched only with
+  identical arguments, which is right for a class (`Array[Int] !~~
+  Array[Numeric]`) and wrong for a role: Rakudo asks each argument on the
+  right to accept the one on the left. A `:D` argument on the right takes
+  only itself, since the left one is a type object; a nested
+  parameterization asks again a level down. PDF::COS::Tie's
+  `$att.type !~~ Positional[Mu]` warned four times on `use PDF::Content`.
+  `t/regression/issue-222-parameterized-role-arguments-smartmatch.raku`, 52
+  rows against Rakudo 2026.09.
+- **A `--> Int:D` after a parameter is checked** (32b1ea01). Only a `-->`
+  that opened the signature kept its smiley, so `sub j($p --> Int:D) { Int }`
+  returned the type object Rakudo refuses, and the signature read
+  `($p --> Int)`. `t/regression/signature-text-names-types-as-raku.raku`.
+
 ### Fixed: crashes
 
+### Behaves like Rakudo
+
+- **Two PDF::Content declarations compile** (1a3f36d1; issues #223 and
+  #224), so `use PDF::Content`, and PDF::Lite above it, gets past them. A
+  named sub nested in a method takes a `$!attr` parameter
+  (`sub STORE($, $!text) { … }`, handed to a Proxy), binding into the
+  method's `self` as an anonymous `sub ($!x)` there does; a sub at the top
+  level or in a class body is still refused. `my subset S of ::?ROLE:D is
+  export(:S) where { … }` reads the enclosing type, where the `::?ROLE:D`
+  became a statement of its own and `is export(…)` a call to a routine
+  named `export`. `t/regression/issue-223-224-pdf-content-declarations.raku`.
+- **A class's FALLBACK answers `.name` again** (e7bbb97c; issue #225, a
+  regression since 5.0.0). The built-in arm that makes `42.name`
+  X::Method::NotFound threw before the unknown-name path, where FALLBACK has
+  run since 0cc5b2bd moved it there; on a user class the arm now hands the
+  name on to `handles *`, FALLBACK and `.^add_fallback`.
+  `t/regression/issue-225-fallback-gets-name.raku`.
+- **A signature names NativeCall's types as their `.raku` does** (32b1ea01;
+  issue #220's follow-up): `sub f(Pointer $x)` is
+  `:(NativeCall::Types::Pointer $x)`, as on Rakudo, while the type itself
+  is unchanged. A coercion renders its target's smiley first,
+  `Str:D(Int) $y` (it was `Str(Int):D`), and `--> Str()` as `--> Str(Any)`.
+- **A program ends at once past a worker blocked in a read** (17d28f81;
+  issue #229). `exit`, or the mainline's end, while a `start` waited on
+  `$*IN.read`, `.get`, `.slurp` or an `is native` read(2) that nothing would
+  satisfy took 2.2 s: drainWorkers waited out its whole 2 s grace for a
+  worker that could not see the shutdown flag, then abandoned it anyway. A
+  worker parked in such a call is now counted, and the drain stops waiting
+  once every live worker is one: 0.25 s, where Rakudo 2026.09 takes
+  0.32-0.44 s. `t/regression/issue-229-exit-past-blocked-read.raku`.
+
 ### Platforms and packaging
+
+### Tools
+
+- **`rakupp install` cleans up without `rm`** (20f0691d; issue #228). Its
+  three scratch directories were removed with `rm -rf`, so on Windows every
+  distribution printed "'rm' is not recognized" and the last cleanup died
+  in an END with X::Proc::Unsuccessful, though the installs succeeded. They
+  are removed in Raku now: a symlink unlinked and never followed, a
+  read-only file made writable first. Found beside it, the directory an
+  install from a URL unpacks into was never removed, on any platform; it
+  goes at the end too. Not run on Windows.
 
 ### Left open
 
@@ -237,3 +307,11 @@ b9e35683 (the store undo log copies the arrays at a sixteenth).*
   written out never takes a typed array, where Rakudo's does. A role
   method's signature leaves out its invocant (`:(Int $x, *%_)` against
   Rakudo's `:(RI $:: Int $x, *%_)`), and `&c:(Foo)` renders as `&c`.
+- Found with issues #221-#229, the same before them (each in
+  TODO-FOLLOW-UPS.md): a value-parameterized role, `R2[1] ~~ R2[Int]`, is
+  False where Rakudo says True; `Positional[Int:D].^name` is
+  `Positional[Int,D]`; `%h{@b.item} = 1` assigns a two-key slice; a FALLBACK
+  receives the list methods Any answers (`.first`, `.elems` …), and an
+  object that is no Exception keeps `.throw`, `.rethrow`, `.resume` and
+  `.backtrace` from its FALLBACK; a `my subset` in a `unit role`'s file is
+  not named for its package.

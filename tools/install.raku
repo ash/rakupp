@@ -238,7 +238,24 @@ sub fetch-text(Str $url) {
 # prefetched archive from here instead of fetching it again.
 my %PREFETCHED;
 my $PREFETCH-DIR;
-END { run 'rm', '-rf', $PREFETCH-DIR.Str if $PREFETCH-DIR }
+my @URL-SCRATCH;   # url-dist-entry's unpacked archives: the install reads them after it returns
+END { remove-tree($_) for |@URL-SCRATCH, |($PREFETCH-DIR // ()) }
+
+# A scratch directory and everything in it, removed in Raku: `rm -rf` is no
+# command on Windows, where every cleanup printed "'rm' is not recognized"
+# and the last one died in this END (#228). A symlink is unlinked, never
+# followed, as rm does it; a read-only file (Windows will not unlink one) is
+# made writable first. What still will not go is left — this is cleanup.
+sub remove-tree(IO() $p) {
+    return unless $p.e || $p.l;
+    if $p.d && !$p.l {
+        remove-tree($_) for (try $p.dir) // ();
+        try $p.rmdir;
+    }
+    elsif !(try $p.unlink) {
+        try { $p.chmod(0o644); $p.unlink }
+    }
+}
 
 sub prefetch-archives(@entries) {
     my @urls = @entries.grep({ !.<local-root> }).map({ archive-url($_) })
@@ -1046,6 +1063,7 @@ sub url-dist-entry(Str $url) {
     my $sub  = %spec<sub>;
     my $tmp = $*TMPDIR.add("rakupp-install-url-{$*PID}-{$url.subst(/<-alnum>/, '-', :g).substr(*-40)}");
     $tmp.mkdir;
+    @URL-SCRATCH.push: $tmp;
     my $tarball = $tmp.add('dist.tar.gz').Str;
 
     my $err = '';
@@ -1733,7 +1751,7 @@ sub shadowed-by-rakulib(%e --> Bool) {
 sub install-one(%e, Str $prefix, Bool :$no-test, Bool :$force, Bool :$test-only,
                 :%have, :%broken) {
     my $tmp;   # download scratch — set only when there is a download
-    LEAVE { run 'rm', '-rf', $tmp.Str if $tmp }   # never a user's directory
+    LEAVE { remove-tree($tmp) if $tmp }   # never a user's directory
     my $root;
     if %e<local-root> {
         # a path install: the directory IS the dist — nothing to fetch,
@@ -2730,7 +2748,7 @@ sub MAIN(
     $VERBOSE = ?$verbose;
     $RECURSIVE = ?$recursive;
     # the one-symlink PATH shim the test/build children see, if one was made
-    LEAVE { run 'rm', '-rf', $TEST-SHIM if $TEST-SHIM }
+    LEAVE { remove-tree($TEST-SHIM) if $TEST-SHIM }
     # `rakupp uninstall --list` is a mode mix, not a synonym for install
     # --list — refuse it rather than silently answering as a different command
     if ($uninstall || $reinstall || $test-only) && ($list || $check || $gc) {

@@ -5821,7 +5821,8 @@ static std::string ncElemTypeOf(const Value& v) {
 //     types, and a bare `Array` - or `[1,2]` - is neither `Array[Int]` nor
 //     `Array[Mu]`; an object hash `my Int %h{Str}` is a `Hash[Int,Str]` and
 //     not a `Hash[Int]`. An instance never carries a smiley (a `my Int:D @a`
-//     is an Array[Int] here), so it compares by bare name.
+//     is an Array[Int] here), so it compares by bare name. A ROLE's type object
+//     takes each argument by smartmatch: `Positional[Int] ~~ Positional[Mu]`.
 //   - a ROLE the left does (Positional[T], Associative[T]): its element type
 //     CONFORMS to T - `Array[Int]` is a `Positional[Cool]` - a definedness
 //     smiley on T narrows it (`Positional[Int:D]` refuses `Array[Int]`), and
@@ -5867,7 +5868,9 @@ static bool typeParamMatches(const Value& l, const Value& r) {
     std::string hb, hs, wb, ws;
     if (lbase == r.s) {
         if (want.size() != have.size()) return false;
+        const bool role = !instance && isBuiltinRole(lbase);   // a role's arguments smartmatch (#222)
         for (size_t i = 0; i < want.size(); i++) {
+            if (role) { if (!roleArgAccepts(have[i], want[i])) return false; continue; }
             if (!instance) { if (have[i] != want[i]) return false; continue; }
             splitTypeSmiley(have[i], hb, hs); splitTypeSmiley(want[i], wb, ws);
             if (hb != wb) return false;
