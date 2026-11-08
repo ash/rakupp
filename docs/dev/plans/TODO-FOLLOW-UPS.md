@@ -94,19 +94,6 @@ moves to [TODO.md](TODO.md).
   bare name outside that scope should not see it. Also check an ordinary
   name (`{ constant FOO = 1 }; say FOO`) against the oracle.
 
-- [ ] **An anonymous `rule { … }` has no sigspace** (found 2026-10-23 while
-  making compiled regex literals values; compiled code answers the same):
-
-  ```raku
-  my $r = rule { a b }; say 'a b' ~~ $r   # Nil, Rakudo ｢a b｣
-  say 'ab' ~~ $r                          # ｢ab｣, Rakudo Nil
-  ```
-
-  It matches as a `token` would. `rx:s/a b/` and a named `my rule` are
-  right. Start at regexMatch's `wired` test (src/InterpreterCore.cpp
-  ~20533), which reads the `rule` kind into "sr" flags only for a value it
-  counts as wired.
-
 - [ ] **An undeclared type-like name before a statement's block is refused
   only in an EVAL** (found 2026-10-27 while making statement conditions
   Rakudo's xblock, 4af53b07; on daf9c03c too):
@@ -120,22 +107,6 @@ moves to [TODO.md](TODO.md).
   in src/InterpreterModules.cpp asks bareNameResolves of `gobbleSites_`
   after its parseProgram; a program's and a module's parse never do. Done
   when the first line is refused at compile time, as in Rakudo 2026.09.
-
-- [ ] **`Empty` before a pointy block is read as a listop taking it** (found
-  2026-10-27 while fixing issue #207, 3ddcd58b; on 170bb19a too, where 4af53b07
-  had a condition's listop start taking its block):
-
-  ```raku
-  for Empty -> $x { }; say 'ok'   # ===SORRY!=== Function 'Empty' needs parens to avoid gobbling block, Rakudo ok
-  for 1, Empty -> \v { say v }    # the same, Rakudo 1
-  for 1, Empty { .say }           # 1 in both
-  ```
-
-  `Empty` is a term, as `now`, `e`, `pi` and `rand` are, and those keep the
-  pointy for the statement already. The exemptions are the `rand`/`i`/type
-  test 4af53b07 added to parsePrimary (src/Parser.cpp, "…and so, before a
-  block or a pointy"). Done when the first two lines answer as in Rakudo
-  2026.09.
 
 - [ ] **A package declaration that starts a statement does not take an
   infix after it** (found 2026-10-27 while fixing issue #206, 2b9494ae; on
@@ -183,21 +154,6 @@ moves to [TODO.md](TODO.md).
   search found nothing until 0e44c5a6 made a user group list the engine's
   candidates too. Done when B is refused as in Rakudo and b-count is 9;
   size it with the TODO.md item, which is the same chain.
-- [ ] **`loop(…)` calling a `&loop` parameter is parsed as a loop** (found
-  2026-10-28 while writing c50eb3b8's test, for issue #146):
-
-  ```raku
-  sub count(&loop) { my $n = 0; loop({ $n++ }); loop({ $n++ }); $n }
-  say count(-> &b { b() });
-  # Raku++: Malformed loop spec (expected 3 parts separated by semicolon, got 1)
-  # Rakudo 2026.09: 2
-  ```
-
-  Rakudo reads a keyword followed straight by `(`, with no space, as a call
-  of that name, and calls the `&loop` in scope. Here the statement parser
-  takes `loop` as the loop keyword whatever follows it. Done when the
-  program prints 2; check `if(…)`, `while(…)` and `for(…)` beside it.
-
 - [ ] **A constant's initializer calls a routine declared below it** (found
   2026-10-29 fixing issue #196, f303f0c0; on v5.5.0 too):
 
@@ -343,6 +299,19 @@ moves to [TODO.md](TODO.md).
   class's is caught at parse time (checkRedeclarations in src/Parser.cpp).
   Done when each line matches Rakudo 2026.09.
 
+- [ ] **An anonymous `rule` interpolated as `<$r>` matches nothing, and its
+  `.raku` is a `rx//`** (found 2026-11-08 making a stored `rule` keep its
+  sigspace; the same before it):
+
+  ```raku
+  my $r = rule { a b };
+  say "x a b" ~~ /<$r>/;   # Nil, Rakudo ｢a b｣
+  say $r.raku;             # rx/ a b /, Rakudo rule { a b }
+  ```
+
+  The value carries its kind (hashKind "rule" or "token") and the scope it
+  closed over; the `<$var>` assertion and the Regex `.raku` read neither.
+
 ## Operators and types
 
 - [ ] **A value-parameterized role does not smartmatch its type argument**
@@ -401,31 +370,6 @@ moves to [TODO.md](TODO.md).
   ahead of its Whatever curry, so D.ACCEPTS gets the `*` and answers. A
   core type (`* ~~ Int`) curries. Done when the user class curries too and
   `$w ~~ D` with a Whatever VALUE still asks ACCEPTS.
-- [ ] **`--> Buf` accepts a Blob, `--> Hash` a Map and `--> Rat` a FatRat**
-  (found 2026-11-01 checking 608774f1's return shortcut, which accepts none
-  of them itself; dcdf14ba too):
-
-  ```raku
-  sub a(--> Buf) { Blob.new(1) }; sub b(--> Hash) { Map.new }; sub c(--> Rat) { FatRat.new(1, 2) }
-  .say for (&a, &b, &c).map({ (try .()) // $!.^name });   # Blob:0x<01>, Map.new(()), 0.5
-                                                          # Rakudo: X::TypeCheck::Return ×3
-  ```
-
-  checkRetType's full check (typeOrSubsetMatches for Buf and Hash,
-  rtTypeMatch's VT::Rat case for Rat) is wider than the nominal check.
-
-- [ ] **`or` and `xor` chain, where Rakudo refuses them** (found 2026-10-31
-  writing tools/rakuast-deparse-l10n-spec.raku, 3431c375):
-
-  ```raku
-  say (1 or 0 xor 1);   # Nil, Rakudo: "Only identical operators may be list
-                        # associative; since 'or' and 'xor' differ, they are
-                        # non-associative and you need to clarify with parentheses"
-  ```
-
-  The loose-or level is list-associative upstream, so mixing two of its
-  operators is a compile error, as `max` and `min` are at theirs. Done when
-  the line is refused with Rakudo's message, and `1 or 0 or 1` still runs.
 - [ ] **Built-in prefix and postfix operators fail when called by name**
   (found 2026-10-19 while fixing undeclared operator names, 145cddbf):
 
@@ -586,19 +530,6 @@ moves to [TODO.md](TODO.md).
   docs/dev/findings/semantics/Date-Time.md answer as in Rakudo 2026.09,
   less the two Rakudo bugs the sheet says not to copy.
 
-- [ ] **`Str.new` with a positional answers a string** (found 2026-10-28
-  while fixing issue #208, 0f19ab0e; on ad5482f4 too):
-
-  ```raku
-  say Str.new(1).raku;      # "1", Rakudo: Default constructor for 'Str' only takes named arguments
-  say "Date".new(1).raku;   # "", the same
-  my $t = "Date"; say "[$t.new(1)]";   # [], the same
-  ```
-
-  Rakudo's Mu.new takes named arguments only, so a positional to a class
-  with no `new` of its own dies; the third line is how a test probe written
-  as `"$t.new(...)"` printed empty strings here instead of dying.
-
 - [ ] **A built-in method whose parameter takes a Junction whole threads it
   instead** (found 2026-10-28 while fixing issue #192, f483f0e6; on f30323e3 too):
 
@@ -618,22 +549,6 @@ moves to [TODO.md](TODO.md).
   matcher methods have. `.push` keeps it whole already, and its `.raku`
   alone is wrong: a one-element Array holding a junction gets a trailing
   comma. Done when the lines above are Rakudo 2026.09's.
-- [ ] **A signature drops `--> Nil`** (found 2026-10-28 while writing
-  issue #211's regression test, 0e44c5a6; on v5.5.0 too):
-
-  ```raku
-  sub f(Int $x --> Nil) { }
-  say &f.signature.returns.^name;    # Mu, Rakudo Nil (`--> Int` is Int in both)
-  say &f.signature ~~ :(Int);        # True, Rakudo False
-  say :(Int --> Nil) ~~ :(Int);      # True, Rakudo False
-  ```
-
-  `&f.returns` is Nil, so the routine keeps it; its Signature object does
-  not (`returns` in its hash), and sigAcceptsSig (src/Builtins.cpp), which
-  compares the two sides' `\x01ret`, takes `--> Nil` for no return type.
-  Cro's trait multis are declared `--> Nil`, so a search among
-  `&trait_mod:<is>.candidates` by a signature without one matches here what
-  it misses in Rakudo. Done when the three lines are Rakudo 2026.09's.
 - [ ] **A metaclass `compose` finds the accessors early through `.^can`
   and `.^find_method`** (found 2026-10-28 while fixing `rakupp install
   AttrX::Lazy`, 8c871a25; on v5.5.0 too):
@@ -663,20 +578,6 @@ moves to [TODO.md](TODO.md).
   accessors still build before changing it. Done when the three lines
   are Rakudo 2026.09's.
 
-- [ ] **A qualified enum's type object gists with its whole name** (found
-  2026-10-30 fixing HTTP::HPACK's module enums, 5801c286; a class already
-  answers Rakudo's):
-
-  ```raku
-  class A::B {}; say A::B;          # (B) in both
-  enum B::Idx <X Y>; say B::Idx;    # (B::Idx), Rakudo (Idx)
-  ```
-
-  `.^name` and `.raku` are B::Idx in both, and `.^shortname` is Idx in
-  both. The gist of an enum's type object (the tagged pair list,
-  isEnumTypeObject) should take the last part of the name, as a class's
-  does. Done when `say` and `.gist` print (Idx).
-
 - [ ] **An optional parameter typed by a subset binds its type object
   unchecked when nothing is passed** (found 2026-10-30 fixing
   Cro::HTTP::Cookie's BUILD, c4df7b96):
@@ -695,22 +596,6 @@ moves to [TODO.md](TODO.md).
   attributive `CN :$!n`, where c4df7b96's store refuses it, but names CN
   as what it got where Rakudo names Str. Done when both lines match Rakudo
   2026.09.
-- [ ] **`~` of a built-in exception made with `.new` is the empty string**
-  (found 2026-10-30 fixing `sprintf('%s', $e)` for a user's exception,
-  594d4aac):
-
-  ```raku
-  my $e = X::AdHoc.new(:payload<boom>);
-  say ~$e;                 # "" and "Use of uninitialized value", Rakudo boom
-  say $e.Str;              # boom
-  say sprintf('%s', $e);   # X::AdHoc<4377956096>, Rakudo boom
-  ```
-
-  A user's exception class writes `message`, and strOf
-  (src/InterpreterOperators.cpp) and g_userStr (src/Interpreter.cpp) both
-  find it; a built-in one made with `.new` has no such method on its class
-  and neither path reaches its `.Str`. A `die "x"` exception (`~$!`) is
-  fine. Done when the three lines match Rakudo 2026.09.
 - [ ] **`callsame` from a role's candidate reaches the one it overrides in a
   role it does** (found 2026-10-31 making a role's multis join its parent
   role's, 1d5e98c0; the build before it answered the same):
@@ -756,40 +641,6 @@ moves to [TODO.md](TODO.md).
   what a probe calls (`.result`, `.receive`, `.join`), so they have none.
   `.can` on a role has no sentinel either. Done when these answer from a
   table of their methods rather than a probe.
-- [ ] **An infix on a Whatever value curries** (found 2026-10-31 making a
-  method on one call it, 34168c0e):
-
-  ```raku
-  my $w = *;
-  say $w ~ "a";   # WhateverCode.new, Rakudo *a
-  say 5 ~~ $w;    # WhateverCode.new, Rakudo True
-  ```
-
-  evalBinary (src/InterpreterCore.cpp) curries whenever an operand IS a
-  Whatever (`isWhateverish`), not only when the operand was a written `*`.
-  Done when, as for methods, only a written star curries.
-- [ ] **`=for para` and `=begin para` are a Pod::Block::Para, not a
-  Pod::Block::Named** (found 2026-10-31 checking Pod gists against Rakudo,
-  5d4de331):
-
-  ```raku
-  =for para
-  y
-
-  =begin para
-  x
-  =end para
-
-  say $=pod.map(*.^name);   # (Pod::Block::Para Pod::Block::Para),
-                            # Rakudo (Pod::Block::Named Pod::Block::Named)
-  ```
-
-  Rakudo makes a Named block called "para" with the Para inside it, as
-  rakupp already does for the abbreviated `=para`; the Para inside is right
-  in both, only the outer block's class and name differ, so `.gist` shows
-  `Pod::Block::Para` where Rakudo shows `Pod::Block::Named{:name("para")}`.
-  The blocks are built in src/Pod.cpp. Done when both lines' names and
-  `$=pod.gist` match Rakudo 2026.09.
 - [ ] **A Pod block's `.Str` and `.raku` are its text** (found 2026-10-31
   making its `.gist` Rakudo's, 5d4de331):
 
@@ -808,18 +659,45 @@ moves to [TODO.md](TODO.md).
   both lines match Rakudo 2026.09 (an address aside) and the suite still
   passes.
 
-## Control flow and containers
-
-- [ ] **`%h{@b.item} = 1` assigns a slice** (found 2026-11-07 fixing #221,
-  266d37c6):
+- [ ] **A `Buf` parameter takes a Blob, and a `Hash` one or variable a Map**
+  (found 2026-11-08 making `--> Buf` and `--> Hash` refuse them; `--> Rat`
+  and `my Rat $r` refuse a FatRat since):
 
   ```raku
-  my @b = 1, 2; my %h; %h{@b.item} = 1; say %h.elems;   # 2, Rakudo 1
-  my %o{Any}; %o{@b.item} = 1; say %o.keys[0] === @b;   # False, Rakudo True
+  sub a(Buf $x) { 1 }; say a(Blob.new(1));      # 1, Rakudo: X::TypeCheck::Binding::Parameter
+  sub b(Hash $x) { 1 }; say b(Map.new);         # 1, the same
+  my Hash $h = Map.new; say $h.^name;           # Map, Rakudo: X::TypeCheck::Assignment
   ```
 
-  A read, `%h{@b.item}`, and a store through a variable, `%h{$x} = 1`, take
-  the itemized array as one key; the assignment path flattens it.
+  typeMatchesArg (src/InterpreterCore.cpp) lets any buffer kind match any
+  buffer type name, and a Map match `Hash` (hashKindIsMap); `~~` answers
+  both right. Before narrowing it, check that no built-in answers a Blob or
+  a Map where Rakudo answers a Buf or a Hash (`.read`, `.subbuf`, `~` of two
+  Bufs, `%h.Map`), or a `Buf $b` parameter that took one starts refusing it.
+
+- [ ] **An arithmetic infix on a Whatever value numifies it** (found
+  2026-11-08 making an infix on one stop currying):
+
+  ```raku
+  my $w = *;
+  say $w + 1;        # 1, Rakudo: X::Multi::NoMatch (Cannot resolve caller Numeric(Whatever:D: ))
+  say $w == 1;       # False, the same
+  say -$w;           # -0, the same
+  say ($w => 1).raku;   # "*" => 1, Rakudo * => 1
+  say 5 ~~ *;        # WhateverCode.new, Rakudo 5 ~~ * (a WhateverCode gists as its source)
+  ```
+
+- [ ] **Two built-in exceptions made with `.new` have the wrong message**
+  (found 2026-11-08 making `~` of one its message):
+
+  ```raku
+  say X::Str::Numeric.new(:source<a>, :pos(0), :reason<r>).message;
+      # (Any), Rakudo: Cannot convert string to number: r in '<HERE>a' (indicated by <HERE>)
+  say X::OutOfRange.new(:what<x>, :got(5), :range(1..2)).message;
+      # …should be in 1 2, Rakudo …should be in 1..2
+  ```
+
+## Control flow and containers
 
 - [ ] **A top-level `use` and `constant` run in the mainline, after BEGIN,
   CHECK and INIT** (found 2026-10-30 checking what a #190 build runs; on
@@ -1139,18 +1017,6 @@ moves to [TODO.md](TODO.md).
   NativeHelpers::Blob's pointer-to) needs thought first. Done when this
   prints 4, and a compiled caller sees what `sub widen(Buf $b) {
   $b.write-uint8($b.elems, 9) }` added.
-- [ ] **`$b[1]++` on a Buf element dies** (found 2026-10-28 while fixing
-  issue #186, 18ef8f73; the same on 50122f46):
-
-  ```raku
-  my $b = Buf.new(1, 2);
-  $b[1]++;          # Index out of range. Is: 1, should be in 0..0
-  say $b.list;      # Rakudo (1 3)
-  ```
-
-  `$b[0] += 10` and `$b[1] = 7` are right; only the step is not, in a
-  variable and in a parameter alike. Done when it prints Rakudo's (1 3),
-  compiled too.
 - [ ] **An array slot alias still names a position after `@a = …`** (found
   2026-10-29 while fixing issue #215, 67c35490; on v5.5.0 too). Rakudo's
   alias is the element's Scalar, which a list assignment replaces; ours
@@ -1298,23 +1164,17 @@ moves to [TODO.md](TODO.md).
   return hands back a container that is not that cell. Done when the
   returned container and the attribute share it.
 
-## Processes and diagnostics
-
-- [ ] **`run` and `shell` silently accept named arguments they do not take**
-  (found 2026-10-20 writing tools/run-fatroast.raku: `run(…, :ENV(%env))`
-  ran the child with the parent's environment, and a whole campaign ran
-  against the wrong directory):
+- [ ] **An itemized Range is two keys** (found 2026-11-08 making
+  `%h{@b.item} = 1` one key):
 
   ```raku
-  run("true", :bogus); say "ok"       # ok, Rakudo: Cannot resolve caller run(true, :bogus) (X::Multi::NoMatch)
-  shell("true", :ENV(%())); say "ok"  # same
+  my %x; %x{(1..2).item} = 1; say %x;   # {1 => 1, 2 => (Any)}, Rakudo {1 2 => 1}
   ```
 
-  `run` takes `in out err bin chomp merge enc nl cwd env arg0
-  win-verbatim-args`. Methods stay lenient in both engines
-  (`Proc::Async.new("true").start(:bogus)` is fine). Check Roast (S29-os,
-  S17-procasync, `#?rakudo todo`) and the repo's own callers (`grep -rn
-  ':ENV(' tools/ t/ lib/`) before refusing.
+  `.item` on a Range hands back the Range unitemized, so the slice branch of
+  the assignment, which skips an itemized list now, still takes it.
+
+## Processes and diagnostics
 
 - [ ] **"Variable '$x' is not declared" inside a string past line 200 is
   reported at line 1** (found 2026-10-20: a typo on line 268 of
@@ -1406,6 +1266,24 @@ moves to [TODO.md](TODO.md).
   so those two arms keep the quit. Done when the line above matches Rakudo,
   `uncaught_handler` is honoured, and those arms hand the tapper's error on.
 
+- [ ] **`--doc` runs the program's mainline** (found 2026-11-08 checking
+  `=for para`'s rendering):
+
+  ```bash
+  printf '=para w\n\nsay "MAINLINE RAN";\n' > /tmp/d.raku; build/rakupp --doc=Text /tmp/d.raku
+  # rakupp: MAINLINE RAN, then w; Rakudo: w
+  ```
+
+- [ ] **A Pair passed to `run` as a positional is dropped** (found
+  2026-11-08 making `run` refuse unknown named arguments):
+
+  ```raku
+  say run("echo", "a" => 1, :out).out.slurp(:close).raku;   # "\n", Rakudo "a\t1\n"
+  ```
+
+  run()'s argument loop reads every Pair as an adverb, the ones written as
+  positionals too (`v.namedArg` tells them apart).
+
 ## Backends
 
 - [ ] **Python: `dir()` of a package that comes back as an Object lists
@@ -1445,19 +1323,6 @@ moves to [TODO.md](TODO.md).
   BEGIN. A BEGIN statement inside a routine or block still runs at start
   too, and keeps the top-level ones running when it touches the program's
   variables.
-
-- [ ] **`Instant.raku` is not exact, so a binary does not embed `constant T =
-  now`** (found 2026-10-30 fixing issue #190, 946d29e4):
-
-  ```raku
-  my $i = now; say $i.raku; say (EVAL $i.raku) eqv $i
-  # rakupp: Instant.from-posix(1793331244.935708e0) / False
-  # Rakudo: Instant.from-posix(1793331244.919478689) / True
-  ```
-
-  The build embeds a value only when its `.raku` reads back `eqv`, so an
-  Instant constant is computed at start, with a note. Write the posix value
-  as Rakudo does, a Rat.
 
 - [ ] **`--exe`: a list constant says it is an Array** (found 2026-10-30
   fixing issue #190; base ba17e855 does the same):
@@ -1572,6 +1437,28 @@ moves to [TODO.md](TODO.md).
   tools/source-helpers/interpreter.plan is the plan that
   split Interpreter.cpp, and split.raku can cut along another one. Done
   when it is under its 34d064ca ceiling again.
+
+- [ ] **`--exe`: two Buf element steps** (found 2026-11-08 making
+  `$b[1]++` step a Buf's element, which compiled code already did):
+
+  ```raku
+  my $b = Buf.new(2, 0); $b[*-1]--; say $b.list;   # interpreted (2 255), --exe: Index out of range. Is: -1
+  my @a = Buf.new(5); @a[0][0]++; say @a[0].list;  # interpreted (6), --exe: [1]
+  ```
+
+  Codegen's nativeElemTarget takes an element step to nativeElemStep, which
+  hands a Buf to bufElemStep, only for a variable base and a plain index; a
+  `*-1` index or an Index base takes the general step through rtIndexRef,
+  which has no place for a Buf's byte (the second makes the Buf an Array).
+
+- [ ] **`--exe`: a multi dispatch no candidate takes says so in its own
+  words** (found 2026-11-08 checking the X::Multi::NoMatch profile):
+
+  ```raku
+  class A { multi method m(Int) { } }; A.new.m("x");
+  # interpreted and Rakudo: Cannot resolve caller m(A:D: Str:D); none of these signatures matches…
+  # --exe: No matching multi-method candidate for m
+  ```
 
 ## Performance
 
@@ -1823,8 +1710,3 @@ moves to [TODO.md](TODO.md).
   and Raku++ names line 16, where `say Q/foo $a \n/` holds the spelling in a
   literal that interpolates nothing. Both refuse the file; only the line
   differs (found 2026-10-23). Likely DeclCheck's textual scan.
-
-- [ ] **`.index(Str)` and `.indices(Str)` die as X::TypeCheck::Binding::
-  Parameter; Rakudo 2026.09 dies X::Multi::NoMatch** ("Cannot resolve caller
-  indices(Str:D: Str:U)"), naming the candidates. Roast asserts only
-  `dies-ok` (S32-str/index.t, indices.t). Found 2026-10-23.

@@ -23,7 +23,10 @@ b9e35683 (the store undo log copies the arrays at a sixteenth),
 and issues #221-#229: 1a3f36d1 (#223, #224), 28824bb7 (#222), 32b1ea01
 (#220's follow-up), 266d37c6 and 92561fe1 (#221), e7bbb97c (#225),
 20f0691d (#228), 17d28f81 (#229); eb574770 and f395b6eb (#230); 5f6d78e4 (#231);
-e1245a6c and 6785ecda (`raku++`, a symlink to the engine).*
+e1245a6c and 6785ecda (`raku++`, a symlink to the engine);
+sixteen of TODO-FOLLOW-UPS.md's items: c73d0b8d, ced6a8ef, 4c49bc3e,
+122eae41, 46c4e957, e00e905c, 5ae92da8, 2d078a02, 56a7962d, a7739c52,
+c2ec4411, 6e8cdfbe, 8fbd9e08, 6497dca5, a3f00087, db0fdbca.*
 
 ---
 
@@ -297,6 +300,26 @@ e1245a6c and 6785ecda (`raku++`, a symlink to the engine).*
   `:42x<a>` are Rakudo's compile errors, where they indexed the pair at run
   time. `t/regression/wordquote-colonpair-bracket.raku`, 124 checks against
   Rakudo 2026.09.
+- **`--> Buf` refuses a Blob, `--> Hash` a Map and `--> Rat` a FatRat**
+  (56a7962d), as Rakudo's return check does, interpreted and compiled. The full
+  check took each sibling for the type; the compiled fast check
+  (rtTypedFast's Rat) took a FatRat too, and so `my Rat $r = FatRat.new(1, 2)`
+  stored. A `Buf` or `Hash` parameter still takes a Blob or a Map (left open).
+  `t/regression/return-type-sibling-refused.raku`.
+- **A `rule { … }` or `token { … }` kept in a variable, or passed to a
+  routine, matches as one** (c2ec4411): `my $r = rule { a b }; 'a b' ~~ $r` was
+  Nil and 'ab' matched, in both engines; a written value lost its kind on
+  the way into the variable or the argument list.
+  `t/regression/anon-rule-value-keeps-sigspace.raku`.
+- **`%h{@b.item} = 1` stores one key** (6e8cdfbe), as the read and `%h{$x} = 1`
+  did: the assignment's slice branch took any list a method answered for
+  many keys. `t/regression/itemized-list-hash-key-assign.raku`.
+- **`run` and `shell` refuse a named argument they do not take** (db0fdbca):
+  `run(…, :ENV(%env))` ran the child with this process's environment, and a
+  whole FatRoast campaign ran against the wrong directory unnoticed. It is
+  X::Multi::NoMatch with Rakudo's candidate, as on Rakudo; `run(:timeout)`,
+  rakupp's own, stays, and Proc::Async's `.start` is lenient in both
+  engines. `t/regression/run-refuses-unknown-named.raku`.
 
 ### Fixed: crashes
 
@@ -330,6 +353,47 @@ e1245a6c and 6785ecda (`raku++`, a symlink to the engine).*
   worker parked in such a call is now counted, and the drain stops waiting
   once every live worker is one: 0.25 s, where Rakudo 2026.09 takes
   0.32-0.44 s. `t/regression/issue-229-exit-past-blocked-read.raku`.
+- **A type object where a needle goes is X::Multi::NoMatch** (c73d0b8d):
+  `.index(Str)`, `.indices`, `.rindex`, `.contains`, `.starts-with` and
+  `.ends-with` died X::TypeCheck::Binding::Parameter about a `$needle`
+  parameter. The capture in every X::Multi::NoMatch message now names the
+  invocant's definedness (`m(A:D: Str:D)`, where it said `m(A: Str:D)`) and
+  a Bool argument as its adverb (`:i`, not `:i(Bool)`).
+  `t/regression/needle-type-object-no-match.raku`.
+- **A qualified enum's type object gists by its short name** (ced6a8ef),
+  `(Idx)` for `B::Idx`, as a class's does.
+- **`now` is an exact Rat of nanoseconds** (4c49bc3e), as Rakudo's is, so its
+  `.raku` reads back `eqv`: it was a Num, `Instant.from-posix(1793331244.935708e0)`.
+  A binary can embed `constant T = now` now. `t/regression/now-is-exact-rat.raku`.
+- **`Str.new(1)` dies "Default constructor for 'Str' only takes named
+  arguments"** (122eae41), as do Any, Cool, Match, Exception, Capture and
+  Signature with a positional, and `"x".new(:value<a>)` is "a".
+  `t/regression/default-constructor-positional.raku`.
+- **`~` and `sprintf('%s')` of a built-in exception made with `.new` are its
+  message** (46c4e957), as `.Str` was: `~X::AdHoc.new(:payload<boom>)` was "" with
+  a warning. One with no message says "Something went wrong in (E)".
+  `t/regression/builtin-exception-stringifies.raku`.
+- **`for Empty -> $x { }` runs** (e00e905c): `Empty` is a term before a block or
+  a pointy, as `rand` and `now` are.
+- **`$b[1]++` steps a Buf's element** (5ae92da8), wrapping at its width, where it
+  died "Index out of range"; one past the end grows the Buf, and a Blob's
+  element is refused as Rakudo refuses it, compiled too.
+- **An infix on a Whatever value is applied to it** (2d078a02): `my $w = *; $w ~
+  "a"` is "*a" and `5 ~~ $w` True, where both curried; only a written `*`
+  curries, as for methods. A `.&` call on a written star builds its own
+  WhateverCode now (`*.uc.&{ $_ ~ 'one' }`), where it ran the block on the
+  star and leaned on that curry. `t/regression/whatever-value-infix-does-not-curry.raku`.
+- **Mixing two list-associative operators is refused** (a7739c52): `1 or 0 xor 1`,
+  `1 || 0 ^^ 1`, `1 and 0 andthen 1` say "Only identical operators may be
+  list associative…", as Rakudo does; `1 min 2 max 3` has Rakudo's message.
+- **A signature returns the type of a written return value** (8fbd9e08):
+  `sub f(Int $x --> Nil)`'s `.signature.returns` is Nil (it was Mu), `-->
+  True` Bool, `--> 42` Int, and `&f.signature ~~ :(Int)` is False.
+- **`loop(…)` calls a `&loop` parameter** (6497dca5), as it called a `sub loop`;
+  without one, `loop(…) { … }` is refused, as Rakudo does.
+- **`=for para` and `=begin para` are a Pod::Block::Named called "para"**
+  (a3f00087) holding the Para, as `=para` was, and `--doc=Text` renders a `para`
+  block as its paragraphs, not under its name.
 
 ### Platforms and packaging
 
@@ -392,8 +456,18 @@ e1245a6c and 6785ecda (`raku++`, a symlink to the engine).*
 - Found with issues #221-#229, the same before them (each in
   TODO-FOLLOW-UPS.md): a value-parameterized role, `R2[1] ~~ R2[Int]`, is
   False where Rakudo says True; `Positional[Int:D].^name` is
-  `Positional[Int,D]`; `%h{@b.item} = 1` assigns a two-key slice; a FALLBACK
+  `Positional[Int,D]`; a FALLBACK
   receives the list methods Any answers (`.first`, `.elems` …), and an
   object that is no Exception keeps `.throw`, `.rethrow`, `.resume` and
   `.backtrace` from its FALLBACK; a `my subset` in a `unit role`'s file is
   not named for its package.
+- Found with this batch of follow-ups (c73d0b8d to db0fdbca), each the same before it
+  and each in TODO-FOLLOW-UPS.md: a `Buf` parameter takes a Blob and a
+  `Hash` one or variable a Map; arithmetic on a Whatever value numifies it
+  (`$w + 1` is 1, Rakudo dies); `<$r>` of a stored anonymous `rule` matches
+  nothing, and its `.raku` is a `rx//`; `(1..2).item` is two hash keys;
+  `X::Str::Numeric.new(…).message` is (Any) and X::OutOfRange's range reads
+  `1 2`; `--doc` runs the program's mainline; a Pair passed to `run` as a
+  positional is dropped; compiled, `$b[*-1]--` and `@a[0][0]++` on a Buf
+  differ, and a multi dispatch no candidate takes says "No matching
+  multi-method candidate".
