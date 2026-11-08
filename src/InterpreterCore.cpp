@@ -9137,16 +9137,19 @@ Value Interpreter::callCallableRaw(const Value& codeVal, ValueList args, const s
             // "Will never work" is what Rakudo says when the COMPILER can count
             // the arguments: a call that names the routine and flattens nothing.
             // Through a variable (`my &g = &f; g(…)`, `$block()`) or with a `|`
-            // slip only the run finds out, and the run says how many it expected
-            // (Rakudo-checked wording, an X::AdHoc — thrown as our
-            // X::Signature::ArityMismatch, which IS one and says more).
-            bool slipped = false;
+            // slip, or beside a named argument (`g(:a)`), only the run finds out, and
+            // the run says how many it expected (Rakudo-checked wording, an X::AdHoc
+            // — thrown as our X::Signature::ArityMismatch, which IS one and says more).
+            bool slipped = std::any_of(args.begin(), args.end(), [](const Value& a) { return isNamedArg(a); });
             if (rwArgs)
                 for (auto& ae : *rwArgs)
                     if (ae && ae->kind == NK::Unary && static_cast<const Unary*>(ae.get())->op == "|") { slipped = true; break; }
             if (!writtenName || *writtenName != c.ci().name || slipped) {
                 const int got = posStrict + pairish;
                 const bool few = got < reqPos;
+                // (worded by the real slurpies: an `@` counted unbounded above only for the too-many test)
+                bool unbounded = false;
+                if (c.ci().params) for (auto& p : *c.ci().params) unbounded = unbounded || (!p.invocant && !p.named && (p.sigil == '|' || (p.slurpy && p.sigil != '%' && (p.sigil != '$' || p.subSig))));
                 std::string expected;
                 if (unbounded) expected = "at least " + std::to_string(reqPos) + " arguments";
                 else if (reqPos == maxPos)
