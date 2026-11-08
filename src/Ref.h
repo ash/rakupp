@@ -142,9 +142,14 @@ enum : std::uint32_t {
     kPayCycleAcyclic = 16,
     kPayKeptDetached = 32,   // a kept `@a.head(n)`'s buffer, its array refilled (keepEndsContainers)
     kPayFatRat = 64,         // a Rat body (PK::Rat) whose Value is a FatRat: its type, not its parts
+    // WHICH_ID: the body has a `.WHICH` serial in Which.cpp's table, which its
+    // death takes out (whichForget), so a body later made at its address gets
+    // a serial of its own
+    kPayWhichId = 128,
 };
 constexpr unsigned kPayCycleIdxShift = 8;
 void cycleForget(Payload* p) noexcept;   // Cycle.cpp
+void whichForget(Payload* p) noexcept;   // Which.cpp
 
 // The count's top bit: a TRACKED body (an object's: see makePayload) whose
 // every release that leaves it alive makes it a cycle-collector candidate —
@@ -159,7 +164,9 @@ extern bool g_cycleTrack;                       // Cycle.cpp: objects are tracke
 void cycleNoteRelease(Payload* p) noexcept;     // Cycle.cpp
 [[gnu::noinline]] inline void payloadReleaseSlow(Payload* p, std::uint32_t old) noexcept {
     if ((old & kRefMask) == 1) {
-        if (p->pflags_.load(std::memory_order_relaxed) & kPayCycleBuffered) cycleForget(p);
+        const std::uint32_t f = p->pflags_.load(std::memory_order_relaxed);
+        if (f & kPayCycleBuffered) cycleForget(p);
+        if (f & kPayWhichId) whichForget(p);
         p->destroySelf();
     }
     else if (old & kRefTracked) cycleNoteRelease(p);

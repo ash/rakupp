@@ -4,8 +4,14 @@
 # `["1 2"]` were all `Array|1 2` — while `===` already said the arrays were
 # different objects. An Array, a List or a Seq now identifies by its payload,
 # as `===` does: the same for the life of the object however it changes, and
-# distinct for two objects alive at once. (A temporary's WHICH, like a Hash's,
-# may be reused once it is gone.)
+# distinct for two objects.
+#
+# …and two temporaries are two objects too. The identity was the payload's
+# address, which the next body took once the first was gone, so the issue's
+# last row, `(1,2).WHICH eq ('1','2').WHICH`, stayed True — as did
+# `Foo.new.WHICH eq Foo.new.WHICH`, two Hashes, two Bufs, two Instants. Every
+# such WHICH is a serial now, assigned to the body when first asked for and
+# dropped with it.
 #
 # Found beside it: `(elem)` flattened the list it searched, so
 # `@b (elem) (@b.item,)` was False and `2 ∈ (1, (2, 3))` True; it walks the
@@ -38,6 +44,26 @@ my $q = ('1', '2');
 my $r = ('1 2',);
 check '(1,2) is no ("1","2")', $p.WHICH eq $q.WHICH, False;
 check '…nor ("1 2",)', $p.WHICH eq $r.WHICH, False;
+check 'the issue\'s last row, with temporaries', (1, 2).WHICH eq ('1', '2').WHICH, False;
+check 'two temporary Arrays', [1, 2].WHICH eq [1, 2].WHICH, False;
+check 'one temporary a loop makes each time', (^3).map({ [$_].WHICH }).unique.elems, 3;
+
+# the other identities had the same hole
+class Foo { }
+check 'two temporary objects', Foo.new.WHICH eq Foo.new.WHICH, False;
+check 'two temporary Hashes', {a => 1}.WHICH eq {b => 2}.WHICH, False;
+check 'two temporary Bufs', Buf.new(1).WHICH eq Buf.new(2).WHICH, False;
+check 'two Promises', Promise.new.WHICH eq Promise.new.WHICH, False;
+my $obj = Foo.new;
+check 'an object keeps its WHICH', $obj.WHICH eq $obj.WHICH, True;
+my $buf = Buf.new(1, 2);
+my $bw = $buf.WHICH;
+$buf.push(3);
+check 'a Buf keeps its WHICH', $bw eq $buf.WHICH, True;
+my %hh = a => 1;
+my $hw = %hh.WHICH;
+%hh = b => 2;
+check 'a Hash keeps its WHICH through a refill', $hw eq %hh.WHICH, True;
 
 # a List holding an Array keeps its WHICH while the Array grows
 my $l = (1, 2, @a);

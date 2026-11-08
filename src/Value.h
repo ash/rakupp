@@ -1964,7 +1964,12 @@ inline bool identityScalar(const Value& v) {
            ((v.t == VT::Num || v.t == VT::Int || v.t == VT::Rat) &&
             (v.hashKind == "Instant" || v.hashKind == "Duration"));
 }
-inline Value& identify(Value& v) { v.extM() = std::make_shared<char>(); return v; }
+// The token is its WHICH serial: an address would be handed to the next
+// token once this one is gone, and two temporaries would share a WHICH.
+struct IdentityToken { std::uint64_t id; };
+std::uint64_t nextWhichSerial() noexcept;   // Which.cpp
+inline std::shared_ptr<void> identityToken() { return std::make_shared<IdentityToken>(IdentityToken{nextWhichSerial()}); }
+inline Value& identify(Value& v) { v.extM() = identityToken(); return v; }
 
 bool valueEq(const Value& a, const Value& b);   // numeric/str smart equality
 // structural eqv over two objects: same class, attrs pairwise-equal via `eq`
