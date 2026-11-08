@@ -6187,16 +6187,16 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
         }
         // A PARAMETERIZED constructor type-checks what it is given, exactly as
         // an assignment into the container would: `Array[Int].new("a")` is
-        // X::TypeCheck::Assignment, not an Array holding a Str (sheet LA-21).
-        if (!v.ofType().empty() && v.ofType() != "Mu" && v.ofType() != "Any" &&
-            v.ofType().find(',') == std::string::npos &&
-            !ascii::islower((unsigned char)v.ofType()[0]))
+        // X::TypeCheck::Assignment, not an Array holding a Str (sheet LA-21),
+        // and `Array[Str:D]` asks the nominal type and the smiley's definedness.
+        const std::string& ot = v.ofType();
+        const char sm = ot.size() > 2 && ot[ot.size() - 2] == ':' && ot[ot.size() - 3] != ':' ? ot.back() : 0;
+        if (!ot.empty() && ot != "Mu" && ot != "Any" && ot.find(',') == std::string::npos && !ascii::islower((unsigned char)ot[0]))
             for (auto& x : seed) {
-                if (x.t == VT::Nil || typeOrSubsetMatches(x, v.ofType())) continue;
-                throwTypedV("X::TypeCheck::Assignment",
-                    {{"got", x}, {"expected", Value::typeObj(v.ofType())}},
-                    "Type check failed in assignment; expected " + v.ofType() +
-                        " but got " + x.typeName() + " (" + typeCheckRepr(x) + ")");
+                if (x.t == VT::Nil || (typeOrSubsetMatches(x, sm ? ot.substr(0, ot.size() - 2) : ot) &&
+                                       (sm != 'D' || rtIsDefined(x)) && (sm != 'U' || !rtIsDefined(x)))) continue;
+                throwTypedV("X::TypeCheck::Assignment", {{"got", x}, {"expected", Value::typeObj(ot)}},
+                    "Type check failed in assignment; expected " + ot + " but got " + x.typeName() + " (" + typeCheckRepr(x) + ")");
             }
         if (!dims.empty()) { // shaped array — pre-sized, row-major, tagged with .shape()
             std::string et = v.ofType() == "Any" || v.ofType() == "Mu" ? "" : v.ofType();

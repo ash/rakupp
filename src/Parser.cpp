@@ -10043,7 +10043,10 @@ ExprPtr Parser::parsePrimary() {
                         atArgStart = false;
                         continue;
                     }
-                    advance(); // commas / smileys — the comma is re-added implicitly
+                    // a smiley stays on its argument, `Positional[Int:D]`, as Rakudo names it
+                    if (isOp(":") && !atArgStart && peek().kind == Tok::Ident &&
+                        (peek().text == "D" || peek().text == "U" || peek().text == "_")) { advance(); params += ":" + advance().text; continue; }
+                    advance(); // commas — the comma is re-added implicitly
                 }
                 expectKind(Tok::RBracket, "]");
                 auto nt = std::make_unique<NameTerm>(name);

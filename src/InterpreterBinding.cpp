@@ -992,7 +992,7 @@ bool roleArgsCovariant(const std::string& have, const std::string& want) {
         if (ha[i] == wa[i] || wa[i] == "Mu" || (wa[i] == "Any" && ha[i] != "Mu")) continue;
         if (!typeNameLead(ha[i][0]) || !typeNameLead(wa[i][0])) return false;
         if (ha[i].find('[') != std::string::npos && roleArgsCovariant(ha[i], wa[i])) continue;
-        if (!typeNameConforms(ha[i], wa[i], std::string(), std::string())) return false;
+        if (!roleArgAccepts(ha[i], wa[i])) return false;   // (`R[Int:D] ~~ R[Int]`, not the other way)
     }
     return true;
 }
@@ -1552,6 +1552,9 @@ size_t topLevelComma(const std::string& s) {   // (shared: MethodCallPart3.cpp)
 std::string elemTypeOfSpec(const std::string& ofType) {
     if (ofType.empty()) return "";
     std::string first = ofType.substr(0, topLevelComma(ofType));
+    // (an element is checked by its nominal type: `Array[Str:D]`'s smiley is not kept, TODO-FOLLOW-UPS.md)
+    if (first.size() > 2 && first[first.size() - 2] == ':' && first[first.size() - 3] != ':' && std::strchr("DU_", first.back()))
+        first.resize(first.size() - 2);
     if (first.empty() || first == "Any" || first == "Mu" || first == "Cool") return "";
     if (!typeNameLead(first[0])) return ""; // native: see natCheck
     return first;
