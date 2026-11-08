@@ -552,7 +552,7 @@ private:
     // `--> CArray[Str]` — a NativeCall return type keeps its element parameter
     std::string nativeRetParam(size_t identPos) const;
     size_t lastBlockClose_ = (size_t)-1;
-    size_t lastPkgClose_ = (size_t)-1;   // …and the last that closed a package body (`class {}` is a term)
+    ExprPtr presetLhs_;                  // parseExpr's first operand, read already (`class A {} === A`)
     // the innermost enclosing ROLE (what ::?ROLE names), past any class or
     // grammar declared inside it — "" outside every role
     std::string enclosingRoleName() const {

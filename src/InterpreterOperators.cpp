@@ -2701,13 +2701,13 @@ bool Interpreter::catAssignInPlace(Value* lv, const Value& rhs) {
         return !v.itemized &&
                (v.hashKind == "Blob" || v.hashKind == "Buf" || v.hashKind == "utf8");
     };
-    // `$blob ~= $blob` appends BYTES and yields a Buf, like the binary form.
-    // Normalizing here would corrupt them, and a high byte looks non-ASCII.
-    if (bloby(*lv) && bloby(rhs) && lv->blobElemSize() == rhs.blobElemSize()) {
+    // `$blob ~= $blob` of one type appends BYTES and keeps it, like the binary form;
+    // any other buffer pair is the binary form's (a plain Buf). Normalizing here
+    // would corrupt them, and a high byte looks non-ASCII.
+    if (bloby(*lv) || bloby(rhs)) {
+        if (!bloby(*lv) || !bloby(rhs) || lv->typeName() != rhs.typeName()) return false;
         lv->s += rhs.s;
-        lv->hashKind = "Buf";
-        identify(*lv); // `$b ~= …` is `$b = $b ~ …` — a NEW Buf in the variable
-        if (lv->ofType().empty()) lv->ofTypeM() = rhs.ofType();
+        identify(*lv); // `$b ~= …` is `$b = $b ~ …` — a NEW buffer in the variable
         return true;
     }
     if (asciiRhs) lv->s.appendAscii(rhs.s.str());
@@ -3758,6 +3758,7 @@ static const std::set<std::string> kCorePostfixOps = {
     "++", "--", "i", "\xE2\x81\xBF", "\xE2\x9A\x9B++", "\xE2\x9A\x9B--"};
 static const std::set<std::string> kCoreCircumfixOps = {":{ }", "[ ]", "{ }"};
 static const std::set<std::string> kCorePostcircumfixOps = {"[ ]", "[; ]", "{ }", "{; }"};
+bool corePrefixName(const std::string& n) { return n.size() > 10 && kCorePrefixOps.count(n.substr(9, n.size() - 10)); }
 static const std::set<std::string>* coreOpsOf(const std::string& cat) {
     return cat == "infix" ? &kCoreInfixOps : cat == "prefix" ? &kCorePrefixOps
          : cat == "postfix" ? &kCorePostfixOps : cat == "circumfix" ? &kCoreCircumfixOps

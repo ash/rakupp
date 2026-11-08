@@ -868,6 +868,8 @@ extern std::atomic<uint64_t> g_lexShadowMask;
 // `-"fish"`), so evalUnary has to look it up — this keeps that lookup off every
 // other program's unary operators.
 extern std::atomic<bool> g_userPrefixShadow;
+// `&prefix:<->`: a built-in prefix's name (InterpreterOperators.cpp's kCorePrefixOps)
+bool corePrefixName(const std::string& amperName);
 inline unsigned lexShadowSlot(const char* p, size_t n) {
     return (unsigned)((p[0] * 31u + p[n - 1] * 7u + n) & 63u);
 }
@@ -1134,10 +1136,11 @@ struct Env {
             !(v.t == VT::Code && v.code() && !v.code()->ci().name.empty() &&
               (v.code()->ci().isMultiDispatcher || v.code()->ci().isMultiCandidate || v.code()->ci().isProto)))
             lexShadowArm(name.data() + 8, name.size() - 9);
+        // (…and a multi on a BUILT-IN prefix's name, whose candidates evalUnary tries first)
         if (name.size() > 10 && name[0] == '&' && name[1] == 'p' &&
             name.compare(0, 9, "&prefix:<") == 0 &&
-            v.t == VT::Code && v.code() && !v.code()->ci().isMultiDispatcher && !v.code()->ci().isMultiCandidate &&
-            !v.code()->ci().isProto && !v.code()->ci().builtin)
+            v.t == VT::Code && v.code() && !v.code()->ci().isMultiCandidate && !v.code()->ci().isProto &&
+            !v.code()->ci().builtin && (!v.code()->ci().isMultiDispatcher || corePrefixName(name)))
             g_userPrefixShadow.store(true, std::memory_order_relaxed);
         if (layout) {
             auto it = layout->byName.find(name);

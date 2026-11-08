@@ -9137,16 +9137,19 @@ Value Interpreter::callCallableRaw(const Value& codeVal, ValueList args, const s
             // "Will never work" is what Rakudo says when the COMPILER can count
             // the arguments: a call that names the routine and flattens nothing.
             // Through a variable (`my &g = &f; g(…)`, `$block()`) or with a `|`
-            // slip only the run finds out, and the run says how many it expected
-            // (Rakudo-checked wording, an X::AdHoc — thrown as our
-            // X::Signature::ArityMismatch, which IS one and says more).
-            bool slipped = false;
+            // slip, or beside a named argument (`g(:a)`), only the run finds out, and
+            // the run says how many it expected (Rakudo-checked wording, an X::AdHoc
+            // — thrown as our X::Signature::ArityMismatch, which IS one and says more).
+            bool slipped = std::any_of(args.begin(), args.end(), [](const Value& a) { return isNamedArg(a); });
             if (rwArgs)
                 for (auto& ae : *rwArgs)
                     if (ae && ae->kind == NK::Unary && static_cast<const Unary*>(ae.get())->op == "|") { slipped = true; break; }
             if (!writtenName || *writtenName != c.ci().name || slipped) {
                 const int got = posStrict + pairish;
                 const bool few = got < reqPos;
+                // (worded by the real slurpies: an `@` counted unbounded above only for the too-many test)
+                bool unbounded = false;
+                if (c.ci().params) for (auto& p : *c.ci().params) unbounded = unbounded || (!p.invocant && !p.named && (p.sigil == '|' || (p.slurpy && p.sigil != '%' && (p.sigil != '$' || p.subSig))));
                 std::string expected;
                 if (unbounded) expected = "at least " + std::to_string(reqPos) + " arguments";
                 else if (reqPos == maxPos)
@@ -14032,10 +14035,12 @@ Value Interpreter::evalAssign(Assign* a, bool sink) {
                                 " but got " + p->typeName());
         }
         // …and outside any package a bare/`our` constant is still a PACKAGE
-        // symbol: `{ constant $c = 1 }; ::('$c')` finds it (GLOBAL)
+        // symbol: `{ constant $c = 1 }; ::('$c')` finds it (GLOBAL). Not over a
+        // CORE term, which a bare name finds before the package (`Less`, `pi`).
         if (ve->declare && ve->d().declScope == "constant" && tctx().pkgPrefix.empty() &&
             !ve->d().declMyConstant && !ve->name.empty() && tctx().cur != global_ &&
-            !global_->local(ve->name)) {
+            !global_->local(ve->name) && !coreEnumValueRef(ve->name) && !builtinPtr(ve->name) &&
+            [&] { Value t; return !nameTermConstant(ve->name, t); }()) {
             if (Value* p = tctx().cur->find(ve->name)) {
                 noteSymbolMutation("constant publish");
                 global_->define(ve->name, *p);
@@ -19512,15 +19517,21 @@ static Value applyArithGeneral(const std::string& op, const Value& l, const Valu
         // not 6) and — worse — NFC-NORMALIZED the result: these are bytes, and
         // normalizing them corrupts them silently. Digest's HMAC pads its key with
         // `$key ~= Blob.new: 0 xx ($block-size - +$key)`, so every hash was wrong.
-        // Same element width only; mixing blob8 with blob16 has no meaningful answer.
+        // Two of one type stay that type (utf8 ~ utf8 is a utf8, `Blob[uint8] ~ Blob[uint8]`
+        // one); any other pair is a plain Buf, of the elements when a width is not a byte's
+        // (Rakudo: utf8 ~ utf16 is `Buf.new(97,98,99)`, a wide element wrapped to 8 bits).
         auto bloby = [](const Value& v) {
             return v.t == VT::Str && !v.itemized &&
                    (v.hashKind == "Blob" || v.hashKind == "Buf" || v.hashKind == "utf8");
         };
-        if (bloby(l) && bloby(r) && l.blobElemSize() == r.blobElemSize()) {
-            Value out = Value::str(l.s + r.s);
-            out.hashKind = "Buf";                       // Rakudo: utf8 ~ Blob is a Buf
-            out.ofTypeM() = l.ofType().empty() ? r.ofType() : l.ofType();
+        if (bloby(l) && bloby(r)) {
+            const bool same = l.typeName() == r.typeName();
+            std::string bytes;
+            if (!same && (l.blobElemSize() != 1 || r.blobElemSize() != 1))
+                for (const Value* v : {&l, &r}) for (auto& e : v->blobList()) bytes += (char)(e.toInt() & 0xFF);
+            Value out = Value::str(bytes.empty() ? l.s + r.s : bytes);
+            out.hashKind = same ? l.hashKind : IStr("Buf");
+            if (same) { out.enumName = l.enumName; out.ofTypeM() = l.ofType(); }
             return identify(out);
         }
         // …and a Buf meeting a STRING has no string form to join: `"a" ~ $buf` is
@@ -25897,8 +25908,10 @@ Value Interpreter::evalUnary(Unary* u) {
             if (f->t == VT::Code && f->code() && !f->code()->ci().isMultiDispatcher &&
                 !f->code()->ci().isMultiCandidate && !f->code()->ci().isProto && !f->code()->ci().builtin)
                 return callCallable(*f, ValueList{v});
-    if (!u->postfix && v.t == VT::Object && v.obj() && v.obj()->cls) {
-        if (Value* f = tctx().cur->find("&prefix:<" + u->op + ">")) {
+    // (…and a user multi on any operand: `multi prefix:<->(Str $x)` takes `-"a"`, the built-in `-3`)
+    if (!u->postfix && ((v.t == VT::Object && v.obj() && v.obj()->cls) || g_userPrefixShadow.load(std::memory_order_relaxed))) {
+        if (Value* f = tctx().cur->find("&prefix:<" + u->op + ">"); f && (v.t == VT::Object ||
+                (f->t == VT::Code && f->code() && f->code()->ci().isMultiDispatcher && !f->code()->ci().builtin))) {
             try { return callCallable(*f, ValueList{v}); }
             catch (RakuError& e) {
                 // no candidate for this class: fall through to the built-in, the
@@ -31665,6 +31678,14 @@ Value Interpreter::evalVarExpr(Expr* e) {
                 };
                 return code;
             }
+        }
+        // `&postfix:<++>`, `&prefix:<-->`: the step on the container it is handed,
+        // as a routine of that name (`@a.map(&postfix:<++>)`, `f($y)` steps $y)
+        if (bare == "prefix:<++>" || bare == "prefix:<-->" || bare == "postfix:<++>" || bare == "postfix:<-->") {
+            const bool post = bare[1] == 'o', inc = bare.find("++") != std::string::npos;
+            Value code = evalString(std::string("sub ($x is rw) { ") + (post ? "$x" : "") + (inc ? "++" : "--") + (post ? "" : "$x") + " }");
+            code.setCode(makePayload<Callable>(*code.code())); code.code()->ciM().name = bare;
+            return code;
         }
         // `&prefix:<!>` / `&prefix:<->` — a built-in prefix operator as a
         // Callable: `(False, &prefix:<!> ... *)` alternates

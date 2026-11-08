@@ -2340,7 +2340,7 @@ ExprPtr Parser::parseExpr(int minbp) {
     if (!leftCont) leftSigil_ = 0;
     const char entrySigil = leftSigil_;
     ExprCtxScope loopCtx{exprCtx_, 'E'};   // (a prefix's operand is part of the expression too)
-    ExprPtr lhs = parsePrefix();
+    ExprPtr lhs = presetLhs_ ? std::move(presetLhs_) : parsePrefix();
     for (;;) {
         exprMinbp_ = minbp;   // (a nested parse in the operand reset it on its way out)
         // An operand of a tight operator that ENDS in a subscript adverb is done
@@ -14308,14 +14308,11 @@ StmtPtr Parser::parseClass(bool isRole, bool isGrammar, bool isPackage, bool isU
     // Only the FIRST component counts — `module Foo::MY` is an ordinary name —
     // and `GLOBAL::` is the exception that proves it, being a real place to put
     // a declaration (`class GLOBAL::evo`, stripped just below). GLOBAL standing
-    // ALONE is still nothing to declare, and Rakudo says so in its own words.
+    // ALONE is still nothing to declare, refused in the same words as the rest.
     if (!cd->name.empty()) {
         size_t sep = cd->name.find("::");
         std::string first = sep == std::string::npos ? cd->name : cd->name.substr(0, sep);
-        if (first == "GLOBAL" && sep == std::string::npos)
-            throw ParseError("Cannot declare pseudo-package GLOBAL", cur().line,
-                             "X::AdHoc", {});
-        if (first != "GLOBAL" && isPseudoPkg(first))
+        if ((first != "GLOBAL" || sep == std::string::npos) && (first == "GLOBAL" || isPseudoPkg(first)))
             throw ParseError("Cannot use pseudo package " + first + " in package name",
                              cur().line, "X::PseudoPackage::InDeclaration",
                              {{"pseudo-package", first}, {"action", "package name"}});
@@ -14436,7 +14433,7 @@ StmtPtr Parser::parseClass(bool isRole, bool isGrammar, bool isPackage, bool isU
             }
             cd->body.push_back(std::move(st));
         }
-        lastBlockClose_ = lastPkgClose_ = pos_;   // `module M { } say 1` is one line too many
+        lastBlockClose_ = pos_;   // `module M { } say 1` is one line too many
         expectKind(Tok::RBrace, "}");
         return cd;
     }
@@ -15530,7 +15527,7 @@ StmtPtr Parser::parseClass(bool isRole, bool isGrammar, bool isPackage, bool isU
     for (auto& lb : classBodyLeave) cd->body.push_back(std::move(lb));
     // this `}` closes a block as parseBlock's does: `my $x = class { … }⏎for …`
     // ends the statement at the newline — `for` is not a statement modifier
-    if (braced) { lastBlockClose_ = lastPkgClose_ = pos_; expectKind(Tok::RBrace, "}"); }
+    if (braced) { lastBlockClose_ = pos_; expectKind(Tok::RBrace, "}"); }
     typeStack_.pop_back();
     typeIsRole_.pop_back();
     // `self!nope()` in a class that declares no private `nope` is a COMPILE
@@ -17471,11 +17468,15 @@ StmtPtr Parser::parseStatementImpl() {
             // `class Foo {…}.new(…)` as a statement (zef's config object is exactly
             // this as a sub's last statement): the type is a TERM with a postfix.
             // Wrap the decl in `do { … }` (evals to the type object) and apply it.
-            if (isOp(".") && !cur().spaceBefore) {
+            // …and so is it before an infix on its line (`class A {} === A`, Roast's
+            // `class {} − class {}`): the operator's left operand
+            const bool infix = cur().kind == Tok::Op && cur().line == toks_[pos_ - 1].line && !(isOp(".") && !cur().spaceBefore);
+            if ((isOp(".") && !cur().spaceBefore) || infix) {
                 auto be = std::make_unique<BlockExpr>();
                 be->body.push_back(std::move(decl));
                 auto u = std::make_unique<Unary>(); u->op = "do"; u->operand = std::move(be);
                 auto es = std::make_unique<ExprStmt>();
+                if (infix) { presetLhs_ = std::move(u); es->e = parseExpression(); return applyModifiers(std::move(es)); }
                 es->e = parsePostfix(std::move(u), true);
                 return es;
             }
@@ -18010,11 +18011,6 @@ void Parser::checkTextAfterBlock() {
     if (!((pv.kind == Tok::RBrace && pos_ - 1 == lastBlockClose_) || pos_ - 1 == lastRegexDeclBody_)) return;
     const Token& ct = cur();
     if (ct.line != pv.line) return;
-    // A package declaration is a term, so an infix may follow it: Roast's
-    // `class {} − class {}`. The statement parser ends the declaration at its
-    // `}` and reads `− class {}` as a statement of its own, which is wrong
-    // but is no missing `;`.
-    if (pos_ - 1 == lastPkgClose_ && ct.kind == Tok::Op) return;
     // any vertical whitespace ends the line — VT, FF, CR, NEL, LS and PS as
     // much as LF
     if (src_) {
