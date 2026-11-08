@@ -15869,12 +15869,14 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
                         one.arr()->push_back(keys); keys = one;
                     }
                 }
-                if (!(keys.t == VT::Array || keys.t == VT::Range)) {
+                // (…and an itemized list is ONE key: `%h{@b.item} = 1`)
+                const bool many = (keys.t == VT::Array || keys.t == VT::Range) && !keys.itemized;
+                if (!many) {
                     // not a slice after all — hand this answer to the ordinary
                     // path below rather than running the subscript a second time
                     parkSubscript(ix->index.get(), keys);
                 }
-                if (keys.t == VT::Array || keys.t == VT::Range) {
+                if (many) {
                     ValueList ks;
                     if (keys.t != VT::Range) ks = keys.flatten(); // a Range waits for the target's size below
                     Value rv = evalValueOf(a->value.get());
