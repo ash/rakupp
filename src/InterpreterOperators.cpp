@@ -2701,13 +2701,13 @@ bool Interpreter::catAssignInPlace(Value* lv, const Value& rhs) {
         return !v.itemized &&
                (v.hashKind == "Blob" || v.hashKind == "Buf" || v.hashKind == "utf8");
     };
-    // `$blob ~= $blob` appends BYTES and yields a Buf, like the binary form.
-    // Normalizing here would corrupt them, and a high byte looks non-ASCII.
-    if (bloby(*lv) && bloby(rhs) && lv->blobElemSize() == rhs.blobElemSize()) {
+    // `$blob ~= $blob` of one type appends BYTES and keeps it, like the binary form;
+    // any other buffer pair is the binary form's (a plain Buf). Normalizing here
+    // would corrupt them, and a high byte looks non-ASCII.
+    if (bloby(*lv) || bloby(rhs)) {
+        if (!bloby(*lv) || !bloby(rhs) || lv->typeName() != rhs.typeName()) return false;
         lv->s += rhs.s;
-        lv->hashKind = "Buf";
-        identify(*lv); // `$b ~= …` is `$b = $b ~ …` — a NEW Buf in the variable
-        if (lv->ofType().empty()) lv->ofTypeM() = rhs.ofType();
+        identify(*lv); // `$b ~= …` is `$b = $b ~ …` — a NEW buffer in the variable
         return true;
     }
     if (asciiRhs) lv->s.appendAscii(rhs.s.str());

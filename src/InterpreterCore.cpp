@@ -19515,15 +19515,21 @@ static Value applyArithGeneral(const std::string& op, const Value& l, const Valu
         // not 6) and — worse — NFC-NORMALIZED the result: these are bytes, and
         // normalizing them corrupts them silently. Digest's HMAC pads its key with
         // `$key ~= Blob.new: 0 xx ($block-size - +$key)`, so every hash was wrong.
-        // Same element width only; mixing blob8 with blob16 has no meaningful answer.
+        // Two of one type stay that type (utf8 ~ utf8 is a utf8, `Blob[uint8] ~ Blob[uint8]`
+        // one); any other pair is a plain Buf, of the elements when a width is not a byte's
+        // (Rakudo: utf8 ~ utf16 is `Buf.new(97,98,99)`, a wide element wrapped to 8 bits).
         auto bloby = [](const Value& v) {
             return v.t == VT::Str && !v.itemized &&
                    (v.hashKind == "Blob" || v.hashKind == "Buf" || v.hashKind == "utf8");
         };
-        if (bloby(l) && bloby(r) && l.blobElemSize() == r.blobElemSize()) {
-            Value out = Value::str(l.s + r.s);
-            out.hashKind = "Buf";                       // Rakudo: utf8 ~ Blob is a Buf
-            out.ofTypeM() = l.ofType().empty() ? r.ofType() : l.ofType();
+        if (bloby(l) && bloby(r)) {
+            const bool same = l.typeName() == r.typeName();
+            std::string bytes;
+            if (!same && (l.blobElemSize() != 1 || r.blobElemSize() != 1))
+                for (const Value* v : {&l, &r}) for (auto& e : v->blobList()) bytes += (char)(e.toInt() & 0xFF);
+            Value out = Value::str(bytes.empty() ? l.s + r.s : bytes);
+            out.hashKind = same ? l.hashKind : IStr("Buf");
+            if (same) { out.enumName = l.enumName; out.ofTypeM() = l.ofType(); }
             return identify(out);
         }
         // …and a Buf meeting a STRING has no string form to join: `"a" ~ $buf` is
