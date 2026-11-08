@@ -14035,10 +14035,12 @@ Value Interpreter::evalAssign(Assign* a, bool sink) {
                                 " but got " + p->typeName());
         }
         // …and outside any package a bare/`our` constant is still a PACKAGE
-        // symbol: `{ constant $c = 1 }; ::('$c')` finds it (GLOBAL)
+        // symbol: `{ constant $c = 1 }; ::('$c')` finds it (GLOBAL). Not over a
+        // CORE term, which a bare name finds before the package (`Less`, `pi`).
         if (ve->declare && ve->d().declScope == "constant" && tctx().pkgPrefix.empty() &&
             !ve->d().declMyConstant && !ve->name.empty() && tctx().cur != global_ &&
-            !global_->local(ve->name)) {
+            !global_->local(ve->name) && !coreEnumValueRef(ve->name) && !builtinPtr(ve->name) &&
+            [&] { Value t; return !nameTermConstant(ve->name, t); }()) {
             if (Value* p = tctx().cur->find(ve->name)) {
                 noteSymbolMutation("constant publish");
                 global_->define(ve->name, *p);
