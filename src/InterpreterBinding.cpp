@@ -927,6 +927,7 @@ int Interpreter::tabledTypeHasMethod(const std::string& tn, const std::string& m
         {"Stringy", {
         }},
     };
+    if (tn == "Any") return kAny.count(mn) ? 1 : -1;   // (what a FALLBACK never sees)
     auto it = kOwn.find(tn == "Sub" || tn == "Method" || tn == "Submethod" ? std::string("Routine") : tn);
     if (it == kOwn.end()) return 0;
     return it->second.count(mn) || kAny.count(mn) ? 1 : -1;
