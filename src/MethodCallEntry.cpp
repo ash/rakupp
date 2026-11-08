@@ -259,4 +259,26 @@ std::optional<Value> Interpreter::methodCallEntry(const Value& inv, const std::s
     return std::nullopt;
 }
 
+// A Pod block's `.raku`, as Rakudo writes it: the constructor that builds it,
+// `Pod::Heading.new(level => 1, config => {}, contents => [Pod::Block::Para.new(…)])`,
+// each block inside it the same way. It was the block's text.
+std::string Interpreter::podRaku(const Value& v) {
+    if (v.t == VT::Array && v.arr()) {
+        std::string o = "[";
+        for (size_t i = 0; i < v.arr()->size(); i++) o += (i ? ", " : "") + podRaku((*v.arr())[i]);
+        return o + "]";
+    }
+    if (!(v.t == VT::Hash && v.hashKind == "Pod" && v.hash())) return methodCall(v, "raku", ValueList{}).toStr();
+    const auto& h = *v.hash();
+    auto pc = h.find("podclass");
+    std::string o = (pc != h.end() ? pc->second.s.copyText() : std::string("Pod::Block")) + ".new(";
+    for (const char* k : {"name", "type", "meta", "level", "caption", "headers", "term", "config", "contents"}) {
+        auto it = h.find(k);
+        if (it == h.end() && std::strcmp(k, "config") != 0) continue;   // (a block's config is {} when it has none)
+        if (o.back() != '(') o += ", ";
+        o += std::string(k) + " => " + (it == h.end() ? std::string("{}") : podRaku(it->second));
+    }
+    return o + ")";
+}
+
 } // namespace rakupp

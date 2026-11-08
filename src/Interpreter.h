@@ -5365,6 +5365,7 @@ public:
         return v;
     }
     Value defaultScheduler_; // the ONE $*SCHEDULER (copies share .hash(), so attr writes persist)
+    std::string podRaku(const Value& v);   // a Pod block's `.raku`: its constructor (MethodCallEntry.cpp)
 private:
     // `$obj!meth` is legal only lexically inside the declaring class; throws otherwise.
     void requirePrivateCallScope(const std::string& name);

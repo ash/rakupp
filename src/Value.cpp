@@ -996,7 +996,11 @@ std::string Value::toStr() const {
         auto it = hash()->find("name");
         if (it != hash()->end()) return it->second.toStr();
     }
-    // a Pod block is the text of its contents (`~$=pod[0]`, `~$thing.WHY`)
+    // a Pod block stringifies as any object does, `Pod::Block::Named<id>`, as
+    // Rakudo's; a declarator block is the text of its contents (`~&f.WHY`)
+    if (t == VT::Hash && hashKind == "Pod" && hash() && hash()->count("podclass") &&
+        hash()->at("podclass").s.str() != "Pod::Block::Declarator")
+        return hash()->at("podclass").s.copyText() + "<" + std::to_string((uintptr_t)hash()) + ">";
     if (t == VT::Hash && hashKind == "Pod" && hash() && hash()->count("contents")) {
         std::string o;
         const Value& c = hash()->at("contents");

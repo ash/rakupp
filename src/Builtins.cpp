@@ -2176,6 +2176,8 @@ std::string rakuReprImpl(const Value& v, int depth, std::set<const void*>& seen)
         if (hd != v.hash()->end() && hd->second.truthy()) out += ", handled => Bool::True";
         return out + ")";
     }
+    // a Pod block inside a list renders as its constructor, as it does alone
+    if (v.t == VT::Hash && v.hashKind == "Pod" && v.hash() && g_cbInterp) return g_cbInterp->podRaku(v);
     // a live Pointer / CArray (a native struct's field) renders as its `.raku`
     // method does, not as the {addr, of} slots that hold it
     if (v.t == VT::Hash && (v.hashKind == "Pointer" || v.hashKind == "CArray") &&
@@ -2486,7 +2488,7 @@ std::string rakuReprImpl(const Value& v, int depth, std::set<const void*>& seen)
                 // — not an enum's type object, which is no list: [Color]
                 if (!v.isList && v.arr()->size() == 1 &&
                     ((*v.arr())[0].t == VT::Range || ((*v.arr())[0].t == VT::Array && !isEnumTypeObject((*v.arr())[0])) ||
-                     (*v.arr())[0].t == VT::Hash))
+                     ((*v.arr())[0].t == VT::Hash && (*v.arr())[0].hashKind != "Pod")))   // (a Pod block is no list)
                     o += ",";
                 seen.erase(v.arr());
             }

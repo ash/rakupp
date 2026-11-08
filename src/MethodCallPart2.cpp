@@ -3721,17 +3721,12 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
             };
             return Value::str(podGist(inv, 0));
         }
-        if (m == "Str" || m == "gist" || m == "raku") {
-            // stringify to the concatenated text of the contents (paragraphs/children)
-            std::function<std::string(const Value&)> flat = [&](const Value& v) -> std::string {
-                if (v.t == VT::Str) return v.s.copyText();
-                if (v.t == VT::Hash && v.hashKind == "Pod" && v.hash()->count("contents")) {
-                    std::string o; for (auto& c : *(*v.hash())["contents"].arr()) o += flat(c); return o;
-                }
-                if (v.t == VT::Array && v.arr()) { std::string o; for (auto& c : *v.arr()) o += flat(c); return o; }
-                return v.toStr();
-            };
-            return Value::str(flat(inv));
+        // `.Str` and `.raku` are Rakudo's, Mu's `Class<id>` and the constructor that
+        // builds the block; a declarator block's are its text (`~&f.WHY`), as toStr
+        // gives, and so is its `.gist`
+        if (m == "Str" || m == "raku" || m == "gist") {
+            const bool decl = h.count("podclass") && h["podclass"].s.str() == "Pod::Block::Declarator";
+            return Value::str(m == "raku" && !decl ? podRaku(inv) : inv.toStr());
         }
     }
     if ((inv.t == VT::Type && inv.s == "Kernel") ||
@@ -5939,16 +5934,14 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
                     at[a.s.copyText()] = a.pairVal()->toStr();
             std::string syn;
             auto gistArg = [&](const char* k) {   // (got and range by their gist: `should be in 1..2`, not `1 2`)
-                for (auto& a : args) if (a.t == VT::Pair && a.s == k && a.pairVal()) return gistOf(*a.pairVal());
-                return std::string(); };
+                for (auto& a : args) if (a.t == VT::Pair && a.s == k && a.pairVal()) return gistOf(*a.pairVal()); return std::string(); };
             if (t == "X::OutOfRange" && at.count("what")) {
                 syn = at["what"] + " out of range. Is: " + gistArg("got") + ", should be in " + gistArg("range");
                 if (at.count("comment")) syn += "; " + at["comment"];
             }
             else if (t == "X::Str::Numeric" && at.count("source") && at.count("reason")) {
                 const std::string& src = at["source"];
-                size_t pos = 0; try { pos = (size_t)std::max(0LL, std::stoll(at.count("pos") ? at["pos"] : "0")); } catch (...) {}
-                pos = std::min(pos, src.size());
+                size_t pos = 0; try { pos = std::min(src.size(), (size_t)std::max(0LL, std::stoll(at.count("pos") ? at["pos"] : "0"))); } catch (...) {}
                 syn = "Cannot convert string to number: " + at["reason"] + " in '" + src.substr(0, pos) + "<HERE>" + src.substr(pos) + "' (indicated by <HERE>)";
             }
             else if (t == "X::NYI" && at.count("feature"))

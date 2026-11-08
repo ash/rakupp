@@ -188,6 +188,8 @@ static void parseFormatting(const std::string& s, ValueList& out) {
         size_t body = fmtOpener(s, i, nOpen, guil);
         if (body != std::string::npos) {
             size_t end = fmtClose(s, body, nOpen, guil);
+            // V<…> is verbatim TEXT, no code: Rakudo runs it into the text around it
+            if (end != std::string::npos && s[i] == 'V') { text += s.substr(body, end - body); i = end + (guil ? 2 : nOpen); continue; }
             if (end != std::string::npos) {
                 flush();
                 out.push_back(mkFmt(s[i], s.substr(body, end - body)));
