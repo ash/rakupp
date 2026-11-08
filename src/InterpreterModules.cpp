@@ -4235,7 +4235,7 @@ bool Interpreter::paramTypeUndeclared(const std::string& t) {
 std::string Interpreter::noMatchProfile(const Value& self, const ValueList& as, bool withInvocant) {
     auto isNamedArg = [](const Value& v) { return v.t == VT::Pair && v.namedArg; };
     std::string prof;
-    if (withInvocant) prof = self.typeName() + ":";
+    if (withInvocant) prof = self.typeName() + (self.t == VT::Type ? ":U:" : ":D:");
     auto sep = [&]() { if (!prof.empty() && prof.back() != ':') prof += ", "; else if (!prof.empty()) prof += " "; };
     for (auto& a : as) {
         if (isNamedArg(a)) continue;
@@ -4245,6 +4245,8 @@ std::string Interpreter::noMatchProfile(const Value& self, const ValueList& as, 
     for (auto& a : as) {
         if (!isNamedArg(a) || a.t != VT::Pair) continue;
         Value v = a.pairVal() ? *a.pairVal() : Value::boolean(true);
+        // a Bool is the adverb's spelling: `:i`, `:!i`
+        if (v.t == VT::Bool) { sep(); prof += std::string(v.truthy() ? ":" : ":!") + a.s; continue; }
         std::string tn = v.typeName();
         std::string shown = tn;
         auto ci = classes_.find(v.t == VT::Type ? v.s.str() : tn);
@@ -4256,6 +4258,14 @@ std::string Interpreter::noMatchProfile(const Value& self, const ValueList& as, 
         prof += ":" + a.s + "(" + shown + ")";
     }
     return prof;
+}
+
+// A type object where a needle goes (`.index(Str)`, `.contains(Int)`): Rakudo
+// has no candidate for (Str:D: Str:U), and its dispatcher says so
+// (S32-str/index.t and indices.t assert `dies-ok`)
+void Interpreter::throwNeedleNoMatch(const Value& inv, const std::string& m, const ValueList& args) {
+    throw RakuError{Value::typeObj("X::Multi::NoMatch"), "Cannot resolve caller " + m + "(" +
+        noMatchProfile(inv, args, /*withInvocant=*/true) + "); none of these signatures matches"};
 }
 
 // A parameter typed with a name nothing declares, suggestions and all

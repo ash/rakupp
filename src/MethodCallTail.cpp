@@ -753,10 +753,7 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
                            inv.t == VT::Rat || inv.t == VT::Bool) && !args.empty()) {
         // …and a type object is no needle, as for `.index`: `42.indices: Str`
         // dies (it answered (0 1 2), the type read as "")
-        if (a0().t == VT::Type)
-            throw RakuError{Value::typeObj("X::TypeCheck::Binding::Parameter"),
-                "Type check failed in binding to parameter '$needle'; expected Cool:D but got " +
-                a0().typeName() + " (" + a0().gist() + ")"};
+        if (a0().t == VT::Type) throwNeedleNoMatch(inv, m, args);
         std::string s = inv.toStr(), needle = a0().toStr();
         bool overlap = false, icase = false, imark = false;
         for (auto& a : args) if (a.t == VT::Pair) {

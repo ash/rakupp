@@ -5978,10 +5978,7 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
         // A type object is no needle. Rakudo has no candidate for (Cool:D: Str:U)
         // and dies; S32-str/{index,starts-with,ends-with}.t assert `dies-ok`, and
         // before this the type stringified to "" and every predicate answered True.
-        if (!args.empty() && args[0].t == VT::Type)
-            throw RakuError{Value::typeObj("X::TypeCheck::Binding::Parameter"),
-                "Type check failed in binding to parameter '$needle'; expected Cool:D but got " +
-                args[0].typeName() + " (" + args[0].gist() + ")"};
+        if (!args.empty() && args[0].t == VT::Type) throwNeedleNoMatch(inv, m, args);
         // splatted multi-needle: index($s, "a", "o", :i) — several positional
         // STRING args are all needles (a numeric-looking string is a start pos)
         {
@@ -6890,10 +6887,7 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
         // A type object is no needle. Rakudo has no candidate for (Cool:D: Str:U)
         // and dies; S32-str/{index,starts-with,ends-with}.t assert `dies-ok`, and
         // before this the type stringified to "" and every predicate answered True.
-        if (!args.empty() && args[0].t == VT::Type)
-            throw RakuError{Value::typeObj("X::TypeCheck::Binding::Parameter"),
-                "Type check failed in binding to parameter '$needle'; expected Cool:D but got " +
-                args[0].typeName() + " (" + args[0].gist() + ")"};
+        if (!args.empty() && args[0].t == VT::Type) throwNeedleNoMatch(inv, m, args);
         // No adverbs, a plain Str on both sides: read the operands in place.
         // The general path below copies the whole haystack per call (and
         // `.contains($n, $pos)` decoded it twice more), so a scanning loop
