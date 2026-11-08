@@ -6865,7 +6865,12 @@ static void mergeParentRoleMultis(ClassInfo* ci, const SigKey& sigKeyParams) {
                 // …but a PARAMETERIZED one is a different role: `role R does R['x']`
                 // composes R['x'], not R. PDF::COS::ByteString is declared exactly
                 // that way — a bare role over its own default parameterization.
-                bool paramSelf = false;
+                // …and a PARAMETERIZED DECLARATION is a different role from the bare
+                // name it composes: `role R['x'] does R` composes the R declared
+                // before it. A role's own `[...]` params mean the declaration joins
+                // the group, and it is registered only after its parent resolves,
+                // so the lookup below still finds the earlier role.
+                bool paramSelf = cd->parameterized;
                 for (auto& ra : cd->roleArgs)
                     if (ra.first == parentName && !ra.second.empty()) { paramSelf = true; break; }
                 const bool selfNamed = parentName == cd->name && !cd->name.empty() &&

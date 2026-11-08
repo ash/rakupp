@@ -301,12 +301,8 @@ Value Interpreter::mixinValue(Value base, const Value& rhs, bool copy, bool rhsI
     {
         std::set<ClassInfo*> composedRoles(roleInfos.begin(), roleInfos.end());
         std::function<void(ClassInfo*)> composeChain = [&](ClassInfo* role) {
-            for (auto& sub : role->doneRoles) {
-                nc->doneRoles.insert(sub);
-                auto sit = classes_.find(sub);
-                if (sit == classes_.end() || !sit->second) continue;
-                ClassInfo* sr = sit->second.get();
-                if (!composedRoles.insert(sr).second) continue;
+            std::function<void(ClassInfo*)> take = [&](ClassInfo* sr) {
+                if (!sr || !composedRoles.insert(sr).second) return;
                 for (auto& kv : sr->methods) nc->methods.emplace(kv.first, kv.second);
                 for (auto& kv : sr->rules) {
                     if (nc->rules.count(kv.first)) continue;
@@ -339,6 +335,20 @@ Value Interpreter::mixinValue(Value base, const Value& rhs, bool copy, bool rhsI
                     obj->attrs[a.name] = dv;
                 }
                 composeChain(sr);
+            };
+            // …by IDENTITY first: `doneRoles` holds NAMES, and the candidates of a
+            // role group share one, so `role R['x'] does R` had its own bare R
+            // resolve back to the specialization and lose what only the bare role
+            // declares — a `$obj does R['x']` at run time then answered no method
+            // the base role provides.
+            for (auto& cp : role->composedRoles) take(cp.get());
+            // …and the PARENT slot, which is where a role's first `does` lands
+            if (role->parent && role->parent->isRole) take(role->parent.get());
+            for (auto& sub : role->doneRoles) {
+                nc->doneRoles.insert(sub);
+                auto sit = classes_.find(sub);
+                if (sit == classes_.end() || !sit->second) continue;
+                take(sit->second.get());
             }
         };
         for (ClassInfo* role : roleInfos) if (role) composeChain(role);
