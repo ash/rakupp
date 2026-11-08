@@ -5338,8 +5338,6 @@ static void mergeParentRoleMultis(ClassInfo* ci, const SigKey& sigKeyParams) {
         }
 }
 
-// The declaration statements exec dispatches here, kept out of its frame.
-//
 // execDeclStmt's refusals of what two roles bring a class, in Rakudo's words: an
 // only method from one role beside a multi of its name from another (a stub
 // aside), whatever the class declares itself; then a method two roles bring and
@@ -5381,6 +5379,8 @@ static void refuseRoleClashes(Interpreter& I, const std::string& clsName, const 
         }
 }
 
+// The declaration statements exec dispatches here, kept out of its frame.
+//
 // exec is one switch over every statement kind, and a switch's stack frame is
 // sized to the MAXIMUM over all its cases — so the ~100 Value temporaries that
 // `class`, `sub`, `enum`, `subset`, a named regex and `use` need between them
