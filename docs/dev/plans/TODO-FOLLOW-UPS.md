@@ -15,6 +15,42 @@ moves to [TODO.md](TODO.md).
 
 ## Names and parsing
 
+- [ ] **A local proto beside an imported multi is a redeclaration** (found
+  2026-11-08 fixing #231, 5f6d78e4; a regression from eb574770, #230):
+  Rakudo merges them, and Roast's S11-modules/import-multi.t, fully passing
+  at v5.6.0, dies at its `import C;` (4 of 17).
+
+  ```raku
+  {
+      proto sub Cfoo(Mu) { * }
+      multi sub Cfoo(Str $a) { 'Str' }
+      module C { multi sub Cfoo(Int $a) is export { 'Int' } }
+      import C;              # rakupp: Redeclaration of routine 'Cfoo'.  Rakudo: merges
+      say Cfoo(7), Cfoo('a');   # Rakudo: IntStr
+  }
+  ```
+
+  importClashesWithLocal (InterpreterModules.cpp) counts a proto beside an
+  imported group as a clash; a local proto with multis takes the imported
+  candidates in Rakudo.
+
+- [ ] **Four word-list spellings still read differently from Rakudo** (found
+  2026-11-08 fixing #231, 5f6d78e4; each the same before it):
+
+  ```raku
+  say « :x\<a ».raku;       # rakupp: couldn't find final '>'   Rakudo: (:x, "<a")
+  say « infix:<+> ».raku;   # rakupp: "infix:<+>"               Rakudo: ("infix", "+")
+  my $x = 5; say « :$x:y ».raku;  # rakupp: (:x(5), :y)        Rakudo: Variable '$x:y' is not declared
+  say qww« b' ».raku;       # rakupp: ("b", " ")                Rakudo: couldn't find final "'"
+  ```
+
+  The first is the lexer: it reads the `<` after a backslash in a «…» list
+  as an opening angle. The second is Rakudo's keyless colonpair, `:<+>`,
+  whose word-list reading is its value (`« :<a b> »` is ("a", "b")). The
+  third is the ordinary colonpair parser: `(:$x:y)` in code is two pairs
+  too, where Rakudo reads `$x:y` as one long name. The fourth is the qww
+  scan, which accepts a quoted span that never closes.
+
 - [ ] **A `my &f`, a variable or a class beside an import of its name
   compiles** (found 2026-11-08 fixing #230, eb574770): Rakudo refuses each
   with X::Redeclaration, in either order.

@@ -22,7 +22,7 @@ a516dd92 and b4bf1dc9 (`--doc-links`: a program linked to its documentation),
 b9e35683 (the store undo log copies the arrays at a sixteenth),
 and issues #221-#229: 1a3f36d1 (#223, #224), 28824bb7 (#222), 32b1ea01
 (#220's follow-up), 266d37c6 and 92561fe1 (#221), e7bbb97c (#225),
-20f0691d (#228), 17d28f81 (#229); eb574770 (#230).*
+20f0691d (#228), 17d28f81 (#229); eb574770 (#230); 5f6d78e4 (#231).*
 
 ---
 
@@ -273,6 +273,27 @@ and issues #221-#229: 1a3f36d1 (#223, #224), 28824bb7 (#222), 32b1ea01
   `===SORRY!===` header, and a `use` in a routine body reports it at the
   routine's first call. `t/regression/import-over-local-routine.raku`, 38
   checks against Rakudo 2026.09.
+- **A colonpair in a `«…»` or `qww` word list keeps its value** (5f6d78e4;
+  issue #231). `« :x[1, 2] »` was the two words ":x[1," and "2]", where
+  Rakudo has `:x([1, 2])`: the word ended at the first blank, so the pair
+  never formed. PDF::Content's `my Array enum ColorName « :Aqua[0, 1, 1] … »`
+  died on a type check, so `use PDF::Content` failed on its first line; an
+  untyped enum or a hash took the fragments for its names. In every
+  quote-protected list (`« »`, `<< >>`, `qww`, `qqww`, `Qww`, `q:ww`, `Q:ww`
+  and a `%h«…»` subscript) a colonpair is now code, as Rakudo lexes it. A
+  value group glued to the key, `(…)`, `[…]`, `{…}`, `<…>`, `<<…>>` or `«…»`,
+  belongs to the pair, blanks and quotes and nested brackets included, and is
+  code even in `qww`, which leaves bare words alone. A pair may start mid-word
+  (`a:b` is ("a", :b)), pairs may chain (`:x:y`), and the next character after
+  the value starts a new word (`:x[1,2]y` is (:x([1, 2]), "y")). A lone pair
+  is that Pair (`qww<:x>` is `:x`). `qw`, `q:w`, `qq:w` and `<…>` still split
+  at blanks. The pair is read by the ordinary colonpair parser, which brought
+  four fixes to every colonpair: `:x<1/2>` is a RatStr and `:x<1+2i>` a
+  ComplexStr (both were plain numbers); `:x<<a>>` is "a" (it was "<a>");
+  `:x«a :b»` holds a Pair and splits what it interpolates; and `:!x[1]` and
+  `:42x<a>` are Rakudo's compile errors, where they indexed the pair at run
+  time. `t/regression/wordquote-colonpair-bracket.raku`, 124 checks against
+  Rakudo 2026.09.
 
 ### Fixed: crashes
 
@@ -321,6 +342,14 @@ and issues #221-#229: 1a3f36d1 (#223, #224), 28824bb7 (#222), 32b1ea01
   goes at the end too. Not run on Windows.
 
 ### Left open
+
+- Found with 5f6d78e4: eb574770 above made a local `proto` and `multi`
+  beside an imported multi of the same name X::Redeclaration, where Rakudo
+  merges them, so Roast's S11-modules/import-multi.t, fully passing at
+  v5.6.0, now dies at its `import C;` (4 of 17). And four word-list
+  spellings still read differently from Rakudo, the same before it:
+  `« :x\<a »`, `« infix:<+> »`, `« :$x:y »` and an unclosed quote in a
+  qww word. Both are in TODO-FOLLOW-UPS.md.
 
 - Found with eb574770, the same before it (each in TODO-FOLLOW-UPS.md): a
   `my &f`, a `my $v` or a class beside an import of its name compiles, where
