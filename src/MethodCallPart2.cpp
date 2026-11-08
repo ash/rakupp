@@ -11058,6 +11058,7 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
             return Value::boolean(false);
         std::string rn = args[0].t == VT::Type ? args[0].s.copyText() : args[0].typeName();
         if (rn == "Any" || rn == "Mu") return Value::boolean(true);
+        if (rn.find('\x01') != std::string::npos) return Value::boolean(typeOrSubsetMatches(inv, rn));   // a pun, as `~~`
         // a SUBSET answers by its constraint: `1.does(PosReal)` is True
         if (args[0].t == VT::Type && subsets_.count(rn))
             return Value::boolean(typeOrSubsetMatches(inv, rn));

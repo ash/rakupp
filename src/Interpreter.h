@@ -4781,7 +4781,7 @@ public:
     std::shared_ptr<Env> global_;
     // `R[42]` written twice is ONE type: role puns memoised by argument identity.
     std::map<std::string, std::string> rolePunCache_;
-    std::string roleArgsDisplay(const std::string& roleName, const ValueList& argv);
+    std::string roleArgsDisplay(const std::string& roleName, const ValueList& argv, bool byType = false);   // (byType: a value by its type)
     bool userTypeRefuses(const Value& rhs, const std::string& want);
     bool lexicalAliasAccepts(Env* scope, const std::string& ty, const Value& v);
     void varWhereCheck(const std::string& nm, const Value& rhs);

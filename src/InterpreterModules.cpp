@@ -4571,22 +4571,15 @@ Value Interpreter::makeRolePun(ClassInfo* role, const std::string& roleName, Val
     // comes out whole (roast S02-names-vars/names.t).
     pun->dispName = roleArgsDisplay(roleName, argv);
     {   // a VALUE argument is shown by its type
-        bool anyValue = false;
-        for (auto& a : argv) if (!a.namedArg && (a.t != VT::Type || !a.enumName.empty())) anyValue = true;
-        if (anyValue) {
-            ValueList shown;
-            for (auto& a : argv) {
-                if (a.namedArg) continue;
-                Value t = a.t == VT::Type && a.enumName.empty() ? a : Value::typeObj(a.typeName());
-                shown.push_back(t);
-            }
-            pun->shownName = roleArgsDisplay(roleName, shown);
-        }
+        const std::string shown = roleArgsDisplay(roleName, argv, /*byType=*/true);
+        if (shown != pun->dispName) pun->shownName = shown;
     }
     if (cacheable) rolePunCache_[punKey] = pun->name;
     pun->doneRoles.insert(roleName); // `~~ P` still answers True
     // …and `~~ P[Int]` answers for THIS parameterization only
     if (pun->dispName != roleName) pun->doneRoles.insert(pun->dispName);
+    // …and a VALUE argument is a value of its type: `R2[1] ~~ R2[Int]`, as Int.ACCEPTS(1)
+    if (!pun->shownName.empty()) pun->doneRoles.insert(pun->shownName);
     pun->roleParamBindings.clear();
     bindRoleParamsInto(pun.get(), role, argv, role->declEnv);
     // (the generic statements run for THIS parameterization, and its methods
@@ -4650,12 +4643,13 @@ Value Interpreter::makeRolePun(ClassInfo* role, const std::string& roleName, Val
 // How a parameterization is WRITTEN: `Foo[Int]`, nested parameters in their own
 // display form (`Baz[Foo[Int],Bar[Int]]`). A pun's `.^name`, and the key a
 // composing class records in doneRoles so `C ~~ R[Int]` can tell R[Int] from R[Str].
-std::string Interpreter::roleArgsDisplay(const std::string& roleName, const ValueList& argv) {
+std::string Interpreter::roleArgsDisplay(const std::string& roleName, const ValueList& argv, bool byType) {
     std::string args;
     for (auto& a : argv) {
         if (a.namedArg) continue;
         if (!args.empty()) args += ",";
-        if (a.t == VT::Type) {
+        if (byType && (a.t != VT::Type || !a.enumName.empty())) args += a.typeName();   // (a value by its type)
+        else if (a.t == VT::Type) {
             auto ci = classes_.find(a.s);
             args += (ci != classes_.end() && !ci->second->dispName.empty())
                         ? ci->second->dispName : a.typeName();
@@ -4859,7 +4853,7 @@ void Interpreter::concretizeInnerRoles(const std::shared_ptr<ClassInfo>& conc, C
         const std::string disp = roleArgsDisplay(slot->name, argv);
         done[slot.get()] = inner;
         slot = inner;
-        if (disp != slot->name) conc->doneRoles.insert(disp);
+        if (disp != slot->name) { conc->doneRoles.insert(disp); conc->doneRoles.insert(roleArgsDisplay(slot->name, argv, true)); }
     };
     redo(conc->parent);
     for (auto& r : conc->composedRoles) redo(r);
@@ -7625,6 +7619,7 @@ static void mergeParentRoleMultis(ClassInfo* ci, const SigKey& sigKeyParams) {
                         const std::string rn = role->dispName.empty() ? role->name : role->dispName;
                         std::string disp = roleArgsDisplay(rn, argv);
                         if (disp != rn) ci->doneRoles.insert(disp);
+                        ci->doneRoles.insert(roleArgsDisplay(rn, argv, /*byType=*/true));   // (`does R2[1]` is an R2[Int])
                     }
                 }
                 // A ROLE binds its OWN parameter defaults too, so that using it
