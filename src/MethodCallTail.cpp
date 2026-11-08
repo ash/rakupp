@@ -301,6 +301,25 @@ static void parseRotorSpecs(const ValueList& args, bool isBatch,
     if (specs.empty()) specs.push_back({1, 1});
 }
 
+// `.map` with an `is rw`, raw or `\x` parameter binds it to the Array's element, as
+// a hyper's is (pendingRwSlots): one slot per parameter of the chunk, for the one call
+// — `@a.map(&postfix:<++>)` steps each element
+static bool takesRwParam(const Value& code) {
+    if (!code.code() || code.code()->ci().builtin || !code.code()->ci().params) return false;
+    for (auto& pp : *code.code()->ci().params)
+        if (!pp.named && !pp.invocant && (pp.isRw || pp.isRaw || pp.sigil == '\\')) return true;
+    return false;
+}
+struct RwSlotScope {
+    ExecContext& t; std::vector<Value*> slots;
+    RwSlotScope(ExecContext& x, Value* first, size_t n) : t(x) {
+        if (!first) return;
+        for (size_t k = 0; k < n; k++) slots.push_back(first + k);
+        t.pendingRwSlots = &slots;
+    }
+    ~RwSlotScope() { if (!slots.empty()) t.pendingRwSlots = nullptr; }
+};
+
 [[noreturn]] void throwCannotMap(Interpreter& I, const std::string& what, const Value& u) {
     const bool listy = u.t == VT::Array || u.t == VT::Range;
     const bool hashy = u.t == VT::Hash;
@@ -4629,6 +4648,8 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
                 // (the `$_` write-back below still reaches the slot itself)
                 const bool holesRead = inv.t == VT::Array && !inv.isList &&
                                        (!inv.ofType().empty() || inv.elemDefault());
+                // …and an `is rw`, raw or `\x` parameter is bound to the element (RwSlotScope)
+                const bool rwParam = inv.t == VT::Array && inv.arr() && items.size() == inv.arr()->size() && takesRwParam(args[0]);
                 for (size_t i = 0; i < items.size(); i += ar) {
                     ValueList ca;
                     for (size_t k = 0; k < ar && i + k < items.size(); k++)
@@ -4643,6 +4664,7 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
                     if (loopPh)
                         tctx().loopPhaserCtl = (i == 0 ? 1 : 0) | (i + ar >= items.size() ? 2 : 0) | 4;
                     Value r;
+                    RwSlotScope rws(tctx(), rwParam ? &(*inv.arr())[i] : nullptr, ca.size());
                     try { r = callCallable(args[0], ca); }
                     // 6.e: `next $v` / `last $v` supply the value for the
                     // iteration they end; a bare next/last still skips or stops.
