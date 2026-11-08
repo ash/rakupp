@@ -29,7 +29,9 @@ The user-facing documentation is one level up, in [../](../README.md).
   hyper-operators, Whatever, NFG, slangs). Includes a November 2026 full-text
   search of the Swift, Rust, Kotlin, C#, Scala and Dart proposal archives and
   the JEPs, and of design forums, mailing lists (perl5-porters, python-3000,
-  es-discuss), twenty more design repositories and seventeen issue trackers.
+  es-discuss), twenty more design repositories and seventeen issue trackers. The
+  sourced research notes behind it are in
+  [perl6-influence-notes/](perl6-influence-notes/README.md).
 
 ## Process
 
