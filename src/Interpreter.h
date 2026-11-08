@@ -5362,6 +5362,7 @@ private:
     // `$obj!meth` is legal only lexically inside the declaring class; throws otherwise.
     void requirePrivateCallScope(const std::string& name);
     Value evalCall(Call* c);
+    Value dotAmpCurry(Call* c);   // `*.uc.&{ … }`: a `.&` on a written star curries (InterpreterBinding.cpp)
     Value evalTempLet(Call* c); // temp/let: snapshot BEFORE arg evaluation
     Value evalIndex(Index* idx);
     // Concrete index tuples for a multi-dimensional subscript — shared by the

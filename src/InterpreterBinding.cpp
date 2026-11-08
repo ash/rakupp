@@ -2913,6 +2913,27 @@ Value Interpreter::seqOpGroups(Value seed, const std::vector<ValueList>& groups,
     return out;
 }
 
+// `*.uc.&{ $_ ~ 'one' }`: a `.&` whose invocant holds a written `*` curries on
+// through the call, as Rakudo's does — the code runs on what the curried
+// invocant makes of the WhateverCode's argument. Calling the code with the star
+// itself leaned on its body's operators currying on a Whatever VALUE, which
+// they do not (S02-types/whatever.t, "can curry chains with .& calls on them").
+Value Interpreter::dotAmpCurry(Call* c) {
+    ValueList as = evalArgs(c->args);
+    Value fn = eval(c->callee.get());
+    const Value head = as.empty() ? Value::whatever() : as[0];
+    const bool wc = head.t == VT::Code && head.code();
+    Value code; code.t = VT::Code; code.setCode(makePayload<Callable>());
+    code.code()->ciM().isWhateverCode = true;
+    code.code()->ciM().whateverArity = wc ? std::max(1LL, (long long)head.code()->ci().whateverArity) : 1;
+    code.code()->ciM().builtin = [fn, head, wc, as](Interpreter& I, ValueList& a) -> Value {
+        ValueList call = as;
+        call[0] = wc ? I.callCallable(head, a) : a.empty() ? Value::any() : a[0];
+        return I.callCallable(fn, std::move(call));
+    };
+    return code;
+}
+
 bool Interpreter::exprHasWhateverLit(const Expr* e) {
     if (!e) return false;
     switch (e->kind) {

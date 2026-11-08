@@ -23579,6 +23579,11 @@ Value Interpreter::evalBinary(Binary* b) {
             const std::string lt = strInStrContext(l);   // (composing across the join)
             return Value::str(nfcConcat(lt, strInStrContext(r), nfcKnown(l), nfcKnown(r)));
         }
+        // a Whatever that arrived as a value is concatenated, not curried: `$w ~ "a"` is "*a"
+        if (whateverArrivedAsValue(b, l, r)) {
+            struct Drop { ~Drop() { Interpreter::valueSmartmatch_ = false; } } drop;   // (one-shot, whatever path)
+            Interpreter::valueSmartmatch_ = true; return applyBinOp(op, l, r);
+        }
         return applyArith("~", l, r);
     }
   armDoes:
@@ -24256,7 +24261,8 @@ Value Interpreter::evalBinary(Binary* b) {
         // generic smartmatch on the already-evaluated operands — the Whatever a
         // VARIABLE holds is a value here (`my $w = *; $w ~~ Pair` is False on
         // Rakudo); only a written `*` curries. (A core type: typeMatchMemo.)
-        if (lTopic.t == VT::Whatever && !exprHasWhateverLit(b->lhs.get())) return smartmatchValue(op, lTopic, r);
+        if ((lTopic.t == VT::Whatever && !exprHasWhateverLit(b->lhs.get())) ||
+            (r.t == VT::Whatever && !exprHasWhateverLit(b->rhs.get()))) return smartmatchValue(op, lTopic, r);   // (`5 ~~ $w`)
         Value tm;
         return r.t == VT::Type && typeMatchMemo(op, lTopic, r, tm) ? tm : applyArith(op, lTopic, r);
     }
@@ -26288,6 +26294,7 @@ Value Interpreter::evalCall(Call* c) {
     // the built-in `die` raises from a frame of its own (execDieStmt), called
     // before anything of this one is alive
     if (RAKUPP_UNLIKELY(opEq(c->name, "die")) && plainDieCall(c)) return execDieStmt(c);
+    if (RAKUPP_UNLIKELY(c->dotAmp) && !c->args.empty() && exprHasWhateverLit(c->args[0].get())) return dotAmpCurry(c);
     // `CORE::name(…)` / `&CORE::name(…)` names the BUILT-IN, past whatever the
     // program has put in scope under that name — and shadowing is exactly when
     // the form gets written. lizmat's Perl-builtin ports are all this shape
