@@ -1,6 +1,6 @@
 # Follow-ups
 
-*Collected 2026-10-20; added to 2026-11-07.*
+*Collected 2026-10-20; added to 2026-11-08.*
 
 Findings that sessions on 2026-10-19 and 2026-10-20 proposed as follow-up
 work and nobody started: gaps found in passing while doing something else.
@@ -14,6 +14,39 @@ moves to [TODO.md](TODO.md).
 ---
 
 ## Names and parsing
+
+- [ ] **A `my &f`, a variable or a class beside an import of its name
+  compiles** (found 2026-11-08 fixing #230, eb574770): Rakudo refuses each
+  with X::Redeclaration, in either order.
+
+  ```raku
+  # Other exports `sub run-word`; M exports `our $shared` and `class K`
+  use Other; my &run-word = -> $x { "lam" }; say run-word(1);   # lam, Rakudo: Redeclaration of symbol '&run-word'.
+  use M; my $shared = 7; say $shared;                          # 7, Rakudo: … '$shared'.
+  use M; class K { }                                           # compiles, Rakudo: … 'K'.
+  ```
+
+  importClashesWithLocal (InterpreterModules.cpp) judges routines only: a
+  `my &f` is not hoisted, so it lands on the import afterwards, and a pad may
+  hold its slot before the `use` runs. Variables come in through
+  importPackageExports, which skips a local; types through the import loops.
+
+- [ ] **Two imports of one name in a block keep the first** (found
+  2026-11-08 fixing #230, eb574770):
+
+  ```raku
+  { use Other; use Other2; say run-word("a") }   # other:a, Rakudo other2:a
+  ```
+
+  The mainline keeps the last, as Rakudo does, because it publishes to
+  global_. In a block or a module, the lexical import roads in loadModuleImpl
+  skip a name the scope holds (`if (!saved->local(k))`, and the repeat-use
+  and `import` loops), even one that only an earlier import put there.
+
+- [ ] **`use Test; sub ok(…)` compiles** (found 2026-11-08 fixing #230,
+  eb574770): Rakudo says "Redeclaration of symbol '&ok'.". Test's routines
+  are builtins, and `use Test` only sets a flag (`usedTest_`), so no import
+  meets the local sub.
 
 - [ ] **A subset declared in a package is not named for it** (found
   2026-11-07 fixing #224, 1a3f36d1):
