@@ -65,18 +65,6 @@ moves to [TODO.md](TODO.md).
   are builtins, and `use Test` only sets a flag (`usedTest_`), so no import
   meets the local sub.
 
-- [ ] **A subset declared in a package is not named for it** (found
-  2026-11-07 fixing #224, 1a3f36d1):
-
-  ```raku
-  class K { my subset S of Int; method n { S.^name } }; say K.n;   # S, Rakudo K::S
-  role RR { my subset U of Int; method n { U.^name } }             # U, Rakudo RR::U
-  ```
-
-  `our` or `my`, in a class, a role or a `unit role` file
-  (PDF::Content::FontObj's SubsetFontLike is `PDF::Content::FontObj::SubsetFontLike`
-  on Rakudo). A SubsetDecl registers its bare name.
-
 - [ ] **A plain `constant` leaks out of its block and out of an EVAL** (found
   2026-10-20 while caching the bare `Less` term, b35718ba; the leak predates
   that cache):
@@ -205,24 +193,6 @@ moves to [TODO.md](TODO.md).
   `-> \s, |q { $cap = q; callsame };` read as a quote to the `;` before
   `|q` counted as one. Done when a declared term wins over the quote however
   it was declared, and these three then follow Rakudo.
-- [ ] **A subset's unknown trait is ignored, and a runtime subset on a taken
-  name answers that name with a suffix** (found 2026-10-31 giving subsets
-  their traits and `SubsetHOW.new_type`, 0abc0b39):
-
-  ```raku
-  subset S is no-such-trait of Int;   # accepted; Rakudo: 'S' cannot inherit from
-                                      # 'no-such-trait' because it is unknown
-  class User { }
-  say Metamodel::SubsetHOW.new_type(:name<User>, :refinee(User), :refinement(True)).^name;
-                                      # User+1, Rakudo User
-  ```
-
-  A trait no `trait_mod:<is>` candidate takes is dropped (the subset arm of
-  execDeclStmt). Types are registered by name, so a second one asking for a
-  taken name is keyed `User+1` (subsetNewType, src/InterpreterBinding.cpp),
-  as a runtime class is; Red names a sub-model after its model. Done when
-  the first is refused as Rakudo does and the second answers the name it
-  was given.
 - [ ] **A sub the main program imports is visible to a module that never
   imported it** (found 2026-10-31 hiding the program's operators from
   modules, 8a6c9d9a, which did that for operators only):
@@ -267,38 +237,6 @@ moves to [TODO.md](TODO.md).
   all, so it needs the spelling recorded (an Ast.h field and a
   kAstSerialVersion bump). Done when each line matches Rakudo 2026.09, and
   t/regression/rakuast-view-declarations.raku carries them.
-- [ ] **`.AST.DEPARSE` of a `start` block writes the `$/` and `$!` the parse
-  gave it, one more pair each round** (found 2026-10-31 checking that the
-  rendering is a fixed point, 586c5160; on 23e143f2 too):
-
-  ```raku
-  print Q[my $p = start { 1 }].AST.DEPARSE;               # start { my $!; my $/; 1 }
-  print Q[my $p = start { 1 }].AST.DEPARSE.AST.DEPARSE;   # …two of each
-  ```
-
-  Rakudo 2026.09 writes `start { 1 }`. The parser inserts the two
-  declarations at the front of the body (src/Parser.cpp, the `start` arm of
-  the term parser), which is what a `start` block gets implicitly upstream,
-  and the view renders them as written statements. Same program, but the text
-  grows each round, and it is the only thing keeping five of the examples
-  from being a fixed point of `.AST.DEPARSE`. Done when the view leaves out
-  the two the parse put there and both lines render as Rakudo's.
-- [ ] **A package's three gaps beside Rakudo's** (found 2026-11-03 making the
-  packages a qualified name implies, 3072c3a5; each on main before it):
-
-  ```raku
-  class Z2 {}; module Z4 {}; class Z3::Q {}; say GLOBAL::.keys.grep(/Z/).sort;   # (), Rakudo (Z2 Z3 Z4)
-  module A {}; module A {};          # runs, Rakudo: Redeclaration of symbol 'A'
-  package P {}; P.new;               # No such method 'new' for invocant of type 'P'
-                                     # Rakudo: You cannot create an instance of this type (P)
-  ```
-
-  `GLOBAL::` comes back empty though `MY::` lists the same names, and the
-  per-unit stash tree (stashDeclare in src/Interpreter.cpp) knows each one
-  as package-scoped. A package's redeclaration goes unchecked where a
-  class's is caught at parse time (checkRedeclarations in src/Parser.cpp).
-  Done when each line matches Rakudo 2026.09.
-
 - [ ] **An anonymous `rule` interpolated as `<$r>` matches nothing, and its
   `.raku` is a `rx//`** (found 2026-11-08 making a stored `rule` keep its
   sigspace; the same before it):
@@ -311,6 +249,21 @@ moves to [TODO.md](TODO.md).
 
   The value carries its kind (hashKind "rule" or "token") and the scope it
   closed over; the `<$var>` assertion and the Regex `.raku` read neither.
+
+- [ ] **`.AST.DEPARSE` writes `start 5` with braces, and the Unknown-parent
+  message differs** (found 2026-11-08 making a `start` block's implicit
+  declarations leave the rendering):
+
+  ```raku
+  print Q[my $p = start 5].AST.DEPARSE;   # my $p = start {⏎    5⏎}, Rakudo my $p = start 5
+  class C is nosuch { }                    # Class 'C' cannot inherit from 'nosuch' because it is unknown
+                                           # Rakudo: 'C' cannot inherit from 'nosuch' because it is unknown.
+  subset S is nosuch of Int;               # refused when it runs; Rakudo refuses it at compile time
+  ```
+
+  The parser wraps `start EXPR` in a block, which the view renders. The class
+  message is the parse-time one (InterpreterModules.cpp, "Class '" + …); the
+  subset's is applySubsetTraits', which runs with the declaration.
 
 ## Operators and types
 
@@ -356,20 +309,6 @@ moves to [TODO.md](TODO.md).
   `.throw`, `.rethrow`, `.resume` and `.backtrace` answer on an object that
   is no Exception, where Rakudo hands them to FALLBACK.
 
-- [ ] **`* ~~ T` does not curry when T is a user class with an ACCEPTS**
-  (found 2026-11-01 writing t/regression/core-type-shortcuts.raku for #217;
-  dcdf14ba too):
-
-  ```raku
-  class D { method ACCEPTS($x) { $x eq 'long' } }
-  my &m = * ~~ D; say &m.^name;      # Bool, Rakudo WhateverCode
-  say <long short>.map(* ~~ D);      # dies "Cannot map a List using 'Bool::False'"
-  ```
-
-  applyArithGeneral asks typeObjectUserAccepts (the `C's ACCEPTS` arm)
-  ahead of its Whatever curry, so D.ACCEPTS gets the `*` and answers. A
-  core type (`* ~~ Int`) curries. Done when the user class curries too and
-  `$w ~~ D` with a Whatever VALUE still asks ACCEPTS.
 - [ ] **Built-in prefix and postfix operators fail when called by name**
   (found 2026-10-19 while fixing undeclared operator names, 145cddbf):
 
@@ -423,23 +362,6 @@ moves to [TODO.md](TODO.md).
   native when it is an IntLit; an expression of literals that folds to an
   Int in range (`2**62`, `1 +< 40`) is the same case. Check the `-O` lane
   (Codegen `nativeOp`, which asks `vInt`) agrees.
-
-- [ ] **A native return type is not checked** (found 2026-10-22 while making
-  compiled routines check `--> T`, e30e2827; on v5.5.0 too):
-
-  ```raku
-  sub rn(--> num) { "s" }; say rn()   # s, Rakudo: This type cannot unbox to a native number: P6opaque, Str
-  sub ri(--> int) { "s" }; say ri()   # s, Rakudo: …to a native integer: P6opaque, Str
-  sub rs(--> str) { 5 }; say rs()     # 5, Rakudo: …to a native string: P6opaque, Int
-  ```
-
-  checkRetType (src/InterpreterCore.cpp) leaves a native name unchecked on
-  purpose ("a boxed value has no native tag"), and Codegen::retCheckOf
-  follows it, so both engines agree today. A fix is the binder's refusal
-  (nativeParamTakes, throwNativeUnbox in src/InterpreterBinding.cpp) at the
-  return: `--> num` takes a Num or a NumStr, `--> int` an Int, `--> str` a
-  Str. Then drop the native exclusion in retCheckOf and leanReturn's
-  LeanNative arm.
 
 - [ ] **Two types cannot share a short name** (found 2026-10-27 while making
   DateTime::Timezones install, 50aebf54; on v5.5.0 too). Types are known by
@@ -578,24 +500,6 @@ moves to [TODO.md](TODO.md).
   accessors still build before changing it. Done when the three lines
   are Rakudo 2026.09's.
 
-- [ ] **An optional parameter typed by a subset binds its type object
-  unchecked when nothing is passed** (found 2026-10-30 fixing
-  Cro::HTTP::Cookie's BUILD, c4df7b96):
-
-  ```raku
-  my subset CN of Str where /^ \w+ $/;
-  sub f(CN :$x) { $x }; say f();   # (CN), Rakudo: Constraint type check failed in binding
-                                   #   to parameter '$x'; expected CN but got Str (Str)
-  say CN ~~ CN;                    # False, Rakudo True
-  ```
-
-  Rakudo's default for an unpassed parameter is its NOMINAL type (Str for
-  CN), and the subset's `where` then refuses it. unpassedDefault in
-  src/InterpreterCore.cpp hands back typedDefault(type), the subset's own
-  type object, and nothing checks it. The same default reaches an
-  attributive `CN :$!n`, where c4df7b96's store refuses it, but names CN
-  as what it got where Rakudo names Str. Done when both lines match Rakudo
-  2026.09.
 - [ ] **`callsame` from a role's candidate reaches the one it overrides in a
   role it does** (found 2026-10-31 making a role's multis join its parent
   role's, 1d5e98c0; the build before it answered the same):
@@ -611,22 +515,6 @@ moves to [TODO.md](TODO.md).
   left to call; here the redispatch defers up the parent chain (S's parent
   slot holds B) and finds it. Done when an overridden role candidate is out
   of the redispatch too.
-- [ ] **A class's own candidate overrides a role's that differs only by a
-  required named** (found 2026-10-31, 4df715fc, which stopped a role's own
-  two such candidates from overriding each other):
-
-  ```raku
-  role I { multi method m($a, :$cast!) { "cast" }; multi method m($a) { "plain" } }
-  class C does I { multi method m($a) { "own" } }
-  say C.new.m(1, :cast);   # own, Rakudo cast
-  ```
-
-  Composition keys a candidate by its positional types only (sigKeyParams
-  in execDeclStmt, src/InterpreterModules.cpp), so `m($a)` counts as the
-  same signature as `m($a, :$cast!)` and replaces it. Rakudo keeps a role
-  candidate unless the class has one with an identical signature, nameds
-  included. Done when the key carries the required nameds, for overrides,
-  conflicts and stub requirements alike.
 - [ ] **`.^find_method` on Promise, Channel, Supply, Lock, Semaphore, Thread
   and the code types answers yes for any name** (found 2026-10-31, 3f0baa68,
   which gave the value types a sentinel):
@@ -675,26 +563,26 @@ moves to [TODO.md](TODO.md).
   a Map where Rakudo answers a Buf or a Hash (`.read`, `.subbuf`, `~` of two
   Bufs, `%h.Map`), or a `Buf $b` parameter that took one starts refusing it.
 
-- [ ] **An arithmetic infix on a Whatever value numifies it** (found
-  2026-11-08 making an infix on one stop currying):
+- [ ] **A Whatever value keyed into a Pair is a string, and a WhateverCode
+  gists as `WhateverCode.new`** (found 2026-11-08 making arithmetic on a
+  Whatever value die):
 
   ```raku
-  my $w = *;
-  say $w + 1;        # 1, Rakudo: X::Multi::NoMatch (Cannot resolve caller Numeric(Whatever:D: ))
-  say $w == 1;       # False, the same
-  say -$w;           # -0, the same
-  say ($w => 1).raku;   # "*" => 1, Rakudo * => 1
-  say 5 ~~ *;        # WhateverCode.new, Rakudo 5 ~~ * (a WhateverCode gists as its source)
+  my $w = *; say ($w => 1).raku;   # "*" => 1, Rakudo * => 1
+  say 5 ~~ *;                      # WhateverCode.new, Rakudo 5 ~~ * (its source)
   ```
 
-- [ ] **Two built-in exceptions made with `.new` have the wrong message**
-  (found 2026-11-08 making `~` of one its message):
+- [ ] **Two role conflicts and a `substr` say less than Rakudo** (found
+  2026-11-08 checking the role candidate key):
 
   ```raku
-  say X::Str::Numeric.new(:source<a>, :pos(0), :reason<r>).message;
-      # (Any), Rakudo: Cannot convert string to number: r in '<HERE>a' (indicated by <HERE>)
-  say X::OutOfRange.new(:what<x>, :got(5), :range(1..2)).message;
-      # …should be in 1 2, Rakudo …should be in 1..2
+  role A2 { multi method m($a, :$x!) { "A" } }; role B2 { multi method m($a, :$x!) { "B" } }
+  class E does A2 does B2 { }
+  # Method 'm' must be resolved by class E because it exists in multiple roles (A2, B2)
+  # Rakudo: Multi method 'm' with signature :(E $:: $a, :$x!, *%_)' must be resolved by class E
+  #         because it exists in multiple roles (B2, A2)   — at compile time
+  try "abc".substr(10); say $!.message;
+  # …should be in 0..3, Rakudo adds "; use *-10 if you want to index relative to the end"
   ```
 
 ## Control flow and containers
@@ -936,21 +824,6 @@ moves to [TODO.md](TODO.md).
   or drop `holdsCells`. `f(($a, 2))` itself works since d7c6d9d5 (and on a
   second call since 3e97932e).
 
-- [ ] **The interpreter does not sink a ternary's branches** (found
-  2026-10-23 while making compiled regex literals values; compiled code is
-  right):
-
-  ```raku
-  $_ = 'abc'; False ?? /q/ !! /c/; say $/   # Nil, Rakudo and --exe ｢c｣
-  ```
-
-  Sink context reaches a ternary's branches in Rakudo, and a sunk regex
-  literal matches `$_`. Interpreter::exec's ExprStmt arm
-  (src/InterpreterCore.cpp, "A bare regex STATEMENT") matches only a
-  RegexLit that is the statement itself; codegen's exSunk takes a ternary
-  apart. t/regression/exe-regex-literal-values.raku skips that line for the
-  interpreter; drop the skip with the fix.
-
 - [ ] **A LEAVE runs on `exit` in both engines; Rakudo runs none** (found
   2026-10-27 while fixing the compiled LEAVE, fc262224):
 
@@ -983,20 +856,6 @@ moves to [TODO.md](TODO.md).
   a parameter as bare through VarExpr::bareParam, which the parser sets;
   `.VAR` still sees the Scalar the binder makes. Done when the three lines
   are Rakudo 2026.09's.
-- [ ] **A `let` is not undone when a LEAVE dies during the unwinding**
-  (found 2026-10-28 while fixing issue #205, 099a2055):
-
-  ```raku
-  our $x = 1;
-  sub f { let $x = 5; LEAVE die "from LEAVE"; die "first" }
-  try f(); say $x;    # 5, Rakudo 1
-  ```
-
-  callCallableRaw's and invokeMethod's handlers run the LEAVEs
-  (runLeavePhasers) before runLetRestoresOf, and a LEAVE that dies throws
-  past the restore. 099a2055 made a method put its caller's scope back on that
-  path; nothing restores the `let`s. Done when this prints 1, for a method
-  as well.
 - [ ] **A write past a Buf's end grows a buffer only one holder sees**
   (found 2026-10-28 while fixing issue #186, 18ef8f73; the same before it):
 
@@ -1105,7 +964,6 @@ moves to [TODO.md](TODO.md).
     `List:D(Pair:D)`: the smiley goes after the coercion;
   - `R.^candidates.map(*.HOW.^name)` dies "Cannot map a List using a Str":
     `.^name` after `*.HOW` is not curried into the WhateverCode;
-  - `GLOBAL::.keys` is empty after `class A::B::C { }` (Rakudo: (A));
   - closing the tap of a supply block calls the tapper's `done` callback
     (`supply { whenever Supply.interval(10) { } }.tap(done => { note
     "done" }).close` says "done"; Rakudo says nothing);
@@ -1136,10 +994,6 @@ moves to [TODO.md](TODO.md).
   - IO::Socket::Async::SSL's t/encoding.rakutest failed once in a fresh
     `rakupp install` (it read "¸ВО" for "ПИВО": the reply's first bytes were
     lost) and has passed 80 runs since, idle and under load;
-  - a Vow's `.keep` with no argument keeps the promise with True; Rakudo's
-    needs the value ("Too few positionals passed");
-  - `.slurp` on a directory dies X::IO::Directory "Failed to open file …: is
-    a directory"; Rakudo's dies X::AdHoc "Tried to open directory …";
   - Cro::RPC::JSON's test-only dependencies JSON::Unmarshal
     (t/080-trait.rakutest), URI (t/query.rakutest) and Test::META
     (t/010-use.t) still fail their own suites. Cro::RPC::JSON's tests do
@@ -1164,32 +1018,20 @@ moves to [TODO.md](TODO.md).
   return hands back a container that is not that cell. Done when the
   returned container and the attribute share it.
 
-- [ ] **An itemized Range is two keys** (found 2026-11-08 making
-  `%h{@b.item} = 1` one key):
+- [ ] **An itemized Range flattens in a list** (found 2026-11-08 making
+  `(1..2).item` one hash key; `$(1..2)` the same before it):
 
   ```raku
-  my %x; %x{(1..2).item} = 1; say %x;   # {1 => 1, 2 => (Any)}, Rakudo {1 2 => 1}
+  my @a = (1..2).item; say @a.elems;     # 2, Rakudo 1
+  say ((1..2).item, 3).flat.elems;       # 3, Rakudo 2
+  say [$(1..2)].elems;                   # 2, Rakudo 1
   ```
 
-  `.item` on a Range hands back the Range unitemized, so the slice branch of
-  the assignment, which skips an itemized list now, still takes it.
+  An itemized Array keeps itself whole in these. `.item` itemizes a Range
+  too now (the hash subscript reads the flag); the list builders do not ask
+  it of a Range.
 
 ## Processes and diagnostics
-
-- [ ] **"Variable '$x' is not declared" inside a string past line 200 is
-  reported at line 1** (found 2026-10-20: a typo on line 268 of
-  tools/run-fatroast.raku was reported at the shebang):
-
-  ```bash
-  { for i in $(seq 300); do echo "#"; done; echo 'say "$nope";'; } > /tmp/g.raku; build/rakupp -c /tmp/g.raku   # :1, want :301
-  ```
-
-  A bare `say $nope;` gets 301; 199 lines get the right line too.
-  reportUndeclaredVars() in src/DeclCheck.cpp: a variable from the
-  interpolation sub-parser carries no line, the finding lands on line 1,
-  and `locate()` walks only 200 lines forward from it. Give interpolated
-  variable nodes the line of their string; do not widen the window. Cover
-  `"$nope"`, `"a {$nope} b"`, `qq/$nope/` and a multi-line statement.
 
 - [ ] **A parse error shows its line and column only when a file is run**
   (found 2026-10-27 while fixing issue #206, 2b9494ae):
@@ -1266,23 +1108,18 @@ moves to [TODO.md](TODO.md).
   so those two arms keep the quit. Done when the line above matches Rakudo,
   `uncaught_handler` is honoured, and those arms hand the tapper's error on.
 
-- [ ] **`--doc` runs the program's mainline** (found 2026-11-08 checking
-  `=for para`'s rendering):
-
-  ```bash
-  printf '=para w\n\nsay "MAINLINE RAN";\n' > /tmp/d.raku; build/rakupp --doc=Text /tmp/d.raku
-  # rakupp: MAINLINE RAN, then w; Rakudo: w
-  ```
-
-- [ ] **A Pair passed to `run` as a positional is dropped** (found
-  2026-11-08 making `run` refuse unknown named arguments):
+- [ ] **A runtime error in a `{…}` of a multi-line string names the
+  string's first line** (found 2026-11-08 numbering an interpolation's
+  tokens from its string):
 
   ```raku
-  say run("echo", "a" => 1, :out).out.slurp(:close).raku;   # "\n", Rakudo "a\t1\n"
+  my $x = 1;
+  say "a
+    {$x.nope}";    # rakupp: line 2, Rakudo line 3
   ```
 
-  run()'s argument loop reads every Pair as an adverb, the ones written as
-  positionals too (`v.namedArg` tells them apart).
+  The block's nodes carry their own lines now; the backtrace takes the
+  statement's.
 
 ## Backends
 
@@ -1323,17 +1160,6 @@ moves to [TODO.md](TODO.md).
   BEGIN. A BEGIN statement inside a routine or block still runs at start
   too, and keeps the top-level ones running when it touches the program's
   variables.
-
-- [ ] **`--exe`: a list constant says it is an Array** (found 2026-10-30
-  fixing issue #190; base ba17e855 does the same):
-
-  ```raku
-  constant @L = (2, 4); say @L;   # interpreted and Rakudo: (2 4); --exe: [2 4]
-  ```
-
-  Natively compiled, `constant @L = LIST` binds an Array where the
-  interpreter binds a List (InterpreterCore.cpp's `isList` bind for a
-  constant); Codegen should mark it a List.
 
 - [ ] **`--exe`: `:=` inside a natively compiled routine copies instead of
   aliasing** (found 2026-10-19 verifying the non-ASCII binding fix; the
