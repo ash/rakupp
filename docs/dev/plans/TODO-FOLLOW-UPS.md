@@ -15,25 +15,6 @@ moves to [TODO.md](TODO.md).
 
 ## Names and parsing
 
-- [ ] **A local proto beside an imported multi is a redeclaration** (found
-  2026-11-08 fixing #231, 5f6d78e4; a regression from eb574770, #230):
-  Rakudo merges them, and Roast's S11-modules/import-multi.t, fully passing
-  at v5.6.0, dies at its `import C;` (4 of 17).
-
-  ```raku
-  {
-      proto sub Cfoo(Mu) { * }
-      multi sub Cfoo(Str $a) { 'Str' }
-      module C { multi sub Cfoo(Int $a) is export { 'Int' } }
-      import C;              # rakupp: Redeclaration of routine 'Cfoo'.  Rakudo: merges
-      say Cfoo(7), Cfoo('a');   # Rakudo: IntStr
-  }
-  ```
-
-  importClashesWithLocal (InterpreterModules.cpp) counts a proto beside an
-  imported group as a clash; a local proto with multis takes the imported
-  candidates in Rakudo.
-
 - [ ] **Four word-list spellings still read differently from Rakudo** (found
   2026-11-08 fixing #231, 5f6d78e4; each the same before it):
 
