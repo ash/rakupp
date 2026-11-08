@@ -5938,11 +5938,18 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
                 if (a.t == VT::Pair && a.pairVal() && rtIsDefined(*a.pairVal()))
                     at[a.s.copyText()] = a.pairVal()->toStr();
             std::string syn;
+            auto gistArg = [&](const char* k) {   // (got and range by their gist: `should be in 1..2`, not `1 2`)
+                for (auto& a : args) if (a.t == VT::Pair && a.s == k && a.pairVal()) return gistOf(*a.pairVal());
+                return std::string(); };
             if (t == "X::OutOfRange" && at.count("what")) {
-                syn = at["what"] + " out of range. Is: " +
-                      (at.count("got") ? at["got"] : std::string()) +
-                      ", should be in " + (at.count("range") ? at["range"] : std::string());
+                syn = at["what"] + " out of range. Is: " + gistArg("got") + ", should be in " + gistArg("range");
                 if (at.count("comment")) syn += "; " + at["comment"];
+            }
+            else if (t == "X::Str::Numeric" && at.count("source") && at.count("reason")) {
+                const std::string& src = at["source"];
+                size_t pos = 0; try { pos = (size_t)std::max(0LL, std::stoll(at.count("pos") ? at["pos"] : "0")); } catch (...) {}
+                pos = std::min(pos, src.size());
+                syn = "Cannot convert string to number: " + at["reason"] + " in '" + src.substr(0, pos) + "<HERE>" + src.substr(pos) + "' (indicated by <HERE>)";
             }
             else if (t == "X::NYI" && at.count("feature"))
                 syn = at["feature"] + " not yet implemented. Sorry.";
