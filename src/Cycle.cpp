@@ -318,7 +318,9 @@ bool retainIfLive(Payload* p) {
 void releaseQuiet(Payload* p) {
     uint32_t old = p->refs_.fetch_sub(1, std::memory_order_acq_rel);
     if ((old & kRefMask) == 1) {
-        if (p->pflags_.load(std::memory_order_relaxed) & kPayCycleBuffered) cycleForget(p);
+        const uint32_t f = p->pflags_.load(std::memory_order_relaxed);
+        if (f & kPayCycleBuffered) cycleForget(p);
+        if (f & kPayWhichId) whichForget(p);
         p->destroySelf();
     }
 }

@@ -3,10 +3,45 @@
 // Split out of Builtins.cpp, whose size it was; `===`, `.unique`, object hashes
 // and `(elem)` all ask whichOf.
 #include "BuiltinsParts.h"
+#include <atomic>
 #include <cstdio>
+#include <mutex>
 #include <string>
+#include <unordered_map>
 
 namespace rakupp {
+
+// An object's WHICH is a SERIAL, not its address. Bodies come back from the
+// slab pool, so a temporary's address was the next one's: `(1,2).WHICH eq
+// ('1','2').WHICH` and `Foo.new.WHICH eq Foo.new.WHICH` were True, and
+// `(^3).map({ [$_].WHICH }).unique` had one element, where Rakudo's three
+// (#221). A body gets its serial the first time a WHICH asks for it and keeps
+// it while it lives; its death (whichForget, from the release path, which the
+// kPayWhichId bit sends here) gives the address back without the serial. The
+// table is never destroyed: bodies still die during static destruction.
+static std::atomic<std::uint64_t> g_whichSerial{0};
+std::uint64_t nextWhichSerial() noexcept { return g_whichSerial.fetch_add(1, std::memory_order_relaxed) + 1; }
+static std::mutex& whichMut() { static auto* m = new std::mutex; return *m; }
+static std::unordered_map<const Payload*, std::uint64_t>& whichIds() {
+    static auto* t = new std::unordered_map<const Payload*, std::uint64_t>;
+    return *t;
+}
+static std::uint64_t bodySerial(const Payload* p) {
+    std::lock_guard<std::mutex> lk(whichMut());
+    if (p->pflags_.load(std::memory_order_relaxed) & kPayWhichId) {
+        auto it = whichIds().find(p);
+        if (it != whichIds().end()) return it->second;
+    }
+    const std::uint64_t id = nextWhichSerial();
+    whichIds()[p] = id;
+    p->pflags_.fetch_or(kPayWhichId, std::memory_order_relaxed);
+    return id;
+}
+void whichForget(Payload* p) noexcept {
+    try { std::lock_guard<std::mutex> lk(whichMut()); whichIds().erase(p); } catch (...) {}
+}
+// `Type|serial`, as Rakudo's `Array|2340682431952` reads
+static std::string serialWhich(const std::string& type, std::uint64_t id) { return type + "|" + std::to_string(id); }
 
 // The canonical identity of a value — what `.WHICH` answers and what a Set/Bag/Mix
 // keys on. Two values are the same element exactly when these agree, so it has to
@@ -31,7 +66,7 @@ static bool userWhichIsValue(const Value& v) {
 }
 // The built-in objects that keep their state in a Hash payload: each `.new` is
 // a different object however alike their fields read, so they identify by the
-// payload's address. Rendering the fields made every fresh Promise
+// payload (its serial). Rendering the fields made every fresh Promise
 // `Promise|status Planned`, so `.unique`, a Set or an object hash merged them,
 // and the WHICH moved when the Promise was kept. (Rakudo 2026.09: all ObjAt.)
 static bool hashIsIdentity(const Value& v) {
@@ -70,11 +105,8 @@ std::string whichOf(const Value& v) {
     // useless "Buf|" — the bytes are unprintable — for every buffer alive.
     // A token-less one (a construction site that predates the stamp) keeps the
     // old value rendering rather than claiming to be a different object.
-    if (identityScalar(v) && v.ext()) {
-        char idb[24];
-        std::snprintf(idb, sizeof idb, "|%p", v.ext().get());
-        return v.typeName() + idb;
-    }
+    if (identityScalar(v) && v.ext())
+        return serialWhich(v.typeName(), static_cast<const IdentityToken*>(v.ext().get())->id);
     if (v.isAllomorph()) {
         // the numeric half is the same value with the string side dropped
         Value num = v; num.hashKind.clear(); num.s.clear();
@@ -98,7 +130,7 @@ std::string whichOf(const Value& v) {
         case VT::Bool:    return "Bool|" + std::string(v.b ? "1" : "0");
         case VT::Rat:     return "Rat|" + ratPart(v);
         case VT::Complex: return "Complex|" + Value::number(v.n).toStr() + "|" + Value::number(v.im()).toStr();
-        // An OBJECT is identified by its address, not by its contents — two
+        // An OBJECT is identified by being itself, not by its contents — two
         // instances with equal attributes are different elements of a Set. This
         // lived only in the `.WHICH` arm, so `.WHICH` said they differed while
         // baggyKeyStr (which keys on the RENDERING, `A<obj>` for every instance
@@ -106,9 +138,7 @@ std::string whichOf(const Value& v) {
         case VT::Object:  if (v.obj()) {
                               std::string w; bool isV = false;
                               if (g_userWhich && g_userWhich(v, w, isV)) return w;
-                              char buf[24];
-                              std::snprintf(buf, sizeof buf, "|%p", (void*)v.obj());
-                              return v.typeName() + buf;
+                              return serialWhich(v.typeName(), bodySerial(v.p_.get()));
                           }
                           return v.typeName() + "|<null>";
         // a Range's identity is its GIST, exclusion markers and all — expanding
@@ -118,11 +148,7 @@ std::string whichOf(const Value& v) {
         // A MATCH is an object: two matches of the same text are two nodes of
         // the tree (issue #109), and a copy of one is still it — the payload
         // every copy shares, which is what `===` compares
-        case VT::Match:   if (v.p_) {
-                              char buf[24];
-                              std::snprintf(buf, sizeof buf, "|%p", (const void*)v.p_.get());
-                              return v.typeName() + buf;
-                          }
+        case VT::Match:   if (v.p_) return serialWhich(v.typeName(), bodySerial(v.p_.get()));
                           return v.typeName() + "|" + v.toStr();
         // A Pair identifies by its PARTS — but only while both are values. With
         // an Array (or any other reference type) inside, the Pair is an object
@@ -146,11 +172,8 @@ std::string whichOf(const Value& v) {
         // write into a nested Hash both leave that payload where it is, so the
         // WHICH holds still, as Rakudo's `Map|…`/`Hash|…` does (S32-hash/map.t).
         case VT::Hash:    if (v.hash() && (v.hashKind.empty() || v.hashKind == "Hash" || v.hashKind == "Map" ||
-                                       hashIsIdentity(v))) {
-                              char buf[24];
-                              std::snprintf(buf, sizeof buf, "|%p", (void*)v.hash());
-                              return v.typeName() + buf;
-                          }
+                                       hashIsIdentity(v)))
+                              return serialWhich(v.typeName(), bodySerial(v.p_.get()));
                           return v.typeName() + "|" + v.toStr();
         case VT::Array:   if (!v.enumType.empty() && v.enumName.empty()) goto typeObject; // an enum's type
                           if (v.hashKind == "Capture") {
@@ -182,11 +205,9 @@ std::string whichOf(const Value& v) {
                           // and `[1,2]` the same as `["1","2"]` (#221). `Empty` is the one
                           // empty Slip, however it was built; `my Int @a` is an Array[Int].
                           if (v.s == "Slip" && v.arr() && v.arr()->empty()) return "Slip|Empty";
-                          {
-                              char buf[24];
-                              std::snprintf(buf, sizeof buf, "|%p", (void*)v.p_.get());
-                              return v.typeName() + (v.ofType().empty() ? "" : "[" + v.ofType() + "]") + buf;
-                          }
+                          if (!v.p_) return v.typeName() + "|<null>";
+                          return serialWhich(v.typeName() + (v.ofType().empty() ? "" : "[" + v.ofType() + "]"),
+                                             bodySerial(v.p_.get()));
         // a TYPE OBJECT is undefined, and Rakudo marks that with a `U` before
         // the type's own number: `Rat|U4360041773904`. The number here is the
         // name's hash, so it is stable for the run and distinct per type.

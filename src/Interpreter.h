@@ -5346,7 +5346,7 @@ public:
     // reference type — so every read has to hand back the SAME identity token,
     // or `$*INIT-INSTANT === $*INIT-INSTANT` would be False. Both reader sites
     // go through here.
-    std::shared_ptr<void> initInstantId_ = std::make_shared<char>();
+    std::shared_ptr<void> initInstantId_ = identityToken();
     Value initInstantVal() {
         Value v = Value::number(initInstant_);
         v.hashKind = "Instant";
