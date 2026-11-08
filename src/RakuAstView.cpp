@@ -250,7 +250,20 @@ struct Builder {
             case NK::Call: {
                 auto* c = static_cast<Call*>(e);
                 ValueList args;
-                for (auto& a : c->args) args.push_back(buildExpr(a.get()));
+                // `start 5`: the parser thunks the expression in a block of its own
+                // (statements of line 0, the implicit `$/` and `$!` among them),
+                // which upstream is no block at all
+                if ((c->name == "start" || c->name == "CORE::start") && c->args.size() == 1 &&
+                    c->args[0]->kind == NK::BlockExpr) {
+                    const Expr* only = nullptr; int real = 0;
+                    for (auto& st : static_cast<BlockExpr*>(c->args[0].get())->body)
+                        if (st->line != 0 || st->kind != NK::ExprStmt) real += 2;
+                        else if (auto* x = static_cast<const ExprStmt*>(st.get())->e.get();
+                                 !(x && x->kind == NK::VarExpr && static_cast<const VarExpr*>(x)->declare && x->line == 0))
+                            { only = x; real++; }
+                    if (real == 1 && only) args.push_back(buildExpr(const_cast<Expr*>(only)));
+                }
+                if (args.empty()) for (auto& a : c->args) args.push_back(buildExpr(a.get()));
                 Value arglist = node("ArgList", {{"args", list(args)}});
                 if (c->callee)   // `$code(…)` — a call on an expression, not a name
                     return node("ApplyPostfix", {{"operand", buildExpr(c->callee.get())},
