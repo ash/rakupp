@@ -1811,6 +1811,7 @@ struct ExecContext {
     uint64_t frameTop = 0;        // incremented per callCallableRaw activation
     size_t redispatchFloor = 0;   // frames below this index are another routine's (callsame/nextsame can't see them)
     uint64_t curRoutineFrame = 0; // frameTop at the nearest enclosing ROUTINE entry
+    uint64_t evalRoutineFrame = 0; // …and the one an eval-lives-ok string runs as (evalAsRoutine): its top level's
     Env* curRoutineEnv = nullptr; // …and that activation's own scope (identity: frame numbers repeat)
     // The BUILT-IN standing behind the user method currently running, for
     // callsame/nextsame. A user method that overrides a built-in (`method clone
