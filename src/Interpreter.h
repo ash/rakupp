@@ -3425,7 +3425,8 @@ public:
                         // a literal `where { … }` block, evaluated ONCE: one closure,
                         // so a `state` inside it persists across checks, as in Rakudo
                         std::shared_ptr<Value> whereBlock;
-                        Value howObj; };                   // its own .HOW, made on first ask (or by new_type)
+                        Value howObj;                      // its own .HOW, made on first ask (or by new_type)
+                        std::string shownName; };          // `K::S` for one declared in package K, `my` too
     StrMap<SubsetInfo> subsets_;
     // operator → the not-yet-declared type names of each candidate that armed
     // it provisionally (noteUserInfixCandidate); decided again as classes and

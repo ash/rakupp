@@ -8467,6 +8467,9 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
                 if (cn != classes_.end() && cn->second && !cn->second->dispName.empty())
                     return Value::str(!cn->second->shownName.empty() ? cn->second->shownName : cn->second->dispName);
             }
+            if (inv.t == VT::Type)   // (a subset declared in package K is named for it: `K::S`)
+                if (auto si = subsets_.find(inv.s.str()); si != subsets_.end() && !si->second.shownName.empty())
+                    return Value::str(si->second.shownName);
             // (a NativeCall type names its package: NativeCall::Types::CArray[int32])
             if (inv.t != VT::Object) return Value::str(ncQualifiedName(inv.typeName()));
             return Value::str(inv.typeName());

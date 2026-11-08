@@ -5319,6 +5319,7 @@ static void mergeParentRoleMultis(ClassInfo* ci, const SigKey& sigKeyParams) {
                 info.coerce = sd->coerceBase;             // `of Str()`
                 info.coerceFrom = sd->coerceFrom;         // `of Num(Str)`
                 info.declEnv = tctx().cur;   // `where { LogLevels{$_}:exists }` reads its class's constant (Template::Mustache)
+                if (!tctx().pkgPrefix.empty()) info.shownName = tctx().pkgPrefix + sd->name;   // its `.^name`, `my` or not
                 // A subset declared inside a package is that package's: it must
                 // not take a CORE type's name over for everyone else. Cro::HTTP::
                 // Request's `subset Method of Str where /^<[A..Z]>+$/` turned

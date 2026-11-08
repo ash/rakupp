@@ -3239,7 +3239,11 @@ static void forceLazyImpl(const Value& v) {
 static std::string typeDispNameImpl(const std::string& key) {
     if (!g_matchClasses) return std::string();
     auto it = g_matchClasses->find(key);
-    if (it == g_matchClasses->end() || !it->second) return std::string();
+    if (it == g_matchClasses->end() || !it->second) {   // …and a subset declared in a package: `K::S`
+        if (!g_cbInterp) return std::string();
+        auto si = g_cbInterp->subsets_.find(key);
+        return si != g_cbInterp->subsets_.end() ? si->second.shownName : std::string();
+    }
     return !it->second->shownName.empty() ? it->second->shownName : it->second->dispName;
 }
 static const bool g_typeDispNameInstalled = ((g_typeDispName = &typeDispNameImpl), true);
