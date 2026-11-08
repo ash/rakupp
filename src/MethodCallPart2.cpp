@@ -4225,6 +4225,8 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
                                 "Access denied to keep/break this Promise; already vowed"};
             (*inv.hash())["vowed"] = Value::boolean(true);
         };
+        if ((m == "keep" || m == "break") && inv.hashKind == "Vow" && args.empty())   // (a Vow's take their value)
+            throw RakuError{Value::typeObj("X::AdHoc"), "Too few positionals passed; expected 2 arguments but got 1"};
         if (m == "keep") {
             takeVow();
             Value v = args.empty() ? Value::boolean(true) : args[0];
