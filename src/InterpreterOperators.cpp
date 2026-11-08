@@ -2276,6 +2276,13 @@ std::string Interpreter::strOf(const Value& v) {
         // whether message is a method or a plain attribute.
         if (Value* m = v.obj()->cls->findMethod("message")) { ValueList none; return invokeMethod(*m, v, none).toStr(); }
         auto mit = v.obj()->attrs.find("message");
+        if (mit != v.obj()->attrs.end() && rtIsDefined(mit->second)) return strOf(mit->second);
+        // …and a built-in one made with `.new` computes it (X::OutOfRange's) or
+        // has its payload (X::AdHoc's); one with none says so, as Exception.Str does
+        if (v.obj()->cls->isException() || v.obj()->cls->name.rfind("X::", 0) == 0) {
+            Value msg = methodCall(v, "message", ValueList{});
+            return rtIsDefined(msg) ? strOf(msg) : "Something went wrong in " + Value::typeObj(v.obj()->cls->name).gist();
+        }
         if (mit != v.obj()->attrs.end()) return strOf(mit->second);
         if (v.obj()->hasBoxed) return strOf(v.obj()->boxed());
         // A class that does the built-in SEQUENCE role stringifies as its

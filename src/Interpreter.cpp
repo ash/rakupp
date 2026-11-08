@@ -4629,7 +4629,8 @@ void Interpreter::adoptProcessStatics() {
     // `sprintf "%s: %s", $level.uc, $e`, which printed X::FieldNotFound<id>.
     g_userStr = [this](const Value& v, std::string& out) {
         if (v.t != VT::Object || !v.obj() || !v.obj()->cls) return false;
-        if (!v.obj()->cls->findMethod("Str") && !v.obj()->cls->findMethod("message")) return false;
+        if (!v.obj()->cls->findMethod("Str") && !v.obj()->cls->findMethod("message") &&
+            !v.obj()->cls->isException()) return false;
         out = strOf(v);
         return true;
     };
