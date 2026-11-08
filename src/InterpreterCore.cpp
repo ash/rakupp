@@ -4287,6 +4287,9 @@ static inline bool isMuTypeObject(const Value& v) {
 // default to Mu (Rakudo: `-> $x? { $x.^name }()` is Mu, `sub f($x?)` gives Any)
 static Value unpassedDefault(const std::string& type, char sigil, bool blockParam) {
     if (blockParam && type.empty() && sigil == '$') return Value::typeObj("Mu");
+    // (a SUBSET's is its nominal type, which refuseUnpassedDefinite has had the `where` check)
+    if (sigil == '$' && !type.empty() && g_cbInterp) if (std::string n = g_cbInterp->subsetNominal(type); !n.empty())
+        return Value::typeObj(n);
     return typedDefault(type, sigil);
 }
 // …which a `:D` parameter refuses: an optional `Real:D :$r` (or `Real:D $r?`)
@@ -4316,6 +4319,7 @@ void Interpreter::bindRoutineParams(const Callable& c, ValueList& args, std::sha
     bindParams(*c.ci().params, args, env, methodCtx, blockParams, whereVerified);
 }
 void Interpreter::refuseUnpassedDefinite(const Param& p) {
+    if (p.sigil == '$' && !p.type.empty() && !p.coerce) refuseUnpassedSubset(p);
     if (p.defConstraint != 1 || p.sigil != '$' || p.type.empty()) return;
     std::string routine = t_bindRoutine && !t_bindRoutine->empty() ? *t_bindRoutine : std::string("<anon>");
     throwTypedV("X::Parameter::InvalidConcreteness",

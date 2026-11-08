@@ -3571,6 +3571,8 @@ public:
     [[noreturn]] void throwInvalidParamType(const std::string& type);
     bool paramTypeUndeclared(const std::string& t);
     std::string noMatchProfile(const Value& self, const ValueList& as, bool withInvocant);
+    std::string subsetNominal(const std::string& type);   // `subset CN of Str …` → Str
+    void refuseUnpassedSubset(const Param& p);            // …whose `where` an unpassed default must pass
     [[noreturn]] void throwNeedleNoMatch(const Value& inv, const std::string& m, const ValueList& args);
     // `next`/`last`/`redo` (kind 1/2/3) called WITH arguments — `next(L)`,
     // `last $label`, `next OUTER`, 6.e's `last $value`: always throws

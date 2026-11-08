@@ -1229,6 +1229,7 @@ void Interpreter::checkBareSubsetDecl(const VarExpr* ve, char sigil) {
 
 bool Interpreter::subsetMatches(const std::string& name, const Value& v, int depth) {
     if (depth > 16) return false; // subset cycle backstop
+    if (v.t == VT::Type && v.s == name && v.ofType().empty()) return true;   // `CN ~~ CN`: the subset itself
     // TYPE-OBJECT arguments memoize per (subset, type): a where-clause over a
     // type object is deterministic per type (it introspects the type, not
     // runtime state — the same bet Rakudo's type-check cache makes), and
@@ -1493,6 +1494,36 @@ std::string Interpreter::enumBaseType(const std::string& enumType) {
     const Value* v0 = p0.t == VT::Pair ? p0.pairVal() : nullptr;
     if (!v0) return "Int";
     return v0->t == VT::Int ? std::string("Int") : v0->typeName();
+}
+
+// The type a subset narrows, past every subset on the way: Str for `subset CN
+// of Str where …`, Any for one of nothing; "" for a name that is no subset (or a
+// coercion subset, whose default is its own business).
+std::string Interpreter::subsetNominal(const std::string& type) {
+    if (type == "UInt") return "Int";   // (the built-in one, no entry here)
+    auto it = subsets_.find(type);
+    if (it == subsets_.end() || it->second.coerce) return std::string();
+    std::string n = type;
+    for (int d = 0; d < 16 && it != subsets_.end(); d++) {
+        n = it->second.base.empty() ? std::string("Any") : resolveClassAlias(it->second.base);
+        it = subsets_.find(n);
+    }
+    return n == "UInt" ? std::string("Int") : n;
+}
+// An optional parameter typed by a subset and not passed holds the subset's
+// nominal type object, and the subset has to take it, as Rakudo's binder
+// checks: `sub f(CN :$x)` called without :x dies when CN's `where` refuses Str.
+void Interpreter::refuseUnpassedSubset(const Param& p) {
+    const std::string n = subsetNominal(p.type);
+    if (n.empty() || !subsets_.count(p.type)) return;
+    const Value dv = Value::typeObj(n);
+    if (subsetMatches(p.type, dv)) return;
+    throwTypedV("X::TypeCheck::Binding::Parameter",
+        {{"got", dv}, {"expected", Value::typeObj(p.type)}, {"symbol", Value::str(p.name)}},
+        "Constraint type check failed in binding to parameter '" + p.name + "'; expected " + p.type +
+        " but got " + n + " (" + n + ")\nThe parameter is optional and was not passed an argument, so its\n"
+        "implicit default value was checked against the constraint. Give the\nparameter a default value that "
+        "satisfies the constraint, mark it as\nrequired, or make the constraint accept the implicit default.");
 }
 
 bool Interpreter::typeOrSubsetMatches(const Value& v, const std::string& type) {
