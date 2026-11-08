@@ -21,8 +21,8 @@ a3246b12 (an untyped Array of Nums packs itself into doubles),
 a516dd92 and b4bf1dc9 (`--doc-links`: a program linked to its documentation),
 b9e35683 (the store undo log copies the arrays at a sixteenth),
 and issues #221-#229: 1a3f36d1 (#223, #224), 28824bb7 (#222), 32b1ea01
-(#220's follow-up), 266d37c6 (#221), e7bbb97c (#225), 20f0691d (#228),
-17d28f81 (#229).*
+(#220's follow-up), 266d37c6 and 92561fe1 (#221), e7bbb97c (#225),
+20f0691d (#228), 17d28f81 (#229).*
 
 ---
 
@@ -226,14 +226,18 @@ and issues #221-#229: 1a3f36d1 (#223, #224), 28824bb7 (#222), 32b1ea01
   agrees with Rakudo 2026.09, interpreted, under `--jit`, `--cnp` and
   `--exe`.
 
-- **`Array.WHICH` and `List.WHICH` are identity, as `===` is** (266d37c6;
-  issue #221). They were the type and the elements joined by a space:
+- **`Array.WHICH` and `List.WHICH` are identity, as `===` is** (266d37c6,
+  92561fe1; issue #221). They were the type and the elements joined by a space:
   `@a.push(3)` moved `@a.WHICH`, two arrays holding 1, 2 had one WHICH and
   were one element of a Set or a Bag, and `[1,2]`, `["1","2"]` and
   `["1 2"]` were all `Array|1 2`. An Array, a List or a Seq now identifies by
   its payload, which every copy shares and a push or a refill leaves in
   place; a typed one is `Array[Int]|…`, `Empty` is still one object, and a
-  Capture and a Junction are still values. Found beside it, `(elem)`
+  Capture and a Junction are still values. An identity is a serial now, not
+  an address, which the next body took once a temporary was gone: `(1,2).WHICH
+  eq ('1','2').WHICH` was True, as were two temporary objects, Hashes, Bufs
+  and Instants. A Set of 200,000 objects takes 0.058 s where it took 0.050,
+  and each live body asked for its WHICH holds about 42 bytes more. Found beside it, `(elem)`
   flattened the list it searched: `@b (elem) (@b.item,)` was False and
   `2 ∈ (1, (2, 3))` True. `t/regression/issue-221-array-list-which-identity.raku`.
 - **`Positional[Int] ~~ Positional[Mu]` is True** (28824bb7; issue #222).
