@@ -22,7 +22,7 @@ a516dd92 and b4bf1dc9 (`--doc-links`: a program linked to its documentation),
 b9e35683 (the store undo log copies the arrays at a sixteenth),
 and issues #221-#229: 1a3f36d1 (#223, #224), 28824bb7 (#222), 32b1ea01
 (#220's follow-up), 266d37c6 and 92561fe1 (#221), e7bbb97c (#225),
-20f0691d (#228), 17d28f81 (#229).*
+20f0691d (#228), 17d28f81 (#229); eb574770 (#230).*
 
 ---
 
@@ -254,6 +254,25 @@ and issues #221-#229: 1a3f36d1 (#223, #224), 28824bb7 (#222), 32b1ea01
   that opened the signature kept its smiley, so `sub j($p --> Int:D) { Int }`
   returned the type object Rakudo refuses, and the signature read
   `($p --> Int)`. `t/regression/signature-text-names-types-as-raku.raku`.
+- **A sub beside a routine its scope imports is a redeclaration**
+  (eb574770; issue #230). `unit module Mine; use Other; sub run-word {…}`,
+  where Other exports a `run-word`, compiled and kept the local sub; Rakudo
+  refuses it with "Redeclaration of symbol '&run-word'.", and in the
+  reporter's 2,000-line module calls reached the imported one, so the output
+  changed with nothing said. Every import road stepped aside for the local
+  name, and a `sub EXPORT`'s map was bound over it. Now it is
+  X::Redeclaration in either order: for `sub`, `my sub` and `our sub`; in a
+  module, the mainline, a block, a routine body, or a class or package body;
+  after `import`; for a `sub EXPORT`; and in `--aot` and `--exe` binaries.
+  The error names the `use`'s file and line. A multi beside an imported sub,
+  or a proto beside an imported group, is `Redeclaration of routine 'f'.
+  Did you mean to declare a multi-sub?`, as on Rakudo. Two multis still
+  merge, a local sub still completes an imported stub, and a selective export
+  the `use` did not ask for, `need`, `use M ()` and a `use` in another scope
+  still clash with nothing. It is raised when the `use` runs, so there is no
+  `===SORRY!===` header, and a `use` in a routine body reports it at the
+  routine's first call. `t/regression/import-over-local-routine.raku`, 38
+  checks against Rakudo 2026.09.
 
 ### Fixed: crashes
 
@@ -302,6 +321,13 @@ and issues #221-#229: 1a3f36d1 (#223, #224), 28824bb7 (#222), 32b1ea01
   goes at the end too. Not run on Windows.
 
 ### Left open
+
+- Found with eb574770, the same before it (each in TODO-FOLLOW-UPS.md): a
+  `my &f`, a `my $v` or a class beside an import of its name compiles, where
+  Rakudo refuses it; two imports of one name in a block keep the first,
+  where Rakudo keeps the last (the mainline keeps the last); and `use Test;
+  sub ok(…)` compiles, because Test's routines are built in rather than
+  imported.
 
 - Found with 28257097, the same before it: an attribute typed by a
   parameterized alias, `constant AI = Array[Int]; has AI $.a`, takes an
