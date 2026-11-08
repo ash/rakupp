@@ -225,4 +225,31 @@ bool Parser::testImportedHere(const std::vector<StmtPtr>& stmts) {
     return false;
 }
 
+// `prefix:<->(3)`, `postfix:<++>($x)`, `postcircumfix:<[ ]>(@a, 1)`: a built-in
+// operator called by its name is that operator applied, as Rakudo's `&prefix:<->`
+// is; a written one keeps a postfix's container (`postfix:<++>(my $y = 1)` steps
+// $y). One the program declares stays a call to it, and so does anything with a
+// named argument. Answers null when the call is not one of these.
+ExprPtr Parser::builtinOpCall(const std::string& name, std::vector<ExprPtr>& args) {
+    if (name.empty() || name.back() != '>') return nullptr;
+    for (auto& a : args) if (a->kind == NK::Pair && !static_cast<PairExpr*>(a.get())->parenned) return nullptr;
+    auto op = [&](size_t from) { return name.substr(from, name.size() - from - 1); };
+    static const std::set<std::string> kPrefix = {"-", "+", "~", "?", "!", "so", "not", "+^", "~^", "?^", "^", "++", "--"};
+    const bool pre = name.rfind("prefix:<", 0) == 0 && kPrefix.count(op(8)) && !userPrefix_.count(op(8));
+    const bool post = name.rfind("postfix:<", 0) == 0 && (op(9) == "++" || op(9) == "--") && !userPostfix_.count(op(9));
+    if ((pre || post) && args.size() == 1) {
+        auto u = std::make_unique<Unary>();
+        const std::string o = pre ? op(8) : op(9);   // (`so` and `not` are the tight `?` and `!` applied)
+        u->line = args[0]->line; u->op = o == "so" ? "?" : o == "not" ? "!" : o; u->postfix = post; u->operand = std::move(args[0]);
+        return u;
+    }
+    const bool brackets = name == "postcircumfix:<[ ]>" && !userPostcircumfix_.count("[");
+    if ((brackets || (name == "postcircumfix:<{ }>" && !userPostcircumfix_.count("{"))) && args.size() == 2) {
+        auto ix = std::make_unique<Index>();
+        ix->line = args[0]->line; ix->isHash = !brackets; ix->base = std::move(args[0]); ix->index = std::move(args[1]);
+        return ix;
+    }
+    return nullptr;
+}
+
 } // namespace rakupp

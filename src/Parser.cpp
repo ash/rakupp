@@ -10092,6 +10092,7 @@ ExprPtr Parser::parsePrimary() {
                 if (useNqp_ && name.size() > 5 && name.compare(0, 5, "nqp::") == 0)
                     if (ExprPtr n = makeNqpOp(name.substr(5), callArgs))
                         return n;
+                if (ExprPtr op = builtinOpCall(name, callArgs)) return op;   // `prefix:<->(3)` is `-3`
                 auto c = std::make_unique<Call>();
                 c->name = name;
                 c->parenned = true;   // `f(…)`, against the listop form just below

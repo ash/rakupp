@@ -3663,17 +3663,17 @@ Token Lexer::lexIdentOrVar() {
     }
     // `infix:['+']` — an operator name computed from an expression; it lexes
     // as the code variable `&infix:[…]`, which the parser turns into the lookup
+    auto notDeclared = [&] {   // …but a DECLARATION names the operator: `multi sub infix:["plus"]`
+        size_t b = pos_ - name.size();
+        while (b > 0 && (src_[b - 1] == ' ' || src_[b - 1] == '\t')) b--;
+        size_t e = b;
+        while (b > 0 && ascii::isalpha((unsigned char)src_[b - 1])) b--;
+        const std::string w = src_.substr(b, e - b);
+        return w != "sub" && w != "multi" && w != "proto" && w != "only" &&
+               w != "method" && w != "submethod" && w != "my" && w != "our";
+    };
     if ((name == "infix" || name == "prefix" || name == "postfix" || name == "circumfix" ||
-         name == "postcircumfix") && peek() == ':' && peek(1) == '[' &&
-        [&] {   // …but a DECLARATION names the operator: `multi sub infix:["plus"]`
-            size_t b = pos_ - name.size();
-            while (b > 0 && (src_[b - 1] == ' ' || src_[b - 1] == '\t')) b--;
-            size_t e = b;
-            while (b > 0 && ascii::isalpha((unsigned char)src_[b - 1])) b--;
-            const std::string w = src_.substr(b, e - b);
-            return w != "sub" && w != "multi" && w != "proto" && w != "only" &&
-                   w != "method" && w != "submethod" && w != "my" && w != "our";
-        }()) {
+         name == "postcircumfix") && peek() == ':' && peek(1) == '[' && notDeclared()) {
         name = "&" + name + advance();   // :
         int d = 0;
         while (!eof()) {
@@ -3683,6 +3683,20 @@ Token Lexer::lexIdentOrVar() {
             name += advance();
         }
         return make(Tok::Var, name);
+    }
+    // `infix:«<=»(1, 2)`, `infix:<<∈>>(…)`: the guillemet and double-angle spellings
+    // of an operator's name, called, are its `:<…>` name, as `&infix:«<=»` is
+    if ((name == "infix" || name == "prefix" || name == "postfix") && peek() == ':' && notDeclared()) {
+        const bool guil = (unsigned char)peek(1) == 0xC2 && (unsigned char)peek(2) == 0xAB;
+        const std::string closer = guil ? "\xC2\xBB" : ">>";
+        const size_t from = pos_ + 3, to = guil || src_.compare(pos_ + 1, 2, "<<") == 0 ? src_.find(closer, from)
+                                                                                          : std::string::npos;
+        if (to != std::string::npos && to > from &&
+            src_.find_first_of(" \t\n", from) >= to && (to + 2 >= src_.size() || src_[to + 2] == '(')) {
+            name += ":<" + src_.substr(from, to - from) + ">";
+            while (pos_ < to + 2) advance();
+            return make(Tok::Ident, name);
+        }
     }
     // word-operator compound assignment: `div= mod= gcd= lcm=` (one Op token, tight `=`)
     if ((name == "div" || name == "mod" || name == "gcd" || name == "lcm") &&
