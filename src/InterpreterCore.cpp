@@ -6167,6 +6167,8 @@ bool typeMatchesArg(const Value& arg, const std::string& type) {
                 static const std::set<std::string> bufTypes = {
                     "Blob", "Buf", "blob8", "buf8", "blob16", "buf16", "blob32", "buf32",
                     "blob64", "buf64", "utf8", "utf16", "utf32", "Positional"};
+                // (an immutable Blob is no Buf: `sub f(Buf $b)` refuses one, as Rakudo's does)
+                if (arg.hashKind == "Blob" && (type == "Buf" || type.rfind("buf", 0) == 0)) return false;
                 return bufTypes.count(type) > 0 || (type == "Stringy" && arg.hashKind != "CArray");
             }
             // an IO::Path is Cool but NOT Stringy — a `Str:D $path` candidate must
@@ -6265,7 +6267,7 @@ bool typeMatchesArg(const Value& arg, const std::string& type) {
             if (type == "Cool") return isCoolValue(arg);
             if (!hashKindIsAssociative(arg.hashKind)) return false;
             if (type == "Associative") return true;
-            return (type == "Hash" || type == "Map") && hashKindIsMap(arg.hashKind);
+            return (type == "Map" || (type == "Hash" && arg.hashKind != "Map")) && hashKindIsMap(arg.hashKind);   // (a Map is no Hash)
         // a Pair DOES Associative in Raku: `(a => 1) ~~ Associative` is True,
         // and Crane's traversal dispatches its whole `at`/`in` family on
         // `Associative:D`, so a Pair in a path missed every candidate and came
