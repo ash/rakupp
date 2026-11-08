@@ -5264,7 +5264,7 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
                 // `@paths.append($[|@prefix, $node])` adds ONE path, which is how
                 // ML::TriesWithFrequencies gathers its root-to-leaf paths.
                 // (`push` never had to say so — it flattens nothing.)
-                if (args.size() == 1 && args[0].itemized) return args;
+                if (args.size() == 1 && (args[0].itemized || isJunction(args[0]))) return args;   // (a Junction is one too)
                 if (args.size() == 1 && isMultiDimShaped(args[0]))
                     return shapedLeaves(args[0]);   // a shaped array appends its leaves
                 if (args.size() == 1 && args[0].t == VT::Array && args[0].arr())

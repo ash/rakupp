@@ -2486,9 +2486,10 @@ std::string rakuReprImpl(const Value& v, int depth, std::set<const void*>& seen)
                 if (v.isList && v.arr()->size() == 1) o += ",";
                 // a 1-element ARRAY holding an iterable disambiguates with a
                 // trailing comma too: [1..5,] (else the raku form would flatten)
-                // — not an enum's type object, which is no list: [Color]
+                // — not an enum's type object, which is no list: [Color], nor a Junction
                 if (!v.isList && v.arr()->size() == 1 &&
-                    ((*v.arr())[0].t == VT::Range || ((*v.arr())[0].t == VT::Array && !isEnumTypeObject((*v.arr())[0])) ||
+                    ((*v.arr())[0].t == VT::Range || ((*v.arr())[0].t == VT::Array && !isEnumTypeObject((*v.arr())[0]) &&
+                                                      !isJunction((*v.arr())[0])) ||
                      ((*v.arr())[0].t == VT::Hash && (*v.arr())[0].hashKind != "Pod")))   // (a Pod block is no list)
                     o += ",";
                 seen.erase(v.arr());
@@ -3342,6 +3343,7 @@ Value makeInfArray(long long start) {
 
 ValueList toList(const Value& v) {
     forceLazy(v);   // an unpulled gather lists its ELEMENTS
+    if (isJunction(v)) return ValueList{v};   // a Junction is no Iterable: one item (`@a.append(1|2)`)
     if (v.t == VT::Array && v.arr()) {
         // a HOLE of an `is default(v)` array lists as v, the value reading
         // that slot gives: `@a.grep`, `.kv`, `.pairs` see 7 where it is unset
@@ -6538,6 +6540,11 @@ Value Interpreter::methodCall(const Value& inv, const std::string& m, ValueList 
         if (inv.t == VT::Hash && inv.hashKind == "FileHandle" &&
             (opEq(m, "say") || opEq(m, "print") || opEq(m, "note") || opEq(m, "put"))) break;
         if (methodTakesJunction(inv, m, ai)) continue;  // the signature asked for it whole
+        // …and so do the built-ins whose parameters are slurpies or Mu: a list's
+        // push/append/unshift/prepend/splice, and a QuantHash's `.new`
+        static const std::set<std::string> kJunctionWhole = {"push", "append", "unshift", "prepend", "splice"};
+        static const std::set<std::string> kQuantHash = {"Set", "SetHash", "Bag", "BagHash", "Mix", "MixHash"};
+        if (kJunctionWhole.count(m) || (m == "new" && inv.t == VT::Type && kQuantHash.count(std::string(inv.s.str())))) continue;
         if (first == args.size()) first = ai;
         if (args[ai].enumName == "all" || args[ai].enumName == "none") { first = ai; break; }
     }
