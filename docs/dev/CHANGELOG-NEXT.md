@@ -23,7 +23,17 @@ b9e35683 (the store undo log copies the arrays at a sixteenth),
 and issues #221-#229: 1a3f36d1 (#223, #224), 28824bb7 (#222), 32b1ea01
 (#220's follow-up), 266d37c6 and 92561fe1 (#221), e7bbb97c (#225),
 20f0691d (#228), 17d28f81 (#229); eb574770 and f395b6eb (#230); 5f6d78e4 (#231);
-e1245a6c and 6785ecda (`raku++`, a symlink to the engine).*
+e1245a6c and 6785ecda (`raku++`, a symlink to the engine);
+sixteen of TODO-FOLLOW-UPS.md's items: c73d0b8d, ced6a8ef, 4c49bc3e,
+122eae41, 46c4e957, e00e905c, 5ae92da8, 2d078a02, 56a7962d, a7739c52,
+c2ec4411, 6e8cdfbe, 8fbd9e08, 6497dca5, a3f00087, db0fdbca;
+and nineteen more: b9c337a0, 5d7e8be9, 2a32bb59, b4cb4a06, 23822660,
+5f78f1f3, f59ff84c, 88751a81, 370e0b4d, 7c69a48c, 393aa64e, 85a90672,
+1f5ed33a, 728cf9cb, 07dc2ee9, 04db6160, 0f3b9feb, 2cbd6521, 84afd3c1;
+and twelve more: 483370b7, 422df3d1, a63dab44, 53837aa5, ae41bc63, 8660ca95,
+7279b2ad, 50f0b0bd, 019f922c, fa865d47, d3ab58de, e9bb987d;
+and thirteen more: 592afa33, 75326b8b, e82801e8, a797a3c6, 1c681ec5, d6c9e30c,
+cd191fb1, 21111219, 6c0c4fa1, e89a0e1e, fa0cc7aa, bc6faf15, ea460d2a.*
 
 ---
 
@@ -297,6 +307,99 @@ e1245a6c and 6785ecda (`raku++`, a symlink to the engine).*
   `:42x<a>` are Rakudo's compile errors, where they indexed the pair at run
   time. `t/regression/wordquote-colonpair-bracket.raku`, 124 checks against
   Rakudo 2026.09.
+- **`--> Buf` refuses a Blob, `--> Hash` a Map and `--> Rat` a FatRat**
+  (56a7962d), as Rakudo's return check does, interpreted and compiled. The full
+  check took each sibling for the type; the compiled fast check
+  (rtTypedFast's Rat) took a FatRat too, and so `my Rat $r = FatRat.new(1, 2)`
+  stored. A `Buf` or `Hash` parameter still takes a Blob or a Map (left open).
+  `t/regression/return-type-sibling-refused.raku`.
+- **A `rule { … }` or `token { … }` kept in a variable, or passed to a
+  routine, matches as one** (c2ec4411): `my $r = rule { a b }; 'a b' ~~ $r` was
+  Nil and 'ab' matched, in both engines; a written value lost its kind on
+  the way into the variable or the argument list.
+  `t/regression/anon-rule-value-keeps-sigspace.raku`.
+- **`%h{@b.item} = 1` stores one key** (6e8cdfbe), as the read and `%h{$x} = 1`
+  did: the assignment's slice branch took any list a method answered for
+  many keys. `t/regression/itemized-list-hash-key-assign.raku`.
+- **`run` and `shell` refuse a named argument they do not take** (db0fdbca):
+  `run(…, :ENV(%env))` ran the child with this process's environment, and a
+  whole FatRoast campaign ran against the wrong directory unnoticed. It is
+  X::Multi::NoMatch with Rakudo's candidate, as on Rakudo; `run(:timeout)`,
+  rakupp's own, stays, and Proc::Async's `.start` is lenient in both
+  engines. `t/regression/run-refuses-unknown-named.raku`.
+- **`* ~~ D` curries for a user class with its own ACCEPTS** (b9c337a0), as `* ~~
+  Int` does: it asked D.ACCEPTS(*) and answered a Bool, so `.map(* ~~ D)`
+  died. `t/regression/whatever-curry-past-user-accepts.raku`.
+- **A ternary statement's regex branch matches `$_`** (5d7e8be9): `False ?? /q/
+  !! /c/;` left `$/` untouched in the interpreter, where Rakudo and `--exe`
+  match. `t/regression/sunk-ternary-regex-matches.raku`.
+- **A `let` is undone when a LEAVE dies while its routine unwinds** (2a32bb59),
+  for a sub and a method; it kept the new value.
+  `t/regression/let-undone-when-leave-dies.raku`.
+- **A class's candidate overrides a role's only when the required named
+  arguments match too** (370e0b4d): `m($a)` in the class replaced the role's
+  `m($a, :$cast!)`. `t/regression/role-candidate-required-named-key.raku`.
+- **An unpassed optional parameter typed by a subset is checked** (7c69a48c): it
+  holds the subset's nominal type object, which the `where` must accept,
+  with Rakudo's message; it bound the subset's own type object unchecked.
+  `CN ~~ CN` is True. `t/regression/optional-subset-param-default.raku`.
+- **A native return type is checked** (393aa64e), interpreted and compiled:
+  `sub f(--> num) { "s" }` answered "s", where Rakudo cannot unbox it; a
+  NumStr answers its Num and a Bool its Int.
+  `t/regression/native-return-type-checked.raku`.
+- **A numeric operator on a Whatever value dies** (1f5ed33a), "Cannot resolve
+  caller Numeric(Whatever:D: )", as on Rakudo: `my $w = *; $w + 1` was 1 and
+  `-$w` -0. `t/regression/whatever-value-not-numeric.raku`.
+- **A Pair passed to `run` as a positional is an argument** (04db6160), "a\t1";
+  it was read as an adverb and dropped.
+  `t/regression/run-positional-pair-argument.raku`.
+- **`%h{(1..2).item} = 1` stores one key** (2cbd6521), as `%h{$(1..2)}` does.
+  `t/regression/itemized-range-hash-key.raku`.
+- **`--exe`: `constant @L = (2, 4)` is a List** (84afd3c1), where it said Array
+  and printed `[2 4]`. `t/regression/list-constant-native.raku`, built
+  natively by t/run.raku.
+- **`exit` runs no LEAVE phaser** (50f0b0bd), interpreted or compiled: `for ^2 ->
+  $i { LEAVE { say "leave$i" }; exit 0 if $i == 0 }` printed leave0, where
+  Rakudo runs the END phasers and ends. `t/regression/exit-runs-no-leave.raku`.
+- **A typed `$` parameter's `.VAR` is its value** (019f922c): `sub t(Channel $in)
+  { $in.VAR.^name }` said Scalar, Rakudo Channel; an Iterable is still
+  itemized. `t/regression/typed-param-var-is-value.raku`.
+- **A Whatever held in a variable stays a Pair's key** (ae41bc63): `($w => 1).raku`
+  was `"*" => 1`. `t/regression/whatever-value-pair-key.raku`.
+- **A Pod block's `.Str` and `.raku` are Rakudo's** (7279b2ad), `Pod::Block::Named<…>`
+  and the constructor that builds it, where both were its text; `V<…>` is
+  text run into its neighbours. `t/regression/pod-block-str-and-raku.raku`.
+- **A supply whose own code dies runs its CLOSE phasers before the tapper's
+  quit** (e9bb987d), in every whenever arm, and a `done` in it before the tapper's
+  done; a source's quit passing through still reaches the tapper first.
+  `t/regression/supply-close-before-quit.raku`.
+- **Code cued on the scheduler that dies is reported and ends the process**
+  (d3ab58de), status 1, as Rakudo's scheduler does; it was silent and the
+  program ran on. `t/regression/scheduler-cue-die-reported.raku`.
+- **A phaser written last makes the value Nil** (592afa33): `sub f { 42; LEAVE { }
+  }` answered 42 and `(1, 2).map({ $_ * 2; LEAVE { } })` (2 4).
+  `t/regression/phaser-written-last-is-nil.raku`.
+- **A native int operator wraps with a folded literal** (e82801e8), interpreted
+  and compiled: `$x * 2**62` on a native 3 answered 13835058055282163712, where
+  Rakudo folds `2**62` and wraps. `t/regression/native-int-folded-literal.raku`.
+- **A value-parameterized role matches its type** (1c681ec5): `R2[1] ~~ R2[Int]`,
+  a class doing R2[1], and `.does(R2[1])` were False.
+  `t/regression/value-role-argument-accepts.raku`.
+- **`callsame` from a role's method stops at a role it does** (d6c9e30c), as
+  Rakudo's: it called the composed-away method. `t/regression/role-callsame-skips-composed-role.raku`.
+- **`.^find_method` and `.can` on Promise, Channel, Supply, Lock, Semaphore,
+  Thread and the code types answer from Rakudo's table** (cd191fb1): any name was
+  found; `Cool.can('chars')` was empty. `t/regression/find-method-from-table.raku`.
+- **An itemized Range is one element** (21111219): `my @a = (1..2).item`, `[$(1..2)]`
+  and `.flat` spread it, and a destructuring spread an inner Range.
+  `t/regression/itemized-range-stays-one.raku`.
+- **A `fail` in a `start` block breaks its promise** (fa0cc7aa); it was kept with the
+  Failure. `t/regression/fail-in-start-breaks-promise.raku`.
+- **A sunk `start` that dies is reported and ends the process** (bc6faf15), status 1,
+  as Rakudo's; it was silent. `t/regression/sunk-start-reported.raku`.
+- **A tapper that dies on an interval's or a Channel's value goes to the
+  scheduler** (ea460d2a), reported with status 1 or to `uncaught_handler`; it quit
+  the supply. `t/regression/tapper-death-to-scheduler.raku`.
 
 ### Fixed: crashes
 
@@ -330,6 +433,105 @@ e1245a6c and 6785ecda (`raku++`, a symlink to the engine).*
   worker parked in such a call is now counted, and the drain stops waiting
   once every live worker is one: 0.25 s, where Rakudo 2026.09 takes
   0.32-0.44 s. `t/regression/issue-229-exit-past-blocked-read.raku`.
+- **A type object where a needle goes is X::Multi::NoMatch** (c73d0b8d):
+  `.index(Str)`, `.indices`, `.rindex`, `.contains`, `.starts-with` and
+  `.ends-with` died X::TypeCheck::Binding::Parameter about a `$needle`
+  parameter. The capture in every X::Multi::NoMatch message now names the
+  invocant's definedness (`m(A:D: Str:D)`, where it said `m(A: Str:D)`) and
+  a Bool argument as its adverb (`:i`, not `:i(Bool)`).
+  `t/regression/needle-type-object-no-match.raku`.
+- **A qualified enum's type object gists by its short name** (ced6a8ef),
+  `(Idx)` for `B::Idx`, as a class's does.
+- **`now` is an exact Rat of nanoseconds** (4c49bc3e), as Rakudo's is, so its
+  `.raku` reads back `eqv`: it was a Num, `Instant.from-posix(1793331244.935708e0)`.
+  A binary can embed `constant T = now` now. `t/regression/now-is-exact-rat.raku`.
+- **`Str.new(1)` dies "Default constructor for 'Str' only takes named
+  arguments"** (122eae41), as do Any, Cool, Match, Exception, Capture and
+  Signature with a positional, and `"x".new(:value<a>)` is "a".
+  `t/regression/default-constructor-positional.raku`.
+- **`~` and `sprintf('%s')` of a built-in exception made with `.new` are its
+  message** (46c4e957), as `.Str` was: `~X::AdHoc.new(:payload<boom>)` was "" with
+  a warning. One with no message says "Something went wrong in (E)".
+  `t/regression/builtin-exception-stringifies.raku`.
+- **`for Empty -> $x { }` runs** (e00e905c): `Empty` is a term before a block or
+  a pointy, as `rand` and `now` are.
+- **`$b[1]++` steps a Buf's element** (5ae92da8), wrapping at its width, where it
+  died "Index out of range"; one past the end grows the Buf, and a Blob's
+  element is refused as Rakudo refuses it, compiled too.
+- **An infix on a Whatever value is applied to it** (2d078a02): `my $w = *; $w ~
+  "a"` is "*a" and `5 ~~ $w` True, where both curried; only a written `*`
+  curries, as for methods. A `.&` call on a written star builds its own
+  WhateverCode now (`*.uc.&{ $_ ~ 'one' }`), where it ran the block on the
+  star and leaned on that curry. `t/regression/whatever-value-infix-does-not-curry.raku`.
+- **Mixing two list-associative operators is refused** (a7739c52): `1 or 0 xor 1`,
+  `1 || 0 ^^ 1`, `1 and 0 andthen 1` say "Only identical operators may be
+  list associative…", as Rakudo does; `1 min 2 max 3` has Rakudo's message.
+- **A signature returns the type of a written return value** (8fbd9e08):
+  `sub f(Int $x --> Nil)`'s `.signature.returns` is Nil (it was Mu), `-->
+  True` Bool, `--> 42` Int, and `&f.signature ~~ :(Int)` is False.
+- **`loop(…)` calls a `&loop` parameter** (6497dca5), as it called a `sub loop`;
+  without one, `loop(…) { … }` is refused, as Rakudo does.
+- **`=for para` and `=begin para` are a Pod::Block::Named called "para"**
+  (a3f00087) holding the Para, as `=para` was, and `--doc=Text` renders a `para`
+  block as its paragraphs, not under its name.
+- **A Vow's `.keep` and `.break` take their value** (b4cb4a06): `$vow.keep` kept
+  the promise with True, where Rakudo dies "Too few positionals passed".
+- **`.slurp` of a directory dies "Tried to open directory <path>"** (23822660),
+  X::AdHoc as on Rakudo, and `.lines` of one is X::IO::Directory, where it
+  answered no lines. `t/regression/directory-slurp-and-lines.raku`.
+- **A subset declared in a package is named for it** (5f78f1f3), `my` or not:
+  `K::S`, where it said `S`. `t/regression/subset-named-for-package.raku`.
+- **A subset's unknown trait is refused** (f59ff84c), X::Inheritance::UnknownParent
+  (when the declaration runs; Rakudo refuses it at compile time), and
+  `SubsetHOW.new_type(:name<User>)` on a taken name answers `User`, not
+  `User+1`. `t/regression/subset-unknown-trait-and-new-type-name.raku`.
+- **`.AST.DEPARSE` of a `start` block leaves out its implicit `$/` and `$!`**
+  (88751a81), which grew by a pair each round.
+  `t/regression/rakuast-start-block-deparse.raku`.
+- **Three package gaps** (85a90672): `GLOBAL::.keys` lists the package-scoped
+  names (it was empty), a second `module A`, a `module` before a class and a
+  `package` after a role are redeclarations, and `P.new` on a package says
+  "You cannot create an instance of this type (P)". `t/regression/package-gaps.raku`.
+- **A variable inside a string is reported on its own line** (728cf9cb): past
+  line 200 it was line 1, and `$?LINE` after a newline in a string, or in a
+  heredoc, was a line off. `t/regression/interpolated-variable-line.raku`.
+- **`--doc` renders the Pod and runs nothing past INIT** (07dc2ee9), as Rakudo's
+  does: it ran the program first. A `DOC` phaser runs only under `--doc`,
+  `DOC BEGIN` included. `t/regression/doc-renders-without-running.raku`.
+- **X::Str::Numeric and X::OutOfRange made with `.new` have Rakudo's
+  messages** (0f3b9feb): the first was (Any), the second wrote its range `1 2`.
+  `t/regression/exception-new-messages.raku`.
+- **`use Test; sub ok(…)` is a redeclaration** (483370b7), "Redeclaration of
+  symbol '&ok'.", and every routine declared twice gets Rakudo's one
+  wording, "… Did you mean to declare a multi-sub?".
+  `t/regression/test-routine-redeclaration.raku`.
+- **An undeclared type-like name before a statement's block is refused at
+  compile time** (422df3d1), "Function 'Foo' needs parens to avoid gobbling
+  block", for every xblock (`if`, `for`, `when`, …), not only in an EVAL.
+  `t/regression/gobbled-block-refused-at-compile-time.raku`.
+- **`.AST.DEPARSE` writes `start 5` as written** (a63dab44), not as a block.
+  `t/regression/rakuast-start-expression-deparse.raku`.
+- **An unknown parent is reported in Rakudo's words** (53837aa5), "'C' cannot
+  inherit from 'nosuch' because it is unknown.", and a role's unknown `is`
+  is one too, where it was dropped. `t/regression/unknown-parent-message.raku`.
+- **`substr`'s out-of-range messages are Rakudo's** (8660ca95): a start past the
+  end hints "use *-10", a negative length is the "Number of characters
+  argument". `t/regression/substr-out-of-range-hint.raku`.
+- **`is hidden-from-backtrace` hides the routine's frame** (fa865d47), which was
+  printed; `.backtrace.list` keeps it with `.is-hidden` True.
+  `t/regression/hidden-from-backtrace-frames.raku`.
+- **A built-in operator called by its name is the operator** (75326b8b):
+  `prefix:<->(3)`, `postfix:<++>($y)` (which steps $y),
+  `postcircumfix:<[ ]>(…)`, `infix:«<=»(1, 2)` died or did not parse.
+  `t/regression/builtin-operator-called-by-name.raku`.
+- **A type argument keeps its smiley** (a797a3c6): `Positional[Int:D].^name` said
+  `Positional[Int,D]`, and `R[Int:D] ~~ R[Int]` is True.
+  `t/regression/type-argument-smiley-name.raku`.
+- **A parse error shows its line and a `^` under `-e`, `-c` and `--lint`**
+  (6c0c4fa1), as a file run did, and most errors name a column.
+  `t/regression/parse-error-excerpt-everywhere.raku`.
+- **A runtime error in a string's `{…}` names the block's line** (e89a0e1e), where it
+  named the statement's first. `t/regression/interpolated-block-error-line.raku`.
 
 ### Platforms and packaging
 
@@ -376,10 +578,9 @@ e1245a6c and 6785ecda (`raku++`, a symlink to the engine).*
 
 - Found with eb574770, the same before it (each in TODO-FOLLOW-UPS.md): a
   `my &f`, a `my $v` or a class beside an import of its name compiles, where
-  Rakudo refuses it; two imports of one name in a block keep the first,
-  where Rakudo keeps the last (the mainline keeps the last); and `use Test;
-  sub ok(…)` compiles, because Test's routines are built in rather than
-  imported.
+  Rakudo refuses it; and two imports of one name in a block keep the first,
+  where Rakudo keeps the last (the mainline keeps the last). (`use Test; sub
+  ok(…)` is fixed by 483370b7, above.)
 
 - Found with 28257097, the same before it: an attribute typed by a
   parameterized alias, `constant AI = Array[Int]; has AI $.a`, takes an
@@ -390,10 +591,38 @@ e1245a6c and 6785ecda (`raku++`, a symlink to the engine).*
   method's signature leaves out its invocant (`:(Int $x, *%_)` against
   Rakudo's `:(RI $:: Int $x, *%_)`), and `&c:(Foo)` renders as `&c`.
 - Found with issues #221-#229, the same before them (each in
-  TODO-FOLLOW-UPS.md): a value-parameterized role, `R2[1] ~~ R2[Int]`, is
-  False where Rakudo says True; `Positional[Int:D].^name` is
-  `Positional[Int,D]`; `%h{@b.item} = 1` assigns a two-key slice; a FALLBACK
-  receives the list methods Any answers (`.first`, `.elems` …), and an
-  object that is no Exception keeps `.throw`, `.rethrow`, `.resume` and
-  `.backtrace` from its FALLBACK; a `my subset` in a `unit role`'s file is
-  not named for its package.
+  TODO-FOLLOW-UPS.md): a FALLBACK receives the list methods Any answers
+  (`.first`, `.elems` …), and an object that is no Exception keeps
+  `.throw`, `.rethrow`, `.resume` and `.backtrace` from its FALLBACK; a `my
+  subset` in a `unit role`'s file is not named for its package.
+  (`R2[1] ~~ R2[Int]` and `Positional[Int:D].^name` are fixed by 1c681ec5
+  and a797a3c6, above.)
+- Found with c73d0b8d to db0fdbca, each the same before it and each in
+  TODO-FOLLOW-UPS.md: a `Buf` parameter takes a Blob and a `Hash` one or
+  variable a Map; `<$r>` of a stored anonymous `rule` matches nothing, and
+  its `.raku` is a `rx//`; compiled, `$b[*-1]--` and `@a[0][0]++` on a Buf
+  differ, and a multi dispatch no candidate takes says "No matching
+  multi-method candidate". (Five more found there are fixed by b9c337a0 to
+  84afd3c1, above.)
+- Found with b9c337a0 to 84afd3c1, the same before them (each in
+  TODO-FOLLOW-UPS.md): a WhateverCode gists as `WhateverCode.new` where
+  Rakudo shows its source; and a multi-role conflict says less than
+  Rakudo's. (`start 5`'s deparse, the unknown-parent wording, a Whatever
+  key and `.substr`'s messages are fixed by a63dab44, 53837aa5, ae41bc63 and
+  8660ca95, an itemized Range and a `{…}`'s line by 21111219 and e89a0e1e,
+  above.)
+- Found with 483370b7 to e9bb987d, the same before them (each in
+  TODO-FOLLOW-UPS.md): an unknown parent is refused when its declaration
+  runs, where Rakudo refuses it at compile time; a declarator block's
+  `.raku` is its text, a trailing `#=` after a routine's `}` is lost, and
+  `for $=pod` makes one pass; and an `exit` on a worker thread runs no END
+  phaser. (A sunk `start` that dies, and a tapper that dies on an
+  interval's or a Channel's value, are fixed by bc6faf15 and ea460d2a,
+  above.)
+- Found with 592afa33 to ea460d2a, the same before them (each in
+  TODO-FOLLOW-UPS.md): a FIRST or INIT written last does not give the block
+  its value; a user `multi` on a built-in operator hides the built-in
+  candidates, and `&postfix:<++>` is Any; `.^roles` of a class doing a
+  value-parameterized role names it as written, `R2[1]`, where Rakudo names
+  it `R2[Int]`; and an element store into `Array[Str:D]` still checks the
+  nominal type alone.

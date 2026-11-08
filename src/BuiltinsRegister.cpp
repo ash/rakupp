@@ -680,7 +680,7 @@ void Interpreter::registerBuiltins() {
         // and Rakudo throws the exception.
         const uint64_t lf = I.lexicalRoutineFrame();
         if (I.tctx().curRoutineFrame == 0 || I.fatalHere() || I.tctx().compiledTry > 0 ||
-            (lf && !I.lexicalRoutineLive()))
+            (lf && !I.lexicalRoutineLive()) || I.lexicalRoutineIsBlock())
             throw RakuError{(*f.hash())["exception"], (*f.hash())["message"].toStr()};
         if (lf && lf < I.tctx().curRoutineFrame) throw ReturnEx{f, lf};
         throw ReturnEx{f};
@@ -1647,6 +1647,27 @@ static bool openDash(Interpreter& I, ValueList& a, Value& out) {
     return false;
 }
 
+// A named argument run() or shell() does not take is no match, as Rakudo's
+// dispatcher says: `run(…, :ENV(%e))` ran the child with this process's
+// environment, and a whole campaign went to the wrong directory unnoticed
+// (tools/run-fatroast.raku). Proc::Async's methods stay lenient, as theirs do.
+static void refuseUnknownProcNamed(Interpreter& I, const ValueList& a, bool shell) {
+    static const std::set<std::string> runNames = {"in", "out", "err", "bin", "chomp", "merge", "enc", "nl",
+        "cwd", "env", "arg0", "win-verbatim-args", "timeout"};   // (:timeout is ours)
+    static const std::set<std::string> shellNames = {"in", "out", "err", "bin", "chomp", "merge", "enc", "nl",
+        "cwd", "env"};
+    const char* common = ":$in = \"-\", :$out = \"-\", :$err = \"-\", Bool :$bin, Bool :$chomp = Bool::True, "
+                         "Bool :$merge, Str :$enc, Str:D :$nl = \"\\n\", :$cwd = Code.new, :$env";
+    for (auto& v : a) {
+        if (!(v.t == VT::Pair && v.namedArg) || (shell ? shellNames : runNames).count(std::string(v.s.str()))) continue;
+        throw RakuError{Value::typeObj("X::Multi::NoMatch"), std::string("Cannot resolve caller ") +
+            (shell ? "shell(" : "run(") + I.noMatchProfile(Value(), a, false) +
+            "); none of these signatures matches:\n    " +
+            (shell ? std::string("($cmd, ") + common + ")"
+                   : std::string("(*@args where { ... }, ") + common + ", :$arg0, :$win-verbatim-args = Bool::False)")};
+    }
+}
+
 void Interpreter::registerBuiltinsPart2() {
     auto& B = builtins_;
     // (the EVAL moves the current line into its own text: a failure is reported
@@ -1976,6 +1997,7 @@ void Interpreter::registerBuiltinsPart2() {
         return pv && ((pv->t == VT::Hash && pv->hashKind == "FileHandle") || pv->t == VT::Object);
     };
     B["run"] = [](Interpreter& I, ValueList& a) -> Value {
+        refuseUnknownProcNamed(I, a, /*shell=*/false);
         std::vector<std::string> argv; bool wantOut = false, wantIn = false, wantErr = false;
         int outMode = -1, errMode = -1; // -1 unspecified (inherit/echo), 0 :!x (discard), 1 :x (capture)
         int inFd = -1; bool haveInHandle = false; // `:in($handle)`: the child's stdin itself
@@ -1989,14 +2011,13 @@ void Interpreter::registerBuiltinsPart2() {
         // checks a script's combined output this way saw "" against whatever it
         // expected (as-cli-arguments' twelve tests, and the eight dists behind it).
         bool merge = false;
-        Value outSink, errSink;
-        bool binPipes = false;
+        Value outSink, errSink; bool binPipes = false;
         // A default-constructed Value is Any, not Nil — "was a sink given?" needs
         // its own flag, and testing `.t == VT::Nil` for it (as this did) answered
         // "yes" for every un-adverbed run.
         bool haveOutSink = false, haveErrSink = false;
         for (auto& v : flattenArgs(a)) {
-            if (v.t == VT::Pair) {
+            if (v.t == VT::Pair && v.namedArg) {   // (a Pair passed as a positional is an argument: "a\t1")
                 if (v.s == "out") { wantOut = v.pairVal() ? v.pairVal()->truthy() : true; outMode = wantOut ? 1 : 0;
                                     if (asSink(v.pairVal())) { outSink = *v.pairVal(); haveOutSink = true; } }
                 else if (v.s == "err") { wantErr = v.pairVal() ? v.pairVal()->truthy() : true; errMode = wantErr ? 1 : 0;
@@ -2157,8 +2178,8 @@ void Interpreter::registerBuiltinsPart2() {
     // shell(CMD, :out, :err) — run CMD through the system shell (`/bin/sh -c CMD`),
     // so redirections/pipes in CMD work. Returns a Proc; +$proc is the exit status.
     B["shell"] = [](Interpreter& I, ValueList& a) -> Value {
-        std::string cmd; bool wantOut = false, wantErr = false, merge = false;
-        bool binPipes = false;
+        refuseUnknownProcNamed(I, a, /*shell=*/true);
+        std::string cmd; bool wantOut = false, wantErr = false, merge = false, binPipes = false;
         int outMode = -1, errMode = -1; // -1 unspecified, 0 :!x discard, 1 :x capture
         int inFd = -1; // `:in($handle)`: the child's stdin itself (a Bool `:in` is not a shell() mode)
         std::vector<std::string> envKV; bool haveEnv = false; std::string cwd;

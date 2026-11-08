@@ -1012,6 +1012,7 @@ Value numifyStrOrThrow(std::string_view in) {
 }
 
 std::atomic<bool> g_anyShaped{false};
+std::atomic<bool> g_exitUnwinding{false};   // an `exit` is unwinding: no LEAVE runs (Interpreter.h)
 Value makeShapedContainer(const std::vector<long long>& dims, const std::string& declType,
                           const ValueList* fill) {
     g_anyShaped.store(true, std::memory_order_relaxed);
@@ -3290,8 +3291,13 @@ bool nameTermConstant(const std::string& n, Value& out, bool sixE) {
     if (n == "now") { // Instant: high-resolution seconds since the epoch
         // …on the `now` clock, which carries the Instant epoch offset that
         // `.to-posix` takes back off (see epochNowSecs). Handing out raw POSIX
-        // put `now.to-posix` ten seconds in the past.
-        out = Value::number(epochNowSecs());
+        // put `now.to-posix` ten seconds in the past. An exact Rat of
+        // nanoseconds, as Rakudo's is, so its `.raku` reads back `eqv` (a
+        // binary embeds `constant T = now` only then)
+        long long ns = std::chrono::duration_cast<std::chrono::nanoseconds>(
+            std::chrono::system_clock::now().time_since_epoch()).count();
+        ns += taiOffsetForPosix(ns / 1000000000LL) * 1000000000LL;
+        out = Value::rat(BigInt(ns), BigInt(1000000000LL));
         out.hashKind = "Instant";
         identify(out);
         return true;
@@ -4624,7 +4630,8 @@ void Interpreter::adoptProcessStatics() {
     // `sprintf "%s: %s", $level.uc, $e`, which printed X::FieldNotFound<id>.
     g_userStr = [this](const Value& v, std::string& out) {
         if (v.t != VT::Object || !v.obj() || !v.obj()->cls) return false;
-        if (!v.obj()->cls->findMethod("Str") && !v.obj()->cls->findMethod("message")) return false;
+        if (!v.obj()->cls->findMethod("Str") && !v.obj()->cls->findMethod("message") &&
+            !v.obj()->cls->isException()) return false;
         out = strOf(v);
         return true;
     };
@@ -7079,6 +7086,33 @@ void Interpreter::endPool() {
 
 // $*SCHEDULER.cue(&code, :in/:at → delaySecs, :every, :times, :stop, :catch).
 // A worker sleeps GIL-free, takes the GIL per run, and re-arms for :every.
+// What Rakudo's ThreadPoolScheduler does with an error no handler took: it says
+// where it ran and what it was, and ends the process with status 1.
+void Interpreter::endOnUnhandled(const RakuError& e) {
+    const long long tid = currentThread().hash()->at("id").toInt();
+    std::cout.flush();
+    std::cerr << "Unhandled exception in code scheduled on thread " << tid << "\n"
+              << renderError(e, btStyleForStderr()) << std::flush;
+    std::_Exit(1);
+}
+
+// A sunk `start` that broke goes to the scheduler's uncaught_handler, or, with
+// none, ends the process as an unhandled cued die does: Rakudo marks a `start`'s
+// promise to do this when it is sunk (`start { die }`, or a sunk call answering
+// one). Called from the promise's settling, on the worker thread that broke it.
+void Interpreter::sunkStartBroke(const std::shared_ptr<PromiseState>& ps, const Value& sched) {
+    if (ps->cause.t == VT::Any && ps->causeMsg.empty()) return;   // (no error: a worker stopped, as at the end)
+    auto it = sched.hash()->find("uncaught_handler");
+    if (it != sched.hash()->end() && it->second.t == VT::Code) {
+        Value h = it->second; (void)bool(ps->done);   // (--race: the handler sees the worker's past)
+        try { callCallable(h, ValueList{ps->cause}); } catch (...) {}
+        return;
+    }
+    RakuError err{ps->cause, ps->causeMsg.empty() ? std::string("Promise broken") : ps->causeMsg};
+    if (ps->causeBt) err.bt = ps->causeBt;
+    endOnUnhandled(err);
+}
+
 Value Interpreter::cueJob(Value code, double delaySecs, double everySecs, long long times,
                           Value stopF, Value catchF) {
     engageGil();
@@ -7129,6 +7163,9 @@ Value Interpreter::cueJob(Value code, double delaySecs, double everySecs, long l
                 if (catchF.t == VT::Code) {
                     try { ValueList ca{self->exceptionFor(e)}; self->callCallable(catchF, ca); } catch (...) {}
                 }
+                // …and with no handler (`:catch`, the scheduler's uncaught_handler)
+                // Rakudo's ThreadPoolScheduler prints it and ends the process, 1
+                else self->endOnUnhandled(e);
             }
             catch (const WorkerAbortEx&) { break; } // shutdown: unwind the cue loop
             catch (...) {}
@@ -7157,6 +7194,20 @@ Value Interpreter::cueJob(Value code, double delaySecs, double everySecs, long l
         fin->store(true, std::memory_order_release);
     }), fin);
     return cancellation;
+}
+
+// An error the supply's own code did not raise — its TAPPER's, on a value from
+// an interval or a Channel, which Rakudo delivers on the scheduler — goes where
+// the scheduler sends one: to `uncaught_handler`, or it ends the process.
+void Interpreter::toSchedulerUncaught(const RakuError& e) {
+    if (defaultScheduler_.t == VT::Hash && defaultScheduler_.hash()) {
+        auto it = defaultScheduler_.hash()->find("uncaught_handler");
+        if (it != defaultScheduler_.hash()->end() && it->second.t == VT::Code) {
+            try { callCallable(it->second, ValueList{exceptionFor(e)}); } catch (...) {}
+            return;
+        }
+    }
+    endOnUnhandled(e);
 }
 
 // Block the caller until `ps` completes, dropping the GIL while parked so a

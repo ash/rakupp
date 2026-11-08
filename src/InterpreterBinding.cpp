@@ -804,6 +804,133 @@ Value Interpreter::probeSentinel(const std::string& tn) {
     try { return methodCall(Value::typeObj(tn), it->second.first, as); }
     catch (...) { return Value::typeObj(tn); }
 }
+// The built-in types no sentinel can stand for (an empty Promise's `.result`
+// would wait, a Thread's `.run` start one) and the roles `.can` is asked of
+// answer `.can` and `.^find_method` from a table: Rakudo 2026.09's methods for
+// each beyond Any's and Mu's, which every one of them has as well (Sub, Method
+// and Submethod have Routine's). 1: it has the method; -1: it has not; 0: not a
+// type this table knows.
+int Interpreter::tabledTypeHasMethod(const std::string& tn, const std::string& mn) {
+    static const std::set<std::string> kAny = {
+        "ACCEPTS", "ASSIGN-KEY", "ASSIGN-POS", "AT-KEY", "AT-POS", "Array", "BIND-KEY", "BIND-POS", "BUILDALL",
+        "BUILD_LEAST_DERIVED", "Bag", "BagHash", "Bool", "CREATE", "Capture", "DEFINITE", "DELETE-KEY",
+        "DELETE-POS", "DUMP", "DUMP-OBJECT-ATTRS", "DUMP-PIECES", "EXISTS-KEY", "EXISTS-POS",
+        "FLATTENABLE_HASH", "FLATTENABLE_LIST", "HOW", "Hash", "INSTANTIATE-GENERIC", "Int", "List", "Map",
+        "Mix", "MixHash", "Numeric", "POPULATE", "REPR", "Real", "Seq", "Set", "SetHash", "Slip", "Str",
+        "Stringy", "Supply", "VAR", "WALK", "WHAT", "WHERE", "WHICH", "WHO", "WHY", "ZEN-KEY", "all",
+        "antipairs", "any", "append", "are", "batch", "bless", "cache", "can", "categorize", "chrs",
+        "classify", "clone", "collate", "combinations", "deepmap", "defined", "dispatch:<!>", "dispatch:<.*>",
+        "dispatch:<.+>", "dispatch:<.=>", "dispatch:<.?>", "dispatch:<::>", "dispatch:<hyper>",
+        "dispatch:<var>", "does", "duckmap", "eager", "elems", "emit", "end", "fail-cannot-be-empty",
+        "fail-iterator-cannot-be-lazy", "first", "flat", "flatmap", "fmt", "gist", "gistseen", "grep", "hash",
+        "head", "invert", "is-generic", "is-lazy", "isa", "item", "iterator", "iterator-and-first", "join",
+        "keys", "kv", "lazy-if", "list", "map", "match", "max", "maxpairs", "min", "minmax", "minpairs", "new",
+        "nl-out", "nodemap", "none", "not", "note", "one", "pairs", "pairup", "perl", "perlseen",
+        "permutations", "pick", "prepend", "print", "print-nl", "produce", "push", "put", "raku", "rakuseen",
+        "reduce", "repeated", "return", "return-rw", "reverse", "roll", "rotor", "say", "self", "serial",
+        "set_why", "sink", "skip", "slice", "so", "sort", "splice", "split", "squish", "sum", "tail", "take",
+        "throw-cannot-be-empty", "throw-iterator-cannot-be-lazy", "toggle", "tree", "unique", "unshift",
+        "values"
+    };
+    static const std::map<std::string, std::set<std::string>> kOwn = {
+        {"Promise", {
+            "BUILD", "allof", "andthen", "anyof", "at", "break", "broken", "cause", "get-await-handle", "in",
+            "keep", "kept", "orelse", "result", "scheduler", "start", "status", "then", "vow"
+        }},
+        {"Channel", {
+            "BUILD", "close", "closed", "fail", "get-await-handle", "poll", "receive", "send"
+        }},
+        {"Supply", {
+            "BUILD", "Channel", "Promise", "Tappable", "act", "comb", "decode", "delayed", "do", "encode",
+            "from-list", "get-await-handle", "grab", "interval", "lines", "live", "merge", "migrate",
+            "on-close", "on-demand", "rotate", "sanitize", "schedule-on", "serialize", "share", "stable",
+            "start", "tap", "throttle", "wait", "words", "zip", "zip-latest"
+        }},
+        {"Lock", {
+            "condition", "lock", "protect", "unlock"
+        }},
+        {"Semaphore", {
+            "acquire", "release", "try_acquire"
+        }},
+        {"Thread", {
+            "BUILD", "app_lifetime", "finish", "id", "is-initial-thread", "name", "run", "start", "usage",
+            "yield"
+        }},
+        {"Code", {
+            "POSITIONS", "arity", "associative", "assuming", "bytecode-size", "cando", "count", "file", "iffy",
+            "is-implementation-detail", "line", "of", "outer", "prec", "precedence", "reducer", "returns",
+            "signature", "static_id", "thunky"
+        }},
+        {"Block", {
+            "POSITIONS", "add_phaser", "arity", "associative", "assuming", "bytecode-size",
+            "callable_for_phaser", "cando", "count", "file", "fire_if_phasers", "fire_phasers",
+            "has-loop-phasers", "has-phaser", "has-phasers", "iffy", "is-implementation-detail", "line", "of",
+            "outer", "phasers", "prec", "precedence", "push-phaser", "reducer", "returns", "signature",
+            "static_id", "thunky", "unshift-phaser"
+        }},
+        {"Routine", {
+            "IS-SETTING-ONLY", "POSITIONS", "add_phaser", "apply-operator-trait", "arity", "assoc",
+            "associative", "assuming", "bytecode-size", "callable_for_phaser", "candidates", "cando", "count",
+            "equiv", "file", "fire_if_phasers", "fire_phasers", "has-loop-phasers", "has-phaser",
+            "has-phasers", "iffy", "is-implementation-detail", "is-wrapped", "leave", "line", "looser",
+            "multi", "of", "op_props", "outer", "package", "phasers", "prec", "precedence", "push-phaser",
+            "reducer", "returns", "set_op_props", "signature", "soft", "static_id", "thunky", "tighter",
+            "unshift-phaser", "unwrap", "wrap"
+        }},
+        {"Regex", {
+            "HAS-CAPTURE-MARKERS", "IS-SETTING-ONLY", "POSITIONS", "add_phaser", "apply-operator-trait",
+            "arity", "assoc", "associative", "assuming", "bytecode-size", "callable_for_phaser", "candidates",
+            "cando", "count", "equiv", "file", "fire_if_phasers", "fire_phasers", "has-loop-phasers",
+            "has-phaser", "has-phasers", "iffy", "is-implementation-detail", "is-wrapped", "leave", "line",
+            "looser", "multi", "of", "op_props", "outer", "package", "phasers", "prec", "precedence",
+            "push-phaser", "reducer", "returns", "set_op_props", "signature", "soft", "static_id", "thunky",
+            "tighter", "unshift-phaser", "unwrap", "wrap"
+        }},
+        {"WhateverCode", {
+            "POSITIONS", "arity", "associative", "assuming", "bytecode-size", "cando", "count", "file",
+            "has-loop-phasers", "has-phasers", "iffy", "is-implementation-detail", "line", "of", "outer",
+            "prec", "precedence", "reducer", "returns", "signature", "static_id", "thunky"
+        }},
+        {"Cool", {
+            "AST", "Complex", "EVAL", "Failure", "FatRat", "IO", "NFC", "NFD", "NFKC", "NFKD", "Num", "Order",
+            "Rat", "UInt", "Version", "abs", "acos", "acosec", "acosech", "acosh", "acotan", "acotanh", "asec",
+            "asech", "asin", "asinh", "atan", "atan2", "atanh", "byte", "ceiling", "chars", "chomp", "chop",
+            "chr", "cis", "codes", "comb", "conj", "contains", "cos", "cosec", "cosech", "cosh", "cotan",
+            "cotanh", "encode", "ends-with", "exp", "fc", "flip", "floor", "indent", "index", "indices", "int",
+            "int16", "int32", "int64", "int8", "is-prime", "lc", "lines", "log", "log10", "log2", "ord",
+            "ords", "parse-names", "path", "printf", "rand", "rindex", "roots", "round", "samecase",
+            "samemark", "samespace", "sec", "sech", "sign", "sin", "sinh", "sprintf", "sqrt", "starts-with",
+            "subst", "subst-mutate", "substr", "substr-eq", "substr-rw", "tan", "tanh", "tc", "tclc", "trans",
+            "trim", "trim-leading", "trim-trailing", "truncate", "uc", "uint", "uint16", "uint32", "uint64",
+            "uint8", "unimatch", "uniname", "uninames", "uniparse", "uniprop", "uniprops", "unival", "univals",
+            "unpolar", "wordcase", "words"
+        }},
+        {"Numeric", {
+            "FatRat", "exp", "log", "log10", "log2", "pred", "roots", "succ"
+        }},
+        {"Real", {
+            "Bridge", "Complex", "Num", "Rat", "abs", "acos", "acosec", "acosech", "acosh", "acotan",
+            "acotanh", "asec", "asech", "asin", "asinh", "atan", "atan2", "atanh", "base", "ceiling", "cis",
+            "conj", "cos", "cosec", "cosech", "cosh", "cotan", "cotanh", "exp", "floor", "isNaN", "log",
+            "polymod", "rand", "round", "sec", "sech", "sign", "sin", "sinh", "tan", "tanh", "truncate",
+            "unpolar"
+        }},
+        {"Positional", {
+            "of"
+        }},
+        {"Associative", {
+            "keyof", "of"
+        }},
+        {"Iterable", {
+            "hyper", "lazy", "race"
+        }},
+        {"Stringy", {
+        }},
+    };
+    auto it = kOwn.find(tn == "Sub" || tn == "Method" || tn == "Submethod" ? std::string("Routine") : tn);
+    if (it == kOwn.end()) return 0;
+    return it->second.count(mn) || kAny.count(mn) ? 1 : -1;
+}
 // Rakudo gives each X::TypeCheck class a `method message` that renders its
 // attributes, so one built by hand reports like one the engine threw — Red
 // constructs X::TypeCheck::Assignment with `symbol`, `got` and `expected` for
@@ -992,7 +1119,7 @@ bool roleArgsCovariant(const std::string& have, const std::string& want) {
         if (ha[i] == wa[i] || wa[i] == "Mu" || (wa[i] == "Any" && ha[i] != "Mu")) continue;
         if (!typeNameLead(ha[i][0]) || !typeNameLead(wa[i][0])) return false;
         if (ha[i].find('[') != std::string::npos && roleArgsCovariant(ha[i], wa[i])) continue;
-        if (!typeNameConforms(ha[i], wa[i], std::string(), std::string())) return false;
+        if (!roleArgAccepts(ha[i], wa[i])) return false;   // (`R[Int:D] ~~ R[Int]`, not the other way)
     }
     return true;
 }
@@ -1229,6 +1356,7 @@ void Interpreter::checkBareSubsetDecl(const VarExpr* ve, char sigil) {
 
 bool Interpreter::subsetMatches(const std::string& name, const Value& v, int depth) {
     if (depth > 16) return false; // subset cycle backstop
+    if (v.t == VT::Type && v.s == name && v.ofType().empty()) return true;   // `CN ~~ CN`: the subset itself
     // TYPE-OBJECT arguments memoize per (subset, type): a where-clause over a
     // type object is deterministic per type (it introspects the type, not
     // runtime state — the same bet Rakudo's type-check cache makes), and
@@ -1392,6 +1520,7 @@ Value Interpreter::subsetNewType(const Value& inv, const ValueList& args) {
     // a name already taken keeps its type (a sub-model is named after its model)
     std::string key = name;
     for (int n = 1; classes_.count(key) || subsets_.count(key); n++) key = name + "+" + std::to_string(n);
+    if (key != name) si.shownName = name;   // …and answers the name it was given (`.^name` is User)
     si.langRev = langRev_;
     if (!(inv.t == VT::Type && inv.s == "Metamodel::SubsetHOW")) {
         try { si.howObj = methodCall(inv.t == VT::Object ? Value::typeObj(inv.obj()->cls->name) : inv, "new", ValueList{}); }
@@ -1402,6 +1531,28 @@ Value Interpreter::subsetNewType(const Value& inv, const ValueList& args) {
     subsets_[key] = std::move(si);
     noteSymbolMutation("runtime SubsetHOW.new_type");
     return Value::typeObj(key);
+}
+
+// A subset's traits run through `&trait_mod:<is>` as a class's do (Red's `is
+// sub-model`), and one nothing takes is a parent no one declared, as Rakudo
+// reads `subset S is no-such of Int` (a built-in type trait is taken). It was
+// dropped without a word.
+void Interpreter::applySubsetTraits(const SubsetDecl& sd, const Value& self, Value* tm) {
+    static const std::set<std::string> kTypeTraits = {"export", "DEPRECATED", "hidden", "rw", "repr",
+        "nativesize", "unsigned", "ctype", "array_type", "pure", "nodal", "implementation-detail"};
+    for (auto& tr : sd.traits) {
+        bool taken = kTypeTraits.count(tr.name) || isKnownTypeName(tr.name) || classes_.count(tr.name);
+        if (tm && tm->t == VT::Code) {
+            Value p = Value::pair(tr.name, tr.arg ? eval(tr.arg.get()) : Value::boolean(true));
+            p.namedArg = true;
+            try { callCallable(*tm, ValueList{self, p}); taken = true; }
+            catch (RakuError& te) { if (te.message.rfind("Cannot resolve caller", 0) != 0) throw; }
+        }
+        if (!taken)
+            throwTypedV("X::Inheritance::UnknownParent",
+                {{"child", Value::str(sd.name)}, {"parent", Value::str(tr.name)}, {"suggestions", Value::array()}},
+                unknownParentMessage(sd.name, tr.name, {}));
+    }
 }
 
 // A subset's .HOW: one metaobject per subset, as a class has, so Red's
@@ -1472,6 +1623,36 @@ std::string Interpreter::enumBaseType(const std::string& enumType) {
     return v0->t == VT::Int ? std::string("Int") : v0->typeName();
 }
 
+// The type a subset narrows, past every subset on the way: Str for `subset CN
+// of Str where …`, Any for one of nothing; "" for a name that is no subset (or a
+// coercion subset, whose default is its own business).
+std::string Interpreter::subsetNominal(const std::string& type) {
+    if (type == "UInt") return "Int";   // (the built-in one, no entry here)
+    auto it = subsets_.find(type);
+    if (it == subsets_.end() || it->second.coerce) return std::string();
+    std::string n = type;
+    for (int d = 0; d < 16 && it != subsets_.end(); d++) {
+        n = it->second.base.empty() ? std::string("Any") : resolveClassAlias(it->second.base);
+        it = subsets_.find(n);
+    }
+    return n == "UInt" ? std::string("Int") : n;
+}
+// An optional parameter typed by a subset and not passed holds the subset's
+// nominal type object, and the subset has to take it, as Rakudo's binder
+// checks: `sub f(CN :$x)` called without :x dies when CN's `where` refuses Str.
+void Interpreter::refuseUnpassedSubset(const Param& p) {
+    const std::string n = subsetNominal(p.type);
+    if (n.empty() || !subsets_.count(p.type)) return;
+    const Value dv = Value::typeObj(n);
+    if (subsetMatches(p.type, dv)) return;
+    throwTypedV("X::TypeCheck::Binding::Parameter",
+        {{"got", dv}, {"expected", Value::typeObj(p.type)}, {"symbol", Value::str(p.name)}},
+        "Constraint type check failed in binding to parameter '" + p.name + "'; expected " + p.type +
+        " but got " + n + " (" + n + ")\nThe parameter is optional and was not passed an argument, so its\n"
+        "implicit default value was checked against the constraint. Give the\nparameter a default value that "
+        "satisfies the constraint, mark it as\nrequired, or make the constraint accept the implicit default.");
+}
+
 bool Interpreter::typeOrSubsetMatches(const Value& v, const std::string& type) {
     if (subsets_.count(type)) return subsetMatches(type, v);
     return typeMatchesResolved(v, type);
@@ -1498,6 +1679,9 @@ size_t topLevelComma(const std::string& s) {   // (shared: MethodCallPart3.cpp)
 std::string elemTypeOfSpec(const std::string& ofType) {
     if (ofType.empty()) return "";
     std::string first = ofType.substr(0, topLevelComma(ofType));
+    // (an element is checked by its nominal type: `Array[Str:D]`'s smiley is not kept, TODO-FOLLOW-UPS.md)
+    if (first.size() > 2 && first[first.size() - 2] == ':' && first[first.size() - 3] != ':' && std::strchr("DU_", first.back()))
+        first.resize(first.size() - 2);
     if (first.empty() || first == "Any" || first == "Mu" || first == "Cool") return "";
     if (!typeNameLead(first[0])) return ""; // native: see natCheck
     return first;
@@ -2913,6 +3097,41 @@ Value Interpreter::seqOpGroups(Value seed, const std::vector<ValueList>& groups,
     return out;
 }
 
+// A Whatever VALUE has no Numeric to give: called as a function (`&infix:<+>(*,
+// 42)`), or held in a variable (`my $w = *; $w + 1`, `-$w`), a numeric
+// operator dies as Rakudo's does, where only a WRITTEN star curries.
+void Interpreter::refuseWhateverNumeric(const std::string& op) {
+    static const std::set<std::string> kNumeric = {
+        "+", "-", "*", "/", "%", "**", "div", "mod", "gcd", "lcm", "%%",
+        "+&", "+|", "+^", "+<", "+>", "\xC3\x97", "\xC3\xB7", "\xE2\x88\x92",
+        "==", "!=", "<", ">", "<=", ">=", "<=>", "\xE2\x89\xA0", "\xE2\x89\xA4", "\xE2\x89\xA5"};
+    if (kNumeric.count(op))
+        throwTypedV("X::Multi::NoMatch", {},
+                    "Cannot resolve caller Numeric(Whatever:D: ); none of these signatures matches:\n"
+                    "    (Mu:U \\v: *%_)");
+}
+
+// `*.uc.&{ $_ ~ 'one' }`: a `.&` whose invocant holds a written `*` curries on
+// through the call, as Rakudo's does — the code runs on what the curried
+// invocant makes of the WhateverCode's argument. Calling the code with the star
+// itself leaned on its body's operators currying on a Whatever VALUE, which
+// they do not (S02-types/whatever.t, "can curry chains with .& calls on them").
+Value Interpreter::dotAmpCurry(Call* c) {
+    ValueList as = evalArgs(c->args);
+    Value fn = eval(c->callee.get());
+    const Value head = as.empty() ? Value::whatever() : as[0];
+    const bool wc = head.t == VT::Code && head.code();
+    Value code; code.t = VT::Code; code.setCode(makePayload<Callable>());
+    code.code()->ciM().isWhateverCode = true;
+    code.code()->ciM().whateverArity = wc ? std::max(1LL, (long long)head.code()->ci().whateverArity) : 1;
+    code.code()->ciM().builtin = [fn, head, wc, as](Interpreter& I, ValueList& a) -> Value {
+        ValueList call = as;
+        call[0] = wc ? I.callCallable(head, a) : a.empty() ? Value::any() : a[0];
+        return I.callCallable(fn, std::move(call));
+    };
+    return code;
+}
+
 bool Interpreter::exprHasWhateverLit(const Expr* e) {
     if (!e) return false;
     switch (e->kind) {
@@ -3218,7 +3437,11 @@ static void forceLazyImpl(const Value& v) {
 static std::string typeDispNameImpl(const std::string& key) {
     if (!g_matchClasses) return std::string();
     auto it = g_matchClasses->find(key);
-    if (it == g_matchClasses->end() || !it->second) return std::string();
+    if (it == g_matchClasses->end() || !it->second) {   // …and a subset declared in a package: `K::S`
+        if (!g_cbInterp) return std::string();
+        auto si = g_cbInterp->subsets_.find(key);
+        return si != g_cbInterp->subsets_.end() ? si->second.shownName : std::string();
+    }
     return !it->second->shownName.empty() ? it->second->shownName : it->second->dispName;
 }
 static const bool g_typeDispNameInstalled = ((g_typeDispName = &typeDispNameImpl), true);
@@ -4099,6 +4322,12 @@ Value Interpreter::makePseudoStash(const std::string& chainIn) {
                     (*snap.hash())[dn] = kv.second;
                 }
     }
+    // GLOBAL:: lists the package-scoped names every unit declared (`class A::B`
+    // gives it A), as the per-unit stash trees know them; it listed nothing
+    if (mode == 'G')
+        for (auto& [unit, U] : unitStash_)
+            for (auto& [name, node] : U.globalish)
+                if (node && !snap.hash()->count(name)) (*snap.hash())[name] = Value::typeObj(node->fq);
     od->attrs["snap"] = snap;
     return Value::object(od);
 }
@@ -5230,8 +5459,8 @@ bool rtTypeMatch(const Value& v, const std::string& type) {
             if (v.hashKind == "Instant" || v.hashKind == "Duration")
                 return type == "Numeric" || type == "Real";
             return type == "Num" || type == "Numeric" || type == "Real";
-        case VT::Rat:     return type == "Rat" || type == "Rational" || type == "Numeric" || type == "Real" ||
-                                 (type == "FatRat" && v.fatRat());
+        case VT::Rat:     return (type == "Rat" && !v.fatRat()) || type == "Rational" || type == "Numeric" ||
+                                 type == "Real" || (type == "FatRat" && v.fatRat());   // (siblings)
         case VT::Complex: return type == "Complex" || type == "Numeric";
         case VT::Str:
             // tagged non-strings that ride on VT::Str (IO::Path, Version,
@@ -5452,8 +5681,11 @@ static std::string btFrameName(const Callable* c, bool outermost) {
 // A frame the short form hides: the callables the RUNTIME makes up — Whatever
 // currying, `.assuming` wrappers, `wrap` shims. They are Rakudo's `is-hidden`
 // frames: real activations, but not places the reader wrote code.
+// …and a routine the program declared `is hidden-from-backtrace` (DBIish raises
+// its errors through two of them); `--ll-exception` shows every one.
 static bool btFrameHidden(const Callable* c) {
-    return c && (c->ci().isWhateverCode || (c->ci().name.empty() && c->ci().isBlock && c->ci().langRev == -1));
+    return c && (c->ci().isWhateverCode || c->ci().hiddenBt ||
+                 (c->ci().name.empty() && c->ci().isBlock && c->ci().langRev == -1));
 }
 
 Interpreter::BtStyle Interpreter::btStyleForStderr() {
@@ -8989,6 +9221,32 @@ static Value bufElemStore(Value& buf, const Value& key, Value v) {
             mb[(size_t)i * w + k] = (char)(unsigned char)((x >> (8 * k)) & 0xFF);
     buf.s.promote();   // shared storage from here on, as the interpreter's arm leaves it
     return buf.blobElemAt(i);
+}
+// `constant @L = (2, 4)` in compiled code: what the interpreter's constant bind
+// makes of the value — a List, an Array or a Range kept as it is, a Seq or an
+// object cached, anything else the one-element List. It was assigned as `my @`
+// is, so the constant said it was an Array.
+Value rtConstPositional(Interpreter& I, Value v) {
+    if ((v.t == VT::Array && v.s != "Seq") || v.t == VT::Range) { v.itemized = false; return v; }
+    if (v.t == VT::Object || (v.t == VT::Array && v.s == "Seq")) return I.methodCall(v, "cache", ValueList{});
+    Value l = Value::array(); l.isList = true;
+    l.arr()->push_back(std::move(v));
+    return l;
+}
+// `$b[1]++`, `--$b[*-1]`: a Buf's element steps through the same store, wrapping
+// at its width, and one past the end grows it; a Blob's is no container
+Value bufElemStep(Interpreter& I, Value& buf, Value key, const std::string& op, bool post) {
+    if (buf.hashKind == "Blob")
+        throw RakuError{Value::typeObj("X::Multi::NoMatch"), "Cannot resolve caller " +
+            std::string(post ? "postfix" : "prefix") + ":<" + op +
+            ">(Int:D); the following candidates match the type but require mutable arguments"};
+    if (key.t == VT::Code && key.code() && key.code()->ci().isWhateverCode)
+        key = I.callCallable(key, ValueList{Value::integer((long long)buf.blobElems())});
+    const long long i = writeIndexInt(key);
+    if (i < 0) negIndexThrow(i);
+    Value old = i < (long long)buf.blobElems() ? buf.blobElemAt(i) : Value::integer(0);
+    Value nv = bufElemStore(buf, key, applyArith(op == "++" ? "+" : "-", old, Value::integer(1)));
+    return post ? old : nv;
 }
 Value rtElemStoreN(Interpreter& I, Value& base, const Value& key, Value v, char how) {
     if (rtIsBuf(base)) return bufElemStore(base, key, std::move(v));

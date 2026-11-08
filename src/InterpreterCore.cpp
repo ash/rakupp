@@ -382,7 +382,8 @@ bool rtNativeIntOp(const std::string& op, long long sa, long long sb, long long&
 // A native int operand makes an integer operator the NATIVE one, as Rakudo's
 // dispatch picks it: `int.max + 1` wraps to int.min, and the result is native
 // itself, so `($z * 4) div 2` wraps in the middle and gives 0. The other operand
-// must be a native int too, or an integer LITERAL that fits 64 bits: a boxed Int
+// must be a native int too, or an integer LITERAL that fits 64 bits (intLitFolded,
+// `2**62` among them): a boxed Int
 // variable, typed or not, takes the Int candidate and grows, as does a literal
 // wider than 64 bits (oracle-checked against Rakudo 2026.09). Answers false for
 // everything it does not decide, and for a zero divisor, which the general path
@@ -395,14 +396,6 @@ static bool nativeIntArith(const std::string& op, const Value& l, const Value& r
     auto plainInt = [](const Value& v) {
         return v.t == VT::Int && !v.big() && v.hashKind.empty() && v.enumName.empty();
     };
-    auto intLit = [](const Expr* e) {
-        if (e && e->kind == NK::Unary) {
-            auto* u = static_cast<const Unary*>(e);
-            if (u->postfix || (!opEq(u->op, "-") && !opEq(u->op, "\xE2\x88\x92"))) return false;
-            e = u->operand.get();
-        }
-        return e && e->kind == NK::IntLit;
-    };
     // A native is a STATIC property in Rakudo: the operand names a native
     // variable, or is itself a native operation. A value that merely carries
     // the tags — an array element, a routine's return, a list item, the topic
@@ -414,7 +407,7 @@ static bool nativeIntArith(const std::string& op, const Value& l, const Value& r
     const bool ln8 = natInt(l) && natNode(ln), rn8 = natInt(r) && natNode(rn);
     if (!ln8 && !rn8) return false;
     if (!plainInt(l) || !plainInt(r)) return false;
-    if (!(ln8 || intLit(ln)) || !(rn8 || intLit(rn))) return false;
+    if (!(ln8 || intLitFolded(ln)) || !(rn8 || intLitFolded(rn))) return false;
     long long x;
     if (!rtNativeIntOp(op, l.i, r.i, x)) return false;
     out = Value::integer(x);
@@ -860,13 +853,14 @@ bool Interpreter::hoistSubs(const std::vector<StmtPtr>& stmts) {
 
 // ----------------- statements -----------------
 // A block-scoped phaser we run at entry/exit rather than in-place.
-// Is the body's LAST statement, in source order, a CATCH or CONTROL block?
+// Is the body's LAST statement, in source order, a CATCH or CONTROL block, or a phaser with no
+// value (not ENTER, FIRST or INIT, whose values are theirs)? Rakudo's body then answers Nil.
 static bool trailingCatchBlock(const std::vector<StmtPtr>& body) {
-    if (body.empty()) return false;
-    const Stmt* s = body.back().get();
-    if (s->kind != NK::Block) return false;
+    const Stmt* s = body.empty() ? nullptr : body.back().get();
+    if (!s || s->kind != NK::Block) return false;
     auto* b = static_cast<const Block*>(s);
-    return b->isCatch || b->phaser == "CONTROL";
+    return b->isCatch || b->phaser == "CONTROL" ||
+           (isBlockPhaser(s) && b->phaser != "ENTER" && b->phaser != "FIRST" && b->phaser != "INIT");
 }
 
 static bool isBlockPhaser(const Stmt* s) {
@@ -943,7 +937,9 @@ static void drainTempRestores(Env* cur, size_t mark) {
     }
 }
 
+static void runLetRestoresOf(const std::shared_ptr<Env>& e);   // (below)
 void Interpreter::runLeavePhasers(const std::vector<StmtPtr>& stmts, bool ok, size_t tempMark, int postOk) {
+    if (rtExitUnwinding()) return;   // `exit` leaves every block without its LEAVE (Rakudo)
     // reverse source order. KEEP runs only when the block is left SUCCESSFULLY,
     // UNDO only when it isn't; LEAVE always. (Firing both made zef log
     // "Updated <mirror>" and "Failed to update <mirror>" for the same fetch.)
@@ -1045,6 +1041,7 @@ void Interpreter::runLeavePhasers(const std::vector<StmtPtr>& stmts, bool ok, si
                             "Postcondition '" + r.gist() + "' failed");
         }
     }
+    if (!ok && !leaveErrors.empty()) runLetRestoresOf(tctx().cur);   // (left by an exception: the `let`s undo first)
     if (leaveErrors.size() > 1) {
         Value list = Value::array(); list.isList = true;
         for (auto& le : leaveErrors) list.arr()->push_back(exceptionFor(le));
@@ -1201,7 +1198,7 @@ Value Interpreter::execBlockFull(Block* b, std::shared_ptr<Env> scope, bool sink
     // as it is a routine's: what precedes it is sunk, into that very CATCH, and
     // the block answers Nil. Woxi's `try { await $killed; CATCH { default { } } }`
     // threw the killed Proc's X::Proc::Unsuccessful from outside the try instead.
-    const bool trailingCatch = (entryWork & 1) && trailingCatchBlock(b->stmts);
+    const bool trailingCatch = (entryWork & 16) && trailingCatchBlock(b->stmts);
     if (trailingCatch) lastIdx = b->stmts.size();
     // a CATCH {} anywhere in the block handles exceptions from the whole
     // block; a CONTROL {} registers as the dynamic handler `warn` runs
@@ -2019,6 +2016,18 @@ Value Interpreter::exec(Stmt* s, bool sink) {
             // the distinction Rakudo draws: `/b/;` sets `$/`, `do { /b/ }` does not.
             // (After the assignment fast path: that is the hot statement shape, and
             // a RegexLit is never an Assign.)
+            // …and so does the branch a sunk ternary takes: `False ?? /q/ !! /c/;`
+            // matches /c/, as Rakudo and compiled code do (the others evaluate as before)
+            if (sink && e->kind == NK::Ternary) {
+                auto rxIn = [](auto& self, const Expr* x) -> bool {   // (not into parentheses: they are a value)
+                    if (x->kind == NK::RegexLit) return !x->inParens;
+                    if (x->kind != NK::Ternary || x->inParens) return false;
+                    auto* t = static_cast<const Ternary*>(x); return self(self, t->then.get()) || self(self, t->els.get()); };
+                if (!e->inParens && rxIn(rxIn, e))
+                    while (e->kind == NK::Ternary && !e->inParens)
+                        e = boolify(eval(static_cast<Ternary*>(e)->cond.get())) ? static_cast<Ternary*>(e)->then.get()
+                                                                                : static_cast<Ternary*>(e)->els.get();
+            }
             if (sink && e->kind == NK::RegexLit) {
                 auto* rl = static_cast<RegexLit*>(e);
                 // (`rx/…/;` too: sunk, the Regex it makes is smartmatched the same way)
@@ -2035,21 +2044,14 @@ Value Interpreter::exec(Stmt* s, bool sink) {
             const unsigned long long refusalsBefore = e->kind == NK::Index ? g_subscriptRefusals : 0;
             Value r = eval(e);
             // A SUNK `start` (nobody will await it) hands a death to the
-            // scheduler's uncaught_handler, when one is installed
-            // (`$*SCHEDULER.uncaught_handler = -> $ex { … }`)
+            // scheduler's uncaught_handler, or ends the process (sunkStartBroke)
             if (sink && e->kind == NK::Call &&
                 r.t == VT::Hash && r.hashKind == "Promise" && r.ext() && defaultScheduler_.t == VT::Hash &&
-                defaultScheduler_.hash()) {
+                defaultScheduler_.hash() && std::static_pointer_cast<PromiseState>(r.ext())->fromStart) {
                 auto ps = std::static_pointer_cast<PromiseState>(r.ext());
                 Value sched = defaultScheduler_;
                 Interpreter* self = this;
-                auto fire = [ps, sched, self]() {
-                    if (!ps->broken) return;
-                    auto it = sched.hash()->find("uncaught_handler");
-                    if (it == sched.hash()->end() || it->second.t != VT::Code) return;
-                    Value h = it->second; (void)bool(ps->done);   // (--race: the handler sees the worker's past)
-                    try { self->callCallable(h, ValueList{ps->cause}); } catch (...) {}
-                };
+                auto fire = [ps, sched, self]() { if (ps->broken) self->sunkStartBroke(ps, sched); };
                 bool settled;   // (looking is not an await: .v, no --race edge)
                 { std::lock_guard<std::mutex> lk(ps->m); settled = ps->done.v; if (!settled) ps->thens.push_back(fire); }
                 if (settled) fire();
@@ -4273,6 +4275,9 @@ static inline bool isMuTypeObject(const Value& v) {
 // default to Mu (Rakudo: `-> $x? { $x.^name }()` is Mu, `sub f($x?)` gives Any)
 static Value unpassedDefault(const std::string& type, char sigil, bool blockParam) {
     if (blockParam && type.empty() && sigil == '$') return Value::typeObj("Mu");
+    // (a SUBSET's is its nominal type, which refuseUnpassedDefinite has had the `where` check)
+    if (sigil == '$' && !type.empty() && g_cbInterp) if (std::string n = g_cbInterp->subsetNominal(type); !n.empty())
+        return Value::typeObj(n);
     return typedDefault(type, sigil);
 }
 // …which a `:D` parameter refuses: an optional `Real:D :$r` (or `Real:D $r?`)
@@ -4302,6 +4307,7 @@ void Interpreter::bindRoutineParams(const Callable& c, ValueList& args, std::sha
     bindParams(*c.ci().params, args, env, methodCtx, blockParams, whereVerified);
 }
 void Interpreter::refuseUnpassedDefinite(const Param& p) {
+    if (p.sigil == '$' && !p.type.empty() && !p.coerce) refuseUnpassedSubset(p);
     if (p.defConstraint != 1 || p.sigil != '$' || p.type.empty()) return;
     std::string routine = t_bindRoutine && !t_bindRoutine->empty() ? *t_bindRoutine : std::string("<anon>");
     throwTypedV("X::Parameter::InvalidConcreteness",
@@ -7949,15 +7955,15 @@ static bool isElementPath(const Expr* e) {
 // an argument already of that type as the general binder does — typeCheckBind
 // passes it, bindNativeParam makes a native of it — and any other argument
 // declines the lean path for the call, so the general binder answers it. A
-// return of a native type is not checked (checkRetType: a boxed value has no
-// native tag); of a boxed one, a value of that type is what the check passes.
+// return of a value of the type, native or boxed, is what the check passes, and
+// anything else goes to checkRetType (`--> int` refuses a Str, as Rakudo's unbox does).
 enum LeanType : signed char { LeanNone = 0, LeanNum = 1, LeanInt = 2, LeanBoxNum = 3, LeanBoxInt = 4,
-                              LeanStr = 5, LeanNative = 6 /* a return of num, int or str */ };
+                              LeanStr = 5 };
 static signed char leanTypeOf(const std::string& t, bool ret) {
     if (t.empty()) return LeanNone;
-    if (t == "num" || t == "num64") return ret ? LeanNative : LeanNum;
-    if (t == "int" || t == "int64") return ret ? LeanNative : LeanInt;
-    if (ret && t == "str") return LeanNative;
+    if (t == "num" || t == "num64") return LeanNum;
+    if (t == "int" || t == "int64") return LeanInt;
+    if (ret && t == "str") return LeanStr;
     if (t == "Num") return LeanBoxNum;
     if (t == "Int") return LeanBoxInt;
     if (t == "Str") return LeanStr;
@@ -8019,7 +8025,7 @@ static signed char plainSubShape(Callable& c) {
 // passes as it is, or that check
 static inline Value leanReturn(Interpreter& I, const Callable& c, Value v) {
     const signed char k = c.ci().leanRet;
-    if (k == LeanNone || k == LeanNative || leanArgFits(v, k)) return v;
+    if (k == LeanNone || leanArgFits(v, k)) return v;
     return I.checkRetType(c, std::move(v));
 }
 
@@ -8946,14 +8952,7 @@ Value Interpreter::callCallableRaw(const Value& codeVal, ValueList args, const s
     if (c.ci().builtin && args.size() == 2 && c.ci().name.rfind("infix:<", 0) == 0 && c.ci().name.back() == '>' &&
         (args[0].t == VT::Whatever || args[1].t == VT::Whatever)) {
         std::string op = c.ci().name.substr(7, c.ci().name.size() - 8);
-        if (op.size() > 1 && op[0] == 'R') op = op.substr(1);
-        static const std::set<std::string> kNumeric = {
-            "+", "-", "*", "/", "%", "**", "div", "mod", "gcd", "lcm", "%%",
-            "+&", "+|", "+^", "+<", "+>", "\xC3\x97", "\xC3\xB7", "\xE2\x88\x92"};
-        if (kNumeric.count(op))
-            throwTypedV("X::Multi::NoMatch", {},
-                        "Cannot resolve caller Numeric(Whatever:D: ); none of these signatures matches:\n"
-                        "    (Mu:U \\v: *%_)");
+        refuseWhateverNumeric(op.size() > 1 && op[0] == 'R' ? op.substr(1) : op);
     }
     // A ONE-ARGUMENT call to an infix operator is its REDUCTION form (infixOneArgForm)
     if (c.ci().builtin && args.size() == 1 && c.ci().name.rfind("infix:<", 0) == 0 &&
@@ -9997,6 +9996,19 @@ Value Interpreter::checkRetType(const Callable& c, Value v) {
     // …and so does NIL — the "no value" sentinel satisfies every return
     // constraint (roast: "Can return Nil through subset typecheck")
     if (v.t == VT::Nil) return v;
+    // A NATIVE return type unboxes what comes back, as a native parameter binds
+    // it: `--> num` a Num or a NumStr, answering the Num; `--> int` an Int (a
+    // Bool is 1); `--> str` a Str or an allomorph. It took anything.
+    if (const NatKind nk = classes_.count(retName) ? NatKind::None : nativeKindOf(retName); nk != NatKind::None) {
+        if (v.t == VT::Type)
+            throw RakuError{Value::typeObj("X::AdHoc"), "Cannot unbox a type object (" + v.typeName() + ") to " +
+                (nk == NatKind::Num ? "a num." : nk == NatKind::Str ? "a str." : nk == NatKind::UInt ? "an unsigned int." : "an int.")};
+        if (!nativeParamTakes(v, nk)) throwNativeUnbox(v, nk);
+        if (nk == NatKind::Num) return v.t == VT::Num && v.hashKind.empty() ? v : Value::number(v.toNum());
+        if (nk == NatKind::Str) return v;   // (an allomorph stays one, as on Rakudo)
+        return (v.t == VT::Int && v.hashKind.empty() && v.enumName.empty()) || (v.t != VT::Int && v.t != VT::Bool)
+            ? v : Value::integer(v.toInt());
+    }
     // a SUBSET return type constrains even an UNDEFINED value — its where
     // clause runs regardless, so `--> UInt` rejects a hash-miss Any
     // (Date::Event's etype(Str) on an unknown name; Rakudo dies the same way)
@@ -10019,7 +10031,9 @@ Value Interpreter::checkRetType(const Callable& c, Value v) {
     const bool checkable = kRet.count(retName) ||
         ((classes_.count(retName) || subsets_.count(retName) || isKnownTypeName(retName)) &&
          !isNativeTypeName(retName) && retName.find('[') == std::string::npos);
-    if (checkable && !(kRet.count(retName) ? rtTypeMatch(v, retName) : typeOrSubsetMatches(v, retName)))
+    // (a sibling the parameter matcher lets through is no match: a Blob is no Buf, a Map no Hash)
+    const bool sibling = (retName == "Buf" && v.hashKind == "Blob") || (retName == "Hash" && v.hashKind == "Map");
+    if (checkable && (sibling || !(kRet.count(retName) ? rtTypeMatch(v, retName) : typeOrSubsetMatches(v, retName))))
         throwTypedV("X::TypeCheck::Return",
                     {{"got", v}, {"expected", Value::typeObj(retName)}},
                     "Type check failed for return value; expected " + retName +
@@ -10386,7 +10400,8 @@ Value Interpreter::invokeMethodChain(const std::string& name, ClassInfo* startCl
                 for (auto& h : k->hides) if (h == c->name) return true;
             return false;
         };
-        while (nextStart && hiddenHere(nextStart)) nextStart = nextStart->parent.get();
+        // …and so is a role a role does (`role S does B`): S's method composed B's away
+        while (nextStart && (hiddenHere(nextStart) || (owner->isRole && nextStart->isRole))) nextStart = nextStart->parent.get();
     }
     bool userNext = nextStart && nextStart->findMethod(name);
     // Under MULTIPLE inheritance the next method is the next class in the
@@ -15867,12 +15882,14 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
                         one.arr()->push_back(keys); keys = one;
                     }
                 }
-                if (!(keys.t == VT::Array || keys.t == VT::Range)) {
+                // (…and an itemized list is ONE key: `%h{@b.item} = 1`)
+                const bool many = (keys.t == VT::Array || keys.t == VT::Range) && !keys.itemized;
+                if (!many) {
                     // not a slice after all — hand this answer to the ordinary
                     // path below rather than running the subscript a second time
                     parkSubscript(ix->index.get(), keys);
                 }
-                if (keys.t == VT::Array || keys.t == VT::Range) {
+                if (many) {
                     ValueList ks;
                     if (keys.t != VT::Range) ks = keys.flatten(); // a Range waits for the target's size below
                     Value rv = evalValueOf(a->value.get());
@@ -18661,6 +18678,7 @@ static Value applyArithGeneral(const std::string& op, const Value& l, const Valu
         if (valueSmartmatchHook(op, l, r, hooked)) return hooked;
     }
     if (Value got; r.t == VT::Type && g_cbInterp && (opEq(op, "~~") || opEq(op, "!~~")) && !isJunction(l) &&
+        !(l.t == VT::Whatever && !valueMatch) &&   // (a written `* ~~ C` curries below)
         g_cbInterp->typeObjectUserAccepts(l, r, got)) return Value::boolean(opEq(op, "~~") == got.truthy());   // C's ACCEPTS
     // an enum's TYPE OBJECT against a type: a type object (never `:D`) of its
     // enum, of Enumeration and of its value type's line — not a list to match
@@ -20925,8 +20943,8 @@ Value Interpreter::regexMatch(const std::string& subject, std::string_view patte
         tctx().cur = savedOuter;
     }
     // flavor flags for anonymous declarators: token = ratchet, rule = ratchet+sigspace
-    std::string reFlags = wired ? (rxVal->hashKind == "token" ? "r"
-                                 : rxVal->hashKind == "rule" ? "sr" : "") : "";
+    std::string reFlags = rxVal && rxVal->t == VT::Regex ? (rxVal->hashKind == "token" ? "r"   // (a compiled one: no
+                                 : rxVal->hashKind == "rule" ? "sr" : "") : "";               //  scope, its kind still)
     // …and the same for a NAMED one reached through its `&name` Callable. The
     // `<name>` subrule path has always mapped the declarator's kind to these
     // flags; the Callable ran the bare pattern, so `my rule u { ab cd }` matched
@@ -23023,7 +23041,9 @@ Value Interpreter::evalBinary(Binary* b) {
         // and answered a WhateverCode — truthy, so every test of one passed.
         // Costs a type check on the eager path and the AST walk only when an
         // operand really is one.
-        if (whateverArrivedAsValue(b, l, r)) { Interpreter::valueSmartmatch_ = true; return applyBinOp(op, l, r); }
+        if (whateverArrivedAsValue(b, l, r)) {   // (and a numeric operator has no Numeric of it to take)
+            if (l.t == VT::Whatever || r.t == VT::Whatever) refuseWhateverNumeric(op);
+            Interpreter::valueSmartmatch_ = true; return applyBinOp(op, l, r); }
         if (RAKUPP_UNLIKELY(uninitOperand(l) || uninitOperand(r))) uninitBinaryOperands(b, op, l, r);
         // a DateTime against a number, or one of a class DERIVING DateTime (dateTimeArith)
         if (l.t == VT::Object || r.t == VT::Object || l.hashKind == "DateTime" || r.hashKind == "DateTime")
@@ -23578,6 +23598,11 @@ Value Interpreter::evalBinary(Binary* b) {
         if (l.t == VT::Object || r.t == VT::Object) {
             const std::string lt = strInStrContext(l);   // (composing across the join)
             return Value::str(nfcConcat(lt, strInStrContext(r), nfcKnown(l), nfcKnown(r)));
+        }
+        // a Whatever that arrived as a value is concatenated, not curried: `$w ~ "a"` is "*a"
+        if (whateverArrivedAsValue(b, l, r)) {
+            struct Drop { ~Drop() { Interpreter::valueSmartmatch_ = false; } } drop;   // (one-shot, whatever path)
+            Interpreter::valueSmartmatch_ = true; return applyBinOp(op, l, r);
         }
         return applyArith("~", l, r);
     }
@@ -24256,7 +24281,8 @@ Value Interpreter::evalBinary(Binary* b) {
         // generic smartmatch on the already-evaluated operands — the Whatever a
         // VARIABLE holds is a value here (`my $w = *; $w ~~ Pair` is False on
         // Rakudo); only a written `*` curries. (A core type: typeMatchMemo.)
-        if (lTopic.t == VT::Whatever && !exprHasWhateverLit(b->lhs.get())) return smartmatchValue(op, lTopic, r);
+        if ((lTopic.t == VT::Whatever && !exprHasWhateverLit(b->lhs.get())) ||
+            (r.t == VT::Whatever && !exprHasWhateverLit(b->rhs.get()))) return smartmatchValue(op, lTopic, r);   // (`5 ~~ $w`)
         Value tm;
         return r.t == VT::Type && typeMatchMemo(op, lTopic, r, tm) ? tm : applyArith(op, lTopic, r);
     }
@@ -25019,7 +25045,7 @@ Value Interpreter::evalUnary(Unary* u) {
             return h;
         }
         // $[...] / $(...) / $%h: the container becomes ONE non-flattening item
-        if (v.t == VT::Array || v.t == VT::Hash) v.itemized = true;
+        if (v.t == VT::Array || v.t == VT::Hash || v.t == VT::Range) v.itemized = true;
         return v; // item context
     }
     if (opEq(u->op, "BEGIN")) {
@@ -25592,6 +25618,8 @@ Value Interpreter::evalUnary(Unary* u) {
                     if (!(deproxiedBase.t == VT::Hash && deproxiedBase.hashKind == "Proxy"))
                         bp = &deproxiedBase;
                 }
+                if (bp && !ix->isHash && bp->t == VT::Str && (bp->hashKind == "Buf" || bp->hashKind == "Blob"))
+                    return bufElemStep(*this, *bp, subscriptKey(ix->index.get()), u->op, u->postfix);   // `$b[1]++`
                 // a SetHash element is its key's EXISTENCE: `$sh<k>++` answers
                 // False and adds k, `--` removes it — Bools, never counts. An
                 // undefined `my SetHash $sh` vivifies into one.
@@ -25802,6 +25830,9 @@ Value Interpreter::evalUnary(Unary* u) {
         if (v.t == VT::Num) return Value::number(-v.n);
         if (v.t == VT::Int && !v.big() && v.i != LLONG_MIN) return Value::integer(-v.i);
     }
+    // (a Whatever VALUE, no written star, has no Numeric for `-` or `+`: Rakudo dies)
+    if (v.t == VT::Whatever && !(u->operand && u->operand->kind == NK::Whatever) &&
+        (opEq(u->op, "-") || opEq(u->op, "+") || opEq(u->op, "\xE2\x88\x92"))) refuseWhateverNumeric("-");
     // Whatever-currying for prefix ops: `~*`, `-*`, `+*`, `?*`, `!*` become a
     // WhateverCode (e.g. `.sort: ~*` sorts by stringification). `^*` is here too,
     // because `@chars[^(*-1)]` — everything but the last element — is how
@@ -26286,6 +26317,7 @@ Value Interpreter::evalCall(Call* c) {
     // the built-in `die` raises from a frame of its own (execDieStmt), called
     // before anything of this one is alive
     if (RAKUPP_UNLIKELY(opEq(c->name, "die")) && plainDieCall(c)) return execDieStmt(c);
+    if (RAKUPP_UNLIKELY(c->dotAmp) && !c->args.empty() && exprHasWhateverLit(c->args[0].get())) return dotAmpCurry(c);
     // `CORE::name(…)` / `&CORE::name(…)` names the BUILT-IN, past whatever the
     // program has put in scope under that name — and shadowing is exactly when
     // the form gets written. lizmat's Perl-builtin ports are all this shape
@@ -30149,7 +30181,7 @@ struct RatLitParts {
                     // …and a TYPE OBJECT key stays the type: `(Int) => 1`,
                     // Red's `:{ Red::AST => $response }`
                     kv.t == VT::Type || kv.t == VT::Complex || kv.t == VT::Nil ||
-                    kv.t == VT::Range) {
+                    kv.t == VT::Range || kv.t == VT::Whatever) {   // (`$w => 1` keys the star: `* => 1`)
                     // (decontainerized: the KEY of `$s => "x"` is the list, not its Scalar)
                     Value k = kv; k.itemized = false;
                     pr.setPairKey(std::move(k));
@@ -30582,7 +30614,7 @@ Value Interpreter::eval(Expr* e) {
                 // the wrong type, and the check that rejected it was right to.
                 // (…but a Range held in a `$` variable is an ITEM: `my $r = 1..3;
                 // [$r]` is one element, as in Rakudo)
-                else if (v.t == VT::Range && l->items.size() == 1 && !l->fromCommaList &&
+                else if (v.t == VT::Range && !v.itemized && l->items.size() == 1 && !l->fromCommaList &&   // ($(1..2), `.item`: one)
                          !v.rExFrom() && v.rTo() - v.rFrom() < 1000000 &&
                          !(l->items[0]->kind == NK::VarExpr &&
                            static_cast<const VarExpr*>(l->items[0].get())->name.rfind('$', 0) == 0)) {
@@ -32658,6 +32690,10 @@ Value Interpreter::evalMethodCallExpr(Expr* e, Value* handedInv) {
     if (opEq(mc->method, "VAR") && !mc->methodExpr && !mc->meta &&
         mc->inv->kind == NK::VarExpr) {
         auto* ivar = static_cast<VarExpr*>(mc->inv.get());
+        // a typed read-only `$` parameter holds its value bare, as Rakudo binds it: `.VAR`
+        // is the value (`Channel $in`), but an Iterable the binder itemizes is in a Scalar
+        if (ivar->bareParam) { Value v = eval(ivar);
+            if (!(v.t == VT::Array || v.t == VT::Range || (v.t == VT::Hash && (v.hashKind.empty() || v.hashKind == "Map")))) return v; }
         // `$!a.VAR` — the attribute's container: its `is default` value
         if (ivar->name.size() > 2 && ivar->name[0] == '$' && ivar->name[1] == '!') {
             Value sc = Value::makeHash(); sc.hashKind = "Scalar";

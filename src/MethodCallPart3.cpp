@@ -775,6 +775,12 @@ Value Interpreter::byCallableMinMaxPairs(const std::vector<std::pair<Value, Valu
     return out;
 }
 
+// (a path that names a directory: `.slurp` and `.lines` refuse one)
+static bool isDirPath(const std::string& p) {
+    struct stat st;
+    return ::stat(p.c_str(), &st) == 0 && S_ISDIR(st.st_mode);
+}
+
 std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName& m, ValueList& args,
                                      const std::vector<ExprPtr>* rwArgs) {
     auto a0 = [&]() -> Value { return args.empty() ? Value::any() : args[0]; };
@@ -2295,12 +2301,9 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
         return methodCall(in, "slurp", args);
     }
     if (m == "slurp" && inv.hashKind == "IO") {
-        {   // a DIRECTORY has no content to slurp
-            struct stat dst;
-            if (::stat(ioFsPath(inv).c_str(), &dst) == 0 && S_ISDIR(dst.st_mode))
-                throw RakuError{Value::typeObj("X::IO::Directory"),
-                                "Failed to open file " + inv.toStr() + ": is a directory"};
-        }
+        if (isDirPath(ioFsPath(inv)))   // a DIRECTORY has no content: Rakudo's slurp says so by its whole path
+            throw RakuError{Value::typeObj("X::AdHoc"),
+                            "Tried to open directory " + methodCall(inv, "absolute", ValueList{}).toStr()};
         std::ifstream in(ioFsPath(inv), std::ios::binary);
         if (!in) throwFailedOpen(ioFsPath(inv));
         std::ostringstream ss; ss << in.rdbuf();
@@ -4831,6 +4834,9 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
             methodCall(h, "close", ValueList{});
             return res;
         }
+        if (isDirPath(ioFsPath(inv)))   // …and `.lines` of one is the `.open` it starts with (it read no lines)
+            throwTypedV("X::IO::Directory", {{"path", Value::str(inv.toStr())}, {"trying", Value::str("open")}},
+                        "'" + inv.toStr() + "' is a directory, cannot do '.open' on a directory");
         std::ifstream in(ioFsPath(inv), std::ios::binary); Value out = Value::array(); out.isList = true; out.s = "Seq";
         if (!in) throwFailedOpen(ioFsPath(inv));
         std::ostringstream raw; raw << in.rdbuf();
@@ -4868,7 +4874,9 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
     // string
     // Str/Blob byte views. rakupp stores a Blob/Buf as a Str tagged hashKind="Blob";
     // its raw UTF-8 bytes are the buffer, so encode/decode are (tagged) identity.
-    if (m == "new" && inv.t == VT::Str) return Value::str(""); // "literal".new — a fresh empty Str
+    // "literal".new is Str.new: a fresh Str, `:value` its text, no positionals
+    if (m == "new" && inv.t == VT::Str)
+        return inv.hashKind.empty() ? methodCall(Value::typeObj("Str"), "new", args) : Value::str("");
     if (inv.t == VT::Str && (inv.hashKind == "Blob" || inv.hashKind == "Buf")) {
         if (m.rfind("read-", 0) == 0) { // read-(u)bits / read-num* / read-(u)int*
             Value tmp = inv;
@@ -5932,10 +5940,8 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
         // is the range, and `chars` itself is in it (Str sheet ST-35).
         if (start < 0 || start > n)
             return armedFailure("X::OutOfRange", "Start argument to substr out of range. Is: " +
-                std::to_string(start) + ", should be in 0.." + std::to_string(n) +
-                (start < 0 ? "; use *" + std::to_string(start) +
-                             " if you want to index relative to the end"
-                           : ""));
+                std::to_string(start) + ", should be in 0.." + std::to_string(n) + "; " + (-start > n ? "" :
+                "use *-" + std::to_string(start < 0 ? -start : start) + " if you want to index relative to the end"));   // (Rakudo's)
         // The length may be a Whatever/WhateverCode: `*` means "to the end" and
         // `*-1` etc. is called with the max available length (n - start).
         long long len;
@@ -5959,9 +5965,9 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
             return armedFailure("X::OutOfRange",
                 "Number of characters argument to substr out of range. Is: NaN, should be in 0..^Inf");
         if (len < 0) // Rakudo: X::OutOfRange (this counted back from the end)
-            return armedFailure("X::OutOfRange", "Length argument to substr out of range. Is: " +
-                std::to_string(len) + ", should be in 0.." + std::to_string(n - start) +
-                "; use *" + std::to_string(len) + " if you want to index relative to the end");
+            return armedFailure("X::OutOfRange", "Number of characters argument to substr out of range. Is: " +
+                std::to_string(len) + ", should be in 0..^Inf; use *" + std::to_string(len) +
+                " if you want to index relative to the end");
         if (start + len > n) len = n - start;
         return slice(start, start + len);
     }
@@ -5978,10 +5984,7 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
         // A type object is no needle. Rakudo has no candidate for (Cool:D: Str:U)
         // and dies; S32-str/{index,starts-with,ends-with}.t assert `dies-ok`, and
         // before this the type stringified to "" and every predicate answered True.
-        if (!args.empty() && args[0].t == VT::Type)
-            throw RakuError{Value::typeObj("X::TypeCheck::Binding::Parameter"),
-                "Type check failed in binding to parameter '$needle'; expected Cool:D but got " +
-                args[0].typeName() + " (" + args[0].gist() + ")"};
+        if (!args.empty() && args[0].t == VT::Type) throwNeedleNoMatch(inv, m, args);
         // splatted multi-needle: index($s, "a", "o", :i) — several positional
         // STRING args are all needles (a numeric-looking string is a start pos)
         {
@@ -6890,10 +6893,7 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
         // A type object is no needle. Rakudo has no candidate for (Cool:D: Str:U)
         // and dies; S32-str/{index,starts-with,ends-with}.t assert `dies-ok`, and
         // before this the type stringified to "" and every predicate answered True.
-        if (!args.empty() && args[0].t == VT::Type)
-            throw RakuError{Value::typeObj("X::TypeCheck::Binding::Parameter"),
-                "Type check failed in binding to parameter '$needle'; expected Cool:D but got " +
-                args[0].typeName() + " (" + args[0].gist() + ")"};
+        if (!args.empty() && args[0].t == VT::Type) throwNeedleNoMatch(inv, m, args);
         // No adverbs, a plain Str on both sides: read the operands in place.
         // The general path below copies the whole haystack per call (and
         // `.contains($n, $pos)` decoded it twice more), so a scanning loop

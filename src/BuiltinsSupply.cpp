@@ -653,13 +653,7 @@ Value Interpreter::spawnSupplyTimer(double secs, Value blk, std::shared_ptr<Supp
                 // supply and reaches the TAPPER's quit handler. Without this the
                 // throw escaped the worker's catch(...) below and the pending hold
                 // was never released, so the supply hung instead of quitting.
-                Value ex = I2.exceptionFor(e);
-                if (ctx->quitCb.t == VT::Code) {
-                    ValueList qa{ex};
-                    try { I2.callCallable(ctx->quitCb, qa); } catch (...) {}
-                }
-                ctx->done = true;
-                if (ctx->tap) I2.closeTapHandle(ctx->tap);
+                (void)quitSupply(I2, ctx, I2.exceptionFor(e));
             }
         }
         ctx->pending--;
@@ -821,14 +815,15 @@ Value Interpreter::spawnSupplyChannel(Value chan, Value blk, std::shared_ptr<Sup
         try { I2.sinkDiscarded(I2.callCallable(blk, one)); }
         catch (NextEx&) {} catch (LastEx&) { ctx->done = true; } catch (DoneEx&) { ctx->done = true; }
         catch (RakuError& e) {
+            // the TAPPER died on our emit: the scheduler has it, as on Rakudo
+            if (e.fromTapperOf == ctx.get()) { I2.toSchedulerUncaught(e); return; }
             // same rule as every other whenever arm: the body's own QUIT phasers
             // see it first, otherwise it goes downstream and closes the activation
             Value ex = I2.exceptionFor(e);
             bool handled = false;
             for (auto& q : quitP) { ValueList o2{ex}; try { I2.callCallable(q, o2); handled = true; } catch (...) {} }
-            if (!handled && ctx->quitCb.t == VT::Code) { ValueList o2{ex}; try { I2.callCallable(ctx->quitCb, o2); } catch (...) {} }
-            ctx->done = true;
-            if (ctx->tap) I2.closeTapHandle(ctx->tap);
+            if (!handled) (void)quitSupply(I2, ctx, ex);
+            else { ctx->done = true; if (ctx->tap) I2.closeTapHandle(ctx->tap); }
         }
     });
     throttleSpawn();
@@ -909,13 +904,14 @@ Value Interpreter::spawnSupplyInterval(double interval, double delay, Value blk,
                 // the generic whenever path): its own QUIT phasers see it first,
                 // otherwise it goes downstream and closes the activation. The
                 // worker used to swallow it, so the failure vanished and the
-                // ticker kept running.
+                // ticker kept running. (The TAPPER's own death the scheduler has,
+                // and the ticking stops, as Rakudo's `:every` cue does.)
+                if (e.fromTapperOf == ctx.get()) { ctx->done = true; I2.toSchedulerUncaught(e); return; }
                 Value ex = I2.exceptionFor(e);
                 bool handled = false;
                 for (auto& q : quitP) { ValueList o2{ex}; try { I2.callCallable(q, o2); handled = true; } catch (...) {} }
-                if (!handled && ctx->quitCb.t == VT::Code) { ValueList o2{ex}; try { I2.callCallable(ctx->quitCb, o2); } catch (...) {} }
-                ctx->done = true;
-                if (ctx->tap) I2.closeTapHandle(ctx->tap);
+                if (!handled) (void)quitSupply(I2, ctx, ex);
+                else { ctx->done = true; if (ctx->tap) I2.closeTapHandle(ctx->tap); }
             }
         }
     });
@@ -1835,6 +1831,8 @@ Value Interpreter::tapSupply(const Value& s, Value emitCb, Value doneCb, Value q
             Value ex = exceptionFor(e);
             bool handled = false;
             for (auto& q : quitP) { ValueList one{ex}; try { callCallable(q, one); handled = true; } catch (...) {} }
+            // CLOSE runs before the tapper hears of the die, as on Rakudo
+            closeTapHandle(handle);
             std::exception_ptr ret;
             if (!handled && quitCb.t == VT::Code) {
                 ValueList one{ex};
@@ -1842,7 +1840,6 @@ Value Interpreter::tapSupply(const Value& s, Value emitCb, Value doneCb, Value q
                 catch (ReturnEx&) { ret = std::current_exception(); }   // see callQuitCb
                 catch (...) {}
             }
-            closeTapHandle(handle);
             if (ret) std::rethrow_exception(ret);
             if (!handled) throw;
         }

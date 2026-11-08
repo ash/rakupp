@@ -39,6 +39,11 @@ int rakuppRunOn(Interpreter& interp, const std::string& src, std::vector<std::st
                 const std::string& fileName, const std::string& exePath,
                 const std::vector<std::string>& libPaths = {}, bool declCheck = false);
 
+// A parse error as the command line reports one: the message, the line it names
+// (`srcLine`, "" when it cannot be had) with a `^` under its column when it names
+// one, and `at FILE:LINE`. A run, `-e` and `-c` all print it this way.
+void printParseError(const struct ParseError& e, const std::string& srcLine, const std::string& at);
+
 // Same as rakuppRun, but executes on a thread with a large stack so deep
 // (but bounded) recursion works and the interpreter's recursion guard fires
 // before a native stack overflow. Use this as the top-level entry point.

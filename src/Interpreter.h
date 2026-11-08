@@ -108,6 +108,8 @@ void chanWaitFor(uint64_t seen, int ms);
 const std::set<std::string>& coreTypeNames(); // …the set itself, for "Did you mean" ranking
 std::vector<std::string> suggestNames(const std::string& name, const std::vector<std::string>& cands);
 std::string didYouMean(const std::vector<std::string>& sug); // ". Did you mean 'X'?" or ""
+std::string unknownParentMessage(const std::string& child, const std::string& parent,
+                                 const std::vector<std::string>& sug);   // X::Inheritance::UnknownParent's
 // A custom Real (a `does Real` class with `.Bridge`) numifies through the object
 // itself — `toNum()` answers 0 for one. Defined in BuiltinsSupply.cpp.
 double numValueOf(Interpreter& I, const Value& v);
@@ -1230,7 +1232,12 @@ void collectPubAttrs(ClassInfo* c, std::vector<const ClassAttr*>& out);
 // nearest one): a block passed down into other subs returns from the routine
 // that wrote it, not from whichever sub happens to call it.
 struct ReturnEx { Value v; uint64_t target = 0; };
-struct ExitEx { int code = 0; };
+// `exit` unwinds without running any block's LEAVE, as Rakudo's does (it runs
+// the END phasers and ends): the flag is raised by the exception and dropped
+// when the ENDs start (runEnds), and both engines' LEAVE runners ask it
+extern std::atomic<bool> g_exitUnwinding;
+inline bool rtExitUnwinding() { return g_exitUnwinding.load(std::memory_order_relaxed); }
+struct ExitEx { int code = 0; ExitEx(int c = 0) : code(c) { g_exitUnwinding.store(true, std::memory_order_relaxed); } };
 // From 6.e, `next $v` / `last $v` supply a value for the iteration they end:
 // `(1,2,3).map({ $_ == 2 ?? next(42) !! $_ })` is (1 42 3). hasVal separates
 // "supplied Nil" from "supplied nothing"; before 6.e nothing ever sets it.
@@ -2079,6 +2086,7 @@ struct PromiseState {
     // `await` can only report its own line, which is never where the error is.
     std::shared_ptr<BtRecord> causeBt;
     std::vector<std::function<void()>> thens; // `.then` continuations, fired once on settle
+    bool fromStart = false;   // a `start`'s: sunk, its break is reported (sunkStartBroke)
 };
 
 // One active `react` block. `whenever` on a live Supplier registers a tap that
@@ -3425,7 +3433,8 @@ public:
                         // a literal `where { … }` block, evaluated ONCE: one closure,
                         // so a `state` inside it persists across checks, as in Rakudo
                         std::shared_ptr<Value> whereBlock;
-                        Value howObj; };                   // its own .HOW, made on first ask (or by new_type)
+                        Value howObj;                      // its own .HOW, made on first ask (or by new_type)
+                        std::string shownName; };          // `K::S` for one declared in package K, `my` too
     StrMap<SubsetInfo> subsets_;
     // operator → the not-yet-declared type names of each candidate that armed
     // it provisionally (noteUserInfixCandidate); decided again as classes and
@@ -3462,6 +3471,7 @@ public:
     uint64_t lexicalRoutineFrame(); // the frame a `return` written here belongs to
     const Value* lexicalRoutineVal();   // …and that routine itself: `&?ROUTINE`, what `samewith` calls
     void recordLexicalRoutine();        // (a block that asks for it, as it is made)
+    bool lexicalRoutineIsBlock();       // …a `start` block's own frame, which is no routine to leave
     Value varContainerName(const std::string& vn);   // `@a.VAR.name`: a parameter's is its container's
     // Nested BEGIN/CHECK/INIT phasers run before the code around them, in a
     // STATIC environment of the scopes that enclose them (the lexicals exist,
@@ -3570,6 +3580,9 @@ public:
     [[noreturn]] void throwInvalidParamType(const std::string& type);
     bool paramTypeUndeclared(const std::string& t);
     std::string noMatchProfile(const Value& self, const ValueList& as, bool withInvocant);
+    std::string subsetNominal(const std::string& type);   // `subset CN of Str …` → Str
+    void refuseUnpassedSubset(const Param& p);            // …whose `where` an unpassed default must pass
+    [[noreturn]] void throwNeedleNoMatch(const Value& inv, const std::string& m, const ValueList& args);
     // `next`/`last`/`redo` (kind 1/2/3) called WITH arguments — `next(L)`,
     // `last $label`, `next OUTER`, 6.e's `last $value`: always throws
     [[noreturn]] Value loopControlWith(int kind, const ValueList& as);
@@ -3716,7 +3729,8 @@ public:
     bool typeObjectUserAccepts(const Value& l, const Value& r, Value& out);   // `42 ~~ C` with a user ACCEPTS                          // `has T $.x = Nil`
     // does a bare type-like name resolve to a type, package, constant or term
     // here — pure lookups, for the gobbled-block check of a unit about to run
-    bool bareNameResolves(const std::string& n, const Program& unit);
+    bool bareNameResolves(const std::string& n, const Program& unit, bool needOuter = true);
+    void refuseGobbledBlocks(const std::vector<GobbleSiteInfo>& sites, const Program& prog, bool needOuter = true);
     // ONE scope's own symbol: what it holds, or — for a `my` further down that
     // has not run yet — the declared-but-uninitialized value (OUTER::<$x>)
     bool frameSymbol(Env* f, const std::string& key, Value& out);
@@ -4623,6 +4637,8 @@ public:
     void poolWorker(std::function<void()> job);
     void stopPool();   // idle pooled workers end (drainWorkers, endPool)
     void endPool();    // …and are joined (the destructor)
+    [[noreturn]] void endOnUnhandled(const RakuError& e);   // the scheduler's end for an unhandled error
+    void sunkStartBroke(const std::shared_ptr<PromiseState>& ps, const Value& sched);   // (Interpreter.cpp)
     Value cueJob(Value code, double delaySecs, double everySecs, long long times,
                  Value stopF, Value catchF); // $*SCHEDULER.cue — returns a Cancellation
     // Real (wired) tap of a Supply value: on-demand blocks run with emits routed
@@ -4769,7 +4785,7 @@ public:
     std::shared_ptr<Env> global_;
     // `R[42]` written twice is ONE type: role puns memoised by argument identity.
     std::map<std::string, std::string> rolePunCache_;
-    std::string roleArgsDisplay(const std::string& roleName, const ValueList& argv);
+    std::string roleArgsDisplay(const std::string& roleName, const ValueList& argv, bool byType = false);   // (byType: a value by its type)
     bool userTypeRefuses(const Value& rhs, const std::string& want);
     bool lexicalAliasAccepts(Env* scope, const std::string& ty, const Value& v);
     void varWhereCheck(const std::string& nm, const Value& rhs);
@@ -5327,9 +5343,11 @@ public:
     // …and the value it probes a built-in TYPE object on (`Set.^find_method`):
     // an empty instance of the type, or the type object itself when none is safe.
     Value probeSentinel(const std::string& type);
+    int tabledTypeHasMethod(const std::string& tn, const std::string& mn);   // (.can on a Promise, a role …)
     bool isSubsetHow(const Value& v);   // Metamodel::SubsetHOW, a metaclass made from it, or a subset's .HOW
     Value subsetRefinee(const std::string& subset, bool refinement);   // `.^refinee` / `.^refinement`
     Value subsetNewType(const Value& how, const ValueList& args);      // `Metamodel::SubsetHOW.new_type`
+    void applySubsetTraits(const struct SubsetDecl& sd, const Value& self, Value* tm);   // `subset S is t`
     Value subsetsHow(const std::string& subset);                       // a subset's own .HOW
     // A bare regex literal as a value, through RegexLit::closedPat (skips the
     // splice copy, the $/@ scans and the obsolete-check memo probe once the
@@ -5357,10 +5375,14 @@ public:
         return v;
     }
     Value defaultScheduler_; // the ONE $*SCHEDULER (copies share .hash(), so attr writes persist)
+    std::string podRaku(const Value& v);   // a Pod block's `.raku`: its constructor (MethodCallEntry.cpp)
+    void toSchedulerUncaught(const RakuError& e);   // a tapper's error on an interval's or a Channel's value
 private:
     // `$obj!meth` is legal only lexically inside the declaring class; throws otherwise.
     void requirePrivateCallScope(const std::string& name);
     Value evalCall(Call* c);
+    Value dotAmpCurry(Call* c);   // `*.uc.&{ … }`: a `.&` on a written star curries (InterpreterBinding.cpp)
+    void refuseWhateverNumeric(const std::string& op);   // `$w + 1` with `$w = *`: no Numeric (…)
     Value evalTempLet(Call* c); // temp/let: snapshot BEFORE arg evaluation
     Value evalIndex(Index* idx);
     // Concrete index tuples for a multi-dimensional subscript — shared by the
@@ -6313,7 +6335,7 @@ inline bool rtTypedFast(const Value& v, int fast) {
         case RTB_INT: return v.t == VT::Int;
         case RTB_STR: return v.t == VT::Str;
         case RTB_NUM: return v.t == VT::Num;
-        case RTB_RAT: return v.t == VT::Rat;
+        case RTB_RAT: return v.t == VT::Rat && !v.fatRat();   // (a FatRat is no Rat)
         case RTB_BOOL: return v.t == VT::Bool;
         case RTB_MACHINE_INT: return v.t == VT::Int && !v.big();   // into `int`: fits, nothing to wrap
         default: return false;
@@ -6389,8 +6411,10 @@ bool rtLiveFailure(const Value& r);   // a Failure nothing has handled yet (the 
 // otherwise, as every element store was
 Value rtNativeArrayNew(Interpreter& I, const char* type, const char* name, Value rhs, bool dollarSource);
 Value rtArrayAssignTo(Interpreter& I, Value& lv, Value rhs, const char* name, bool dollarSource);
+Value rtConstPositional(Interpreter& I, Value v);   // `constant @L = …`: a Positional as it is, the rest a List
 bool rtPackedStore(Interpreter& I, Value& base, const Value& key, const Value& v);
 Value rtElemStoreN(Interpreter& I, Value& base, const Value& key, Value v, char how);
+Value bufElemStep(Interpreter& I, Value& buf, Value key, const std::string& op, bool post);   // `$b[1]++`
 // …and whether an array is native (a routine compiled in module mode asks:
 // the name it was told is native may be another array's where it runs). A Buf
 // counts: its elements are packed words too, stored by rtElemStoreN.

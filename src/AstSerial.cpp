@@ -473,6 +473,7 @@ template <class IO> void visit(IO& io, SubDecl& n)  {
     // `is nodal`, parser-consumed as well: a hyper over a cached module's
     // nodal routine would descend into every node
     F(io, n.isNodal);
+    F(io, n.hiddenBt);
 }
 template <class IO> void visit(IO& io, ClassDecl& n) {
     F(io, n.name); F(io, n.parent); ioVec(io, n.extraParents); ioVec(io, n.roles);
@@ -613,10 +614,10 @@ template <class IO> void ioExpr(IO& io, ExprPtr& e) {
     if constexpr (IO::reading) {
         uint8_t k = io.u8();
         if (k == kNull) { e.reset(); return; }
-        uint64_t lp = io.uvar();   // the line, shifted, over the inParens bit
-        int line = (int)(lp >> 1);
+        uint64_t lp = io.uvar();   // the line, shifted, over the blockPart and inParens bits
+        int line = (int)(lp >> 2);
         switch ((NK)k) {
-#define X(K, T) case NK::K: { auto n = makeNode<T>(); n->line = line; n->inParens = lp & 1; visit(io, *n); e = std::move(n); break; }
+#define X(K, T) case NK::K: { auto n = makeNode<T>(); n->line = line; n->inParens = lp & 1; n->blockPart = lp & 2; visit(io, *n); e = std::move(n); break; }
             EXPR_KINDS(X)
 #undef X
             default: throw AstSerialError{"unknown expression kind in AST cache"};
@@ -625,7 +626,7 @@ template <class IO> void ioExpr(IO& io, ExprPtr& e) {
         if (!e) { io.u8(kNull); return; }
         io.u8((uint8_t)e->kind);
         uint64_t line = io.stripLines ? 0 : (uint64_t)(e->line < 0 ? 0 : e->line);
-        io.uvar(line << 1 | (e->inParens ? 1 : 0));
+        io.uvar(line << 2 | (e->blockPart ? 2 : 0) | (e->inParens ? 1 : 0));
         switch (e->kind) {
 #define X(K, T) case NK::K: visit(io, static_cast<T&>(*e)); break;
             EXPR_KINDS(X)

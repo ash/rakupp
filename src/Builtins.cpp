@@ -2176,6 +2176,8 @@ std::string rakuReprImpl(const Value& v, int depth, std::set<const void*>& seen)
         if (hd != v.hash()->end() && hd->second.truthy()) out += ", handled => Bool::True";
         return out + ")";
     }
+    // a Pod block inside a list renders as its constructor, as it does alone
+    if (v.t == VT::Hash && v.hashKind == "Pod" && v.hash() && g_cbInterp) return g_cbInterp->podRaku(v);
     // a live Pointer / CArray (a native struct's field) renders as its `.raku`
     // method does, not as the {addr, of} slots that hold it
     if (v.t == VT::Hash && (v.hashKind == "Pointer" || v.hashKind == "CArray") &&
@@ -2486,7 +2488,7 @@ std::string rakuReprImpl(const Value& v, int depth, std::set<const void*>& seen)
                 // — not an enum's type object, which is no list: [Color]
                 if (!v.isList && v.arr()->size() == 1 &&
                     ((*v.arr())[0].t == VT::Range || ((*v.arr())[0].t == VT::Array && !isEnumTypeObject((*v.arr())[0])) ||
-                     (*v.arr())[0].t == VT::Hash))
+                     ((*v.arr())[0].t == VT::Hash && (*v.arr())[0].hashKind != "Pod")))   // (a Pod block is no list)
                     o += ",";
                 seen.erase(v.arr());
             }
@@ -4763,12 +4765,23 @@ Value makeSignature(const Callable* c) {
     // `.returns` / `.of` — the DECLARED return type. DBDish's TypeConverter keys
     // its conversion table by it (`%!Conversions{$_.signature.returns} = $_`), so
     // without this the whole table was built under one key.
+    // (`--> Nil`, `--> True`, `--> 42` are kept as the value the body returns,
+    // and the signature returns that value's type all the same)
+    std::string retLitT;
+    if (retT.empty() && c) {
+        const Expr* rl = c->ci().retLiteral;
+        const std::string lit = retLiteralText(rl);
+        retLitT = lit == "Nil" ? "Nil" : lit == "Empty" ? "Slip" : !lit.empty() ? "Bool"
+                : rl && rl->kind == NK::IntLit ? "Int"
+                : rl && (rl->kind == NK::StrLit || rl->kind == NK::InterpStr) ? "Str" : "";
+    }
     if (!retT.empty()) (*s.hash())["returns"] = Value::typeObj(retTypeName(retT));
+    else if (!retLitT.empty()) (*s.hash())["returns"] = Value::typeObj(retLitT);
     // the declared parameters themselves (AST-owned, program lifetime), for
     // Signature ~~ Signature
     if (c && !c->cold().hasPrimed && c->ci().params && synth.empty()) {
         (*s.hash())["\x01sigptr"] = Value::integer((long long)(uintptr_t)c->ci().params);
-        (*s.hash())["\x01ret"] = Value::str(c->cold().retType);
+        (*s.hash())["\x01ret"] = Value::str(retLitT.empty() ? c->cold().retType : retLitT);
         if (c->ci().isMethod) (*s.hash())["\x01method"] = Value::boolean(true);   // an invocant comes first
     }
     (*s.hash())["arity"] = Value::integer(arity);
@@ -6472,12 +6485,18 @@ Value Interpreter::methodCall(const Value& inv, const std::string& m, ValueList 
             if (mm == tn) return inv;   // `Int.Int`, `Num.Num`: the type object itself
         }
     }
-    // `Mu.new(1)` — the default constructor takes named arguments only
-    if (opEq(m, "new") && inv.t == VT::Type && inv.s == "Mu")
+    // `Mu.new(1)`, `Str.new(1)` — the default constructor takes named arguments
+    // only, and these core types have no `new` of their own
+    if (opEq(m, "new") && inv.t == VT::Type && (inv.s == "Mu" || inv.s == "Str" || inv.s == "Any" ||
+        inv.s == "Cool" || inv.s == "Match" || inv.s == "Exception" || inv.s == "Capture" || inv.s == "Signature"))
         for (auto& a : args)
             if (!(a.t == VT::Pair && a.namedArg))
-                throwTypedV("X::Constructor::Positional", {{"type", Value::typeObj("Mu")}},
-                            "Default constructor for 'Mu' only takes named arguments");
+                throwTypedV("X::Constructor::Positional", {{"type", inv}},
+                            "Default constructor for '" + inv.s + "' only takes named arguments");
+    // …and a package or a module has no instances at all (Rakudo's PackageHOW)
+    if ((opEq(m, "new") || opEq(m, "bless")) && inv.t == VT::Type && pkgKind_.count(inv.s.copyText()) &&
+        !classes_.count(inv.s))
+        throw RakuError{Value::typeObj("X::AdHoc"), "You cannot create an instance of this type (" + inv.s + ")"};
     // A handle's lazy `.lines` is read in full before a list method works on
     // it (`$fh.lines.grep(…)`): only `for` and subscripts walk it line by line
     // (…but not for its INDEX views: `.kv`/`.pairs`/`.antipairs` pull as they
@@ -8454,6 +8473,9 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
                 if (cn != classes_.end() && cn->second && !cn->second->dispName.empty())
                     return Value::str(!cn->second->shownName.empty() ? cn->second->shownName : cn->second->dispName);
             }
+            if (inv.t == VT::Type)   // (a subset declared in package K is named for it: `K::S`)
+                if (auto si = subsets_.find(inv.s.str()); si != subsets_.end() && !si->second.shownName.empty())
+                    return Value::str(si->second.shownName);
             // (a NativeCall type names its package: NativeCall::Types::CArray[int32])
             if (inv.t != VT::Object) return Value::str(ncQualifiedName(inv.typeName()));
             return Value::str(inv.typeName());
@@ -8688,7 +8710,10 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
                 }
                 else probeInv = probeSentinel(tn);
             }
-            if (!mn.empty() && probeInv.t != VT::Object && probeInv.t != VT::Type &&
+            // a type no sentinel stands for, or a role, answers from its table
+            const int tabled = inv.t == VT::Type && !classes_.count(inv.s) && !mn.empty() ? tabledTypeHasMethod(tn, mn) : 0;
+            if (tabled < 0) return Value::typeObj("Mu");
+            if (!tabled && !mn.empty() && probeInv.t != VT::Object && probeInv.t != VT::Type &&
                 probeInv.t != VT::Any && probeInv.t != VT::Nil &&
                 probeMethodExists(probeInv, mn, "/nonexistent/rakupp-lookup-probe") == -1)
                 return Value::typeObj("Mu");
@@ -8696,12 +8721,12 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
             // type has too. So a name that is not even on an Int cannot be on
             // them, and this probe only ever turns a wrong YES into a right NO —
             // never the reverse, which is why the answer is not read positively.
-            if (!mn.empty() && inv.t == VT::Type && (inv.s == "Mu" || inv.s == "Any") &&
+            if (!tabled && !mn.empty() && inv.t == VT::Type && (inv.s == "Mu" || inv.s == "Any") &&
                 probeMethodExists(Value::integer(0), mn, "/nonexistent/rakupp-lookup-probe") == -1)
                 return Value::typeObj("Mu");
             // …and a ROLE the same way, against a type that does it: whatever
             // Cool, Real or Numeric has, an Int has; whatever Stringy has, a Str
-            if (!mn.empty() && inv.t == VT::Type && !classes_.count(inv.s)) {
+            if (!tabled && !mn.empty() && inv.t == VT::Type && !classes_.count(inv.s)) {
                 const std::string_view r = inv.s;
                 Value rep = r == "Cool" || r == "Real" || r == "Numeric" ? Value::integer(0)
                           : r == "Stringy" ? Value::str("")

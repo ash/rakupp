@@ -3721,17 +3721,11 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
             };
             return Value::str(podGist(inv, 0));
         }
-        if (m == "Str" || m == "gist" || m == "raku") {
-            // stringify to the concatenated text of the contents (paragraphs/children)
-            std::function<std::string(const Value&)> flat = [&](const Value& v) -> std::string {
-                if (v.t == VT::Str) return v.s.copyText();
-                if (v.t == VT::Hash && v.hashKind == "Pod" && v.hash()->count("contents")) {
-                    std::string o; for (auto& c : *(*v.hash())["contents"].arr()) o += flat(c); return o;
-                }
-                if (v.t == VT::Array && v.arr()) { std::string o; for (auto& c : *v.arr()) o += flat(c); return o; }
-                return v.toStr();
-            };
-            return Value::str(flat(inv));
+        // `.Str` and `.raku` are Rakudo's, Mu's `Class<id>` and the constructor that builds
+        // the block; a declarator block's, and its `.gist`, are its text (`~&f.WHY`), as toStr's
+        if (m == "Str" || m == "raku" || m == "gist") {
+            const bool decl = h.count("podclass") && h["podclass"].s.str() == "Pod::Block::Declarator";
+            return Value::str(m == "raku" && !decl ? podRaku(inv) : inv.toStr());
         }
     }
     if ((inv.t == VT::Type && inv.s == "Kernel") ||
@@ -4225,6 +4219,8 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
                                 "Access denied to keep/break this Promise; already vowed"};
             (*inv.hash())["vowed"] = Value::boolean(true);
         };
+        if ((m == "keep" || m == "break") && inv.hashKind == "Vow" && args.empty())   // (a Vow's take their value)
+            throw RakuError{Value::typeObj("X::AdHoc"), "Too few positionals passed; expected 2 arguments but got 1"};
         if (m == "keep") {
             takeVow();
             Value v = args.empty() ? Value::boolean(true) : args[0];
@@ -5510,7 +5506,9 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
             auto it = inv.hash()->find(m.s);
             return it != inv.hash()->end() ? it->second : Value::any();
         }
-        if (m == "is-hidden") return Value::boolean(false);
+        if (m == "is-hidden") {   // a routine declared `is hidden-from-backtrace`
+            auto it = inv.hash()->find("code"); const Value* c = it != inv.hash()->end() ? &it->second : nullptr;
+            return Value::boolean(c && c->t == VT::Code && c->code() && c->code()->ci().hiddenBt); }
         // the setting's own `throw` / `die` frames (see btCaptureNow)
         if (m == "is-setting") return Value::boolean(inv.hash()->count("setting") > 0);
         // a frame whose code is a SUB or METHOD (not a bare block, not the mainline)
@@ -5936,11 +5934,16 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
                 if (a.t == VT::Pair && a.pairVal() && rtIsDefined(*a.pairVal()))
                     at[a.s.copyText()] = a.pairVal()->toStr();
             std::string syn;
+            auto gistArg = [&](const char* k) {   // (got and range by their gist: `should be in 1..2`, not `1 2`)
+                for (auto& a : args) if (a.t == VT::Pair && a.s == k && a.pairVal()) return gistOf(*a.pairVal()); return std::string(); };
             if (t == "X::OutOfRange" && at.count("what")) {
-                syn = at["what"] + " out of range. Is: " +
-                      (at.count("got") ? at["got"] : std::string()) +
-                      ", should be in " + (at.count("range") ? at["range"] : std::string());
+                syn = at["what"] + " out of range. Is: " + gistArg("got") + ", should be in " + gistArg("range");
                 if (at.count("comment")) syn += "; " + at["comment"];
+            }
+            else if (t == "X::Str::Numeric" && at.count("source") && at.count("reason")) {
+                const std::string& src = at["source"];
+                size_t pos = 0; try { pos = std::min(src.size(), (size_t)std::max(0LL, std::stoll(at.count("pos") ? at["pos"] : "0"))); } catch (...) {}
+                syn = "Cannot convert string to number: " + at["reason"] + " in '" + src.substr(0, pos) + "<HERE>" + src.substr(pos) + "' (indicated by <HERE>)";
             }
             else if (t == "X::NYI" && at.count("feature"))
                 syn = at["feature"] + " not yet implemented. Sorry.";
@@ -6181,16 +6184,16 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
         }
         // A PARAMETERIZED constructor type-checks what it is given, exactly as
         // an assignment into the container would: `Array[Int].new("a")` is
-        // X::TypeCheck::Assignment, not an Array holding a Str (sheet LA-21).
-        if (!v.ofType().empty() && v.ofType() != "Mu" && v.ofType() != "Any" &&
-            v.ofType().find(',') == std::string::npos &&
-            !ascii::islower((unsigned char)v.ofType()[0]))
+        // X::TypeCheck::Assignment, not an Array holding a Str (sheet LA-21),
+        // and `Array[Str:D]` asks the nominal type and the smiley's definedness.
+        const std::string& ot = v.ofType();
+        const char sm = ot.size() > 2 && ot[ot.size() - 2] == ':' && ot[ot.size() - 3] != ':' ? ot.back() : 0;
+        if (!ot.empty() && ot != "Mu" && ot != "Any" && ot.find(',') == std::string::npos && !ascii::islower((unsigned char)ot[0]))
             for (auto& x : seed) {
-                if (x.t == VT::Nil || typeOrSubsetMatches(x, v.ofType())) continue;
-                throwTypedV("X::TypeCheck::Assignment",
-                    {{"got", x}, {"expected", Value::typeObj(v.ofType())}},
-                    "Type check failed in assignment; expected " + v.ofType() +
-                        " but got " + x.typeName() + " (" + typeCheckRepr(x) + ")");
+                if (x.t == VT::Nil || (typeOrSubsetMatches(x, sm ? ot.substr(0, ot.size() - 2) : ot) &&
+                                       (sm != 'D' || rtIsDefined(x)) && (sm != 'U' || !rtIsDefined(x)))) continue;
+                throwTypedV("X::TypeCheck::Assignment", {{"got", x}, {"expected", Value::typeObj(ot)}},
+                    "Type check failed in assignment; expected " + ot + " but got " + x.typeName() + " (" + typeCheckRepr(x) + ")");
             }
         if (!dims.empty()) { // shaped array — pre-sized, row-major, tagged with .shape()
             std::string et = v.ofType() == "Any" || v.ofType() == "Mu" ? "" : v.ofType();
@@ -8074,6 +8077,9 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
                         ValueList builtinArgs;   // attribute pairs stay with the object
                         for (auto& a : args)
                             if (!(a.t == VT::Pair && ci->findAttr(a.s))) builtinArgs.push_back(a);
+                        // (a coercion, `Sym("b")`, hands its value on positionally: Str.new takes it as :value)
+                        if (nb == "Str" && builtinArgs.size() == 1 && !(builtinArgs[0].t == VT::Pair && builtinArgs[0].namedArg))
+                            { Value v = Value::pair("value", builtinArgs[0]); v.namedArg = true; builtinArgs[0] = v; }
                         od->boxed() = methodCall(Value::typeObj(nb), "new", builtinArgs);
                         runAttrDefaults(od, ci, args);
                         Value self = Value::object(od);
@@ -8865,6 +8871,8 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
         }
         if (m == "signature") return makeSignature(inv.code());
         if (m == "yada") return Value::boolean(inv.code()->ci().isStub);   // a `{ ... }` / `{ !!! }` body
+        // (the trait's role brings the method: a routine without it has none)
+        if (m == "is-hidden-from-backtrace" && inv.code()->ci().hiddenBt) return Value::boolean(true);
         if (m == "multi" || m == "is_dispatcher") return Value::boolean(inv.code()->ci().isMultiDispatcher);
         // `$block.ACCEPTS($x)` is `$block($x)` — a Callable used as a matcher
         // (paths' `$!dir-matcher.ACCEPTS($name)` is how every directory is
@@ -9838,7 +9846,10 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
         // its own methods are its and the rest an Any's — Red's `try $*RED-DB.^can(…)`)
         const bool failure = !ci && inv.t == VT::Hash && inv.hashKind == "Failure", failureOwn = failure && failureOwnMethod(mn);
         if (failure && !failureOwn) { probeInv = Value::makeHash(); probeInv.hashKind = "Any"; }
-        if (!ci && out.arr()->empty() && !mn.empty() &&
+        // …and a type no sentinel stands for, or a role, from its table: `Cool.can('chars')`
+        const int tabled = !ci && inv.t == VT::Type && !classes_.count(inv.s) ? tabledTypeHasMethod(inv.s.copyText(), mn) : 0;
+        if (tabled) probeInv = Value::integer(0);   // (anything the clause below lets through: the table answers)
+        if (!ci && out.arr()->empty() && !mn.empty() && tabled >= 0 &&
             probeInv.t != VT::Object && probeInv.t != VT::Type && probeInv.t != VT::Any && probeInv.t != VT::Nil &&
             // Date/DateTime share one dispatch surface here, so a probe cannot
             // tell them apart — the curated Dateish list above is authoritative
@@ -9847,7 +9858,7 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
                 // one probe (shared with .^lookup): 1 = found, -1 = not found,
                 // 0 = a side-effectful name that must not be probed (no stub —
                 // the permissive answer this fallback has always given)
-                if (failureOwn || probeMethodExists(probeInv, mn, "/nonexistent/rakupp-can-probe") == 1) {
+                if (failureOwn || tabled > 0 || probeMethodExists(probeInv, mn, "/nonexistent/rakupp-can-probe") == 1) {
                     Value stub; stub.t = VT::Code; stub.setCode(makePayload<Callable>());
                     stub.code()->ciM().name = mn; stub.code()->ciM().isMethod = true;
                     std::string mnc = mn;
@@ -10072,7 +10083,7 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
     if (m == "VAR" || m == "self") return inv; // container introspection: value is its own container
     if (m == "item") { // .item: decontainerize to a single item (itemize a container)
         Value v = inv;
-        if (v.t == VT::Array || v.t == VT::Hash) v.itemized = true;
+        if (v.t == VT::Array || v.t == VT::Hash || v.t == VT::Range) v.itemized = true;   // (a Range is one key too)
         return v;
     }
     // Bool is an enum (False => 0, True => 1): .key is the name, .value the ordinal.
@@ -11047,6 +11058,7 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
             return Value::boolean(false);
         std::string rn = args[0].t == VT::Type ? args[0].s.copyText() : args[0].typeName();
         if (rn == "Any" || rn == "Mu") return Value::boolean(true);
+        if (rn.find('\x01') != std::string::npos) return Value::boolean(typeOrSubsetMatches(inv, rn));   // a pun, as `~~`
         // a SUBSET answers by its constraint: `1.does(PosReal)` is True
         if (args[0].t == VT::Type && subsets_.count(rn))
             return Value::boolean(typeOrSubsetMatches(inv, rn));

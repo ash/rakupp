@@ -1196,6 +1196,20 @@ const Value* Interpreter::lexicalRoutineVal() {
     }
     return tctx().curRoutineVal;
 }
+// Is the frame a `fail` written here would leave a BLOCK's own — a `start`
+// block's, a hyper `map`'s, which run as routines of their own on a worker —
+// rather than a routine's? Then there is no routine to leave, and Rakudo's
+// `fail` throws: `start { fail "x" }` breaks its promise.
+bool Interpreter::lexicalRoutineIsBlock() {
+    for (Env* e = tctx().cur.get(); e; e = e->parent.get()) {
+        if (!e->routineFrame) continue;
+        for (auto it = tctx().callFrames.rbegin(); it != tctx().callFrames.rend(); ++it)
+            if (it->calleeEnv == e)
+                return it->code && it->code->t == VT::Code && it->code->code() && it->code->code()->ci().isBlock;
+        return false;
+    }
+    return false;
+}
 void Interpreter::recordLexicalRoutine() {
     for (Env* e = tctx().cur.get(); e; e = e->parent.get()) {
         if (!e->routineFrame) continue;
@@ -1976,7 +1990,7 @@ std::string Interpreter::gistOf(const Value& v, bool skipUser) {
         throwTypedV("X::Method::NotFound", {{"method", Value::str("gist")}, {"typename", Value::str(v.s)}},
                     "Method " + v.s + ".gist not found");
     // an enum's type object gists as any type object does: `say day` is (day)
-    if (isEnumTypeObject(v)) return "(" + std::string(v.enumType.str()) + ")";
+    if (isEnumTypeObject(v)) return v.gist();
     // An ENDLESS lazy sequence gists as Rakudo's "(...)", and a lazy ARRAY as
     // "[...]" — neither shows what happens to be reified, because say/print
     // must not pretend the cached prefix is the whole list (sheet LA-02).
@@ -2276,6 +2290,13 @@ std::string Interpreter::strOf(const Value& v) {
         // whether message is a method or a plain attribute.
         if (Value* m = v.obj()->cls->findMethod("message")) { ValueList none; return invokeMethod(*m, v, none).toStr(); }
         auto mit = v.obj()->attrs.find("message");
+        if (mit != v.obj()->attrs.end() && rtIsDefined(mit->second)) return strOf(mit->second);
+        // …and a built-in one made with `.new` computes it (X::OutOfRange's) or
+        // has its payload (X::AdHoc's); one with none says so, as Exception.Str does
+        if (v.obj()->cls->isException() || v.obj()->cls->name.rfind("X::", 0) == 0) {
+            Value msg = methodCall(v, "message", ValueList{});
+            return rtIsDefined(msg) ? strOf(msg) : "Something went wrong in " + Value::typeObj(v.obj()->cls->name).gist();
+        }
         if (mit != v.obj()->attrs.end()) return strOf(mit->second);
         if (v.obj()->hasBoxed) return strOf(v.obj()->boxed());
         // A class that does the built-in SEQUENCE role stringifies as its

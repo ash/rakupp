@@ -1306,12 +1306,10 @@ void Interpreter::registerBuiltinsPart4() {
                         Value repl;
                         int r = quitP.empty() ? 1 : I2.runQuitPhasers(quitP, ex, repl);
                         if (r != 0) {
-                            Value out = r == 2 ? repl : ex;
-                            auto ret = callQuitCb(I2, ctx->quitCb, out);
                             // nothing may follow a quit (S-06); `done` also stops the
-                            // maybeFinishSupply below emitting one after it.
-                            ctx->done = true;
-                            if (ctx->tap) I2.closeTapHandle(ctx->tap);
+                            // maybeFinishSupply below emitting one after it. A QUIT
+                            // phaser that died is the supply's own die: CLOSE first.
+                            auto ret = quitSupply(I2, ctx, r == 2 ? repl : ex, r == 2);
                             if (ret) { ctx->pending--; std::rethrow_exception(ret); }
                         }
                     } else {
@@ -1339,12 +1337,9 @@ void Interpreter::registerBuiltinsPart4() {
                             // ever. Cro raises every 4xx/5xx as a `die` inside exactly
                             // this shape, so a 404 hung the client instead of throwing.
                             died = true;
-                            Value ex = I2.exceptionFor(e);
-                            auto ret = callQuitCb(I2, ctx->quitCb, ex);
                             // nothing may follow a quit (S-06); `done` also makes the
                             // maybeFinishSupply below a no-op, so no done is emitted.
-                            ctx->done = true;
-                            if (ctx->tap) I2.closeTapHandle(ctx->tap);
+                            auto ret = quitSupply(I2, ctx, I2.exceptionFor(e));
                             if (ret) { ctx->pending--; std::rethrow_exception(ret); }
                         }
                         if (!died) {
@@ -1425,10 +1420,7 @@ void Interpreter::registerBuiltinsPart4() {
                     // reaches the TAPPER's quit handler (Cro's frame parser
                     // dies per malformed frame and its test reads it there).
                     ctx->closeSub(subId);
-                    Value ex = I2.exceptionFor(e);
-                    auto ret = callQuitCb(I2, ctx->quitCb, ex);
-                    ctx->done = true;
-                    if (ctx->tap) I2.closeTapHandle(ctx->tap);
+                    auto ret = quitSupply(I2, ctx, I2.exceptionFor(e));
                     if (ret) std::rethrow_exception(ret);
                 }
             });
@@ -1457,10 +1449,7 @@ void Interpreter::registerBuiltinsPart4() {
                     I2.maybeFinishSupply(ctx);
                     return;
                 }
-                Value out = r == 2 ? repl : ex;
-                auto ret = callQuitCb(I2, ctx->quitCb, out);
-                ctx->done = true;
-                if (ctx->tap) I2.closeTapHandle(ctx->tap);
+                auto ret = quitSupply(I2, ctx, r == 2 ? repl : ex, r == 2);
                 if (ret) std::rethrow_exception(ret);
             });
             Value tapV = I.tapSupply(src, emitW, doneW, quitW);

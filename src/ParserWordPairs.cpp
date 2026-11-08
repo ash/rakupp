@@ -106,7 +106,9 @@ void Parser::inheritSyntax(Parser& p) const {
 
 ExprPtr Parser::parseEmbeddedExpr(const std::string& src, bool ownScope) {
     Lexer lx(src);
-    Parser p(lx.tokenize());
+    std::vector<Token> toks = lx.tokenize();
+    if (embedLineBase_ > 1) for (auto& t : toks) t.line += embedLineBase_ - 1;   // (the file's lines)
+    Parser p(std::move(toks));
     // Inherit user-defined operators so `"{ 4! }"` sees this program's `postfix:<!>`
     // (and custom infix/prefix/circumfix) just as top-level code does.
     inheritSyntax(p);
@@ -200,6 +202,73 @@ bool Parser::takeWordPair(std::vector<ExprPtr>& pairs, std::vector<std::string>&
     pairs.push_back(parseColonPair());
     words.push_back("\x03" + std::to_string(pairs.size() - 1));
     return true;
+}
+
+// The column a parse error raised on `line` names, when it names none: where
+// the token the parse stopped on starts, or, when that one is on a later line
+// or is the end, just past the token before it (`say 1 +` ran out after the
+// `+`). Read off the source by each token's end offset, and 0 when the token's
+// text is not what the source holds there (a string, a fudged file).
+int Parser::stopColumn(int line) const {
+    auto colAt = [&](size_t i, bool after) -> int {
+        const Token& t = toks_[i];
+        if (!src_ || t.off == 0 || t.off > src_->size() || t.off < t.text.size() ||
+            src_->compare(t.off - t.text.size(), t.text.size(), t.text) != 0) return 0;
+        const size_t at = after ? t.off : t.off - t.text.size();
+        const size_t nl = at == 0 ? std::string::npos : src_->rfind('\n', at - 1);
+        return (int)(at - (nl == std::string::npos ? 0 : nl + 1)) + 1;
+    };
+    if (pos_ < toks_.size() && toks_[pos_].kind != Tok::End && toks_[pos_].line == line) return colAt(pos_, false);
+    if (pos_ > 0 && pos_ - 1 < toks_.size() && toks_[pos_ - 1].line == line) return colAt(pos_ - 1, true);
+    return 0;
+}
+
+// `use Test` imports its routines into the scope it stands in, so a plain `sub
+// ok` or a `my &ok` beside it redeclares one, in either order, as on Rakudo (a
+// multi joins them; `use Test ()` imports nothing). Test's routines are built
+// in here, and no import ever met the local one.
+bool Parser::isTestExport(const std::string& n) {
+    static const std::set<std::string> names = {
+        "bail-out", "can-ok", "cmp-ok", "diag", "dies-ok", "does-ok", "done-testing", "eval-dies-ok",
+        "eval-lives-ok", "fails-like", "flunk", "is", "is-approx", "is-deeply", "isa-ok", "isnt", "like",
+        "lives-ok", "nok", "ok", "pass", "plan", "skip", "skip-rest", "subtest", "throws-like", "todo",
+        "unlike", "use-ok"};
+    return names.count(n) > 0;
+}
+bool Parser::testImportedHere(const std::vector<StmtPtr>& stmts) {
+    for (auto& s : stmts)
+        if (s && s->kind == NK::UseStmt) {
+            auto* u = static_cast<const UseStmt*>(s.get());
+            if (u->module == "Test" && !u->isNo && !u->isNeed && !u->emptyImport && u->importArgs.empty()) return true;
+        }
+    return false;
+}
+
+// `prefix:<->(3)`, `postfix:<++>($x)`, `postcircumfix:<[ ]>(@a, 1)`: a built-in
+// operator called by its name is that operator applied, as Rakudo's `&prefix:<->`
+// is; a written one keeps a postfix's container (`postfix:<++>(my $y = 1)` steps
+// $y). One the program declares stays a call to it, and so does anything with a
+// named argument. Answers null when the call is not one of these.
+ExprPtr Parser::builtinOpCall(const std::string& name, std::vector<ExprPtr>& args) {
+    if (name.empty() || name.back() != '>') return nullptr;
+    for (auto& a : args) if (a->kind == NK::Pair && !static_cast<PairExpr*>(a.get())->parenned) return nullptr;
+    auto op = [&](size_t from) { return name.substr(from, name.size() - from - 1); };
+    static const std::set<std::string> kPrefix = {"-", "+", "~", "?", "!", "so", "not", "+^", "~^", "?^", "^", "++", "--"};
+    const bool pre = name.rfind("prefix:<", 0) == 0 && kPrefix.count(op(8)) && !userPrefix_.count(op(8));
+    const bool post = name.rfind("postfix:<", 0) == 0 && (op(9) == "++" || op(9) == "--") && !userPostfix_.count(op(9));
+    if ((pre || post) && args.size() == 1) {
+        auto u = std::make_unique<Unary>();
+        const std::string o = pre ? op(8) : op(9);   // (`so` and `not` are the tight `?` and `!` applied)
+        u->line = args[0]->line; u->op = o == "so" ? "?" : o == "not" ? "!" : o; u->postfix = post; u->operand = std::move(args[0]);
+        return u;
+    }
+    const bool brackets = name == "postcircumfix:<[ ]>" && !userPostcircumfix_.count("[");
+    if ((brackets || (name == "postcircumfix:<{ }>" && !userPostcircumfix_.count("{"))) && args.size() == 2) {
+        auto ix = std::make_unique<Index>();
+        ix->line = args[0]->line; ix->isHash = !brackets; ix->base = std::move(args[0]); ix->index = std::move(args[1]);
+        return ix;
+    }
+    return nullptr;
 }
 
 } // namespace rakupp

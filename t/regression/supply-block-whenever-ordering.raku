@@ -169,7 +169,8 @@ check ((try { my @l = (supply { emit 1; die "boom" }).list; @l.elems }) // $!.me
     my @o;
     (supply { whenever Supply.from-list(1) { emit $_ }; CLOSE { @o.push('C1') }; CLOSE { @o.push('C2') }; done })
         .tap({ @o.push($_) }, done => { @o.push('done') });
-    check @o, ['done', 'C2', 'C1'], 'an explicit done tears down the same way';
+    # (…but CLOSE first: a `done` in the block unwinds it before the tapper hears, as on Rakudo)
+    check @o, ['C2', 'C1', 'done'], 'an explicit done tears down in the same order, before the done';
 }
 {
     my @o;

@@ -906,7 +906,12 @@ Value Interpreter::evalInterp(InterpStr* s) {
         return strLitValue(static_cast<StrLit*>(s->parts[0].get()));
     ValueList vals;
     vals.reserve(s->parts.size());
-    for (auto& p : s->parts) vals.push_back(eval(p.get()));
+    for (auto& p : s->parts) {
+        // a `{…}` part is a block: an error in it names its own line (left set when it throws)
+        if (!p->blockPart || p->line <= 0) { vals.push_back(eval(p.get())); continue; }
+        const int stmtLine = curLine_;
+        curLine_ = p->line; vals.push_back(eval(p.get())); curLine_ = stmtLine;
+    }
     // An undefined part warns naming where it came from (`$u`, `@a[2]`), as does
     // an array with an undefined element (`@a`): converted here, with its
     // expression in hand, and handed on as the "" it stands for.
@@ -1214,6 +1219,9 @@ static Value regexClosingOver(std::string pat, const std::shared_ptr<Env>& sc) {
 // splice copy, the two scans, and rejectObsoleteRegex's mutex+map probe —
 // `if /\d/` in a loop paid all of that per iteration (REVIEW-3.7 batch 3).
 Value Interpreter::regexLitValue(RegexLit* rl) {
+    // an anonymous `rule {…}` or `token {…}` keeps its kind, which eval gives it:
+    // `my $r = rule { a b }` and `f(rule { a b })` were a plain `rx//`
+    if (!rl->declKind.empty()) return eval(rl);
     if (const void* p = rl->closedPat.get())
         return Value::regex(*static_cast<const std::string*>(p));
     Value v = regexClosingOver(spliceRegexVars(rl->pattern), tctx().cur);
@@ -4052,11 +4060,11 @@ void Interpreter::assignListTarget(ListExpr* lst, const Value& rhs, bool isBindi
             ValueList shaped;
             if (isMultiDimShaped(r)) shapedLeaves(r, shaped);
             for (auto& it : (isMultiDimShaped(r) ? shaped : *r.arr())) {
-                if (it.t == VT::Range) { for (auto& e : it.flatten()) vals.push_back(e); }
-                else {
+                {
                     // ONE level, and one level only: an inner list is ONE value,
                     // itemized — `my ($a, $b, $c) = (1, 2), 3` is
-                    // `($(1, 2), 3, Any)`, not three loose values (sheet LA-31).
+                    // `($(1, 2), 3, Any)`, not three loose values (sheet LA-31),
+                    // and an inner Range too: `(1..2), 3` gives $a 1..2.
                     Value e = it;
                     if (e.t == VT::Array || e.t == VT::Hash) e.itemized = true;
                     vals.push_back(std::move(e));
@@ -4775,7 +4783,7 @@ std::optional<Value> Interpreter::enumTypeObjectMethod(const Value& inv, const s
     const std::string tn = inv.enumType.str();
     // it renders as the TYPE it is: `day.gist` is (day), `.raku` day, and `.Str`
     // the empty string with the uninitialized warning any type object gives
-    if (m == "gist") return Value::str("(" + tn + ")");
+    if (m == "gist") return Value::str(inv.gist());   // by its short name: `B::Idx` is (Idx)
     if (m == "raku" || m == "perl") return Value::str(tn);
     if (m == "Str" || m == "Stringy") { warnUninitStr(inv); return Value::str(""); }
     // an undefined value is False
@@ -5836,10 +5844,11 @@ void Interpreter::arrayStore(Value& lvRef, Value& rhs, bool isAssign, bool dolla
         (rhs.hashKind == "Blob" || rhs.hashKind == "Buf")) {
         raceW(lv) = coerceArray(rhs, isNativeScalarName(lv->ofType()));
     }
-    else if (isAssign && dollarSource && rhs.t == VT::Range) {
+    else if (isAssign && (dollarSource || rhs.itemized) && rhs.t == VT::Range) {
         // a $-container ITEMIZES: `my @r = $r` is ONE element (the
-        // Range), unlike the flattening `my @r = 1..5` (Array/List
-        // itemization is wider surgery; Range is the roast-tested bit)
+        // Range), unlike the flattening `my @r = 1..5`, and so do
+        // `$(1..5)` and `(1..5).item` (Array/List itemization is wider
+        // surgery; Range is the roast-tested bit)
         Value one = Value::array();
         one.arr()->push_back(rhs);
         raceW(lv) = one;

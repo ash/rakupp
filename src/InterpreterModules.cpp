@@ -2539,22 +2539,53 @@ thread_local std::vector<std::string> g_classBodies;
 // a core type — an X:: one only if Rakudo has it, since isKnownTypeName takes
 // any X:: name — or when a class, subset, package, alias or lexical answers to
 // it. A routine of that name counts too: only an UNKNOWN name is refused.
-bool Interpreter::bareNameResolves(const std::string& n, const Program& unit) {
+// `CATCH { when X::Y {} }`: a type-like name before a statement's block that
+// nothing declares is, to Rakudo, a call that swallowed the block — a
+// compile-time group raised before anything runs, whether or not the `when`
+// ever does (S32-exceptions/misc.t). An EVAL asks after its parse; the main
+// program right after its own, when no import can bring the name in.
+void Interpreter::refuseGobbledBlocks(const std::vector<GobbleSiteInfo>& sites, const Program& prog, bool needOuter) {
+    for (auto& gs : sites)
+        if (!bareNameResolves(gs.name, prog, needOuter)) {
+            std::string sm = "Function '" + gs.shown + "' needs parens to avoid gobbling block (or perhaps "
+                             "it's a class that's not declared or available in this scope?)";
+            std::string pw = "block (apparently claimed by '" + gs.shown + "')";
+            throw ParseError(sm + "\nMissing " + pw, gs.line, "X::Comp::Group",
+                             {{"sorrow", "X::Syntax::BlockGobbled"}, {"sorrow-msg", sm},
+                              {"sorrow-what", gs.shown}, {"panic", "X::Syntax::Missing"},
+                              {"panic-msg", "Missing " + pw}, {"panic-what", pw}});
+        }
+}
+
+bool Interpreter::bareNameResolves(const std::string& n, const Program& unit, bool needOuter) {
     auto declaredIn = [&](const Program& p) {
         if (p.typeNamesOpaque || p.declaredTypeNames.count(n) || p.declaredTermNames.count(n)) return true;
         for (size_t c = n.find("::"); c != std::string::npos; c = n.find("::", c + 2))
             if (p.declaredTypeNames.count(n.substr(c + 2))) return true;
-        return false;
+        auto in = p.declaredTypeNames.lower_bound(n + "::");   // `class A::B` makes A a package
+        return in != p.declaredTypeNames.end() && in->rfind(n + "::", 0) == 0;
     };
     if (declaredIn(unit)) return true;
-    if (const Program* outer = unitCurrent(); !outer || declaredIn(*outer)) return true;
+    if (const Program* outer = unitCurrent(); outer ? declaredIn(*outer) : needOuter) return true;
     // a pseudo-package or CORE-qualified name is not this check's business
     static const char* const kPseudo[] = {"MY::", "OUR::", "CORE::", "GLOBAL::", "PROCESS::", "COMPILING::",
         "DYNAMIC::", "CALLER::", "CALLERS::", "LEXICAL::", "OUTER::", "OUTERS::", "SETTING::", "UNIT::",
         "CLIENT::", "PARENT::", "EXPORT::"};
     for (const char* p : kPseudo)
-        if (n.rfind(p, 0) == 0) return true;
+        if (n.rfind(p, 0) == 0 || n + "::" == p) return true;
     if (n.rfind("X::", 0) == 0 ? isRakudoExceptionName(n) : isKnownTypeName(n)) return true;
+    // …nor a core term or enum member (`for Inf {…}`, `if Less {…}`, `with SIGINT {…}`), a
+    // name in Rakudo's CORE that has no type here, or one qualified by a core type
+    static const std::set<std::string> kTerms = {"Inf", "NaN", "Nil", "Empty", "Awaiter", "CX",
+        "ContainerDescriptor", "EXPORTHOW", "Exceptions", "HardRoutine", "Hyper", "JSONException", "Metamodel",
+        "MethodDispatcher", "MultiDispatcher", "NumericEnumeration", "NumericStringyEnumeration", "Pod", "RakuAST",
+        "Rakudo", "SIGBREAK", "SIGEMT", "SIGINFO", "SIGIO", "SIGPROF", "SIGPWR", "SIGSTKFLT", "SIGTHR", "SIGVTALRM",
+        "SIGXCPU", "SIGXFSZ", "SOCK_DGRAM", "SOCK_MAX", "SOCK_PACKET", "SOCK_RAW", "SOCK_RDM", "SOCK_SEQPACKET",
+        "SOCK_STREAM", "SocketType", "SoftRoutine", "StringyEnumeration", "Tappable", "TypeEnv", "UINT64_UPPER",
+        "WrapDispatcher", "X"};
+    Value ev;
+    const std::string head = n.rfind("X::", 0) == 0 ? n : n.substr(0, n.find("::"));   // (X:: is asked above)
+    if (kTerms.count(head) || coreEnumValue(n, ev) || (head.size() < n.size() && isKnownTypeName(head))) return true;
     const std::string& rn = resolveClassAlias(n);
     if (classes_.count(n) || classes_.count(rn) || subsets_.count(n) || pkgMeta_.count(n) ||
         pkgMeta_.count(rn) || isNativeTypeName(n) || enumPairs_.count(n))
@@ -2685,20 +2716,7 @@ Value Interpreter::evalString(const std::string& srcIn, bool mainlinePH, bool* i
                     }
                 }
             *prog = parser.parseProgram();
-            // `CATCH { when X::Y {} }`: a type-like name before a statement's block
-            // that nothing declares is, to Rakudo, a call that swallowed the block —
-            // a compile-time group raised before anything runs, whether or not the
-            // `when` ever does (S32-exceptions/misc.t)
-            for (auto& gs : parser.gobbleSites_)
-                if (!bareNameResolves(gs.name, *prog)) {
-                    std::string sm = "Function '" + gs.shown + "' needs parens to avoid gobbling block (or perhaps "
-                                     "it's a class that's not declared or available in this scope?)";
-                    std::string pw = "block (apparently claimed by '" + gs.shown + "')";
-                    throw ParseError(sm + "\nMissing " + pw, gs.line, "X::Comp::Group",
-                                     {{"sorrow", "X::Syntax::BlockGobbled"}, {"sorrow-msg", sm},
-                                      {"sorrow-what", gs.shown}, {"panic", "X::Syntax::Missing"},
-                                      {"panic-msg", "Missing " + pw}, {"panic-what", pw}});
-                }
+            refuseGobbledBlocks(parser.gobbleSites_, *prog);   // `CATCH { when X::Y {} }`
             // `EVAL 'return 1; self!typo()'` in a method: a private method the class
             // does not have is a COMPILE-time error, raised before anything runs
             // (integration/advent2011-day11.t)
@@ -4186,6 +4204,21 @@ static double suggestDistance(const std::string& a, const std::string& b) {
 }
 
 // ". Did you mean 'X'?" / ". Did you mean any of these: 'X', 'Y'?", or nothing
+// X::Inheritance::UnknownParent's message, as Rakudo's Exception.rakumod writes
+// it: "'C' cannot inherit from 'P' because it is unknown.", and the
+// suggestions on lines of their own
+std::string unknownParentMessage(const std::string& child, const std::string& parent,
+                                 const std::vector<std::string>& sug) {
+    std::string m = "'" + child + "' cannot inherit from '" + parent + "' because it is unknown.";
+    if (sug.size() == 1) m += "\nDid you mean '" + sug[0] + "'?\n";
+    else if (!sug.empty()) {
+        m += "\nDid you mean one of these?";
+        for (auto& n : sug) m += "\n    '" + n + "'";
+        m += "\n";
+    }
+    return m;
+}
+
 std::string didYouMean(const std::vector<std::string>& sug) {
     if (sug.empty()) return "";
     if (sug.size() == 1) return ". Did you mean '" + sug[0] + "'?";
@@ -4235,7 +4268,7 @@ bool Interpreter::paramTypeUndeclared(const std::string& t) {
 std::string Interpreter::noMatchProfile(const Value& self, const ValueList& as, bool withInvocant) {
     auto isNamedArg = [](const Value& v) { return v.t == VT::Pair && v.namedArg; };
     std::string prof;
-    if (withInvocant) prof = self.typeName() + ":";
+    if (withInvocant) prof = self.typeName() + (self.t == VT::Type ? ":U:" : ":D:");
     auto sep = [&]() { if (!prof.empty() && prof.back() != ':') prof += ", "; else if (!prof.empty()) prof += " "; };
     for (auto& a : as) {
         if (isNamedArg(a)) continue;
@@ -4245,6 +4278,8 @@ std::string Interpreter::noMatchProfile(const Value& self, const ValueList& as, 
     for (auto& a : as) {
         if (!isNamedArg(a) || a.t != VT::Pair) continue;
         Value v = a.pairVal() ? *a.pairVal() : Value::boolean(true);
+        // a Bool is the adverb's spelling: `:i`, `:!i`
+        if (v.t == VT::Bool) { sep(); prof += std::string(v.truthy() ? ":" : ":!") + a.s; continue; }
         std::string tn = v.typeName();
         std::string shown = tn;
         auto ci = classes_.find(v.t == VT::Type ? v.s.str() : tn);
@@ -4256,6 +4291,14 @@ std::string Interpreter::noMatchProfile(const Value& self, const ValueList& as, 
         prof += ":" + a.s + "(" + shown + ")";
     }
     return prof;
+}
+
+// A type object where a needle goes (`.index(Str)`, `.contains(Int)`): Rakudo
+// has no candidate for (Str:D: Str:U), and its dispatcher says so
+// (S32-str/index.t and indices.t assert `dies-ok`)
+void Interpreter::throwNeedleNoMatch(const Value& inv, const std::string& m, const ValueList& args) {
+    throw RakuError{Value::typeObj("X::Multi::NoMatch"), "Cannot resolve caller " + m + "(" +
+        noMatchProfile(inv, args, /*withInvocant=*/true) + "); none of these signatures matches"};
 }
 
 // A parameter typed with a name nothing declares, suggestions and all
@@ -4528,22 +4571,15 @@ Value Interpreter::makeRolePun(ClassInfo* role, const std::string& roleName, Val
     // comes out whole (roast S02-names-vars/names.t).
     pun->dispName = roleArgsDisplay(roleName, argv);
     {   // a VALUE argument is shown by its type
-        bool anyValue = false;
-        for (auto& a : argv) if (!a.namedArg && (a.t != VT::Type || !a.enumName.empty())) anyValue = true;
-        if (anyValue) {
-            ValueList shown;
-            for (auto& a : argv) {
-                if (a.namedArg) continue;
-                Value t = a.t == VT::Type && a.enumName.empty() ? a : Value::typeObj(a.typeName());
-                shown.push_back(t);
-            }
-            pun->shownName = roleArgsDisplay(roleName, shown);
-        }
+        const std::string shown = roleArgsDisplay(roleName, argv, /*byType=*/true);
+        if (shown != pun->dispName) pun->shownName = shown;
     }
     if (cacheable) rolePunCache_[punKey] = pun->name;
     pun->doneRoles.insert(roleName); // `~~ P` still answers True
     // …and `~~ P[Int]` answers for THIS parameterization only
     if (pun->dispName != roleName) pun->doneRoles.insert(pun->dispName);
+    // …and a VALUE argument is a value of its type: `R2[1] ~~ R2[Int]`, as Int.ACCEPTS(1)
+    if (!pun->shownName.empty()) pun->doneRoles.insert(pun->shownName);
     pun->roleParamBindings.clear();
     bindRoleParamsInto(pun.get(), role, argv, role->declEnv);
     // (the generic statements run for THIS parameterization, and its methods
@@ -4607,12 +4643,13 @@ Value Interpreter::makeRolePun(ClassInfo* role, const std::string& roleName, Val
 // How a parameterization is WRITTEN: `Foo[Int]`, nested parameters in their own
 // display form (`Baz[Foo[Int],Bar[Int]]`). A pun's `.^name`, and the key a
 // composing class records in doneRoles so `C ~~ R[Int]` can tell R[Int] from R[Str].
-std::string Interpreter::roleArgsDisplay(const std::string& roleName, const ValueList& argv) {
+std::string Interpreter::roleArgsDisplay(const std::string& roleName, const ValueList& argv, bool byType) {
     std::string args;
     for (auto& a : argv) {
         if (a.namedArg) continue;
         if (!args.empty()) args += ",";
-        if (a.t == VT::Type) {
+        if (byType && (a.t != VT::Type || !a.enumName.empty())) args += a.typeName();   // (a value by its type)
+        else if (a.t == VT::Type) {
             auto ci = classes_.find(a.s);
             args += (ci != classes_.end() && !ci->second->dispName.empty())
                         ? ci->second->dispName : a.typeName();
@@ -4816,7 +4853,7 @@ void Interpreter::concretizeInnerRoles(const std::shared_ptr<ClassInfo>& conc, C
         const std::string disp = roleArgsDisplay(slot->name, argv);
         done[slot.get()] = inner;
         slot = inner;
-        if (disp != slot->name) conc->doneRoles.insert(disp);
+        if (disp != slot->name) { conc->doneRoles.insert(disp); conc->doneRoles.insert(roleArgsDisplay(slot->name, argv, true)); }
     };
     redo(conc->parent);
     for (auto& r : conc->composedRoles) redo(r);
@@ -5309,6 +5346,7 @@ static void mergeParentRoleMultis(ClassInfo* ci, const SigKey& sigKeyParams) {
                 info.coerce = sd->coerceBase;             // `of Str()`
                 info.coerceFrom = sd->coerceFrom;         // `of Num(Str)`
                 info.declEnv = tctx().cur;   // `where { LogLevels{$_}:exists }` reads its class's constant (Template::Mustache)
+                if (!tctx().pkgPrefix.empty()) info.shownName = tctx().pkgPrefix + sd->name;   // its `.^name`, `my` or not
                 // A subset declared inside a package is that package's: it must
                 // not take a CORE type's name over for everyone else. Cro::HTTP::
                 // Request's `subset Method of Str where /^<[A..Z]>+$/` turned
@@ -5336,13 +5374,7 @@ static void mergeParentRoleMultis(ClassInfo* ci, const SigKey& sigKeyParams) {
                 const Value self = Value::typeObj(shadowsCore ? tctx().pkgPrefix + sd->name : sd->name);
                 if (tm && tm->t == VT::Code && !tctx().pkgPrefix.empty() && !sd->isMy && !shadowsCore)
                     subsets_[tctx().pkgPrefix + sd->name].howObj = methodCall(self, "HOW", ValueList{});
-                for (auto& tr : sd->traits) {
-                    if (!tm || tm->t != VT::Code) break;
-                    Value p = Value::pair(tr.name, tr.arg ? eval(tr.arg.get()) : Value::boolean(true));
-                    p.namedArg = true;
-                    try { callCallable(*tm, ValueList{self, p}); }
-                    catch (RakuError& te) { if (te.message.rfind("Cannot resolve caller", 0) != 0) throw; }
-                }
+                applySubsetTraits(*sd, self, tm);
             }
             return Value::any();
         }
@@ -5798,7 +5830,7 @@ static void mergeParentRoleMultis(ClassInfo* ci, const SigKey& sigKeyParams) {
                 c.code()->ciM().isMethod = sd->isMethod;
                 c.code()->ciM().isStub = stmtIsStub(sd->body);
                 c.code()->ciM().testAssertion = sd->testAssertion;
-                c.code()->ciM().isNodal = sd->isNodal;
+                c.code()->ciM().isNodal = sd->isNodal; c.code()->ciM().hiddenBt = sd->hiddenBt;
                 {   // `sub f { @_ }` — an @_/%_ reference implies a slurpy signature
                     std::set<std::string> ph2;
                     for (auto& s2 : sd->body) collectPHStmt(s2.get(), ph2);
@@ -6377,6 +6409,7 @@ static void mergeParentRoleMultis(ClassInfo* ci, const SigKey& sigKeyParams) {
                     code.code()->ciM().retRw = md->retRw;
                     code.code()->coldM().pod = md->pod; code.code()->coldM().podTrail = md->podTrail;
                     if (md->deprecated) code.code()->coldM().deprecated = deprecationFor(md);
+                    code.code()->ciM().hiddenBt = md->hiddenBt;   // (`is hidden-from-backtrace`)
                     code.code()->ciM().body = &md->body;
                     code.code()->ciM().langRev = langRev_;
                     code.code()->ciM().rakuAst = rakuAstPragma_;
@@ -6533,12 +6566,11 @@ static void mergeParentRoleMultis(ClassInfo* ci, const SigKey& sigKeyParams) {
                     !isKnownTypeName(cd->parent) && !pkgKind_.count(cd->parent) &&
                     !subsets_.count(cd->parent) && !(tctx().cur && tctx().cur->find(cd->parent))) {
                     auto sug = typeSuggestions(cd->parent);
-                    Value sl = Value::array(); sl.isList = true;
+                    Value sl = Value::array();   // (an Array, as Rakudo's)
                     for (auto& n : sug) sl.arr()->push_back(Value::str(n));
                     throwTypedV("X::Inheritance::UnknownParent",
                         {{"child", Value::str(cd->name)}, {"parent", Value::str(cd->parent)}, {"suggestions", sl}},
-                        "'" + cd->name + "' cannot inherit from '" + cd->parent + "' because it is unknown" +
-                        didYouMean(sug));
+                        unknownParentMessage(cd->name, cd->parent, sug));
                 }
                 if (!cd->name.empty()) {
                     signed char k = cd->isModuleDecl ? 1 : 2;
@@ -6737,7 +6769,6 @@ static void mergeParentRoleMultis(ClassInfo* ci, const SigKey& sigKeyParams) {
             // class REGISTERED (classes_[clsName], far below) — so unknown parents
             // are collected and offered to the trait_mod after registration.
             std::vector<std::string> pendingIsTraits;
-            std::set<std::string> roleIsTraits;   // …of those, a role's: unhandled is not an error
             // A `unit role`/`unit class` file keeps its `use` statements INSIDE the
             // body (the body is the rest of the file), but parent/role resolution
             // below needs those modules loaded NOW: `unit role JX::Attr; use
@@ -6952,17 +6983,14 @@ static void mergeParentRoleMultis(ClassInfo* ci, const SigKey& sigKeyParams) {
                             try { Value tv = eval(ra.second[0].get()); if (tv.t == VT::Type) ci->nativeOf = tv.s; }
                             catch (RakuError&) {}
                 }
-                else if (!cd->isRole && !cd->parentIsDoes)
+                // a name no type answers is a trait (`role Loser is description {}`,
+                // S14-traits/package.t), and one no candidate takes is an unknown
+                // parent, for a role as for a class (Rakudo) — but not a role's own
+                // type capture, its parent once it is given (`role RC[::T] is T`)
+                else if (!cd->parentIsDoes &&
+                         std::none_of(cd->roleParams.begin(), cd->roleParams.end(), [&](const Param& p) {
+                             return p.typeCapture && (p.captureName == cd->parent || p.type == cd->parent); }))
                     pendingIsTraits.push_back(cd->parent);
-                // a ROLE's `is name` that names no type is offered to
-                // `trait_mod:<is>` too (`role Loser is description {}`,
-                // S14-traits/package.t) — but one no candidate takes is still
-                // dropped, as it always was for a role
-                else if (cd->isRole && !cd->parentIsDoes && !cd->parent.empty() &&
-                         ascii::islower((unsigned char)cd->parent[0])) {
-                    pendingIsTraits.push_back(cd->parent);
-                    roleIsTraits.insert(cd->parent);
-                }
             }
             for (auto& tn : cd->trustsNames) ci->trusts.insert(tn);
             ci->hidden = cd->isHidden;
@@ -7008,6 +7036,9 @@ static void mergeParentRoleMultis(ClassInfo* ci, const SigKey& sigKeyParams) {
             auto sigKeyParams = [](const std::vector<Param>* ps, const Callable* owner = nullptr) {
                 std::string k;
                 if (ps) for (auto& p : *ps) {
+                    // …a REQUIRED named makes it another signature too: a class's
+                    // `m($a)` leaves a role's `m($a, :$cast!)` in (Rakudo keeps it)
+                    if (p.named && p.required && !p.slurpy) { k += ":" + (p.namedKey.empty() ? p.name : p.namedKey) + "!,"; continue; }
                     if (p.named || p.slurpy) continue;
                     if (owner && owner->ci().roleConcrete && owner->closure && !p.type.empty())
                         if (Value* tv = owner->closure->local(p.type))
@@ -7588,6 +7619,7 @@ static void mergeParentRoleMultis(ClassInfo* ci, const SigKey& sigKeyParams) {
                         const std::string rn = role->dispName.empty() ? role->name : role->dispName;
                         std::string disp = roleArgsDisplay(rn, argv);
                         if (disp != rn) ci->doneRoles.insert(disp);
+                        ci->doneRoles.insert(roleArgsDisplay(rn, argv, /*byType=*/true));   // (`does R2[1]` is an R2[Int])
                     }
                 }
                 // A ROLE binds its OWN parameter defaults too, so that using it
@@ -7759,6 +7791,7 @@ static void mergeParentRoleMultis(ClassInfo* ci, const SigKey& sigKeyParams) {
                 // what `.^find_method('m').WHY` answers, exactly as a sub's is
                 code.code()->coldM().pod = md->pod; code.code()->coldM().podTrail = md->podTrail;
                 if (md->deprecated) code.code()->coldM().deprecated = deprecationFor(md.get());
+                code.code()->ciM().hiddenBt = md->hiddenBt;   // (`is hidden-from-backtrace`)
                 code.code()->ciM().declFile = declFileNowI();
                 code.code()->ciM().declLine = md->line;
                 code.code()->ciM().isStub = stmtIsStub(md->body);
@@ -8244,7 +8277,6 @@ static void mergeParentRoleMultis(ClassInfo* ci, const SigKey& sigKeyParams) {
                 }
                 // a PACKAGE or MODULE is a namespace, not a class: it can be named
                 // but never inherited from
-                if (!handled && roleIsTraits.count(tn)) continue;
                 if (!handled && pkgKind_.count(tn))
                     throwTypedV("X::Inheritance::Unsupported",
                         {{"child-typename", Value::str(cd->name)}, {"parent", Value::typeObj(tn)}},
@@ -8252,12 +8284,11 @@ static void mergeParentRoleMultis(ClassInfo* ci, const SigKey& sigKeyParams) {
                         " does not support inheritance, so " + cd->name + " cannot inherit from it");
                 if (!handled) {
                     auto sug = typeSuggestions(tn);
-                    Value sl = Value::array(); sl.isList = true;
+                    Value sl = Value::array();   // (an Array, as Rakudo's)
                     for (auto& n : sug) sl.arr()->push_back(Value::str(n));
                     throwTypedV("X::Inheritance::UnknownParent",
                         {{"child", Value::str(cd->name)}, {"parent", Value::str(tn)}, {"suggestions", sl}},
-                        "Class '" + cd->name + "' cannot inherit from '" + tn +
-                        "' because it is unknown" + didYouMean(sug));
+                        unknownParentMessage(cd->name, tn, sug));
                 }
             }
             // Class-body subs are hoisted into the body scope NOW, before the
@@ -9150,6 +9181,7 @@ int Interpreter::run(Program& prog) {
     // mainline's (`END a; sub f { END b }; END c` runs c, b, a) and a module's
     // takes its place at the `use` that loaded it.
     auto runEnds = [&]() {
+        g_exitUnwinding.store(false, std::memory_order_relaxed);   // (an END's own blocks run their LEAVEs)
         // Dropped objects get their DESTROY before the ENDs, so an END block
         // observes destructor effects; objects an END itself releases wait for
         // a real process exit, like Rakudo's unguaranteed finalization.
@@ -9409,6 +9441,9 @@ int Interpreter::run(Program& prog) {
         if (ctValues_) ctAfterCheck(*this, prog);   // a binary's build-time pass: no INIT, no ENTER
         else {
             for (auto* b : initP) runHoistedInit(b);                              // INIT: source order, program-wide
+            // `--doc` renders the Pod and stops there, as Rakudo's does (its DOC
+            // INIT exits): no mainline, no MAIN and no END. It ran the program first.
+            if (docMode_) { std::cout << docModeText(); std::cout.flush(); drainWorkers(); return 0; }
             for (auto* b : enterP) runPhaser(b);                                  // ENTER: on UNIT-block entry, before the mainline
         }
         // a mainline CONTROL {} is the outermost warn handler for the run
@@ -9539,7 +9574,6 @@ int Interpreter::run(Program& prog) {
             if (rc < 0) sinkReturnedValue(callCallable(*mainSub, margs));
             else { code = rc; exited = true; } // the usage path's exit status
         }
-        if (docMode_) std::cout << docModeText(); // --doc: print the rendered POD after the program runs
     } catch (ExitEx& e) {
         code = e.code;
         exited = true;

@@ -4263,7 +4263,8 @@ ValueList smartmatchCallArgs(const Value& r, const Value& topic) {
 Value Interpreter::smartmatchValue(const std::string& op, const Value& l, const Value& r) {
     if (Value m; r.t == VT::Type && typeMatchMemo(op, l, r, m)) return m;
     if (l.t == VT::Array) l.seqTouch();   // `$s ~~ …` caches a Seq (SeqToken)
-    if (!(l.t == VT::Whatever || (l.t == VT::Code && l.code() && l.code()->ci().isWhateverCode)))
+    if (!(l.t == VT::Whatever || (l.t == VT::Code && l.code() && l.code()->ci().isWhateverCode) ||
+          r.t == VT::Whatever))
         return applyBinOp(op, l, r);
     struct Drop { ~Drop() { Interpreter::valueSmartmatch_ = false; } } drop;
     Interpreter::valueSmartmatch_ = true;

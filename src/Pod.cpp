@@ -188,6 +188,8 @@ static void parseFormatting(const std::string& s, ValueList& out) {
         size_t body = fmtOpener(s, i, nOpen, guil);
         if (body != std::string::npos) {
             size_t end = fmtClose(s, body, nOpen, guil);
+            // V<…> is verbatim TEXT, no code: Rakudo runs it into the text around it
+            if (end != std::string::npos && s[i] == 'V') { text += s.substr(body, end - body); i = end + (guil ? 2 : nOpen); continue; }
             if (end != std::string::npos) {
                 flush();
                 out.push_back(mkFmt(s[i], s.substr(body, end - body)));
@@ -772,7 +774,8 @@ static std::string classForBlock(const std::string& name, int& level) {
     if (name == "code")    return "Pod::Block::Code";
     if (name == "comment") return "Pod::Block::Comment";
     if (name == "table")   return "Pod::Block::Table";
-    if (name == "para")    return "Pod::Block::Para";
+    // (`=begin para` and `=for para` are a Named block called "para" holding the
+    // Para, as the abbreviated `=para` is)
     return "Pod::Block::Named";
 }
 
@@ -883,13 +886,6 @@ static void parseSeq(const std::vector<std::string>& lines, size_t& i,
                     if (!v.empty()) ic.arr()->push_back(Value::str(v));
                 } else {
                     std::string para = collectPara(lines, i);
-                    // `=for para` IS the paragraph, not a block holding one
-                    if (cls == "Pod::Block::Para" && !para.empty()) {
-                        Value pp = mkPara(para);
-                        if (block.hash()->count("config")) (*pp.hash())["config"] = (*block.hash())["config"];
-                        out.push_back(pp);
-                        continue;
-                    }
                     if (!para.empty()) ic.arr()->push_back(mkPara(para));
                 }
                 (*block.hash())["contents"] = ic;
@@ -1135,7 +1131,7 @@ std::string pod2text(const Value& v) {
         // (Pod::To::Text renders a `nested` or `config` block as nothing)
         if (name == "nested" || name == "config") return "";
         std::string kids = podKids(v, true);
-        if (name.empty() || name == "pod") return kids;
+        if (name.empty() || name == "pod" || name == "para") return kids;   // (a `para` block too: its paragraphs)
         return kids.empty() ? name : name + "\n" + kids;
     }
     return podKids(v, true);

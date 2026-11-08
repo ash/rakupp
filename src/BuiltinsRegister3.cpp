@@ -83,11 +83,12 @@ void Interpreter::registerBuiltinsPart5() {
                 // already inside the tap, and the stream stops under it. Inside a
                 // REACT the "tapper" is the react's own plumbing, which must be
                 // told, or the react waits for a source that has already stopped.
+                // Its CLOSE phasers run first, as on Rakudo.
+                I.closeTapHandle(ctx->tap);
                 if ((ctx->emitting == 0 || !I.reactStack_.empty()) && ctx->doneCb.t == VT::Code) {
                     ValueList na; try { I.callCallable(ctx->doneCb, na); } catch (...) {}
                 }
                 ctx->doneFired = true;
-                I.closeTapHandle(ctx->tap);
             }
             throw DoneEx{}; // done also EXITS the enclosing whenever block / supply body (Rakudo)
         }
@@ -804,6 +805,7 @@ void Interpreter::registerBuiltinsPart5() {
             return p;
         }
         Value p = I.spawnPromise(code);
+        if (p.ext()) std::static_pointer_cast<PromiseState>(p.ext())->fromStart = true;
         I.yieldToWorker();
         return p;
     };

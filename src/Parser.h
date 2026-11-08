@@ -366,7 +366,9 @@ private:
     std::map<std::string, std::map<std::string, int>> exportedSubs_; // per package: exported non-multi sub -> block depth // a capitalised bare term used before any declaration of it: name -> line
     bool declTypesOpaque_ = false;
     bool importsModules_ = false;   // a non-pragma `use`/`need` anywhere in the unit
+    bool importsTypes_ = false;     // …one that may bring type names in (Test brings none)
     bool sawEndPhaser_ = false;   // an END anywhere in the unit (Program::mayHaveEnd)
+    int embedLineBase_ = 0;       // parseEmbeddedExpr: the file line its text starts on (0: line 1)
     bool sawRoutineUse_ = false;  // a `use`/`need` inside a routine body (Program::mayHaveRoutineUse)
     // (pendingStmts_), flushed after the current statement by the block loops
     std::string lastWillPhaser_;
@@ -582,9 +584,11 @@ public:
     // …and each type-like bare name that sits right before a statement's block
     // (`when X::Y {`). To Rakudo one nothing declares is a CALL that gobbled the
     // block, a compile-time error; EVAL resolves these once parsed (misc.t)
-    struct GobbleSite { std::string name, shown; int line; };
+    using GobbleSite = GobbleSiteInfo;   // (Ast.h: the interpreter checks them too)
+    bool importsTypes() const { return importsTypes_; }   // (a `use` that may bring type names in)
     std::vector<GobbleSite> gobbleSites_;
     void noteGobbleSite(const Expr* cond);
+    int stopColumn(int line) const;   // a parse error's column, where the parse stopped (ParserWordPairs.cpp)
     bool inEmbedded_ = false; // parsing an interpolated `"{…}"`/`"$!x"` piece of a larger unit
     int routineDepth_ = 0;   // nesting of sub/method bodies (&?ROUTINE legality)
     int selfDepth_ = 0;      // nesting of method/submethod bodies: a `self` a nested sub's `$!x` parameter binds into
@@ -710,6 +714,9 @@ private:
     size_t infixDotAt_ = (size_t)-1; // the dotty infix `EXPR . method` being applied (see parseExpr)
     ExprPtr computedOpName(const std::string& t); // `&infix:[EXPR]` / `&infix:<<$x>>` — a run-time operator name
     ExprPtr parseEmbeddedExpr(const std::string& src, bool ownScope = false); // parse a `{…}`/`$()` interpolation, inheriting user operators
+    static bool isTestExport(const std::string& n);                      // …and `use Test` beside a local `sub ok`
+    static bool testImportedHere(const std::vector<StmtPtr>& stmts);    //    (ParserWordPairs.cpp)
+    ExprPtr builtinOpCall(const std::string& name, std::vector<ExprPtr>& args);   // `prefix:<->(3)` (the same)
     void inheritSyntax(Parser& p) const;          // a snippet's parser sees this unit's operators (ParserWordPairs.cpp)
     ExprPtr wordColonPair(const std::string& src, int line); // a qww/qqww word's colonpair, parsed as code (ParserWordPairs.cpp)
     ExprPtr angleColonPair(const std::string& w); // a word that is one whole colonpair → PairExpr (null if not one)

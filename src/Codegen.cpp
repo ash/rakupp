@@ -858,7 +858,7 @@ struct Codegen {
         auto known = [&](std::string t) {
             if (t.size() > 2 && t[t.size() - 2] == ':') t.resize(t.size() - 2);   // `Numeric:D`
             return !t.empty() && t.find_first_of("[(:\x01") == std::string::npos && t != "Mu" &&
-                   t != "Any" && !isNativeTypeName(t) && (isKnownTypeName(t) || classNames.count(t));
+                   t != "Any" && (isKnownTypeName(t) || isNativeTypeName(t) || classNames.count(t));
         };
         if (!known(retTypeName(rt))) return "";
         if (retTypeCoerces(rt) && !retTypeCoerceFrom(rt).empty() && !known(retTypeCoerceFrom(rt))) return "";
@@ -1013,8 +1013,9 @@ struct Codegen {
         noteIndexWrite(ix->base.get());
         const std::string base = lvalueExpr(ix->base.get());
         const std::string step = std::string("rtStep(_o, ") + (up ? "true" : "false") + ", [&]() -> Interpreter& { return RT; })";
-        const std::string native = "Value _o = rtIndexGetP(__b, __k); Value _n = rtElemStoreN(RT, __b, __k, " + step +
-                                   ", '+'); " + (postfix ? "return rtStepOld(std::move(_o));" : "return _n;");
+        const std::string native = "if (rtIsBuf(__b)) return bufElemStep(RT, __b, __k, " + cesc(up ? "++" : "--") + ", " +
+            (postfix ? "true" : "false") + "); Value _o = rtIndexGetP(__b, __k); Value _n = rtElemStoreN(RT, __b, __k, " +   // (a Buf's
+            step + ", '+'); " + (postfix ? "return rtStepOld(std::move(_o));" : "return _n;");   //  byte steps as the interpreter's)
         std::string other;   // (an array not native after all: the step as it was)
         if (ask)
             other = " Value& _r = rtIndexRef(__b, __k, false, " +
@@ -1410,8 +1411,10 @@ struct Codegen {
         return e && e->kind == NK::RegexLit && !static_cast<RegexLit*>(e)->isM;
     }
     std::string rxValue(Expr* e) {
-        requireEngineOnlyRegex(static_cast<RegexLit*>(e)->pattern, "a regex");
-        return "Value::regex(" + cesc(static_cast<RegexLit*>(e)->pattern) + ")";
+        auto* rl = static_cast<RegexLit*>(e);
+        requireEngineOnlyRegex(rl->pattern, "a regex");
+        return rl->declKind.empty() ? "Value::regex(" + cesc(rl->pattern) + ")"   // (an anonymous `rule {…}` keeps its kind)
+             : "([]{ Value r = Value::regex(" + cesc(rl->pattern) + "); r.hashKind = " + cesc(rl->declKind) + "; return r; }())";
     }
     std::string exVal(Expr* e) { return rxValueLit(e) ? rxValue(e) : ex(e); }
     // …and a ternary that can answer one, which a condition and a statement
@@ -3683,7 +3686,8 @@ struct Codegen {
     std::string leaveGuard(const std::string& inner, int ind) {
         const std::string g = "__leave" + std::to_string(leaveCtr_++), pad(ind * 4, ' ');
         return pad + "struct " + g + "_t { std::function<void()> f; int n; ~" + g +
-               "_t() noexcept(false) { if (std::uncaught_exceptions() > n) { try { f(); } catch (...) {} } else f(); } } " +
+               "_t() noexcept(false) { if (rtExitUnwinding()) return; "   // (`exit` runs no LEAVE, as Rakudo's)
+               "if (std::uncaught_exceptions() > n) { try { f(); } catch (...) {} } else f(); } } " +
                g + "{[&]{\n" + inner + pad + "}, std::uncaught_exceptions()};\n";
     }
     // …and its body: a lambda the guard calls in place, so, as in a `do {…}`,
@@ -4917,6 +4921,7 @@ struct Codegen {
                 if (!v->declare && !moduleMode_)
                     return "rtArrayAssignTo(RT, " + lvalueExpr(tgt) + ", " + rhs + ", " + cesc(n) + ", " +
                            (dollar ? "true" : "false") + ")";
+                if (v->declare && v->d().declScope == "constant") return "rtConstPositional(RT, " + rhs + ")";   // (a List stays one)
                 return std::string(v->declare && v->d().declType.empty() ? "rtSelfPack(" : "(") + "rtArrayVal(rtNilToAny(" + rhs + ")))";
             }
             if (!n.empty() && n[0] == '%') return "rtCoerceHash(" + rhs + ")"; // my %h = a=>1,…

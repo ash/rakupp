@@ -196,6 +196,7 @@ static const std::unordered_set<std::string> kBlockKeywords = {
 // names listed here are affected, and only once THIS unit has declared a
 // routine of that name (Parser::kwNamedSubs_) — an undeclared `if(1) {…}` is
 // left to the reading, and the error, it had before.
+bool g_docPhasers = false;   // --doc is on: a `DOC` phaser is the phaser it prefixes (Runtime.cpp sets it)
 static const std::unordered_set<std::string> kNeedsEndKeyword = {
     "if", "unless", "while", "until", "for", "foreach", "loop", "repeat",
     "given", "when", "default", "has", "multi", "proto", "only", "subset",
@@ -234,7 +235,6 @@ struct InfixInfo {
     bool isAssign = false;
     bool isComma = false;
     bool isRange = false;
-    bool isMinMax = false;   // `min` / `max`: the two do not mix without parentheses
     bool isFatArrow = false;
     bool isTernary = false;
     std::string op;
@@ -642,7 +642,7 @@ static InfixInfo classifyInfixUncached(const Token& t) {
         // `1 max (0 && 7)`. At BP_ADD all three read the other way round.
         // The parens are the author's own: `max` and `min` are list-associative
         // only with themselves, so a mixed chain stays a parse error either way.
-        if (o == "min" || o == "max") { in.valid = true; in.lbp = BP_OROR; in.isMinMax = true; return in; } // infix min/max
+        if (o == "min" || o == "max") { in.valid = true; in.lbp = BP_OROR; return in; } // infix min/max
         if (o == "and" || o == "andthen" || o == "notandthen") { in.valid = true; in.lbp = BP_AND; return in; }
         if (o == "or" || o == "xor" || o == "orelse") { in.valid = true; in.lbp = BP_OR; return in; }
         // flip-flop, all eight spellings: a leading `^` excludes the evaluation that
@@ -1794,6 +1794,7 @@ ExprPtr Parser::parseStmtCond(int bp) {
     std::swap(outer, condBorg_);
     if (!outer.empty() && !isKind(Tok::LBrace) && !isOp("->") && !isOp("<->"))
         throw blockGobbledError(outer, toks_[pos_ - 1].line);
+    noteGobbleSite(e.get());   // `if Foo { … }`: refused once the unit shows no type Foo
     return e;
 }
 // The contents of an already-opened `(` up to its `)`, where a `;` separates
@@ -3359,15 +3360,22 @@ ExprPtr Parser::parseExpr(int minbp) {
         // `..` and its `^`-marked siblings are NON-ASSOCIATIVE: `1..2..3` has to
         // be parenthesized, and Rakudo says so rather than picking a grouping.
         {
-            // `min` and `max` do not mix: `1 min 2 max 3` needs parentheses, and
-            // Rakudo refuses it by name rather than picking a grouping.
-            if (in.isMinMax && lhs->kind == NK::Binary && !parenned_.count(lhs.get())) {
+            // A LIST-associative operator does not follow a different one of its
+            // precedence: `1 min 2 max 3`, `1 || 0 ^^ 1` and `1 or 0 xor 1` need
+            // parentheses, and Rakudo refuses them by name rather than picking a
+            // grouping. A left-associative one after it is fine (`1 xor 0 or 1`).
+            static const std::map<std::string, int> kLevel = {
+                {"||", BP_OROR}, {"//", BP_OROR}, {"^^", BP_OROR}, {"min", BP_OROR}, {"max", BP_OROR},
+                {"and", BP_AND}, {"andthen", BP_AND}, {"notandthen", BP_AND},
+                {"or", BP_OR}, {"xor", BP_OR}, {"orelse", BP_OR}};
+            static const std::set<std::string> kListAssoc = {"^^", "min", "max", "andthen", "notandthen", "xor", "orelse"};
+            if (kListAssoc.count(in.op) && lhs->kind == NK::Binary && !parenned_.count(lhs.get())) {
                 const std::string& lo = static_cast<Binary*>(lhs.get())->op;
-                if ((lo == "min" || lo == "max") && lo != in.op)
-                    throw ParseError("Operators '" + lo + "' and '" + in.op +
-                                     "' are non-associative and require parentheses",
-                                     cur().line, "X::Syntax::NonListAssociative",
-                                     {{"left", lo}, {"right", in.op}});
+                auto lv = kLevel.find(lo);
+                if (lo != in.op && lv != kLevel.end() && lv->second == in.lbp)
+                    throw ParseError("Only identical operators may be list associative; since '" + lo + "' and '" +
+                                     in.op + "' differ, they are non-associative and you need to clarify with parentheses",
+                                     cur().line, "X::Syntax::NonListAssociative", {{"left", lo}, {"right", in.op}});
             }
             static const std::set<std::string> kRangeOps = {"..", "^..", "..^", "^..^"};
             if (kRangeOps.count(in.op)) {
@@ -7162,13 +7170,15 @@ ExprPtr Parser::parsePrimary() {
         advance(); advance(); // : (
         try {
             auto be = std::make_unique<BlockExpr>();
-            sigRetType_.clear();
+            sigRetType_.clear(); sigRetLiteral_.reset();
             be->params = parseSignature();
             // `:(Int --> Str)` — the return type belongs to the SIGNATURE here,
             // and it was parsed and then dropped, so `.returns` answered Mu and
             // `.gist` left the `-->` out. A `sub (--> Int) {…}` two hundred lines
             // below already read it back the same way.
             be->retType = sigRetType_;
+            // …and `:(Int --> Nil)`, whose Nil is read as a return value
+            if (be->retType.empty() && sigRetLiteral_ && retLiteralText(sigRetLiteral_.get()) == "Nil") be->retType = "Nil";
             expectKind(Tok::RParen, ")");
             auto u = std::make_unique<Unary>();
             u->op = "siglit";
@@ -10033,7 +10043,10 @@ ExprPtr Parser::parsePrimary() {
                         atArgStart = false;
                         continue;
                     }
-                    advance(); // commas / smileys — the comma is re-added implicitly
+                    // a smiley stays on its argument, `Positional[Int:D]`, as Rakudo names it
+                    if (isOp(":") && !atArgStart && peek().kind == Tok::Ident &&
+                        (peek().text == "D" || peek().text == "U" || peek().text == "_")) { advance(); params += ":" + advance().text; continue; }
+                    advance(); // commas — the comma is re-added implicitly
                 }
                 expectKind(Tok::RBracket, "]");
                 auto nt = std::make_unique<NameTerm>(name);
@@ -10082,6 +10095,7 @@ ExprPtr Parser::parsePrimary() {
                 if (useNqp_ && name.size() > 5 && name.compare(0, 5, "nqp::") == 0)
                     if (ExprPtr n = makeNqpOp(name.substr(5), callArgs))
                         return n;
+                if (ExprPtr op = builtinOpCall(name, callArgs)) return op;   // `prefix:<->(3)` is `-3`
                 auto c = std::make_unique<Call>();
                 c->name = name;
                 c->parenned = true;   // `f(…)`, against the listop form just below
@@ -10151,9 +10165,10 @@ ExprPtr Parser::parsePrimary() {
             bool listopOk = startsListopArg(cur(), name);
             // `now` and `time` are TERMS, never listops: `now +300` is now + 300
             if (listopOk && (name == "now" || name == "time") && cur().kind != Tok::LParen) listopOk = false;
-            // …and so, before a block or a pointy, are `rand`, `i` and a TYPE: the block is
-            // the statement's (`if rand { … }`, `for buf8 -> \bt { }`), as in Rakudo
+            // …and so, before a block or a pointy, are `rand`, `i`, `Empty` and a TYPE: the
+            // block is the statement's (`if rand { … }`, `for buf8 -> \bt { }`), as in Rakudo
             if (listopOk && (isKind(Tok::LBrace) || isOp("->") || isOp("<->")) && (name == "rand" || name == "i" ||
+                (name == "Empty" && !declaredSubNames_.count(name)) ||
                 isKnownTypeName(name) || declTypeNames_.count(name) || declClassDecls_.count(name) || usedTypeNames_.count(name) ||
                 (isNativeTypeName(name) && !declaredSubNames_.count(name)))) listopOk = false;   // `for uint64 -> \T`
             // callsame/nextsame are nullary redispatchers — they reuse the current
@@ -10798,6 +10813,21 @@ ExprPtr Parser::parseInterpString(const std::string& rawIn) {
             fF = feats.find('f') != std::string::npos;
         }
     }
+    // An embedded expression is parsed by a parser of its own, whose tokens are
+    // numbered from the string's line, the newlines before it counted: `"$nope"`
+    // on line 301 is reported there, where it was line 1 (DeclCheck then looked
+    // only 200 lines on) and a `{…}` block's runtime errors named its own line 1
+    // (a string token records the line it ENDS on, a heredoc's its marker's)
+    auto lineAt = [&](size_t at) {
+        const Token& st = pos_ > 0 ? toks_[pos_ - 1] : cur();
+        const int start = st.heredoc ? st.line + 1 : st.line - (int)std::count(st.text.begin(), st.text.end(), '\n');
+        return start + (int)std::count(raw.begin(), raw.begin() + (long)std::min(at, raw.size()), '\n');
+    };
+    auto embedAt = [&](size_t at, const std::string& src, bool own = false) {
+        embedLineBase_ = lineAt(at);
+        struct Reset { int& b; ~Reset() { b = 0; } } reset{embedLineBase_};
+        return parseEmbeddedExpr(src, own);
+    };
     // A `$` that starts no variable must be backslashed: `"$"`, `"a $, b"`;
     // and `"${۳}"` is Perl 5's capture spelling. Top-level text only — a
     // `{ … }` closure in the string is code.
@@ -11048,12 +11078,9 @@ ExprPtr Parser::parseInterpString(const std::string& rawIn) {
             // term after infix). It was dropped without a word, and the string
             // read on as if the block had been empty. The error names the line
             // the block is on, not its line within the block's own text.
-            try { result->parts.push_back(parseEmbeddedExpr(inner, declares())); }
+            try { auto& bp = result->parts.emplace_back(embedAt(i, inner, declares())); bp->blockPart = true; if (!bp->line) bp->line = lineAt(i); }
             catch (ParseError& pe) {
-                const Token& st = pos_ > 0 ? toks_[pos_ - 1] : cur();
-                const int at = st.line + (st.heredoc ? 1 : 0) +
-                               (int)std::count(raw.begin(), raw.begin() + (long)i, '\n');
-                pe.line = at + (pe.line > 0 ? pe.line - 1 : 0);
+                if (pe.line <= 0) pe.line = lineAt(i);   // (a line of its own tokens is the file's now)
                 throw;
             }
             catch (...) { rethrowIfObsolete(); }
@@ -11181,7 +11208,7 @@ ExprPtr Parser::parseInterpString(const std::string& rawIn) {
             scanChain(j, var); // a bare `.message` stays literal, as after any variable
             flush();
             if (var.size() == 2) result->parts.push_back(std::make_unique<VarExpr>(var));
-            else try { result->parts.push_back(parseEmbeddedExpr(var)); } catch (...) { rethrowIfObsolete(); lit += var; }
+            else try { result->parts.push_back(embedAt(i, var)); } catch (...) { rethrowIfObsolete(); lit += var; }
             i = j;
             continue;
         }
@@ -11198,7 +11225,7 @@ ExprPtr Parser::parseInterpString(const std::string& rawIn) {
             }
             scanChain(j, var); // postfix chain on the capture: $0[1] $<k>{...} $0.uc()
             flush();
-            try { result->parts.push_back(parseEmbeddedExpr(var)); } catch (...) { rethrowIfObsolete(); lit += var; }
+            try { result->parts.push_back(embedAt(i, var)); } catch (...) { rethrowIfObsolete(); lit += var; }
             i = j;
             continue;
         }
@@ -11226,7 +11253,7 @@ ExprPtr Parser::parseInterpString(const std::string& rawIn) {
                 // in code: `&` says "the routine of this name", and dropping it
                 // let a TYPE of that name answer instead once a bare `Bar(…)`
                 // started resolving to the type's coercion.
-                try { result->parts.push_back(parseEmbeddedExpr("&" + fname + "(" + argsrc + ")")); }
+                try { result->parts.push_back(embedAt(i, "&" + fname + "(" + argsrc + ")")); }
                 catch (...) { rethrowIfObsolete(); }
                 i = k2 + 1;
                 continue;
@@ -11241,7 +11268,7 @@ ExprPtr Parser::parseInterpString(const std::string& rawIn) {
                 if (scanChain(k2, var)) {
                     lit.pop_back();
                     flush();
-                    try { result->parts.push_back(parseEmbeddedExpr(var)); }
+                    try { result->parts.push_back(embedAt(i, var)); }
                     catch (...) { rethrowIfObsolete(); throw; }
                     i = k2;
                     continue;
@@ -11257,7 +11284,7 @@ ExprPtr Parser::parseInterpString(const std::string& rawIn) {
             std::string inner = scanInterpBlock(raw, j, '(', ')');
             if (j < n) {
                 flush();
-                try { result->parts.push_back(parseEmbeddedExpr("$(" + inner + ")")); }
+                try { result->parts.push_back(embedAt(i, "$(" + inner + ")")); }
                 catch (...) { rethrowIfObsolete(); lit += raw.substr(i, j + 1 - i); }
                 i = j + 1;
                 continue;
@@ -11318,7 +11345,7 @@ ExprPtr Parser::parseInterpString(const std::string& rawIn) {
                                      {{"old", old}, {"replacement", repl}});
                 }
                 flush();
-                try { result->parts.push_back(parseEmbeddedExpr(std::string(1, sig) + "(" + inner + ")")); }
+                try { result->parts.push_back(embedAt(i, std::string(1, sig) + "(" + inner + ")")); }
                 catch (...) { rethrowIfObsolete(); }
                 i = j + 1;
                 continue;
@@ -11367,15 +11394,12 @@ ExprPtr Parser::parseInterpString(const std::string& rawIn) {
             }
             flush();
             try {
-                ExprPtr part = parseEmbeddedExpr(var);
+                ExprPtr part = embedAt(i, var);
                 // a compile-time magical reads its NODE's line — stamp the
                 // string's own position, not the sub-parser's line 1
                 // ("line $?LINE" — Log::Async's context test)
-                if (part && part->kind == NK::VarExpr && var.rfind("$?", 0) == 0) {
-                    int base = pos_ > 0 ? toks_[pos_ - 1].line : cur().line;
-                    for (size_t nl = 0; nl < i; nl++) if (raw[nl] == '\n') base++;
-                    static_cast<VarExpr*>(part.get())->line = base;
-                }
+                if (part && part->kind == NK::VarExpr && var.rfind("$?", 0) == 0)
+                    static_cast<VarExpr*>(part.get())->line = lineAt(i);
                 result->parts.push_back(std::move(part));
             } catch (...) { rethrowIfObsolete(); lit += var; }
             i = j;
@@ -13723,6 +13747,8 @@ StmtPtr Parser::parseSub(bool isMulti, bool isProto, bool asMethod) {
             s->testAssertion = true;
         if (isIdent("is") && peek().kind == Tok::Ident && peek().text == "nodal")
             s->isNodal = true;
+        if (isIdent("is") && peek().kind == Tok::Ident && peek().text == "hidden-from-backtrace")
+            s->hiddenBt = true;
         // a non-built-in `is NAME` / `is NAME(expr)` trait: captured for dispatch
         // to a user `multi sub trait_mod:<is>` at declaration time
         if (isIdent("is") && peek().kind == Tok::Ident) {
@@ -16855,8 +16881,10 @@ StmtPtr Parser::parseStatementImpl() {
             // An import brings type names this unit never spells; the
             // declaration-type check stands down for such a unit (Program::
             // importsModules).
-            if (!u->isNo && !u->module.empty() && !isPragmaName(u->module))
+            if (!u->isNo && !u->module.empty() && !isPragmaName(u->module)) {
                 importsModules_ = true;
+                if (u->module != "Test") importsTypes_ = true;
+            }
             // name adverbs on the USE: `use JSON::Class:ver<0.0.14+>` — capture
             // the version constraint so the loader can SKIP too-old candidates
             // (License::SPDX needs 0.0.14+; the vendored battery copy is 0.0.6,
@@ -17152,7 +17180,7 @@ StmtPtr Parser::parseStatementImpl() {
             return false;
         };
         if ((kw == "if" || kw == "unless" || kw == "with" || kw == "without" ||
-             kw == "while" || kw == "until" || kw == "for") && gluedParenThenBlock())
+             kw == "while" || kw == "until" || kw == "for" || kw == "loop") && gluedParenThenBlock())
             throw ParseError("Word '" + kw + "' interpreted as '" + kw +
                              "()' function call; please use whitespace instead of parens\n"
                              "Unexpected block in infix position (two terms in a row)",
@@ -17272,7 +17300,6 @@ StmtPtr Parser::parseStatementImpl() {
             advance();
             auto w = std::make_unique<WhenStmt>();
             w->cond = parseStmtCond();
-            noteGobbleSite(w->cond.get());
             w->body = parseBlock();
             return w;
         }
@@ -17492,6 +17519,13 @@ StmtPtr Parser::parseStatementImpl() {
             !(peek().kind == Tok::LParen && !peek().spaceBefore)) {
             const size_t kwPos = pos_;
             advance();
+            // `DOC INIT { … }`, `DOC BEGIN { … }`: the phaser it prefixes under
+            // `--doc`, and nothing otherwise (it ran in every run, and its
+            // BEGIN never ran under --doc)
+            if (kw == "DOC") {
+                auto st = parseStatement();
+                return g_docPhasers ? std::move(st) : StmtPtr(std::make_unique<EmptyStmt>());
+            }
             auto b = std::make_unique<Block>();
             b->phaser = kw; // run-timing handled by the interpreter
             b->srcPos = (int)pos_;                 // source order, finer than the line
@@ -17624,6 +17658,19 @@ void Parser::checkRedeclarations(const std::vector<StmtPtr>& stmts, bool unitSco
     // redeclares (Rakudo). After `unit module` the statements are the
     // package's, which has none (a `unit class` holds them as its body).
     bool mainlineTop = unitScope && !strictSep_;   // (an EVAL runs inside a scope)
+    // `use Test` imports its routines into this scope: a plain `sub ok` or a `my &ok` beside it redeclares one
+    const bool testHere = testImportedHere(stmts);
+    // Rakudo's one wording for a routine declared twice, whichever kinds the two are
+    auto redeclaredRoutine = [](const std::string& n, int line) {
+        return ParseError("Redeclaration of routine '" + n + "'. Did you mean to declare a multi-sub?", line,
+                          "X::Redeclaration", {{"symbol", n}, {"what", "routine"}});
+    };
+    auto refuseTestName = [&](const std::string& n, int line, bool proto = false) {
+        if (testHere && isTestExport(n))   // (a proto of the name is a routine redeclared)
+            throw proto ? redeclaredRoutine(n, line)
+                        : ParseError("Redeclaration of symbol '&" + n + "'.", line, "X::Redeclaration",
+                                     {{"symbol", "&" + n}, {"what", "symbol"}});
+    };
     for (auto& s : stmts) {
         if (!s) continue;
         if (!s->label.empty() &&
@@ -17660,8 +17707,10 @@ void Parser::checkRedeclarations(const std::vector<StmtPtr>& stmts, bool unitSco
                 // …but a `constant &infix:<☄> := &infix:<☃>` ALIASES a routine
                 // that may still take candidates: `multi infix:<☄>` after it is fine
                 if (ve->declare && ve->name.size() > 1 && ve->name[0] == '&' &&
-                    ve->d().declScope != "constant")
+                    ve->d().declScope != "constant") {
                     subs[ve->name.substr(1)] |= 1;
+                    refuseTestName(ve->name.substr(1), s->line);
+                }
             }
             termSubs(whole);
             continue;
@@ -17669,14 +17718,10 @@ void Parser::checkRedeclarations(const std::vector<StmtPtr>& stmts, bool unitSco
         if (s->kind == NK::ReturnStmt) termSubs(static_cast<const ReturnStmt*>(s.get())->value.get());
         if (s->kind == NK::SubDecl) {
             auto* sd = static_cast<const SubDecl*>(s.get());
-            // two protos for one name in one scope
-            if (sd->isProto && !sd->name.empty() && !sd->isMethod && (subs[sd->name] & 4))
-                throw ParseError("Redeclaration of routine '" + sd->name + "'", sd->line,
-                                 "X::Redeclaration", {{"symbol", sd->name}, {"what", "routine"}});
-            // …and a proto beside a plain (only) sub of the name, either order
-            if (sd->isProto && !sd->name.empty() && !sd->isMethod && (subs[sd->name] & 1))
-                throw ParseError("Redeclaration of routine '" + sd->name + "'", sd->line,
-                                 "X::Redeclaration", {{"symbol", sd->name}, {"what", "routine"}});
+            if ((!sd->isMulti || sd->isProto) && !sd->isMethod && !sd->name.empty()) refuseTestName(sd->name, sd->line, sd->isProto);
+            // a proto after any routine of its name in one scope, or a plain (only) sub after one
+            if (sd->isProto && !sd->name.empty() && !sd->isMethod && (subs[sd->name] & 7))
+                throw redeclaredRoutine(sd->name, sd->line);
             if (sd->isProto && !sd->name.empty() && !sd->isMethod) subs[sd->name] |= 4;
             if (sd->name.empty() || sd->isProto || sd->isMethod) continue;
             // `sub f {...}` (bare yada body) is a redeclarable forward stub
@@ -17688,22 +17733,14 @@ void Parser::checkRedeclarations(const std::vector<StmtPtr>& stmts, bool unitSco
                         c->args.empty() && !c->callee) {
                         // …but it does not replace a REAL one declared before it
                         if (!sd->isMulti && subs.count(sd->name) && (subs[sd->name] & 1))
-                            throw ParseError("Redeclaration of routine '" + sd->name +
-                                             "'. Did you mean to declare a multi-sub?", sd->line,
-                                             "X::Redeclaration", {{"symbol", sd->name}, {"what", "routine"}});
+                            throw redeclaredRoutine(sd->name, sd->line);
                         continue;
                     }
                 }
             }
             int& f = subs[sd->name];
             int bit = sd->isMulti ? 2 : 1;
-            if ((f & 5) && bit == 1)
-                throw ParseError("Redeclaration of routine '" + sd->name +
-                                 "'. Did you mean to declare a multi-sub?", sd->line,
-                                 "X::Redeclaration", {{"symbol", sd->name}, {"what", "routine"}});
-            if (((f & 3) && bit == 1) || ((f & 1) && bit == 2))
-                throw ParseError("Redeclaration of routine '" + sd->name + "' (multi/only mix)", sd->line,
-                                 "X::Redeclaration", {{"symbol", sd->name}, {"what", "routine"}});
+            if (((f & 7) && bit == 1) || ((f & 1) && bit == 2)) throw redeclaredRoutine(sd->name, sd->line);
             f |= bit;
         }
         else if (s->kind == NK::ClassDecl) {
@@ -17775,12 +17812,19 @@ void Parser::checkRedeclarations(const std::vector<StmtPtr>& stmts, bool unitSco
             completedPkgs_.insert(cd->name);  // …wherever the body stands (see the unit check)
             // the body is a scope of its own: `package P { sub p {…}; sub p {…} }` redeclares
             checkRedeclarations(cd->body);
-            // A bare `package`/`module` is a WEAK namespace declaration: it only
-            // opens the name to hold `our`-scoped symbols and may coexist with a
-            // later `class`/`role`/`grammar` of the same name that refines it
+            // A bare `package` is a WEAK namespace declaration: it only opens the
+            // name to hold `our`-scoped symbols and may coexist with a later
+            // `class`/`role`/`grammar` of the same name that refines it
             // (Cro::ResourceIdentifier does exactly this). Don't count it, and
-            // don't let it trip the redeclaration check for the real type below.
-            if (cd->isPackage) continue;
+            // don't let it trip the redeclaration check for the real type below
+            // — but after a module or a class it is one, as a second `module`
+            // is, which Rakudo refuses in either order with a class
+            if (cd->isPackage && !cd->isModuleDecl) {
+                if (types.count(cd->name))
+                    throw ParseError("Redeclaration of symbol '" + cd->name + "'", cd->line,
+                                     "X::Redeclaration", {{"symbol", cd->name}});
+                continue;
+            }
             if (types[cd->name]++)
                 throw ParseError("Redeclaration of symbol '" + cd->name + "'", cd->line,
                                  "X::Redeclaration", {{"symbol", cd->name}});
@@ -17830,6 +17874,10 @@ Program Parser::parseProgram() {
     // (`say start(5); sub start($x) {…}`); `sub sub` waits for its declaration
     for (size_t i = 0; i + 1 < toks_.size(); i++) {
         const Token& t = toks_[i];
+        // …and a `&loop` parameter: `sub count(&loop) { loop({ … }) }` calls it
+        if (t.kind == Tok::Var && t.text.size() > 1 && t.text[0] == '&' && t.text != "&sub" &&
+            kNeedsEndKeyword.count(t.text.substr(1)))
+            kwNamedSubs_.insert(t.text.substr(1));
         if (t.kind != Tok::Ident) continue;
         const bool scope = t.text == "my" || t.text == "our" || t.text == "state";   // `my &start`
         const bool routine = t.text == "sub" || t.text == "multi" || t.text == "proto" || t.text == "only";
@@ -17853,12 +17901,13 @@ Program Parser::parseProgram() {
             if (isKind(Tok::Comma) && prog.stmts.back() && prog.stmts.back()->kind == NK::SubDecl) { advance(); continue; }
             if (!matchKind(Tok::Semicolon)) enforceStmtSep();
         }
-    } catch (ParseError&) {
+    } catch (ParseError& e) {
         // A tolerant lex (Lexer::tokenize) stopped at a construct it could not
         // read; whatever the parser then tripped over AT that end is a symptom
         // (`say "abc` reads as a bare `say` before End). The lex error is the
         // unit's. An error raised BEFORE the end is the parser's own.
         if (isKind(Tok::End) && cur().flag) throw Lexer::storedLexError((size_t)cur().ival);
+        if (!e.col && e.file.empty()) e.col = stopColumn(e.line);   // (where the excerpt's `^` goes)
         throw;
     }
     // the lex stopped early (Lexer::tokenize, tolerant): no slang re-read the
@@ -18391,7 +18440,7 @@ void Parser::noteGobbleSite(const Expr* cond) {
     if (n.empty() || !nt->ofType.empty() || nt->pkgSelf || nt->symbolicStrict) return;
     if (!ascii::isupper((unsigned char)n[0]) && n.find("::") == std::string::npos) return;
     gobbleSites_.push_back({n, n + (nt->defConstraint == 1 ? ":D" : nt->defConstraint == 2 ? ":U" : ""),
-                            cond->line});
+                            cond->line ? cond->line : cur().line});   // (a qualified name's node has no line: its block's)
 }
 
 bool Parser::knownTypeName(const std::string& name) const {

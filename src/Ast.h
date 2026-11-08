@@ -97,6 +97,10 @@ struct Node {
     // upstream, and without it the rendering was `1 + 2 * 3`. It sits in the
     // two bytes a 16-bit NK leaves before `line`, so no node grows.
     bool inParens = false;
+    // A string's `{…}` part, inlined as its one expression: it runs as a block of
+    // its own, so a runtime error in it names its own line, not the statement's
+    // (evalInterp). The byte after inParens, so no node grows.
+    bool blockPart = false;
     int line = 0;
     explicit Node(NK k) : kind(k) {}
     virtual ~Node() = default;
@@ -1116,6 +1120,7 @@ struct SubDecl : Stmt {
     bool deprecated = false;   // `is DEPRECATED` / `is DEPRECATED("use X")`
     bool testAssertion = false; // `is test-assertion`: a failing test inside reports the CALLER's line
     bool isNodal = false;       // `is nodal`: a hyper applies it to each node and does not descend
+    bool hiddenBt = false;      // `is hidden-from-backtrace`: a backtrace leaves its frame out
     ExprPtr deprecatedWith;    // …its argument: what to use instead
     // How the return type was SPELLED: 'o' for `of Int`, 'r' for `returns Int`,
     // 'a' for `--> Int`, 0 for none. The three mean the same thing at run time
@@ -1620,20 +1625,31 @@ inline bool nativeIntNode(const Expr* e) {
     return false;
 }
 
+// An integer literal, signed or not, or literals an operator folds (`2**62`,
+// `1 +< 40`, `-2**62`): Rakudo folds those to one literal at compile time, which
+// a native int operator takes as it takes a written one. (One wider than 64
+// bits is still an Int: the run-time operation sees its value and grows.)
+inline bool intLitFolded(const Expr* x) {
+    if (x && x->kind == NK::Binary) {
+        auto* b = static_cast<const Binary*>(x);
+        const std::string& o = b->op;
+        return (o == "+" || o == "-" || o == "*" || o == "**" || o == "+<" || o == "+>" || o == "div" || o == "%" ||
+                o == "mod" || o == "+&" || o == "+|" || o == "+^") && intLitFolded(b->lhs.get()) && intLitFolded(b->rhs.get());
+    }
+    if (x && x->kind == NK::Unary) {
+        auto* u = static_cast<const Unary*>(x);
+        return !u->postfix && (u->op == "-" || u->op == "+" || u->op == "\xE2\x88\x92") && intLitFolded(u->operand.get());
+    }
+    return x && x->kind == NK::IntLit;
+}
+
 // The same question with no value to look at, for the compiling backends: an
 // integer operator is native when each operand is a native int or an integer
 // literal (at least one of them native), all the way down.
 inline bool nativeIntStatic(const Expr* e) {
     if (!e) return false;
     if (e->kind == NK::VarExpr) return static_cast<const VarExpr*>(e)->nativeIntRead;
-    auto intLit = [](const Expr* x) {
-        if (x && x->kind == NK::Unary) {
-            auto* u = static_cast<const Unary*>(x);
-            if (u->postfix || (u->op != "-" && u->op != "\xE2\x88\x92")) return false;
-            x = u->operand.get();
-        }
-        return x && x->kind == NK::IntLit;
-    };
+    const auto intLit = intLitFolded;
     if (e->kind == NK::Binary) {
         auto* b = static_cast<const Binary*>(e);
         const std::string& o = b->op;
@@ -1669,10 +1685,10 @@ inline bool nativeNumericStatic(const Expr* e, char* kind = nullptr) {
         char lk = 0, rk = 0;
         const bool ln = nativeNumericStatic(b->lhs.get(), &lk), rn = nativeNumericStatic(b->rhs.get(), &rk);
         auto litOf = [](const Expr* x, char want) {
+            if (want == 'i') return intLitFolded(x);
             if (x && x->kind == NK::Unary && !static_cast<const Unary*>(x)->postfix)
                 x = static_cast<const Unary*>(x)->operand.get();
             if (!x) return false;
-            if (want == 'i') return x->kind == NK::IntLit;
             return x->kind == NK::NumLit && !static_cast<const NumLit*>(x)->isRat &&
                    !static_cast<const NumLit*>(x)->imaginary;
         };
@@ -1717,6 +1733,11 @@ inline std::string retTypeCoerceFrom(const std::string& rt) {
     return rt.substr(o + 1, rt.size() - o - 2);
 }
 // (here, not in Value.h: the code generator applies a return type too)
+
+// `when X::Y {`: a bare type-like name with a statement's block right after
+// it, which the parser notes and the interpreter refuses when nothing declares
+// the name (Interpreter::refuseGobbledBlocks)
+struct GobbleSiteInfo { std::string name, shown; int line; };
 
 inline std::string retLiteralText(const Expr* e) {
     if (!e) return "";

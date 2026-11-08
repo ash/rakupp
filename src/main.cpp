@@ -2662,7 +2662,7 @@ static const FlagDoc kFlagDocs[] = {
     {"--version", 0, nullptr, "version, build and platform, on one line"},
     {"--version-full", 0, nullptr, "the full build report"},
     {"--info", 0, nullptr, "the full build report"},
-    {"--doc", 0, nullptr, "render the Pod of the program after the run (--doc=Text names the renderer)"},
+    {"--doc", 0, nullptr, "render the Pod of the program instead of running it (--doc=Text names the renderer)"},
     {"--lint", 0, nullptr, "static analysis, no run"},
     {"--json", 0, nullptr, "machine-readable -c and --lint findings"},
     {"--ast", 0, nullptr, "print the parsed AST"},
@@ -3032,6 +3032,21 @@ static bool docArgsNameProgram(int argc, char** argv, int from) {
         }
     }
     return false;
+}
+
+// A parse error under `-c` or `--lint`, as a run reports it: the line read
+// from the source in hand (`-e` code has no file to read it from) and the `^`.
+static void reportParseErrorIn(const ParseError& e, const std::string& src, const std::string& fileName) {
+    std::string sl;
+    if (e.file.empty() && e.line > 0) {
+        size_t b = 0;
+        for (int l = 1; l < e.line && b != std::string::npos; l++) {
+            b = src.find('\n', b);
+            if (b != std::string::npos) b++;
+        }
+        if (b != std::string::npos && b <= src.size()) sl = src.substr(b, src.find('\n', b) - b);
+    }
+    printParseError(e, sl, e.file.empty() ? fileName : e.file);
 }
 
 int main(int argc, char** argv) {
@@ -4507,9 +4522,14 @@ int main(int argc, char** argv) {
             parser.srcFile_ = fileName;
             parser.src_ = &src;
             prog = parser.parseProgram();
+            // `CATCH { when X::Y {} }`, as a run refuses it (an interpreter answers what names resolve)
+            if (!parser.gobbleSites_.empty() && !parser.importsTypes()) {
+                Interpreter ci;
+                ci.refuseGobbledBlocks(parser.gobbleSites_, prog, /*needOuter=*/false);
+            }
         } catch (const ParseError& e) {
             if (jsonOut) { printJsonFindings({jsonFinding(fileName, e.line, "error", "parse-error", e.what())}); return 2; }
-            std::cerr << "===SORRY!=== Parse error at line " << e.line << ": " << e.what() << "\n";
+            reportParseErrorIn(e, src, fileName);
             return 2;
         }
         // Syntax is only half of "does this compile": an undeclared variable is
@@ -4561,7 +4581,7 @@ int main(int argc, char** argv) {
             prog = parser.parseProgram();
         } catch (const ParseError& e) {
             if (jsonOut) { printJsonFindings({jsonFinding(fileName, e.line, "error", "parse-error", e.what())}); return 2; }
-            std::cerr << "===SORRY!=== Parse error at line " << e.line << ": " << e.what() << "\n";
+            reportParseErrorIn(e, src, fileName);
             return 2;
         }
         auto findings = lintProgram(prog);
