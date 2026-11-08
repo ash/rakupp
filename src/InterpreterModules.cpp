@@ -4204,6 +4204,21 @@ static double suggestDistance(const std::string& a, const std::string& b) {
 }
 
 // ". Did you mean 'X'?" / ". Did you mean any of these: 'X', 'Y'?", or nothing
+// X::Inheritance::UnknownParent's message, as Rakudo's Exception.rakumod writes
+// it: "'C' cannot inherit from 'P' because it is unknown.", and the
+// suggestions on lines of their own
+std::string unknownParentMessage(const std::string& child, const std::string& parent,
+                                 const std::vector<std::string>& sug) {
+    std::string m = "'" + child + "' cannot inherit from '" + parent + "' because it is unknown.";
+    if (sug.size() == 1) m += "\nDid you mean '" + sug[0] + "'?\n";
+    else if (!sug.empty()) {
+        m += "\nDid you mean one of these?";
+        for (auto& n : sug) m += "\n    '" + n + "'";
+        m += "\n";
+    }
+    return m;
+}
+
 std::string didYouMean(const std::vector<std::string>& sug) {
     if (sug.empty()) return "";
     if (sug.size() == 1) return ". Did you mean '" + sug[0] + "'?";
@@ -6556,12 +6571,11 @@ static void mergeParentRoleMultis(ClassInfo* ci, const SigKey& sigKeyParams) {
                     !isKnownTypeName(cd->parent) && !pkgKind_.count(cd->parent) &&
                     !subsets_.count(cd->parent) && !(tctx().cur && tctx().cur->find(cd->parent))) {
                     auto sug = typeSuggestions(cd->parent);
-                    Value sl = Value::array(); sl.isList = true;
+                    Value sl = Value::array();   // (an Array, as Rakudo's)
                     for (auto& n : sug) sl.arr()->push_back(Value::str(n));
                     throwTypedV("X::Inheritance::UnknownParent",
                         {{"child", Value::str(cd->name)}, {"parent", Value::str(cd->parent)}, {"suggestions", sl}},
-                        "'" + cd->name + "' cannot inherit from '" + cd->parent + "' because it is unknown" +
-                        didYouMean(sug));
+                        unknownParentMessage(cd->name, cd->parent, sug));
                 }
                 if (!cd->name.empty()) {
                     signed char k = cd->isModuleDecl ? 1 : 2;
@@ -6760,7 +6774,6 @@ static void mergeParentRoleMultis(ClassInfo* ci, const SigKey& sigKeyParams) {
             // class REGISTERED (classes_[clsName], far below) — so unknown parents
             // are collected and offered to the trait_mod after registration.
             std::vector<std::string> pendingIsTraits;
-            std::set<std::string> roleIsTraits;   // …of those, a role's: unhandled is not an error
             // A `unit role`/`unit class` file keeps its `use` statements INSIDE the
             // body (the body is the rest of the file), but parent/role resolution
             // below needs those modules loaded NOW: `unit role JX::Attr; use
@@ -6975,17 +6988,14 @@ static void mergeParentRoleMultis(ClassInfo* ci, const SigKey& sigKeyParams) {
                             try { Value tv = eval(ra.second[0].get()); if (tv.t == VT::Type) ci->nativeOf = tv.s; }
                             catch (RakuError&) {}
                 }
-                else if (!cd->isRole && !cd->parentIsDoes)
+                // a name no type answers is a trait (`role Loser is description {}`,
+                // S14-traits/package.t), and one no candidate takes is an unknown
+                // parent, for a role as for a class (Rakudo) — but not a role's own
+                // type capture, its parent once it is given (`role RC[::T] is T`)
+                else if (!cd->parentIsDoes &&
+                         std::none_of(cd->roleParams.begin(), cd->roleParams.end(), [&](const Param& p) {
+                             return p.typeCapture && (p.captureName == cd->parent || p.type == cd->parent); }))
                     pendingIsTraits.push_back(cd->parent);
-                // a ROLE's `is name` that names no type is offered to
-                // `trait_mod:<is>` too (`role Loser is description {}`,
-                // S14-traits/package.t) — but one no candidate takes is still
-                // dropped, as it always was for a role
-                else if (cd->isRole && !cd->parentIsDoes && !cd->parent.empty() &&
-                         ascii::islower((unsigned char)cd->parent[0])) {
-                    pendingIsTraits.push_back(cd->parent);
-                    roleIsTraits.insert(cd->parent);
-                }
             }
             for (auto& tn : cd->trustsNames) ci->trusts.insert(tn);
             ci->hidden = cd->isHidden;
@@ -8270,7 +8280,6 @@ static void mergeParentRoleMultis(ClassInfo* ci, const SigKey& sigKeyParams) {
                 }
                 // a PACKAGE or MODULE is a namespace, not a class: it can be named
                 // but never inherited from
-                if (!handled && roleIsTraits.count(tn)) continue;
                 if (!handled && pkgKind_.count(tn))
                     throwTypedV("X::Inheritance::Unsupported",
                         {{"child-typename", Value::str(cd->name)}, {"parent", Value::typeObj(tn)}},
@@ -8278,12 +8287,11 @@ static void mergeParentRoleMultis(ClassInfo* ci, const SigKey& sigKeyParams) {
                         " does not support inheritance, so " + cd->name + " cannot inherit from it");
                 if (!handled) {
                     auto sug = typeSuggestions(tn);
-                    Value sl = Value::array(); sl.isList = true;
+                    Value sl = Value::array();   // (an Array, as Rakudo's)
                     for (auto& n : sug) sl.arr()->push_back(Value::str(n));
                     throwTypedV("X::Inheritance::UnknownParent",
                         {{"child", Value::str(cd->name)}, {"parent", Value::str(tn)}, {"suggestions", sl}},
-                        "Class '" + cd->name + "' cannot inherit from '" + tn +
-                        "' because it is unknown" + didYouMean(sug));
+                        unknownParentMessage(cd->name, tn, sug));
                 }
             }
             // Class-body subs are hoisted into the body scope NOW, before the

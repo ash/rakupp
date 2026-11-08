@@ -1424,7 +1424,7 @@ void Interpreter::applySubsetTraits(const SubsetDecl& sd, const Value& self, Val
         if (!taken)
             throwTypedV("X::Inheritance::UnknownParent",
                 {{"child", Value::str(sd.name)}, {"parent", Value::str(tr.name)}, {"suggestions", Value::array()}},
-                "'" + sd.name + "' cannot inherit from '" + tr.name + "' because it is unknown.");
+                unknownParentMessage(sd.name, tr.name, {}));
     }
 }
 
