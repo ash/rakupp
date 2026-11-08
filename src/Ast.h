@@ -1718,6 +1718,11 @@ inline std::string retTypeCoerceFrom(const std::string& rt) {
 }
 // (here, not in Value.h: the code generator applies a return type too)
 
+// `when X::Y {`: a bare type-like name with a statement's block right after
+// it, which the parser notes and the interpreter refuses when nothing declares
+// the name (Interpreter::refuseGobbledBlocks)
+struct GobbleSiteInfo { std::string name, shown; int line; };
+
 inline std::string retLiteralText(const Expr* e) {
     if (!e) return "";
     if (e->kind == NK::NameTerm) {

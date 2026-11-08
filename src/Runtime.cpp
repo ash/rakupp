@@ -366,6 +366,9 @@ int rakuppRunOn(Interpreter& interp, const std::string& src, std::vector<std::st
         if (const char* rl = std::getenv("RAKULIB"))
             for (auto& d : splitSearchPath(rl)) parser.libPaths_.push_back(d);
         Program prog = parser.parseProgram();
+        // `CATCH { when X::Y {} }` is refused here as in an EVAL, when no import
+        // can bring the name in (it ran, and the `when` never matched)
+        if (!parser.importsTypes()) interp.refuseGobbledBlocks(parser.gobbleSites_, prog, /*needOuter=*/false);
         {
             std::vector<std::string> sp = precompSearchPath(libPaths);
             if (fileName != "-e" && !fileName.empty())

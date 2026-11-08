@@ -3720,7 +3720,8 @@ public:
     bool typeObjectUserAccepts(const Value& l, const Value& r, Value& out);   // `42 ~~ C` with a user ACCEPTS                          // `has T $.x = Nil`
     // does a bare type-like name resolve to a type, package, constant or term
     // here — pure lookups, for the gobbled-block check of a unit about to run
-    bool bareNameResolves(const std::string& n, const Program& unit);
+    bool bareNameResolves(const std::string& n, const Program& unit, bool needOuter = true);
+    void refuseGobbledBlocks(const std::vector<GobbleSiteInfo>& sites, const Program& prog, bool needOuter = true);
     // ONE scope's own symbol: what it holds, or — for a `my` further down that
     // has not run yet — the declared-but-uninitialized value (OUTER::<$x>)
     bool frameSymbol(Env* f, const std::string& key, Value& out);

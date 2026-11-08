@@ -366,6 +366,7 @@ private:
     std::map<std::string, std::map<std::string, int>> exportedSubs_; // per package: exported non-multi sub -> block depth // a capitalised bare term used before any declaration of it: name -> line
     bool declTypesOpaque_ = false;
     bool importsModules_ = false;   // a non-pragma `use`/`need` anywhere in the unit
+    bool importsTypes_ = false;     // …one that may bring type names in (Test brings none)
     bool sawEndPhaser_ = false;   // an END anywhere in the unit (Program::mayHaveEnd)
     int embedLineBase_ = 0;       // parseEmbeddedExpr: the file line its text starts on (0: line 1)
     bool sawRoutineUse_ = false;  // a `use`/`need` inside a routine body (Program::mayHaveRoutineUse)
@@ -583,7 +584,8 @@ public:
     // …and each type-like bare name that sits right before a statement's block
     // (`when X::Y {`). To Rakudo one nothing declares is a CALL that gobbled the
     // block, a compile-time error; EVAL resolves these once parsed (misc.t)
-    struct GobbleSite { std::string name, shown; int line; };
+    using GobbleSite = GobbleSiteInfo;   // (Ast.h: the interpreter checks them too)
+    bool importsTypes() const { return importsTypes_; }   // (a `use` that may bring type names in)
     std::vector<GobbleSite> gobbleSites_;
     void noteGobbleSite(const Expr* cond);
     bool inEmbedded_ = false; // parsing an interpolated `"{…}"`/`"$!x"` piece of a larger unit

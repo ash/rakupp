@@ -4507,6 +4507,11 @@ int main(int argc, char** argv) {
             parser.srcFile_ = fileName;
             parser.src_ = &src;
             prog = parser.parseProgram();
+            // `CATCH { when X::Y {} }`, as a run refuses it (an interpreter answers what names resolve)
+            if (!parser.gobbleSites_.empty() && !parser.importsTypes()) {
+                Interpreter ci;
+                ci.refuseGobbledBlocks(parser.gobbleSites_, prog, /*needOuter=*/false);
+            }
         } catch (const ParseError& e) {
             if (jsonOut) { printJsonFindings({jsonFinding(fileName, e.line, "error", "parse-error", e.what())}); return 2; }
             std::cerr << "===SORRY!=== Parse error at line " << e.line << ": " << e.what() << "\n";

@@ -2539,22 +2539,53 @@ thread_local std::vector<std::string> g_classBodies;
 // a core type — an X:: one only if Rakudo has it, since isKnownTypeName takes
 // any X:: name — or when a class, subset, package, alias or lexical answers to
 // it. A routine of that name counts too: only an UNKNOWN name is refused.
-bool Interpreter::bareNameResolves(const std::string& n, const Program& unit) {
+// `CATCH { when X::Y {} }`: a type-like name before a statement's block that
+// nothing declares is, to Rakudo, a call that swallowed the block — a
+// compile-time group raised before anything runs, whether or not the `when`
+// ever does (S32-exceptions/misc.t). An EVAL asks after its parse; the main
+// program right after its own, when no import can bring the name in.
+void Interpreter::refuseGobbledBlocks(const std::vector<GobbleSiteInfo>& sites, const Program& prog, bool needOuter) {
+    for (auto& gs : sites)
+        if (!bareNameResolves(gs.name, prog, needOuter)) {
+            std::string sm = "Function '" + gs.shown + "' needs parens to avoid gobbling block (or perhaps "
+                             "it's a class that's not declared or available in this scope?)";
+            std::string pw = "block (apparently claimed by '" + gs.shown + "')";
+            throw ParseError(sm + "\nMissing " + pw, gs.line, "X::Comp::Group",
+                             {{"sorrow", "X::Syntax::BlockGobbled"}, {"sorrow-msg", sm},
+                              {"sorrow-what", gs.shown}, {"panic", "X::Syntax::Missing"},
+                              {"panic-msg", "Missing " + pw}, {"panic-what", pw}});
+        }
+}
+
+bool Interpreter::bareNameResolves(const std::string& n, const Program& unit, bool needOuter) {
     auto declaredIn = [&](const Program& p) {
         if (p.typeNamesOpaque || p.declaredTypeNames.count(n) || p.declaredTermNames.count(n)) return true;
         for (size_t c = n.find("::"); c != std::string::npos; c = n.find("::", c + 2))
             if (p.declaredTypeNames.count(n.substr(c + 2))) return true;
-        return false;
+        auto in = p.declaredTypeNames.lower_bound(n + "::");   // `class A::B` makes A a package
+        return in != p.declaredTypeNames.end() && in->rfind(n + "::", 0) == 0;
     };
     if (declaredIn(unit)) return true;
-    if (const Program* outer = unitCurrent(); !outer || declaredIn(*outer)) return true;
+    if (const Program* outer = unitCurrent(); outer ? declaredIn(*outer) : needOuter) return true;
     // a pseudo-package or CORE-qualified name is not this check's business
     static const char* const kPseudo[] = {"MY::", "OUR::", "CORE::", "GLOBAL::", "PROCESS::", "COMPILING::",
         "DYNAMIC::", "CALLER::", "CALLERS::", "LEXICAL::", "OUTER::", "OUTERS::", "SETTING::", "UNIT::",
         "CLIENT::", "PARENT::", "EXPORT::"};
     for (const char* p : kPseudo)
-        if (n.rfind(p, 0) == 0) return true;
+        if (n.rfind(p, 0) == 0 || n + "::" == p) return true;
     if (n.rfind("X::", 0) == 0 ? isRakudoExceptionName(n) : isKnownTypeName(n)) return true;
+    // …nor a core term or enum member (`for Inf {…}`, `if Less {…}`, `with SIGINT {…}`), a
+    // name in Rakudo's CORE that has no type here, or one qualified by a core type
+    static const std::set<std::string> kTerms = {"Inf", "NaN", "Nil", "Empty", "Awaiter", "CX",
+        "ContainerDescriptor", "EXPORTHOW", "Exceptions", "HardRoutine", "Hyper", "JSONException", "Metamodel",
+        "MethodDispatcher", "MultiDispatcher", "NumericEnumeration", "NumericStringyEnumeration", "Pod", "RakuAST",
+        "Rakudo", "SIGBREAK", "SIGEMT", "SIGINFO", "SIGIO", "SIGPROF", "SIGPWR", "SIGSTKFLT", "SIGTHR", "SIGVTALRM",
+        "SIGXCPU", "SIGXFSZ", "SOCK_DGRAM", "SOCK_MAX", "SOCK_PACKET", "SOCK_RAW", "SOCK_RDM", "SOCK_SEQPACKET",
+        "SOCK_STREAM", "SocketType", "SoftRoutine", "StringyEnumeration", "Tappable", "TypeEnv", "UINT64_UPPER",
+        "WrapDispatcher", "X"};
+    Value ev;
+    const std::string head = n.rfind("X::", 0) == 0 ? n : n.substr(0, n.find("::"));   // (X:: is asked above)
+    if (kTerms.count(head) || coreEnumValue(n, ev) || (head.size() < n.size() && isKnownTypeName(head))) return true;
     const std::string& rn = resolveClassAlias(n);
     if (classes_.count(n) || classes_.count(rn) || subsets_.count(n) || pkgMeta_.count(n) ||
         pkgMeta_.count(rn) || isNativeTypeName(n) || enumPairs_.count(n))
@@ -2685,20 +2716,7 @@ Value Interpreter::evalString(const std::string& srcIn, bool mainlinePH, bool* i
                     }
                 }
             *prog = parser.parseProgram();
-            // `CATCH { when X::Y {} }`: a type-like name before a statement's block
-            // that nothing declares is, to Rakudo, a call that swallowed the block —
-            // a compile-time group raised before anything runs, whether or not the
-            // `when` ever does (S32-exceptions/misc.t)
-            for (auto& gs : parser.gobbleSites_)
-                if (!bareNameResolves(gs.name, *prog)) {
-                    std::string sm = "Function '" + gs.shown + "' needs parens to avoid gobbling block (or perhaps "
-                                     "it's a class that's not declared or available in this scope?)";
-                    std::string pw = "block (apparently claimed by '" + gs.shown + "')";
-                    throw ParseError(sm + "\nMissing " + pw, gs.line, "X::Comp::Group",
-                                     {{"sorrow", "X::Syntax::BlockGobbled"}, {"sorrow-msg", sm},
-                                      {"sorrow-what", gs.shown}, {"panic", "X::Syntax::Missing"},
-                                      {"panic-msg", "Missing " + pw}, {"panic-what", pw}});
-                }
+            refuseGobbledBlocks(parser.gobbleSites_, *prog);   // `CATCH { when X::Y {} }`
             // `EVAL 'return 1; self!typo()'` in a method: a private method the class
             // does not have is a COMPILE-time error, raised before anything runs
             // (integration/advent2011-day11.t)

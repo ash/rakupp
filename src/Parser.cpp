@@ -1794,6 +1794,7 @@ ExprPtr Parser::parseStmtCond(int bp) {
     std::swap(outer, condBorg_);
     if (!outer.empty() && !isKind(Tok::LBrace) && !isOp("->") && !isOp("<->"))
         throw blockGobbledError(outer, toks_[pos_ - 1].line);
+    noteGobbleSite(e.get());   // `if Foo { … }`: refused once the unit shows no type Foo
     return e;
 }
 // The contents of an already-opened `(` up to its `)`, where a `;` separates
@@ -16874,8 +16875,10 @@ StmtPtr Parser::parseStatementImpl() {
             // An import brings type names this unit never spells; the
             // declaration-type check stands down for such a unit (Program::
             // importsModules).
-            if (!u->isNo && !u->module.empty() && !isPragmaName(u->module))
+            if (!u->isNo && !u->module.empty() && !isPragmaName(u->module)) {
                 importsModules_ = true;
+                if (u->module != "Test") importsTypes_ = true;
+            }
             // name adverbs on the USE: `use JSON::Class:ver<0.0.14+>` — capture
             // the version constraint so the loader can SKIP too-old candidates
             // (License::SPDX needs 0.0.14+; the vendored battery copy is 0.0.6,
@@ -17291,7 +17294,6 @@ StmtPtr Parser::parseStatementImpl() {
             advance();
             auto w = std::make_unique<WhenStmt>();
             w->cond = parseStmtCond();
-            noteGobbleSite(w->cond.get());
             w->body = parseBlock();
             return w;
         }
@@ -18431,7 +18433,7 @@ void Parser::noteGobbleSite(const Expr* cond) {
     if (n.empty() || !nt->ofType.empty() || nt->pkgSelf || nt->symbolicStrict) return;
     if (!ascii::isupper((unsigned char)n[0]) && n.find("::") == std::string::npos) return;
     gobbleSites_.push_back({n, n + (nt->defConstraint == 1 ? ":D" : nt->defConstraint == 2 ? ":U" : ""),
-                            cond->line});
+                            cond->line ? cond->line : cur().line});   // (a qualified name's node has no line: its block's)
 }
 
 bool Parser::knownTypeName(const std::string& name) const {
