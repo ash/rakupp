@@ -786,6 +786,42 @@ std::string typeCheckRepr(const Value& v) {
     if (r.size() > 1 && r[0] == '$' && (r[1] == '(' || r[1] == '[' || r[1] == '{')) r.erase(0, 1);
     return r.size() > 23 ? r.substr(0, 20) + "..." : r;
 }
+// A typed `%` parameter, `Int %h`, binds an Associative[Int]: the hash must be
+// typed so, as `Int @a` wants a typed array. An untyped Hash or Map gets the
+// hint about typed hashes (its `.of` is Mu), a Bag or a Hash[Str] none.
+void Interpreter::refuseUntypedHash(const Param& p, const Value& v) {
+    if (p.type == "Any" || p.type == "Mu" || !isKnownTypeName(p.type) || p.type.find_first_of("[:(") != std::string::npos ||
+        v.t != VT::Hash || !v.hash() || v.hashKind == "Failure" || !hashKindIsAssociative(v.hashKind)) return;
+    const std::string et = v.ofType().substr(0, v.ofType().find(','));
+    if (!et.empty() && et != "Mu" && et != "Any" && (et == p.type || typeOrSubsetMatches(Value::typeObj(et), p.type))) return;
+    const bool ofMu = (v.hashKind.empty() || v.hashKind == "Map") && (et.empty() || et == "Mu");
+    std::string why = "expected Associative[" + p.type + "] but got " +
+                      (v.hashKind.empty() && !v.ofType().empty() ? "Hash[" + v.ofType() + "]" : v.typeName());
+    if (ofMu) why += ". You have to pass an explicitly typed hash, not one that just might happen "
+                     "to contain elements of the correct type.";
+    throwTypedV("X::TypeCheck::Binding::Parameter",
+        {{"got", v}, {"expected", Value::typeObj("Associative[" + p.type + "]")}, {"symbol", Value::str(p.name)}},
+        "Type check failed in binding to parameter '" + paramShownName(p) + "'; " +
+        methodCall(Value::str(why), "naive-word-wrapper", {}).toStr());
+}
+// A `&` parameter of bindParams takes a Callable: `f(5)` or `f(A)` (a type that is no Callable) is a
+// binding failure, positional or named (`sub r(:&c)`); a Failure, Nil and Any pass through
+bool Interpreter::notCallableArg(const Value& v) {
+    if (v.t == VT::Code || v.t == VT::Regex || v.t == VT::Nil || v.t == VT::Any || (v.t == VT::Hash && v.hashKind == "Failure"))
+        return false;
+    static const std::set<std::string, std::less<>> kCode = {"Code", "Block", "Sub", "Method", "Submethod", "Routine",
+        "Macro", "Regex", "WhateverCode", "Callable", "Mu", "Any"};
+    return (v.t == VT::Type && !typeOrSubsetMatches(v, "Callable") && !kCode.count(v.s.str())) ||
+           v.t == VT::Int || v.t == VT::Num || v.t == VT::Rat || v.t == VT::Bool || (v.t == VT::Str && v.hashKind.empty()) ||
+           (v.t == VT::Object && v.obj() && v.obj()->cls && !v.obj()->cls->findMethod("CALL-ME") &&
+            !typeOrSubsetMatches(v, "Callable"));
+}
+void Interpreter::refuseNotCallable(const Param& p, const Value& v) {
+    throwTypedV("X::TypeCheck::Binding::Parameter",
+        {{"got", v}, {"expected", Value::typeObj("Callable")}, {"symbol", Value::str(p.name)}},
+        "Type check failed in binding to parameter '" + paramShownName(p) + "'; expected Callable but got " +
+        v.typeName() + " (" + typeCheckRepr(v) + ")");
+}
 // What Failure declares itself (Rakudo 2026.09's `Failure.^methods(:local)`):
 // `.can` on a Failure answers these and Any's, never by calling it — every
 // call on an unhandled one throws the exception it holds.

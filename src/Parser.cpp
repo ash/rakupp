@@ -12966,6 +12966,7 @@ std::vector<Param> Parser::parseSignature(Tok closeTok) {
     // container, so it cannot be optional; and a LITERAL default that can never
     // satisfy the declared type is refused at compile time
     for (const auto& p : params) {
+        refuseRwContainer(p, cur().line);
         if (p.isRw && !p.named && (p.optional || p.defaultVal))
             throw ParseError("Cannot use 'is rw' on optional parameter '" + p.name + "'.", cur().line,
                              "X::Trait::Invalid", {{"type", "is"}, {"subtype", "rw"}, {"declaring", "parameter"}, {"name", p.name}});
@@ -17251,8 +17252,8 @@ StmtPtr Parser::parseStatementImpl() {
                 auto ps = parsePointyParams();
                 bool anySub = false;
                 // a COERCION too (`with $s -> Int() $n`): the name alone would drop it,
-                // and a `%h`, which takes an Associative only (#207)
-                for (auto& p : ps) anySub = anySub || (bool)p.subSig || p.coerce || p.sigil == '%';
+                // and a `%h` or `@a`, which take an Associative or a Positional only (#207)
+                for (auto& p : ps) anySub = anySub || (bool)p.subSig || p.coerce || p.sigil == '%' || p.sigil == '@';
                 if (anySub) g->params = std::move(ps); // destructuring binder — bindParams
                 else if (!ps.empty() && !ps[0].name.empty()) g->var = ps[0].name; // "$_" too: marks an explicit binder
             }
@@ -17288,7 +17289,7 @@ StmtPtr Parser::parseStatementImpl() {
                     advance();
                     auto ps = parsePointyParams();
                     bool anySub = false;
-                    for (auto& p : ps) anySub = anySub || (bool)p.subSig || p.coerce || p.sigil == '%';
+                    for (auto& p : ps) anySub = anySub || (bool)p.subSig || p.coerce || p.sigil == '%' || p.sigil == '@';
                     if (anySub) g->elseParams = std::move(ps);
                     else if (!ps.empty() && !ps[0].name.empty()) g->elseVar = ps[0].name;
                 }

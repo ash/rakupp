@@ -4826,9 +4826,12 @@ void Interpreter::bindParams(const std::vector<Param>& params, ValueList& args,
     // bound by a call that passes too many (laxOverflow) coerces whatever came.
     auto bindAssocArg = [&](const Param& p, Value& v, bool positional) {
         if (notAssociativeArg(v) && !(positional && laxOverflow())) refuseNotAssociative(p, v);
+        if (!p.type.empty() && !(positional && laxOverflow())) refuseUntypedHash(p, v);   // (`Int %h`)
         if (v.t == VT::Type || (v.t == VT::Pair && !p.isCopy) ||
             (v.t == VT::Object && v.obj() && v.obj()->cls && typeOrSubsetMatches(v, "Associative"))) { /* raw */ }
         else if (!(v.t == VT::Hash && v.hash() && !p.isCopy)) v = coerceHash(v);
+        // …and `is copy` makes a plain Hash of whatever came, as Rakudo's does: a Map, a Bag ({:a(2)}), a typed hash
+        if (p.isCopy && v.t == VT::Hash && (!v.hashKind.empty() || !v.ofType().empty())) { v = methodCall(v, "Hash", {}); v.ofTypeM() = ""; }
         v.itemized = false;   // `%h` holds the hash, never an item of one
     };
     // Fast path: every parameter is a plain mandatory positional scalar and no
@@ -5378,6 +5381,7 @@ void Interpreter::bindParams(const std::vector<Param>& params, ValueList& args,
                     }
                 }
                 else if (p.sigil == '%') bindAssocArg(p, bv, false);
+                else if (p.sigil == '&' && p.type.empty() && notCallableArg(bv)) refuseNotCallable(p, bv);
                 // coercion type on a NAMED param (`IO:D() :$cwd`) — the positional
                 // arm has always done this; without it `:cwd("/tmp")` stayed a Str
                 // and every downstream `IO:D()` candidate refused it (TAP's
@@ -5546,21 +5550,7 @@ void Interpreter::bindParams(const std::vector<Param>& params, ValueList& args,
             }
             // `sub f(&c)` takes a Callable: `f(5)` or `f(A)` (a type that is no
             // Callable) is a binding failure
-            else if (p.sigil == '&' && p.type.empty() && !laxOverflow() &&
-                     v.t != VT::Code && v.t != VT::Regex && v.t != VT::Nil && v.t != VT::Any &&
-                     !(v.t == VT::Hash && v.hashKind == "Failure") &&
-                     ((v.t == VT::Type && !typeOrSubsetMatches(v, "Callable") &&
-                       !(v.s == "Code" || v.s == "Block" || v.s == "Sub" || v.s == "Method" || v.s == "Submethod" ||
-                         v.s == "Routine" || v.s == "Macro" || v.s == "Regex" || v.s == "WhateverCode" ||
-                         v.s == "Callable" || v.s == "Mu" || v.s == "Any")) ||
-                      v.t == VT::Int || v.t == VT::Num || v.t == VT::Rat || v.t == VT::Bool ||
-                      (v.t == VT::Str && v.hashKind.empty()) ||
-                      (v.t == VT::Object && v.obj() && v.obj()->cls && !v.obj()->cls->findMethod("CALL-ME") &&
-                       !typeOrSubsetMatches(v, "Callable"))))
-                throwTypedV("X::TypeCheck::Binding::Parameter",
-                    {{"got", v}, {"expected", Value::typeObj("Callable")}, {"symbol", Value::str(p.name)}},
-                    "Type check failed in binding to parameter '" + paramShownName(p) + "'; expected Callable but got " +
-                    v.typeName() + " (" + typeCheckRepr(v) + ")");
+            else if (p.sigil == '&' && p.type.empty() && !laxOverflow() && notCallableArg(v)) refuseNotCallable(p, v);
             else if (p.sigil == '%') bindAssocArg(p, v, true);
             // coercion type `Int() \x` / `Str(Cool) $s`: coerce the bound value via
             // its .Type method — which FAILS where the method does (Int on <1/0>)
@@ -16983,8 +16973,8 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
             // `%a := %b` BINDS: both names are the same hash from then on, so a
             // write through either is visible through the other. The coercion
             // below copies (which is right for `=`), and that copy is why an
-            // aliased hash silently diverged.
-            if (opEq(a->op, ":=") && rhs.t == VT::Hash && rhs.hash()) {
+            // aliased hash silently diverged. A Pair binds as itself, as on Rakudo.
+            if (opEq(a->op, ":=") && ((rhs.t == VT::Hash && rhs.hash()) || rhs.t == VT::Pair)) {
                 // …but a TYPED hash variable binds only a hash typed to match:
                 // `my Int %h := :42foo.Set.Hash` dies, as does any untyped hash
                 // that merely happens to hold Ints (S02-types/set.t)

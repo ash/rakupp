@@ -5379,6 +5379,9 @@ public:
     Value defaultScheduler_; // the ONE $*SCHEDULER (copies share .hash(), so attr writes persist)
     [[noreturn]] void refuseNotPositional(const Param& p, const Value& v);   // bindParams' refusal (InterpreterBinding.cpp)
     std::string podRaku(const Value& v);   // a Pod block's `.raku`: its constructor (MethodCallEntry.cpp)
+    [[noreturn]] void refuseNotCallable(const Param& p, const Value& v);     // …and its `&` and `Int %h` ones (the same)
+    bool notCallableArg(const Value& v);
+    void refuseUntypedHash(const Param& p, const Value& v);   // `Int %h` given an untyped hash
     void toSchedulerUncaught(const RakuError& e);   // a tapper's error on an interval's or a Channel's value
 private:
     // `$obj!meth` is legal only lexically inside the declaring class; throws otherwise.
