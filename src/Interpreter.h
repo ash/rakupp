@@ -5367,6 +5367,7 @@ private:
     void requirePrivateCallScope(const std::string& name);
     Value evalCall(Call* c);
     Value dotAmpCurry(Call* c);   // `*.uc.&{ … }`: a `.&` on a written star curries (InterpreterBinding.cpp)
+    void refuseWhateverNumeric(const std::string& op);   // `$w + 1` with `$w = *`: no Numeric (…)
     Value evalTempLet(Call* c); // temp/let: snapshot BEFORE arg evaluation
     Value evalIndex(Index* idx);
     // Concrete index tuples for a multi-dimensional subscript — shared by the

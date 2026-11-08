@@ -8964,14 +8964,7 @@ Value Interpreter::callCallableRaw(const Value& codeVal, ValueList args, const s
     if (c.ci().builtin && args.size() == 2 && c.ci().name.rfind("infix:<", 0) == 0 && c.ci().name.back() == '>' &&
         (args[0].t == VT::Whatever || args[1].t == VT::Whatever)) {
         std::string op = c.ci().name.substr(7, c.ci().name.size() - 8);
-        if (op.size() > 1 && op[0] == 'R') op = op.substr(1);
-        static const std::set<std::string> kNumeric = {
-            "+", "-", "*", "/", "%", "**", "div", "mod", "gcd", "lcm", "%%",
-            "+&", "+|", "+^", "+<", "+>", "\xC3\x97", "\xC3\xB7", "\xE2\x88\x92"};
-        if (kNumeric.count(op))
-            throwTypedV("X::Multi::NoMatch", {},
-                        "Cannot resolve caller Numeric(Whatever:D: ); none of these signatures matches:\n"
-                        "    (Mu:U \\v: *%_)");
+        refuseWhateverNumeric(op.size() > 1 && op[0] == 'R' ? op.substr(1) : op);
     }
     // A ONE-ARGUMENT call to an infix operator is its REDUCTION form (infixOneArgForm)
     if (c.ci().builtin && args.size() == 1 && c.ci().name.rfind("infix:<", 0) == 0 &&
@@ -23059,7 +23052,9 @@ Value Interpreter::evalBinary(Binary* b) {
         // and answered a WhateverCode — truthy, so every test of one passed.
         // Costs a type check on the eager path and the AST walk only when an
         // operand really is one.
-        if (whateverArrivedAsValue(b, l, r)) { Interpreter::valueSmartmatch_ = true; return applyBinOp(op, l, r); }
+        if (whateverArrivedAsValue(b, l, r)) {   // (and a numeric operator has no Numeric of it to take)
+            if (l.t == VT::Whatever || r.t == VT::Whatever) refuseWhateverNumeric(op);
+            Interpreter::valueSmartmatch_ = true; return applyBinOp(op, l, r); }
         if (RAKUPP_UNLIKELY(uninitOperand(l) || uninitOperand(r))) uninitBinaryOperands(b, op, l, r);
         // a DateTime against a number, or one of a class DERIVING DateTime (dateTimeArith)
         if (l.t == VT::Object || r.t == VT::Object || l.hashKind == "DateTime" || r.hashKind == "DateTime")
@@ -25846,6 +25841,9 @@ Value Interpreter::evalUnary(Unary* u) {
         if (v.t == VT::Num) return Value::number(-v.n);
         if (v.t == VT::Int && !v.big() && v.i != LLONG_MIN) return Value::integer(-v.i);
     }
+    // (a Whatever VALUE, no written star, has no Numeric for `-` or `+`: Rakudo dies)
+    if (v.t == VT::Whatever && !(u->operand && u->operand->kind == NK::Whatever) &&
+        (opEq(u->op, "-") || opEq(u->op, "+") || opEq(u->op, "\xE2\x88\x92"))) refuseWhateverNumeric("-");
     // Whatever-currying for prefix ops: `~*`, `-*`, `+*`, `?*`, `!*` become a
     // WhateverCode (e.g. `.sort: ~*` sorts by stringification). `^*` is here too,
     // because `@chars[^(*-1)]` — everything but the last element — is how

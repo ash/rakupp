@@ -2967,6 +2967,20 @@ Value Interpreter::seqOpGroups(Value seed, const std::vector<ValueList>& groups,
     return out;
 }
 
+// A Whatever VALUE has no Numeric to give: called as a function (`&infix:<+>(*,
+// 42)`), or held in a variable (`my $w = *; $w + 1`, `-$w`), a numeric
+// operator dies as Rakudo's does, where only a WRITTEN star curries.
+void Interpreter::refuseWhateverNumeric(const std::string& op) {
+    static const std::set<std::string> kNumeric = {
+        "+", "-", "*", "/", "%", "**", "div", "mod", "gcd", "lcm", "%%",
+        "+&", "+|", "+^", "+<", "+>", "\xC3\x97", "\xC3\xB7", "\xE2\x88\x92",
+        "==", "!=", "<", ">", "<=", ">=", "<=>", "\xE2\x89\xA0", "\xE2\x89\xA4", "\xE2\x89\xA5"};
+    if (kNumeric.count(op))
+        throwTypedV("X::Multi::NoMatch", {},
+                    "Cannot resolve caller Numeric(Whatever:D: ); none of these signatures matches:\n"
+                    "    (Mu:U \\v: *%_)");
+}
+
 // `*.uc.&{ $_ ~ 'one' }`: a `.&` whose invocant holds a written `*` curries on
 // through the call, as Rakudo's does — the code runs on what the curried
 // invocant makes of the WhateverCode's argument. Calling the code with the star
