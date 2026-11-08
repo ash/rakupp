@@ -805,6 +805,7 @@ void Interpreter::registerBuiltinsPart5() {
             return p;
         }
         Value p = I.spawnPromise(code);
+        if (p.ext()) std::static_pointer_cast<PromiseState>(p.ext())->fromStart = true;
         I.yieldToWorker();
         return p;
     };

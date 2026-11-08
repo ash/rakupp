@@ -7086,6 +7086,33 @@ void Interpreter::endPool() {
 
 // $*SCHEDULER.cue(&code, :in/:at → delaySecs, :every, :times, :stop, :catch).
 // A worker sleeps GIL-free, takes the GIL per run, and re-arms for :every.
+// What Rakudo's ThreadPoolScheduler does with an error no handler took: it says
+// where it ran and what it was, and ends the process with status 1.
+void Interpreter::endOnUnhandled(const RakuError& e) {
+    const long long tid = currentThread().hash()->at("id").toInt();
+    std::cout.flush();
+    std::cerr << "Unhandled exception in code scheduled on thread " << tid << "\n"
+              << renderError(e, btStyleForStderr()) << std::flush;
+    std::_Exit(1);
+}
+
+// A sunk `start` that broke goes to the scheduler's uncaught_handler, or, with
+// none, ends the process as an unhandled cued die does: Rakudo marks a `start`'s
+// promise to do this when it is sunk (`start { die }`, or a sunk call answering
+// one). Called from the promise's settling, on the worker thread that broke it.
+void Interpreter::sunkStartBroke(const std::shared_ptr<PromiseState>& ps, const Value& sched) {
+    if (ps->cause.t == VT::Any && ps->causeMsg.empty()) return;   // (no error: a worker stopped, as at the end)
+    auto it = sched.hash()->find("uncaught_handler");
+    if (it != sched.hash()->end() && it->second.t == VT::Code) {
+        Value h = it->second; (void)bool(ps->done);   // (--race: the handler sees the worker's past)
+        try { callCallable(h, ValueList{ps->cause}); } catch (...) {}
+        return;
+    }
+    RakuError err{ps->cause, ps->causeMsg.empty() ? std::string("Promise broken") : ps->causeMsg};
+    if (ps->causeBt) err.bt = ps->causeBt;
+    endOnUnhandled(err);
+}
+
 Value Interpreter::cueJob(Value code, double delaySecs, double everySecs, long long times,
                           Value stopF, Value catchF) {
     engageGil();
@@ -7138,13 +7165,7 @@ Value Interpreter::cueJob(Value code, double delaySecs, double everySecs, long l
                 }
                 // …and with no handler (`:catch`, the scheduler's uncaught_handler)
                 // Rakudo's ThreadPoolScheduler prints it and ends the process, 1
-                else {
-                    const long long tid = self->currentThread().hash()->at("id").toInt();
-                    std::cout.flush();
-                    std::cerr << "Unhandled exception in code scheduled on thread " << tid << "\n"
-                              << self->renderError(e, self->btStyleForStderr()) << std::flush;
-                    std::_Exit(1);
-                }
+                else self->endOnUnhandled(e);
             }
             catch (const WorkerAbortEx&) { break; } // shutdown: unwind the cue loop
             catch (...) {}

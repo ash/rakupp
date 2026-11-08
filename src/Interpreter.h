@@ -2086,6 +2086,7 @@ struct PromiseState {
     // `await` can only report its own line, which is never where the error is.
     std::shared_ptr<BtRecord> causeBt;
     std::vector<std::function<void()>> thens; // `.then` continuations, fired once on settle
+    bool fromStart = false;   // a `start`'s: sunk, its break is reported (sunkStartBroke)
 };
 
 // One active `react` block. `whenever` on a live Supplier registers a tap that
@@ -4636,6 +4637,8 @@ public:
     void poolWorker(std::function<void()> job);
     void stopPool();   // idle pooled workers end (drainWorkers, endPool)
     void endPool();    // …and are joined (the destructor)
+    [[noreturn]] void endOnUnhandled(const RakuError& e);   // the scheduler's end for an unhandled error
+    void sunkStartBroke(const std::shared_ptr<PromiseState>& ps, const Value& sched);   // (Interpreter.cpp)
     Value cueJob(Value code, double delaySecs, double everySecs, long long times,
                  Value stopF, Value catchF); // $*SCHEDULER.cue — returns a Cancellation
     // Real (wired) tap of a Supply value: on-demand blocks run with emits routed

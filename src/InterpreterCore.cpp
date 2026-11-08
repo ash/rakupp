@@ -2044,21 +2044,14 @@ Value Interpreter::exec(Stmt* s, bool sink) {
             const unsigned long long refusalsBefore = e->kind == NK::Index ? g_subscriptRefusals : 0;
             Value r = eval(e);
             // A SUNK `start` (nobody will await it) hands a death to the
-            // scheduler's uncaught_handler, when one is installed
-            // (`$*SCHEDULER.uncaught_handler = -> $ex { … }`)
+            // scheduler's uncaught_handler, or ends the process (sunkStartBroke)
             if (sink && e->kind == NK::Call &&
                 r.t == VT::Hash && r.hashKind == "Promise" && r.ext() && defaultScheduler_.t == VT::Hash &&
-                defaultScheduler_.hash()) {
+                defaultScheduler_.hash() && std::static_pointer_cast<PromiseState>(r.ext())->fromStart) {
                 auto ps = std::static_pointer_cast<PromiseState>(r.ext());
                 Value sched = defaultScheduler_;
                 Interpreter* self = this;
-                auto fire = [ps, sched, self]() {
-                    if (!ps->broken) return;
-                    auto it = sched.hash()->find("uncaught_handler");
-                    if (it == sched.hash()->end() || it->second.t != VT::Code) return;
-                    Value h = it->second; (void)bool(ps->done);   // (--race: the handler sees the worker's past)
-                    try { self->callCallable(h, ValueList{ps->cause}); } catch (...) {}
-                };
+                auto fire = [ps, sched, self]() { if (ps->broken) self->sunkStartBroke(ps, sched); };
                 bool settled;   // (looking is not an await: .v, no --race edge)
                 { std::lock_guard<std::mutex> lk(ps->m); settled = ps->done.v; if (!settled) ps->thens.push_back(fire); }
                 if (settled) fire();
