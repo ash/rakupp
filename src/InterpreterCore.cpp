@@ -18665,6 +18665,7 @@ static Value applyArithGeneral(const std::string& op, const Value& l, const Valu
         if (valueSmartmatchHook(op, l, r, hooked)) return hooked;
     }
     if (Value got; r.t == VT::Type && g_cbInterp && (opEq(op, "~~") || opEq(op, "!~~")) && !isJunction(l) &&
+        !(l.t == VT::Whatever && !valueMatch) &&   // (a written `* ~~ C` curries below)
         g_cbInterp->typeObjectUserAccepts(l, r, got)) return Value::boolean(opEq(op, "~~") == got.truthy());   // C's ACCEPTS
     // an enum's TYPE OBJECT against a type: a type object (never `:D`) of its
     // enum, of Enumeration and of its value type's line — not a list to match
