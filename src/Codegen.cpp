@@ -1411,8 +1411,10 @@ struct Codegen {
         return e && e->kind == NK::RegexLit && !static_cast<RegexLit*>(e)->isM;
     }
     std::string rxValue(Expr* e) {
-        requireEngineOnlyRegex(static_cast<RegexLit*>(e)->pattern, "a regex");
-        return "Value::regex(" + cesc(static_cast<RegexLit*>(e)->pattern) + ")";
+        auto* rl = static_cast<RegexLit*>(e);
+        requireEngineOnlyRegex(rl->pattern, "a regex");
+        return rl->declKind.empty() ? "Value::regex(" + cesc(rl->pattern) + ")"   // (an anonymous `rule {…}` keeps its kind)
+             : "([]{ Value r = Value::regex(" + cesc(rl->pattern) + "); r.hashKind = " + cesc(rl->declKind) + "; return r; }())";
     }
     std::string exVal(Expr* e) { return rxValueLit(e) ? rxValue(e) : ex(e); }
     // …and a ternary that can answer one, which a condition and a statement

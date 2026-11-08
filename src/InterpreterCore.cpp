@@ -20927,8 +20927,8 @@ Value Interpreter::regexMatch(const std::string& subject, std::string_view patte
         tctx().cur = savedOuter;
     }
     // flavor flags for anonymous declarators: token = ratchet, rule = ratchet+sigspace
-    std::string reFlags = wired ? (rxVal->hashKind == "token" ? "r"
-                                 : rxVal->hashKind == "rule" ? "sr" : "") : "";
+    std::string reFlags = rxVal && rxVal->t == VT::Regex ? (rxVal->hashKind == "token" ? "r"   // (a compiled one: no
+                                 : rxVal->hashKind == "rule" ? "sr" : "") : "";               //  scope, its kind still)
     // …and the same for a NAMED one reached through its `&name` Callable. The
     // `<name>` subrule path has always mapped the declarator's kind to these
     // flags; the Callable ran the bare pattern, so `my rule u { ab cd }` matched

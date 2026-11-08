@@ -1214,6 +1214,9 @@ static Value regexClosingOver(std::string pat, const std::shared_ptr<Env>& sc) {
 // splice copy, the two scans, and rejectObsoleteRegex's mutex+map probe —
 // `if /\d/` in a loop paid all of that per iteration (REVIEW-3.7 batch 3).
 Value Interpreter::regexLitValue(RegexLit* rl) {
+    // an anonymous `rule {…}` or `token {…}` keeps its kind, which eval gives it:
+    // `my $r = rule { a b }` and `f(rule { a b })` were a plain `rx//`
+    if (!rl->declKind.empty()) return eval(rl);
     if (const void* p = rl->closedPat.get())
         return Value::regex(*static_cast<const std::string*>(p));
     Value v = regexClosingOver(spliceRegexVars(rl->pattern), tctx().cur);
