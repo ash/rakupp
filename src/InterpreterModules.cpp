@@ -5254,6 +5254,17 @@ static void mergeParentRoleMultis(ClassInfo* ci, const SigKey& sigKeyParams) {
         }
 }
 
+// …and so is a METHOD `handles` delegation. Dispatch walks a type's
+// `methodHandles` up its parent chain, so the role-requirement check does too:
+// PDF::Lite satisfies PDF::Content::API's `page` stub with
+// `method Pages returns Pages handles <page pages add-page …> { self.Root.Pages }`.
+// (A file-scope helper, not a lambda in execDeclStmt, which sits at its size
+// ceiling.)
+static bool methodHandlesCover(ClassInfo* c, const std::string& n) {
+    for (; c; c = c->parent.get()) if (c->methodHandles.count(n)) return true;
+    return false;
+}
+
 // The declaration statements exec dispatches here, kept out of its frame.
 //
 // exec is one switch over every statement kind, and a switch's stack frame is
@@ -7964,6 +7975,7 @@ static void mergeParentRoleMultis(ClassInfo* ci, const SigKey& sigKeyParams) {
                     else ok = hasImpl(ci.get(), rq, nullptr) ||
                               classOwn.count(rq); // an own stub is a deliberate promise
                     if (!ok && attrCovers(ci.get(), rq)) ok = true;
+                    if (!ok && methodHandlesCover(ci.get(), rq)) ok = true;
                     // a stubbed MULTI candidate left unimplemented has its own
                     // exception type (parameterized-basic.t: a `multi method`
                     // stub whose invocant is typed `::?CLASS:D`)
