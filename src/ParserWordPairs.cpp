@@ -204,4 +204,25 @@ bool Parser::takeWordPair(std::vector<ExprPtr>& pairs, std::vector<std::string>&
     return true;
 }
 
+// `use Test` imports its routines into the scope it stands in, so a plain `sub
+// ok` or a `my &ok` beside it redeclares one, in either order, as on Rakudo (a
+// multi joins them; `use Test ()` imports nothing). Test's routines are built
+// in here, and no import ever met the local one.
+bool Parser::isTestExport(const std::string& n) {
+    static const std::set<std::string> names = {
+        "bail-out", "can-ok", "cmp-ok", "diag", "dies-ok", "does-ok", "done-testing", "eval-dies-ok",
+        "eval-lives-ok", "fails-like", "flunk", "is", "is-approx", "is-deeply", "isa-ok", "isnt", "like",
+        "lives-ok", "nok", "ok", "pass", "plan", "skip", "skip-rest", "subtest", "throws-like", "todo",
+        "unlike", "use-ok"};
+    return names.count(n) > 0;
+}
+bool Parser::testImportedHere(const std::vector<StmtPtr>& stmts) {
+    for (auto& s : stmts)
+        if (s && s->kind == NK::UseStmt) {
+            auto* u = static_cast<const UseStmt*>(s.get());
+            if (u->module == "Test" && !u->isNo && !u->isNeed && !u->emptyImport && u->importArgs.empty()) return true;
+        }
+    return false;
+}
+
 } // namespace rakupp

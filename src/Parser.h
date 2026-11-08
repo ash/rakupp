@@ -711,6 +711,8 @@ private:
     size_t infixDotAt_ = (size_t)-1; // the dotty infix `EXPR . method` being applied (see parseExpr)
     ExprPtr computedOpName(const std::string& t); // `&infix:[EXPR]` / `&infix:<<$x>>` — a run-time operator name
     ExprPtr parseEmbeddedExpr(const std::string& src, bool ownScope = false); // parse a `{…}`/`$()` interpolation, inheriting user operators
+    static bool isTestExport(const std::string& n);                      // …and `use Test` beside a local `sub ok`
+    static bool testImportedHere(const std::vector<StmtPtr>& stmts);    //    (ParserWordPairs.cpp)
     void inheritSyntax(Parser& p) const;          // a snippet's parser sees this unit's operators (ParserWordPairs.cpp)
     ExprPtr wordColonPair(const std::string& src, int line); // a qww/qqww word's colonpair, parsed as code (ParserWordPairs.cpp)
     ExprPtr angleColonPair(const std::string& w); // a word that is one whole colonpair → PairExpr (null if not one)

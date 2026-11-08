@@ -17650,6 +17650,19 @@ void Parser::checkRedeclarations(const std::vector<StmtPtr>& stmts, bool unitSco
     // redeclares (Rakudo). After `unit module` the statements are the
     // package's, which has none (a `unit class` holds them as its body).
     bool mainlineTop = unitScope && !strictSep_;   // (an EVAL runs inside a scope)
+    // `use Test` imports its routines into this scope: a plain `sub ok` or a `my &ok` beside it redeclares one
+    const bool testHere = testImportedHere(stmts);
+    // Rakudo's one wording for a routine declared twice, whichever kinds the two are
+    auto redeclaredRoutine = [](const std::string& n, int line) {
+        return ParseError("Redeclaration of routine '" + n + "'. Did you mean to declare a multi-sub?", line,
+                          "X::Redeclaration", {{"symbol", n}, {"what", "routine"}});
+    };
+    auto refuseTestName = [&](const std::string& n, int line, bool proto = false) {
+        if (testHere && isTestExport(n))   // (a proto of the name is a routine redeclared)
+            throw proto ? redeclaredRoutine(n, line)
+                        : ParseError("Redeclaration of symbol '&" + n + "'.", line, "X::Redeclaration",
+                                     {{"symbol", "&" + n}, {"what", "symbol"}});
+    };
     for (auto& s : stmts) {
         if (!s) continue;
         if (!s->label.empty() &&
@@ -17686,8 +17699,10 @@ void Parser::checkRedeclarations(const std::vector<StmtPtr>& stmts, bool unitSco
                 // …but a `constant &infix:<☄> := &infix:<☃>` ALIASES a routine
                 // that may still take candidates: `multi infix:<☄>` after it is fine
                 if (ve->declare && ve->name.size() > 1 && ve->name[0] == '&' &&
-                    ve->d().declScope != "constant")
+                    ve->d().declScope != "constant") {
                     subs[ve->name.substr(1)] |= 1;
+                    refuseTestName(ve->name.substr(1), s->line);
+                }
             }
             termSubs(whole);
             continue;
@@ -17695,14 +17710,10 @@ void Parser::checkRedeclarations(const std::vector<StmtPtr>& stmts, bool unitSco
         if (s->kind == NK::ReturnStmt) termSubs(static_cast<const ReturnStmt*>(s.get())->value.get());
         if (s->kind == NK::SubDecl) {
             auto* sd = static_cast<const SubDecl*>(s.get());
-            // two protos for one name in one scope
-            if (sd->isProto && !sd->name.empty() && !sd->isMethod && (subs[sd->name] & 4))
-                throw ParseError("Redeclaration of routine '" + sd->name + "'", sd->line,
-                                 "X::Redeclaration", {{"symbol", sd->name}, {"what", "routine"}});
-            // …and a proto beside a plain (only) sub of the name, either order
-            if (sd->isProto && !sd->name.empty() && !sd->isMethod && (subs[sd->name] & 1))
-                throw ParseError("Redeclaration of routine '" + sd->name + "'", sd->line,
-                                 "X::Redeclaration", {{"symbol", sd->name}, {"what", "routine"}});
+            if ((!sd->isMulti || sd->isProto) && !sd->isMethod && !sd->name.empty()) refuseTestName(sd->name, sd->line, sd->isProto);
+            // a proto after any routine of its name in one scope, or a plain (only) sub after one
+            if (sd->isProto && !sd->name.empty() && !sd->isMethod && (subs[sd->name] & 7))
+                throw redeclaredRoutine(sd->name, sd->line);
             if (sd->isProto && !sd->name.empty() && !sd->isMethod) subs[sd->name] |= 4;
             if (sd->name.empty() || sd->isProto || sd->isMethod) continue;
             // `sub f {...}` (bare yada body) is a redeclarable forward stub
@@ -17714,22 +17725,14 @@ void Parser::checkRedeclarations(const std::vector<StmtPtr>& stmts, bool unitSco
                         c->args.empty() && !c->callee) {
                         // …but it does not replace a REAL one declared before it
                         if (!sd->isMulti && subs.count(sd->name) && (subs[sd->name] & 1))
-                            throw ParseError("Redeclaration of routine '" + sd->name +
-                                             "'. Did you mean to declare a multi-sub?", sd->line,
-                                             "X::Redeclaration", {{"symbol", sd->name}, {"what", "routine"}});
+                            throw redeclaredRoutine(sd->name, sd->line);
                         continue;
                     }
                 }
             }
             int& f = subs[sd->name];
             int bit = sd->isMulti ? 2 : 1;
-            if ((f & 5) && bit == 1)
-                throw ParseError("Redeclaration of routine '" + sd->name +
-                                 "'. Did you mean to declare a multi-sub?", sd->line,
-                                 "X::Redeclaration", {{"symbol", sd->name}, {"what", "routine"}});
-            if (((f & 3) && bit == 1) || ((f & 1) && bit == 2))
-                throw ParseError("Redeclaration of routine '" + sd->name + "' (multi/only mix)", sd->line,
-                                 "X::Redeclaration", {{"symbol", sd->name}, {"what", "routine"}});
+            if (((f & 7) && bit == 1) || ((f & 1) && bit == 2)) throw redeclaredRoutine(sd->name, sd->line);
             f |= bit;
         }
         else if (s->kind == NK::ClassDecl) {
