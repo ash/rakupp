@@ -1232,7 +1232,12 @@ void collectPubAttrs(ClassInfo* c, std::vector<const ClassAttr*>& out);
 // nearest one): a block passed down into other subs returns from the routine
 // that wrote it, not from whichever sub happens to call it.
 struct ReturnEx { Value v; uint64_t target = 0; };
-struct ExitEx { int code = 0; };
+// `exit` unwinds without running any block's LEAVE, as Rakudo's does (it runs
+// the END phasers and ends): the flag is raised by the exception and dropped
+// when the ENDs start (runEnds), and both engines' LEAVE runners ask it
+extern std::atomic<bool> g_exitUnwinding;
+inline bool rtExitUnwinding() { return g_exitUnwinding.load(std::memory_order_relaxed); }
+struct ExitEx { int code = 0; ExitEx(int c = 0) : code(c) { g_exitUnwinding.store(true, std::memory_order_relaxed); } };
 // From 6.e, `next $v` / `last $v` supply a value for the iteration they end:
 // `(1,2,3).map({ $_ == 2 ?? next(42) !! $_ })` is (1 42 3). hasVal separates
 // "supplied Nil" from "supplied nothing"; before 6.e nothing ever sets it.

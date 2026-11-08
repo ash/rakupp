@@ -9184,6 +9184,7 @@ int Interpreter::run(Program& prog) {
     // mainline's (`END a; sub f { END b }; END c` runs c, b, a) and a module's
     // takes its place at the `use` that loaded it.
     auto runEnds = [&]() {
+        g_exitUnwinding.store(false, std::memory_order_relaxed);   // (an END's own blocks run their LEAVEs)
         // Dropped objects get their DESTROY before the ENDs, so an END block
         // observes destructor effects; objects an END itself releases wait for
         // a real process exit, like Rakudo's unguaranteed finalization.

@@ -1012,6 +1012,7 @@ Value numifyStrOrThrow(std::string_view in) {
 }
 
 std::atomic<bool> g_anyShaped{false};
+std::atomic<bool> g_exitUnwinding{false};   // an `exit` is unwinding: no LEAVE runs (Interpreter.h)
 Value makeShapedContainer(const std::vector<long long>& dims, const std::string& declType,
                           const ValueList* fill) {
     g_anyShaped.store(true, std::memory_order_relaxed);

@@ -3686,7 +3686,8 @@ struct Codegen {
     std::string leaveGuard(const std::string& inner, int ind) {
         const std::string g = "__leave" + std::to_string(leaveCtr_++), pad(ind * 4, ' ');
         return pad + "struct " + g + "_t { std::function<void()> f; int n; ~" + g +
-               "_t() noexcept(false) { if (std::uncaught_exceptions() > n) { try { f(); } catch (...) {} } else f(); } } " +
+               "_t() noexcept(false) { if (rtExitUnwinding()) return; "   // (`exit` runs no LEAVE, as Rakudo's)
+               "if (std::uncaught_exceptions() > n) { try { f(); } catch (...) {} } else f(); } } " +
                g + "{[&]{\n" + inner + pad + "}, std::uncaught_exceptions()};\n";
     }
     // …and its body: a lambda the guard calls in place, so, as in a `do {…}`,

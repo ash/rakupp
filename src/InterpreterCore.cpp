@@ -945,6 +945,7 @@ static void drainTempRestores(Env* cur, size_t mark) {
 
 static void runLetRestoresOf(const std::shared_ptr<Env>& e);   // (below)
 void Interpreter::runLeavePhasers(const std::vector<StmtPtr>& stmts, bool ok, size_t tempMark, int postOk) {
+    if (rtExitUnwinding()) return;   // `exit` leaves every block without its LEAVE (Rakudo)
     // reverse source order. KEEP runs only when the block is left SUCCESSFULLY,
     // UNDO only when it isn't; LEAVE always. (Firing both made zef log
     // "Updated <mirror>" and "Failed to update <mirror>" for the same fetch.)
