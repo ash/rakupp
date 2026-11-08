@@ -5375,6 +5375,7 @@ public:
         return v;
     }
     Value defaultScheduler_; // the ONE $*SCHEDULER (copies share .hash(), so attr writes persist)
+    [[noreturn]] void refuseNotPositional(const Param& p, const Value& v);   // bindParams' refusal (InterpreterBinding.cpp)
     std::string podRaku(const Value& v);   // a Pod block's `.raku`: its constructor (MethodCallEntry.cpp)
     void toSchedulerUncaught(const RakuError& e);   // a tapper's error on an interval's or a Channel's value
 private:

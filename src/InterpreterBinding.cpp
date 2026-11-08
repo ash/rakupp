@@ -419,6 +419,20 @@ Value Interpreter::makeTypedEx(const std::string& type,
 void Interpreter::throwTypedV(const std::string& type,
                               std::vector<std::pair<std::string, Value>> attrs,
                               const std::string& message) {
+    // A type check that refused a FAILURE says what that failure was first, as
+    // Rakudo's X::TypeCheck.priors does with its `.mess`, the message and the
+    // backtrace: "Earlier failure:\n boom\n  in block <unit> …\n\nFinal error:\n …"
+    if (type.rfind("X::TypeCheck", 0) == 0)
+        for (auto& kv : attrs)
+            if (kv.first == "got" && kv.second.t == VT::Hash && kv.second.hashKind == "Failure" && kv.second.hash()) {
+                auto mi = kv.second.hash()->find("message"), ei = kv.second.hash()->find("exception");
+                std::string was = (mi != kv.second.hash()->end() ? mi->second.toStr() : std::string()) + "\n";
+                if (ei != kv.second.hash()->end() && ei->second.t == VT::Object)
+                    try { was += methodCall(methodCall(ei->second, "backtrace", {}), "Str", {}).toStr(); } catch (...) {}
+                const std::string full = "Earlier failure:\n " + was + "\nFinal error:\n " + message;
+                Value ex = makeTypedEx(type, std::move(attrs), full);
+                throw RakuError{ex, full};
+            }
     Value ex = makeTypedEx(type, std::move(attrs), message);
     throw RakuError{ex, message};
 }
@@ -741,6 +755,21 @@ void Interpreter::coerceParam(const Param& p, Value& v, const std::string* typeO
             " of " + v.typeName());
 }
 
+// Refusals of bindParams (InterpreterCore.cpp), in Rakudo's words. A `@`
+// parameter given what is no Positional: as refuseNotAssociative does for `%`,
+// the hint about typed arrays when what came has an `.of` of Mu (a Hash, a
+// Map, a Pair), word-wrapped as X::TypeCheck.explain does.
+void Interpreter::refuseNotPositional(const Param& p, const Value& v) {
+    const bool ofMu = (v.t == VT::Hash && (v.hashKind.empty() || v.hashKind == "Map") &&
+                       (v.ofType().empty() || v.ofType() == "Mu")) || v.t == VT::Pair;
+    std::string why = "expected Positional but got " + v.typeName() + " (" + typeCheckRepr(v) + ")";
+    if (ofMu) why += ". You have to pass an explicitly typed array, not one that just might happen "
+                     "to contain elements of the correct type.";
+    throwTypedV("X::TypeCheck::Binding::Parameter",
+        {{"got", v}, {"expected", Value::typeObj("Positional")}, {"symbol", Value::str(p.name)}},
+        "Type check failed in binding to parameter '" + paramShownName(p) + "'; " +
+        (ofMu ? methodCall(Value::str(why), "naive-word-wrapper", {}).toStr() : why));
+}
 // A lone typed candidate rejects a mismatched argument (multi dispatch already
 // type-selects; without this a single `sub f(Int $x)` bound anything). Type
 // objects/undefined bind (no :D enforcement here) and junction kinds pass —
