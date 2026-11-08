@@ -81,7 +81,18 @@ struct Builder {
     // A statement list from our statements, and the Blockoid around one.
     Value statementList(const std::vector<StmtPtr>& stmts) {
         ValueList out;
-        for (auto& s : stmts) out.push_back(buildStmt(s.get()));
+        for (auto& s : stmts) {
+            // (the fresh `my $/; my $!` the parser gives a `start` block are implicit
+            // upstream, and line 0 here: written out, each round of `.AST.DEPARSE`
+            // added another pair)
+            if (s->kind == NK::ExprStmt && s->line == 0) {
+                const Expr* e = static_cast<const ExprStmt*>(s.get())->e.get();
+                if (e && e->kind == NK::VarExpr && e->line == 0 && static_cast<const VarExpr*>(e)->declare &&
+                    (static_cast<const VarExpr*>(e)->name == "$/" || static_cast<const VarExpr*>(e)->name == "$!"))
+                    continue;
+            }
+            out.push_back(buildStmt(s.get()));
+        }
         return node("StatementList", {{"statements", list(out)}});
     }
     Value blockoid(const std::vector<StmtPtr>& stmts) {
