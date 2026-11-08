@@ -25052,7 +25052,7 @@ Value Interpreter::evalUnary(Unary* u) {
             return h;
         }
         // $[...] / $(...) / $%h: the container becomes ONE non-flattening item
-        if (v.t == VT::Array || v.t == VT::Hash) v.itemized = true;
+        if (v.t == VT::Array || v.t == VT::Hash || v.t == VT::Range) v.itemized = true;
         return v; // item context
     }
     if (opEq(u->op, "BEGIN")) {
@@ -30621,7 +30621,7 @@ Value Interpreter::eval(Expr* e) {
                 // the wrong type, and the check that rejected it was right to.
                 // (…but a Range held in a `$` variable is an ITEM: `my $r = 1..3;
                 // [$r]` is one element, as in Rakudo)
-                else if (v.t == VT::Range && l->items.size() == 1 && !l->fromCommaList &&
+                else if (v.t == VT::Range && !v.itemized && l->items.size() == 1 && !l->fromCommaList &&   // ($(1..2), `.item`: one)
                          !v.rExFrom() && v.rTo() - v.rFrom() < 1000000 &&
                          !(l->items[0]->kind == NK::VarExpr &&
                            static_cast<const VarExpr*>(l->items[0].get())->name.rfind('$', 0) == 0)) {

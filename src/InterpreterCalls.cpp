@@ -4055,11 +4055,11 @@ void Interpreter::assignListTarget(ListExpr* lst, const Value& rhs, bool isBindi
             ValueList shaped;
             if (isMultiDimShaped(r)) shapedLeaves(r, shaped);
             for (auto& it : (isMultiDimShaped(r) ? shaped : *r.arr())) {
-                if (it.t == VT::Range) { for (auto& e : it.flatten()) vals.push_back(e); }
-                else {
+                {
                     // ONE level, and one level only: an inner list is ONE value,
                     // itemized — `my ($a, $b, $c) = (1, 2), 3` is
-                    // `($(1, 2), 3, Any)`, not three loose values (sheet LA-31).
+                    // `($(1, 2), 3, Any)`, not three loose values (sheet LA-31),
+                    // and an inner Range too: `(1..2), 3` gives $a 1..2.
                     Value e = it;
                     if (e.t == VT::Array || e.t == VT::Hash) e.itemized = true;
                     vals.push_back(std::move(e));
@@ -5839,10 +5839,11 @@ void Interpreter::arrayStore(Value& lvRef, Value& rhs, bool isAssign, bool dolla
         (rhs.hashKind == "Blob" || rhs.hashKind == "Buf")) {
         raceW(lv) = coerceArray(rhs, isNativeScalarName(lv->ofType()));
     }
-    else if (isAssign && dollarSource && rhs.t == VT::Range) {
+    else if (isAssign && (dollarSource || rhs.itemized) && rhs.t == VT::Range) {
         // a $-container ITEMIZES: `my @r = $r` is ONE element (the
-        // Range), unlike the flattening `my @r = 1..5` (Array/List
-        // itemization is wider surgery; Range is the roast-tested bit)
+        // Range), unlike the flattening `my @r = 1..5`, and so do
+        // `$(1..5)` and `(1..5).item` (Array/List itemization is wider
+        // surgery; Range is the roast-tested bit)
         Value one = Value::array();
         one.arr()->push_back(rhs);
         raceW(lv) = one;

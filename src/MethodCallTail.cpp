@@ -197,7 +197,7 @@ static void flatOneInto(const Value& x, bool ofArray, bool hammer, ValueList& ou
         for (auto& e : *x.arr()) flatOneInto(e, !x.isList, false, out);
     else if (!ofArray && x.t == VT::Hash && x.hash() && x.hashKind.empty())
         for (auto& kv : *x.hash()) out.push_back(hashEntryPair(x, kv.first, kv.second));
-    else if (!ofArray && x.t == VT::Range)
+    else if (!ofArray && x.t == VT::Range && !x.itemized)
         for (auto& e : x.flatten()) out.push_back(e);
     else {
         // What stays whole stays whole BECAUSE it is in a container, and
