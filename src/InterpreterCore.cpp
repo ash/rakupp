@@ -25906,8 +25906,10 @@ Value Interpreter::evalUnary(Unary* u) {
             if (f->t == VT::Code && f->code() && !f->code()->ci().isMultiDispatcher &&
                 !f->code()->ci().isMultiCandidate && !f->code()->ci().isProto && !f->code()->ci().builtin)
                 return callCallable(*f, ValueList{v});
-    if (!u->postfix && v.t == VT::Object && v.obj() && v.obj()->cls) {
-        if (Value* f = tctx().cur->find("&prefix:<" + u->op + ">")) {
+    // (…and a user multi on any operand: `multi prefix:<->(Str $x)` takes `-"a"`, the built-in `-3`)
+    if (!u->postfix && ((v.t == VT::Object && v.obj() && v.obj()->cls) || g_userPrefixShadow.load(std::memory_order_relaxed))) {
+        if (Value* f = tctx().cur->find("&prefix:<" + u->op + ">"); f && (v.t == VT::Object ||
+                (f->t == VT::Code && f->code() && f->code()->ci().isMultiDispatcher && !f->code()->ci().builtin))) {
             try { return callCallable(*f, ValueList{v}); }
             catch (RakuError& e) {
                 // no candidate for this class: fall through to the built-in, the
@@ -31674,6 +31676,14 @@ Value Interpreter::evalVarExpr(Expr* e) {
                 };
                 return code;
             }
+        }
+        // `&postfix:<++>`, `&prefix:<-->`: the step on the container it is handed,
+        // as a routine of that name (`@a.map(&postfix:<++>)`, `f($y)` steps $y)
+        if (bare == "prefix:<++>" || bare == "prefix:<-->" || bare == "postfix:<++>" || bare == "postfix:<-->") {
+            const bool post = bare[1] == 'o', inc = bare.find("++") != std::string::npos;
+            Value code = evalString(std::string("sub ($x is rw) { ") + (post ? "$x" : "") + (inc ? "++" : "--") + (post ? "" : "$x") + " }");
+            code.setCode(makePayload<Callable>(*code.code())); code.code()->ciM().name = bare;
+            return code;
         }
         // `&prefix:<!>` / `&prefix:<->` — a built-in prefix operator as a
         // Callable: `(False, &prefix:<!> ... *)` alternates

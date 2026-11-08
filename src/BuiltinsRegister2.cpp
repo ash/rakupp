@@ -461,13 +461,15 @@ void Interpreter::registerBuiltinsPart3() {
     };
     // `so`/`not` are word PREFIXES, and a program may add candidates to them
     // (Red: `multi prefix:<so>(Red::AST $a)` builds SQL instead of a Bool).
-    // Same rule as evalUnary's for a symbolic prefix: an OBJECT operand tries
-    // the user's candidates first, and one none of them takes falls through
-    // to the built-in, as Rakudo's wider core candidate would take it.
+    // Same rule as evalUnary's for a symbolic prefix: an OBJECT operand, or any
+    // once a program declares a multi of the name, tries the user's candidates
+    // first, and one none of them takes falls through to the built-in, as
+    // Rakudo's wider core candidate would take it.
     auto userWordPrefix = [](Interpreter& I, const char* op, ValueList& a, Value& out) -> bool {
-        if (a.size() != 1 || a[0].t != VT::Object || !a[0].obj() || !a[0].obj()->cls) return false;
+        const bool obj = a.size() == 1 && a[0].t == VT::Object && a[0].obj() && a[0].obj()->cls;
+        if (a.size() != 1 || (!obj && !g_userPrefixShadow.load(std::memory_order_relaxed))) return false;
         Value* f = I.tctx().cur ? I.tctx().cur->find(std::string("&prefix:<") + op + ">") : nullptr;
-        if (!f) return false;
+        if (!f || (!obj && !(f->t == VT::Code && f->code() && !f->code()->ci().builtin))) return false;
         try { out = I.callCallable(*f, ValueList{a[0]}); return true; }
         catch (RakuError& e) {
             if (!isMultiNoMatch(e)) throw;

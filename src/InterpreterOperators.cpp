@@ -3758,6 +3758,7 @@ static const std::set<std::string> kCorePostfixOps = {
     "++", "--", "i", "\xE2\x81\xBF", "\xE2\x9A\x9B++", "\xE2\x9A\x9B--"};
 static const std::set<std::string> kCoreCircumfixOps = {":{ }", "[ ]", "{ }"};
 static const std::set<std::string> kCorePostcircumfixOps = {"[ ]", "[; ]", "{ }", "{; }"};
+bool corePrefixName(const std::string& n) { return n.size() > 10 && kCorePrefixOps.count(n.substr(9, n.size() - 10)); }
 static const std::set<std::string>* coreOpsOf(const std::string& cat) {
     return cat == "infix" ? &kCoreInfixOps : cat == "prefix" ? &kCorePrefixOps
          : cat == "postfix" ? &kCorePostfixOps : cat == "circumfix" ? &kCoreCircumfixOps
