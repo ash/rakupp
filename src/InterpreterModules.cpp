@@ -7013,6 +7013,9 @@ static void mergeParentRoleMultis(ClassInfo* ci, const SigKey& sigKeyParams) {
             auto sigKeyParams = [](const std::vector<Param>* ps, const Callable* owner = nullptr) {
                 std::string k;
                 if (ps) for (auto& p : *ps) {
+                    // …a REQUIRED named makes it another signature too: a class's
+                    // `m($a)` leaves a role's `m($a, :$cast!)` in (Rakudo keeps it)
+                    if (p.named && p.required && !p.slurpy) { k += ":" + (p.namedKey.empty() ? p.name : p.namedKey) + "!,"; continue; }
                     if (p.named || p.slurpy) continue;
                     if (owner && owner->ci().roleConcrete && owner->closure && !p.type.empty())
                         if (Value* tv = owner->closure->local(p.type))
