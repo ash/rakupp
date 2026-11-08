@@ -5314,6 +5314,47 @@ static void mergeParentRoleMultis(ClassInfo* ci, const SigKey& sigKeyParams) {
 
 // The declaration statements exec dispatches here, kept out of its frame.
 //
+// execDeclStmt's refusals of what two roles bring a class, in Rakudo's words: an
+// only method from one role beside a multi of its name from another (a stub
+// aside), whatever the class declares itself; then a method two roles bring and
+// the class leaves unresolved, the roles named last-composed first, and a multi
+// by its first candidate in conflict (the last-composed role's first) with its
+// signature, as Rakudo's X::Role::Unresolved::Multi names it.
+template <class SigKey>
+static void refuseRoleClashes(Interpreter& I, const std::string& clsName, const std::vector<ClassInfo*>& composedRoles,
+                              const std::set<std::string>& conflicted, const std::set<std::string>& classOwn, SigKey sigKeyParams,
+                              std::map<std::string, std::map<std::string, std::set<const Callable*>>>& provided,
+                              std::map<std::string, std::vector<std::string>>& providerRoles,
+                              std::map<std::string, std::map<std::string, std::vector<std::string>>>& keyProviders) {
+    std::set<std::string> onlyM, multiM;
+    for (ClassInfo* role : composedRoles)
+        for (auto& kv : role->methods)
+            if (kv.second.t == VT::Code && kv.second.code() && !kv.second.code()->ci().isStub)
+                (kv.second.code()->ci().isMultiDispatcher ? multiM : onlyM).insert(kv.first);
+    for (auto& n : onlyM)
+        if (multiM.count(n))
+            throw RakuError{Value::typeObj("X::Comp::AdHoc"), "Cannot have a multi candidate for '" + n +
+                            "' when an only method is also in the package '" + clsName + "'"};
+    for (const std::string& cn : conflicted)
+        if (!classOwn.count(cn)) {
+            const Value* multi = nullptr; std::string sk;
+            for (auto rit = composedRoles.rbegin(); rit != composedRoles.rend() && !multi; ++rit) {
+                auto mit = (*rit)->methods.find(cn);
+                if (mit == (*rit)->methods.end() || mit->second.t != VT::Code || !mit->second.code()->ci().isMultiDispatcher) continue;
+                for (auto& c : mit->second.code()->cold().candidates)
+                    if (c.code() && !c.code()->ci().isStub && provided[cn][sk = sigKeyParams(c.code()->ci().params, c.code())].size() > 1 &&
+                        keyProviders[cn][sk].size() > 1) { multi = &c; break; }
+            }
+            const auto& roles = multi ? keyProviders[cn][sk] : providerRoles[cn];
+            std::string rl; for (auto r = roles.rbegin(); r != roles.rend(); ++r) rl += (rl.empty() ? "" : ", ") + *r;
+            const std::string tail = " must be resolved by class " + clsName + " because it exists in multiple roles (" + rl + ")";
+            if (!multi) throw RakuError{Value::typeObj("X::Role::Unresolved::Method"), "Method '" + cn + "'" + tail};
+            std::string sig = I.methodCall(I.methodCall(*multi, "signature", {}), "raku", {}).toStr();
+            if (sig.find(" $:: ") == std::string::npos && sig.size() > 2) sig.insert(2, clsName + " $:: ");
+            throw RakuError{Value::typeObj("X::Role::Unresolved::Multi"), "Multi method '" + cn + "' with signature " + sig + "'" + tail};
+        }
+}
+
 // exec is one switch over every statement kind, and a switch's stack frame is
 // sized to the MAXIMUM over all its cases — so the ~100 Value temporaries that
 // `class`, `sub`, `enum`, `subset`, a named regex and `use` need between them
@@ -7189,8 +7230,12 @@ static void mergeParentRoleMultis(ClassInfo* ci, const SigKey& sigKeyParams) {
             // resolved by the class's own method (diamonds share the Callable, so
             // pointer identity exempts them)
             std::map<std::string, std::map<std::string, std::set<const Callable*>>> provided;
-            std::map<std::string, std::set<std::string>> providerRoles;
-            std::map<std::string, std::map<std::string, std::set<std::string>>> keyProviders;   // …per signature
+            // (in the order the roles compose: a conflict names them the other way round, as Rakudo's)
+            std::map<std::string, std::vector<std::string>> providerRoles;
+            std::map<std::string, std::map<std::string, std::vector<std::string>>> keyProviders;   // …per signature
+            auto note = [](std::vector<std::string>& v, const std::string& r) {
+                if (std::find(v.begin(), v.end(), r) == v.end()) v.push_back(r);
+            };
             for (ClassInfo* role : composedRoles) {
                 // (two parameterizations of one role are two providers: R[Str], R[Int])
                 auto ca = concArgv.find(role);
@@ -7206,14 +7251,14 @@ static void mergeParentRoleMultis(ClassInfo* ci, const SigKey& sigKeyParams) {
                             if (c.code() && !c.code()->ci().isStub) {
                                 const std::string sk = sigKeyParams(c.code()->ci().params, c.code());
                                 provided[kv.first][sk].insert(c.code());
-                                keyProviders[kv.first][sk].insert(provider);
-                                providerRoles[kv.first].insert(provider);
+                                note(keyProviders[kv.first][sk], provider);
+                                note(providerRoles[kv.first], provider);
                             }
                     }
                     else if (!kv.second.code()->ci().isStub) {
                         provided[kv.first][""].insert(kv.second.code());
-                        keyProviders[kv.first][""].insert(provider);
-                        providerRoles[kv.first].insert(provider);
+                        note(keyProviders[kv.first][""], provider);
+                        note(providerRoles[kv.first], provider);
                     }
                 }
             }
@@ -7971,13 +8016,8 @@ static void mergeParentRoleMultis(ClassInfo* ci, const SigKey& sigKeyParams) {
                 std::set<std::string> classOwn;
                 for (auto& md : cd->methods) classOwn.insert(md->isPrivate ? "!" + md->name : md->name);
                 // conflicts first: two roles provided the same real implementation
-                for (const std::string& cn : conflicted)
-                    if (!classOwn.count(cn)) {
-                        std::string rl; for (auto& r : providerRoles[cn]) { if (!rl.empty()) rl += ", "; rl += r; }
-                        throw RakuError{Value::typeObj("X::Role::Unresolved::Method"),
-                            "Method '" + cn + "' must be resolved by class " + clsName +
-                            " because it exists in multiple roles (" + rl + ")"};
-                    }
+                refuseRoleClashes(*this, clsName, composedRoles, conflicted, classOwn, sigKeyParams,
+                                  provided, providerRoles, keyProviders);
                 // a real (non-stub) implementation anywhere in the effective type
                 std::function<bool(ClassInfo*, const std::string&, const std::string*)> hasImpl =
                     [&](ClassInfo* c, const std::string& n, const std::string* sig) -> bool {
