@@ -775,6 +775,12 @@ Value Interpreter::byCallableMinMaxPairs(const std::vector<std::pair<Value, Valu
     return out;
 }
 
+// (a path that names a directory: `.slurp` and `.lines` refuse one)
+static bool isDirPath(const std::string& p) {
+    struct stat st;
+    return ::stat(p.c_str(), &st) == 0 && S_ISDIR(st.st_mode);
+}
+
 std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName& m, ValueList& args,
                                      const std::vector<ExprPtr>* rwArgs) {
     auto a0 = [&]() -> Value { return args.empty() ? Value::any() : args[0]; };
@@ -2295,12 +2301,9 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
         return methodCall(in, "slurp", args);
     }
     if (m == "slurp" && inv.hashKind == "IO") {
-        {   // a DIRECTORY has no content to slurp
-            struct stat dst;
-            if (::stat(ioFsPath(inv).c_str(), &dst) == 0 && S_ISDIR(dst.st_mode))
-                throw RakuError{Value::typeObj("X::IO::Directory"),
-                                "Failed to open file " + inv.toStr() + ": is a directory"};
-        }
+        if (isDirPath(ioFsPath(inv)))   // a DIRECTORY has no content: Rakudo's slurp says so by its whole path
+            throw RakuError{Value::typeObj("X::AdHoc"),
+                            "Tried to open directory " + methodCall(inv, "absolute", ValueList{}).toStr()};
         std::ifstream in(ioFsPath(inv), std::ios::binary);
         if (!in) throwFailedOpen(ioFsPath(inv));
         std::ostringstream ss; ss << in.rdbuf();
@@ -4831,6 +4834,9 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
             methodCall(h, "close", ValueList{});
             return res;
         }
+        if (isDirPath(ioFsPath(inv)))   // …and `.lines` of one is the `.open` it starts with (it read no lines)
+            throwTypedV("X::IO::Directory", {{"path", Value::str(inv.toStr())}, {"trying", Value::str("open")}},
+                        "'" + inv.toStr() + "' is a directory, cannot do '.open' on a directory");
         std::ifstream in(ioFsPath(inv), std::ios::binary); Value out = Value::array(); out.isList = true; out.s = "Seq";
         if (!in) throwFailedOpen(ioFsPath(inv));
         std::ostringstream raw; raw << in.rdbuf();
