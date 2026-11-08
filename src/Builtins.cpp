@@ -4763,12 +4763,23 @@ Value makeSignature(const Callable* c) {
     // `.returns` / `.of` — the DECLARED return type. DBDish's TypeConverter keys
     // its conversion table by it (`%!Conversions{$_.signature.returns} = $_`), so
     // without this the whole table was built under one key.
+    // (`--> Nil`, `--> True`, `--> 42` are kept as the value the body returns,
+    // and the signature returns that value's type all the same)
+    std::string retLitT;
+    if (retT.empty() && c) {
+        const Expr* rl = c->ci().retLiteral;
+        const std::string lit = retLiteralText(rl);
+        retLitT = lit == "Nil" ? "Nil" : lit == "Empty" ? "Slip" : !lit.empty() ? "Bool"
+                : rl && rl->kind == NK::IntLit ? "Int"
+                : rl && (rl->kind == NK::StrLit || rl->kind == NK::InterpStr) ? "Str" : "";
+    }
     if (!retT.empty()) (*s.hash())["returns"] = Value::typeObj(retTypeName(retT));
+    else if (!retLitT.empty()) (*s.hash())["returns"] = Value::typeObj(retLitT);
     // the declared parameters themselves (AST-owned, program lifetime), for
     // Signature ~~ Signature
     if (c && !c->cold().hasPrimed && c->ci().params && synth.empty()) {
         (*s.hash())["\x01sigptr"] = Value::integer((long long)(uintptr_t)c->ci().params);
-        (*s.hash())["\x01ret"] = Value::str(c->cold().retType);
+        (*s.hash())["\x01ret"] = Value::str(retLitT.empty() ? c->cold().retType : retLitT);
         if (c->ci().isMethod) (*s.hash())["\x01method"] = Value::boolean(true);   // an invocant comes first
     }
     (*s.hash())["arity"] = Value::integer(arity);
