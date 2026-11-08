@@ -382,7 +382,8 @@ bool rtNativeIntOp(const std::string& op, long long sa, long long sb, long long&
 // A native int operand makes an integer operator the NATIVE one, as Rakudo's
 // dispatch picks it: `int.max + 1` wraps to int.min, and the result is native
 // itself, so `($z * 4) div 2` wraps in the middle and gives 0. The other operand
-// must be a native int too, or an integer LITERAL that fits 64 bits: a boxed Int
+// must be a native int too, or an integer LITERAL that fits 64 bits (intLitFolded,
+// `2**62` among them): a boxed Int
 // variable, typed or not, takes the Int candidate and grows, as does a literal
 // wider than 64 bits (oracle-checked against Rakudo 2026.09). Answers false for
 // everything it does not decide, and for a zero divisor, which the general path
@@ -395,14 +396,6 @@ static bool nativeIntArith(const std::string& op, const Value& l, const Value& r
     auto plainInt = [](const Value& v) {
         return v.t == VT::Int && !v.big() && v.hashKind.empty() && v.enumName.empty();
     };
-    auto intLit = [](const Expr* e) {
-        if (e && e->kind == NK::Unary) {
-            auto* u = static_cast<const Unary*>(e);
-            if (u->postfix || (!opEq(u->op, "-") && !opEq(u->op, "\xE2\x88\x92"))) return false;
-            e = u->operand.get();
-        }
-        return e && e->kind == NK::IntLit;
-    };
     // A native is a STATIC property in Rakudo: the operand names a native
     // variable, or is itself a native operation. A value that merely carries
     // the tags — an array element, a routine's return, a list item, the topic
@@ -414,7 +407,7 @@ static bool nativeIntArith(const std::string& op, const Value& l, const Value& r
     const bool ln8 = natInt(l) && natNode(ln), rn8 = natInt(r) && natNode(rn);
     if (!ln8 && !rn8) return false;
     if (!plainInt(l) || !plainInt(r)) return false;
-    if (!(ln8 || intLit(ln)) || !(rn8 || intLit(rn))) return false;
+    if (!(ln8 || intLitFolded(ln)) || !(rn8 || intLitFolded(rn))) return false;
     long long x;
     if (!rtNativeIntOp(op, l.i, r.i, x)) return false;
     out = Value::integer(x);

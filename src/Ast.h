@@ -1621,20 +1621,31 @@ inline bool nativeIntNode(const Expr* e) {
     return false;
 }
 
+// An integer literal, signed or not, or literals an operator folds (`2**62`,
+// `1 +< 40`, `-2**62`): Rakudo folds those to one literal at compile time, which
+// a native int operator takes as it takes a written one. (One wider than 64
+// bits is still an Int: the run-time operation sees its value and grows.)
+inline bool intLitFolded(const Expr* x) {
+    if (x && x->kind == NK::Binary) {
+        auto* b = static_cast<const Binary*>(x);
+        const std::string& o = b->op;
+        return (o == "+" || o == "-" || o == "*" || o == "**" || o == "+<" || o == "+>" || o == "div" || o == "%" ||
+                o == "mod" || o == "+&" || o == "+|" || o == "+^") && intLitFolded(b->lhs.get()) && intLitFolded(b->rhs.get());
+    }
+    if (x && x->kind == NK::Unary) {
+        auto* u = static_cast<const Unary*>(x);
+        return !u->postfix && (u->op == "-" || u->op == "+" || u->op == "\xE2\x88\x92") && intLitFolded(u->operand.get());
+    }
+    return x && x->kind == NK::IntLit;
+}
+
 // The same question with no value to look at, for the compiling backends: an
 // integer operator is native when each operand is a native int or an integer
 // literal (at least one of them native), all the way down.
 inline bool nativeIntStatic(const Expr* e) {
     if (!e) return false;
     if (e->kind == NK::VarExpr) return static_cast<const VarExpr*>(e)->nativeIntRead;
-    auto intLit = [](const Expr* x) {
-        if (x && x->kind == NK::Unary) {
-            auto* u = static_cast<const Unary*>(x);
-            if (u->postfix || (u->op != "-" && u->op != "\xE2\x88\x92")) return false;
-            x = u->operand.get();
-        }
-        return x && x->kind == NK::IntLit;
-    };
+    const auto intLit = intLitFolded;
     if (e->kind == NK::Binary) {
         auto* b = static_cast<const Binary*>(e);
         const std::string& o = b->op;
@@ -1670,10 +1681,10 @@ inline bool nativeNumericStatic(const Expr* e, char* kind = nullptr) {
         char lk = 0, rk = 0;
         const bool ln = nativeNumericStatic(b->lhs.get(), &lk), rn = nativeNumericStatic(b->rhs.get(), &rk);
         auto litOf = [](const Expr* x, char want) {
+            if (want == 'i') return intLitFolded(x);
             if (x && x->kind == NK::Unary && !static_cast<const Unary*>(x)->postfix)
                 x = static_cast<const Unary*>(x)->operand.get();
             if (!x) return false;
-            if (want == 'i') return x->kind == NK::IntLit;
             return x->kind == NK::NumLit && !static_cast<const NumLit*>(x)->isRat &&
                    !static_cast<const NumLit*>(x)->imaginary;
         };
