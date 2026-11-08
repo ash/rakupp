@@ -815,6 +815,8 @@ Value Interpreter::spawnSupplyChannel(Value chan, Value blk, std::shared_ptr<Sup
         try { I2.sinkDiscarded(I2.callCallable(blk, one)); }
         catch (NextEx&) {} catch (LastEx&) { ctx->done = true; } catch (DoneEx&) { ctx->done = true; }
         catch (RakuError& e) {
+            // the TAPPER died on our emit: the scheduler has it, as on Rakudo
+            if (e.fromTapperOf == ctx.get()) { I2.toSchedulerUncaught(e); return; }
             // same rule as every other whenever arm: the body's own QUIT phasers
             // see it first, otherwise it goes downstream and closes the activation
             Value ex = I2.exceptionFor(e);
@@ -902,7 +904,9 @@ Value Interpreter::spawnSupplyInterval(double interval, double delay, Value blk,
                 // the generic whenever path): its own QUIT phasers see it first,
                 // otherwise it goes downstream and closes the activation. The
                 // worker used to swallow it, so the failure vanished and the
-                // ticker kept running.
+                // ticker kept running. (The TAPPER's own death the scheduler has,
+                // and the ticking stops, as Rakudo's `:every` cue does.)
+                if (e.fromTapperOf == ctx.get()) { ctx->done = true; I2.toSchedulerUncaught(e); return; }
                 Value ex = I2.exceptionFor(e);
                 bool handled = false;
                 for (auto& q : quitP) { ValueList o2{ex}; try { I2.callCallable(q, o2); handled = true; } catch (...) {} }

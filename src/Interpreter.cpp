@@ -7196,6 +7196,20 @@ Value Interpreter::cueJob(Value code, double delaySecs, double everySecs, long l
     return cancellation;
 }
 
+// An error the supply's own code did not raise — its TAPPER's, on a value from
+// an interval or a Channel, which Rakudo delivers on the scheduler — goes where
+// the scheduler sends one: to `uncaught_handler`, or it ends the process.
+void Interpreter::toSchedulerUncaught(const RakuError& e) {
+    if (defaultScheduler_.t == VT::Hash && defaultScheduler_.hash()) {
+        auto it = defaultScheduler_.hash()->find("uncaught_handler");
+        if (it != defaultScheduler_.hash()->end() && it->second.t == VT::Code) {
+            try { callCallable(it->second, ValueList{exceptionFor(e)}); } catch (...) {}
+            return;
+        }
+    }
+    endOnUnhandled(e);
+}
+
 // Block the caller until `ps` completes, dropping the GIL while parked so a
 // worker can run, and handing over the live execution registers to it.
 void Interpreter::awaitPromise(const std::shared_ptr<PromiseState>& ps) {
