@@ -4267,6 +4267,29 @@ std::vector<std::string> suggestNames(const std::string& name, const std::vector
     return out;
 }
 
+// An undeclared VARIABLE's suggestions, as Rakudo's: within a third of its length
+// past the sigil (`$fo` finds no `$foo`, `$baz` finds `$bar`, `$foO` its `$foo`)
+std::vector<std::string> variableSuggestions(const std::string& name, const std::vector<std::string>& cands) {
+    std::vector<std::string> out;
+    for (auto& c : suggestNames(name, cands))
+        if (suggestDistance(name, c) <= (name.size() - 1) / 3.0) out.push_back(c);
+    return out;
+}
+// …and its message: those, or Rakudo 2026.09's hint when there are none, filled
+// to 71 columns as Rakudo's naive-word-wrapper fills it
+std::string undeclaredVariableMessage(const std::string& name, const std::vector<std::string>& sug) {
+    std::string m = "Variable '" + name + "' is not declared" + didYouMean(sug), out, line;
+    if (sug.empty()) m += ". Perhaps you forgot a 'sub' if this was intended to be part of a signature?";
+    for (size_t i = 0, e; i < m.size(); i = e + 1) {
+        e = m.find(' ', i); if (e == std::string::npos) e = m.size();
+        std::string w = m.substr(i, e - i);
+        if (line.empty()) line = w;
+        else if (line.size() + 1 + w.size() <= 71) line += " " + w;
+        else { out += (out.empty() ? "" : "\n") + line; line = w; }
+    }
+    return out + (out.empty() ? "" : "\n") + line;
+}
+
 // A misspelled TYPE name: the core types and every type this program declared
 // Is `t`, written where a parameter's type goes, something nothing declares?
 // Only a certainty counts (see declTypeIsKnown): a core enum member or term

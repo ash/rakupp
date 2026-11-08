@@ -756,7 +756,7 @@ int reportUndeclaredVars(const std::vector<UndeclaredVar>& findings,
     std::cerr << "===SORRY!=== Error while compiling " << fileName << "\n";
     for (auto& f : findings) {
         int line = locate(f);
-        std::cerr << "Variable '" << f.name << "' is not declared\n"
+        std::cerr << undeclaredVariableMessage(f.name, variableSuggestions(f.name, f.inScope)) << "\n"
                   << "at " << fileName << ":" << line << "\n";
         std::string ln = sourceLine(line);
         if (ln.empty()) continue;

@@ -483,7 +483,7 @@ void Interpreter::throwUndeclaredVar(const std::string& name, const std::vector<
                 for (auto& a : c->attrs) cands.push_back(std::string(1, a.sigil) + "!" + a.name);
         }
     }
-    std::vector<std::string> sug = suggestNames(name, cands);
+    std::vector<std::string> sug = variableSuggestions(name, cands);
     // …and a TYPE the bare name nearly spells: `$foo` next to `class Foo`
     // suggests Foo (Rakudo's X::Undeclared lists types among its suggestions)
     if (name.size() > 1 && (name[0] == '$' || name[0] == '@' || name[0] == '%')) {
@@ -495,15 +495,9 @@ void Interpreter::throwUndeclaredVar(const std::string& name, const std::vector<
         if (typeCands.size() < 2000)
             for (auto& t : suggestNames(name.substr(1), typeCands)) sug.push_back(t);
     }
-    std::string msg = "Variable '" + name + "' is not declared";
+    std::string msg = undeclaredVariableMessage(name, sug);
     Value sl = Value::array(); sl.isList = true;
     for (auto& n : sug) sl.arr()->push_back(Value::str(n));
-    if (sug.size() == 1) msg += ". Did you mean '" + sug[0] + "'?";
-    else if (!sug.empty()) {
-        msg += ". Did you mean any of these: ";
-        for (size_t i = 0; i < sug.size(); i++) msg += (i ? ", '" : "'") + sug[i] + "'";
-        msg += "?";
-    }
     Value he = Value::array(); he.isList = true;
     throwTypedV("X::Undeclared", {{"symbol", Value::str(name)}, {"what", Value::str("Variable")},
                                   {"suggestions", sl}, {"pre", Value::str("")}, {"post", Value::str(name)},
