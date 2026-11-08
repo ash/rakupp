@@ -1196,6 +1196,20 @@ const Value* Interpreter::lexicalRoutineVal() {
     }
     return tctx().curRoutineVal;
 }
+// Is the frame a `fail` written here would leave a BLOCK's own — a `start`
+// block's, a hyper `map`'s, which run as routines of their own on a worker —
+// rather than a routine's? Then there is no routine to leave, and Rakudo's
+// `fail` throws: `start { fail "x" }` breaks its promise.
+bool Interpreter::lexicalRoutineIsBlock() {
+    for (Env* e = tctx().cur.get(); e; e = e->parent.get()) {
+        if (!e->routineFrame) continue;
+        for (auto it = tctx().callFrames.rbegin(); it != tctx().callFrames.rend(); ++it)
+            if (it->calleeEnv == e)
+                return it->code && it->code->t == VT::Code && it->code->code() && it->code->code()->ci().isBlock;
+        return false;
+    }
+    return false;
+}
 void Interpreter::recordLexicalRoutine() {
     for (Env* e = tctx().cur.get(); e; e = e->parent.get()) {
         if (!e->routineFrame) continue;

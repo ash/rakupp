@@ -680,7 +680,7 @@ void Interpreter::registerBuiltins() {
         // and Rakudo throws the exception.
         const uint64_t lf = I.lexicalRoutineFrame();
         if (I.tctx().curRoutineFrame == 0 || I.fatalHere() || I.tctx().compiledTry > 0 ||
-            (lf && !I.lexicalRoutineLive()))
+            (lf && !I.lexicalRoutineLive()) || I.lexicalRoutineIsBlock())
             throw RakuError{(*f.hash())["exception"], (*f.hash())["message"].toStr()};
         if (lf && lf < I.tctx().curRoutineFrame) throw ReturnEx{f, lf};
         throw ReturnEx{f};
