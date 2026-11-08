@@ -2855,6 +2855,7 @@ public:
     std::optional<Value> catchAllDelegation(const Value& inv, const struct MName& m, ValueList& args,
                                             const std::vector<ExprPtr>* rwArgs);
     Value exceptionFor(const RakuError& e); // $!/$_ value for a caught error: always a DEFINED exception instance
+    [[noreturn]] void throwBeginTime(const RakuError& e, const std::string& kind);   // X::Comp::BeginTime (InterpreterModules.cpp)
     // A Failure stores its exception as a bare TYPE plus a message; anything
     // that hands the exception to user code (`$!`, `.exception`, `.throw`) must
     // hand over a defined instance instead, or `if $!` is False and `.message`

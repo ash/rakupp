@@ -9010,6 +9010,19 @@ static void refuseRoleClashes(Interpreter& I, const std::string& clsName, const 
     return execBlock(b, scope, sink, handOff); // a sunk bare block sinks its final value too
 }
 
+// What dies in a BEGIN, a CHECK or a constant's initializer is a compile-time
+// failure: X::Comp::BeginTime holding it as `.exception`, worded as Rakudo's,
+// "An exception X::AdHoc+{X::Comp} occurred while evaluating a BEGIN:⏎msg". A
+// BEGIN's (and a constant's, which Rakudo evaluates as one) does X::Comp; a
+// CHECK's is as it was thrown.
+void Interpreter::throwBeginTime(const RakuError& e, const std::string& kind) {
+    Value inner = exceptionFor(e);
+    if (kind == "BEGIN" && inner.t == VT::Object && inner.obj() && !typeOrSubsetMatches(inner, "X::Comp"))
+        inner = mixinValue(inner, Value::typeObj("X::Comp"), true, false, nullptr);
+    throwTypedV("X::Comp::BeginTime", {{"exception", inner}, {"use-case", Value::str("evaluating a " + kind)}},
+                "An exception " + inner.typeName() + " occurred while evaluating a " + kind + ":\n" + e.message);
+}
+
 [[gnu::noinline]] Value Interpreter::execBareBlockRare(Block* b, bool sink) {
     // A registered END belongs to program exit. The statement runners
     // skip it (isBlockPhaser), so this is the UNIT-level path — a
@@ -9025,15 +9038,15 @@ static void refuseRoleClashes(Interpreter& I, const std::string& clsName, const 
     // compile-time failure, as at the top level
     struct BeginDepth { int& d; bool on; BeginDepth(int& x, bool o) : d(x), on(o) { if (on) d++; } ~BeginDepth() { if (on) d--; } }
         beginDepthGuard{beginDepth_, b->phaser == "BEGIN"};
-    if (b->phaser == "BEGIN" && !b->stmtForm) {   // (`BEGIN my $x = …` declares out here: left alone)
+    // …and a CHECK too; the statement form (`BEGIN my $x = …`) runs in this scope, where it declares
+    if (b->phaser == "BEGIN" || b->phaser == "CHECK") {
+        const std::string kind = b->phaser;
         b->phaser.clear();
-        struct Restore { Block* b; ~Restore() { b->phaser = "BEGIN"; } } rs{b};
-        try { return exec(b, sink); }
+        struct Restore { Block* b; const std::string& k; ~Restore() { b->phaser = k; } } rs{b, kind};
+        try { return b->stmtForm ? execBlock(b, tctx().cur, sink) : exec(b, sink); }
         catch (RakuError& e) {
             if (e.payload.t == VT::Type && e.payload.s == "X::Undeclared::Symbols") throw;
-            Value inner = exceptionFor(e);
-            throwTypedV("X::Comp::BeginTime", {{"exception", inner}, {"use-case", Value::str("evaluating a BEGIN")}},
-                        "An exception occurred while evaluating a BEGIN: " + e.message);
+            throwBeginTime(e, kind);
         }
     }
     // `{*}` inside a `proto` body: THE dispatch point. It hands the proto's
@@ -9474,10 +9487,7 @@ int Interpreter::run(Program& prog) {
             catch (RakuError& e) {
                 // a routine not declared YET is a compile-time refusal of its own
                 if (e.payload.t == VT::Type && e.payload.s == "X::Undeclared::Symbols") throw;
-                Value inner = exceptionFor(e);
-                std::string im = e.message;
-                throwTypedV("X::Comp::BeginTime", {{"exception", inner}, {"use-case", Value::str("evaluating a BEGIN")}},
-                            "An exception occurred while evaluating a BEGIN: " + im);
+                throwBeginTime(e, "BEGIN");
             }
         };
         // …and the top-level constants among them, in the same source order, when
@@ -9501,7 +9511,8 @@ int Interpreter::run(Program& prog) {
             }
             for (; bi < beginP.size(); bi++) runBegin(beginP[bi]);
         }
-        for (auto it = checkP.rbegin(); it != checkP.rend(); ++it) runPhaser(*it); // CHECK: reverse
+        for (auto it = checkP.rbegin(); it != checkP.rend(); ++it)   // CHECK: reverse
+            try { runPhaser(*it); } catch (RakuError& e) { throwBeginTime(e, "CHECK"); }
         if (ctValues_) ctAfterCheck(*this, prog);   // a binary's build-time pass: no INIT, no ENTER
         else {
             for (auto* b : initP) runHoistedInit(b);                              // INIT: source order, program-wide

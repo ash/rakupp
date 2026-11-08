@@ -1119,9 +1119,7 @@ void Interpreter::runStaticPhasers(const std::vector<StmtPtr>& stmts, const std:
             tctx().cur = saved;
             RakuError re{Value::typeObj("X::ControlFlow::Return"), "Attempt to return outside of any Routine"};
             if (r.kind == "INIT") throw re;
-            Value inner = exceptionFor(re);
-            throwTypedV("X::Comp::BeginTime", {{"exception", inner}, {"use-case", Value::str("evaluating a " + r.kind)}},
-                        "An exception occurred while evaluating a " + r.kind + ": " + re.message);
+            throwBeginTime(re, r.kind);
         } catch (...) { tctx().cur = saved; throw; }
         tctx().cur = saved;
         staticPhaserVal_[key] = v;
