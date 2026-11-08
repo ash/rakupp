@@ -29,7 +29,9 @@ sixteen of TODO-FOLLOW-UPS.md's items: c73d0b8d, ced6a8ef, 4c49bc3e,
 c2ec4411, 6e8cdfbe, 8fbd9e08, 6497dca5, a3f00087, db0fdbca;
 and nineteen more: b9c337a0, 5d7e8be9, 2a32bb59, b4cb4a06, 23822660,
 5f78f1f3, f59ff84c, 88751a81, 370e0b4d, 7c69a48c, 393aa64e, 85a90672,
-1f5ed33a, 728cf9cb, 07dc2ee9, 04db6160, 0f3b9feb, 2cbd6521, 84afd3c1.*
+1f5ed33a, 728cf9cb, 07dc2ee9, 04db6160, 0f3b9feb, 2cbd6521, 84afd3c1;
+and twelve more: 483370b7, 422df3d1, a63dab44, 53837aa5, ae41bc63, 8660ca95,
+7279b2ad, 50f0b0bd, 019f922c, fa865d47, d3ab58de, e9bb987d.*
 
 ---
 
@@ -354,6 +356,24 @@ and nineteen more: b9c337a0, 5d7e8be9, 2a32bb59, b4cb4a06, 23822660,
 - **`--exe`: `constant @L = (2, 4)` is a List** (84afd3c1), where it said Array
   and printed `[2 4]`. `t/regression/list-constant-native.raku`, built
   natively by t/run.raku.
+- **`exit` runs no LEAVE phaser** (50f0b0bd), interpreted or compiled: `for ^2 ->
+  $i { LEAVE { say "leave$i" }; exit 0 if $i == 0 }` printed leave0, where
+  Rakudo runs the END phasers and ends. `t/regression/exit-runs-no-leave.raku`.
+- **A typed `$` parameter's `.VAR` is its value** (019f922c): `sub t(Channel $in)
+  { $in.VAR.^name }` said Scalar, Rakudo Channel; an Iterable is still
+  itemized. `t/regression/typed-param-var-is-value.raku`.
+- **A Whatever held in a variable stays a Pair's key** (ae41bc63): `($w => 1).raku`
+  was `"*" => 1`. `t/regression/whatever-value-pair-key.raku`.
+- **A Pod block's `.Str` and `.raku` are Rakudo's** (7279b2ad), `Pod::Block::Named<…>`
+  and the constructor that builds it, where both were its text; `V<…>` is
+  text run into its neighbours. `t/regression/pod-block-str-and-raku.raku`.
+- **A supply whose own code dies runs its CLOSE phasers before the tapper's
+  quit** (e9bb987d), in every whenever arm, and a `done` in it before the tapper's
+  done; a source's quit passing through still reaches the tapper first.
+  `t/regression/supply-close-before-quit.raku`.
+- **Code cued on the scheduler that dies is reported and ends the process**
+  (d3ab58de), status 1, as Rakudo's scheduler does; it was silent and the
+  program ran on. `t/regression/scheduler-cue-die-reported.raku`.
 
 ### Fixed: crashes
 
@@ -455,6 +475,25 @@ and nineteen more: b9c337a0, 5d7e8be9, 2a32bb59, b4cb4a06, 23822660,
 - **X::Str::Numeric and X::OutOfRange made with `.new` have Rakudo's
   messages** (0f3b9feb): the first was (Any), the second wrote its range `1 2`.
   `t/regression/exception-new-messages.raku`.
+- **`use Test; sub ok(…)` is a redeclaration** (483370b7), "Redeclaration of
+  symbol '&ok'.", and every routine declared twice gets Rakudo's one
+  wording, "… Did you mean to declare a multi-sub?".
+  `t/regression/test-routine-redeclaration.raku`.
+- **An undeclared type-like name before a statement's block is refused at
+  compile time** (422df3d1), "Function 'Foo' needs parens to avoid gobbling
+  block", for every xblock (`if`, `for`, `when`, …), not only in an EVAL.
+  `t/regression/gobbled-block-refused-at-compile-time.raku`.
+- **`.AST.DEPARSE` writes `start 5` as written** (a63dab44), not as a block.
+  `t/regression/rakuast-start-expression-deparse.raku`.
+- **An unknown parent is reported in Rakudo's words** (53837aa5), "'C' cannot
+  inherit from 'nosuch' because it is unknown.", and a role's unknown `is`
+  is one too, where it was dropped. `t/regression/unknown-parent-message.raku`.
+- **`substr`'s out-of-range messages are Rakudo's** (8660ca95): a start past the
+  end hints "use *-10", a negative length is the "Number of characters
+  argument". `t/regression/substr-out-of-range-hint.raku`.
+- **`is hidden-from-backtrace` hides the routine's frame** (fa865d47), which was
+  printed; `.backtrace.list` keeps it with `.is-hidden` True.
+  `t/regression/hidden-from-backtrace-frames.raku`.
 
 ### Platforms and packaging
 
@@ -530,10 +569,18 @@ and nineteen more: b9c337a0, 5d7e8be9, 2a32bb59, b4cb4a06, 23822660,
   multi-method candidate". (Five more found there are fixed by b9c337a0 to
   84afd3c1, above.)
 - Found with b9c337a0 to 84afd3c1, the same before them (each in
-  TODO-FOLLOW-UPS.md): `.AST.DEPARSE` writes `start 5` with braces; a
-  class's unknown parent says "Class 'C' cannot inherit…" where Rakudo says
-  "'C' cannot inherit…"; a Whatever value keyed into a Pair is the string
-  "*", and a WhateverCode gists as `WhateverCode.new` where Rakudo shows its
-  source; a multi-role conflict and an out-of-range `.substr` say less than
-  Rakudo's; an itemized Range still flattens in a list; and a runtime error
-  in a `{…}` of a multi-line string names the string's first line.
+  TODO-FOLLOW-UPS.md): a WhateverCode gists as `WhateverCode.new` where
+  Rakudo shows its source; a multi-role conflict says less than Rakudo's;
+  an itemized Range still flattens in a list; and a runtime error in a
+  `{…}` of a multi-line string names the string's first line. (`start 5`'s
+  deparse, the unknown-parent wording, a Whatever key and `.substr`'s
+  messages are fixed by a63dab44, 53837aa5, ae41bc63 and 8660ca95, above.)
+- Found with 483370b7 to e9bb987d, the same before them (each in
+  TODO-FOLLOW-UPS.md): an unknown parent is refused when its declaration
+  runs, where Rakudo refuses it at compile time; a declarator block's
+  `.raku` is its text, a trailing `#=` after a routine's `}` is lost, and
+  `for $=pod` makes one pass; a sunk `start` that dies is silent, where
+  Rakudo reports it and exits 1; and an `exit` on a worker thread runs no
+  END phaser. Still open beside d3ab58de, from before: a tapper that dies on
+  a value from `Supply.interval` or a Channel quits the supply, where
+  Rakudo ends the process.
