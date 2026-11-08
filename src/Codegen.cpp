@@ -4920,6 +4920,7 @@ struct Codegen {
                 if (!v->declare && !moduleMode_)
                     return "rtArrayAssignTo(RT, " + lvalueExpr(tgt) + ", " + rhs + ", " + cesc(n) + ", " +
                            (dollar ? "true" : "false") + ")";
+                if (v->declare && v->d().declScope == "constant") return "rtConstPositional(RT, " + rhs + ")";   // (a List stays one)
                 return std::string(v->declare && v->d().declType.empty() ? "rtSelfPack(" : "(") + "rtArrayVal(rtNilToAny(" + rhs + ")))";
             }
             if (!n.empty() && n[0] == '%') return "rtCoerceHash(" + rhs + ")"; // my %h = a=>1,…

@@ -9089,6 +9089,17 @@ static Value bufElemStore(Value& buf, const Value& key, Value v) {
     buf.s.promote();   // shared storage from here on, as the interpreter's arm leaves it
     return buf.blobElemAt(i);
 }
+// `constant @L = (2, 4)` in compiled code: what the interpreter's constant bind
+// makes of the value — a List, an Array or a Range kept as it is, a Seq or an
+// object cached, anything else the one-element List. It was assigned as `my @`
+// is, so the constant said it was an Array.
+Value rtConstPositional(Interpreter& I, Value v) {
+    if ((v.t == VT::Array && v.s != "Seq") || v.t == VT::Range) { v.itemized = false; return v; }
+    if (v.t == VT::Object || (v.t == VT::Array && v.s == "Seq")) return I.methodCall(v, "cache", ValueList{});
+    Value l = Value::array(); l.isList = true;
+    l.arr()->push_back(std::move(v));
+    return l;
+}
 // `$b[1]++`, `--$b[*-1]`: a Buf's element steps through the same store, wrapping
 // at its width, and one past the end grows it; a Blob's is no container
 Value bufElemStep(Interpreter& I, Value& buf, Value key, const std::string& op, bool post) {

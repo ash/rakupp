@@ -6396,6 +6396,7 @@ bool rtLiveFailure(const Value& r);   // a Failure nothing has handled yet (the 
 // otherwise, as every element store was
 Value rtNativeArrayNew(Interpreter& I, const char* type, const char* name, Value rhs, bool dollarSource);
 Value rtArrayAssignTo(Interpreter& I, Value& lv, Value rhs, const char* name, bool dollarSource);
+Value rtConstPositional(Interpreter& I, Value v);   // `constant @L = …`: a Positional as it is, the rest a List
 bool rtPackedStore(Interpreter& I, Value& base, const Value& key, const Value& v);
 Value rtElemStoreN(Interpreter& I, Value& base, const Value& key, Value v, char how);
 Value bufElemStep(Interpreter& I, Value& buf, Value key, const std::string& op, bool post);   // `$b[1]++`
