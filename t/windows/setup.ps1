@@ -7,6 +7,7 @@
     machine, in TAP:
 
       * the engine it installed RUNS (6 * 7, not a file-exists check)
+      * raku++.exe is installed with no task to ask for it, and runs
       * the "raku" task is what decides whether raku.exe exists, and the copy
         it makes is a working engine
       * Add/Remove Programs gets an entry, and its version is the version the
@@ -100,6 +101,7 @@ function Run-Silent ([string] $exe, [string[]] $arguments) {
 $prefix = Join-Path ([System.IO.Path]::GetTempPath()) ('rakupp-setup-' + [guid]::NewGuid().ToString('N').Substring(0, 8))
 $bin    = Join-Path $prefix 'bin'
 $exe    = Join-Path $bin 'rakupp.exe'
+$plus   = Join-Path $bin 'raku++.exe'
 $alias  = Join-Path $bin 'raku.exe'
 $probe  = '%LOCALAPPDATA%\rakupp-path-probe'
 $silent = @('/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', '/NOCANCEL')
@@ -115,6 +117,7 @@ try {
     ok ($rc -eq 0) 'setup exits 0' "exit $rc"
     ok (Wait-For { Test-Path -LiteralPath $exe }) 'bin\rakupp.exe is there'
     ok ((Answer $exe) -eq '42') 'the installed rakupp runs' (Answer $exe)
+    ok ((Answer $plus) -eq '42') 'raku++.exe is installed with no task, and runs' (Answer $plus)
     ok (-not (Test-Path -LiteralPath $alias)) 'without the raku task there is no raku.exe'
 
     $after = Get-RawUserPath

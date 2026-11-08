@@ -13,8 +13,10 @@
 # `../lib` rule, so `--exe` works from the package unchanged; and
 # `rakupp upgrade` refuses a /usr prefix, sending the user to apt.
 #
-# Only the name `rakupp` is installed: Debian's own rakudo package owns
-# /usr/bin/raku, and a .deb cannot ask the one-liner's second-name question.
+# The names `rakupp` and `raku++` are installed (the second the relative link
+# `cmake --install` puts beside the first), and not `raku`: Debian's own rakudo
+# package owns /usr/bin/raku, and a .deb cannot ask the one-liner's
+# second-name question.
 #
 # Usage:  rakupp tools/make-deb.raku dist/rakupp [OUT]
 #         OUT is a directory (default .), which gets Debian's own name,
@@ -59,9 +61,10 @@ sub MAIN(Str $layout, Str $out = '.', Str :$arch) {
         sh('cp', '-R', $src.add($d).absolute, $usr.absolute) if $src.add($d).d;
     }
     # The one-liner's `raku` link, when the layout came from an install that
-    # said yes to it: /usr/bin/raku is the rakudo package's.
+    # said yes to it: /usr/bin/raku is the rakudo package's. `raku++` stays --
+    # a relative link, so it names /usr/bin/rakupp from where it lands.
     for $usr.add('bin').dir -> $f {
-        $f.unlink unless $f.basename eq 'rakupp';
+        $f.unlink unless $f.basename eq 'rakupp' | 'raku++';
     }
     my $doc = $usr.add('share/doc/rakupp');
     $doc.mkdir;
@@ -94,7 +97,8 @@ sub MAIN(Str $layout, Str $out = '.', Str :$arch) {
          (rakupp install), a REPL, and --exe, which compiles a Raku program to a
          native executable. --exe needs a C++ compiler, hence the suggestion.
          .
-         The command is rakupp. The name raku is left to the rakudo package.
+         The command is rakupp, also installed as raku++. The name raku is left
+         to the rakudo package.
         END
 
     my $deb = $out.ends-with('.deb') ?? $out.IO

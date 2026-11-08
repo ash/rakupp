@@ -7,6 +7,8 @@
     rakupp-windows-x64.zip and asserts what it did, in TAP:
 
       * the engine it unpacked RUNS (6 * 7, not a file-exists check)
+      * raku++.exe is made on every run, asked about or not, and runs -- the
+        zip carries no copy of it, so the installer is the only thing that can
       * -NoRakuAlias leaves no raku.exe, -RakuAlias makes one that runs
       * a re-run keeps the name the install had, and does not add a second
         PATH entry
@@ -98,6 +100,7 @@ $prefix  = Join-Path ([System.IO.Path]::GetTempPath()) ('rakupp-gate-' + [guid]:
 $prefix2 = $prefix + '-sb'
 $bin     = Join-Path $prefix 'bin'
 $exe     = Join-Path $bin 'rakupp.exe'
+$plus    = Join-Path $bin 'raku++.exe'
 $alias   = Join-Path $bin 'raku.exe'
 # An entry that MUST come back unexpanded. %LOCALAPPDATA% is set on every
 # Windows, so an installer that expands PATH turns this into a literal path
@@ -115,6 +118,7 @@ try {
     ok ($rc -eq 0) 'installer exits 0' "exit $rc"
     ok (Test-Path -LiteralPath $exe) 'bin\rakupp.exe is there'
     ok ((Answer $exe) -eq '42') 'the installed rakupp runs' (Answer $exe)
+    ok ((Answer $plus) -eq '42') 'raku++.exe is there with no question asked, and runs' (Answer $plus)
     ok (-not (Test-Path -LiteralPath $alias)) '-NoRakuAlias leaves no raku.exe'
 
     $after = Get-RawUserPath
@@ -132,6 +136,7 @@ try {
     $rc = Invoke-Installer @{ Archive = $Archive; Dir = $prefix; Yes = $true }
     ok ($rc -eq 0) 'a third run exits 0' "exit $rc"
     ok ((Answer $alias) -eq '42') 'an upgrade keeps the raku name it had' (Answer $alias)
+    ok ((Answer $plus) -eq '42') 'an upgrade remakes raku++.exe' (Answer $plus)
 
     # ---- uninstall, through the copy the install left in the prefix ---------
     # Someone who installed through `irm | iex` has no file of their own, so

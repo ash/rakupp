@@ -20,9 +20,10 @@ irm https://raku.online/install-windows.ps1 | iex
 
 Either one downloads the release archive for the machine it is running on,
 checks it against the published SHA-256, unpacks it into a per-user prefix,
-asks whether you also want the engine under the second name `raku`, and puts
-its `bin/` on your `PATH`. Neither needs root or an administrator. Re-running
-either upgrades in place, and so does `rakupp upgrade`.
+where the engine answers to both `rakupp` and `raku++`, asks whether you also
+want it under the name `raku`, and puts its `bin/` on your `PATH`. Neither
+needs root or an administrator. Re-running either upgrades in place, and so
+does `rakupp upgrade`.
 
 **Docker**, with nothing installed on the machine — see [Docker](#docker):
 
@@ -99,11 +100,12 @@ curl -fLO https://github.com/ash/rakupp/releases/latest/download/rakupp-linux-x8
 sudo apt install ./rakupp-linux-x86_64.deb
 ```
 
-On ARM64 the file is `rakupp-linux-aarch64.deb`. It installs `/usr/bin/rakupp`,
-the runtime `--exe` links against in `/usr/lib` and `/usr/include/rakupp`, and
-nothing else. There is no `raku` name, because Debian's `rakudo` package
-already owns `/usr/bin/raku`. `--exe` needs a C++ compiler: `sudo apt install
-g++`. The package needs Debian 12 or Ubuntu 22.04 or newer.
+On ARM64 the file is `rakupp-linux-aarch64.deb`. It installs `/usr/bin/rakupp`
+and `/usr/bin/raku++`, the runtime `--exe` links against in `/usr/lib` and
+`/usr/include/rakupp`, and nothing else. There is no `raku` name, because
+Debian's `rakudo` package already owns `/usr/bin/raku`. `--exe` needs a C++
+compiler: `sudo apt install g++`. The package needs Debian 12 or Ubuntu 22.04
+or newer.
 
 It is a file, not an APT repository, so `apt upgrade` does not see new
 releases: download the new `.deb` and run the same `apt install` again.
@@ -142,7 +144,7 @@ curl -fsSL https://raku.online/install.sh | sh -s -- --raku-alias --prepend
 |---|---|
 | `--version vX.Y.Z` | a particular release instead of the latest |
 | `--dir DIR` | install somewhere else (default `$HOME/.rakupp`) |
-| `--raku-alias` / `--no-raku-alias` | answer the `raku` question up front |
+| `--raku-alias` / `--no-raku-alias` | answer the `raku` question up front (`raku++` is not a question) |
 | `--prepend` | put `bin/` *first* on `PATH`, ahead of any other Raku |
 | `--no-path` | leave your shell startup files alone |
 | `--archive FILE` | install an archive you already downloaded |
@@ -172,12 +174,15 @@ installer still has its old `PATH`. Open a new one, or run that line in it —
 the installer prints it for your shell (`source "$HOME/.rakupp/env.fish"` under
 fish).
 
-**The second name.** `rakupp` finds its runtime relative to its own executable's
-real path, so `raku` inside `bin/` is a complete engine and not a stub —
-`raku --exe prog.raku` compiles exactly as `rakupp --exe` does. The link is
-relative, so the prefix can be moved afterwards. If a Rakudo `raku` is already
-on your `PATH`, the installer names it and says which of the two will win;
-`--prepend` swaps them.
+**The other names.** `rakupp` finds its runtime relative to its own
+executable's real path, so another name inside `bin/` is a complete engine and
+not a stub — `raku++ --exe prog.raku` compiles exactly as `rakupp --exe` does.
+`raku++`, the product's own name, is always there: nothing else claims it, so
+it is not a question, and it is in the release archive itself, as a relative
+link beside `rakupp`. `raku` is the one the installer asks about. Both links
+are relative, so the prefix can be moved afterwards. If a Rakudo `raku` is
+already on your `PATH`, the installer names it and says which of the two will
+win; `--prepend` swaps them.
 
 **Undo.** The install leaves a copy of the script in the prefix:
 
@@ -235,9 +240,9 @@ rakupp upgrade --check     # what is available; install nothing
 `rakupp upgrade` is a Raku program carried **inside** the binary, like `rakupp
 install` and `rakupp doc`, so it works the same on every platform and there is
 no script on disk to keep in step with the engine. It replaces the prefix in
-place: same location, same `PATH` entry, same `raku` name if you had one. It
-verifies the download against the published SHA-256 before swapping anything,
-and puts the old binary back if the new one does not run.
+place: same location, same `PATH` entry, `raku++`, and the `raku` name if you
+had one. It verifies the download against the published SHA-256 before swapping
+anything, and puts the old binary back if the new one does not run.
 
 `--version vX.Y.Z` takes a particular release, including an older one;
 `--force` reinstalls the version you already have.
@@ -265,9 +270,10 @@ same place by default, so pick one per machine rather than layering them.
 
 **[Download rakupp-setup-windows-x64.exe](https://github.com/ash/rakupp/releases/latest/download/rakupp-setup-windows-x64.exe)** — that link always
 resolves to the latest release — and run it. It asks for the install location,
-offers a checkbox for the second command name `raku`, and another for putting
-`bin\` on your `PATH` — and it registers with Add/Remove Programs, so it comes
-off the way any other Windows program does.
+installs the engine as both `rakupp.exe` and `raku++.exe`, offers a checkbox for
+the command name `raku`, and another for putting `bin\` on your `PATH` — and it
+registers with Add/Remove Programs, so it comes off the way any other Windows
+program does.
 
 The file is **not code-signed**, so SmartScreen will call the publisher unknown
 for as long as it takes the file to earn a reputation: **More info → Run
@@ -296,10 +302,10 @@ Windows Terminal. `irm` and `iex` are PowerShell's own aliases for
 `cmd.exe` or to a Unix shell, which answer that there is no such command.
 
 It downloads the latest `rakupp-windows-x64.zip`, checks it against the
-published SHA-256, unpacks it into `%LOCALAPPDATA%\Programs\rakupp`, asks
-whether you want the engine under the second name `raku` as well, and puts
-`bin\` on your user `PATH`. Then open a *new* terminal — a running one keeps the
-environment it started with.
+published SHA-256, unpacks it into `%LOCALAPPDATA%\Programs\rakupp`, makes
+`raku++.exe` beside `rakupp.exe`, asks whether you want the engine under the
+name `raku` as well, and puts `bin\` on your user `PATH`. Then open a *new*
+terminal — a running one keeps the environment it started with.
 
 `| iex` cannot pass arguments. To give the script options, hand it to a script
 block instead:
@@ -324,11 +330,14 @@ The four decisions worth automating also read from the environment, for a box
 where the one-liner cannot take arguments: `RAKUPP_VERSION`,
 `RAKUPP_INSTALL_DIR`, `RAKUPP_RAKU_ALIAS=1`, `RAKUPP_NO_PATH=1`.
 
-**The second name.** `rakupp` finds its runtime relative to its own executable,
-so another name inside `bin\` is a complete engine, not a stub. The script makes
-`raku.exe` a hard link to `rakupp.exe` (a copy, where the filesystem refuses
-one); the wizard installs a second copy, which is what lets it own the file for
-upgrades and rollback. If a Rakudo `raku` is already on your `PATH`, the script
+**The other names.** `rakupp` finds its runtime relative to its own executable,
+so another name inside `bin\` is a complete engine, not a stub. The script
+makes `raku++.exe` always, and `raku.exe` when asked, as hard links to
+`rakupp.exe` (a copy, where the filesystem refuses one); the wizard installs
+copies, which is what lets it own the files for upgrades and rollback. The zip
+itself carries no `raku++.exe`: a zip stores no links, and a second copy of the
+engine would be about 7 MB more to download, so the installers and `rakupp
+upgrade` make it. If a Rakudo `raku` is already on your `PATH`, the script
 names it and says which of the two will win; `-Prepend` swaps them.
 
 Nothing is written outside the prefix and `HKCU\Environment`, so neither install
@@ -379,8 +388,8 @@ echo 'say 1 + 2' | docker run --rm -i ghcr.io/ash/rakupp
 The tags are `latest`, the version (`5.6.3`) and the minor (`5.6`). The image
 is the release archive for its architecture, checked against the published
 SHA-256 and unpacked into `/opt/rakupp` on `debian:bookworm-slim`, with the
-second name `raku` beside it. Nothing in it is built separately, so it runs
-exactly the engine the archive does.
+names `raku++` and `raku` beside `rakupp`. Nothing in it is built separately,
+so it runs exactly the engine the archive does.
 
 `rakupp install` works inside it — `curl`, `tar` and the CA certificates it
 needs are in the image, as are `libffi` and `libssl` for NativeCall and the
@@ -433,7 +442,10 @@ targets — except RISC-V, which is cross-compiled and tested under emulation:
 
 Every installer on this page is this section done for you — download, checksum,
 unpack, `PATH`. To do it by hand, unpack keeping the `bin/ lib/ include/`
-layout together (that's what `--exe` uses) and put `bin/` on your `PATH`.
+layout together (that's what `--exe` uses) and put `bin/` on your `PATH`. A
+POSIX archive's `bin/` holds `raku++` too, a relative link to `rakupp`; a
+Windows zip holds `rakupp.exe` alone, and a copy or hard link of it named
+`raku++.exe` is the same engine under that name.
 
 **Anywhere else** — another BSD, a Linux architecture not listed, a system too
 old for the archive — [build from source](#build-from-source). It needs CMake
@@ -474,6 +486,7 @@ cmake --build build -j 4
 
 # Install onto $PATH (binary + the runtime that --exe links against)
 cmake --install build --prefix ~/.local   # → ~/.local/{bin,lib,include/rakupp}
+                                          #   bin/ holds rakupp and raku++
 ```
 
 `-j 4` compiles four files at a time: about 45 s on an Apple M3, where a

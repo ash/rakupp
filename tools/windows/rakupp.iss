@@ -81,12 +81,15 @@ Source: "{#Layout}\share\*";   DestDir: "{app}\share";   Flags: ignoreversion re
 Source: "{#Layout}\README.md"; DestDir: "{app}";         Flags: ignoreversion skipifsourcedoesntexist
 Source: "{#Layout}\LICENSE";   DestDir: "{app}";         Flags: ignoreversion skipifsourcedoesntexist
 
-; The second name is a COPY here, where install-windows.ps1 makes a hard link:
+; The other names are COPIES here, where install-windows.ps1 makes hard links:
 ; a copy is one more [Files] entry, which means Inno owns it for the upgrade,
-; the uninstall and a cancelled install alike. It costs ~15 MB on disk and
-; almost nothing in the download -- solid compression stores the two identical
+; the uninstall and a cancelled install alike. Each costs ~15 MB on disk and
+; almost nothing in the download -- solid compression stores the identical
 ; streams once. rakupp resolves its runtime from GetModuleFileNameW, so any
-; name inside bin\ is a whole engine.
+; name inside bin\ is a whole engine. raku++.exe, the product's own name, has
+; no task: nothing else claims it, so unlike raku.exe it is not a question.
+Source: "{#Layout}\bin\rakupp.exe"; DestDir: "{app}\bin"; DestName: "raku++.exe"; \
+    Flags: ignoreversion
 Source: "{#Layout}\bin\rakupp.exe"; DestDir: "{app}\bin"; DestName: "raku.exe"; \
     Flags: ignoreversion; Tasks: rakualias
 

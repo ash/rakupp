@@ -90,8 +90,9 @@ irm https://raku.online/install-windows.ps1 | iex
 
 Neither needs root or an administrator. Each downloads the archive for the
 machine it is running on, checks it against the published SHA-256, unpacks it
-into a per-user prefix, asks whether you also want the engine under the second
-name `raku`, and puts it on your `PATH`. Then open a new terminal.
+into a per-user prefix, where the engine answers to both `rakupp` and
+`raku++`, asks whether you also want it under the name `raku`, and puts it on
+your `PATH`. Then open a new terminal.
 
 ```sh
 rakupp upgrade        # later: replace it with the latest release, in place

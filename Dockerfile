@@ -23,6 +23,11 @@
 # the box -- `apt-get install -y g++` in a derived image brings it back, since
 # the runtime it links (lib/, include/) is in the image.
 #
+# The engine answers to rakupp, raku++ and raku. The archive carries raku++, a
+# relative link; one older than that link, which RAKUPP_VERSION can name, gets
+# the same link here. raku is the one-liner's optional name, and in an image of
+# its own there is no other Raku for it to shadow.
+#
 # REGISTRY prefixes the base image and is empty by default (Docker Hub). CI
 # sets it to whichever mirror of the official images answers that day
 # (tools/ci-pull.sh: ECR Public, Google's mirror.gcr.io, Docker Hub):
@@ -60,9 +65,11 @@ RUN set -eu; \
     mkdir -p /opt/rakupp; \
     tar -xzf "$name" -C /opt/rakupp --strip-components=1; \
     rm -f "$name" "$name.sha256"; \
+    [ -e /opt/rakupp/bin/raku++ ] || ln -s rakupp /opt/rakupp/bin/raku++; \
     ln -s rakupp /opt/rakupp/bin/raku; \
     /opt/rakupp/bin/rakupp --version; \
-    test "$(/opt/rakupp/bin/rakupp -e 'say 6 * 7')" = 42
+    test "$(/opt/rakupp/bin/rakupp -e 'say 6 * 7')" = 42; \
+    test "$(/opt/rakupp/bin/raku++ -e 'say 6 * 7')" = 42
 
 ENV PATH=/opt/rakupp/bin:$PATH
 
