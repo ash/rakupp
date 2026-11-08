@@ -10084,7 +10084,7 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
     if (m == "VAR" || m == "self") return inv; // container introspection: value is its own container
     if (m == "item") { // .item: decontainerize to a single item (itemize a container)
         Value v = inv;
-        if (v.t == VT::Array || v.t == VT::Hash) v.itemized = true;
+        if (v.t == VT::Array || v.t == VT::Hash || v.t == VT::Range) v.itemized = true;   // (a Range is one key too)
         return v;
     }
     // Bool is an enum (False => 0, True => 1): .key is the name, .value the ordinal.
