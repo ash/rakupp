@@ -7136,6 +7136,15 @@ Value Interpreter::cueJob(Value code, double delaySecs, double everySecs, long l
                 if (catchF.t == VT::Code) {
                     try { ValueList ca{self->exceptionFor(e)}; self->callCallable(catchF, ca); } catch (...) {}
                 }
+                // …and with no handler (`:catch`, the scheduler's uncaught_handler)
+                // Rakudo's ThreadPoolScheduler prints it and ends the process, 1
+                else {
+                    const long long tid = self->currentThread().hash()->at("id").toInt();
+                    std::cout.flush();
+                    std::cerr << "Unhandled exception in code scheduled on thread " << tid << "\n"
+                              << self->renderError(e, self->btStyleForStderr()) << std::flush;
+                    std::_Exit(1);
+                }
             }
             catch (const WorkerAbortEx&) { break; } // shutdown: unwind the cue loop
             catch (...) {}
