@@ -653,13 +653,7 @@ Value Interpreter::spawnSupplyTimer(double secs, Value blk, std::shared_ptr<Supp
                 // supply and reaches the TAPPER's quit handler. Without this the
                 // throw escaped the worker's catch(...) below and the pending hold
                 // was never released, so the supply hung instead of quitting.
-                Value ex = I2.exceptionFor(e);
-                if (ctx->quitCb.t == VT::Code) {
-                    ValueList qa{ex};
-                    try { I2.callCallable(ctx->quitCb, qa); } catch (...) {}
-                }
-                ctx->done = true;
-                if (ctx->tap) I2.closeTapHandle(ctx->tap);
+                (void)quitSupply(I2, ctx, I2.exceptionFor(e));
             }
         }
         ctx->pending--;
@@ -826,9 +820,8 @@ Value Interpreter::spawnSupplyChannel(Value chan, Value blk, std::shared_ptr<Sup
             Value ex = I2.exceptionFor(e);
             bool handled = false;
             for (auto& q : quitP) { ValueList o2{ex}; try { I2.callCallable(q, o2); handled = true; } catch (...) {} }
-            if (!handled && ctx->quitCb.t == VT::Code) { ValueList o2{ex}; try { I2.callCallable(ctx->quitCb, o2); } catch (...) {} }
-            ctx->done = true;
-            if (ctx->tap) I2.closeTapHandle(ctx->tap);
+            if (!handled) (void)quitSupply(I2, ctx, ex);
+            else { ctx->done = true; if (ctx->tap) I2.closeTapHandle(ctx->tap); }
         }
     });
     throttleSpawn();
@@ -913,9 +906,8 @@ Value Interpreter::spawnSupplyInterval(double interval, double delay, Value blk,
                 Value ex = I2.exceptionFor(e);
                 bool handled = false;
                 for (auto& q : quitP) { ValueList o2{ex}; try { I2.callCallable(q, o2); handled = true; } catch (...) {} }
-                if (!handled && ctx->quitCb.t == VT::Code) { ValueList o2{ex}; try { I2.callCallable(ctx->quitCb, o2); } catch (...) {} }
-                ctx->done = true;
-                if (ctx->tap) I2.closeTapHandle(ctx->tap);
+                if (!handled) (void)quitSupply(I2, ctx, ex);
+                else { ctx->done = true; if (ctx->tap) I2.closeTapHandle(ctx->tap); }
             }
         }
     });
@@ -1835,6 +1827,8 @@ Value Interpreter::tapSupply(const Value& s, Value emitCb, Value doneCb, Value q
             Value ex = exceptionFor(e);
             bool handled = false;
             for (auto& q : quitP) { ValueList one{ex}; try { callCallable(q, one); handled = true; } catch (...) {} }
+            // CLOSE runs before the tapper hears of the die, as on Rakudo
+            closeTapHandle(handle);
             std::exception_ptr ret;
             if (!handled && quitCb.t == VT::Code) {
                 ValueList one{ex};
@@ -1842,7 +1836,6 @@ Value Interpreter::tapSupply(const Value& s, Value emitCb, Value doneCb, Value q
                 catch (ReturnEx&) { ret = std::current_exception(); }   // see callQuitCb
                 catch (...) {}
             }
-            closeTapHandle(handle);
             if (ret) std::rethrow_exception(ret);
             if (!handled) throw;
         }

@@ -408,6 +408,21 @@ static inline std::exception_ptr callQuitCb(Interpreter& I, const Value& cb, con
     return nullptr;
 }
 
+// The supply ends in a quit: `done` is set, the tap closed and the tapper's
+// quit handler told. When the supply's own code died (a whenever body, a LAST,
+// a QUIT phaser that threw), its CLOSE phasers run first, as on Rakudo, where
+// that die unwinds the supply block before the quit goes out; a source's quit
+// that only passes through reaches the tapper first. Returns what callQuitCb
+// hands back, for the caller to rethrow.
+static inline std::exception_ptr quitSupply(Interpreter& I, const std::shared_ptr<SupplyTapCtx>& ctx,
+                                            const Value& ex, bool closeFirst = true) {
+    if (closeFirst) { ctx->done = true; if (ctx->tap) I.closeTapHandle(ctx->tap); }
+    auto ret = callQuitCb(I, ctx->quitCb, ex);
+    ctx->done = true;
+    if (!closeFirst && ctx->tap) I.closeTapHandle(ctx->tap);
+    return ret;
+}
+
 // A whenever's LAST phasers, inside a SUPPLY block. A `die` in one ends the
 // supply as a die in the body does (S-57): the tapper's quit handler hears
 // it, and nothing follows. Swallowed, Cro's ContentLength body parser
@@ -418,10 +433,7 @@ static inline std::exception_ptr runSupplyLast(Interpreter& I, const ValueList& 
     std::optional<Value> died;
     I.runLastPhasers(lastP, nullptr, &died);
     if (!died || ctx->done) return nullptr;
-    auto ret = callQuitCb(I, ctx->quitCb, *died);
-    ctx->done = true;
-    if (ctx->tap) I.closeTapHandle(ctx->tap);
-    return ret;
+    return quitSupply(I, ctx, *died);
 }
 
 // The cause of a broken Promise (or a failed Channel) as a real Exception: a
