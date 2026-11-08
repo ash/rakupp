@@ -3290,8 +3290,13 @@ bool nameTermConstant(const std::string& n, Value& out, bool sixE) {
     if (n == "now") { // Instant: high-resolution seconds since the epoch
         // …on the `now` clock, which carries the Instant epoch offset that
         // `.to-posix` takes back off (see epochNowSecs). Handing out raw POSIX
-        // put `now.to-posix` ten seconds in the past.
-        out = Value::number(epochNowSecs());
+        // put `now.to-posix` ten seconds in the past. An exact Rat of
+        // nanoseconds, as Rakudo's is, so its `.raku` reads back `eqv` (a
+        // binary embeds `constant T = now` only then)
+        long long ns = std::chrono::duration_cast<std::chrono::nanoseconds>(
+            std::chrono::system_clock::now().time_since_epoch()).count();
+        ns += taiOffsetForPosix(ns / 1000000000LL) * 1000000000LL;
+        out = Value::rat(BigInt(ns), BigInt(1000000000LL));
         out.hashKind = "Instant";
         identify(out);
         return true;
