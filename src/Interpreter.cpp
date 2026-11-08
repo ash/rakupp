@@ -6484,6 +6484,9 @@ void Interpreter::unknownRoutineTrait(const std::string& name, const Value& code
 void Interpreter::applySubTraits(SubDecl* sd) {
     Value* fn = tctx().cur->find("&" + sd->name);
     if (!fn) return;
+    // a hoisted `proto` is WRITTEN here: an import after this joins its group
+    if (sd->isProto && fn->t == VT::Code && fn->code() && fn->code()->ci().isMultiDispatcher)
+        fn->code()->ciM().protoDeclared = true;
     applyParamTraits(sd->params, *fn);
     if (sd->traits.empty()) return;
     Value* tm = tctx().cur->find("&trait_mod:<is>");

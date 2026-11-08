@@ -2,7 +2,9 @@
 # X::Redeclaration, in either order (issue #230): `use Other; sub run-word {…}`
 # in a module compiled and ran, the import stepped aside for the local sub, and
 # in a larger module a call reached the wrong one. Not a clash: two multis
-# (they merge), an imported stub the local sub completes, a selective export
+# (they merge), a proto written before the import (it takes the imported
+# candidates, where one written after it is a redeclaration — Rakudo goes by
+# the source's order), an imported stub the local sub completes, a selective export
 # the `use` did not ask for, `need` and `use M ()`, a `use` in another scope,
 # and two imports of one name (in the mainline the last wins). The mainline's
 # own routines are reached through child processes, as an EVAL is a scope of
@@ -40,6 +42,20 @@ my %mods =
         multi sub mul(Int $x) is export { "imp-int:$x" }
         sub stubbed($x) is export { ... }
         sub tagged($x) is export(:extra) { "imp-tagged:$x" }
+        M
+    # (a name per check: a local multi beside an import joins the module's own
+    # group, here as on Rakudo, so a later check would meet its candidate)
+    'Merge'   => q:to/M/,
+        unit module Merge;
+        multi sub m1(Int $x) is export { "imp:$x" }
+        multi sub m2(Int $x) is export { "imp:$x" }
+        multi sub m3(Int $x) is export { "imp:$x" }
+        multi sub m4(Int $x) is export { "imp:$x" }
+        multi sub m5(Int $x) is export { "imp:$x" }
+        proto sub p1($) is export {*}
+        multi sub p1(Int $x) is export { "imp-p:$x" }
+        proto sub p2($) is export {*}
+        multi sub p2(Int $x) is export { "imp-p:$x" }
         M
     'ViaExport' => q:to/M/,
         sub EXPORT() { %( '&via' => sub ($x) { "exp:$x" } ) }
@@ -93,6 +109,23 @@ check(ev('use Kinds; sub mul($x) { "loc" }; 1'), '&mul', 'a sub beside an import
 check(ev('use Kinds; multi sub only-one(Int $x) { "loc" }; 1'), 'only-one', 'a multi beside an imported sub');
 check(ev('use Kinds; proto sub mul($) {*}; multi sub mul(Str $s) { "loc" }; 1'), 'mul',
       'a proto beside an imported multi');
+# …but a proto written BEFORE the import takes the imported candidates, as
+# Roast's S11-modules/import-multi.t has it: Rakudo's order is the source's,
+# and here the hoisted proto is already there when the `use` runs
+check(ev('proto sub m1($) {*}; multi sub m1(Str $s) { "loc" }; use Merge; m1(1) ~ "," ~ m1("a")'),
+      'lived:imp:1,loc', 'a proto before the import');
+check(ev('proto sub m2($) {*}; use Merge; m2(1)'), 'lived:imp:1', '…a lone proto');
+check(ev('{ proto sub m3($) {*}; multi sub m3(Str $s) { "loc" }; use Merge; m3(1) ~ "," ~ m3("a") }'),
+      'lived:imp:1,loc', '…in a block');
+check(ev('sub g { proto sub m4($) {*}; multi sub m4(Str $s) { "loc" }; use Merge; m4(1) ~ m4("a") }; g() ~ "," ~ g()'),
+      'lived:imp:1loc,imp:1loc', '…in a routine, called twice');
+check(ev('sub g { use Merge; proto sub m5($) {*}; 1 }; g()'), 'm5', 'a proto after the import, in a routine');
+check(ev('proto sub p1($) {*}; multi sub p1(Str $s) { "loc" }; use Merge; p1(1) ~ "," ~ p1("a")'),
+      'lived:imp-p:1,loc', 'a proto before an imported proto');
+check(ev('use Merge; proto sub p2($) {*}; 1'), 'p2', 'a proto after an imported proto');
+check(ev('proto sub Hfoo(Mu) {*}; multi sub Hfoo(Str $a) { "S" }; ' ~
+         'module ImportHere { multi sub Hfoo(Int $a) is export { "I" } }; import ImportHere; Hfoo(7) ~ Hfoo("a")'),
+      'lived:IS', '`import` of a module declared after the proto');
 check(ev('use Kinds; sub stubbed($x) { "loc:$x" }; stubbed(1)'), 'lived:loc:1', 'a local sub completes an imported stub');
 check(ev('use Kinds; sub only-one($x) { ... }; 1'), '&only-one', 'a local stub beside a real import');
 check(ev('use ViaExport; sub via($x) { "loc" }; 1'), '&via', 'a sub EXPORT');
@@ -124,6 +157,8 @@ check(main("use Mine;\nsay speak();\n"), 'redeclared', "mainline: the issue's pr
 check(main("use Kinds;\nsub tagged(\$x) \{ 'loc' }\nsay tagged(1);\n"), 'lived:loc', 'mainline: a tag not asked for');
 check(main("use Other;\nsay run-word('m');\n"), 'lived:other:m', 'mainline: an import alone');
 check(main("use Other;\nuse Other2;\nsay run-word('m');\n"), 'lived:other2:m', 'mainline: two imports, the last wins');
+check(main("proto sub mul(\$) \{*}\nmulti sub mul(Str \$s) \{ 'loc' }\nuse Kinds;\nsay mul(1), mul('a');\n"),
+      'lived:imp-int:1loc', 'mainline: a proto before the import');
 
 say @fail ?? "FAIL\n" ~ @fail.join("\n") !! 'PASS';
 exit(@fail ?? 1 !! 0);

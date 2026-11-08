@@ -867,6 +867,7 @@ struct CodeInfo : RefCounted {
     mutable DecidedOnce<uint64_t> retFastKey{0};
     mutable DecidedOnce<ClassInfo*> retFastCls{nullptr};
     bool isMultiDispatcher = false;
+    bool protoDeclared = false;   // a group whose `proto` has run in order, not only been hoisted (importClashesWithLocal)
     // a NAMED routine declared without `our` (`sub f`, `my sub f`, `multi f`):
     // lexical, so not its package's symbol however it was installed —
     // `GLOBAL::<&f>:exists` is False for it (ledger O32)
