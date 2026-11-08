@@ -8710,7 +8710,10 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
                 }
                 else probeInv = probeSentinel(tn);
             }
-            if (!mn.empty() && probeInv.t != VT::Object && probeInv.t != VT::Type &&
+            // a type no sentinel stands for, or a role, answers from its table
+            const int tabled = inv.t == VT::Type && !classes_.count(inv.s) && !mn.empty() ? tabledTypeHasMethod(tn, mn) : 0;
+            if (tabled < 0) return Value::typeObj("Mu");
+            if (!tabled && !mn.empty() && probeInv.t != VT::Object && probeInv.t != VT::Type &&
                 probeInv.t != VT::Any && probeInv.t != VT::Nil &&
                 probeMethodExists(probeInv, mn, "/nonexistent/rakupp-lookup-probe") == -1)
                 return Value::typeObj("Mu");
@@ -8718,12 +8721,12 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
             // type has too. So a name that is not even on an Int cannot be on
             // them, and this probe only ever turns a wrong YES into a right NO —
             // never the reverse, which is why the answer is not read positively.
-            if (!mn.empty() && inv.t == VT::Type && (inv.s == "Mu" || inv.s == "Any") &&
+            if (!tabled && !mn.empty() && inv.t == VT::Type && (inv.s == "Mu" || inv.s == "Any") &&
                 probeMethodExists(Value::integer(0), mn, "/nonexistent/rakupp-lookup-probe") == -1)
                 return Value::typeObj("Mu");
             // …and a ROLE the same way, against a type that does it: whatever
             // Cool, Real or Numeric has, an Int has; whatever Stringy has, a Str
-            if (!mn.empty() && inv.t == VT::Type && !classes_.count(inv.s)) {
+            if (!tabled && !mn.empty() && inv.t == VT::Type && !classes_.count(inv.s)) {
                 const std::string_view r = inv.s;
                 Value rep = r == "Cool" || r == "Real" || r == "Numeric" ? Value::integer(0)
                           : r == "Stringy" ? Value::str("")

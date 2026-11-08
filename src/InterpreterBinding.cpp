@@ -804,6 +804,133 @@ Value Interpreter::probeSentinel(const std::string& tn) {
     try { return methodCall(Value::typeObj(tn), it->second.first, as); }
     catch (...) { return Value::typeObj(tn); }
 }
+// The built-in types no sentinel can stand for (an empty Promise's `.result`
+// would wait, a Thread's `.run` start one) and the roles `.can` is asked of
+// answer `.can` and `.^find_method` from a table: Rakudo 2026.09's methods for
+// each beyond Any's and Mu's, which every one of them has as well (Sub, Method
+// and Submethod have Routine's). 1: it has the method; -1: it has not; 0: not a
+// type this table knows.
+int Interpreter::tabledTypeHasMethod(const std::string& tn, const std::string& mn) {
+    static const std::set<std::string> kAny = {
+        "ACCEPTS", "ASSIGN-KEY", "ASSIGN-POS", "AT-KEY", "AT-POS", "Array", "BIND-KEY", "BIND-POS", "BUILDALL",
+        "BUILD_LEAST_DERIVED", "Bag", "BagHash", "Bool", "CREATE", "Capture", "DEFINITE", "DELETE-KEY",
+        "DELETE-POS", "DUMP", "DUMP-OBJECT-ATTRS", "DUMP-PIECES", "EXISTS-KEY", "EXISTS-POS",
+        "FLATTENABLE_HASH", "FLATTENABLE_LIST", "HOW", "Hash", "INSTANTIATE-GENERIC", "Int", "List", "Map",
+        "Mix", "MixHash", "Numeric", "POPULATE", "REPR", "Real", "Seq", "Set", "SetHash", "Slip", "Str",
+        "Stringy", "Supply", "VAR", "WALK", "WHAT", "WHERE", "WHICH", "WHO", "WHY", "ZEN-KEY", "all",
+        "antipairs", "any", "append", "are", "batch", "bless", "cache", "can", "categorize", "chrs",
+        "classify", "clone", "collate", "combinations", "deepmap", "defined", "dispatch:<!>", "dispatch:<.*>",
+        "dispatch:<.+>", "dispatch:<.=>", "dispatch:<.?>", "dispatch:<::>", "dispatch:<hyper>",
+        "dispatch:<var>", "does", "duckmap", "eager", "elems", "emit", "end", "fail-cannot-be-empty",
+        "fail-iterator-cannot-be-lazy", "first", "flat", "flatmap", "fmt", "gist", "gistseen", "grep", "hash",
+        "head", "invert", "is-generic", "is-lazy", "isa", "item", "iterator", "iterator-and-first", "join",
+        "keys", "kv", "lazy-if", "list", "map", "match", "max", "maxpairs", "min", "minmax", "minpairs", "new",
+        "nl-out", "nodemap", "none", "not", "note", "one", "pairs", "pairup", "perl", "perlseen",
+        "permutations", "pick", "prepend", "print", "print-nl", "produce", "push", "put", "raku", "rakuseen",
+        "reduce", "repeated", "return", "return-rw", "reverse", "roll", "rotor", "say", "self", "serial",
+        "set_why", "sink", "skip", "slice", "so", "sort", "splice", "split", "squish", "sum", "tail", "take",
+        "throw-cannot-be-empty", "throw-iterator-cannot-be-lazy", "toggle", "tree", "unique", "unshift",
+        "values"
+    };
+    static const std::map<std::string, std::set<std::string>> kOwn = {
+        {"Promise", {
+            "BUILD", "allof", "andthen", "anyof", "at", "break", "broken", "cause", "get-await-handle", "in",
+            "keep", "kept", "orelse", "result", "scheduler", "start", "status", "then", "vow"
+        }},
+        {"Channel", {
+            "BUILD", "close", "closed", "fail", "get-await-handle", "poll", "receive", "send"
+        }},
+        {"Supply", {
+            "BUILD", "Channel", "Promise", "Tappable", "act", "comb", "decode", "delayed", "do", "encode",
+            "from-list", "get-await-handle", "grab", "interval", "lines", "live", "merge", "migrate",
+            "on-close", "on-demand", "rotate", "sanitize", "schedule-on", "serialize", "share", "stable",
+            "start", "tap", "throttle", "wait", "words", "zip", "zip-latest"
+        }},
+        {"Lock", {
+            "condition", "lock", "protect", "unlock"
+        }},
+        {"Semaphore", {
+            "acquire", "release", "try_acquire"
+        }},
+        {"Thread", {
+            "BUILD", "app_lifetime", "finish", "id", "is-initial-thread", "name", "run", "start", "usage",
+            "yield"
+        }},
+        {"Code", {
+            "POSITIONS", "arity", "associative", "assuming", "bytecode-size", "cando", "count", "file", "iffy",
+            "is-implementation-detail", "line", "of", "outer", "prec", "precedence", "reducer", "returns",
+            "signature", "static_id", "thunky"
+        }},
+        {"Block", {
+            "POSITIONS", "add_phaser", "arity", "associative", "assuming", "bytecode-size",
+            "callable_for_phaser", "cando", "count", "file", "fire_if_phasers", "fire_phasers",
+            "has-loop-phasers", "has-phaser", "has-phasers", "iffy", "is-implementation-detail", "line", "of",
+            "outer", "phasers", "prec", "precedence", "push-phaser", "reducer", "returns", "signature",
+            "static_id", "thunky", "unshift-phaser"
+        }},
+        {"Routine", {
+            "IS-SETTING-ONLY", "POSITIONS", "add_phaser", "apply-operator-trait", "arity", "assoc",
+            "associative", "assuming", "bytecode-size", "callable_for_phaser", "candidates", "cando", "count",
+            "equiv", "file", "fire_if_phasers", "fire_phasers", "has-loop-phasers", "has-phaser",
+            "has-phasers", "iffy", "is-implementation-detail", "is-wrapped", "leave", "line", "looser",
+            "multi", "of", "op_props", "outer", "package", "phasers", "prec", "precedence", "push-phaser",
+            "reducer", "returns", "set_op_props", "signature", "soft", "static_id", "thunky", "tighter",
+            "unshift-phaser", "unwrap", "wrap"
+        }},
+        {"Regex", {
+            "HAS-CAPTURE-MARKERS", "IS-SETTING-ONLY", "POSITIONS", "add_phaser", "apply-operator-trait",
+            "arity", "assoc", "associative", "assuming", "bytecode-size", "callable_for_phaser", "candidates",
+            "cando", "count", "equiv", "file", "fire_if_phasers", "fire_phasers", "has-loop-phasers",
+            "has-phaser", "has-phasers", "iffy", "is-implementation-detail", "is-wrapped", "leave", "line",
+            "looser", "multi", "of", "op_props", "outer", "package", "phasers", "prec", "precedence",
+            "push-phaser", "reducer", "returns", "set_op_props", "signature", "soft", "static_id", "thunky",
+            "tighter", "unshift-phaser", "unwrap", "wrap"
+        }},
+        {"WhateverCode", {
+            "POSITIONS", "arity", "associative", "assuming", "bytecode-size", "cando", "count", "file",
+            "has-loop-phasers", "has-phasers", "iffy", "is-implementation-detail", "line", "of", "outer",
+            "prec", "precedence", "reducer", "returns", "signature", "static_id", "thunky"
+        }},
+        {"Cool", {
+            "AST", "Complex", "EVAL", "Failure", "FatRat", "IO", "NFC", "NFD", "NFKC", "NFKD", "Num", "Order",
+            "Rat", "UInt", "Version", "abs", "acos", "acosec", "acosech", "acosh", "acotan", "acotanh", "asec",
+            "asech", "asin", "asinh", "atan", "atan2", "atanh", "byte", "ceiling", "chars", "chomp", "chop",
+            "chr", "cis", "codes", "comb", "conj", "contains", "cos", "cosec", "cosech", "cosh", "cotan",
+            "cotanh", "encode", "ends-with", "exp", "fc", "flip", "floor", "indent", "index", "indices", "int",
+            "int16", "int32", "int64", "int8", "is-prime", "lc", "lines", "log", "log10", "log2", "ord",
+            "ords", "parse-names", "path", "printf", "rand", "rindex", "roots", "round", "samecase",
+            "samemark", "samespace", "sec", "sech", "sign", "sin", "sinh", "sprintf", "sqrt", "starts-with",
+            "subst", "subst-mutate", "substr", "substr-eq", "substr-rw", "tan", "tanh", "tc", "tclc", "trans",
+            "trim", "trim-leading", "trim-trailing", "truncate", "uc", "uint", "uint16", "uint32", "uint64",
+            "uint8", "unimatch", "uniname", "uninames", "uniparse", "uniprop", "uniprops", "unival", "univals",
+            "unpolar", "wordcase", "words"
+        }},
+        {"Numeric", {
+            "FatRat", "exp", "log", "log10", "log2", "pred", "roots", "succ"
+        }},
+        {"Real", {
+            "Bridge", "Complex", "Num", "Rat", "abs", "acos", "acosec", "acosech", "acosh", "acotan",
+            "acotanh", "asec", "asech", "asin", "asinh", "atan", "atan2", "atanh", "base", "ceiling", "cis",
+            "conj", "cos", "cosec", "cosech", "cosh", "cotan", "cotanh", "exp", "floor", "isNaN", "log",
+            "polymod", "rand", "round", "sec", "sech", "sign", "sin", "sinh", "tan", "tanh", "truncate",
+            "unpolar"
+        }},
+        {"Positional", {
+            "of"
+        }},
+        {"Associative", {
+            "keyof", "of"
+        }},
+        {"Iterable", {
+            "hyper", "lazy", "race"
+        }},
+        {"Stringy", {
+        }},
+    };
+    auto it = kOwn.find(tn == "Sub" || tn == "Method" || tn == "Submethod" ? std::string("Routine") : tn);
+    if (it == kOwn.end()) return 0;
+    return it->second.count(mn) || kAny.count(mn) ? 1 : -1;
+}
 // Rakudo gives each X::TypeCheck class a `method message` that renders its
 // attributes, so one built by hand reports like one the engine threw — Red
 // constructs X::TypeCheck::Assignment with `symbol`, `got` and `expected` for

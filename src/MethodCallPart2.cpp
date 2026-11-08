@@ -3721,9 +3721,8 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
             };
             return Value::str(podGist(inv, 0));
         }
-        // `.Str` and `.raku` are Rakudo's, Mu's `Class<id>` and the constructor that
-        // builds the block; a declarator block's are its text (`~&f.WHY`), as toStr
-        // gives, and so is its `.gist`
+        // `.Str` and `.raku` are Rakudo's, Mu's `Class<id>` and the constructor that builds
+        // the block; a declarator block's, and its `.gist`, are its text (`~&f.WHY`), as toStr's
         if (m == "Str" || m == "raku" || m == "gist") {
             const bool decl = h.count("podclass") && h["podclass"].s.str() == "Pod::Block::Declarator";
             return Value::str(m == "raku" && !decl ? podRaku(inv) : inv.toStr());
@@ -5508,10 +5507,8 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
             return it != inv.hash()->end() ? it->second : Value::any();
         }
         if (m == "is-hidden") {   // a routine declared `is hidden-from-backtrace`
-            auto it = inv.hash()->find("code");
-            return Value::boolean(it != inv.hash()->end() && it->second.t == VT::Code && it->second.code() &&
-                                  it->second.code()->ci().hiddenBt);
-        }
+            auto it = inv.hash()->find("code"); const Value* c = it != inv.hash()->end() ? &it->second : nullptr;
+            return Value::boolean(c && c->t == VT::Code && c->code() && c->code()->ci().hiddenBt); }
         // the setting's own `throw` / `die` frames (see btCaptureNow)
         if (m == "is-setting") return Value::boolean(inv.hash()->count("setting") > 0);
         // a frame whose code is a SUB or METHOD (not a bare block, not the mainline)
@@ -9849,7 +9846,10 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
         // its own methods are its and the rest an Any's — Red's `try $*RED-DB.^can(…)`)
         const bool failure = !ci && inv.t == VT::Hash && inv.hashKind == "Failure", failureOwn = failure && failureOwnMethod(mn);
         if (failure && !failureOwn) { probeInv = Value::makeHash(); probeInv.hashKind = "Any"; }
-        if (!ci && out.arr()->empty() && !mn.empty() &&
+        // …and a type no sentinel stands for, or a role, from its table: `Cool.can('chars')`
+        const int tabled = !ci && inv.t == VT::Type && !classes_.count(inv.s) ? tabledTypeHasMethod(inv.s.copyText(), mn) : 0;
+        if (tabled) probeInv = Value::integer(0);   // (anything the clause below lets through: the table answers)
+        if (!ci && out.arr()->empty() && !mn.empty() && tabled >= 0 &&
             probeInv.t != VT::Object && probeInv.t != VT::Type && probeInv.t != VT::Any && probeInv.t != VT::Nil &&
             // Date/DateTime share one dispatch surface here, so a probe cannot
             // tell them apart — the curated Dateish list above is authoritative
@@ -9858,7 +9858,7 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
                 // one probe (shared with .^lookup): 1 = found, -1 = not found,
                 // 0 = a side-effectful name that must not be probed (no stub —
                 // the permissive answer this fallback has always given)
-                if (failureOwn || probeMethodExists(probeInv, mn, "/nonexistent/rakupp-can-probe") == 1) {
+                if (failureOwn || tabled > 0 || probeMethodExists(probeInv, mn, "/nonexistent/rakupp-can-probe") == 1) {
                     Value stub; stub.t = VT::Code; stub.setCode(makePayload<Callable>());
                     stub.code()->ciM().name = mn; stub.code()->ciM().isMethod = true;
                     std::string mnc = mn;

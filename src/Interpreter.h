@@ -5339,6 +5339,7 @@ public:
     // …and the value it probes a built-in TYPE object on (`Set.^find_method`):
     // an empty instance of the type, or the type object itself when none is safe.
     Value probeSentinel(const std::string& type);
+    int tabledTypeHasMethod(const std::string& tn, const std::string& mn);   // (.can on a Promise, a role …)
     bool isSubsetHow(const Value& v);   // Metamodel::SubsetHOW, a metaclass made from it, or a subset's .HOW
     Value subsetRefinee(const std::string& subset, bool refinement);   // `.^refinee` / `.^refinement`
     Value subsetNewType(const Value& how, const ValueList& args);      // `Metamodel::SubsetHOW.new_type`
