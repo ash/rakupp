@@ -32702,6 +32702,10 @@ Value Interpreter::evalMethodCallExpr(Expr* e, Value* handedInv) {
     if (opEq(mc->method, "VAR") && !mc->methodExpr && !mc->meta &&
         mc->inv->kind == NK::VarExpr) {
         auto* ivar = static_cast<VarExpr*>(mc->inv.get());
+        // a typed read-only `$` parameter holds its value bare, as Rakudo binds it: `.VAR`
+        // is the value (`Channel $in`), but an Iterable the binder itemizes is in a Scalar
+        if (ivar->bareParam) { Value v = eval(ivar);
+            if (!(v.t == VT::Array || v.t == VT::Range || (v.t == VT::Hash && (v.hashKind.empty() || v.hashKind == "Map")))) return v; }
         // `$!a.VAR` — the attribute's container: its `is default` value
         if (ivar->name.size() > 2 && ivar->name[0] == '$' && ivar->name[1] == '!') {
             Value sc = Value::makeHash(); sc.hashKind = "Scalar";
