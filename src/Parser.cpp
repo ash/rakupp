@@ -234,7 +234,6 @@ struct InfixInfo {
     bool isAssign = false;
     bool isComma = false;
     bool isRange = false;
-    bool isMinMax = false;   // `min` / `max`: the two do not mix without parentheses
     bool isFatArrow = false;
     bool isTernary = false;
     std::string op;
@@ -642,7 +641,7 @@ static InfixInfo classifyInfixUncached(const Token& t) {
         // `1 max (0 && 7)`. At BP_ADD all three read the other way round.
         // The parens are the author's own: `max` and `min` are list-associative
         // only with themselves, so a mixed chain stays a parse error either way.
-        if (o == "min" || o == "max") { in.valid = true; in.lbp = BP_OROR; in.isMinMax = true; return in; } // infix min/max
+        if (o == "min" || o == "max") { in.valid = true; in.lbp = BP_OROR; return in; } // infix min/max
         if (o == "and" || o == "andthen" || o == "notandthen") { in.valid = true; in.lbp = BP_AND; return in; }
         if (o == "or" || o == "xor" || o == "orelse") { in.valid = true; in.lbp = BP_OR; return in; }
         // flip-flop, all eight spellings: a leading `^` excludes the evaluation that
@@ -3359,15 +3358,22 @@ ExprPtr Parser::parseExpr(int minbp) {
         // `..` and its `^`-marked siblings are NON-ASSOCIATIVE: `1..2..3` has to
         // be parenthesized, and Rakudo says so rather than picking a grouping.
         {
-            // `min` and `max` do not mix: `1 min 2 max 3` needs parentheses, and
-            // Rakudo refuses it by name rather than picking a grouping.
-            if (in.isMinMax && lhs->kind == NK::Binary && !parenned_.count(lhs.get())) {
+            // A LIST-associative operator does not follow a different one of its
+            // precedence: `1 min 2 max 3`, `1 || 0 ^^ 1` and `1 or 0 xor 1` need
+            // parentheses, and Rakudo refuses them by name rather than picking a
+            // grouping. A left-associative one after it is fine (`1 xor 0 or 1`).
+            static const std::map<std::string, int> kLevel = {
+                {"||", BP_OROR}, {"//", BP_OROR}, {"^^", BP_OROR}, {"min", BP_OROR}, {"max", BP_OROR},
+                {"and", BP_AND}, {"andthen", BP_AND}, {"notandthen", BP_AND},
+                {"or", BP_OR}, {"xor", BP_OR}, {"orelse", BP_OR}};
+            static const std::set<std::string> kListAssoc = {"^^", "min", "max", "andthen", "notandthen", "xor", "orelse"};
+            if (kListAssoc.count(in.op) && lhs->kind == NK::Binary && !parenned_.count(lhs.get())) {
                 const std::string& lo = static_cast<Binary*>(lhs.get())->op;
-                if ((lo == "min" || lo == "max") && lo != in.op)
-                    throw ParseError("Operators '" + lo + "' and '" + in.op +
-                                     "' are non-associative and require parentheses",
-                                     cur().line, "X::Syntax::NonListAssociative",
-                                     {{"left", lo}, {"right", in.op}});
+                auto lv = kLevel.find(lo);
+                if (lo != in.op && lv != kLevel.end() && lv->second == in.lbp)
+                    throw ParseError("Only identical operators may be list associative; since '" + lo + "' and '" +
+                                     in.op + "' differ, they are non-associative and you need to clarify with parentheses",
+                                     cur().line, "X::Syntax::NonListAssociative", {{"left", lo}, {"right", in.op}});
             }
             static const std::set<std::string> kRangeOps = {"..", "^..", "..^", "^..^"};
             if (kRangeOps.count(in.op)) {
