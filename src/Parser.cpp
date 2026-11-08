@@ -17161,7 +17161,7 @@ StmtPtr Parser::parseStatementImpl() {
             return false;
         };
         if ((kw == "if" || kw == "unless" || kw == "with" || kw == "without" ||
-             kw == "while" || kw == "until" || kw == "for") && gluedParenThenBlock())
+             kw == "while" || kw == "until" || kw == "for" || kw == "loop") && gluedParenThenBlock())
             throw ParseError("Word '" + kw + "' interpreted as '" + kw +
                              "()' function call; please use whitespace instead of parens\n"
                              "Unexpected block in infix position (two terms in a row)",
@@ -17839,6 +17839,10 @@ Program Parser::parseProgram() {
     // (`say start(5); sub start($x) {…}`); `sub sub` waits for its declaration
     for (size_t i = 0; i + 1 < toks_.size(); i++) {
         const Token& t = toks_[i];
+        // …and a `&loop` parameter: `sub count(&loop) { loop({ … }) }` calls it
+        if (t.kind == Tok::Var && t.text.size() > 1 && t.text[0] == '&' && t.text != "&sub" &&
+            kNeedsEndKeyword.count(t.text.substr(1)))
+            kwNamedSubs_.insert(t.text.substr(1));
         if (t.kind != Tok::Ident) continue;
         const bool scope = t.text == "my" || t.text == "our" || t.text == "state";   // `my &start`
         const bool routine = t.text == "sub" || t.text == "multi" || t.text == "proto" || t.text == "only";
