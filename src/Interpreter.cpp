@@ -657,6 +657,22 @@ bool valueEqv(const Value& a, const Value& b) {
 // Numify a string with Raku-correct result type (Int vs Num); undefined if non-numeric.
 // External linkage (declared in Interpreter.h) so Builtins.cpp's .Int/.Numeric can
 // reuse the BigInt-aware parse instead of the lossy long-long toInt().
+// Non-ASCII decimal digits (category Nd: Arabic-Indic, Devanagari, …)
+// transliterate to ASCII so the ordinary positional parse handles them —
+// "٤٢".Int is 42, exactly as each digit's Numeric_Value says (and a Date string's).
+std::string asciiDecimalDigits(std::string_view s) {
+    bool anyHigh = false; // any byte >= 0x80 anywhere ("1٢" — not only the first)
+    for (unsigned char c : s) if (c >= 0x80) { anyHigh = true; break; }
+    if (!anyHigh) return std::string(s);
+    std::string t2;
+    for (uint32_t cp : utf8cp(s)) {
+        int dv = cp >= 0x80 ? uniDigitValue(cp) : -1;   // never-cut: plain digits are not the names feature
+        if (dv >= 0) t2 += (char)('0' + dv);
+        else t2 += cpToU8(cp);
+    }
+    return t2;
+}
+
 Value numifyStr(std::string_view in) {
     size_t a = in.find_first_not_of(" \t\n\r\f\v");
     if (a == std::string::npos) return Value::integer(0); // empty/whitespace -> 0
@@ -665,27 +681,7 @@ Value numifyStr(std::string_view in) {
     // Unicode MINUS SIGN (U+2212) is accepted as an ASCII '-' in numeric strings
     for (size_t k = 0; (k = s.find("\xE2\x88\x92", k)) != std::string::npos; )
         s.replace(k, 3, "-");
-    // Non-ASCII decimal digits (category Nd: Arabic-Indic, Devanagari, …)
-    // transliterate to ASCII so the ordinary positional parse handles them —
-    // "٤٢".Int is 42, exactly as each digit's Numeric_Value says.
-    {
-        bool anyHigh = false; // any byte >= 0x80 anywhere ("1٢" — not only the first)
-        for (unsigned char c : s) if (c >= 0x80) { anyHigh = true; break; }
-        if (anyHigh) {
-            std::string t2;
-            for (uint32_t cp : utf8cp(s)) {
-                if (cp >= 0x80) {
-                    int dv = uniDigitValue(cp);   // never-cut: plain digits are not the names feature
-                    if (dv >= 0) {
-                        t2 += (char)('0' + dv);
-                        continue;
-                    }
-                }
-                t2 += cpToU8(cp);
-            }
-            s = std::move(t2);
-        }
-    }
+    s = asciiDecimalDigits(s);
     // strip underscores that sit between two digits (numeric separators)
     if (s.find('_') != std::string::npos) {
         std::string t;

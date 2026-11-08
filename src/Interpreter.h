@@ -166,6 +166,7 @@ Value makeBaggy(const ValueList& items, const std::string& kind,
 // Numify a string with Raku-correct result type (Int/Rat/Num), BigInt-aware
 // (defined in Interpreter.cpp). Non-numeric input yields an undefined value.
 Value numifyStr(std::string_view in);
+std::string asciiDecimalDigits(std::string_view s);   // "٢٠١٠" → "2010": any Nd digit as its ASCII one
 // numifyStr, but a string that isn't a number THROWS X::Str::Numeric the way
 // Rakudo does in numeric context (`"a" + 1`), instead of silently reading as 0.
 Value numifyStrOrThrow(std::string_view in);
