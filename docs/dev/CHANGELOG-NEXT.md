@@ -31,7 +31,9 @@ and nineteen more: b9c337a0, 5d7e8be9, 2a32bb59, b4cb4a06, 23822660,
 5f78f1f3, f59ff84c, 88751a81, 370e0b4d, 7c69a48c, 393aa64e, 85a90672,
 1f5ed33a, 728cf9cb, 07dc2ee9, 04db6160, 0f3b9feb, 2cbd6521, 84afd3c1;
 and twelve more: 483370b7, 422df3d1, a63dab44, 53837aa5, ae41bc63, 8660ca95,
-7279b2ad, 50f0b0bd, 019f922c, fa865d47, d3ab58de, e9bb987d.*
+7279b2ad, 50f0b0bd, 019f922c, fa865d47, d3ab58de, e9bb987d;
+and thirteen more: 592afa33, 75326b8b, e82801e8, a797a3c6, 1c681ec5, d6c9e30c,
+cd191fb1, 21111219, 6c0c4fa1, e89a0e1e, fa0cc7aa, bc6faf15, ea460d2a.*
 
 ---
 
@@ -374,6 +376,30 @@ and twelve more: 483370b7, 422df3d1, a63dab44, 53837aa5, ae41bc63, 8660ca95,
 - **Code cued on the scheduler that dies is reported and ends the process**
   (d3ab58de), status 1, as Rakudo's scheduler does; it was silent and the
   program ran on. `t/regression/scheduler-cue-die-reported.raku`.
+- **A phaser written last makes the value Nil** (592afa33): `sub f { 42; LEAVE { }
+  }` answered 42 and `(1, 2).map({ $_ * 2; LEAVE { } })` (2 4).
+  `t/regression/phaser-written-last-is-nil.raku`.
+- **A native int operator wraps with a folded literal** (e82801e8), interpreted
+  and compiled: `$x * 2**62` on a native 3 answered 13835058055282163712, where
+  Rakudo folds `2**62` and wraps. `t/regression/native-int-folded-literal.raku`.
+- **A value-parameterized role matches its type** (1c681ec5): `R2[1] ~~ R2[Int]`,
+  a class doing R2[1], and `.does(R2[1])` were False.
+  `t/regression/value-role-argument-accepts.raku`.
+- **`callsame` from a role's method stops at a role it does** (d6c9e30c), as
+  Rakudo's: it called the composed-away method. `t/regression/role-callsame-skips-composed-role.raku`.
+- **`.^find_method` and `.can` on Promise, Channel, Supply, Lock, Semaphore,
+  Thread and the code types answer from Rakudo's table** (cd191fb1): any name was
+  found; `Cool.can('chars')` was empty. `t/regression/find-method-from-table.raku`.
+- **An itemized Range is one element** (21111219): `my @a = (1..2).item`, `[$(1..2)]`
+  and `.flat` spread it, and a destructuring spread an inner Range.
+  `t/regression/itemized-range-stays-one.raku`.
+- **A `fail` in a `start` block breaks its promise** (fa0cc7aa); it was kept with the
+  Failure. `t/regression/fail-in-start-breaks-promise.raku`.
+- **A sunk `start` that dies is reported and ends the process** (bc6faf15), status 1,
+  as Rakudo's; it was silent. `t/regression/sunk-start-reported.raku`.
+- **A tapper that dies on an interval's or a Channel's value goes to the
+  scheduler** (ea460d2a), reported with status 1 or to `uncaught_handler`; it quit
+  the supply. `t/regression/tapper-death-to-scheduler.raku`.
 
 ### Fixed: crashes
 
@@ -494,6 +520,18 @@ and twelve more: 483370b7, 422df3d1, a63dab44, 53837aa5, ae41bc63, 8660ca95,
 - **`is hidden-from-backtrace` hides the routine's frame** (fa865d47), which was
   printed; `.backtrace.list` keeps it with `.is-hidden` True.
   `t/regression/hidden-from-backtrace-frames.raku`.
+- **A built-in operator called by its name is the operator** (75326b8b):
+  `prefix:<->(3)`, `postfix:<++>($y)` (which steps $y),
+  `postcircumfix:<[ ]>(…)`, `infix:«<=»(1, 2)` died or did not parse.
+  `t/regression/builtin-operator-called-by-name.raku`.
+- **A type argument keeps its smiley** (a797a3c6): `Positional[Int:D].^name` said
+  `Positional[Int,D]`, and `R[Int:D] ~~ R[Int]` is True.
+  `t/regression/type-argument-smiley-name.raku`.
+- **A parse error shows its line and a `^` under `-e`, `-c` and `--lint`**
+  (6c0c4fa1), as a file run did, and most errors name a column.
+  `t/regression/parse-error-excerpt-everywhere.raku`.
+- **A runtime error in a string's `{…}` names the block's line** (e89a0e1e), where it
+  named the statement's first. `t/regression/interpolated-block-error-line.raku`.
 
 ### Platforms and packaging
 
@@ -540,10 +578,9 @@ and twelve more: 483370b7, 422df3d1, a63dab44, 53837aa5, ae41bc63, 8660ca95,
 
 - Found with eb574770, the same before it (each in TODO-FOLLOW-UPS.md): a
   `my &f`, a `my $v` or a class beside an import of its name compiles, where
-  Rakudo refuses it; two imports of one name in a block keep the first,
-  where Rakudo keeps the last (the mainline keeps the last); and `use Test;
-  sub ok(…)` compiles, because Test's routines are built in rather than
-  imported.
+  Rakudo refuses it; and two imports of one name in a block keep the first,
+  where Rakudo keeps the last (the mainline keeps the last). (`use Test; sub
+  ok(…)` is fixed by 483370b7, above.)
 
 - Found with 28257097, the same before it: an attribute typed by a
   parameterized alias, `constant AI = Array[Int]; has AI $.a`, takes an
@@ -554,13 +591,12 @@ and twelve more: 483370b7, 422df3d1, a63dab44, 53837aa5, ae41bc63, 8660ca95,
   method's signature leaves out its invocant (`:(Int $x, *%_)` against
   Rakudo's `:(RI $:: Int $x, *%_)`), and `&c:(Foo)` renders as `&c`.
 - Found with issues #221-#229, the same before them (each in
-  TODO-FOLLOW-UPS.md): a value-parameterized role, `R2[1] ~~ R2[Int]`, is
-  False where Rakudo says True; `Positional[Int:D].^name` is
-  `Positional[Int,D]`; a FALLBACK
-  receives the list methods Any answers (`.first`, `.elems` …), and an
-  object that is no Exception keeps `.throw`, `.rethrow`, `.resume` and
-  `.backtrace` from its FALLBACK; a `my subset` in a `unit role`'s file is
-  not named for its package.
+  TODO-FOLLOW-UPS.md): a FALLBACK receives the list methods Any answers
+  (`.first`, `.elems` …), and an object that is no Exception keeps
+  `.throw`, `.rethrow`, `.resume` and `.backtrace` from its FALLBACK; a `my
+  subset` in a `unit role`'s file is not named for its package.
+  (`R2[1] ~~ R2[Int]` and `Positional[Int:D].^name` are fixed by 1c681ec5
+  and a797a3c6, above.)
 - Found with c73d0b8d to db0fdbca, each the same before it and each in
   TODO-FOLLOW-UPS.md: a `Buf` parameter takes a Blob and a `Hash` one or
   variable a Map; `<$r>` of a stored anonymous `rule` matches nothing, and
@@ -570,17 +606,23 @@ and twelve more: 483370b7, 422df3d1, a63dab44, 53837aa5, ae41bc63, 8660ca95,
   84afd3c1, above.)
 - Found with b9c337a0 to 84afd3c1, the same before them (each in
   TODO-FOLLOW-UPS.md): a WhateverCode gists as `WhateverCode.new` where
-  Rakudo shows its source; a multi-role conflict says less than Rakudo's;
-  an itemized Range still flattens in a list; and a runtime error in a
-  `{…}` of a multi-line string names the string's first line. (`start 5`'s
-  deparse, the unknown-parent wording, a Whatever key and `.substr`'s
-  messages are fixed by a63dab44, 53837aa5, ae41bc63 and 8660ca95, above.)
+  Rakudo shows its source; and a multi-role conflict says less than
+  Rakudo's. (`start 5`'s deparse, the unknown-parent wording, a Whatever
+  key and `.substr`'s messages are fixed by a63dab44, 53837aa5, ae41bc63 and
+  8660ca95, an itemized Range and a `{…}`'s line by 21111219 and e89a0e1e,
+  above.)
 - Found with 483370b7 to e9bb987d, the same before them (each in
   TODO-FOLLOW-UPS.md): an unknown parent is refused when its declaration
   runs, where Rakudo refuses it at compile time; a declarator block's
   `.raku` is its text, a trailing `#=` after a routine's `}` is lost, and
-  `for $=pod` makes one pass; a sunk `start` that dies is silent, where
-  Rakudo reports it and exits 1; and an `exit` on a worker thread runs no
-  END phaser. Still open beside d3ab58de, from before: a tapper that dies on
-  a value from `Supply.interval` or a Channel quits the supply, where
-  Rakudo ends the process.
+  `for $=pod` makes one pass; and an `exit` on a worker thread runs no END
+  phaser. (A sunk `start` that dies, and a tapper that dies on an
+  interval's or a Channel's value, are fixed by bc6faf15 and ea460d2a,
+  above.)
+- Found with 592afa33 to ea460d2a, the same before them (each in
+  TODO-FOLLOW-UPS.md): a FIRST or INIT written last does not give the block
+  its value; a user `multi` on a built-in operator hides the built-in
+  candidates, and `&postfix:<++>` is Any; `.^roles` of a class doing a
+  value-parameterized role names it as written, `R2[1]`, where Rakudo names
+  it `R2[Int]`; and an element store into `Array[Str:D]` still checks the
+  nominal type alone.
