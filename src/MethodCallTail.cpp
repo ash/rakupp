@@ -314,7 +314,7 @@ static void parseRotorSpecs(const ValueList& args, bool isBatch,
     I.throwTypedV("X::Cannot::Map",
                   {{"what", Value::str(what)}, {"using", Value::str(using_)},
                    {"suggestion", Value::str(suggestion)}},
-                  "Cannot map a " + what + " using " + using_);
+                  "Cannot map a " + what + " using " + using_ + "\n" + suggestion);   // (Rakudo's message ends with it)
 }
 
 } // namespace rakupp
