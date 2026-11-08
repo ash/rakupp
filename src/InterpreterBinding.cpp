@@ -1392,6 +1392,7 @@ Value Interpreter::subsetNewType(const Value& inv, const ValueList& args) {
     // a name already taken keeps its type (a sub-model is named after its model)
     std::string key = name;
     for (int n = 1; classes_.count(key) || subsets_.count(key); n++) key = name + "+" + std::to_string(n);
+    if (key != name) si.shownName = name;   // …and answers the name it was given (`.^name` is User)
     si.langRev = langRev_;
     if (!(inv.t == VT::Type && inv.s == "Metamodel::SubsetHOW")) {
         try { si.howObj = methodCall(inv.t == VT::Object ? Value::typeObj(inv.obj()->cls->name) : inv, "new", ValueList{}); }
@@ -1402,6 +1403,28 @@ Value Interpreter::subsetNewType(const Value& inv, const ValueList& args) {
     subsets_[key] = std::move(si);
     noteSymbolMutation("runtime SubsetHOW.new_type");
     return Value::typeObj(key);
+}
+
+// A subset's traits run through `&trait_mod:<is>` as a class's do (Red's `is
+// sub-model`), and one nothing takes is a parent no one declared, as Rakudo
+// reads `subset S is no-such of Int` (a built-in type trait is taken). It was
+// dropped without a word.
+void Interpreter::applySubsetTraits(const SubsetDecl& sd, const Value& self, Value* tm) {
+    static const std::set<std::string> kTypeTraits = {"export", "DEPRECATED", "hidden", "rw", "repr",
+        "nativesize", "unsigned", "ctype", "array_type", "pure", "nodal", "implementation-detail"};
+    for (auto& tr : sd.traits) {
+        bool taken = kTypeTraits.count(tr.name) || isKnownTypeName(tr.name) || classes_.count(tr.name);
+        if (tm && tm->t == VT::Code) {
+            Value p = Value::pair(tr.name, tr.arg ? eval(tr.arg.get()) : Value::boolean(true));
+            p.namedArg = true;
+            try { callCallable(*tm, ValueList{self, p}); taken = true; }
+            catch (RakuError& te) { if (te.message.rfind("Cannot resolve caller", 0) != 0) throw; }
+        }
+        if (!taken)
+            throwTypedV("X::Inheritance::UnknownParent",
+                {{"child", Value::str(sd.name)}, {"parent", Value::str(tr.name)}, {"suggestions", Value::array()}},
+                "'" + sd.name + "' cannot inherit from '" + tr.name + "' because it is unknown.");
+    }
 }
 
 // A subset's .HOW: one metaobject per subset, as a class has, so Red's

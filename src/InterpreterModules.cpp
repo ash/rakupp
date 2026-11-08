@@ -5347,13 +5347,7 @@ static void mergeParentRoleMultis(ClassInfo* ci, const SigKey& sigKeyParams) {
                 const Value self = Value::typeObj(shadowsCore ? tctx().pkgPrefix + sd->name : sd->name);
                 if (tm && tm->t == VT::Code && !tctx().pkgPrefix.empty() && !sd->isMy && !shadowsCore)
                     subsets_[tctx().pkgPrefix + sd->name].howObj = methodCall(self, "HOW", ValueList{});
-                for (auto& tr : sd->traits) {
-                    if (!tm || tm->t != VT::Code) break;
-                    Value p = Value::pair(tr.name, tr.arg ? eval(tr.arg.get()) : Value::boolean(true));
-                    p.namedArg = true;
-                    try { callCallable(*tm, ValueList{self, p}); }
-                    catch (RakuError& te) { if (te.message.rfind("Cannot resolve caller", 0) != 0) throw; }
-                }
+                applySubsetTraits(*sd, self, tm);
             }
             return Value::any();
         }

@@ -5332,6 +5332,7 @@ public:
     bool isSubsetHow(const Value& v);   // Metamodel::SubsetHOW, a metaclass made from it, or a subset's .HOW
     Value subsetRefinee(const std::string& subset, bool refinement);   // `.^refinee` / `.^refinement`
     Value subsetNewType(const Value& how, const ValueList& args);      // `Metamodel::SubsetHOW.new_type`
+    void applySubsetTraits(const struct SubsetDecl& sd, const Value& self, Value* tm);   // `subset S is t`
     Value subsetsHow(const std::string& subset);                       // a subset's own .HOW
     // A bare regex literal as a value, through RegexLit::closedPat (skips the
     // splice copy, the $/@ scans and the obsolete-check memo probe once the
