@@ -7701,10 +7701,8 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
             // PDF::COS is a role whose loader API is reached as `PDF::COS.load-dict`,
             // and its body forwards with `$.load-delegate: …`. The instance path has
             // the same arm; without this one the delegated name was never found.
-            for (ClassInfo* c = ci.get(); c; c = c->parent.get()) {
-                auto hit = c->methodHandles.find(m);
-                if (hit == c->methodHandles.end()) continue;
-                Value target = methodCall(inv, hit->second, ValueList{});
+            if (ClassInfo* c = firstUpward(ci.get(), [&](ClassInfo* k) { return k->methodHandles.count(m) > 0; })) {
+                Value target = methodCall(inv, c->methodHandles.find(m)->second, ValueList{});
                 return methodCall(target, m, std::move(args), rwArgs);
             }
             // accessing an attribute (public accessor) on a type object is illegal
@@ -8413,28 +8411,30 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
             auto cit = classes_.find(h);
             return cit != classes_.end() && cit->second && cit->second->findMethod(m) != nullptr;
         };
-        for (ClassInfo* c = ci.get(); c; c = c->parent.get())
+        const ClassAttr* da = nullptr; size_t dhi = 0;
+        firstUpward(ci.get(), [&](ClassInfo* c) {
             for (auto& a : c->attrs)
                 for (size_t hi = 0; hi < a.handles.size(); hi++)
-                    if (a.handles[hi] == m || handlesType(a.handles[hi])) {
-                        auto ait = inv.obj()->attrs.find(a.name);
-                        Value target = ait != inv.obj()->attrs.end() ? ait->second : Value::any();
-                        if ((target.t == VT::Any || target.t == VT::Nil) && !a.type.empty())
-                            target = Value::typeObj(a.type); // an unset typed attr delegates to its type object
-                        // a RENAMING delegation calls a DIFFERENT name on the attribute:
-                        // `handles(:terminal<t>)` exposes .terminal, asks the handle for .t
-                        const std::string& to = hi < a.handlesTo.size() && !a.handlesTo[hi].empty()
-                                                ? a.handlesTo[hi] : m;
-                        return methodCall(target, to, std::move(args), rwArgs);
-                    }
+                    if (a.handles[hi] == m || handlesType(a.handles[hi])) { da = &a; dhi = hi; return true; }
+            return false;
+        });
+        if (da) {
+            auto ait = inv.obj()->attrs.find(da->name);
+            Value target = ait != inv.obj()->attrs.end() ? ait->second : Value::any();
+            if ((target.t == VT::Any || target.t == VT::Nil) && !da->type.empty())
+                target = Value::typeObj(da->type); // an unset typed attr delegates to its type object
+            // a RENAMING delegation calls a DIFFERENT name on the attribute:
+            // `handles(:terminal<t>)` exposes .terminal, asks the handle for .t
+            const std::string& to = dhi < da->handlesTo.size() && !da->handlesTo[dhi].empty()
+                                    ? da->handlesTo[dhi] : m;
+            return methodCall(target, to, std::move(args), rwArgs);
+        }
         // …and the same delegation written on a METHOD: `method loader is rw
         // handles <load-delegate>` answers `.load-delegate` by asking `self.loader`
         // for the object to forward to. PDF::COS publishes its whole loader API
         // that way.
-        for (ClassInfo* c = ci.get(); c; c = c->parent.get()) {
-            auto hit = c->methodHandles.find(m);
-            if (hit == c->methodHandles.end()) continue;
-            Value target = methodCall(inv, hit->second, ValueList{});
+        if (ClassInfo* c = firstUpward(ci.get(), [&](ClassInfo* k) { return k->methodHandles.count(m) > 0; })) {
+            Value target = methodCall(inv, c->methodHandles.find(m)->second, ValueList{});
             return methodCall(target, m, std::move(args), rwArgs);
         }
         // Real-role bridge: numeric coercions/methods the class doesn't define

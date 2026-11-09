@@ -52,3 +52,15 @@
 #endif
 #include <condition_variable>
 #include <optional>
+
+namespace rakupp {
+// The first of a class and its parents, depth first and every `is` of each
+// (`class D is B is A` delegates through A too), that `has` says yes to.
+template <class F> static ClassInfo* firstUpward(ClassInfo* c, const F& has) {
+    if (!c) return nullptr;
+    if (has(c)) return c;
+    if (ClassInfo* hit = firstUpward(c->parent.get(), has)) return hit;
+    for (auto& p : c->extraParents) if (ClassInfo* hit = firstUpward(p.get(), has)) return hit;
+    return nullptr;
+}
+}

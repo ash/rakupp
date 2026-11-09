@@ -5392,6 +5392,19 @@ static bool enumNameIsGlobal(const std::string& name, bool loadingModule, const 
     return !name.empty() && ((loadingModule && pkgPrefix.empty()) || name.find("::") != std::string::npos);
 }
 
+// A composed role's `method x handles <n>` delegations are the type's, as its
+// methods are, and outrank what it inherits unless it declares n itself: a role
+// in a later `does` slot is in no parent slot that dispatch and the role
+// requirement check walk. (Out here: execDeclStmt sits at its size ceiling.)
+static void takeRoleMethodHandles(ClassInfo* ci, const ClassDecl* cd, const std::vector<ClassInfo*>& roles) {
+    for (ClassInfo* role : roles)
+        for (auto& kv : role->methodHandles)
+            if (ci->methodHandles.insert(kv).second &&
+                std::none_of(cd->methods.begin(), cd->methods.end(),
+                             [&](const auto& md) { return md && md->name == kv.first; }))
+                ci->delegatedNames.insert(kv.first);
+}
+
 // A role in the PARENT slot (`class C does R` with no `is`) is walked, not
 // copied — so a class's own `multi method m` group shadowed R's candidates for
 // `m` instead of joining them, and the narrower role candidate never competed.
@@ -7095,10 +7108,9 @@ static void refuseRoleClashes(Interpreter& I, const std::string& clsName, const 
                 // …and so is the GROUP a role with its own `[...]` joins: in
                 // `role W { }; role W['X'] does W { }` the W it does is the one
                 // declared before it (PDF::Content's XObject['Form'] is declared so)
-                const bool joinsGroup = cd->isRole && cd->parameterized && [&] {
-                    auto prev = classes_.find(parentName);
-                    return prev != classes_.end() && prev->second && prev->second->isRole;
-                }();
+                auto prevRole = classes_.find(parentName);
+                const bool joinsGroup = cd->isRole && cd->parameterized && prevRole != classes_.end() &&
+                                        prevRole->second && prevRole->second->isRole;
                 const bool selfNamed = parentName == cd->name && !cd->name.empty() &&
                                        parentName == cd->parent && !paramSelf && !joinsGroup;
                 const bool outerType = selfNamed && parentIsOuterType(classes_, cd, parentName, clsName, ci);
@@ -8117,6 +8129,7 @@ static void refuseRoleClashes(Interpreter& I, const std::string& clsName, const 
             }
             // (a class's or a role's own multi groups join its parent roles')
             mergeParentRoleMultis(ci.get(), sigKeyParams);
+            takeRoleMethodHandles(ci.get(), cd, composedRoles);
             // aggregate role requirements (composed roles already carry the ones
             // they inherited from roles they compose, so this is transitive) and
             // record this role's own stub methods as requirements
@@ -8149,7 +8162,8 @@ static void refuseRoleClashes(Interpreter& I, const std::string& clsName, const 
             // role composition check: a non-role class that composes a role must
             // implement every method the role requires — via its own methods, a
             // composed/inherited implementation, a public attribute's accessor,
-            // or an attribute `handles` delegation. Roles compose freely.
+            // or a `handles` delegation, an attribute's or a method's. Roles
+            // compose freely.
             if (!cd->isRole) {
                 std::set<std::string> classOwn;
                 for (auto& md : cd->methods) classOwn.insert(md->isPrivate ? "!" + md->name : md->name);
@@ -8176,6 +8190,7 @@ static void refuseRoleClashes(Interpreter& I, const std::string& clsName, const 
                 std::function<bool(ClassInfo*, const std::string&)> attrCovers =
                     [&](ClassInfo* c, const std::string& n) -> bool {
                     if (!c) return false;
+                    if (c->methodHandles.count(n)) return true;   // `method x handles <n>` as well
                     for (auto& a : c->attrs) {
                         if (a.pub && a.name == n) return true; // accessor counts as the method
                         for (auto& h : a.handles) if (h == n) return true;
