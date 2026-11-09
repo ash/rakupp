@@ -4859,7 +4859,7 @@ bool Regex::matchInlineSub(const Node* n, const Regex* re, MState& st, long pos,
     bool ok = re->matchNode(re->root(), sub, pos, [&](long end) -> bool {
         if (!n->ruleCapture || capKey.empty()) return k(end);
         // a `<( … )>` inside the callee trims what the SUB-MATCH reports
-        long cf = sub.capFrom >= 0 ? sub.capFrom : pos, ct = sub.capFrom >= 0 ? sub.capTo : end;
+        long cf = sub.capFrom >= 0 ? sub.capFrom : pos, ct = sub.capTo >= 0 ? sub.capTo : end;
         ParseNode pn; pn.name = capKeyOverride ? n->ruleName : capKey; pn.from = cf; pn.to = ct;
         pn.named = sub.named;
         if (!sub.children.empty()) pn.kids = std::make_shared<const ChildMap>(sub.children);
@@ -5752,7 +5752,7 @@ bool GrammarMatcher::matchSubMeta(const GrammarRuleMeta& meta, const std::string
             e.fired = true;
             ParseNode fp; fp.name = name;
             fp.from = e.capFrom >= 0 ? e.capFrom : pos;
-            fp.to = e.capFrom >= 0 ? e.capTo : e.end;
+            fp.to = e.capTo >= 0 ? e.capTo : e.end;
             fp.caps = e.caps; fp.named = e.named; fp.kids = e.kids;
             fp.listNames = e.listNames; fp.listCaps = e.listCaps; fp.capReps = e.capReps;
             fp.dynScope = std::move(dyn);
@@ -5884,7 +5884,7 @@ bool GrammarMatcher::matchSubMeta(const GrammarRuleMeta& meta, const std::string
             st.hooks && st.hooks->onRule && st.hooks->hasAction && st.hooks->hasAction(name)) {
             ParseNode fp; fp.name = name;
             fp.from = sub.capFrom >= 0 ? sub.capFrom : pos;
-            fp.to = sub.capFrom >= 0 ? sub.capTo : end;
+            fp.to = sub.capTo >= 0 ? sub.capTo : end;
             fp.caps = myCaps; fp.named = sub.named; fp.kids = kidsCopy;
             fp.listNames = re->listNamesPtr(); fp.listCaps = myList; fp.capReps = myReps;
             if (dynScopeDepth_ && st.hooks->captureDyn) fp.dynScope = st.hooks->captureDyn(); // still inside the rule
