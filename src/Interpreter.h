@@ -3533,6 +3533,7 @@ public:
     Value elemGuardAt(const Expr* e, std::string* nativeT = nullptr);   // …of the element `@a[i]` names, or Any
     Value elemLoopGuard(const Expr* e);                  // …of the array behind a `for`'s view (`@a.grep(…)`)
     bool bindElemMethodAlias(Assign* a, Value& out);     // `$x := @a.AT-POS(1)`: the element's container
+    bool mapHashValues(MethodCall* mc, Value& out);      // `%h.values.map(…)` over the hash's own values (MethodCallTail.cpp)
     Value sliceElemStore(const Value& container, bool isHash, Value& v, const std::string& symbol);
     Value sliceStoreResult(const Value& container);
     void checkElemType(const std::string& want, const Value& v, const std::string& symbol);

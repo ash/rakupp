@@ -31947,64 +31947,9 @@ Value Interpreter::evalMethodCallExpr(Expr* e, Value* handedInv) {
                 }
         }
     }
-    // `%h.values.map({ $_ = 0 })` — Rakudo's `.values` hands out the hash's
-    // own containers, so a write to the topic lands in the hash; in a
-    // SetHash/BagHash/MixHash a weight of 0 deletes the key (quanthash.t).
-    // Our `.values` is a list of copies, so the shape is walked here, one
-    // key at a time, with each slot's topic written back after the block.
-    if ((opEq(mc->method, "map") || opEq(mc->method, "grep")) && mc->args.size() == 1 && !mc->meta &&
-        !mc->hyper && !mc->methodExpr && mc->inv && mc->inv->kind == NK::MethodCall && mc->args[0] &&
-        mc->args[0]->kind == NK::BlockExpr) {
-        auto* vm = static_cast<MethodCall*>(mc->inv.get());
-        if (opEq(vm->method, "values") && vm->args.empty() && !vm->meta && !vm->hyper && !vm->methodExpr &&
-            vm->inv && vm->inv->kind == NK::VarExpr) {
-            auto* ve = static_cast<VarExpr*>(vm->inv.get());
-            Value* hv = !ve->declare && !ve->name.empty() && (ve->name[0] == '%' || ve->name[0] == '$')
-                ? tctx().cur->find(ve->name) : nullptr;
-            const std::string hk = hv && hv->t == VT::Hash ? hv->hashKind : std::string("-");
-            if (hv && hv->hash() && (hk.empty() || hk == "SetHash" || hk == "BagHash" || hk == "MixHash")) {
-                Value fn = eval(mc->args[0].get());
-                if (fn.t == VT::Code && fn.code() && !fn.code()->ci().builtin && codeArity(fn) == 1 &&
-                    (!fn.code()->ci().params || fn.code()->ci().params->empty())) {
-                    auto h = hv->hashS();
-                    std::vector<std::string> keys;
-                    for (auto& kv : *h) keys.push_back(kv.first);
-                    Value out = Value::array(); out.isList = true; out.s = "Seq";
-                    // (a typed hash's value refuses what its type does: #184)
-                    const Value vGuard = hk.empty() ? elemAliasGuard(*hv, true, ve->name) : Value::any();
-                    for (auto& k : keys) {
-                        auto it0 = h->find(k);
-                        if (it0 == h->end()) continue;
-                        Value slot = it0->second;
-                        const Value before = slot;
-                        tctx().topicWriteback = &slot;
-                        Value r;
-                        try { r = callCallable(fn, ValueList{slot}); }
-                        catch (LastEx&) { tctx().topicWriteback = nullptr; break; }
-                        catch (NextEx&) { tctx().topicWriteback = nullptr; continue; }
-                        tctx().topicWriteback = nullptr;
-                        if (!valueEqv(slot, before) && h->count(k)) {
-                            if (hk.empty()) (*h)[k] = vGuard.t == VT::Array ? elemAliasStore(vGuard, slot) : slot;
-                            else if (hk == "SetHash") { if (slot.truthy()) (*h)[k] = Value::boolean(true); else h->erase(k); }
-                            else if (hk == "BagHash") {
-                                long long n = slot.toInt();
-                                if (n <= 0) h->erase(k); else (*h)[k] = Value::integer(n);
-                            }
-                            else if (slot.toNum() == 0.0) h->erase(k);
-                            else (*h)[k] = slot;
-                        }
-                        if (opEq(mc->method, "map")) {
-                            if (r.t == VT::Array && r.isList && r.s == "Slip")
-                                for (auto& x : *r.arr()) out.arr()->push_back(x);
-                            else out.arr()->push_back(r);
-                        }
-                        else if (predAnswerTruthy(*this, r, slot)) out.arr()->push_back(slot);
-                    }
-                    return out;
-                }
-            }
-        }
-    }
+    // `%h.values.map({ $_ = 0 })` writes the hash's own values (mapHashValues, MethodCallTail.cpp)
+    if ((opEq(mc->method, "map") || opEq(mc->method, "grep")) && mc->inv && mc->inv->kind == NK::MethodCall)
+        if (Value out; mapHashValues(mc, out)) return out;
     // This call is the TAIL of a binding's right-hand side, so `.value`
     // names the Pair's CONTAINER rather than a copy of what it holds —
     // `my $node-value := do with $stream { … } else { $node.value }` is
