@@ -52,7 +52,8 @@ and two more: 49808203, 25975633;
 and 0d87a53e (#235) and 5a0e9868;
 and two more: 983b9524, b07f37e2;
 and three more: 689728bf, 2867e40e, 9102ff01;
-and three more: f907b840, 8f55e40a, 9b0073c8.*
+and three more: f907b840, 8f55e40a, 9b0073c8;
+and three more: 63b92af7, f929935a, ae3321f2.*
 
 ---
 
@@ -534,6 +535,13 @@ and three more: f907b840, 8f55e40a, 9b0073c8.*
   when the subscript counts from the end or the Buf is an element:
   `$b[*-1]--` died "Index out of range", and `@a[0][0]++` made the Buf an
   Array. `t/regression/exe-buf-element-step.raku`.
+- **An `@` parameter that is `is copy` refuses what its sigil refuses** (63b92af7):
+  `sub c(@a is copy) { }; c(1)` made a one-element Array of the 1.
+  `t/regression/copy-array-param-refuses-scalar.raku`.
+- **A compiled routine binds an `@` or `%` parameter as the interpreter
+  does** (ae3321f2), with or without -O: `sub u(@a)` given an Int held the Int,
+  an unpassed `@a?` held Any, and an `is copy` one shared the caller's
+  Array, its push reaching the caller. `t/regression/exe-sigil-param-binding.raku`.
 
 ### Fixed: crashes
 
@@ -773,6 +781,9 @@ and three more: f907b840, 8f55e40a, 9b0073c8.*
   passed to 'f'; expected 2 arguments but got 3 in sub-signature", "or
   parameter @x", "1 or 2 arguments", and the phrase again for each nesting
   level. `t/regression/sub-signature-arity-message.raku`.
+- **A heredoc's body is no code** (f929935a): one carrying a program's `sub q($x)
+  { … }` made a later `q[…]` in the file a call, "Undefined routine 'q'".
+  `t/regression/heredoc-sub-text-not-declared.raku`.
 
 ### Platforms and packaging
 
@@ -828,6 +839,10 @@ and three more: f907b840, 8f55e40a, 9b0073c8.*
   parameter's "or parameter @o"; under `--target=js` a sub-signature takes
   any number of positionals, and `set(set(1, 3))` has the inner Set's
   elements where Rakudo has the Set.
+- Found with 63b92af7 and ae3321f2, the same before them (each in
+  TODO-FOLLOW-UPS.md): a compiled routine's `&` parameter takes anything,
+  and an unpassed `:&c` is a Sub where the interpreter's is Callable; under
+  `--target=js` an `@` or `%` parameter takes anything.
 
 - Found with 5f6d78e4, the same before it (TODO-FOLLOW-UPS.md): four
   word-list spellings still read differently from Rakudo, `« :x\<a »`,
