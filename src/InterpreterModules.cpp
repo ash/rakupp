@@ -5340,10 +5340,11 @@ static void mergeParentRoleMultis(ClassInfo* ci, const SigKey& sigKeyParams) {
 
 // execDeclStmt's refusals of what two roles bring a class, in Rakudo's words: an
 // only method from one role beside a multi of its name from another (a stub
-// aside), whatever the class declares itself; then a method two roles bring and
-// the class leaves unresolved, the roles named last-composed first, and a multi
-// by its first candidate in conflict (the last-composed role's first) with its
-// signature, as Rakudo's X::Role::Unresolved::Multi names it.
+// aside), whatever the class declares itself, a role a role does among them;
+// then a method two roles bring and the class leaves unresolved, the roles
+// named last-composed first (a parameterized one by its own name, `A`), and a
+// multi by its first candidate in conflict (the last-composed role's first)
+// with its signature, as Rakudo's X::Role::Unresolved::Multi names it.
 template <class SigKey>
 static void refuseRoleClashes(Interpreter& I, const std::string& clsName, const std::vector<ClassInfo*>& composedRoles,
                               const std::set<std::string>& conflicted, const std::set<std::string>& classOwn, SigKey sigKeyParams,
@@ -5351,10 +5352,15 @@ static void refuseRoleClashes(Interpreter& I, const std::string& clsName, const 
                               std::map<std::string, std::vector<std::string>>& providerRoles,
                               std::map<std::string, std::map<std::string, std::vector<std::string>>>& keyProviders) {
     std::set<std::string> onlyM, multiM;
-    for (ClassInfo* role : composedRoles)
+    const std::function<void(ClassInfo*)> collect = [&](ClassInfo* role) {
         for (auto& kv : role->methods)
             if (kv.second.t == VT::Code && kv.second.code() && !kv.second.code()->ci().isStub)
                 (kv.second.code()->ci().isMultiDispatcher ? multiM : onlyM).insert(kv.first);
+        if (role->parent && role->parent->isRole) collect(role->parent.get());   // (a role's first `does` sits there)
+        for (auto& p : role->extraParents) if (p && p->isRole) collect(p.get());
+        for (auto& sub : role->composedRoles) if (sub && sub->isRole) collect(sub.get());
+    };
+    for (ClassInfo* role : composedRoles) collect(role);
     for (auto& n : onlyM)
         if (multiM.count(n))
             throw RakuError{Value::typeObj("X::Comp::AdHoc"), "Cannot have a multi candidate for '" + n +
@@ -5370,7 +5376,7 @@ static void refuseRoleClashes(Interpreter& I, const std::string& clsName, const 
                         keyProviders[cn][sk].size() > 1) { multi = &c; break; }
             }
             const auto& roles = multi ? keyProviders[cn][sk] : providerRoles[cn];
-            std::string rl; for (auto r = roles.rbegin(); r != roles.rend(); ++r) rl += (rl.empty() ? "" : ", ") + *r;
+            std::string rl; for (auto r = roles.rbegin(); r != roles.rend(); ++r) rl += (rl.empty() ? "" : ", ") + r->substr(0, r->find('['));
             const std::string tail = " must be resolved by class " + clsName + " because it exists in multiple roles (" + rl + ")";
             if (!multi) throw RakuError{Value::typeObj("X::Role::Unresolved::Method"), "Method '" + cn + "'" + tail};
             std::string sig = I.methodCall(I.methodCall(*multi, "signature", {}), "raku", {}).toStr();
