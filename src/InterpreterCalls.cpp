@@ -3642,6 +3642,7 @@ static Value slotProxyWriteRef(Interpreter& I, const Value& proxy, const Value& 
     Value nv = in;
     if (!ref.ofType().empty()) I.nativeElemStore(ref.ofType(), nv, 'o', (long long)idx);
     else if (const Value* g = ref.elemDefault().get()) nv = I.elemAliasStore(*g, std::move(nv));   // (kSlotGuard)
+    else if (nv.t == VT::Nil) nv = Value::any();   // (an untyped element's Nil resets it to Any, as a store does)
     Interpreter::ParStripe ps(I, arr);
     if (Value* last = proxy.hash()->findPre(kSlotLast().s, kSlotLast().h)) *last = nv;
     if (slotProxyDetached(ref, arr)) return nv;  // written to the detached element
@@ -3666,6 +3667,7 @@ Value Interpreter::makeHashSlotProxy(PRef<ValueMap> h, const std::string& key, c
         [h, key, g](Interpreter& I, ValueList& sa) -> Value {
             Value nv = sa.empty() ? Value::any() : sa[0];
             if (g.t == VT::Array) nv = I.elemAliasStore(g, std::move(nv));
+            else if (nv.t == VT::Nil) nv = Value::any();   // (as the array slot's)
             ParStripe ps(I, h.get());
             (*h)[key] = nv;
             return nv;
