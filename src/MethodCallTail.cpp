@@ -628,6 +628,26 @@ static inline void aliasTopic(ExecContext& t, Value* slot, const Value& guard) {
     if (guard.t == VT::Array) t.topicWritebackGuard = {slot, &guard};
 }
 
+// `.first`'s search: the first (or, `fromEnd`, the last) position `pred` accepts,
+// items.size() for none. `$_` aliases the element, as `.map`'s does (through a
+// typed array's guard): `@a.first({ $_ = 9; True })` writes it, and `items`
+// keeps what it wrote for the answer.
+static size_t firstMatchIndex(Interpreter& I, const Value& inv, ValueList& items, const Value* pred, bool fromEnd) {
+    const bool aliasable = pred && pred->t == VT::Code && inv.t == VT::Array && inv.arr() && items.size() == inv.arr()->size();
+    const Value wbGuard = aliasable ? I.elemAliasGuard(inv, false, "") : Value::any();
+    const std::string natT = aliasable ? I.nativeElemTypeOf(inv) : std::string();   // (a native's answer stays one)
+    auto match = [&](size_t i) {
+        if (!pred) return true;
+        if (aliasable) aliasTopic(Interpreter::tctx(), &(*inv.arr())[i], wbGuard);
+        const bool ok = matcherAccepts(I, items[i], *pred);
+        if (aliasable) { items[i] = (*inv.arr())[i]; if (!natT.empty()) I.nativeElemTag(natT, items[i]); }
+        return ok;
+    };
+    if (fromEnd) { for (size_t i = items.size(); i-- > 0; ) if (match(i)) return i; }
+    else for (size_t i = 0; i < items.size(); i++) if (match(i)) return i;
+    return items.size();
+}
+
 // The elements `.append(LIST)` / `.prepend(LIST)` add: a FINITE lazy list is
 // read to its end first, since its buffer holds only what was pulled — a map
 // a routine returned appended nothing. (An endless one was refused already.)
@@ -3803,16 +3823,8 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
                 (*f.hash())["message"]   = Value::str(msg);
                 return f;
             }
-            auto match = [&](const Value& v) {
-                if (!havePred) return true;
-                return matcherAccepts(*this, v, pred);
-            };
-            if (wantEnd) {
-                for (size_t i = items.size(); i-- > 0; ) if (match(items[i])) return answer(i);
-            } else {
-                for (size_t i = 0; i < items.size(); i++) if (match(items[i])) return answer(i);
-            }
-            return Value::nil(); // no match: Nil (like Rakudo)
+            const size_t hit = firstMatchIndex(*this, inv, items, havePred ? &pred : nullptr, wantEnd);
+            return hit < items.size() ? answer(hit) : Value::nil(); // no match: Nil (like Rakudo)
         }
         if ((m == "pickpairs" || m == "grabpairs") && inv.t == VT::Hash && inv.hash() &&
             (inv.hashKind == "Set" || inv.hashKind == "SetHash" ||
