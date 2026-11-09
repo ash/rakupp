@@ -11960,6 +11960,7 @@ Value* Interpreter::lvalue(Expr* e, bool asInvocant) {
         // lastLvalueAttrType). Cleared by the assignment before it asks.
         if (base) {
             tcx.lastLvalueElemType = elemTypeForStore(*base, idx->isHash);
+            if (const char sm = ofTypeSmiley(base->ofType()); sm && !tcx.lastLvalueElemType.empty()) (tcx.lastLvalueElemType += ':') += sm;   // (`Int:D`)
             if (!tcx.lastLvalueElemType.empty() && !idx->isHash && base->t == VT::Array && base->arr()) {
                 tcx.lastLvalueGrowBase = base;
                 tcx.lastLvalueGrowSize = base->arr()->size();
@@ -16608,16 +16609,15 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
                 checkElemType(want, rhs, containerNameOf(mct->inv.get(), mct->method == "AT-KEY" ? '%' : '@'));
             }
         }
-        // `my Int:D @a … ; @a[0] = Int` — the element smiley (Nil is a reset to its default)
+        // `my Int:D @a … ; @a[0] = Int` — the element smiley (Nil is a reset to its default, an `Array[Int:D]`'s too)
         if (opEq(a->op, "=") && a->target->kind == NK::Index) {
             auto* ixt = static_cast<Index*>(a->target.get());
             if (ixt->base && ixt->base->kind == NK::VarExpr) {
                 const std::string& cn = static_cast<VarExpr*>(ixt->base.get())->name;
-                if (elemSmileyOf(cn)) {
-                    Value* cv = tctx().cur->find(cn);
-                    checkElemSmiley(cn, cv ? elemTypeOf(*cv) : std::string(),
-                                    rhs.t == VT::Nil && cv && cv->elemDefault() ? *cv->elemDefault() : rhs);
-                }
+                char sm = elemSmileyOf(cn);
+                Value* cv = sm || rhs.t == VT::Nil ? tctx().cur->find(cn) : nullptr;
+                if (!sm && cv) sm = ofTypeSmiley(cv->ofType());
+                if (sm) checkElemSmiley(cn, cv ? elemTypeOf(*cv) : std::string(), rhs.t == VT::Nil && cv && cv->elemDefault() ? *cv->elemDefault() : rhs, sm);
             }
         }
         tctx().lastLvalueElemType.clear();

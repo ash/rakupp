@@ -5227,6 +5227,7 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
             // way — that is the half natCheck left out, and it is why
             // `has Str @.data` silently accepted Ints (issue #63).
             const std::string boxedElem = elemTypeOf(inv);
+            const std::string boxedSpec = ofTypeSmiley(inv.ofType()) ? boxedElem + ':' + ofTypeSmiley(inv.ofType()) : boxedElem;
             // Both checks see the value that ACTUALLY LANDS, so they run per
             // arm, after append/prepend's one-level flattening: `my int @a;
             // @a.append([1,2])` appends two ints and is legal (natCheck read
@@ -5236,7 +5237,7 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
                 natCheck(v);
                 if (!boxedElem.empty()) {
                     coerceElemValue(*this, boxedElem, v);   // `my Int() @a; @a.push: "3"`
-                    checkElemType(boxedElem, v, "");
+                    checkElemType(boxedSpec, v, "");          // (`my Int:D @a; @a.push: Int` dies)
                 }
             };
             // P3 (the no-crash contract): in parallel mode the structural
