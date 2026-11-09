@@ -39,7 +39,8 @@ e1bd580c, 0ca4968e, c7c4e564;
 and ten more: cae1cb63, a72b133c, c2dcfeb9, 25f02957, b8d8799d, 1c8c779c, 01673b79,
 846ae003, 1695a062, 75213a10;
 and nine more: 586a7f14, 1c32f010, a5cb94fa, 3f7f2856, d9fb551b, 0579b6c2, 2108a08b,
-de67ca59, c77965fc.*
+de67ca59, c77965fc;
+and seven more: 868dbe53, 564eec50, a776b42a, 649cb2b1, 73940d6e, ba6f7edf, 4c47943e.*
 
 ---
 
@@ -447,6 +448,17 @@ de67ca59, c77965fc.*
 - **`.map` binds an `is rw` parameter to the element** (0579b6c2): `@a.map(&inc)`
   and `@a.map(&postfix:<++>)` left @a as it was.
   `t/regression/map-rw-param-binds-element.raku`.
+- **A Nil through an untyped element's alias resets it to Any** (649cb2b1):
+  `my $e := @p[0]; $e = Nil` left Nil in @p, and a Hash's value the same.
+  `t/regression/element-alias-nil-resets.raku`.
+- **A list assignment into a typed variable declared before checks it** (73940d6e):
+  `my Int $a; ($a, $z) = "la", 2` stored "la", and a `:D`, a `where` and a
+  coercion were passed over too. `t/regression/list-assign-checks-typed-scalar.raku`.
+- **`.first`'s `$_` is the Array's element** (ba6f7edf): `@a.first({ $_ = 9; True })`
+  wrote nothing and answered 1. `t/regression/first-topic-aliases-element.raku`.
+- **A typed element written through `.hyper.map`, `.hyper.grep` or a `.kv`
+  loop answers to its type** (4c47943e), and a typed Hash's value under `.kv`:
+  each stored "x" into a `my Int @a`. `t/regression/typed-element-alias-guards.raku`.
 
 ### Fixed: crashes
 
@@ -622,6 +634,15 @@ de67ca59, c77965fc.*
 - **Date and DateTime strings take any decimal digit** (de67ca59), and
   X::Temporal::OutOfRange carries `.got` Int and `.comment`; a timezone's
   minutes are "minutes of timezone". `t/regression/temporal-string-digits-and-ranges.raku`.
+- **A `:D` or `:U` refusal is worded as Rakudo's** (868dbe53): "… but got Int
+  (Int) (perhaps Nil was assigned to a :D which had no default?)", where it
+  said "but got Nil" or "but got Int". `t/regression/smiley-refusal-wording.raku`.
+- **A typed Array's `.raku` writes an undefined element as its type** (564eec50):
+  `Array[Cool].new(Cool, 1)`, where it was `Array[Cool].new(Int, 1)`.
+  `t/regression/typed-array-raku-undefined-element.raku`.
+- **A `:D` or `:U` element type stays on the container** (a776b42a): `my Int:D @d`
+  is an Array[Int:D] and `my Int:D %h` a Hash[Int:D], where both were typed
+  Int, and `@d[0] = Nil` is refused. `t/regression/smiley-element-type-kept.raku`.
 
 ### Platforms and packaging
 
@@ -729,3 +750,7 @@ de67ca59, c77965fc.*
   with an `is rw` parameter writes nothing back; `polymod` threads a
   Junction Rakudo takes whole; and an undeclared variable inside a string
   is refused when the statement runs.
+- Found with 868dbe53 to 4c47943e, the same before them (each in
+  TODO-FOLLOW-UPS.md): a `:D` element's type refusal says "expected Int"
+  where Rakudo says "expected Int:D"; and a Proxy bound to a variable
+  answers `.VAR` as its value.
