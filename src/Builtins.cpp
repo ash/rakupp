@@ -6545,10 +6545,11 @@ Value Interpreter::methodCall(const Value& inv, const std::string& m, ValueList 
             (opEq(m, "say") || opEq(m, "print") || opEq(m, "note") || opEq(m, "put"))) break;
         if (methodTakesJunction(inv, m, ai)) continue;  // the signature asked for it whole
         // …and so do the built-ins whose parameters are slurpies or Mu: a list's
-        // push/append/unshift/prepend/splice, and a QuantHash's `.new`
+        // push/append/unshift/prepend/splice, a QuantHash's `.new` and a number's `.polymod`
         static const std::set<std::string> kJunctionWhole = {"push", "append", "unshift", "prepend", "splice"};
         static const std::set<std::string> kQuantHash = {"Set", "SetHash", "Bag", "BagHash", "Mix", "MixHash"};
-        if (kJunctionWhole.count(m) || (m == "new" && inv.t == VT::Type && kQuantHash.count(std::string(inv.s.str())))) continue;
+        if (kJunctionWhole.count(m) || (m == "new" && inv.t == VT::Type && kQuantHash.count(std::string(inv.s.str()))) ||
+            (opEq(m, "polymod") && (inv.t == VT::Int || inv.t == VT::Num || inv.t == VT::Rat))) continue;
         if (first == args.size()) first = ai;
         if (args[ai].enumName == "all" || args[ai].enumName == "none") { first = ai; break; }
     }
