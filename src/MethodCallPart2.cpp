@@ -7288,12 +7288,14 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
                     };
                     if (d->parentIsDoes && !d->parent.empty()) add(d->parent);
                     for (auto& rn : d->roles) add(rn);
+                    if (!d->isRole) std::reverse(r.begin(), r.end());   // (a class's, the last first, as Rakudo lists them)
                     return r;
                 };
                 // A parameterization the type composed (`does R2[Num]`) is its
                 // own role object, which knows what IT does (R1[Num]); the
                 // generic R2 under the bare name only knows `does R1[::T]`.
                 std::map<std::string, ClassInfo*> composedConc;
+                std::map<std::string, std::string> shownAs;   // (a value argument by its type: `does R2[1]` is R2[Int])
                 {
                     std::set<ClassInfo*> walked;
                     std::function<void(ClassInfo*)> walk = [&](ClassInfo* c) {
@@ -7307,7 +7309,8 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
                                 for (auto& b : r->roleParamBindings)
                                     if (b.first == key) { vals.push_back(b.second); break; }
                             }
-                            if (!vals.empty()) composedConc.emplace(roleArgsDisplay(r->name, vals), r);
+                            if (!vals.empty() && composedConc.emplace(roleArgsDisplay(r->name, vals), r).second)
+                                shownAs.emplace(roleArgsDisplay(r->name, vals), roleArgsDisplay(r->name, vals, true));
                         };
                         if (c->parent) { note(c->parent.get()); walk(c->parent.get()); }
                         for (auto& r : c->composedRoles) { note(r.get()); walk(r.get()); }
@@ -7331,7 +7334,7 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
                 // a pun (or an instance of the role itself) does the role
                 if ((ci->isRole || (ci->decl && ci->decl->isRole)) && inv.t == VT::Object)
                     addRole(ci->dispName.empty() ? ci->name : baseOf(ci->dispName));
-                else if (ci->name.find("\x01pun") != std::string::npos) addRole(ci->dispName.empty() ? ci->name : ci->dispName);
+                else if (ci->name.find("\x01pun") != std::string::npos && inv.t == VT::Object) addRole(ci->dispName.empty() ? ci->name : ci->dispName);
                 for (ClassInfo* c = ci.get(); c; c = c->parent.get()) {
                     if (c->isRole && c != ci.get()) continue;   // the role sitting in the parent slot
                     for (auto& rn : directRoles(c)) addRole(rn);
@@ -7339,8 +7342,8 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
                 }
                 Value res = Value::array(); res.isList = true;
                 for (auto& rn : out) {
-                    auto rit = classes_.find(rn);
-                    res.arr()->push_back(Value::typeObj(rit != classes_.end() ? rn : rn));
+                    auto sh = shownAs.find(rn);
+                    res.arr()->push_back(Value::typeObj(sh != shownAs.end() ? sh->second : rn));
                 }
                 return res;
             }
