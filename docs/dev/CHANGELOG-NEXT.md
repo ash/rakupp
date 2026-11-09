@@ -44,7 +44,8 @@ and seven more: 868dbe53, 564eec50, a776b42a, 649cb2b1, 73940d6e, ba6f7edf, 4c47
 and seven more: fd4495e3, a343a825, 3341d028, e56816cc, 0d6168fb, cd1e7aa9, 07e940ce;
 and five more: add45aeb, 43dbcefb, 57dad570, e8a8ba53, 024a0905;
 and three more: e205f9ae, f371f8b2, e4ec869c;
-and three more: 07dd7b4a, 793c6d61, d5186165.*
+and three more: 07dd7b4a, 793c6d61, d5186165;
+and one more: 5932b773.*
 
 ---
 
@@ -489,6 +490,9 @@ and three more: 07dd7b4a, 793c6d61, d5186165.*
 - **An assignment through a list literal's item answers to the variable's
   type** (d5186165): `my Int $a; ($a, 2)[0] = "l"` stored the Str, and a Nil
   reset it to Any, not its default. `t/regression/list-literal-item-typed-assign.raku`.
+- **A `where` clause is asked of a store through an alias** (5932b773): `my $w :=
+  $wh`, `with $x { $_ = … }` and an `is rw` parameter stored past it.
+  `t/regression/where-alias-checked.raku`.
 
 ### Fixed: crashes
 
@@ -824,3 +828,7 @@ and three more: 07dd7b4a, 793c6d61, d5186165.*
 - Found with 07dd7b4a to d5186165 (in TODO-FOLLOW-UPS.md): a multi method's refusal,
   which lists the candidates since 07dd7b4a, lists only a role's when the class
   has its own beside them, the group the dispatch reports being the role's.
+- Found with 5932b773, the same before it (in TODO-FOLLOW-UPS.md): a `where`
+  variable's `$x = Nil` resets it to Any, where Rakudo resets it to the
+  anonymous subset; and `my Int $x where * > 0; $x = "s"` dies "Cannot
+  convert string to number", where Rakudo refuses it.
