@@ -27,7 +27,7 @@ check True.flatmap({ $_ }).raku,    '(Bool::True,).Seq', 'Bool.flatmap';
 check (1.5).flatmap({ $_ }).raku,   '(1.5,).Seq',     'Rat.flatmap';
 check Any.flatmap({ $_ }).raku,     '(Any,).Seq',     'a type object is one element to iterate';
 
-# It is map-that-flattens-one-level, not map: the block's list result spreads.
+# It is map then .flat, not map: the block's list result spreads.
 check 42.flatmap({ ($_, $_) }).raku,      '(42, 42).Seq',     'a scalar flatmap flattens';
 check (1, 2).flatmap({ ($_, $_) }).raku,  '(1, 1, 2, 2).Seq', 'and so does the list form';
 check (1, 2).flatmap({ $_ }).raku,        '(1, 2).Seq',       'a non-list result is passed through';
