@@ -427,11 +427,12 @@ struct Deparser {
             if (const Value* s = attr(node, "scope"))
                 if (s->toStr() == "my") out = xs("scope", "my") + " ";
             if (c == "Type::Enum")
-                return out + xs("typer", "enum") + " " + opt(attr(node, "name"), indent) + " " +
+                return out + xs("typer", "enum") + " " + opt(attr(node, "name"), indent) + traits(node, indent) + " " +
                        opt(attr(node, "term"), indent);
             out += xs("typer", "subset") + " " + opt(attr(node, "name"), indent);
             if (const Value* b = attr(node, "base-type"))
                 if (isNode(*b)) out += " " + xs("traitmod", "of") + " " + render(*b, indent);
+            out += traits(node, indent);   // (`subset S of Int is export where …`, as Rakudo writes it)
             if (const Value* w = attr(node, "where"))
                 if (isNode(*w)) out += " " + xs("constraint", "where") + " " + render(*w, indent);
             return out;
@@ -1001,6 +1002,7 @@ struct Deparser {
             return out;
         }
         if (c == "Trait::Of")  return xs("traitmod", "of")   + " " + opt(attr(node, "type"), indent);
+        if (c == "Trait::Handles") return xs("traitmod", "handles") + " " + opt(attr(node, "term"), indent);
         if (c == "Trait::Does") return xs("traitmod", "does") + " " + opt(attr(node, "type"), indent);
 
         // ---- whole units --------------------------------------------------

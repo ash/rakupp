@@ -546,6 +546,16 @@ struct Builder {
         return t;
     }
 
+    // `is export`, and `is export(:a, :b)` with its tags, each a colonpair
+    Value exportTrait(const std::vector<std::string>& tags) {
+        if (tags.empty()) return traitIs("export");
+        ValueList cps;
+        for (auto& t : tags) cps.push_back(node("ColonPair::True", {{"key", Value::str(t)}}));
+        Value arg = cps.size() == 1 ? cps[0]
+                  : node("ApplyListInfix", {{"infix", node("Infix", {{"operator", Value::str(",")}})}, {"operands", list(cps)}});
+        return traitIs("export", &arg);
+    }
+
     // The `-> $y` of an `if`, an `elsif`, an `else`, a `with` or a `given`:
     // the parse keeps one plain name, or the whole parameter list when there
     // is more to it than a name. Upstream the block it introduces IS a
@@ -591,6 +601,14 @@ struct Builder {
         // scope is part of what the declaration says; a sub's default is `my`.
         if (!d->isMethod && !d->isSubmethod)
             n.obj()->attrs["scope"] = Value::str(d->isOur ? "our" : "my");
+        // …and `is export` and `is DEPRECATED`, which the parse keeps as flags
+        ValueList traits;
+        if (d->isExport) traits.push_back(exportTrait(d->exportTags));
+        if (d->deprecated) {
+            Value why = d->deprecatedWith ? buildExpr(d->deprecatedWith.get()) : Value();
+            traits.push_back(traitIs("DEPRECATED", d->deprecatedWith ? &why : nullptr));
+        }
+        if (!traits.empty()) n.obj()->attrs["traits"] = list(traits);
         return n;
     }
 
@@ -621,6 +639,15 @@ struct Builder {
         if (a.notBuilt) {
             Value no = node("Term::Enum", {{"name", name("False")}});
             traits.push_back(traitIs("built", &no));
+        }
+        if (a.defaultTrait) { Value dv = buildExpr(a.defaultTrait.get()); traits.push_back(traitIs("default", &dv)); }
+        // `handles <a b>`, the word list it was written as (a renaming pair has no words to give)
+        if (!a.handles.empty() && std::all_of(a.handlesTo.begin(), a.handlesTo.end(), [](const std::string& t) { return t.empty(); })) {
+            std::string words;
+            for (auto& h : a.handles) words += (words.empty() ? "" : " ") + h;
+            traits.push_back(node("Trait::Handles", {{"term", node("QuotedString",
+                {{"segments", list({node("StrLiteral", {{"value", Value::str(words)}})})},
+                 {"processors", list({Value::str("words"), Value::str("val")})}})}}));
         }
         if (!traits.empty()) n.obj()->attrs["traits"] = list(traits);
         if (a.def)
@@ -1086,6 +1113,7 @@ struct Builder {
                 for (auto& t : cd->extraParents) traits.push_back(isParent(t));
                 for (auto& r : cd->roles) traits.push_back(node("Trait::Does", {{"type", roleType(r)}}));
                 if (cd->classRw) traits.push_back(traitIs("rw"));
+                if (cd->isExport) traits.push_back(exportTrait(cd->exportTags));
                 Value pkg = node(cls, {{"name", name(cd->name)},
                                        {"scope", Value::str(cd->isMy ? "my" : "our")},
                                        {"traits", list(traits)},
@@ -1138,6 +1166,7 @@ struct Builder {
                 return node("Statement::Expression", {{"expression",
                     node("Type::Enum", {{"name",  name(d->name)},
                                         {"scope", Value::str(d->isMy ? "my" : "our")},
+                                        {"traits", list(d->isExport ? ValueList{exportTrait(d->exportTags)} : ValueList{})},
                                         {"term",  term}})}});
             }
             case NK::SubsetDecl: {
@@ -1147,6 +1176,7 @@ struct Builder {
                                                 {"scope", Value::str(d->isMy ? "my" : "our")}});
                 if (!d->baseType.empty())
                     n.obj()->attrs["base-type"] = node("Type::Simple", {{"name", name(d->baseType)}});
+                if (d->isExport) n.obj()->attrs["traits"] = list({exportTrait(d->exportTags)});
                 if (d->where) n.obj()->attrs["where"] = buildExpr(d->where.get());
                 return node("Statement::Expression", {{"expression", n}});
             }
