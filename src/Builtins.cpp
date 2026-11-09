@@ -10351,6 +10351,17 @@ Value Interpreter::methodCallUnresolved(const Value& inv, const MName& m, ValueL
         if ((m == "DELETE-KEY" || m == "DELETE-POS") && args.size() == 1)
             throw RakuError{Value::typeObj("X::AdHoc"), std::string("Can not remove ") + (m == "DELETE-KEY" ? "values" : "elements") +
                                                         " from a " + inv.typeName()};
+        // …and Any's mutators and `.sum` (its `.Numeric`), whose candidates take no defined object, in Rakudo's words
+        if (m == "push" || m == "append" || m == "unshift" || m == "prepend" || m == "splice" || (m == "sum" && args.empty())) {
+            if (m == "sum" && inv.t == VT::Object && inv.obj()->cls->findMethod("Numeric")) return methodCall(inv, "Numeric", {});
+            const std::string prof = noMatchProfile(inv, args, m != "splice");
+            throw RakuError{Value::typeObj("X::Multi::NoMatch"), m == "splice"
+                ? "Cannot resolve caller splice(" + inv.typeName() + ":D" + (prof.empty() ? "" : ", " + prof) + "); Routine does not have any candidates.  Is only the proto defined?"
+                : "Cannot resolve caller " + (m == "sum" ? std::string("Numeric") : m.s) + "(" + prof + (prof.back() == ':' ? " " : "") +
+                  "); none of these signatures matches:\n    " + (m == "sum" ? "(Mu:U \\v:: *%_)" : "(Any:U \\SELF:: |values)")};
+        }
+        if (m == "sum")
+            throw RakuError{Value::typeObj("X::AdHoc"), "Too many positionals passed; expected 1 argument but got " + std::to_string(args.size() + 1)};
     }
     // `.CREATE` on an INSTANCE allocates another of its TYPE: Rakudo's CREATE is
     // Mu's, and nothing in it needs a type object. `$obj.CREATE` died here for
