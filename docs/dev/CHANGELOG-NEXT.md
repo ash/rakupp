@@ -41,7 +41,8 @@ and ten more: cae1cb63, a72b133c, c2dcfeb9, 25f02957, b8d8799d, 1c8c779c, 01673b
 and nine more: 586a7f14, 1c32f010, a5cb94fa, 3f7f2856, d9fb551b, 0579b6c2, 2108a08b,
 de67ca59, c77965fc;
 and seven more: 868dbe53, 564eec50, a776b42a, 649cb2b1, 73940d6e, ba6f7edf, 4c47943e;
-and seven more: fd4495e3, a343a825, 3341d028, e56816cc, 0d6168fb, cd1e7aa9, 07e940ce.*
+and seven more: fd4495e3, a343a825, 3341d028, e56816cc, 0d6168fb, cd1e7aa9, 07e940ce;
+and five more: add45aeb, 43dbcefb, 57dad570, e8a8ba53, 024a0905.*
 
 ---
 
@@ -471,6 +472,15 @@ and seven more: fd4495e3, a343a825, 3341d028, e56816cc, 0d6168fb, cd1e7aa9, 07e9
 - **`%h.values.map` binds an `is rw` parameter to the hash's value** (07e940ce):
   `-> $v is rw { $v++ }`, `&inc` and `-> \v` left %h as it was.
   `t/regression/hash-values-map-rw-param.raku`.
+- **`andthen`'s `$_` answers to a typed variable's type** (43dbcefb): `my Int $x;
+  $x andthen $_ = "s"` stored the Str, as `with` once did.
+  `t/regression/andthen-topic-typed-variable.raku`.
+- **A role a role does is asked about a multi beside an only** (57dad570): `role
+  R does S` bringing an only `m` beside S's multi `m` was taken, and two
+  parameterizations are named `(A, A)`. `t/regression/role-clash-through-role.raku`.
+- **A Date or DateTime field that is no number is refused** (e8a8ba53):
+  `Date.new(2015, "x", 1)` was month 0, an hour "x" midnight, and a Str
+  timezone beside a timestamp a number. `t/regression/temporal-str-field-refused.raku`.
 
 ### Fixed: crashes
 
@@ -667,6 +677,11 @@ and seven more: fd4495e3, a343a825, 3341d028, e56816cc, 0d6168fb, cd1e7aa9, 07e9
 - **A class or role refused for an unknown parent leaves nothing behind**
   (cd1e7aa9): `class C {}` after it was a redeclaration.
   `t/regression/refused-parent-leaves-no-type.raku`.
+- **`.polymod` answers a Seq** (add45aeb): `(1, 1, 1).Seq`, where it was a List.
+  `t/regression/polymod-answers-seq.raku`.
+- **An undeclared variable in a declaration's initializer is refused at
+  compile time** (024a0905): `my $y = "a $x b"` ran what came before it.
+  `t/regression/undeclared-in-declaration-initializer.raku`.
 
 ### Platforms and packaging
 
@@ -762,16 +777,15 @@ and seven more: fd4495e3, a343a825, 3341d028, e56816cc, 0d6168fb, cd1e7aa9, 07e9
   list methods on an object, a Failure's `.mess` and an INIT in a routine
   by 586a7f14, 1c32f010 and a5cb94fa, above.)
 - Found with cae1cb63 to 75213a10, the same before them (each in
-  TODO-FOLLOW-UPS.md): an only and a multi a role gets from a role it does
-  pass; and a module's exported variables and types reach past the block
-  that `use`d it. (What dies at BEGIN time, `.map` with an `is rw` routine
-  and an undeclared variable's message are fixed by d9fb551b, 0579b6c2 and 2108a08b,
+  TODO-FOLLOW-UPS.md): a module's exported variables and types reach past
+  the block that `use`d it. (What dies at BEGIN time, `.map` with an `is rw`
+  routine, an undeclared variable's message and an only beside a multi a
+  role's role brings are fixed by d9fb551b, 0579b6c2, 2108a08b and 57dad570,
   above.)
 - Found with 586a7f14 to de67ca59, the same before them (each in
-  TODO-FOLLOW-UPS.md): a Range of objects is `0..0`; and an undeclared
-  variable inside a string is refused when the statement runs. (A Hash's
-  `.values.map` with an `is rw` parameter and `polymod` with a Junction are
-  fixed by 07e940ce and fd4495e3, above.)
+  TODO-FOLLOW-UPS.md): a Range of objects is `0..0`. (A Hash's `.values.map`
+  with an `is rw` parameter, `polymod` with a Junction and an undeclared
+  variable inside a string are fixed by 07e940ce, fd4495e3 and 024a0905, above.)
 - Found with 868dbe53 to 4c47943e, the same before them (each in
   TODO-FOLLOW-UPS.md): a Proxy bound to a variable answers `.VAR` as its
   value. (A `:D` element's type refusal is fixed by 3341d028, above.)
@@ -779,4 +793,8 @@ and seven more: fd4495e3, a343a825, 3341d028, e56816cc, 0d6168fb, cd1e7aa9, 07e9
   TODO-FOLLOW-UPS.md): `.push` and its kin name "the container" in a
   refusal, as `.map` does, where Rakudo names `@a`; an `Array[T].new`'s
   element refusal names the variable it is bound to, where Rakudo names
-  none ("in assignment to ;"); and `.polymod` answers a List, Rakudo a Seq.
+  none ("in assignment to ;"). (`.polymod`'s List is fixed by add45aeb, above.)
+- Found with add45aeb to 024a0905, the same before them (each in
+  TODO-FOLLOW-UPS.md): an undeclared variable's suggestions leave out the
+  routines Rakudo offers (`$nope` gets '&none' and '&note' there); and a
+  role a role does lists its multi candidate twice in `.candidates`.
