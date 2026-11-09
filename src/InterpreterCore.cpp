@@ -5366,7 +5366,7 @@ void Interpreter::bindParams(const std::vector<Param>& params, ValueList& args,
                     if (isCArrayValue(bv)) { bv.itemized = false; }
                     // …and the same refusal: `sub f(:@a)` given 42, a Str or Nil
                     // is a binding failure, not a one-element array
-                    else if (!p.isCopy && notPositionalArg(bv)) refuseNotPositional(p, bv);
+                    else if (notPositionalArg(bv)) refuseNotPositional(p, bv);
                     // …and the same List-vs-Array rule as the positional arm below:
                     // binding never itemises, so `sub f(:@c)` called with a List
                     // keeps a List, whose slots are bare and therefore spread under
@@ -5527,8 +5527,9 @@ void Interpreter::bindParams(const std::vector<Param>& params, ValueList& args,
                 }
                 // a definite scalar is no Positional: `sub f(@a) {}; f(1)` is a
                 // binding failure, not a one-element array — and nor is Nil, Any
-                // or a non-Positional type object (`f(Nil)` refuses in Rakudo)
-                else if (!p.isCopy && !laxOverflow() && notPositionalArg(v)) refuseNotPositional(p, v);
+                // or a non-Positional type object (`f(Nil)` refuses in Rakudo),
+                // whether or not the parameter is `is copy`
+                else if (!laxOverflow() && notPositionalArg(v)) refuseNotPositional(p, v);
                 else {
                     v = coerceArray(v);
                     // a LAZY Seq stays lazy, and binds as the List it caches
