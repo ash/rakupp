@@ -3936,6 +3936,17 @@ public:
     bool forListsValue(const Value& v, bool bare);
     Value forListOf(const Value& v);
     std::thread::id mainThreadId() const { return mainThread_; } // `exit` ends the process from any thread
+    // The END phasers of the run() in progress, for an `exit` (or an unhandled
+    // cued die) on a worker thread to run before it ends the process, as
+    // Rakudo's do; `started` keeps them to one run, whichever thread gets there.
+    struct EndsHook { std::function<void(bool fromWorker)> run; std::atomic<bool> started{false}; };
+    std::atomic<EndsHook*> endsHook_{nullptr};
+    static inline thread_local bool runningWorkerEnds_ = false;   // (an END's own `exit` then throws, as on the main thread)
+    void endsOnWorkerExit() {
+        if (EndsHook* h = endsHook_.load(std::memory_order_acquire); h && !h->started.exchange(true)) {
+            runningWorkerEnds_ = true; h->run(true); runningWorkerEnds_ = false;
+        }
+    }
     // Resolve `$var` atoms inside a regex SOURCE (regex splice / literal text).
     std::string interpRegexPattern(const std::string& in);
     std::string interpP5Pattern(const std::string& in); // :P5 — $vars splice as raw regex source

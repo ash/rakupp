@@ -1969,9 +1969,9 @@ void Interpreter::registerBuiltinsPart2() {
         int code = (int)(a.empty() ? 0 : a[0].toInt());
         // `exit` ends the PROCESS, wherever it is called from. Thrown on a worker
         // thread the ExitEx would only break that thread's Promise, leaving the
-        // main thread to run on — `start { sleep 3; exit }` has to stop everything.
-        if (std::this_thread::get_id() != I.mainThreadId()) {
-            std::cout.flush(); std::cerr.flush();
+        // main thread to run on — `start { exit }` stops everything, after the ENDs, with its status.
+        if (std::this_thread::get_id() != I.mainThreadId() && !Interpreter::runningWorkerEnds_) {
+            I.endsOnWorkerExit(); std::cout.flush(); std::cerr.flush();
             _exit(code);
         }
         throw ExitEx{code};

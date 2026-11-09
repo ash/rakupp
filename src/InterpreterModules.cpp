@@ -9289,12 +9289,13 @@ int Interpreter::run(Program& prog) {
     // the whole compilation, so a nested END takes its place among the
     // mainline's (`END a; sub f { END b }; END c` runs c, b, a) and a module's
     // takes its place at the `use` that loaded it.
-    auto runEnds = [&]() {
+    auto runEnds = [&](bool fromWorker) {
         g_exitUnwinding.store(false, std::memory_order_relaxed);   // (an END's own blocks run their LEAVEs)
         // Dropped objects get their DESTROY before the ENDs, so an END block
         // observes destructor effects; objects an END itself releases wait for
-        // a real process exit, like Rakudo's unguaranteed finalization.
-        try { cycleCollectAtExit(); runPendingDestroys(); } catch (...) {}
+        // a real process exit, like Rakudo's unguaranteed finalization. (Not
+        // for a worker's `exit`: the mainline is still running then.)
+        if (!fromWorker) try { cycleCollectAtExit(); runPendingDestroys(); } catch (...) {}
         // Snapshot before running: ENDs run with the workers still alive (below),
         // and both an EVAL on a worker and an END that EVALs an END of its own
         // register into endPhasers_ while this runs — a reference into it would
@@ -9370,6 +9371,11 @@ int Interpreter::run(Program& prog) {
         for (size_t i = endMark; i < endPhasers_.size(); i++) endPhasers_[i].blk->endSlot = -1;
         endPhasers_.resize(endMark);
     };
+    // …and an `exit` on a worker thread runs them before it ends the process
+    // (endsOnWorkerExit), once, whichever thread gets there first
+    EndsHook endsHook; endsHook.run = runEnds;
+    struct EndsHookBack { std::atomic<EndsHook*>& h; EndsHook* outer; ~EndsHookBack() { h.store(outer); } }
+        endsHookBack{endsHook_, endsHook_.exchange(&endsHook)};
     // Extract a single top-level lexical declaration (name + whether it has an initializer).
     auto topDecl = [](Stmt* s, bool& hasInit) -> std::string {
         hasInit = true;
@@ -9760,7 +9766,7 @@ int Interpreter::run(Program& prog) {
     // is `logger.done`, which starts a worker to close its Supply and then
     // waits on that Supply — drained first, the worker never ran and the wait
     // never returned, so every program that used the logger hung at exit.
-    runEnds(); // END phasers (reverse source order), after the mainline
+    if (!endsHook.started.exchange(true)) runEnds(false); // END phasers (reverse source order), after the mainline
     drainWorkers(); // join any outstanding async workers before we tear down
     code = testRunEnd(code, exited);
     code = raceFinish(code);   // --race: the report, and 66 for a run that raced
