@@ -415,20 +415,27 @@ function newMap(src) { const h = newHash(src); h.ty = T.Map; return h; }
 // flat: recursive flattening of what is not itemized. An Array's slots are
 // scalar containers, so they are pushed as they are (`flat [[1,2],[3,4]]` is two
 // items, `flat ((1,2),(3,4))` four); a List's elements descend unless they are items.
-// What `.flat` makes of one value, read as it is asked for
-function* flatWalk(x, slot) {
-    if (slot) yield item(x);   // an Array slot is a container: its list or hash stays an item
+// What `.flat` makes of one value, read as it is asked for; `:hammer` (6.e)
+// flattens the containers too, an itemized list, hash or Array element
+function* flatWalk(x, slot, hammer) {
+    if (hammer) {
+        if (x instanceof RList) { for (const y of x.arr()) yield* flatWalk(y, false, true); }
+        else if (x instanceof RSeq || x instanceof RRange || x instanceof RSlip) for (const y of iter(x)) yield* flatWalk(y, false, true);
+        else if (x instanceof RHash) yield* x.pairs();
+        else yield x;
+    }
+    else if (slot) yield item(x);   // an Array slot is a container: its list or hash stays an item
     else if (x !== null && typeof x === 'object' && x.item === true) yield x;
     else if (x instanceof RList) { const isArr = x.ty === T.Array; for (const y of x.arr()) yield* flatWalk(y, isArr); }
     else if (x instanceof RSeq || x instanceof RRange || x instanceof RSlip) for (const y of iter(x)) yield* flatWalk(y, false);
     else if (x instanceof RHash) yield* iter(x);   // a Hash in a list spreads into its pairs
     else yield x;
 }
-function flat(v) {
-    if (v !== null && typeof v === 'object' && v.item === true) return mkSeq([v]);
-    if (v instanceof RList || v instanceof RSeq || v instanceof RRange || v instanceof RSlip) return mkSeq([...flatWalk(v, false)]);
+function flat(v, hammer) {
+    if (!hammer && v !== null && typeof v === 'object' && v.item === true) return mkSeq([v]);
+    if (v instanceof RList || v instanceof RSeq || v instanceof RRange || v instanceof RSlip) return mkSeq([...flatWalk(v, false, hammer)]);
     const out = [];
-    for (const x of iter(v)) out.push(...flatWalk(x, false));   // a Hash's pairs, an object's own iterator
+    for (const x of iter(v)) out.push(...flatWalk(x, false, hammer));   // a Hash's pairs, an object's own iterator
     return mkSeq(out);
 }
 function slip(v) { return new RSlip(itemsOf(decont(v)).slice()); }      // |$x slips the container's contents

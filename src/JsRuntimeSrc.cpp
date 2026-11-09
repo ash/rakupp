@@ -2103,20 +2103,27 @@ function newMap(src) { const h = newHash(src); h.ty = T.Map; return h; }
 // flat: recursive flattening of what is not itemized. An Array's slots are
 // scalar containers, so they are pushed as they are (`flat [[1,2],[3,4]]` is two
 // items, `flat ((1,2),(3,4))` four); a List's elements descend unless they are items.
-// What `.flat` makes of one value, read as it is asked for
-function* flatWalk(x, slot) {
-    if (slot) yield item(x);   // an Array slot is a container: its list or hash stays an item
+// What `.flat` makes of one value, read as it is asked for; `:hammer` (6.e)
+// flattens the containers too, an itemized list, hash or Array element
+function* flatWalk(x, slot, hammer) {
+    if (hammer) {
+        if (x instanceof RList) { for (const y of x.arr()) yield* flatWalk(y, false, true); }
+        else if (x instanceof RSeq || x instanceof RRange || x instanceof RSlip) for (const y of iter(x)) yield* flatWalk(y, false, true);
+        else if (x instanceof RHash) yield* x.pairs();
+        else yield x;
+    }
+    else if (slot) yield item(x);   // an Array slot is a container: its list or hash stays an item
     else if (x !== null && typeof x === 'object' && x.item === true) yield x;
     else if (x instanceof RList) { const isArr = x.ty === T.Array; for (const y of x.arr()) yield* flatWalk(y, isArr); }
     else if (x instanceof RSeq || x instanceof RRange || x instanceof RSlip) for (const y of iter(x)) yield* flatWalk(y, false);
     else if (x instanceof RHash) yield* iter(x);   // a Hash in a list spreads into its pairs
     else yield x;
 }
-function flat(v) {
-    if (v !== null && typeof v === 'object' && v.item === true) return mkSeq([v]);
-    if (v instanceof RList || v instanceof RSeq || v instanceof RRange || v instanceof RSlip) return mkSeq([...flatWalk(v, false)]);
+function flat(v, hammer) {
+    if (!hammer && v !== null && typeof v === 'object' && v.item === true) return mkSeq([v]);
+    if (v instanceof RList || v instanceof RSeq || v instanceof RRange || v instanceof RSlip) return mkSeq([...flatWalk(v, false, hammer)]);
     const out = [];
-    for (const x of iter(v)) out.push(...flatWalk(x, false));   // a Hash's pairs, an object's own iterator
+    for (const x of iter(v)) out.push(...flatWalk(x, false, hammer));   // a Hash's pairs, an object's own iterator
     return mkSeq(out);
 }
 function slip(v) { return new RSlip(itemsOf(decont(v)).slice()); }      // |$x slips the container's contents
@@ -2261,13 +2268,13 @@ function sortList(v, f) {
     keyed.sort((a, b) => cmpNum(a[0], b[0]));
     return mkSeq(keyed.map(p => p[1]));
 }
-// min/max skip undefined values, as the interpreter does
+)RKJS",
+R"RKJS(// min/max skip undefined values, as the interpreter does
 // .min/.max with :k / :v / :kv / :p answer the position, the value, both or the pair
 function minMaxAdv(v, f, isMax, named) {
     if (f === undefined && named.has('by')) f = named.get('by');   // the :by spelling of the mapper
     const a = arr(v); let bi = -1, bk, ties = [];   // every position attaining the extremum, in order
-)RKJS",
-R"RKJS(    a.forEach((x, i) => { if (x instanceof RType) return; const k = f ? f(x) : x; const c = bi < 0 ? -1 : (isMax ? -cmpNum(k, bk) : cmpNum(k, bk)); if (c < 0) { bi = i; bk = k; ties = [i]; } else if (c === 0) ties.push(i); });
+    a.forEach((x, i) => { if (x instanceof RType) return; const k = f ? f(x) : x; const c = bi < 0 ? -1 : (isMax ? -cmpNum(k, bk) : cmpNum(k, bk)); if (c < 0) { bi = i; bk = k; ties = [i]; } else if (c === 0) ties.push(i); });
     const has = (n) => truthy(named.get(n) ?? false);
     if (has('k')) return mkList(ties);
     if (has('kv')) return mkList(ties.flatMap(i => [i, a[i]]));
@@ -2482,7 +2489,8 @@ function combinations(v, n) {
             out.push(mkList(idx.map(i => a[i])));
             let i = k - 1; while (i >= 0 && idx[i] === a.length - k + i) i--;
             if (i < 0) break;
-            idx[i]++; for (let j = i + 1; j < k; j++) idx[j] = idx[j - 1] + 1;
+)RKJS",
+R"RKJS(            idx[i]++; for (let j = i + 1; j < k; j++) idx[j] = idx[j - 1] + 1;
         }
     }
     return mkSeq(out);
@@ -2490,8 +2498,7 @@ function combinations(v, n) {
 function permutations(v) {
     const a = arr(v); const out = [];
     const rec = (cur, rest) => { if (!rest.length) { out.push(mkList(cur)); return; } for (let i = 0; i < rest.length; i++) rec([...cur, rest[i]], rest.slice(0, i).concat(rest.slice(i + 1))); };
-)RKJS",
-R"RKJS(    rec([], a);
+    rec([], a);
     return mkSeq(out);
 }
 function listRepeat(v, n) {        // infix:<xx>
@@ -2731,15 +2738,15 @@ function defClass(name, spec) {
     return ty;
 }
 function accessorRw(key) { const f = function (self, ...args) { if (args.length && !(args[0] instanceof RNamed)) self[key] = args[0]; return self[key]; }; f.lvKey = key; return f; }
-RType.prototype.allAttrs = function () { return []; };
+)RKJS",
+R"RKJS(RType.prototype.allAttrs = function () { return []; };
 // Mu.new: build an instance, fill attributes from named args, run BUILD/TWEAK
 // Type.new(...): a user-defined `new` runs (its `self.bless` builds the object); otherwise the default constructor
 const inUserNew = new Set();
 function construct(ty, ...args) {
     if (ty instanceof RType && ty.isUser && !inUserNew.has(ty)) {
         const un = ty.findUser('new');
-)RKJS",
-R"RKJS(        if (un) { inUserNew.add(ty); try { return un(ty, ...args); } finally { inUserNew.delete(ty); } }
+        if (un) { inUserNew.add(ty); try { return un(ty, ...args); } finally { inUserNew.delete(ty); } }
     }
     return buildObj(ty, ...args);
 }
@@ -2905,7 +2912,7 @@ class RSetty {
     keysList() { return Array.from(this.m.values(), e => e.v); }
     valuesList() { return Array.from(this.m.values(), e => e.n); }
     pairsList() { return Array.from(this.m.values(), e => pair(e.v, e.n)); }
-    listItems() { return this.isSet() ? this.keysList() : this.pairsList(); }
+    listItems() { return this.pairsList(); }   // a Set iterates as its Pairs too, `elem => True`
     total() { let t = 0; for (const e of this.m.values()) t = this.isSet() ? t + 1 : add(t, e.n); return t; }
     elems() { return this.m.size; }
     sortedEntries() { return Array.from(this.m.values()).sort((a, b) => cmpNum(a.v, b.v)); }
@@ -2925,7 +2932,7 @@ class RSetty {
 }
 function mkSetty(ty, src) {
     const s = new RSetty(ty);
-    const items = src.length === 1 ? itemsOf(src[0]) : src;
+    const items = src.length === 1 && !(src[0] instanceof RSetty) ? itemsOf(src[0]) : src;   // (a Set's elements, below)
     for (const it of items) {
         if (it instanceof RPair && !(ty === T.Set || ty === T.SetHash)) { s.add(it.k, it.v); continue; }
         if (it instanceof RHash) { for (const [k, v] of it.m) s.add(k, v); continue; }
@@ -2940,14 +2947,14 @@ function toSetty(v, ty) {
     return mkSetty(ty, [v]);
 }
 function setOp(op, a, b) {
-    const anyBag = (a instanceof RSetty && !a.isSet()) || (b instanceof RSetty && !b.isSet()) || op === '⊎' || op === '⊍';   // a Bag operand, or (+)/(.), lifts a list to a Bag with its counts
+)RKJS",
+R"RKJS(    const anyBag = (a instanceof RSetty && !a.isSet()) || (b instanceof RSetty && !b.isSet()) || op === '⊎' || op === '⊍';   // a Bag operand, or (+)/(.), lifts a list to a Bag with its counts
     const A = a instanceof RSetty ? a : toSetty(a, anyBag ? T.Bag : T.Set), B = b instanceof RSetty ? b : toSetty(b, anyBag ? T.Bag : T.Set);
     const baggy = !A.isSet() || !B.isSet();
     const ty = A.isMix() || B.isMix() ? T.Mix : baggy ? T.Bag : T.Set;
     const out = new RSetty(ty);
     switch (op) {
-)RKJS",
-R"RKJS(        case '∪': for (const e of A.m.values()) out.add(e.v, baggy ? (A.isSet() ? 1 : e.n) : undefined);
+        case '∪': for (const e of A.m.values()) out.add(e.v, baggy ? (A.isSet() ? 1 : e.n) : undefined);
                   for (const e of B.m.values()) { const cur = out.m.get(whichKey(e.v)); const n = B.isSet() ? 1 : e.n; if (!baggy) out.add(e.v); else if (!cur) out.add(e.v, n); else if (lt(cur.n, n)) cur.n = n; }
                   return out;
         case '∩': for (const e of A.m.values()) if (B.has(e.v)) out.add(e.v, baggy ? (lt(A.isSet() ? 1 : e.n, B.isSet() ? 1 : B.get(e.v)) ? (A.isSet() ? 1 : e.n) : (B.isSet() ? 1 : B.get(e.v))) : undefined);
@@ -3141,7 +3148,8 @@ function expmod(b, e, m) {
 // call fails rather than cut the cycle short.
 function baseRepeating(v, radix = 10) {
     const x = toNumeric(v);
-    if (!(x instanceof RRat)) throw new RakuError(`No such method 'base-repeating' for invocant of type '${typeName(x)}'`, 'X::Method::NotFound');
+)RKJS",
+R"RKJS(    if (!(x instanceof RRat)) throw new RakuError(`No such method 'base-repeating' for invocant of type '${typeName(x)}'`, 'X::Method::NotFound');
     const b = Number(toInt(radix));
     if (b < 2 || b > 36) throw new RakuError(`Radix ${b} out of range (allowed: 2..36)`, 'X::Syntax::Number::RadixOutOfRange');
     if (x.d === 0n) throw ratDivideByZero(x, 'coercing Rational to Str');
@@ -3150,8 +3158,7 @@ function baseRepeating(v, radix = 10) {
     let rem = a % d;
     if (rem === 0n) return mkList([whole, '']);
     const seen = new Map();
-)RKJS",
-R"RKJS(    let digits = '';
+    let digits = '';
     while (rem !== 0n) {
         if (seen.has(rem)) { const i = seen.get(rem); return mkList([whole + '.' + digits.slice(0, i), digits.slice(i)]); }
         if (digits.length >= 1000000) throw new RakuError(`base-repeating: the expansion of ${str(x)} runs past 1000000 digits without repeating`);
@@ -3327,14 +3334,14 @@ function strBitOp(a, b, f) { const x = str(a), y = str(b); const n = Math.max(x.
 const OP_IDENTITY = { '+': 0, '-': 0, '*': 1, '~': '', '&&': true, '||': false, 'and': true, 'or': false, 'min': Infinity, 'max': -Infinity, '+|': 0, '+&': -1, '+^': 0, 'gcd': 0, 'lcm': 1, '?|': false, '?&': true, '?^': false, 'xor': false, '**': 1, '(|)': undefined };
 function opFn(op) { let f = OPS[op]; if (!f && op[0] === '!' && OPS[op.slice(1)]) { const g = OPS[op.slice(1)]; f = (a, b) => !truthy(g(a, b)); }   // [!after]: the negated operator
     if (!f && op[0] === 'R' && OPS[op.slice(1)]) { const g = OPS[op.slice(1)]; f = (a, b) => g(b, a); }   // [R//]: the reversed operator
-    if (!f) throw new RakuError(`operator ${op} is not in the JS core yet`); f.opName = op; f.rightAssoc = RIGHT_OPS.has(op); return f; }
+)RKJS",
+R"RKJS(    if (!f) throw new RakuError(`operator ${op} is not in the JS core yet`); f.opName = op; f.rightAssoc = RIGHT_OPS.has(op); return f; }
 // [op] LIST — the reduce metaoperator, with chaining for comparison ops
 const CHAIN_OPS = new Set(['==', '!=', '<', '<=', '>', '>=', 'eq', 'ne', 'lt', 'le', 'gt', 'ge', '===', 'eqv', '=:=', '~~', 'before', 'after']);
 const isChainOp = (op) => CHAIN_OPS.has(op[0] === '!' ? op.slice(1) : op);   // [!after] chains like [after]
 const RIGHT_OPS = new Set(['**', '=>', 'xx', 'x']);
 function reduceOp(op, v, triangle) {
-)RKJS",
-R"RKJS(    if (op === 'R,' && triangle) return mkSeq(arr(v).map((_, i, items) => mkList(items.slice(0, i + 1).reverse())));   // [\R,]: each prefix reversed
+    if (op === 'R,' && triangle) return mkSeq(arr(v).map((_, i, items) => mkList(items.slice(0, i + 1).reverse())));   // [\R,]: each prefix reversed
     if (op[0] === 'R' && !OPS[op] && OPS[op.slice(1)]) return reduceOp(op.slice(1), mkList(arr(v).slice().reverse()), triangle);   // [R-] 1,2,3 is 3-2-1: the list reversed, folded left ([\R-]: 3 1 0)
     const items = arr(v);
     const f = opFn(op);
@@ -3477,17 +3484,17 @@ M(T.Mu, {
     item: (s) => item(s), self: (s) => s, sink: (s) => Nil, return: (s) => s,
     ACCEPTS: (s, v) => smartmatch(v, s), 'ACCEPTS': (s, v) => smartmatch(v, s),
     elems: (s) => elemsOf(s), end: (s) => elemsOf(s) - 1, list: (s) => s instanceof RList && s.ty !== T.Seq ? s : mkList(itemsOf(s).slice()), List: (s) => mkList(itemsOf(s).slice()),
-    Array: (s) => newArray(s), Seq: (s) => mkSeq(itemsOf(s).slice()), Slip: (s) => mkSlip(itemsOf(s).slice()), flat: (s) => flat(s), eager: (s) => eagerOf(s), lazy: (s) => lazyOf(s), cache: (s) => cacheOf(s),
+    Array: (s) => newArray(s), Seq: (s) => mkSeq(itemsOf(s).slice()), Slip: (s) => mkSlip(itemsOf(s).slice()), flat: (s, ...a) => flat(s, truthy(nm(a).get('hammer'))), eager: (s) => eagerOf(s), lazy: (s) => lazyOf(s), cache: (s) => cacheOf(s),
     'is-lazy': (s) => s instanceof RSeq && s.lazy, iterator: (s) => iter(s)[Symbol.iterator](), hash: (s) => newHash(s), Hash: (s) => newHash(s), Map: (s) => newMap(s),
     map: (s, f) => mapList(s, f), flatmap: (s, f) => flatmapList(s, f), grep: (s, f) => grepList(s, f), first: (s, ...a) => firstOf(s, posArgs(a)[0], nm(a)), join: (s, sep) => joinList(s, sep), sort: (s, f) => sortList(s, f), reverse: (s) => reverseList(s),
     sum: (s) => sumList(s), min: (s, ...a) => nm(a).size ? minMaxAdv(s, posArgs(a)[0], false, nm(a)) : minOf(s, posArgs(a)[0]), max: (s, ...a) => nm(a).size ? minMaxAdv(s, posArgs(a)[0], true, nm(a)) : maxOf(s, posArgs(a)[0]), minmax: (s, ...a) => { const f = posArgs(a)[0] ?? nm(a).get('by'); return f ? range(minOf(s, f), maxOf(s, f)) : minmax(s); }, unique: (s, ...a) => uniqueList(s, nm(a).get('as') || nm(a).get('with')), squish: (s) => squishList(s),
     head: (s, n) => headOf(s, n), tail: (s, n) => tailOf(s, n), keys: (s) => keysOf(s), values: (s) => valuesOf(s), kv: (s) => kvOf(s), pairs: (s) => pairsOf(s), antipairs: (s) => antipairsOf(s), invert: (s) => invertOf(s),
     pick: (s, n) => pickFrom(s, n), roll: (s, n) => rollFrom(s, n), reduce: (s, f) => reduceList(f, s), produce: (s, f) => produceList(f, s), classify: (s, ...a) => classifyList(s, posArgs(a)[0], nm(a).get('as')), categorize: (s, ...a) => categorizeList(s, posArgs(a)[0], nm(a).get('as')), repeated: (s, ...a) => repeatedList(s, nm(a).get('as') || nm(a).get('with')),
-    combinations: (s, n) => combinations(s, n), permutations: (s) => permutations(s), rotate: (s, n) => rotateList(s, n), rotor: (s, ...sp) => rotorList(s, ...sp), batch: (s, n) => batchList(s, n),
+)RKJS",
+R"RKJS(    combinations: (s, n) => combinations(s, n), permutations: (s) => permutations(s), rotate: (s, n) => rotateList(s, n), rotor: (s, ...sp) => rotorList(s, ...sp), batch: (s, n) => batchList(s, n),
     any: (s) => junction('any', s), all: (s) => junction('all', s), none: (s) => junction('none', s), one: (s) => junction('one', s),
     Set: (s) => toSetty(s, T.Set), SetHash: (s) => toSetty(s, T.SetHash), Bag: (s) => toSetty(s, T.Bag), BagHash: (s) => toSetty(s, T.BagHash), Mix: (s) => toSetty(s, T.Mix), MixHash: (s) => toSetty(s, T.MixHash),
-)RKJS",
-R"RKJS(    Numeric: (s) => toNumeric(s), Int: (s) => toInt(toNumeric(s)), Num: (s) => mkNum(toFloat(s)), Rat: (s) => { const n = toNumeric(s); return n instanceof RRat ? n : isIntVal(n) ? mkRat(big(n), 1n) : floatToRat(toFloat(n)); }, Real: (s) => toNumeric(s),
+    Numeric: (s) => toNumeric(s), Int: (s) => toInt(toNumeric(s)), Num: (s) => mkNum(toFloat(s)), Rat: (s) => { const n = toNumeric(s); return n instanceof RRat ? n : isIntVal(n) ? mkRat(big(n), 1n) : floatToRat(toFloat(n)); }, Real: (s) => toNumeric(s),
     Stringy: (s) => str(s), chars: (s) => chars(s), uc: (s) => uc(s), lc: (s) => lc(s), tc: (s) => tc(s), tclc: (s) => tclc(s), fc: (s) => fc(s), wordcase: (s) => wordcase(s), flip: (s) => flip(s), trim: (s) => trim(s),
     'trim-leading': (s) => trimLeading(s), 'trim-trailing': (s) => trimTrailing(s), chomp: (s) => chomp(s), chop: (s, n) => chop(s, n), ord: (s) => ord(s), chr: (s) => chr(s), ords: (s) => ords(s), chrs: (s) => chrs(s),
     index: (s, n, st) => strIndex(s, n, st), rindex: (s, n, st) => strRindex(s, n, st), contains: (s, n, st) => contains(s, n, st), 'starts-with': (s, p) => startsWith(s, p), 'ends-with': (s, p) => endsWith(s, p),
@@ -3555,12 +3562,12 @@ M(T.Rat, { Int: (s) => s.d === 0n ? failure(new RakuError('Attempt to divide by 
 M(T.List, {
     elems: (s) => s.a.length, end: (s) => s.a.length - 1, Str: (s) => str(s), gist: (s) => s.gist(), raku: (s) => s.raku(), Bool: (s) => s.a.length > 0, Int: (s) => s.a.length, Numeric: (s) => s.a.length, list: (s) => s, List: (s) => s.ty === T.List ? s : mkList(s.a.slice()),
     Array: (s) => s.ty === T.Array ? s : mkArray(s.a.slice()), 'is-lazy': (s) => false, 'push': (s, ...i) => pushTo(s, ...i), 'append': (s, ...i) => appendTo(s, ...i), 'pop': (s) => popFrom(s), 'shift': (s) => shiftFrom(s), 'unshift': (s, ...i) => unshiftTo(s, ...i), 'prepend': (s, ...i) => prependTo(s, ...i), 'splice': (s, ...a) => spliceArr(s, ...a),
-    'AT-POS': (s, i) => aget(s, i), 'ASSIGN-POS': (s, i, v) => aset(s, i, v), 'EXISTS-POS': (s, i) => aexists(s, i), 'DELETE-POS': (s, i) => adelete(s, i), 'Slip': (s) => mkSlip(s.a.slice()), 'Seq': (s) => mkSeq(s.a.slice()), 'flat': (s) => flat(s), 'eager': (s) => s, 'sort': (s, f) => sortList(s, f), 'join': (s, sep) => joinList(s, sep),
+    'AT-POS': (s, i) => aget(s, i), 'ASSIGN-POS': (s, i, v) => aset(s, i, v), 'EXISTS-POS': (s, i) => aexists(s, i), 'DELETE-POS': (s, i) => adelete(s, i), 'Slip': (s) => mkSlip(s.a.slice()), 'Seq': (s) => mkSeq(s.a.slice()), 'flat': (s, ...a) => flat(s, truthy(nm(a).get('hammer'))), 'eager': (s) => s, 'sort': (s, f) => sortList(s, f), 'join': (s, sep) => joinList(s, sep),
     'Hash': (s) => newHash(s), 'hash': (s) => newHash(s), 'Bag': (s) => toSetty(s, T.Bag), 'Set': (s) => toSetty(s, T.Set), 'Mix': (s) => toSetty(s, T.Mix), 'BagHash': (s) => toSetty(s, T.BagHash), 'SetHash': (s) => toSetty(s, T.SetHash), 'MixHash': (s) => toSetty(s, T.MixHash),
-    'clone': (s) => new RList(s.a.slice(), s.ty), 'iterator': (s) => s.a[Symbol.iterator](), 'of': (s) => s.of || T.Mu, 'default': (s) => s.dflt === undefined ? Any : s.dflt, 'is-lazy': (s) => !!s.src, 'Capture': (s) => new RCapture(s.a.slice()), 'shape': (s) => mkList([s.a.length]), 'keys': (s) => keysOf(s), 'sum': (s) => sumList(s), 'map': (s, f) => mapList(s, f),
-});
 )RKJS",
-R"RKJS(M(T.Seq, { elems: (s) => s.elems(), Bool: (s) => !s.isEmpty(), gist: (s) => s.gist(), raku: (s) => s.raku(), 'is-lazy': (s) => s.lazy, list: (s) => s.list(), List: (s) => s.list(), cache: (s) => s instanceof RSeq ? s.list() : mkList(s.arr()), eager: (s) => s instanceof RSeq ? s.cache() : s, Array: (s) => newArray(s), 'lazy': (s) => lazyOf(s), 'Str': (s) => str(s), 'Seq': (s) => s, 'iterator': (s) => s[Symbol.iterator](), 'Slip': (s) => mkSlip(s.arr().slice()), 'clone': (s) => s });
+R"RKJS(    'clone': (s) => new RList(s.a.slice(), s.ty), 'iterator': (s) => s.a[Symbol.iterator](), 'of': (s) => s.of || T.Mu, 'default': (s) => s.dflt === undefined ? Any : s.dflt, 'is-lazy': (s) => !!s.src, 'Capture': (s) => new RCapture(s.a.slice()), 'shape': (s) => mkList([s.a.length]), 'keys': (s) => keysOf(s), 'sum': (s) => sumList(s), 'map': (s, f) => mapList(s, f),
+});
+M(T.Seq, { elems: (s) => s.elems(), Bool: (s) => !s.isEmpty(), gist: (s) => s.gist(), raku: (s) => s.raku(), 'is-lazy': (s) => s.lazy, list: (s) => s.list(), List: (s) => s.list(), cache: (s) => s instanceof RSeq ? s.list() : mkList(s.arr()), eager: (s) => s instanceof RSeq ? s.cache() : s, Array: (s) => newArray(s), 'lazy': (s) => lazyOf(s), 'Str': (s) => str(s), 'Seq': (s) => s, 'iterator': (s) => s[Symbol.iterator](), 'Slip': (s) => mkSlip(s.arr().slice()), 'clone': (s) => s });
 M(T.Range, { elems: (s) => s.elemsOrInf(),
     // bare, the endpoints (`(^3).max` is 3); with :by or :k, the elements compared like a list's
     min: (s, ...a) => a.length ? (nm(a).size ? minMaxAdv(mkList(s.arr()), posArgs(a)[0], false, nm(a)) : minOf(mkList(s.arr()), posArgs(a)[0])) : s.min(),

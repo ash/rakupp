@@ -4311,6 +4311,31 @@ struct BindRoutineName {
     explicit BindRoutineName(const Callable& c) : saved(t_bindRoutine), savedC(t_bindCallable) { t_bindRoutine = &c.ci().name; t_bindCallable = &c; }
     ~BindRoutineName() { t_bindRoutine = saved; t_bindCallable = savedC; }
 };
+// A sub-signature's positionals must fit it, and a refusal is worded as Rakudo's
+// arity_fail words any routine's (its BOOTSTRAP): the routine that binds it,
+// '<anon>' for a block, the counts, then " in sub-signature" and the parameter
+// that holds it, if named (a bare `@` is not), and the phrase again for each
+// level it is nested in
+static void refuseSubSigArity(const std::vector<Param>& sig, size_t got, const std::string& holder, int depth) {
+    size_t arity = 0, count = 0;
+    bool open = false;
+    for (auto& ip : sig) {
+        if (ip.named || ip.invocant) continue;
+        if (ip.slurpy || ip.sigil == '|') { open = true; continue; }
+        count++;
+        if (!ip.optional && !ip.defaultVal && !ip.litVal) arity++;
+    }
+    if (got >= arity && (open || got <= count)) return;
+    const std::string n = std::to_string(arity), s = arity == 1 ? "" : "s";
+    throw RakuError{Value::typeObj("X::AdHoc"),
+        std::string(got < arity ? "Too few" : "Too many") + " positionals passed to '" +
+        (t_bindRoutine && !t_bindRoutine->empty() ? *t_bindRoutine : std::string("<anon>")) + "'; expected " +
+        (open ? "at least " + n + " argument" + s + " but got only "
+              : arity == count ? n + " argument" + s + " but got "
+                               : n + (count == arity + 1 ? " or " : " to ") + std::to_string(count) + " arguments but got ") +
+        std::to_string(got) + " in sub-signature" + (holder.size() < 2 ? std::string() : " or parameter " + holder) +
+        [depth] { std::string l; for (int k = 0; k < depth; k++) l += " in sub-signature"; return l; }()};
+}
 // A routine's signature, and its OWN `$_` (a `$_` parameter, or a fresh one): never the
 // caller's or the mainline's (Rakudo). A pointy block (blockParams) keeps the outer one.
 void Interpreter::bindRoutineParams(const Callable& c, ValueList& args, std::shared_ptr<Env>& env,
@@ -5257,22 +5282,9 @@ void Interpreter::bindParams(const std::vector<Param>& params, ValueList& args,
                     { struct SSB { int& d; SSB(int& x) : d(x) { d++; } ~SSB() { d--; } } ssb{tctx().subSigBind}; bindParams(*p.subSig, inner, env); }
                     // …and the slurped list must fit it: `*@ids ($, *@)` takes at
                     // least one (Rakudo: "Too few positionals … in sub-signature")
-                    size_t req = 0, mx = 0, got = 0;
+                    size_t got = 0;
                     if (a.arr()) for (auto& e : *a.arr()) if (!isNamedArg(e)) got++;
-                    bool open = false;
-                    for (auto& ip : *p.subSig) {
-                        if (ip.named || ip.invocant) continue;
-                        if (ip.slurpy || ip.sigil == '|') { open = true; continue; }
-                        mx++;
-                        if (!ip.optional && !ip.defaultVal && !ip.litVal) req++;
-                    }
-                    if (got < req || (!open && got > mx))
-                        throw RakuError{Value::typeObj("X::AdHoc"),
-                            std::string(got < req ? "Too few" : "Too many") + " positionals passed; expected " +
-                            std::string(got < req ? "at least " : "") + std::to_string(got < req ? req : mx) +
-                            " argument" + ((got < req ? req : mx) == 1 ? "" : "s") + " but got " +
-                            std::to_string(got) + " in sub-signature" +
-                            (p.name.empty() ? std::string() : " of parameter " + p.name)};
+                    refuseSubSigArity(*p.subSig, got, p.name, tctx().subSigBind);
                 }
                 if (capture) pi = piStart;
             }
@@ -5320,21 +5332,9 @@ void Interpreter::bindParams(const std::vector<Param>& params, ValueList& args,
             { struct SSB { int& d; SSB(int& x) : d(x) { d++; } ~SSB() { d--; } } ssb{tctx().subSigBind}; bindParams(*sp.subSig, inner, env); }
             // `sub bar([$x, $y, $z])` — after binding (a type error names itself first), the unpacked list must fit the sub-signature
             if (v.t == VT::Array && v.arr()) {
-                size_t req = 0, mx = 0, got = 0;
-                bool open = false;
-                for (auto& ip : *sp.subSig) {
-                    if (ip.named || ip.invocant) continue;
-                    if (ip.slurpy || ip.sigil == '|') { open = true; continue; }
-                    mx++;
-                    if (!ip.optional && !ip.defaultVal && !ip.litVal) req++;
-                }
+                size_t got = 0;
                 for (auto& e : inner) if (!isNamedArg(e)) got++;
-                if (got < req || (!open && got > mx))
-                    throw RakuError{Value::typeObj("X::AdHoc"),
-                        std::string(got < req ? "Too few" : "Too many") + " positionals passed; expected " +
-                        std::to_string(got < req ? req : mx) + " argument" + ((got < req ? req : mx) == 1 ? "" : "s") +
-                        " but got " + std::to_string(got) + " in sub-signature" +
-                        (sp.name.empty() ? std::string() : " of parameter " + sp.name)};
+                refuseSubSigArity(*sp.subSig, got, sp.name, tctx().subSigBind);
             }
         };
         if (p.named) {

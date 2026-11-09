@@ -291,7 +291,7 @@ class RSetty {
     keysList() { return Array.from(this.m.values(), e => e.v); }
     valuesList() { return Array.from(this.m.values(), e => e.n); }
     pairsList() { return Array.from(this.m.values(), e => pair(e.v, e.n)); }
-    listItems() { return this.isSet() ? this.keysList() : this.pairsList(); }
+    listItems() { return this.pairsList(); }   // a Set iterates as its Pairs too, `elem => True`
     total() { let t = 0; for (const e of this.m.values()) t = this.isSet() ? t + 1 : add(t, e.n); return t; }
     elems() { return this.m.size; }
     sortedEntries() { return Array.from(this.m.values()).sort((a, b) => cmpNum(a.v, b.v)); }
@@ -311,7 +311,7 @@ class RSetty {
 }
 function mkSetty(ty, src) {
     const s = new RSetty(ty);
-    const items = src.length === 1 ? itemsOf(src[0]) : src;
+    const items = src.length === 1 && !(src[0] instanceof RSetty) ? itemsOf(src[0]) : src;   // (a Set's elements, below)
     for (const it of items) {
         if (it instanceof RPair && !(ty === T.Set || ty === T.SetHash)) { s.add(it.k, it.v); continue; }
         if (it instanceof RHash) { for (const [k, v] of it.m) s.add(k, v); continue; }

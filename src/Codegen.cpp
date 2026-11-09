@@ -976,13 +976,14 @@ struct Codegen {
     // parameter's array, or one under a name no plain declaration has (a
     // block's parameter); an attribute's; and one a `$` variable holds. An
     // array declared native is known to be one; one declared plain never is.
-    Index* nativeElemTarget(Expr* e, bool& ask) {
+    Index* nativeElemTarget(Expr* e, bool& ask, bool step = false) {   // (a step: `$b[*-1]--`, `@a[0][0]++` too)
         ask = false;
         if (!e || e->kind != NK::Index) return nullptr;
         auto* ix = static_cast<Index*>(e);
         if (ix->isHash || ix->multiDim || ix->zen || ix->semicolonSub || !ix->adverb.empty() || !ix->index ||
-            hasStarLit(ix->index.get()) || isSliceSubscript(ix->index.get()))
+            (!step && hasStarLit(ix->index.get())) || isSliceSubscript(ix->index.get()))
             return nullptr;
+        if (step && ix->base && ix->base->kind == NK::Index) return ask = true, ix;
         auto* bv = ix->base && ix->base->kind == NK::VarExpr ? static_cast<VarExpr*>(ix->base.get()) : nullptr;
         if (!bv || bv->declare || bv->name.size() < 2) return nullptr;
         const std::string& n = bv->name;
@@ -1013,14 +1014,13 @@ struct Codegen {
         noteIndexWrite(ix->base.get());
         const std::string base = lvalueExpr(ix->base.get());
         const std::string step = std::string("rtStep(_o, ") + (up ? "true" : "false") + ", [&]() -> Interpreter& { return RT; })";
+        const std::string star = hasStarLit(ix->index.get()) ? "__k = rtStarKey(__b, __k); " : "";   // (a Buf's resolves its own)
         const std::string native = "if (rtIsBuf(__b)) return bufElemStep(RT, __b, __k, " + cesc(up ? "++" : "--") + ", " +
-            (postfix ? "true" : "false") + "); Value _o = rtIndexGetP(__b, __k); Value _n = rtElemStoreN(RT, __b, __k, " +   // (a Buf's
+            (postfix ? "true" : "false") + "); " + star + "Value _o = rtIndexGetP(__b, __k); Value _n = rtElemStoreN(RT, __b, __k, " +   // (a Buf's
             step + ", '+'); " + (postfix ? "return rtStepOld(std::move(_o));" : "return _n;");   //  byte steps as the interpreter's)
-        std::string other;   // (an array not native after all: the step as it was)
-        if (ask)
-            other = " Value& _r = rtIndexRef(__b, __k, false, " +
-                    cesc(std::string(postfix ? "postfix" : "prefix") + ":<" + (up ? "++" : "--") + ">") +
-                    "); Value _o = _r; _r = " + step + "; " + (postfix ? "return rtStepOld(std::move(_o));" : "return _r;");
+        const std::string other = !ask ? "" : " " + star + "Value& _r = rtIndexRef(__b, __k, false, " +   // (not native after all)
+            cesc(std::string(postfix ? "postfix" : "prefix") + ":<" + (up ? "++" : "--") + ">") +
+            "); Value _o = _r; _r = " + step + "; " + (postfix ? "return rtStepOld(std::move(_o));" : "return _r;");
         return "([&]()->Value{ Value& __b = " + base + "; Value __k = " + ex(ix->index.get()) + "; " +
                (ask ? "if (rtNatArr(RT, __b)) { " + native + " }" + other : native) + " }())";
     }
@@ -2911,7 +2911,7 @@ struct Codegen {
                     if (u->op != "++" && u->op != "--") unsupported("postfix " + u->op);
                     checkWritable(u->operand.get());
                     bool ask = false;
-                    if (Index* nix = nativeElemTarget(u->operand.get(), ask))
+                    if (Index* nix = nativeElemTarget(u->operand.get(), ask, true))
                         return viewSyncWrap(u->operand.get(), nativeElemStep(nix, ask, u->op == "++", true));
                     std::string delta = u->op == "++" ? "1" : "-1";
                     std::string add = "rtStep(_o, " + std::string(u->op == "++" ? "true" : "false") +
@@ -2925,7 +2925,7 @@ struct Codegen {
                 if (u->op == "++" || u->op == "--") { // prefix: yield the new value
                     checkWritable(u->operand.get());
                     bool ask = false;
-                    if (Index* nix = nativeElemTarget(u->operand.get(), ask))
+                    if (Index* nix = nativeElemTarget(u->operand.get(), ask, true))
                         return viewSyncWrap(u->operand.get(), nativeElemStep(nix, ask, u->op == "++", false));
                     std::string delta = u->op == "++" ? "1" : "-1";
                     std::string add = "rtStep(_r, " + std::string(u->op == "++" ? "true" : "false") +
@@ -4434,7 +4434,7 @@ struct Codegen {
                     if ((u->op == "++" || u->op == "--") && u->operand) {
                         checkWritable(u->operand.get());
                         bool ask = false;
-                        if (Index* nix = nativeElemTarget(u->operand.get(), ask)) {
+                        if (Index* nix = nativeElemTarget(u->operand.get(), ask, true)) {
                             line(ind, "(void)" + viewSyncWrap(u->operand.get(), nativeElemStep(nix, ask, u->op == "++", false)) + ";");
                             return;
                         }

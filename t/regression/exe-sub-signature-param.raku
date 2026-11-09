@@ -48,7 +48,7 @@ my $want = (
     '1:a b 2:c d',
     '3 7',
     '1|2 3',
-    'Too many positionals passed; expected 2 arguments but got 3 in sub-signature',
+    "Too many positionals passed to 'f'; expected 2 arguments but got 3 in sub-signature",
 ).join('|');
 
 my $i = run($*EXECUTABLE, $src.Str, :out, :err);
