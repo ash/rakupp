@@ -90,11 +90,18 @@ function substr(s, from, len) {
     s = str(s);
     const g = unitIsGrapheme(s) ? null : graphemes(s);
     const total = g ? g.length : s.length;
-    let f = typeof from === 'function' ? toInt(from(total)) : toInt(from);
-    if (f < 0) f += total;
-    if (f > total) throw new RakuError(`Start argument to substr out of range. Is: ${f}, should be in 0..${total}; use *-${-f + total} if you want to index relative to the end`, 'X::OutOfRange');
-    let l = len === undefined ? total - f : (typeof len === 'function' ? toInt(len(total)) : toInt(len));
-    if (l < 0) l = 0;
+    // a start before the beginning is refused as one past the end is, with
+    // Rakudo's hint when there is a distance to name (`*-10` for 10, `*-2`
+    // for -2, none for -4 in a string of 3), as the interpreter's substr
+    const f = typeof from === 'function' ? toInt(from(total)) : toInt(from);
+    if (f < 0 || f > total) throw new RakuError(`Start argument to substr out of range. Is: ${f}, should be in 0..${total}; ${-f > total ? '' : `use *-${Math.abs(f)} if you want to index relative to the end`}`, 'X::OutOfRange');
+    // …and the length: `*` and Inf are the rest, a callable is handed the
+    // length still available, and a negative one is refused, not read as none
+    const rest = total - f;
+    const l = len === undefined || len instanceof RWhatever || len === T.Whatever ||
+              (typeof len !== 'function' && toFloat(len) === Infinity) ? rest
+            : typeof len === 'function' ? toInt(len(rest)) : toInt(len);
+    if (l < 0) throw new RakuError(`Number of characters argument to substr out of range. Is: ${l}, should be in 0..^Inf; use *${l} if you want to index relative to the end`, 'X::OutOfRange');
     return g ? g.slice(f, f + l).join('') : s.substr(f, l);
 }
 function flip(s) { s = str(s); return unitIsGrapheme(s) ? s.split('').reverse().join('') : graphemes(s).reverse().join(''); }
