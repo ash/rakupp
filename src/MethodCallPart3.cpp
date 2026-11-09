@@ -784,7 +784,7 @@ Value Interpreter::byCallableMinMaxPairs(const std::vector<std::pair<Value, Valu
 // `1.polymod(2 & 3)` is `(all(1, 1) 0)`, as `all(0, 0) || 0` is 0.
 static Value polymodSteps(Interpreter& I, const Value& inv, const ValueList& fin, const Value& tail, bool lazy) {
     const bool isInt = inv.t == VT::Int || inv.t == VT::Bool;
-    Value out = Value::array(); out.isList = true;
+    Value out = Value::array(); out.isList = true; out.s = "Seq";   // (a Seq, as Rakudo's iterator makes it)
     size_t fi = 0, ti = 0;
     ValueList tcache;
     std::shared_ptr<LazySeqState> st;
@@ -825,7 +825,7 @@ static Value polymodOf(Interpreter& I, const Value& inv, const ValueList& args) 
     if (isInt ? (inv.big() ? inv.big()->sign < 0 : inv.toInt() < 0) : inv.toNum() < 0)
         return armedFailure("X::OutOfRange",
             "invocant to polymod out of range. Is: " + inv.toStr() + ", should be in 0..^Inf");
-    Value out = Value::array(); out.isList = true;
+    Value out = Value::array(); out.isList = true; out.s = "Seq";
     long long n = inv.toInt();
     // an infinite divisor list (10 xx *, 2..*) switches to pull-driven mode:
     // stop as soon as n hits 0 (no trailing remainder); an exhausted list or
