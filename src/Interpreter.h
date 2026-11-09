@@ -167,6 +167,8 @@ Value makeBaggy(const ValueList& items, const std::string& kind,
 // (defined in Interpreter.cpp). Non-numeric input yields an undefined value.
 Value numifyStr(std::string_view in);
 std::string asciiDecimalDigits(std::string_view s);   // "٢٠١٠" → "2010": any Nd digit as its ASCII one
+long long temporalField(const Value& v, const char* what);   // a Date/DateTime field, a Str refused as Rakudo's (Interpreter.cpp)
+Value temporalSecond(const Value& v);                       // …and a second (refused, or kept as given)
 std::string smileyGot(const Value& got, char sm);   // "Int (Int) (perhaps Nil was assigned …)" (InterpreterOperators.cpp)
 char ofTypeSmiley(const std::string& ofType);       // 'D' of an `Int:D` element type, 'U' of `Int:U`, else 0 (InterpreterBinding.cpp)
 // numifyStr, but a string that isn't a number THROWS X::Str::Numeric the way

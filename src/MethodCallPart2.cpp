@@ -4844,7 +4844,7 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
             long long tzOff = tzOffsetDyn();
             for (auto& a : args)
                 if (a.t == VT::Pair && a.s == "timezone" && a.pairVal())
-                    tzOff = a.pairVal()->toInt();
+                    tzOff = temporalField(*a.pairVal(), "timezone!");
             time_t t = (time_t)(us / 1000000);
             struct tm tmbuf; struct tm* lt;
             if (tzOff == tzOffsetDyn()) lt = localtime(&t);
@@ -4880,12 +4880,13 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
             bool haveNamedField = false;
             size_t posN = 0;
             for (auto& a : args) if (a.t != VT::Pair) posN++;
+            const bool fields = posN != 1 || std::any_of(args.begin(), args.end(), [](const Value& v) { return v.hashKind == "Instant"; });   // (a number so tagged)
             for (auto& a : args) {
                 if (a.t == VT::Pair) {
-                    long long val = a.pairVal() ? a.pairVal()->toInt() : 0;
+                    long long val = a.pairVal() ? temporalField(*a.pairVal(), a.s == "timezone" && !fields ? "timezone!" : a.s.copyText().c_str()) : 0;
                     if (a.s == "year") { y = val; haveNamedField = true; } else if (a.s == "month") { mo = val; haveNamedField = true; } else if (a.s == "day") { d = val; haveNamedField = true; if (a.pairVal() && isWhatever(*a.pairVal())) lastDay = true; }
                     else if (a.s == "hour") { h = val; haveNamedField = true; } else if (a.s == "minute") { mi = val; haveNamedField = true; }
-                    else if (a.s == "second") { secV = a.pairVal() ? *a.pairVal() : Value::integer(0); haveNamedField = true; } // exact (frac OK)
+                    else if (a.s == "second") { secV = a.pairVal() ? temporalSecond(*a.pairVal()) : Value::integer(0); haveNamedField = true; } // exact (frac OK)
                     else if (a.s == "timezone") tz = val;
                     // `DateTime.new(date => Date.new(…), hour => 1)` — the date
                     // argument supplies year/month/day, the rest default to 0
@@ -5054,12 +5055,12 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
                 return mk(y, mo, d, h, mi, secV, ip, tz);
             }
             if (!isoStr) {
-                if (pos.size() >= 1) y = pos[0].toInt();
-                if (pos.size() >= 2) mo = pos[1].toInt();
-                if (pos.size() >= 3) { if (isWhatever(pos[2])) lastDay = true; else d = pos[2].toInt(); }
-                if (pos.size() >= 4) h = pos[3].toInt();   // DateTime.new(y, m, d, H, M, S)
-                if (pos.size() >= 5) mi = pos[4].toInt();
-                if (pos.size() >= 6) secV = pos[5];        // exact (frac OK)
+                if (pos.size() >= 1) y = temporalField(pos[0], "year");
+                if (pos.size() >= 2) mo = temporalField(pos[1], "month");
+                if (pos.size() >= 3) { if (isWhatever(pos[2])) lastDay = true; else d = temporalField(pos[2], "day"); }
+                if (pos.size() >= 4) h = temporalField(pos[3], "hour");   // DateTime.new(y, m, d, H, M, S)
+                if (pos.size() >= 5) mi = temporalField(pos[4], "minute");
+                if (pos.size() >= 6) secV = temporalSecond(pos[5]);        // exact (frac OK)
             }
             if (lastDay) { // resolve `*` now that the year and month are known
                 static const int mlen[] = {31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31};
