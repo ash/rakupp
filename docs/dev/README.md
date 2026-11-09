@@ -114,6 +114,14 @@ Next up:
   interpreter and reach the board as C tables; numbers; `use Arduino`,
   answered by the engine, and the ecosystem stub that tells other
   implementations the program needs Raku++; the gates, phases A0–A5.
+- **[plans/MICROBIT-PLAN.md](plans/MICROBIT-PLAN.md)** — `--target=microbit`,
+  **a Raku program as micro:bit firmware** (design draft 2026-11-09, for
+  #226; not started): the BBC micro:bit and how schools program it, the
+  Arduino emitter given a second board and writing C++ for CODAL,
+  `use MicroBit` with MicroPython's names in Raku spelling, pictures computed
+  while building, the first strings at run time, `react` / `whenever` over
+  CODAL's event bus, the simulated board, phases M0–M3; the browser-only
+  chain set aside.
 - **[plans/IDE-PLAN.md](plans/IDE-PLAN.md)** — editor support built into the
   engine (2026-10-07): the language server completed (`--lsp`, phases L0–L6),
   then a debugger over the Debug Adapter Protocol (`--dap`, D0–D6) whose
