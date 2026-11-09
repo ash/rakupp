@@ -17494,6 +17494,7 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
             Value* bp = nullptr;
             try { bp = lvalue(ix->base.get(), /*asInvocant=*/true); } catch (RakuError&) {}
             if (bp && bp->t == VT::Str && (bp->hashKind == "Buf" || bp->hashKind == "Blob")) {
+                if (bp->hashKind == "Blob") throw RakuError{Value::typeObj("X::Assignment::RO"), "Cannot modify an immutable Blob"};   // (as `=` refuses it)
                 long long i = subscriptKey(ix->index.get()).toInt();
                 Value rhsB = eval(a->value.get());
                 std::string binop = a->written().substr(0, a->written().size() - 1);   // `×=` applies `×`
