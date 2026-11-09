@@ -1353,11 +1353,18 @@ function substr(s, from, len) {
     s = str(s);
     const g = unitIsGrapheme(s) ? null : graphemes(s);
     const total = g ? g.length : s.length;
-    let f = typeof from === 'function' ? toInt(from(total)) : toInt(from);
-    if (f < 0) f += total;
-    if (f > total) throw new RakuError(`Start argument to substr out of range. Is: ${f}, should be in 0..${total}; use *-${-f + total} if you want to index relative to the end`, 'X::OutOfRange');
-    let l = len === undefined ? total - f : (typeof len === 'function' ? toInt(len(total)) : toInt(len));
-    if (l < 0) l = 0;
+    // a start before the beginning is refused as one past the end is, with
+    // Rakudo's hint when there is a distance to name (`*-10` for 10, `*-2`
+    // for -2, none for -4 in a string of 3), as the interpreter's substr
+    const f = typeof from === 'function' ? toInt(from(total)) : toInt(from);
+    if (f < 0 || f > total) throw new RakuError(`Start argument to substr out of range. Is: ${f}, should be in 0..${total}; ${-f > total ? '' : `use *-${Math.abs(f)} if you want to index relative to the end`}`, 'X::OutOfRange');
+    // …and the length: `*` and Inf are the rest, a callable is handed the
+    // length still available, and a negative one is refused, not read as none
+    const rest = total - f;
+    const l = len === undefined || len instanceof RWhatever || len === T.Whatever ||
+              (typeof len !== 'function' && toFloat(len) === Infinity) ? rest
+            : typeof len === 'function' ? toInt(len(rest)) : toInt(len);
+    if (l < 0) throw new RakuError(`Number of characters argument to substr out of range. Is: ${l}, should be in 0..^Inf; use *${l} if you want to index relative to the end`, 'X::OutOfRange');
     return g ? g.slice(f, f + l).join('') : s.substr(f, l);
 }
 function flip(s) { s = str(s); return unitIsGrapheme(s) ? s.split('').reverse().join('') : graphemes(s).reverse().join(''); }
@@ -1532,7 +1539,8 @@ function strTrans(s, pairs, named) {
         for (let i = 0; i < from.length; i++) map.set(from[i], del ? (i < to.length ? to[i] : '') : (to.length ? to[Math.min(i, to.length - 1)] : ''));
     }
     let out = '', prev = null;   // :squash — a run of characters mapping to the same replacement becomes one
-    for (const g of graphemes(s)) {
+)RKJS",
+R"RKJS(    for (const g of graphemes(s)) {
         if (comp && compTo !== null) {
             if (map.has(g)) { out += g; prev = null; continue; }
             if (squash && prev === compTo) continue;
@@ -1552,8 +1560,7 @@ function transRegex(s, ps, squash) {
     while (i < s.length) {
         let bestEnd = -1, bestRep = '';
         for (const p of ps) {
-)RKJS",
-R"RKJS(            if (!(p instanceof RPair)) continue;
+            if (!(p instanceof RPair)) continue;
             if (p.k instanceof RRegex) { const e = matchEndAt(s, p.k, i); if (e > bestEnd) { bestEnd = e; bestRep = typeof p.v === 'function' ? str(p.v(new RMatch(s, i, e))) : str(p.v); } }
             else { const from = expandTrans(p.k), to = expandTrans(p.v); for (let j = 0; j < from.length; j++) if (s.startsWith(from[j], i) && i + from[j].length > bestEnd) { bestEnd = i + from[j].length; bestRep = to.length ? to[Math.min(j, to.length - 1)] : ''; } }
         }
@@ -1789,7 +1796,8 @@ class RRange {
             if (typeof lo === 'number' && typeof hi === 'number') { const out = new Array(Math.max(0, hi - lo + 1)); for (let i = lo, k = 0; i <= hi; i++, k++) out[k] = i; return out; }
             const out = []; for (let v = lo; le(v, hi); v = add(v, 1)) out.push(v); return out;
         }
-        if (this.isNumeric()) { const out = []; const okEnd = this.exTo ? lt : le; for (let v = this.lo(), n = 0; okEnd(v, this.to) && n < 1e8; v = add(v, 1), n++) out.push(v); return out; }
+)RKJS",
+R"RKJS(        if (this.isNumeric()) { const out = []; const okEnd = this.exTo ? lt : le; for (let v = this.lo(), n = 0; okEnd(v, this.to) && n < 1e8; v = add(v, 1), n++) out.push(v); return out; }
         return this.strElems();
     }
     *[Symbol.iterator]() {
@@ -1804,8 +1812,7 @@ class RRange {
         if (this.isNumeric()) {
             const okEnd = this.exTo ? lt : le;
             if (this.isInfinite()) { for (let v = this.lo(); ; v = add(v, 1)) yield v; }
-)RKJS",
-R"RKJS(            for (let v = this.lo(); okEnd(v, this.to); v = add(v, 1)) yield v;
+            for (let v = this.lo(); okEnd(v, this.to); v = add(v, 1)) yield v;
             return;
         }
         yield* this.strElems();
@@ -2040,7 +2047,8 @@ function iter(v) {
     if (Array.isArray(v)) return v;
     if (v instanceof RSeq) return v;
     if (v instanceof RRange) return v;
-    if (v instanceof RHash) return v.item === true ? [v] : v.pairs();
+)RKJS",
+R"RKJS(    if (v instanceof RHash) return v.item === true ? [v] : v.pairs();
     if (v instanceof RSlip) return v.a;
     if (v instanceof RSetty) return v.listItems();
     if (v === Nil) return [];
@@ -2060,8 +2068,7 @@ function spliceSlips(items) {
     for (let i = 0; i < items.length; i++) if (items[i] instanceof RSlip) { has = true; break; }
     if (!has) return items;
     const out = [];
-)RKJS",
-R"RKJS(    for (const it of items) if (it instanceof RSlip) out.push(...it.a); else out.push(it);
+    for (const it of items) if (it instanceof RSlip) out.push(...it.a); else out.push(it);
     return out;
 }
 // `[ ... ]`: `single` is the one-argument form [@a] / [1..3] (its elements), else the items
@@ -2259,7 +2266,8 @@ function minMaxAdv(v, f, isMax, named) {
     if (has('p')) return mkList(ties.map(i => new RPair(i, a[i])));
     return bi < 0 ? (isMax ? -Infinity : Infinity) : a[bi];
 }
-function minOf(v, f) { let best; for (const x of iter(v)) { if (x instanceof RType) continue; if (best === undefined || (f ? cmpNum(f(x), f(best)) < 0 : cmpNum(x, best) < 0)) best = x; } return best === undefined ? Infinity : best; }
+)RKJS",
+R"RKJS(function minOf(v, f) { let best; for (const x of iter(v)) { if (x instanceof RType) continue; if (best === undefined || (f ? cmpNum(f(x), f(best)) < 0 : cmpNum(x, best) < 0)) best = x; } return best === undefined ? Infinity : best; }
 function maxOf(v, f) { let best; for (const x of iter(v)) { if (x instanceof RType) continue; if (best === undefined || (f ? cmpNum(f(x), f(best)) > 0 : cmpNum(x, best) > 0)) best = x; } return best === undefined ? -Infinity : best; }
 function minmax(v) { const a = arr(v); if (!a.length) return range(Infinity, -Infinity); return range(minOf(a), maxOf(a)); }
 function uniqueList(v, f) {
@@ -2267,8 +2275,7 @@ function uniqueList(v, f) {
     for (const x of iter(v)) { const k = whichKey(f ? f(x) : x); if (!seen.has(k)) { seen.add(k); out.push(x); } }
     return mkSeq(out);
 }
-)RKJS",
-R"RKJS(function squishList(v) { const out = []; let prev; for (const x of iter(v)) { if (out.length && eqv(x, prev)) continue; out.push(x); prev = x; } return mkSeq(out); }
+function squishList(v) { const out = []; let prev; for (const x of iter(v)) { if (out.length && eqv(x, prev)) continue; out.push(x); prev = x; } return mkSeq(out); }
 function headOf(v, n) {
     if (n === undefined) { const it = iter(v)[Symbol.iterator](); const r = it.next(); return r.done ? Nil : r.value; }
     if (typeof n === 'function') n = n(elemsOf(v));
@@ -2487,7 +2494,8 @@ function listRepeat(v, n) {        // infix:<xx>
 function endOf(v) { return elemsOf(v) - 1; }
 function whichKey(v) {
     if (v instanceof RAllo) return typeOf(v).name + '|' + whichKey(v.n) + '|' + whichKey(v.s);
-    switch (typeof v) {
+)RKJS",
+R"RKJS(    switch (typeof v) {
         case 'string': return 'Str|' + v;
         case 'number': return (Number.isInteger(v) ? 'Int|' : 'Num|') + v;
         case 'bigint': return 'Int|' + v;
@@ -2500,8 +2508,7 @@ function whichKey(v) {
             if (v instanceof REnum) return v.ty.name + '|' + v.key;
             if (v instanceof RPair) return 'Pair|' + whichKey(v.k) + '|' + whichKey(v.v);
             if (v instanceof RList) return v.ty.name + '|' + v.a.map(whichKey).join(',');
-)RKJS",
-R"RKJS(            if (v instanceof RObj) { const m = v.ty.findUser('WHICH'); if (m) return str(m(v)); return v.ty.name + '|' + objId(v); }
+            if (v instanceof RObj) { const m = v.ty.findUser('WHICH'); if (m) return str(m(v)); return v.ty.name + '|' + objId(v); }
             if (v instanceof RDate) return dateWhich(v);
             if (v instanceof RVersion) return 'Version|' + v.Str();
             return typeName(v) + '|' + objId(v);
@@ -2730,12 +2737,12 @@ function construct(ty, ...args) {
 // Array.new(…) takes its arguments by the single-argument rule: one Iterable is its elements (a Hash its
 // Pairs), and several stay as they are — Array.new((1, 2), (3, 4)) is two Lists, Array.new(%h, 2) a Hash and a 2
 function newArgsList(args) { const pos = args.filter(a => !(a instanceof RNamed)); return pos.length === 1 ? itemsOf(pos[0]).slice() : pos.flatMap(a => a instanceof RSlip ? listItems(a) : [a]); }
-function buildObj(ty, ...args) {
+)RKJS",
+R"RKJS(function buildObj(ty, ...args) {
     if (ty.isUser && (ty.isa(T.Array) || ty.isa(T.List)) && !ty.mro.some(t => t.attrs && t.attrs.length)) { const a = mkArray(listItems(args.length && !(args[0] instanceof RNamed) ? args[0] : []).slice()); a.ty = ty; return a; }   // class X is Array
     if (!ty.isUser) {
         if (ty.paramOf) { if (ty.paramBase === T.Array) return withOf(mkArray(newArgsList(args)), ty.paramOf); if (ty.paramBase === T.Hash) return withOf(newHash(args.length ? mkList(args) : undefined), ty.paramOf); }   // Array[Int].new(…)
-)RKJS",
-R"RKJS(        if (ty === T.Str) return ''; if (ty === T.Int) return 0; if (ty === T.Array) return mkArray(newArgsList(args)); if (ty === T.Hash) return newHash(args.length ? mkList(args) : undefined); if (ty === T.List) return mkList(args.filter(a => !(a instanceof RNamed)));
+        if (ty === T.Str) return ''; if (ty === T.Int) return 0; if (ty === T.Array) return mkArray(newArgsList(args)); if (ty === T.Hash) return newHash(args.length ? mkList(args) : undefined); if (ty === T.List) return mkList(args.filter(a => !(a instanceof RNamed)));
         if (ty === T.Pair) { const [pos, named] = splitArgs(args); if (pos.length >= 2) return pair(pos[0], pos[1]); const k = named.get('key'), v = named.get('value'); return pair(k === undefined ? Any : k, v === undefined ? Any : v); }
         if (ty === T.Set || ty === T.SetHash || ty === T.Bag || ty === T.BagHash || ty === T.Mix || ty === T.MixHash) return mkSetty(ty, args.filter(a => !(a instanceof RNamed)));
         if (ty === T.Range) { const [pos] = splitArgs(args); return range(pos[0], pos[1]); }
@@ -2936,11 +2943,11 @@ function setOp(op, a, b) {
                   return out;
         case '∩': for (const e of A.m.values()) if (B.has(e.v)) out.add(e.v, baggy ? (lt(A.isSet() ? 1 : e.n, B.isSet() ? 1 : B.get(e.v)) ? (A.isSet() ? 1 : e.n) : (B.isSet() ? 1 : B.get(e.v))) : undefined);
                   return out;
-        case '∖': for (const e of A.m.values()) { if (!baggy) { if (!B.has(e.v)) out.add(e.v); } else { const n = sub(A.isSet() ? 1 : e.n, B.isSet() ? (B.has(e.v) ? 1 : 0) : B.get(e.v)); if (gt(n, 0)) out.add(e.v, n); } }
+)RKJS",
+R"RKJS(        case '∖': for (const e of A.m.values()) { if (!baggy) { if (!B.has(e.v)) out.add(e.v); } else { const n = sub(A.isSet() ? 1 : e.n, B.isSet() ? (B.has(e.v) ? 1 : 0) : B.get(e.v)); if (gt(n, 0)) out.add(e.v, n); } }
                   return out;
         case '⊖': for (const e of A.m.values()) if (!B.has(e.v)) out.add(e.v); for (const e of B.m.values()) if (!A.has(e.v)) out.add(e.v); return out;
-)RKJS",
-R"RKJS(        case '⊎': for (const e of A.m.values()) out.add(e.v, A.isSet() ? 1 : e.n); for (const e of B.m.values()) out.add(e.v, B.isSet() ? 1 : e.n); if (out.ty === T.Set) { const o2 = new RSetty(T.Bag); for (const e of A.m.values()) o2.add(e.v, 1); for (const e of B.m.values()) o2.add(e.v, 1); return o2; } return out;
+        case '⊎': for (const e of A.m.values()) out.add(e.v, A.isSet() ? 1 : e.n); for (const e of B.m.values()) out.add(e.v, B.isSet() ? 1 : e.n); if (out.ty === T.Set) { const o2 = new RSetty(T.Bag); for (const e of A.m.values()) o2.add(e.v, 1); for (const e of B.m.values()) o2.add(e.v, 1); return o2; } return out;
     }
     throw new RakuError('unknown set operator ' + op);
 }
@@ -3148,13 +3155,13 @@ function baseRepeating(v, radix = 10) {
 }
 function polymod(v, ...mods) {
     let n = big(v); const out = [];
-    // the moduli may be a list, and a lazy one (`2**32 xx *`): stop when nothing is left
+)RKJS",
+R"RKJS(    // the moduli may be a list, and a lazy one (`2**32 xx *`): stop when nothing is left
     const src = mods.length === 1 && (mods[0] instanceof RList || mods[0] instanceof RSeq || mods[0] instanceof RRange) ? mods[0] : mods;
     const lazy = src instanceof RSeq && src.lazy;
     for (const m of iter(src)) {
         if (lazy && n === 0n) break;
-)RKJS",
-R"RKJS(        const mm = big(m); if (mm === 0n) throw new RakuError('Attempt to divide by zero using polymod', 'X::Numeric::DivideByZero');
+        const mm = big(m); if (mm === 0n) throw new RakuError('Attempt to divide by zero using polymod', 'X::Numeric::DivideByZero');
         let r = n % mm; if (r < 0n) r += mm; out.push(normBig(r)); n = (n - r) / mm;
     }
     if (!lazy || n !== 0n) out.push(normBig(n));
@@ -3325,11 +3332,11 @@ function reduceOp(op, v, triangle) {
     if (triangle) {
         if (!items.length) return mkSeq([]);
         if (op === ',') return mkSeq(items.map((_, i) => mkList(items.slice(0, i + 1))));   // [\,]: the flat prefixes
-        if (isChainOp(op)) { const out = [true]; let acc = true; for (let i = 1; i < items.length; i++) { acc = acc && truthy(f(items[i - 1], items[i])); out.push(acc); } return mkSeq(out); }   // [\!eq] 1,2,3: True, then each prefix
+)RKJS",
+R"RKJS(        if (isChainOp(op)) { const out = [true]; let acc = true; for (let i = 1; i < items.length; i++) { acc = acc && truthy(f(items[i - 1], items[i])); out.push(acc); } return mkSeq(out); }   // [\!eq] 1,2,3: True, then each prefix
         if (RIGHT_OPS.has(op)) {   // [\**] 2,3,4 → (4 81 2**81): the folds from the right, in that order
             const out = []; let acc = items[items.length - 1]; out.push(acc);
-)RKJS",
-R"RKJS(            for (let i = items.length - 2; i >= 0; i--) { acc = f(items[i], acc); out.push(acc); }
+            for (let i = items.length - 2; i >= 0; i--) { acc = f(items[i], acc); out.push(acc); }
             return mkSeq(out);
         }
         const out = []; let acc = items[0]; out.push(acc);
@@ -3474,10 +3481,10 @@ M(T.Mu, {
     Numeric: (s) => toNumeric(s), Int: (s) => toInt(toNumeric(s)), Num: (s) => mkNum(toFloat(s)), Rat: (s) => { const n = toNumeric(s); return n instanceof RRat ? n : isIntVal(n) ? mkRat(big(n), 1n) : floatToRat(toFloat(n)); }, Real: (s) => toNumeric(s),
     Stringy: (s) => str(s), chars: (s) => chars(s), uc: (s) => uc(s), lc: (s) => lc(s), tc: (s) => tc(s), tclc: (s) => tclc(s), fc: (s) => fc(s), wordcase: (s) => wordcase(s), flip: (s) => flip(s), trim: (s) => trim(s),
     'trim-leading': (s) => trimLeading(s), 'trim-trailing': (s) => trimTrailing(s), chomp: (s) => chomp(s), chop: (s, n) => chop(s, n), ord: (s) => ord(s), chr: (s) => chr(s), ords: (s) => ords(s), chrs: (s) => chrs(s),
-    index: (s, n, st) => strIndex(s, n, st), rindex: (s, n, st) => strRindex(s, n, st), contains: (s, n, st) => contains(s, n, st), 'starts-with': (s, p) => startsWith(s, p), 'ends-with': (s, p) => endsWith(s, p),
-    substr: (s, f, l) => substr(s, f, l), split: (s, ...a) => strSplit(s, posArgs(a)[0], posArgs(a)[1], nm(a)), words: (s, n) => words(s, n), lines: (s) => lines(s), comb: (s, p, l) => comb(s, p, l), indent: (s, n) => indent(s, n),
 )RKJS",
-R"RKJS(    fmt: (s, f) => fmt(s, f), succ: (s) => inc(s), pred: (s) => dec(s), samecase: (s, p) => samecase(s, p), trans: (s, ...a) => { const [p, named] = splitArgs(a); return strTrans(s, p.length === 1 ? p[0] : mkList(p), named); }, NFC: (s) => strNfc(s), NFD: (s) => strNfd(s), encode: (s) => strEncode(s),
+R"RKJS(    index: (s, n, st) => strIndex(s, n, st), rindex: (s, n, st) => strRindex(s, n, st), contains: (s, n, st) => contains(s, n, st), 'starts-with': (s, p) => startsWith(s, p), 'ends-with': (s, p) => endsWith(s, p),
+    substr: (s, f, l) => substr(s, f, l), split: (s, ...a) => strSplit(s, posArgs(a)[0], posArgs(a)[1], nm(a)), words: (s, n) => words(s, n), lines: (s) => lines(s), comb: (s, p, l) => comb(s, p, l), indent: (s, n) => indent(s, n),
+    fmt: (s, f) => fmt(s, f), succ: (s) => inc(s), pred: (s) => dec(s), samecase: (s, p) => samecase(s, p), trans: (s, ...a) => { const [p, named] = splitArgs(a); return strTrans(s, p.length === 1 ? p[0] : mkList(p), named); }, NFC: (s) => strNfc(s), NFD: (s) => strNfd(s), encode: (s) => strEncode(s),
     'is-prime': (s) => isPrime(s), abs: (s) => abs(s), sqrt: (s) => sqrt(s), sign: (s) => sign(s), floor: (s) => floor(s), ceiling: (s) => ceiling(s), round: (s, n) => round(s, n), truncate: (s) => truncate(s),
     exp: (s, b) => b === undefined ? exp(s) : pow(b, s), log: (s, b) => log(s, b), log2: (s) => log2(s), log10: (s) => log10(s), sin: (s) => sin(s), cos: (s) => cos(s), tan: (s) => tan(s), asin: (s) => asin(s), acos: (s) => acos(s), atan: (s) => atan(s), atan2: (s, b) => atan2(s, b), sinh: (s) => sinh(s), cosh: (s) => cosh(s), tanh: (s) => tanh(s), cbrt: (s) => cbrt(s), cis: (s) => cis(s),
     rand: (s) => randNum(s), gcd: (s, b) => gcd(s, b), lcm: (s, b) => lcm(s, b), expmod: (s, e, m) => expmod(s, e, m), polymod: (s, ...m) => polymod(s, ...m), base: (s, b) => toBase(s, b), 'base-repeating': (s, b) => baseRepeating(s, b),
@@ -3548,9 +3555,9 @@ M(T.Seq, { elems: (s) => s.elems(), Bool: (s) => !s.isEmpty(), gist: (s) => s.gi
 M(T.Range, { elems: (s) => s.elemsOrInf(),
     // bare, the endpoints (`(^3).max` is 3); with :by or :k, the elements compared like a list's
     min: (s, ...a) => a.length ? (nm(a).size ? minMaxAdv(mkList(s.arr()), posArgs(a)[0], false, nm(a)) : minOf(mkList(s.arr()), posArgs(a)[0])) : s.min(),
-    max: (s, ...a) => a.length ? (nm(a).size ? minMaxAdv(mkList(s.arr()), posArgs(a)[0], true, nm(a)) : maxOf(mkList(s.arr()), posArgs(a)[0])) : s.max(), 'excludes-min': (s) => s.exFrom, 'excludes-max': (s) => s.exTo, bounds: (s) => mkList([s.from, s.to]), Str: (s) => s.Str(), gist: (s) => s.gist(), raku: (s) => s.raku(), Bool: (s) => s.elemsOrInf() !== 0,
 )RKJS",
-R"RKJS(    list: (s) => mkList(s.arr()), List: (s) => mkList(s.arr()), Array: (s) => mkArray(s.arr()), reverse: (s) => s.reverse(), 'is-lazy': (s) => s.isInfinite(), 'infinite': (s) => s.isInfinite(), 'is-int': (s) => s.isIntRange(), sum: (s) => { if (s.isInfinite()) return Infinity; if (s.isIntRange() && !s.isInfinite()) { const lo = s.lo(), hi = s.hi(); if (lt(hi, lo)) return 0; return idiv(mul(add(lo, hi), add(sub(hi, lo), 1)), 2); } return sumList(s); },
+R"RKJS(    max: (s, ...a) => a.length ? (nm(a).size ? minMaxAdv(mkList(s.arr()), posArgs(a)[0], true, nm(a)) : maxOf(mkList(s.arr()), posArgs(a)[0])) : s.max(), 'excludes-min': (s) => s.exFrom, 'excludes-max': (s) => s.exTo, bounds: (s) => mkList([s.from, s.to]), Str: (s) => s.Str(), gist: (s) => s.gist(), raku: (s) => s.raku(), Bool: (s) => s.elemsOrInf() !== 0,
+    list: (s) => mkList(s.arr()), List: (s) => mkList(s.arr()), Array: (s) => mkArray(s.arr()), reverse: (s) => s.reverse(), 'is-lazy': (s) => s.isInfinite(), 'infinite': (s) => s.isInfinite(), 'is-int': (s) => s.isIntRange(), sum: (s) => { if (s.isInfinite()) return Infinity; if (s.isIntRange() && !s.isInfinite()) { const lo = s.lo(), hi = s.hi(); if (lt(hi, lo)) return 0; return idiv(mul(add(lo, hi), add(sub(hi, lo), 1)), 2); } return sumList(s); },
     'int-bounds': (s) => mkList([s.lo(), s.hi()]), 'minmax': (s) => mkList([s.min(), s.max()]), 'iterator': (s) => s[Symbol.iterator](), 'ACCEPTS': (s, v) => s.contains(v), 'Int': (s) => s.elemsOrInf(), 'Numeric': (s) => s.elemsOrInf(), 'pick': (s, n) => pickFrom(s, n), 'roll': (s, n) => rollFrom(s, n), 'rand': (s) => rangeRand(s), 'Seq': (s) => new RSeq(s[Symbol.iterator](), s.isInfinite()), 'first': (s, ...a) => firstOf(s, posArgs(a)[0], nm(a)) });
 M(T.Hash, { elems: (s) => s.m.size, Bool: (s) => s.m.size > 0, Str: (s) => str(s), gist: (s) => s.gist(), raku: (s) => s.raku(), keys: (s) => mkSeq(s.keys()), values: (s) => mkSeq(s.values()), kv: (s) => kvOf(s), pairs: (s) => mkSeq(s.pairs()), antipairs: (s) => antipairsOf(s), invert: (s) => invertOf(s),
     'AT-KEY': (s, k) => hget(s, k), 'ASSIGN-KEY': (s, k, v) => hset(s, k, v), 'EXISTS-KEY': (s, k) => hexists(s, k), 'DELETE-KEY': (s, k) => hdelete(s, k), 'push': (s, ...i) => pushTo(s, ...i), 'append': (s, ...i) => pushTo(s, ...i), 'sort': (s, f) => sortList(s, f), 'list': (s) => mkList(s.pairs()), 'List': (s) => mkList(s.pairs()), 'Array': (s) => mkArray(s.pairs()),

@@ -3677,8 +3677,8 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
         if (m == "term")     return h.count("term") ? h["term"] : Value::str("");       // Pod::Defn
         // a declarator block's own three: what it documents, and its parts
         if (m == "WHEREFORE") return h.count("WHEREFORE") ? h["WHEREFORE"] : Value::any();
-        if (m == "leading")   return h.count("leading") ? h["leading"] : Value::any();
-        if (m == "trailing")  return h.count("trailing") ? h["trailing"] : Value::any();
+        if (m == "leading")   return h.count("leading") ? h["leading"] : Value::nil();
+        if (m == "trailing")  return h.count("trailing") ? h["trailing"] : Value::nil();
         if (m == "WHAT")     return Value::typeObj(h.count("podclass") ? h["podclass"].s.str() : std::string("Pod::Block"));
         if (m == "defined" || m == "Bool") return Value::boolean(true);
         // `.gist` is Rakudo's pod-gist: the block's class with its truthy
@@ -3722,11 +3722,8 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
             return Value::str(podGist(inv, 0));
         }
         // `.Str` and `.raku` are Rakudo's, Mu's `Class<id>` and the constructor that builds
-        // the block; a declarator block's, and its `.gist`, are its text (`~&f.WHY`), as toStr's
-        if (m == "Str" || m == "raku" || m == "gist") {
-            const bool decl = h.count("podclass") && h["podclass"].s.str() == "Pod::Block::Declarator";
-            return Value::str(m == "raku" && !decl ? podRaku(inv) : inv.toStr());
-        }
+        // the block; a declarator block's `.Str` and `.gist` are its text (`~&f.WHY`), as toStr's
+        if (m == "Str" || m == "raku" || m == "gist") return Value::str(m == "raku" ? podRaku(inv) : inv.toStr());
     }
     if ((inv.t == VT::Type && inv.s == "Kernel") ||
         (inv.t == VT::Hash && inv.hashKind == "Kernel")) {

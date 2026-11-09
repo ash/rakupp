@@ -272,21 +272,30 @@ moves to [TODO.md](TODO.md).
   accessors still build before changing it. Done when the three lines
   are Rakudo 2026.09's.
 
-- [ ] **A declarator block's `.raku` is its text, and a trailing `#=` after a
-  routine's `}` is lost** (found 2026-11-08 making a Pod block's `.raku` its
-  constructor; `for $=pod` iterates since 3d4a3a91):
+- [ ] **A `$=pod` declarator block names its declarand only once `.WHY` is
+  asked** (found 2026-11-09 making a `#=` after a body the declaration's,
+  983b9524; the same before it):
 
   ```raku
   #| a
+  class C { }
+  say $=pod[0].WHEREFORE.raku;   # Any, Rakudo C (and C here once `C.WHY` ran)
+  #| b
   sub f {
   }
-  #= b
-  say &f.WHY.raku;   # "a", Rakudo Pod::Block::Declarator.new(WHEREFORE => sub f { … }, leading => ["a"], trailing => [["b"],], config => {}, contents => [])
-  say ~&f.WHY;       # a, Rakudo "a\nb"
+  #= c
+  say $=pod.elems;               # 3, Rakudo 2: "c" is an entry of its own
+  say &f.raku;                   # &f, Rakudo sub f { #`(Sub|…) ... }
+  my $x = #|{ p } sub { }; say $x.WHY.raku;   # Nil, Rakudo the block "p"
   ```
 
-  A declarator block keeps only its text and `declLine`: no WHEREFORE, no
-  leading/trailing split.
+  `$=pod` is a textual scan of the source (parsePod, src/Pod.cpp), which
+  runs on a precomp hit too, with no parser behind it, so it cannot see
+  where a body closes; `.WHY` links an entry to its declarand by line when
+  it is asked (the declarator lambda in src/Builtins.cpp). The Lexer
+  records a bracketed `#|{ … }` on the line it ends on, and a declaration
+  on that same line looks only above it. And a multi-line `#={ … }` after
+  code keeps only its first line in `$=pod`, where `.WHY` has all of it.
 
 - [ ] **A WhateverCode gists as `WhateverCode.new`** (found 2026-11-08 making
   arithmetic on a Whatever value die):
@@ -612,8 +621,6 @@ moves to [TODO.md](TODO.md).
     gobbling message;
   - two routines of one name in an EVAL are X::Redeclaration here, an
     X::Comp::Group holding it twice on Rakudo;
-  - the JS backend's `substr` start past the end hints "use *--7" for
-    `"abc".substr(10)` (src/JsRuntimeSrc.cpp), Rakudo "use *-10";
   - Cro::RPC::JSON's test-only dependencies JSON::Unmarshal
     (t/080-trait.rakutest), URI (t/query.rakutest) and Test::META
     (t/010-use.t) still fail their own suites. Cro::RPC::JSON's tests do

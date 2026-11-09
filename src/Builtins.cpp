@@ -7825,8 +7825,8 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
             (*d.hash())["podclass"] = Value::str("Pod::Block::Declarator");
             Value pc = Value::array(); pc.arr()->push_back(Value::str(pod));
             (*d.hash())["contents"] = pc;
-            (*d.hash())["leading"] = lead.empty() ? Value::any() : Value::str(lead);
-            (*d.hash())["trailing"] = trail.empty() ? Value::any() : Value::str(trail);
+            if (!lead.empty()) (*d.hash())["leading"] = Value::str(lead);
+            if (!trail.empty()) (*d.hash())["trailing"] = Value::str(trail);
             (*d.hash())["WHEREFORE"] = inv;
             bool linked = false;
             for (auto& e : podDom_)

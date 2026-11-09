@@ -1139,6 +1139,21 @@ std::string pod2text(const Value& v) {
 
 static thread_local bool g_podStrict = false;
 static bool g_podStrictFwd() { return g_podStrict; }
+std::string foldDeclaratorDoc(const std::string& t) {
+    std::string out;
+    for (size_t a = 0; a <= t.size();) {
+        size_t e = t.find('\n', a);
+        if (e == std::string::npos) e = t.size();
+        const size_t b = t.find_first_not_of(" \t\r", a);
+        if (b != std::string::npos && b < e) {
+            if (!out.empty()) out += ' ';
+            out.append(t, b, t.find_last_not_of(" \t\r", e - 1) - b + 1);
+        }
+        a = e + 1;
+    }
+    return out;
+}
+
 ValueList parsePod(const std::string& src, bool strict) {
     struct StrictScope { bool saved; StrictScope(bool on) : saved(g_podStrict) { g_podStrict = on; } ~StrictScope() { g_podStrict = saved; } } strictScope(strict);
     std::vector<std::string> lines;
@@ -1264,6 +1279,14 @@ ValueList parsePod(const std::string& src, bool strict) {
         return e == std::string::npos ? w : w.substr(0, e);
     };
     std::string leading;
+    // the leading and the trailing part kept apart, as `.leading`, `.trailing`
+    // and `.raku` answer them (the block's text joins the two)
+    auto addPart = [](Value& d, const char* k, const std::string& s) {
+        if (s.empty()) return;
+        auto& h = *d.hash();
+        auto it = h.find(k);
+        h[k] = Value::str(it != h.end() && it->second.t == VT::Str ? it->second.toStr() + " " + s : s);
+    };
     // a pending leading doc becomes the entry of the declaration on `declLine`
     // (1-based): `.WHY` links the entry back to its declarand through it
     auto flushLeading = [&](long long declLine) {
@@ -1273,6 +1296,7 @@ ValueList parsePod(const std::string& src, bool strict) {
         Value pc = Value::array(); pc.arr()->push_back(Value::str(leading));
         (*d.hash())["contents"] = pc;
         (*d.hash())["declLine"] = Value::integer(declLine);
+        addPart(d, "leading", leading);
         top.push_back(d);
         leading.clear();
     };
@@ -1379,11 +1403,11 @@ ValueList parsePod(const std::string& src, bool strict) {
                 if (d == 0 || j + 1 >= lines.size()) break;
                 body += '\n'; cur = lines[++j]; pos = 0;
             }
-            size_t a = body.find_first_not_of(" \t\r\n"), b = body.find_last_not_of(" \t\r\n");
-            body = a == std::string::npos ? std::string() : body.substr(a, b - a + 1);
+            body = foldDeclaratorDoc(body);
             Value d2 = mkPod("Pod::Block::Declarator");
             Value pc = Value::array(); pc.arr()->push_back(Value::str(body));
             (*d2.hash())["contents"] = pc;
+            addPart(d2, lead ? "leading" : "trailing", body);
             if (lead) (*d2.hash())["declLine"] = Value::integer((long long)j + 2);
             else {
                 (*d2.hash())["declLine"] = Value::integer((long long)k + 1);
@@ -1435,12 +1459,12 @@ ValueList parsePod(const std::string& src, bool strict) {
                             body += '\n'; cur = lines[++j]; pos = 0;
                         }
                         const std::string rest = pos + 1 < cur.size() ? trim(cur.substr(pos + 1)) : std::string();
-                        size_t a = body.find_first_not_of(" \t\r\n"), b = body.find_last_not_of(" \t\r\n");
-                        body = a == std::string::npos ? std::string() : body.substr(a, b - a + 1);
+                        body = foldDeclaratorDoc(body);
                         if (!leading.empty()) { body = leading + " " + body; leading.clear(); }
                         Value d2 = mkPod("Pod::Block::Declarator");
                         Value pc = Value::array(); pc.arr()->push_back(Value::str(body));
                         (*d2.hash())["contents"] = pc;
+                        addPart(d2, "leading", body);
                         // the declarand follows on the line after, or on this one
                         (*d2.hash())["declLine"] = Value::integer((long long)(rest.empty() ? j + 2 : j + 1));
                         top.push_back(d2);
@@ -1488,6 +1512,7 @@ ValueList parsePod(const std::string& src, bool strict) {
                     const bool atLineStart = cur.empty() || cur.back() == '\n';
                     c.back() = Value::str(cur + (atLineStart ? "" : " ") + part);
                 }
+                addPart(top.back(), "trailing", part);
                 (*top.back().hash())["trailRunEnd"] = Value::integer((long long)k + 1);
                 continue;
             }
@@ -1500,6 +1525,7 @@ ValueList parsePod(const std::string& src, bool strict) {
                  (h == 0 && (*top.back().hash())["declLine"].toInt() == (long long)k))) {
                 auto& c = *(*top.back().hash())["contents"].arr();
                 if (!c.empty()) c.back() = Value::str(c.back().toStr() + "\n" + unbracket(t.substr(h + 2)));
+                addPart(top.back(), "trailing", unbracket(t.substr(h + 2)));
                 (*top.back().hash())["trailRunEnd"] = Value::integer((long long)k + 1);
                 continue;
             }
@@ -1507,6 +1533,7 @@ ValueList parsePod(const std::string& src, bool strict) {
                 Value d = mkPod("Pod::Block::Declarator");
                 Value pc = Value::array(); pc.arr()->push_back(Value::str(unbracket(t.substr(h + 2))));
                 (*d.hash())["contents"] = pc;
+                addPart(d, "trailing", unbracket(t.substr(h + 2)));
                 // a trailing one documents this line's declaration, or the one
                 // just above when it stands on a line of its own
                 (*d.hash())["declLine"] = Value::integer((long long)k + 1);
@@ -1520,6 +1547,7 @@ ValueList parsePod(const std::string& src, bool strict) {
         Value d = mkPod("Pod::Block::Declarator");
         Value pc = Value::array(); pc.arr()->push_back(Value::str(leading));
         (*d.hash())["contents"] = pc;
+        addPart(d, "leading", leading);
         top.push_back(d);
     }
     return top;

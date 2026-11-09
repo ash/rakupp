@@ -49,7 +49,8 @@ and one more: 5932b773;
 and three more: edc36182, 3d4a3a91, 57cc8291;
 and two more: c1c8743d, 628ad9cb;
 and two more: 49808203, 25975633;
-and 0d87a53e (#235) and 5a0e9868.*
+and 0d87a53e (#235) and 5a0e9868;
+and two more: 983b9524, b07f37e2.*
 
 ---
 
@@ -514,6 +515,13 @@ and 0d87a53e (#235) and 5a0e9868.*
   list, an Array's element and an Array inside an Array were spread where
   `.flat` keeps them whole, and a Hash stayed one element where `.flat` gives
   its pairs. `t/regression/flatmap-is-map-then-flat.raku`.
+- **A `#=` after a routine's or package's closing brace documents it** (983b9524):
+  `~&f.WHY` of `#| a` / `sub f {` / `}` / `#= b` was "a", not "a\nb". A
+  declarator block's `.raku` is its constructor, naming its declarand, and a
+  `#|{ … }` folds its lines. `t/regression/declarator-doc-after-body.raku`.
+- **The JavaScript runtime's `substr` reads a start and a length as Rakudo
+  does** (b07f37e2): `"abc".substr(-2)` answered "bc", and `"abcd".substr(1, *-1)`
+  "bcd". `t/regression/substr-start-and-length.raku`.
 
 ### Fixed: crashes
 
@@ -823,12 +831,11 @@ and 0d87a53e (#235) and 5a0e9868.*
   above.)
 - Found with 483370b7 to e9bb987d, the same before them (each in
   TODO-FOLLOW-UPS.md): an unknown parent is refused when its declaration
-  runs, where Rakudo refuses it at compile time; a declarator block's
-  `.raku` is its text, and a trailing `#=` after a routine's `}` is lost.
-  (An `exit` on a worker thread and `for $=pod` are fixed by e205f9ae and
-  3d4a3a91; a sunk `start` that dies, and a tapper that dies on an
-  interval's or a Channel's value, are fixed by bc6faf15 and ea460d2a,
-  above.)
+  runs, where Rakudo refuses it at compile time. (An `exit` on a worker
+  thread and `for $=pod` are fixed by e205f9ae and 3d4a3a91; a sunk `start`
+  that dies, and a tapper that dies on an interval's or a Channel's value,
+  by bc6faf15 and ea460d2a; a declarator block's `.raku` and a `#=` after a
+  routine's `}` by 983b9524, above.)
 - Found with 592afa33 to ea460d2a, the same before them: none left open.
   (`.^roles` of a class doing a value-parameterized role, an element store
   into `Array[Str:D]`, a FIRST or INIT written last, and a user `multi` on
@@ -876,3 +883,7 @@ and 0d87a53e (#235) and 5a0e9868.*
 - Found with 628ad9cb, the same before it: none left open. (An undeclared
   `&nope`, and an EVAL's undeclared routines, are fixed by 49808203 and 25975633,
   above.)
+- Found with 983b9524, the same before it (in TODO-FOLLOW-UPS.md): a `$=pod`
+  declarator block names its declarand only once `.WHY` is asked, and a doc
+  after a multi-line body is an entry of its own there; a Sub's `.raku` is
+  `&f`; a `#|{ … }` followed on its line by its declarand documents nothing.

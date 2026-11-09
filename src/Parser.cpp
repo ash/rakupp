@@ -13876,6 +13876,7 @@ StmtPtr Parser::parseSub(bool isMulti, bool isProto, bool asMethod) {
         sawReturnRw_ = savedRw;
         routineDepth_--;
         s->body = std::move(blk->stmts);
+        addBodyTrailingPod(s->pod, s->podTrail, toks_[subDeclTok].line, true);
     }
     if (s->retLiteral) { // `--> 1` / `--> True` : the literal IS the return value.
         // The body still runs (for its side effects — parse-false does
@@ -14291,9 +14292,9 @@ StmtPtr Parser::parseClass(bool isRole, bool isGrammar, bool isPackage, bool isU
     // the class whose body is being parsed, for a `has` nested in one of its subs
     classDeclStack_.push_back(cd.get());
     struct ClassStackPop { std::vector<ClassDecl*>& v; ~ClassStackPop() { v.pop_back(); } } classStackPop{classDeclStack_};
+    const size_t dt = pos_ > 0 ? pos_ - 1 : pos_;   // the keyword
     {   // `#|` above the decl and `#=` below it are BOTH the declaration's doc,
         // and a declaration carrying the two answers them joined by a newline.
-        const size_t dt = pos_ > 0 ? pos_ - 1 : pos_;
         cd->pod = leadingPodAt(dt);
         std::string trail = trailingPodAt(dt);
         cd->podTrail = trail;
@@ -15529,7 +15530,7 @@ StmtPtr Parser::parseClass(bool isRole, bool isGrammar, bool isPackage, bool isU
     for (auto& lb : classBodyLeave) cd->body.push_back(std::move(lb));
     // this `}` closes a block as parseBlock's does: `my $x = class { … }⏎for …`
     // ends the statement at the newline — `for` is not a statement modifier
-    if (braced) { lastBlockClose_ = pos_; expectKind(Tok::RBrace, "}"); }
+    if (braced) { lastBlockClose_ = pos_; expectKind(Tok::RBrace, "}"); addBodyTrailingPod(cd->pod, cd->podTrail, toks_[dt].line, false); }
     typeStack_.pop_back();
     typeIsRole_.pop_back();
     // `self!nope()` in a class that declares no private `nope` is a COMPILE
