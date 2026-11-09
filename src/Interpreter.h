@@ -109,6 +109,7 @@ const std::set<std::string>& coreTypeNames(); // …the set itself, for "Did you
 std::vector<std::string> suggestNames(const std::string& name, const std::vector<std::string>& cands);
 std::vector<std::string> variableSuggestions(const std::string& name, const std::vector<std::string>& cands);   // (DeclCheck.h too)
 std::string undeclaredVariableMessage(const std::string& name, const std::vector<std::string>& sug);
+const std::vector<std::string>& coreRoutineNames();   // (DeclCheck.cpp)
 std::string didYouMean(const std::vector<std::string>& sug); // ". Did you mean 'X'?" or ""
 std::string unknownParentMessage(const std::string& child, const std::string& parent,
                                  const std::vector<std::string>& sug);   // X::Inheritance::UnknownParent's

@@ -474,6 +474,8 @@ void Interpreter::throwUndeclaredVar(const std::string& name, const std::vector<
                 for (size_t i = 0; i < e->layout->names.size() && i < 64; i++)
                     if ((e->padLive.load(std::memory_order_acquire) >> i) & 1) consider(e->layout->names[i]);
         }
+        // …and the core routines, which Rakudo's lexical scope holds as `&name`s (`$prnt`: `&print`)
+        cands.insert(cands.end(), coreRoutineNames().begin(), coreRoutineNames().end());
         // inside a method, the class's attributes: `$name` where `has $.name` meant `$!name`
         if (Value* sp = tctx().cur ? tctx().cur->findSelf() : nullptr) {
             ClassInfo* ci = nullptr;
@@ -496,7 +498,7 @@ void Interpreter::throwUndeclaredVar(const std::string& name, const std::vector<
             for (auto& t : suggestNames(name.substr(1), typeCands)) sug.push_back(t);
     }
     std::string msg = undeclaredVariableMessage(name, sug);
-    Value sl = Value::array(); sl.isList = true;
+    Value sl = Value::array();   // (an Array, as Rakudo's)
     for (auto& n : sug) sl.arr()->push_back(Value::str(n));
     Value he = Value::array(); he.isList = true;
     throwTypedV("X::Undeclared", {{"symbol", Value::str(name)}, {"what", Value::str("Variable")},
