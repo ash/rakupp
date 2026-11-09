@@ -795,14 +795,14 @@ f11a9f04, 88f81c1f, 655d13dd.*
   `specialize`; the aliases are its own). The suite's Method::Also case was
   skipped wherever the module was absent, the suite's machines included;
   `t/regression/role-how-specialize-wraps-specialize-with.raku` is that
-  shape with no module. Reported by pull request #234.
+  shape with no module. Reported by Offizin in pull request #234.
 - **`role W { }; role W['X'] does W { }` declares a candidate of W's group**
   (f11a9f04) over the W declared before it, where it was refused "Role 'W'
   cannot inherit from / compose itself", and a run-time `$obj does W['X']`
   gets the bare W's methods and attributes. PDF::Content declares its
   XObject['Form'] so and mixes it in at run time.
-  `t/regression/role-group-candidate-does-bare-role.raku`. Reported by pull
-  request #232.
+  `t/regression/role-group-candidate-does-bare-role.raku`. Reported by
+  Offizin in pull request #232.
 - **A method's `handles` delegation implements a role's stub** (88f81c1f), as
   an attribute's did: `class C does R { method Pages handles <page> { … } }`
   died "Method 'page' must be implemented by C", whether the delegation was
@@ -811,7 +811,7 @@ f11a9f04, 88f81c1f, 655d13dd.*
   slot, and any delegation from a second parent (`class D is B is A`), is
   dispatched too, where it was "No such method".
   `t/regression/handles-delegation-satisfies-and-dispatches.raku`. Reported
-  in part by pull request #233.
+  in part by Offizin in pull request #233.
 - **A class's own method named as a composed role's Method::Also alias is
   X::Method::Duplicate** (655d13dd), "Package 'WithOwn' already has a method
   'zed' …", as on Rakudo; the class's method won.
