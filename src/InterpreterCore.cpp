@@ -10892,9 +10892,21 @@ Value Interpreter::invokeMethod(const Value& codeVal, const Value& self, ValueLi
                 Value cap = Value::array(); cap.hashKind = "Capture"; cap.itemized = true;
                 cap.arr()->push_back(selfCopy);
                 cap.arr()->insert(cap.arr()->end(), as.begin(), as.end());
+                // …and the candidates' signatures, as Rakudo lists them (`(A $:: Int $a, *%_)`), as a sub's are;
+                // a role's, which names no invocant, takes the class that composed the role
+                std::string sigs;
+                for (auto& cand : c.cold().candidates)
+                    if (cand.code() && !cand.code()->ci().isProto && !cand.code()->ci().isProtoBody)
+                        try {
+                            std::string g = methodCall(methodCall(cand, "signature", {}), "gist", {}).toStr();
+                            if (g.find("$::") == std::string::npos && g.size() > 1 && selfCopy.t == VT::Object && selfCopy.obj())
+                                for (ClassInfo* k = selfCopy.obj()->cls.get(); k; k = k->parent.get())
+                                    if (k->doneRoles.count(cand.code()->ci().pkg)) { g.insert(1, k->name + (g.size() > 2 ? " $:: " : " $::")); break; }
+                            sigs += "\n    " + g;
+                        } catch (...) {}
                 throwTypedV("X::Multi::NoMatch", {{"dispatcher", codeVal}, {"capture", cap}},
                             "Cannot resolve caller " + c.ci().name + "(" + prof +
-                            "); none of these signatures matches");
+                            "); none of these signatures matches" + (sigs.empty() ? "" : ":" + sigs));
             }
             visited.push_back(best);
             RedispatchCtx rc;
