@@ -3234,7 +3234,7 @@ Value Interpreter::execForStmt(Stmt* s, bool sink) {
             // and a typed parameter holds one bare (VarExpr::bareParam)
             const auto* sv = fs->list->kind == NK::VarExpr ? static_cast<const VarExpr*>(fs->list.get()) : nullptr;
             const bool dollar = sv && sv->name.size() > 1 && sv->name[0] == '$' && sv->name != "$_";
-            const bool valueBound = dollar && valueBoundVar(sv->name);   // `$x := <value>` is no container
+            const bool valueBound = dollar && (sv->name[1] == '=' || valueBoundVar(sv->name));   // `$x := <value>` is no container, nor `$=pod`
             const bool lists = !viaIterator && !(dollar && !valueBound && !sv->bareParam) &&
                 forListsValue(lv, valueBound || (dollar && sv->bareParam) ||
                                   fs->list->kind == NK::Call || fs->list->kind == NK::MethodCall);
@@ -3383,7 +3383,7 @@ Value Interpreter::execForStmt(Stmt* s, bool sink) {
     // typed parameter holds one bare (VarExpr::bareParam).
     const auto* sv = fs->list->kind == NK::VarExpr ? static_cast<const VarExpr*>(fs->list.get()) : nullptr;
     const bool dollar = sv && sv->name.size() > 1 && sv->name[0] == '$' && sv->name != "$_";
-    const bool constantVar = dollar && isConstantVar(sv->name);
+    const bool constantVar = dollar && (sv->name[1] == '=' || isConstantVar(sv->name));   // (`$=pod` is bound, no container)
     const bool lists = !viaIterator && !(dollar && !constantVar && !sv->bareParam) &&
         forListsValue(listv, constantVar || (dollar && sv->bareParam) ||
                              fs->list->kind == NK::Call || fs->list->kind == NK::MethodCall);
