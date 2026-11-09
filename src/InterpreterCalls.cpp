@@ -4299,8 +4299,10 @@ void Interpreter::assignListTarget(ListExpr* lst, const Value& rhs, bool isBindi
                     }
                 }
                 // a TYPED slot checks what it is given, as `my Str $x = 3` does:
-                // `my (Str $x) = 3` dies
-                if (!isBinding && tgt->kind == NK::VarExpr && !static_cast<VarExpr*>(tgt)->d().declType.empty()) {
+                // `my (Str $x) = 3` dies, and so does `($a, $b) = "x", 2` into a
+                // `my Int $a` declared before (its type, smiley, `where` or coercion)
+                if (!isBinding && tgt->kind == NK::VarExpr &&
+                    (!static_cast<VarExpr*>(tgt)->d().declType.empty() || !static_cast<VarExpr*>(tgt)->declare)) {
                     const std::string& nm = static_cast<VarExpr*>(tgt)->name;
                     if (!nm.empty() && nm[0] == '$') {
                         enforceTypedAssign(nm, v);
