@@ -10359,7 +10359,9 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
             t.ofTypeM() = ot.substr(br + 1, ot.size() - br - 2);
             return t;
         }
-        return Value::typeObj(ot);
+        Value t = Value::typeObj(ot);   // (an `Int:D` is the literal's: Int, definite)
+        if (ot.size() > 2 && ot[ot.size() - 2] == ':') { t = Value::typeObj(ot.substr(0, ot.size() - 2)); t.i = ot.back() == 'D' ? 1 : 2; }
+        return t;
     }
     // `self.rakuseen(NAME, { … })` — Rakudo's cycle guard for a user-written
     // `.raku`: run the block, unless this very object is already being rendered

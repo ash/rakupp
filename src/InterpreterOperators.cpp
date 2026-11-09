@@ -2844,12 +2844,18 @@ void Interpreter::varSmileyCheck(const std::string& nm, const Value& rhs) {
         if (en->local(nm)) return;
     }
 }
+// (Rakudo's words: a Nil is the type it resets to, and an undefined value under a
+// `:D` asks "perhaps Nil was assigned to a :D which had no default?")
 void Interpreter::smileyRefused(const std::string& nm, const Value& rhs, std::string want, char sm) {
+    const Value got = rhs.t == VT::Nil ? Value::typeObj(want) : rhs;
     want += sm == 'D' ? ":D" : ":U";
     throwTypedV("X::TypeCheck::Assignment",
-        {{"got", rhs}, {"expected", Value::typeObj(want)}, {"symbol", Value::str(nm)}},
-        "Type check failed in assignment to " + nm + "; expected " + want +
-        " but got " + rhs.typeName() + (isDefined(rhs) ? " (" + rhs.gist() + ")" : ""));
+        {{"got", got}, {"expected", Value::typeObj(want)}, {"symbol", Value::str(nm)}},
+        "Type check failed in assignment to " + nm + "; expected " + want + " but got " + smileyGot(got, sm));
+}
+std::string smileyGot(const Value& got, char sm) {
+    if (isDefined(got)) return got.typeName() + " (" + typeCheckRepr(got) + ")";
+    return got.typeName() + " (" + got.typeName() + ")" + (sm == 'D' ? " (perhaps Nil was assigned to a :D which had no default?)" : "");
 }
 // --exe: a store into a compiled `my T:D $x` / `my T:U $x` (Codegen::scalarStore),
 // as varSmileyCheck has the interpreter's: no `is default` compiles, so a Nil is

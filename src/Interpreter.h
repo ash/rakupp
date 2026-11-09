@@ -167,6 +167,7 @@ Value makeBaggy(const ValueList& items, const std::string& kind,
 // (defined in Interpreter.cpp). Non-numeric input yields an undefined value.
 Value numifyStr(std::string_view in);
 std::string asciiDecimalDigits(std::string_view s);   // "٢٠١٠" → "2010": any Nd digit as its ASCII one
+std::string smileyGot(const Value& got, char sm);   // "Int (Int) (perhaps Nil was assigned …)" (InterpreterOperators.cpp)
 // numifyStr, but a string that isn't a number THROWS X::Str::Numeric the way
 // Rakudo does in numeric context (`"a" + 1`), instead of silently reading as 0.
 Value numifyStrOrThrow(std::string_view in);

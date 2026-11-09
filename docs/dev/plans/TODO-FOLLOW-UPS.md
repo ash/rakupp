@@ -435,14 +435,14 @@ moves to [TODO.md](TODO.md).
 
 - [ ] **A typed scalar's container handed out by an expression takes
   anything** (found 2026-10-28 while making scalar aliases keep their type,
-  5f87f445; on v5.5.0 too). An alias of a typed variable refuses what the
-  variable refuses now (scalarAliasOf), but these containers are not made by
-  an alias, and store as they come:
+  5f87f445; on v5.5.0 too; a list assignment into one checks it since 73940d6e).
+  An alias of a typed variable refuses what the variable refuses now
+  (scalarAliasOf), but these containers are not made by an alias, and store
+  as they come:
 
   ```raku
   my Int $a = 1;
-  ($a, my $z) = 'la', 2;              # stores; Rakudo: Type check failed in assignment to $a
-  ($a, 2)[0] = 'l';                   # stores; the same in Rakudo
+  ($a, 2)[0] = 'l';                   # stores; Rakudo: Type check failed in assignment to $a
   my Int $p = 1; (k => $p).value = 'pv';    # stores; Rakudo refuses, naming $p
   sub r() is rw { $a }; r() = 'rr';   # stores; Rakudo refuses, naming $a
   my $wh where Int = 1; my $w := $wh; $w = 'q';   # stores; Rakudo: expected <anon>
@@ -450,12 +450,12 @@ moves to [TODO.md](TODO.md).
   say $o.x;                           # 1: the bind took a copy; Rakudo 5
   ```
 
-  The first is list assignment into a typed scalar, with no alias at all:
-  the destructuring store skips the `=` path's type checks. The next three
-  hand out the variable's cell (a list literal's kept item, a Pair's value,
-  an `is rw` routine's tail), so each could take scalarAliasOf's Proxy
-  instead of the bare cell, as `f(($a, 2))` already does. A `where` clause
-  runs in the declaring scope, which the alias's record does not keep.
+  The first three hand out the variable's cell (a list literal's kept item,
+  a Pair's value, an `is rw` routine's tail), so each could take
+  scalarAliasOf's Proxy instead of the bare cell, as `f(($a, 2))` already
+  does; the routine's tail reaches the store as a slot pointer with no name
+  (lvalueThroughRw). A `where` clause runs in the declaring scope, which the
+  alias's record does not keep.
 - [ ] **A refusal through a copy-in/copy-out alias comes at the write-back**
   (found 2026-10-28 while fixing issue #184, 17e33a45). A `for` loop's `$_`,
   `given`'s topic and `.map`'s `$_` hold a copy of the element, written back
@@ -472,49 +472,33 @@ moves to [TODO.md](TODO.md).
   carries its tags (nativeElemTag); a typed element could carry its guard
   the same way, on the loop variable's Env (varDefault plus a table naming
   the container, so the message is "for an element of @a").
-- [ ] **Three aliases of a typed array's elements still take anything**
-  (found 2026-10-28 while fixing issue #184, 17e33a45):
+- [ ] **A typed element's refusal through `.map` names "the container"**
+  (found 2026-10-28 while fixing issue #184, 17e33a45; the three aliases
+  that took anything refuse since ba6f7edf and 4c47943e):
 
   ```raku
-  my Int @a = 1, 2, 3;
-  @a.hyper.map({ $_ = 'x' }).eager;             # stores; Rakudo dies (+X::HyperRace::Died)
-  for @a.kv -> $k, $v is rw { $v = 'x' }        # stores; Rakudo dies
-  @a.first({ $_ = 'x'; True });                 # stores nothing, no error; Rakudo dies
+  my Int @a = 1, 2;
+  @a.map({ $_ = 'x' }).eager;   # "… for an element of the container; …", Rakudo "… of @a; …"
   ```
 
-  The hyper `.map` sets tctx().topicWriteback in runParallel's worker
-  (MethodCallTail.cpp) without the guard the eager `.map` sets beside it
-  (tctx().topicWritebackGuard). And `.map`/`.grep`'s refusal names "the
-  container", not `@a`: the method sees the array's value, not the
-  expression that named it.
-- [ ] **An untyped array's element alias answers as a value** (found
-  2026-10-28 while fixing issue #184, 17e33a45; on v5.5.0 too):
+  `.map`, `.grep`, `.first` and their hyper forms see the array's value,
+  not the expression that named it, so their elemAliasGuard is given no
+  name (MethodCallTail.cpp passes ""). The call's invocant expression has
+  it, as containerNameOf finds it for an assignment.
+- [ ] **An untyped array's element alias answers `.VAR` as a value**
+  (found 2026-10-28 while fixing issue #184, 17e33a45; on v5.5.0 too; a
+  Nil through it resets the element since 649cb2b1):
 
   ```raku
   my @p = 1, 2; my $e := @p[0];
-  $e = Nil; say @p.raku             # [Nil, 2], Rakudo [Any, 2]
-  say $e.VAR.of                     # Nil (the Proxy deproxies), Rakudo (Mu)
+  say $e.VAR.^name;                 # Int, Rakudo Scalar
+  say $e.VAR.name;                  # No such method 'name', Rakudo @p (and `.VAR.of` (Mu))
   ```
 
-  A typed element's alias carries a guard (kSlotGuard) that resets a Nil and
-  builds `.VAR`'s Scalar; an untyped one carries none, to keep the slot
-  proxy at four entries (BinaryHeap builds one per sift step). Nil could
-  reset to Any in slotProxyWriteRef with no entry; `.VAR` needs the
+  A typed element's alias carries a guard (kSlotGuard) that builds `.VAR`'s
+  Scalar; an untyped one carries none, to keep the slot proxy at four
+  entries (BinaryHeap builds one per sift step). `.VAR` needs the
   container's name, which only the bind site has.
-- [ ] **A `:D` element type is half-kept** (found 2026-10-28 while fixing
-  issue #184, 17e33a45; on v5.5.0 too):
-
-  ```raku
-  my Int:D @d = 1;
-  @d[0] = Nil; say @d.raku          # Array[Int].new(Int); Rakudo dies, perhaps Nil was assigned to a :D…
-  say @d.of;                        # (Int), Rakudo (Int:D)
-  say @d.WHAT.^name;                # Array[Int], Rakudo Array[Int:D] (and Hash[Int] for `my Int:D %h`)
-  ```
-
-  The smiley lives in the declaring Env's varSmiley, not in the array's
-  ofType, so `.of`, `.raku` and the Nil arm of element assignment
-  (InterpreterCore.cpp, "Storing Nil into an ELEMENT") do not see it. An
-  alias of the element does now (elemAliasGuard reads elemSmileyOf).
 - [ ] **`.map` over a shared Array writes its elements back** (found
   2026-10-28 while fixing issue #193, b05e989b, on its program). After a
   block's call, callCallableRaw copies the block's `$_` back into the element
@@ -663,6 +647,11 @@ moves to [TODO.md](TODO.md).
     a role's candidate shows no invocant in `.signature.raku`;
   - an undeclared variable inside a string (`my $y = "a $x b"`) is refused
     when the statement runs, where Rakudo refuses it at compile time;
+  - a `:D` element's type refusal names the bare type: `my Int:D @d = 1;
+    @d[0] = "s"` says "expected Int but got Str", Rakudo "expected Int:D"
+    (elemTypeOfSpec drops the smiley; found 2026-11-09, a776b42a);
+  - a Proxy bound to a variable answers `.VAR` as its value:
+    `my $p := Proxy.new(…); $p.VAR.^name` is Int, Rakudo Proxy;
   - Cro::HTTP's t/http2-request-parser.rakutest fails now and then (3 runs
     in 20 at 12a8fee3, 2 in 20 after it): the "Header1 + Continuation1 +
     Header2 + Data1" case passes as soon as its second request is checked,
