@@ -179,8 +179,9 @@ static Value lazyArrayCopy(const Value& inv) {
 }
 
 // `my @a = (1,2),(3,4); @a.flat` is TWO elements even though each element is
-// a List, while `((1,2),(3,4)).flat` is four. `.item` opts out either way,
-// and `:hammer` (6.e) flattens containers regardless.
+// a List, while `((1,2),(3,4)).flat` is four. `.item` opts out either way —
+// a Hash's too: `($%h, 1).flat` keeps it whole, where `(%h, 1).flat` spreads
+// its pairs — and `:hammer` (6.e) flattens containers regardless.
 static void flatOneInto(const Value& x, bool ofArray, bool hammer, ValueList& out) {
     forceLazy(x);   // an unpulled gather flattens into its ELEMENTS
     if (hammer) {
@@ -195,7 +196,7 @@ static void flatOneInto(const Value& x, bool ofArray, bool hammer, ValueList& ou
     }
     if (x.t == VT::Array && x.arr() && !x.itemized && !ofArray)
         for (auto& e : *x.arr()) flatOneInto(e, !x.isList, false, out);
-    else if (!ofArray && x.t == VT::Hash && x.hash() && x.hashKind.empty())
+    else if (!ofArray && x.t == VT::Hash && x.hash() && x.hashKind.empty() && !x.itemized)
         for (auto& kv : *x.hash()) out.push_back(hashEntryPair(x, kv.first, kv.second));
     else if (!ofArray && x.t == VT::Range && !x.itemized)
         for (auto& e : x.flatten()) out.push_back(e);
