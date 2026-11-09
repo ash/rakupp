@@ -4615,7 +4615,7 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
             }
             return out;
         }
-        if (m == "map" || m == "flatmap") { // flatmap == map that flattens list results one level
+        if (m == "map" || m == "flatmap") { // flatmap == map, then .flat
             // the mapper must be a Callable — `%h.map(Hash)` (a type object),
             // `.map(1)`, `.map((3,4))` and `.map({a => 1})` all die (NA-20).
             // The named-only forms delegate instead: `map(flat => &f)` is
@@ -4760,12 +4760,10 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
                                          if (ne.hasVal) pushLoopPayload(*out.arr(), ne.val);
                                          continue; }
                     // post-GLR: map keeps each block result as ONE element; only a
-                    // Slip (or flatmap, which flattens one level by design) spreads.
-                    if (m == "flatmap") {
-                        if (r.t == VT::Array) for (auto& x : *r.arr()) out.arr()->push_back(x);
-                        else if (r.t == VT::Range) for (auto& x : r.flatten()) out.arr()->push_back(x);
-                        else out.arr()->push_back(r);
-                    }
+                    // Slip spreads. flatmap is map then `.flat` (Rakudo): a gather
+                    // spreads its elements (#235), a nested list all the way down,
+                    // and an itemized one — `$(1, 2)`, an Array's element — stays whole.
+                    if (m == "flatmap") flatOneInto(r, false, false, *out.arr());
                     else if (r.t == VT::Array && r.isList && r.s == "Slip")
                         for (auto& x : *r.arr()) out.arr()->push_back(x);
                     else out.arr()->push_back(r);

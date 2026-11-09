@@ -48,7 +48,8 @@ and three more: 07dd7b4a, 793c6d61, d5186165;
 and one more: 5932b773;
 and three more: edc36182, 3d4a3a91, 57cc8291;
 and two more: c1c8743d, 628ad9cb;
-and two more: 49808203, 25975633.*
+and two more: 49808203, 25975633;
+and 0d87a53e (#235) and 5a0e9868.*
 
 ---
 
@@ -500,6 +501,19 @@ and two more: 49808203, 25975633.*
   with the whole list. `t/regression/for-over-pod-variable.raku`.
 - **`=finish` is no block of `$=pod`** (57cc8291): one pod block and a `=finish`
   section made two. `t/regression/pod-finish-not-a-block.raku`.
+- **A `flatmap` block that answers a `gather` spreads its elements** (0d87a53e;
+  issue #235). `(1, 2).flatmap({ gather { take $_ } })` was `()`: flatmap read
+  the result's element buffer, which a gather nothing has pulled from yet
+  leaves empty. Getopt::Long makes a flag's receivers with `gather for` and
+  collects every option's with `.flatmap`, so it refused each declared flag
+  ("Unknown option --version") and its own test suite died on its first line.
+  `t/regression/flatmap-of-gather.raku`.
+- **`flatmap` is `map` then `.flat`** (5a0e9868), as Rakudo defines it. It
+  spread each result one level its own way: a nested list stayed nested
+  (`(1, 2).flatmap({ ($_, ($_,)) })` was `(1, (1,), 2, (2,))`), an itemized
+  list, an Array's element and an Array inside an Array were spread where
+  `.flat` keeps them whole, and a Hash stayed one element where `.flat` gives
+  its pairs. `t/regression/flatmap-is-map-then-flat.raku`.
 
 ### Fixed: crashes
 
@@ -766,6 +780,11 @@ and two more: 49808203, 25975633.*
   goes at the end too. Not run on Windows.
 
 ### Left open
+
+- Found with 0d87a53e, the same before it (TODO-FOLLOW-UPS.md): `--exe`
+  cannot compile a sub-signature in a pointy block or a sub,
+  `.map(-> ($k, @n) { … })` or `sub f(($a, $b))`, and `--target=js` has no
+  `flatmap`.
 
 - Found with 5f6d78e4, the same before it (TODO-FOLLOW-UPS.md): four
   word-list spellings still read differently from Rakudo, `« :x\<a »`,
