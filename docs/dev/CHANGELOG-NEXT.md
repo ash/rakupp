@@ -43,7 +43,8 @@ de67ca59, c77965fc;
 and seven more: 868dbe53, 564eec50, a776b42a, 649cb2b1, 73940d6e, ba6f7edf, 4c47943e;
 and seven more: fd4495e3, a343a825, 3341d028, e56816cc, 0d6168fb, cd1e7aa9, 07e940ce;
 and five more: add45aeb, 43dbcefb, 57dad570, e8a8ba53, 024a0905;
-and three more: e205f9ae, f371f8b2, e4ec869c.*
+and three more: e205f9ae, f371f8b2, e4ec869c;
+and three more: 07dd7b4a, 793c6d61, d5186165.*
 
 ---
 
@@ -485,6 +486,9 @@ and three more: e205f9ae, f371f8b2, e4ec869c.*
 - **An `exit` on a worker thread runs the END phasers** (e205f9ae), and so does an
   unhandled error in cued code; `start { exit 3 }` ended the process with
   none run. `t/regression/worker-exit-runs-end.raku`.
+- **An assignment through a list literal's item answers to the variable's
+  type** (d5186165): `my Int $a; ($a, 2)[0] = "l"` stored the Str, and a Nil
+  reset it to Any, not its default. `t/regression/list-literal-item-typed-assign.raku`.
 
 ### Fixed: crashes
 
@@ -692,6 +696,11 @@ and three more: e205f9ae, f371f8b2, e4ec869c.*
 - **`.AST.DEPARSE` keeps `is export`, `is DEPRECATED`, `is default` and
   `handles`** (e4ec869c), each dropped before.
   `t/regression/rakuast-declaration-traits.raku`.
+- **A multi method's refusal lists the candidates' signatures** (07dd7b4a), as a
+  multi sub's did: `(A $:: Int, *%_)`, a role's named for its class.
+  `t/regression/multi-method-nomatch-signatures.raku`.
+- **An explicit `::?CLASS` invocant is typed by the class** (793c6d61):
+  `(E:D $:: $y, *%_)`, where it was `Mu:D`. `t/regression/class-invocant-typed-by-class.raku`.
 
 ### Platforms and packaging
 
@@ -812,3 +821,6 @@ and three more: e205f9ae, f371f8b2, e4ec869c.*
   `.AST.DEPARSE` writes a one-statement block over three lines and leaves
   out the `;` after a statement that ends in a block, where Rakudo writes
   `say -> { 1 };` (the program is the same).
+- Found with 07dd7b4a to d5186165 (in TODO-FOLLOW-UPS.md): a multi method's refusal,
+  which lists the candidates since 07dd7b4a, lists only a role's when the class
+  has its own beside them, the group the dispatch reports being the role's.

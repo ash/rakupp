@@ -384,11 +384,10 @@ moves to [TODO.md](TODO.md).
   5f87f445; on v5.5.0 too; a list assignment into one checks it since 73940d6e).
   An alias of a typed variable refuses what the variable refuses now
   (scalarAliasOf), but these containers are not made by an alias, and store
-  as they come:
+  as they come (a list literal's item, `($a, 2)[0] = 'l'`, refuses since d5186165):
 
   ```raku
   my Int $a = 1;
-  ($a, 2)[0] = 'l';                   # stores; Rakudo: Type check failed in assignment to $a
   my Int $p = 1; (k => $p).value = 'pv';    # stores; Rakudo refuses, naming $p
   sub r() is rw { $a }; r() = 'rr';   # stores; Rakudo refuses, naming $a
   my $wh where Int = 1; my $w := $wh; $w = 'q';   # stores; Rakudo: expected <anon>
@@ -396,10 +395,10 @@ moves to [TODO.md](TODO.md).
   say $o.x;                           # 1: the bind took a copy; Rakudo 5
   ```
 
-  The first three hand out the variable's cell (a list literal's kept item,
-  a Pair's value, an `is rw` routine's tail), so each could take
-  scalarAliasOf's Proxy instead of the bare cell, as `f(($a, 2))` already
-  does; the routine's tail reaches the store as a slot pointer with no name
+  The first two hand out the variable's cell (a Pair's value, an `is rw`
+  routine's tail), so each could take scalarAliasOf's Proxy instead of the
+  bare cell, as `f(($a, 2))` already does; the routine's tail reaches the
+  store as a slot pointer with no name
   (lvalueThroughRw). A `where` clause runs in the declaring scope, which the
   alias's record does not keep.
 - [ ] **A refusal through a copy-in/copy-out alias comes at the write-back**
@@ -602,7 +601,9 @@ moves to [TODO.md](TODO.md).
     role a role does lists its candidate twice too, `role R4 does S4`
     giving (Int, Str, Int) where Rakudo gives (Str, Int), each with its
     `E4 $::` (mergeParentRoleMultis, src/InterpreterModules.cpp; found
-    again 2026-11-09);
+    again 2026-11-09); and a multi method's refusal, which lists the
+    candidates since 07dd7b4a, lists only the role's when the class has its
+    own beside it (Rakudo lists both, the class's first);
   - an undeclared variable's suggestions leave out the routines Rakudo
     offers: `qq[$nope]` suggests '&none' and '&note' there, nothing here
     (found 2026-11-09, 024a0905);

@@ -10892,9 +10892,21 @@ Value Interpreter::invokeMethod(const Value& codeVal, const Value& self, ValueLi
                 Value cap = Value::array(); cap.hashKind = "Capture"; cap.itemized = true;
                 cap.arr()->push_back(selfCopy);
                 cap.arr()->insert(cap.arr()->end(), as.begin(), as.end());
+                // …and the candidates' signatures, as Rakudo lists them (`(A $:: Int $a, *%_)`), as a sub's are;
+                // a role's, which names no invocant, takes the class that composed the role
+                std::string sigs;
+                for (auto& cand : c.cold().candidates)
+                    if (cand.code() && !cand.code()->ci().isProto && !cand.code()->ci().isProtoBody)
+                        try {
+                            std::string g = methodCall(methodCall(cand, "signature", {}), "gist", {}).toStr();
+                            if (g.find("$::") == std::string::npos && g.size() > 1 && selfCopy.t == VT::Object && selfCopy.obj())
+                                for (ClassInfo* k = selfCopy.obj()->cls.get(); k; k = k->parent.get())
+                                    if (k->doneRoles.count(cand.code()->ci().pkg)) { g.insert(1, k->name + (g.size() > 2 ? " $:: " : " $::")); break; }
+                            sigs += "\n    " + g;
+                        } catch (...) {}
                 throwTypedV("X::Multi::NoMatch", {{"dispatcher", codeVal}, {"capture", cap}},
                             "Cannot resolve caller " + c.ci().name + "(" + prof +
-                            "); none of these signatures matches");
+                            "); none of these signatures matches" + (sigs.empty() ? "" : ":" + sigs));
             }
             visited.push_back(best);
             RedispatchCtx rc;
@@ -16619,6 +16631,21 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
                 if (!sm && cv) sm = ofTypeSmiley(cv->ofType());
                 if (sm) checkElemSmiley(cn, cv ? elemTypeOf(*cv) : std::string(), rhs.t == VT::Nil && cv && cv->elemDefault() ? *cv->elemDefault() : rhs, sm);
             }
+            // …and `($a, 2)[0] = v` lands in $a (lvalue's list-literal arm): $a's type answers, as for `$a = v`,
+            // and a Nil resets it to its default
+            else if (ixt->base && ixt->base->kind == NK::ListExpr)
+                if (Expr* item = listLiteralItem(ixt); item && item->kind == NK::VarExpr && static_cast<VarExpr*>(item)->name.size() > 1 &&
+                                                        static_cast<VarExpr*>(item)->name[0] == '$') {
+                    const std::string& vn = static_cast<VarExpr*>(item)->name;
+                    if (rhs.t == VT::Nil) {
+                        rhs = Value::any();
+                        for (Env* en = tctx().cur.get(); en; en = en->parent.get()) {
+                            if (auto di = en->xr().varDefault.find(vn); di != en->xr().varDefault.end()) { rhs = di->second; break; }
+                            if (en->local(vn)) break;
+                        }
+                    }
+                    enforceTypedAssign(vn, rhs);
+                }
         }
         tctx().lastLvalueElemType.clear();
         // A plain scalar parameter is READONLY in Raku — `is copy` is what makes
