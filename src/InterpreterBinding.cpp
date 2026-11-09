@@ -753,6 +753,60 @@ void Interpreter::coerceParam(const Param& p, Value& v, const std::string* typeO
 // parameter given what is no Positional: as refuseNotAssociative does for `%`,
 // the hint about typed arrays when what came has an `.of` of Mu (a Hash, a
 // Map, a Pair), word-wrapped as X::TypeCheck.explain does.
+// What an `@` parameter refuses: a definite scalar, Nil, Any, or a type object
+// that is not Positional. (A CArray, owned or live, is handled before this is
+// asked.)
+bool Interpreter::notPositionalArg(const Value& v) {
+    if (v.t == VT::Int || v.t == VT::Num || v.t == VT::Rat || v.t == VT::Bool ||
+        v.t == VT::Pair || v.t == VT::Code ||
+        v.t == VT::Nil || v.t == VT::Any) return true;
+    if (v.t == VT::Hash) return !typeMatchesArg(v, "Positional");
+    if (v.t == VT::Str) return v.hashKind.empty();
+    if (v.t == VT::Type)
+        return !(v.s == "Positional" || v.s == "Array" || v.s == "List" || typeMatchesArg(v, "Positional"));
+    return false;
+}
+// What a `%` parameter refuses, named or positional, argument or default:
+// anything that is not Associative. A List of Pairs is no hash, and Rakudo
+// builds none from one: `sub g(:%env) {}; g(:env(A => 1, B => 2))` fails to
+// bind there, where coercing it here let a test pass that dies under Rakudo
+// (#207). A Capture is no Associative there either, whatever `~~` answers
+// here; a Junction is left to autothread.
+bool Interpreter::notAssociativeArg(const Value& v) {
+    if (v.t == VT::Hash && v.hashKind.empty()) return false;   // a plain Hash
+    if (v.hashKind == "Capture" && (v.t == VT::Hash || v.t == VT::Array)) return true;
+    return !isJunction(v) && !typeOrSubsetMatches(v, "Associative");
+}
+// …in Rakudo's words: the type alone, no value, and the hint about typed
+// hashes when what came has an `.of` of Mu (a List, an Array, a Range, code
+// that declares no return type), word-wrapped as X::TypeCheck.explain does
+void Interpreter::refuseNotAssociative(const Param& p, const Value& v) {
+    const std::string tn = v.typeName();
+    bool ofMu;
+    if (v.t == VT::Type) {
+        static const std::set<std::string, std::less<>> kOfMu = {"List", "Array", "Slip", "Range", "Code", "Block",
+                                                                 "Routine", "Sub", "Method", "Regex", "WhateverCode"};
+        ofMu = kOfMu.count(v.s.str()) > 0;
+    }
+    else ofMu = ((tn == "List" || tn == "Array" || tn == "Slip") && (v.ofType().empty() || v.ofType() == "Mu")) ||
+                v.t == VT::Range || v.t == VT::Regex ||
+                (v.t == VT::Code && v.code() && v.code()->cold().retType.empty());
+    std::string why = "expected Associative but got " + tn;
+    if (ofMu) why += ". You have to pass an explicitly typed hash, not one that just might happen "
+                     "to contain elements of the correct type.";
+    throwTypedV("X::TypeCheck::Binding::Parameter",
+        {{"got", v}, {"expected", Value::typeObj("Associative")}, {"symbol", Value::str(p.name)}},
+        "Type check failed in binding to parameter '" + paramShownName(p) + "'; " +
+        methodCall(Value::str(why), "naive-word-wrapper", {}).toStr());
+}
+// A compiled routine's `@` or `%` parameter (Codegen's bindParams): the same
+// refusals, of what was passed, and what came handed back
+Value rtSigilArg(Interpreter& I, const Value& v, const Param& p, bool passed) {
+    if (!passed) return v;
+    if (p.sigil == '@' && I.notPositionalArg(v)) I.refuseNotPositional(p, v);
+    if (p.sigil == '%' && I.notAssociativeArg(v)) I.refuseNotAssociative(p, v);
+    return v;
+}
 void Interpreter::refuseNotPositional(const Param& p, const Value& v) {
     const bool ofMu = (v.t == VT::Hash && (v.hashKind.empty() || v.hashKind == "Map") &&
                        (v.ofType().empty() || v.ofType() == "Mu")) || v.t == VT::Pair;

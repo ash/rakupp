@@ -2207,8 +2207,41 @@ void Lexer::scanDeclaredSubNames(
     // unit itself and closes at end of source.
     struct Pending { std::string name; size_t at; };
     std::vector<std::vector<Pending>> open(1);
+    std::vector<std::string> heredocs;   // the terminators of heredocs opened on this line
     size_t pos = 0;
     while (pos < src.size()) {
+        // A heredoc's body is text too, from the line after its `:to/END/` to the
+        // line that is END: a test that carries a program as a heredoc read that
+        // program's `sub q(…)` as this file's, and its later `q[…]` was a call.
+        if (src[pos] == '\n' && !heredocs.empty()) {
+            pos++;
+            for (const std::string& t : heredocs)
+                while (pos < src.size()) {
+                    size_t e = src.find('\n', pos);
+                    if (e == std::string::npos) e = src.size();
+                    size_t a = src.find_first_not_of(" \t", pos);
+                    const bool last = a < e && src.compare(a, t.size(), t) == 0 &&
+                                      src.find_first_not_of(" \t\r", a + t.size()) >= e;
+                    pos = e < src.size() ? e + 1 : e;
+                    if (last) break;
+                }
+            heredocs.clear();
+            continue;
+        }
+        if (src[pos] == ':' && (src.compare(pos, 3, ":to") == 0 || src.compare(pos, 8, ":heredoc") == 0) &&
+            pos > 0 && rakuIdentCont(src[pos - 1])) {   // (`q:to`, `qq:to`, `Q:heredoc`)
+            size_t d = pos + (src[pos + 1] == 't' ? 3 : 8);
+            const char o = d < src.size() ? src[d] : 0;
+            const char c = o == '<' ? '>' : o == '[' ? ']' : o == '{' ? '}' : o;
+            if (o == '/' || o == '<' || o == '[' || o == '{' || o == '\'' || o == '"') {
+                const size_t e = src.find(c, d + 1);
+                if (e != std::string::npos && e > d + 1 && src.find('\n', d) > e) {
+                    heredocs.push_back(src.substr(d + 1, e - d - 1));
+                    pos = e + 1;
+                    continue;
+                }
+            }
+        }
         // Brace tracking rides along with the same skipping the scan already does
         // for comments and quoted text. It can still be fooled by a brace inside a
         // construct this textual pass does not understand (a regex, a heredoc); an

@@ -54,7 +54,8 @@ and two more: 983b9524, b07f37e2;
 and three more: 689728bf, 2867e40e, 9102ff01;
 and three more: f907b840, 8f55e40a, 9b0073c8;
 and five from reviewing the open pull requests #232-#234: c0aa3e0e, 6004f84a,
-f11a9f04, 88f81c1f, 655d13dd.*
+f11a9f04, 88f81c1f, 655d13dd;
+and three more: 63b92af7, f929935a, ae3321f2.*
 
 ---
 
@@ -547,6 +548,13 @@ f11a9f04, 88f81c1f, 655d13dd.*
   X::Role::Parametric::NoSuchCandidate, where `does W['C']` and
   `role R[$x]` beside `role R[$y]` were taken silently.
   `t/regression/role-group-candidate-by-value.raku`.
+- **An `@` parameter that is `is copy` refuses what its sigil refuses** (63b92af7):
+  `sub c(@a is copy) { }; c(1)` made a one-element Array of the 1.
+  `t/regression/copy-array-param-refuses-scalar.raku`.
+- **A compiled routine binds an `@` or `%` parameter as the interpreter
+  does** (ae3321f2), with or without -O: `sub u(@a)` given an Int held the Int,
+  an unpassed `@a?` held Any, and an `is copy` one shared the caller's
+  Array, its push reaching the caller. `t/regression/exe-sigil-param-binding.raku`.
 
 ### Fixed: crashes
 
@@ -818,6 +826,9 @@ f11a9f04, 88f81c1f, 655d13dd.*
   `t/regression/method-also-role-composition-2026-09-02.raku`, whose other
   non-Rakudo expectation, calling a proto through one of two aliases, it no
   longer asks (Rakudo answers "Ambiguous call" there, from Method::Also).
+- **A heredoc's body is no code** (f929935a): one carrying a program's `sub q($x)
+  { … }` made a later `q[…]` in the file a call, "Undefined routine 'q'".
+  `t/regression/heredoc-sub-text-not-declared.raku`.
 
 ### Platforms and packaging
 
@@ -879,6 +890,10 @@ f11a9f04, 88f81c1f, 655d13dd.*
   parameter's "or parameter @o"; under `--target=js` a sub-signature takes
   any number of positionals, and `set(set(1, 3))` has the inner Set's
   elements where Rakudo has the Set.
+- Found with 63b92af7 and ae3321f2, the same before them (each in
+  TODO-FOLLOW-UPS.md): a compiled routine's `&` parameter takes anything,
+  and an unpassed `:&c` is a Sub where the interpreter's is Callable; under
+  `--target=js` an `@` or `%` parameter takes anything.
 
 - Found with 5f6d78e4, the same before it (TODO-FOLLOW-UPS.md): four
   word-list spellings still read differently from Rakudo, `« :x\<a »`,

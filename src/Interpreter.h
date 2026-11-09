@@ -5404,6 +5404,9 @@ public:
     }
     Value defaultScheduler_; // the ONE $*SCHEDULER (copies share .hash(), so attr writes persist)
     [[noreturn]] void refuseNotPositional(const Param& p, const Value& v);   // bindParams' refusal (InterpreterBinding.cpp)
+    [[noreturn]] void refuseNotAssociative(const Param& p, const Value& v);  // …a `%` parameter's
+    bool notPositionalArg(const Value& v);     // what an `@` parameter refuses
+    bool notAssociativeArg(const Value& v);    // …and a `%` one
     std::string podRaku(const Value& v);   // a Pod block's `.raku`: its constructor (MethodCallEntry.cpp)
     [[noreturn]] void refuseNotCallable(const Param& p, const Value& v);     // …and its `&` and `Int %h` ones (the same)
     bool notCallableArg(const Value& v);
@@ -6449,6 +6452,9 @@ Value rtConstPositional(Interpreter& I, Value v);   // `constant @L = …`: a Po
 bool rtPackedStore(Interpreter& I, Value& base, const Value& key, const Value& v);
 Value rtElemStoreN(Interpreter& I, Value& base, const Value& key, Value v, char how);
 Value bufElemStep(Interpreter& I, Value& buf, Value key, const std::string& op, bool post);   // `$b[1]++`
+// A compiled routine's `@` or `%` parameter: what came (when it came) refused as
+// the interpreter's binder refuses it, or handed back
+Value rtSigilArg(Interpreter& I, const Value& v, const Param& p, bool passed);
 // …and whether an array is native (a routine compiled in module mode asks:
 // the name it was told is native may be another array's where it runs). A Buf
 // counts: its elements are packed words too, stored by rtElemStoreN.

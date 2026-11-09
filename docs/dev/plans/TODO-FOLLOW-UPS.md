@@ -834,26 +834,39 @@ moves to [TODO.md](TODO.md).
   reverse order, an `exit` inside an END sets the status, a die inside one
   is reported and leaves it. Gate in t/exe/test-status.raku.
 
-- [ ] **`--exe`: a natively compiled routine checks no sigil** (found
-  2026-10-27 while fixing issue #207, 3ddcd58b, which made the interpreter's
-  `%` parameter take an Associative only; base 170bb19a compiles the same):
+- [ ] **`--exe`: a natively compiled routine's `&` parameter takes
+  anything** (found 2026-10-27 while fixing issue #207, 3ddcd58b; an `@`
+  or `%` one refuses what its sigil refuses since ae3321f2):
 
   ```raku
-  sub u(@a) { @a.^name }; sub h(%h) { %h.^name }
-  my $x = 1; say (try u($x)) // $!.^name; say (try h($x)) // $!.^name   # interpreted: the binding failure twice, --exe: Int Int
-  sub p(%h) { %h.^name }; say (try p((a => 1, b => 2))) // $!.^name   # interpreted: the failure, --exe: List
-  sub d(:%h = (a => 1, b => 2)) { %h.^name }; say (try d()) // $!.^name   # the same
+  sub f(&c) { &c.^name }; my $x = 1; say (try f($x)) // $!.message   # --exe: Int, interpreted and Rakudo the binding failure
+  say f({ 1 });                                                       # --exe: Sub, interpreted and Rakudo Block
+  sub g(:&c) { &c.^name }; say g();                                   # --exe: Sub, interpreted and Rakudo Callable
   ```
 
-  bindAs (src/Codegen.cpp) makes an `@` or `%` parameter `unitemized(…)`
-  of whatever came, with or without `-O`, and t/exe/run.raku compares the
-  two binaries with each other, so both agree on it. A runtime check the
-  generated code calls (as rtBindTyped is for a typed parameter), with the
-  interpreter's rules (notPositionalArg, notAssociativeArg and the `&`
-  test in bindParams), or a refusal so the routine bundles. Done when
-  t/regression/issue-207-hash-param-takes-associative.raku and
-  at-param-binding-nonpositional.raku pass compiled, `-O` too, and the
-  t/exe gate is as green as before.
+  rtSigilArg (src/InterpreterBinding.cpp) asks an `@` or `%` parameter
+  what the interpreter's binder asks; an `&` one would ask notCallableArg
+  and refuseNotCallable the same way, on each of bindParams's paths in
+  src/Codegen.cpp (positional, named, default, optional, and -O's
+  direct-Value routines), an unpassed one holding the Callable type
+  object. That a compiled block's `.^name` is Sub is the compiled Code's
+  own, not the binding's.
+
+- [ ] **`--target=js`: a routine's `@` or `%` parameter checks no sigil**
+  (found 2026-11-09 with 63b92af7, whose test disagrees under t/js/run.raku; the
+  same before it):
+
+  ```raku
+  sub u(@a) { @a.^name }; my $x = 1; say (try u($x)) // $!.message   # JS Int, interpreted and Rakudo the binding failure
+  sub h(%h) { %h.^name }; say (try h($x)) // $!.message               # JS Int, the same
+  ```
+
+  The emitted binding (src/codegen/Js.cpp) takes what came. The runtime
+  would ask what the interpreter's notPositionalArg and notAssociativeArg
+  ask (src/InterpreterBinding.cpp) and throw their refusals' words, as
+  rtSigilArg does for `--exe` since ae3321f2. Done when
+  t/regression/copy-array-param-refuses-scalar.raku agrees under
+  t/js/run.raku.
 
 - [ ] **`--target=js`: `$_` in `with`/`given` and on the right of
   `andthen`/`orelse`/`notandthen` is a copy** (found 2026-10-20 while fixing
