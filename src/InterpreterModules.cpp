@@ -2921,7 +2921,7 @@ Value Interpreter::evalString(const std::string& srcIn, bool mainlinePH, bool* i
         // is X::Undeclared in Rakudo (roast integration/advent2010-day07.t).
         try { checkUndeclaredCalls(prog->stmts); }
         catch (RakuError& e) {
-            if (!(e.payload.t == VT::Type && e.payload.s == "X::Undeclared::Symbols")) throw;
+            if (e.payload.typeName() != "X::Undeclared::Symbols") throw;   // (a type object, or the report's instance)
             for (auto& u : findUndeclaredVars(*prog, src, libPaths_, /*scoped=*/true))
                 if (!isSpecialVar(u.name) && !(tctx().cur && tctx().cur->find(u.name)))
                     throwUndeclaredVar(u.name, &u.inScope);
