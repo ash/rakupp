@@ -4483,7 +4483,7 @@ std::shared_ptr<ClassInfo> Interpreter::pickRoleVariant(const std::shared_ptr<Cl
 }
 
 // …and by the ARGUMENTS when they are there to look at: the candidates whose
-// positional parameters accept them (type, where-clause), narrowest first —
+// positional parameters accept them (type, literal, where-clause), narrowest first —
 // `role R[Str $x]`, `role R[A $x]`, `role R[B $x]` (B is A), `role R[::T]`
 // pick 1, 3, 2, 4 for "hi", B, A, Pair.
 std::shared_ptr<ClassInfo> Interpreter::pickRoleVariantArgs(const std::shared_ptr<ClassInfo>& group,
@@ -4542,6 +4542,13 @@ std::shared_ptr<ClassInfo> Interpreter::pickRoleVariantValues(const std::shared_
         for (size_t i = 0; i < ps.size() && i < av.size(); i++) {
             const Param* p = ps[i];
             if (p->slurpy) break;
+            // `role W['A']` beside `role W['B']`: a literal takes only itself
+            if (p->litVal) {
+                bool ok = false;
+                try { ok = literalParamAccepts(*p, av[i]); } catch (RakuError&) {}
+                if (!ok) return false;
+                continue;
+            }
             if (p->typeCapture) {
                 std::string cn = !p->captureName.empty() ? p->captureName : p->type;
                 captured[cn] = av[i].t == VT::Type ? av[i] : Value::typeObj(av[i].typeName());
@@ -4582,12 +4589,35 @@ std::shared_ptr<ClassInfo> Interpreter::pickRoleVariantValues(const std::shared_
     if (ok.empty())
         throwTyped("X::Role::Parametric::NoSuchCandidate", {{"role", group->name}},
                    "No appropriate parametric role variant available for '" + group->name + "'");
+    // `T $b` after `::T $a`: typed by what the call binds, a check made at bind time
+    auto generic = [](const std::vector<const Param*>& ps, size_t i) {
+        if (ps[i]->typeFromCapture) return true;
+        for (size_t j = 0; j < i; j++)
+            if (ps[j]->typeCapture && !ps[i]->type.empty() &&
+                (!ps[j]->captureName.empty() ? ps[j]->captureName : ps[j]->type) == ps[i]->type) return true;
+        return false;
+    };
+    // a parameter's nominal type: an untyped one in a role's signature is Mu,
+    // as Rakudo has it (`R[Any $x]` is narrower than `R[$x]`), and a literal's is
+    // the literal's own (`'A'` is a Str)
+    auto nominal = [&](const std::vector<const Param*>& ps, size_t i) -> std::string {
+        const Param* p = ps[i];
+        if (p->typeCapture || generic(ps, i)) return "Mu";
+        if (!p->type.empty()) return p->type;
+        if (p->litVal) {
+            try {
+                Value lv = eval(p->litVal.get());
+                if (lv.isAllomorph()) lv = methodCall(lv, "Numeric", {});
+                return lv.typeName();
+            } catch (RakuError&) {}
+        }
+        return "Mu";
+    };
     // narrowest: a candidate none of whose parameters is wider than the other's
     auto narrowerEq = [&](ClassInfo* a, ClassInfo* b) {
         auto pa = positionals(a), pb = positionals(b);
         for (size_t i = 0; i < pa.size() && i < pb.size(); i++) {
-            std::string ta = pa[i]->typeCapture ? "Mu" : pa[i]->type.empty() ? "Any" : pa[i]->type;
-            std::string tb = pb[i]->typeCapture ? "Mu" : pb[i]->type.empty() ? "Any" : pb[i]->type;
+            std::string ta = nominal(pa, i), tb = nominal(pb, i);
             if (ta == tb) continue;
             if (tb == "Mu" || (tb == "Any" && ta != "Mu")) continue;
             if (ta == "Mu" || ta == "Any") return false;
@@ -4597,13 +4627,39 @@ std::shared_ptr<ClassInfo> Interpreter::pickRoleVariantValues(const std::shared_
         }
         return true;
     };
+    std::vector<size_t> tier;
     for (size_t i = 0; i < ok.size(); i++) {
         bool best = true;
         for (size_t j = 0; j < ok.size() && best; j++)
             if (i != j && !narrowerEq(ok[i], ok[j]) && narrowerEq(ok[j], ok[i])) best = false;
-        if (best) return okp[i];
+        if (best) tier.push_back(i);
     }
-    return okp.front();
+    if (tier.empty()) return okp.front();
+    // …and among the narrowest, as Rakudo's multi-dispatch over the group's
+    // signatures: a candidate whose literal, `where` or captured type accepted
+    // the arguments first, in declaration order (`R[Int $x where * > 0]` beside
+    // `R[Int $x]` takes 5, `R[::T $a, T $b]` beside `R[$a, $b]` takes Array,
+    // Array); then one taking exactly that many positionals (`R[$a]` beside
+    // `R[$a, $b?]` or `R[*@a]`); two still tied are ambiguous, and Rakudo
+    // refuses them: `role R[$x]` beside `role R[$y]` has no candidate for R[5].
+    auto constrained = [&](ClassInfo* v) {
+        auto ps = positionals(v);
+        for (size_t i = 0; i < ps.size() && i < av.size(); i++)
+            if (!ps[i]->slurpy && (ps[i]->litVal || ps[i]->whereExpr || generic(ps, i))) return true;
+        return false;
+    };
+    for (size_t i : tier) if (constrained(ok[i])) return okp[i];
+    std::vector<size_t> exact;
+    for (size_t i : tier) {
+        auto ps = positionals(ok[i]);
+        bool slurpy = false; for (auto* p : ps) if (p->slurpy) slurpy = true;
+        if (!slurpy && ps.size() == av.size()) exact.push_back(i);
+    }
+    const std::vector<size_t>& left = exact.empty() ? tier : exact;
+    if (left.size() > 1)
+        throwTyped("X::Role::Parametric::NoSuchCandidate", {{"role", group->name}},
+                   "No appropriate parametric role variant available for '" + group->name + "'");
+    return okp[left.front()];
 }
 
 Value Interpreter::makeRolePun(ClassInfo* role, const std::string& roleName, ValueList& argv) {
