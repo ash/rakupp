@@ -42,7 +42,8 @@ and nine more: 586a7f14, 1c32f010, a5cb94fa, 3f7f2856, d9fb551b, 0579b6c2, 2108a
 de67ca59, c77965fc;
 and seven more: 868dbe53, 564eec50, a776b42a, 649cb2b1, 73940d6e, ba6f7edf, 4c47943e;
 and seven more: fd4495e3, a343a825, 3341d028, e56816cc, 0d6168fb, cd1e7aa9, 07e940ce;
-and five more: add45aeb, 43dbcefb, 57dad570, e8a8ba53, 024a0905.*
+and five more: add45aeb, 43dbcefb, 57dad570, e8a8ba53, 024a0905;
+and three more: e205f9ae, f371f8b2, e4ec869c.*
 
 ---
 
@@ -481,6 +482,9 @@ and five more: add45aeb, 43dbcefb, 57dad570, e8a8ba53, 024a0905.*
 - **A Date or DateTime field that is no number is refused** (e8a8ba53):
   `Date.new(2015, "x", 1)` was month 0, an hour "x" midnight, and a Str
   timezone beside a timestamp a number. `t/regression/temporal-str-field-refused.raku`.
+- **An `exit` on a worker thread runs the END phasers** (e205f9ae), and so does an
+  unhandled error in cued code; `start { exit 3 }` ended the process with
+  none run. `t/regression/worker-exit-runs-end.raku`.
 
 ### Fixed: crashes
 
@@ -682,6 +686,12 @@ and five more: add45aeb, 43dbcefb, 57dad570, e8a8ba53, 024a0905.*
 - **An undeclared variable in a declaration's initializer is refused at
   compile time** (024a0905): `my $y = "a $x b"` ran what came before it.
   `t/regression/undeclared-in-declaration-initializer.raku`.
+- **`.AST.DEPARSE` writes `{ }`, `-> { }` and `sub { }` as Rakudo does** (f371f8b2):
+  an empty body was "{\n}", and a pointy block with no parameters a plain
+  one. `t/regression/rakuast-empty-and-pointy-blocks.raku`.
+- **`.AST.DEPARSE` keeps `is export`, `is DEPRECATED`, `is default` and
+  `handles`** (e4ec869c), each dropped before.
+  `t/regression/rakuast-declaration-traits.raku`.
 
 ### Platforms and packaging
 
@@ -761,8 +771,8 @@ and five more: add45aeb, 43dbcefb, 57dad570, e8a8ba53, 024a0905.*
   TODO-FOLLOW-UPS.md): an unknown parent is refused when its declaration
   runs, where Rakudo refuses it at compile time; a declarator block's
   `.raku` is its text, a trailing `#=` after a routine's `}` is lost, and
-  `for $=pod` makes one pass; and an `exit` on a worker thread runs no END
-  phaser. (A sunk `start` that dies, and a tapper that dies on an
+  `for $=pod` makes one pass. (An `exit` on a worker thread is fixed by
+  e205f9ae; a sunk `start` that dies, and a tapper that dies on an
   interval's or a Channel's value, are fixed by bc6faf15 and ea460d2a,
   above.)
 - Found with 592afa33 to ea460d2a, the same before them: none left open.
@@ -798,3 +808,7 @@ and five more: add45aeb, 43dbcefb, 57dad570, e8a8ba53, 024a0905.*
   TODO-FOLLOW-UPS.md): an undeclared variable's suggestions leave out the
   routines Rakudo offers (`$nope` gets '&none' and '&note' there); and a
   role a role does lists its multi candidate twice in `.candidates`.
+- Found with e205f9ae to e4ec869c, the same before them (in TODO-FOLLOW-UPS.md):
+  `.AST.DEPARSE` writes a one-statement block over three lines and leaves
+  out the `;` after a statement that ends in a block, where Rakudo writes
+  `say -> { 1 };` (the program is the same).
