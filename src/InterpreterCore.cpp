@@ -184,7 +184,7 @@ bool topicChanged(const Value& now, const Value& orig) {
 // it? Only spares an untyped variable the asking; scalarAliasOf decides.
 static bool varMayBeTyped(const Env* own, const std::string& nm) {
     return own && own->ex && (own->ex->varDefault.count(nm) || own->ex->varSmiley.count(nm) ||
-                              own->ex->varCoerce.count(nm));
+                              own->ex->varCoerce.count(nm) || own->ex->varWhere.count(nm));
 }
 
 static inline bool sameBoundValue(const Value& now, const Value& was);   // (below)

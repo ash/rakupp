@@ -4814,6 +4814,7 @@ public:
     bool userTypeRefuses(const Value& rhs, const std::string& want);
     bool lexicalAliasAccepts(Env* scope, const std::string& ty, const Value& v);
     void varWhereCheck(const std::string& nm, const Value& rhs);
+    void varWhereCheckIn(const std::shared_ptr<Env>& owner, const struct Expr* where, const std::string& nm, const Value& rhs);   // …in the scope that declared it
     void varSmileyCheck(const std::string& nm, const Value& rhs);   // `my Int:D $x` / `:U`
     [[noreturn]] void smileyRefused(const std::string& nm, const Value& rhs, std::string want, char sm);
     // --exe: a compiled store's checks (Codegen::scalarStore): a `:D`/`:U`, and
