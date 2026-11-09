@@ -2020,6 +2020,7 @@ Value* Interpreter::topicAliasSlot(Expr* topic, bool skip, bool allowObject) {
     }
     else return nullptr;
     Value* s = nullptr;
+    tctx().lastLvalueElemArr = nullptr;   // (the caller's ElemHome takes what this names)
     try { s = lvalue(topic); } catch (...) { return nullptr; }
     // a name bound to a VALUE — a readonly parameter, `my $x := 42` — has no
     // container: `with $p { $_ = 5 }` wrote into the parameter (an `is rw`
