@@ -7121,6 +7121,8 @@ void Interpreter::endOnUnhandled(const RakuError& e) {
     std::cout.flush();
     std::cerr << "Unhandled exception in code scheduled on thread " << tid << "\n"
               << renderError(e, btStyleForStderr()) << std::flush;
+    endsOnWorkerExit();   // (Rakudo's `exit(1)` runs the END phasers)
+    std::cout.flush(); std::cerr.flush();
     std::_Exit(1);
 }
 

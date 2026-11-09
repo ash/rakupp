@@ -153,30 +153,26 @@ moves to [TODO.md](TODO.md).
   unless it shadows a built-in a module calls (`say`, `dd`). Done when the
   program's lexicals live in a scope of their own, under global_, and the
   holes go.
-- [ ] **`.AST` still drops `is export`, the attribute traits it has no flag
-  for, and a `use`'s import list** (found 2026-10-31 making the view keep the
-  rest, acf27e4b; on 23e143f2 too). Each renders valid Raku that means
-  something else, so `.AST.EVAL` runs it silently:
+- [ ] **`.AST` still drops a `use`'s import list, and a few spellings** (found
+  2026-10-31 making the view keep the rest, acf27e4b; `is export`, `is
+  DEPRECATED`, an attribute's `is default` and `handles` are kept since e4ec869c):
 
   ```raku
-  print Q[class G is export { has $.a }].AST.DEPARSE;     # class G {
-  print Q[sub f is export { 1 }].AST.DEPARSE;             # sub f {
-  print Q[class H { has $.x is default(3) }].AST.DEPARSE; # has $.x
-  print Q[class K { has @.l handles <elems> }].AST.DEPARSE; # has @.l
   print Q[use Test <foo>; 1].AST.DEPARSE;                 # use Test;
   print Q[use Test :DEFAULT; 1].AST.DEPARSE;              # use Test;
+  print Q[say -> { 1 }; my $b = 1].AST.DEPARSE;           # the block over three lines and no `;`, Rakudo `say -> { 1 };`
   ```
 
-  Rakudo 2026.09 writes each as given. `is export` is a flag plus tags on
-  every declaration kind (ClassDecl, SubDecl, EnumDecl, SubsetDecl), and
-  the view has a Trait::Is builder now (`traitIs` in src/RakuAstView.cpp);
-  `is default`, `handles`, `is DEPRECATED` and user traits sit on AttrDecl
-  and ClassDecl in their own fields. The import list cannot be rendered from
-  what the parse keeps: `<foo>` and `:foo` both land in
+  Rakudo 2026.09 writes each as given. The import list cannot be rendered
+  from what the parse keeps: `<foo>` and `:foo` both land in
   `UseStmt::importArgs` as the word `foo`, and `:!foo` and `:foo<v>` not at
   all, so it needs the spelling recorded (an Ast.h field and a
-  kAstSerialVersion bump). Done when each line matches Rakudo 2026.09, and
-  t/regression/rakuast-view-declarations.raku carries them.
+  kAstSerialVersion bump). An attribute's traits come in a fixed order, as
+  its flags, where Rakudo keeps the source's; a renaming `handles(:a<b>)`
+  and a user trait on an attribute are not kept. The block on one line
+  and the `;` after a statement ending in one are Rakudo's style only (the
+  program is the same).
+
 - [ ] **An unknown parent is refused when the declaration runs; Rakudo
   refuses it at compile time** (found 2026-11-08 making a subset's unknown
   trait an unknown parent, f59ff84c):
@@ -693,19 +689,6 @@ moves to [TODO.md](TODO.md).
   and how `SessionStore::Session` is declared; or DBIish installed here to
   try `:memory:` under Cro. Done when each runs as under Rakudo, or turns
   out not to be rakupp's.
-
-- [ ] **An `exit` on a worker thread runs no END phaser; Rakudo runs them**
-  (found 2026-11-08 making a cued die end the process):
-
-  ```raku
-  END note "END ran"; start { exit 3 }; sleep 0.5;   # status 3 in both, Rakudo also "END ran"
-  ```
-
-  B["exit"] (src/BuiltinsRegister.cpp) calls `_exit` off the main thread,
-  and so does endOnUnhandled (src/Interpreter.cpp: an unhandled cued die, a
-  sunk `start`'s, a tapper's on an interval or a Channel), where Rakudo's
-  `exit(1)` runs the END phasers. The main thread is still running the
-  program then.
 
 ## Backends
 
