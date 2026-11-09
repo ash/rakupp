@@ -51,7 +51,8 @@ and two more: c1c8743d, 628ad9cb;
 and two more: 49808203, 25975633;
 and 0d87a53e (#235) and 5a0e9868;
 and two more: 983b9524, b07f37e2;
-and three more: 689728bf, 2867e40e, 9102ff01.*
+and three more: 689728bf, 2867e40e, 9102ff01;
+and three more: f907b840, 8f55e40a, 9b0073c8.*
 
 ---
 
@@ -526,6 +527,13 @@ and three more: 689728bf, 2867e40e, 9102ff01.*
 - **`.flat` keeps an itemized Hash whole** (689728bf): `my $h = %(b => 2); ($h,
   1).flat` was (:b(2), 1), where Rakudo keeps `${:b(2)}`; a Hash a list holds
   bare still spreads. `t/regression/flat-keeps-itemized-hash.raku`.
+- **The JavaScript runtime's Set iterates as its Pairs** (8f55e40a), as a Bag does:
+  `set(3).map({ .key })` was (Any,), and `for set(3)` saw 3. Its `.flat`
+  takes `:hammer`. `t/regression/set-iterates-pairs.raku`.
+- **A compiled program steps a Buf's byte as the interpreter does** (9b0073c8)
+  when the subscript counts from the end or the Buf is an element:
+  `$b[*-1]--` died "Index out of range", and `@a[0][0]++` made the Buf an
+  Array. `t/regression/exe-buf-element-step.raku`.
 
 ### Fixed: crashes
 
@@ -761,6 +769,10 @@ and three more: 689728bf, 2867e40e, 9102ff01.*
 - **The JavaScript runtime has `flatmap`** (2867e40e), `map` then `.flat` and as
   lazy as the map, where it died "No such method 'flatmap'"; its `.flat`
   spreads a Hash a list holds bare. `t/regression/flatmap-spreads-lazily.raku`.
+- **A sub-signature's arity refusal is Rakudo's** (f907b840): "Too many positionals
+  passed to 'f'; expected 2 arguments but got 3 in sub-signature", "or
+  parameter @x", "1 or 2 arguments", and the phrase again for each nesting
+  level. `t/regression/sub-signature-arity-message.raku`.
 
 ### Platforms and packaging
 
@@ -808,9 +820,14 @@ and three more: 689728bf, 2867e40e, 9102ff01.*
   `--target=js`'s `flatmap` are fixed by 9102ff01 and 2867e40e, above.)
 - Found with 689728bf to 9102ff01, the same before them (each in
   TODO-FOLLOW-UPS.md): a JavaScript block's itemized result loses its
-  container, a JavaScript Set maps over its elements and its `.flat` takes
-  no `:hammer`; a sub-signature's arity refusal leaves out the routine's
-  name, and `sub q(($a, $b)) { }; q(5)` lives where Rakudo refuses it.
+  container, and `sub q(($a, $b)) { }; q("xy")` lives where Rakudo refuses
+  to Capture the Str. (A JavaScript Set's iteration and `.flat(:hammer)`,
+  and a sub-signature's arity wording, are fixed by 8f55e40a and f907b840, above.)
+- Found with f907b840 to 9b0073c8, the same before them (each in
+  TODO-FOLLOW-UPS.md): a nested sub-signature's refusal leaves out an outer
+  parameter's "or parameter @o"; under `--target=js` a sub-signature takes
+  any number of positionals, and `set(set(1, 3))` has the inner Set's
+  elements where Rakudo has the Set.
 
 - Found with 5f6d78e4, the same before it (TODO-FOLLOW-UPS.md): four
   word-list spellings still read differently from Rakudo, `« :x\<a »`,
@@ -835,11 +852,11 @@ and three more: 689728bf, 2867e40e, 9102ff01.*
   fixed by 1c681ec5 and a797a3c6, and the FALLBACK's methods by 34e48087,
   above.)
 - Found with c73d0b8d to db0fdbca, each the same before it and each in
-  TODO-FOLLOW-UPS.md: compiled, `$b[*-1]--` and `@a[0][0]++` on a Buf
-  differ, and a multi dispatch no candidate takes says "No matching
-  multi-method candidate". (Five more found there are fixed by b9c337a0 to
-  84afd3c1, and a Blob for a `Buf` parameter and `<$r>` of a rule by 79b70d34
-  and 853b606b, above.)
+  TODO-FOLLOW-UPS.md: compiled, a multi dispatch no candidate takes says
+  "No matching multi-method candidate". (Five more found there are fixed by
+  b9c337a0 to 84afd3c1, a Blob for a `Buf` parameter and `<$r>` of a rule
+  by 79b70d34 and 853b606b, and `$b[*-1]--` and `@a[0][0]++` on a Buf by
+  9b0073c8, above.)
 - Found with b9c337a0 to 84afd3c1, the same before them (each in
   TODO-FOLLOW-UPS.md): a WhateverCode gists as `WhateverCode.new` where
   Rakudo shows its source. (A multi-role conflict's message is fixed by

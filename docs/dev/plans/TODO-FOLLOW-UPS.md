@@ -218,24 +218,26 @@ moves to [TODO.md](TODO.md).
   answer as Rakudo does, the refusal is gone, and the Roast list is
   v5.5.0's.
 
-- [ ] **A sub-signature's arity refusal leaves out the routine** (found
-  2026-11-09 making `--exe` bundle a sub-signature, 9102ff01; the same before it):
+- [ ] **A sub-signature binds a value that cannot Capture, and a nested
+  one's refusal leaves out the outer parameter** (found 2026-11-09 making
+  `--exe` bundle a sub-signature, 9102ff01; its refusal is Rakudo's words
+  since f907b840):
 
   ```raku
-  sub f(($a, $b)) { }; f((1, 2, 3));
-  # Too many positionals passed; expected 2 arguments but got 3 in sub-signature
-  # Rakudo: Too many positionals passed to 'f'; expected 2 arguments but got 3 in sub-signature
-  sub g(@x ($a, $b)) { }; g((1, 2, 3));   # "… of parameter @x", Rakudo "… or parameter @x"
-  sub k(($a, $b?)) { }; k(());            # "expected 1 argument", Rakudo "expected 1 or 2 arguments"
-  sub q(($a, $b)) { }; q(5);              # lives, Rakudo X::Cannot::Capture
+  sub q(($a, $b)) { }; q("xy");            # lives, Rakudo X::Cannot::Capture
+  (1, 2).map(-> ($a, $b) { }).eager;       # lives, Rakudo "Cannot unpack or Capture `1`."
+  sub z(@o ($a, @i ($b, $c))) { }; z((1, (2,)));
+  # "… in sub-signature or parameter @i in sub-signature",
+  # Rakudo "… in sub-signature or parameter @i in sub-signature or parameter @o"
   ```
 
-  Rakudo words it as its arity_fail words any routine's (BOOTSTRAP.nqp),
-  then " in sub-signature" and " or parameter $name", a pointy block being
-  '<anon>'. bindParams (src/InterpreterCore.cpp: the `destructure` lambda,
-  and the slurpy's check before it) does not know the routine it binds
-  for, and the refusal comes before that routine's frame is in the
-  backtrace, where Rakudo's says "in sub f".
+  bindParams's `destructure` (src/InterpreterCore.cpp) binds a value that
+  is no list as a list of itself, where Rakudo asks its `.Capture`: a Str,
+  an Int or a Bool has none (X::Cannot::Capture), a Num is an empty
+  Capture (the arity refusal), and an object's is its public attributes as
+  nameds. refuseSubSigArity knows only the innermost holder's name, and
+  how deep it is (subSigBind); each level would add its own as the
+  refusal goes out, as Rakudo's binder does.
 
 - [ ] **A `for` loop's `-> @a` binds what its sigil refuses** (found
   2026-10-27 while fixing issue #207, 3ddcd58b, which made a `%` parameter take
@@ -705,23 +707,27 @@ moves to [TODO.md](TODO.md).
   interpreter's binder does and refusing what it refuses.
 
 - [ ] **`--target=js`: a block's itemized result loses its container, a Set
-  maps over its elements, and `.flat` takes no `:hammer`** (found
-  2026-11-09 giving the JavaScript runtime its `flatmap`, 2867e40e):
+  of a Set has its elements, and a sub-signature takes any number of
+  positionals** (found 2026-11-09 giving the JavaScript runtime its
+  `flatmap`, 2867e40e; a Set iterates as its Pairs, and `.flat` takes
+  `:hammer`, since 8f55e40a):
 
   ```raku
   say (1, 2).map({ $($_, $_) }).raku;   # ((1, 1), (2, 2)).Seq, Rakudo ($(1, 1), $(2, 2)).Seq
   my @a = (1, 2), (3, 4); say @a.map({ $_ }).flat.raku;   # (1, 2, 3, 4).Seq, Rakudo ($(1, 2), $(3, 4)).Seq
-  say set(3).map({ .key }).raku;        # (Any,).Seq, Rakudo (3,).Seq
-  my $h = %(b => 2); say ($h, 1).flat(:hammer).raku;      # (${:b(2)}, 1).Seq, Rakudo (:b(2), 1).Seq
+  say set(set(1, 3)).elems;             # 2, Rakudo 1: the Set is one element
+  sub f(($a, $b)) { }; f((1, 2, 3));    # lives, Rakudo "Too many positionals passed to 'f'; …"
   ```
 
-  The emitted block hands back its value without the container, so
-  mapList never sees the item; a Set's `map` reads `listItems()`, its
-  elements, where Rakudo iterates its Pairs; and the runtime's `flat`
-  takes no named argument. `flatmap` inherits all of it:
+  The JavaScript backend keeps no Scalar containers: the emitter itemizes
+  where it knows a value is in one, and a block's `return` does not ask,
+  so mapList never sees the item. mkSetty copies a Setty argument's
+  elements, and a Set as an element would need a value key (whichKey
+  keys an object by identity). The emitted sub-signature unpacks without
+  counting. `flatmap` inherits the first two:
   t/regression/flatmap-is-map-then-flat.raku disagrees under
-  t/js/run.raku on the first two. Done when the four lines are Rakudo
-  2026.09's.
+  t/js/run.raku on them, and t/regression/sub-signature-arity-message.raku
+  on the last. Done when the four lines are Rakudo 2026.09's.
 
 - [ ] **Python: `dir()` of a package that comes back as an Object lists
   Python's attributes** (found 2026-11-03 with 992c75cf; the same for any
@@ -863,19 +869,6 @@ moves to [TODO.md](TODO.md).
   tools/source-helpers/interpreter.plan is the plan that
   split Interpreter.cpp, and split.raku can cut along another one. Done
   when it is under its 34d064ca ceiling again.
-
-- [ ] **`--exe`: two Buf element steps** (found 2026-11-08 making
-  `$b[1]++` step a Buf's element, which compiled code already did):
-
-  ```raku
-  my $b = Buf.new(2, 0); $b[*-1]--; say $b.list;   # interpreted (2 255), --exe: Index out of range. Is: -1
-  my @a = Buf.new(5); @a[0][0]++; say @a[0].list;  # interpreted (6), --exe: [1]
-  ```
-
-  Codegen's nativeElemTarget takes an element step to nativeElemStep, which
-  hands a Buf to bufElemStep, only for a variable base and a plain index; a
-  `*-1` index or an Index base takes the general step through rtIndexRef,
-  which has no place for a Buf's byte (the second makes the Buf an Array).
 
 - [ ] **`--exe`: a multi dispatch no candidate takes says so in its own
   words** (found 2026-11-08 checking the X::Multi::NoMatch profile):
