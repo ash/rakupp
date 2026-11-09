@@ -271,6 +271,22 @@ std::string Interpreter::podRaku(const Value& v) {
     if (!(v.t == VT::Hash && v.hashKind == "Pod" && v.hash())) return methodCall(v, "raku", ValueList{}).toStr();
     const auto& h = *v.hash();
     auto pc = h.find("podclass");
+    // a declarator block's names its declarand and its two parts, the leading
+    // one a Str in an Array and the trailing one an Array in one; its text is
+    // in neither its `contents`
+    if (pc != h.end() && pc->second.s.str() == "Pod::Block::Declarator") {
+        auto part = [&](const char* k, bool nested) {
+            auto it = h.find(k);
+            if (it == h.end() || it->second.t != VT::Str) return std::string("[]");
+            const std::string s = methodCall(it->second, "raku", ValueList{}).toStr();
+            return nested ? "[[" + s + "],]" : "[" + s + "]";
+        };
+        auto w = h.find("WHEREFORE");
+        return "Pod::Block::Declarator.new(WHEREFORE => " +
+               methodCall(w == h.end() ? Value::any() : w->second, "raku", ValueList{}).toStr() +
+               ", leading => " + part("leading", false) + ", trailing => " + part("trailing", true) +
+               ", config => {}, contents => [])";
+    }
     std::string o = (pc != h.end() ? pc->second.s.copyText() : std::string("Pod::Block")) + ".new(";
     for (const char* k : {"name", "type", "meta", "level", "caption", "headers", "term", "config", "contents"}) {
         auto it = h.find(k);

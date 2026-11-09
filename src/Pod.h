@@ -20,4 +20,8 @@ ValueList parsePod(const std::string& src, bool strict = false);
 // name (except `pod`), comments empty, and sibling blocks separated by a
 // blank line.
 std::string pod2text(const Value& v);
+
+// A bracketed declarator doc's text (`#|{ … }`, `#=( … )`) as Rakudo's podify
+// folds it: each line trimmed, the blank ones dropped, the rest joined by a space.
+std::string foldDeclaratorDoc(const std::string& t);
 }

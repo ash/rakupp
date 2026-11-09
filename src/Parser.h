@@ -210,6 +210,32 @@ public:
         }
         return trailingPodFor(line);
     }
+    // A routine's or package's body has just closed (its `}` is the token
+    // before pos_): the `#=` docs after the brace are the declaration's too,
+    // as Rakudo's leave-block-body makes them — on the brace's line, then
+    // alone on the lines below it: a routine's up to the next code, blank
+    // lines and plain comments between, a package's the run just below —
+    // joined to its trailing doc by a space. On the declaration's own line
+    // trailingPodAt took them already; a body that encloses it closing, or
+    // another declaration starting, later on the brace's line takes them there.
+    void addBodyTrailingPod(std::string& pod, std::string& trail, int declLine, bool routine) const {
+        if (pos_ == 0 || toks_[pos_ - 1].kind != Tok::RBrace) return;
+        const int line = toks_[pos_ - 1].line;
+        if (line == declLine && !trail.empty()) return;
+        size_t j = pos_;
+        for (; j < toks_.size() && toks_[j].line == line && toks_[j].kind != Tok::End; j++)
+            if (toks_[j].kind == Tok::RBrace || isDeclWordAt(j)) return;
+        const bool last = j >= toks_.size() || toks_[j].kind == Tok::End;
+        std::string out = routine ? std::string() : trailingPodFor(line);
+        for (auto it = declPod_.lower_bound(line); routine && it != declPod_.end(); ++it) {
+            if (!last && it->first >= toks_[j].line) break;
+            if (claimedPodLines_.count(it->first)) continue;
+            out = out.empty() ? it->second : out + " " + it->second;
+        }
+        if (out.empty()) return;
+        pod = pod.empty() ? out : trail.empty() ? pod + "\n" + out : pod + " " + out;
+        trail = trail.empty() ? out : trail + " " + out;
+    }
     // A `#|` doc waits for the NEXT declaration, however far below: blank
     // lines, plain comments and code that declares nothing (`say 1;`,
     // `my $x = 1;`) leave it pending, and the first declaration or block
