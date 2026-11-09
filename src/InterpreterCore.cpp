@@ -13209,9 +13209,9 @@ static bool intOpAssignInPlace(Interpreter& I, Value* slot, const Value& rhs, si
     return true;
 }
 
-// The element an OP= into a typed container refused, as Rakudo names it:
-// `@a[0]`, `%h{'a'}`. An index that is not a literal or a variable would
-// have to run a second time, so that keeps the container's bare name.
+// The element a `//=`, `||=` or `&&=` into a typed container refused, as Rakudo
+// names it: `@a[0]`, `%h{'a'}` (another OP= names the container). An index that is
+// not a literal or a variable would run twice, so that keeps the bare name.
 static std::string opAssignElemName(Interpreter& I, Index* ix) {
     std::string base = containerNameOf(ix->base.get(), ix->isHash ? '%' : '@');
     if (!ix->index || ix->multiDim || base.empty() || (base[0] != '@' && base[0] != '%')) return base;
@@ -17536,7 +17536,7 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
             auto* ixt = static_cast<Index*>(a->target.get());
             try {
                 coerceElemValue(*this, opElemWant, *lv);
-                checkElemType(opElemWant, *lv, opAssignElemName(*this, ixt));
+                checkElemType(opElemWant, *lv, containerNameOf(ixt->base.get(), ixt->isHash ? '%' : '@'));
             } catch (...) { *lv = opElemPrev; throw; }
         }
         return sink ? Value::any() : slotRead(lv);
