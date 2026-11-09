@@ -55,7 +55,8 @@ and three more: 689728bf, 2867e40e, 9102ff01;
 and three more: f907b840, 8f55e40a, 9b0073c8;
 and five from reviewing the open pull requests #232-#234: c0aa3e0e, 6004f84a,
 f11a9f04, 88f81c1f, 655d13dd;
-and three more: 63b92af7, f929935a, ae3321f2.*
+and three more: 63b92af7, f929935a, ae3321f2;
+and the first from the review of src/ (docs/dev/findings/src-review-2026-11-09.md): d389b329.*
 
 ---
 
@@ -558,6 +559,15 @@ and three more: 63b92af7, f929935a, ae3321f2.*
 
 ### Fixed: crashes
 
+- **An array element written after code that grew the array is still the
+  element** (d389b329): `my @a = 1,2; @a[0] += do { @a.push($_) for ^100000; 5 }`
+  left @a[0] at 1, where Rakudo has 6, and the process died at exit — the store
+  went through a pointer into the block the pushes had freed. The same for
+  `||=` on a computed index, `(temp @a[0]) +=`, a `given` or `with` block that
+  assigns its topic (a segfault), and `temp`/`let` of an element with an
+  assignment (a segfault at the restore). Findings A1, A2 and C1 of the review;
+  20 shapes compared with Rakudo 2026.09, Roast 1,425 files and `t/run.raku`
+  2,150 checks pass. `t/regression/element-target-survives-array-growth.raku`.
 - **A sub-signature on a routine's or a pointy block's parameter no longer
   stops `--exe`** (9102ff01): `sub f(($a, $b))` and `.map(-> ($k, @n) { … })`
   were C++ that clang refused, and no binary was written; the program is
@@ -988,3 +998,6 @@ and three more: 63b92af7, f929935a, ae3321f2.*
   declarator block names its declarand only once `.WHY` is asked, and a doc
   after a multi-line body is an entry of its own there; a Sub's `.raku` is
   `&f`; a `#|{ … }` followed on its line by its declarand documents nothing.
+- Found with d389b329, the same before it: `for @a[0] { $_ = 42 }` does not
+  write the element (`@a[0]` stays as it was, where Rakudo has 42) — only a
+  `$`-variable source is aliased; no crash.
