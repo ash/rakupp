@@ -3184,6 +3184,8 @@ Value Interpreter::keptTypedStore(const Value& proxy, Value v) {
     // Nil — or the undefined hole a callee's `$x = Nil` leaves — resets it
     const bool reset = v.t == VT::Nil || v.t == VT::Any;
     if (reset) v = k[1];
+    // (a `where` variable's type is its subset's: what the type refuses is refused as that, `<anon>`)
+    else if (k[7].t == VT::Code && !type.empty() && rtIsDefined(v) && !typeOrSubsetMatches(v, type)) rtWhereRefused(v, std::string(nm).c_str());
     else if (k[6].b && rtIsDefined(v) && rtTypeMatch(v, type)) {}   // (the common store: it fits)
     else {
         if (!coerce.empty() && v.typeName() != coerce) v = coerceVarValue(v, std::string(coerce), k[5].s.copyText(), std::string(nm));

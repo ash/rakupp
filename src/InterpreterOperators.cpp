@@ -2891,6 +2891,14 @@ void Interpreter::varWhereCheck(const std::string& nm, const Value& rhs) {
             auto wi = en->xr().varWhere.find(nm);
             if (wi != en->xr().varWhere.end()) {
                 if (rhs.t == VT::Nil) return;   // Nil resets to the default
+                // …and a TYPED one is a subset of its type: what the type refuses is
+                // refused as that subset, `expected <anon>`, the clause never run on it
+                if (auto di = en->xr().varDefault.find(nm); di != en->xr().varDefault.end() && !en->xr().varDefaultUntyped.count(nm)) {
+                    auto dti = en->xr().varDefaultType.find(nm);   // (the declared type, where `is default` holds the reset value)
+                    const Value& dty = dti != en->xr().varDefaultType.end() ? dti->second : di->second;
+                    if (dty.t == VT::Type && dty.s != "Any" && dty.s != "Mu" && rtIsDefined(rhs) && !typeOrSubsetMatches(rhs, dty.s.copyText()))
+                        rtWhereRefused(rhs, nm.c_str());
+                }
                 std::shared_ptr<Env> owner = tctx().cur;
                 while (owner.get() != en) owner = owner->parent;
                 varWhereCheckIn(owner, wi->second, nm, rhs);
