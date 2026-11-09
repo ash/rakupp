@@ -218,6 +218,25 @@ moves to [TODO.md](TODO.md).
   answer as Rakudo does, the refusal is gone, and the Roast list is
   v5.5.0's.
 
+- [ ] **A sub-signature's arity refusal leaves out the routine** (found
+  2026-11-09 making `--exe` bundle a sub-signature, 9102ff01; the same before it):
+
+  ```raku
+  sub f(($a, $b)) { }; f((1, 2, 3));
+  # Too many positionals passed; expected 2 arguments but got 3 in sub-signature
+  # Rakudo: Too many positionals passed to 'f'; expected 2 arguments but got 3 in sub-signature
+  sub g(@x ($a, $b)) { }; g((1, 2, 3));   # "… of parameter @x", Rakudo "… or parameter @x"
+  sub k(($a, $b?)) { }; k(());            # "expected 1 argument", Rakudo "expected 1 or 2 arguments"
+  sub q(($a, $b)) { }; q(5);              # lives, Rakudo X::Cannot::Capture
+  ```
+
+  Rakudo words it as its arity_fail words any routine's (BOOTSTRAP.nqp),
+  then " in sub-signature" and " or parameter $name", a pointy block being
+  '<anon>'. bindParams (src/InterpreterCore.cpp: the `destructure` lambda,
+  and the slurpy's check before it) does not know the routine it binds
+  for, and the refusal comes before that routine's frame is in the
+  backtrace, where Rakudo's says "in sub f".
+
 - [ ] **A `for` loop's `-> @a` binds what its sigil refuses** (found
   2026-10-27 while fixing issue #207, 3ddcd58b, which made a `%` parameter take
   an Associative only; the rest of that item fixed 2026-11-08, 0ca4968e):
@@ -669,26 +688,40 @@ moves to [TODO.md](TODO.md).
 
 ## Backends
 
-- [ ] **`--exe` cannot compile a sub-signature in a pointy block or a sub**
-  (found 2026-11-09 fixing #235; the same before it):
+- [ ] **`--exe` bundles the interpreter for a sub-signature in a pointy
+  block or a sub** (found 2026-11-09 fixing #235; until 9102ff01 clang refused
+  the program, "use of undeclared identifier 'v_sa'"):
 
   ```raku
-  say ((1, <a b>), (2, <c d>)).map(-> ($k, @n) { "$k:@n[]" });  # error: use of undeclared identifier 'v_sk'
-  sub f(($a, $b)) { $a + $b }; say f((1, 2));                     # 'v_sa'
-  for (1, 2), (3, 4) -> ($a, $b) { say $a + $b }                 # compiles
+  say ((1, <a b>), (2, <c d>)).map(-> ($k, @n) { "$k:@n[]" });  # bundled
+  sub f(($a, $b)) { $a + $b }; say f((1, 2));                     # bundled
+  for (1, 2), (3, 4) -> ($a, $b) { say $a + $b }                 # native
   ```
 
-  The generated C++ names the sub-signature's variables without declaring
-  them, so clang fails and no binary is written. REBASELINE-PLAN.md has the
-  `sub k([$b, @c])` form as a lead; t/exe/run.raku counts such a program
-  as refused, so no gate fails on it. Done when both forms compile and
-  agree with the interpreter.
+  Codegen's bindParams binds such a parameter as an anonymous value and
+  refuses it, as it refuses a `where`, so the program is bundled with the
+  interpreter. REBASELINE-PLAN.md has the `sub k([$b, @c])` form as a
+  lead. Done when both forms compile natively, unpacking as the
+  interpreter's binder does and refusing what it refuses.
 
-- [ ] **`--target=js` has no `flatmap`** (found 2026-11-09 fixing #235):
-  `say (1, 2).flatmap({ ($_, $_) })` dies "No such method 'flatmap' for
-  invocant of type 'List'". src/js-rt/60-methods.js has `map` on a List, a
-  Hash, a Set and a Code, but no `flatmap`. It is `map` then `.flat`, as on
-  the interpreter since #235's fix.
+- [ ] **`--target=js`: a block's itemized result loses its container, a Set
+  maps over its elements, and `.flat` takes no `:hammer`** (found
+  2026-11-09 giving the JavaScript runtime its `flatmap`, 2867e40e):
+
+  ```raku
+  say (1, 2).map({ $($_, $_) }).raku;   # ((1, 1), (2, 2)).Seq, Rakudo ($(1, 1), $(2, 2)).Seq
+  my @a = (1, 2), (3, 4); say @a.map({ $_ }).flat.raku;   # (1, 2, 3, 4).Seq, Rakudo ($(1, 2), $(3, 4)).Seq
+  say set(3).map({ .key }).raku;        # (Any,).Seq, Rakudo (3,).Seq
+  my $h = %(b => 2); say ($h, 1).flat(:hammer).raku;      # (${:b(2)}, 1).Seq, Rakudo (:b(2), 1).Seq
+  ```
+
+  The emitted block hands back its value without the container, so
+  mapList never sees the item; a Set's `map` reads `listItems()`, its
+  elements, where Rakudo iterates its Pairs; and the runtime's `flat`
+  takes no named argument. `flatmap` inherits all of it:
+  t/regression/flatmap-is-map-then-flat.raku disagrees under
+  t/js/run.raku on the first two. Done when the four lines are Rakudo
+  2026.09's.
 
 - [ ] **Python: `dir()` of a package that comes back as an Object lists
   Python's attributes** (found 2026-11-03 with 992c75cf; the same for any

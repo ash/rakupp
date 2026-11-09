@@ -50,7 +50,8 @@ and three more: edc36182, 3d4a3a91, 57cc8291;
 and two more: c1c8743d, 628ad9cb;
 and two more: 49808203, 25975633;
 and 0d87a53e (#235) and 5a0e9868;
-and two more: 983b9524, b07f37e2.*
+and two more: 983b9524, b07f37e2;
+and three more: 689728bf, 2867e40e, 9102ff01.*
 
 ---
 
@@ -522,8 +523,16 @@ and two more: 983b9524, b07f37e2.*
 - **The JavaScript runtime's `substr` reads a start and a length as Rakudo
   does** (b07f37e2): `"abc".substr(-2)` answered "bc", and `"abcd".substr(1, *-1)`
   "bcd". `t/regression/substr-start-and-length.raku`.
+- **`.flat` keeps an itemized Hash whole** (689728bf): `my $h = %(b => 2); ($h,
+  1).flat` was (:b(2), 1), where Rakudo keeps `${:b(2)}`; a Hash a list holds
+  bare still spreads. `t/regression/flat-keeps-itemized-hash.raku`.
 
 ### Fixed: crashes
+
+- **A sub-signature on a routine's or a pointy block's parameter no longer
+  stops `--exe`** (9102ff01): `sub f(($a, $b))` and `.map(-> ($k, @n) { … })`
+  were C++ that clang refused, and no binary was written; the program is
+  bundled with the interpreter now. `t/regression/exe-sub-signature-param.raku`.
 
 ### Behaves like Rakudo
 
@@ -749,6 +758,9 @@ and two more: 983b9524, b07f37e2.*
 - **An EVAL's undeclared routines are reported in Rakudo's words** (25975633),
   "Undeclared routine:\n    prnt used at line 1. …", every name at once.
   `t/regression/eval-undeclared-routine-report.raku`.
+- **The JavaScript runtime has `flatmap`** (2867e40e), `map` then `.flat` and as
+  lazy as the map, where it died "No such method 'flatmap'"; its `.flat`
+  spreads a Hash a list holds bare. `t/regression/flatmap-spreads-lazily.raku`.
 
 ### Platforms and packaging
 
@@ -790,9 +802,15 @@ and two more: 983b9524, b07f37e2.*
 ### Left open
 
 - Found with 0d87a53e, the same before it (TODO-FOLLOW-UPS.md): `--exe`
-  cannot compile a sub-signature in a pointy block or a sub,
-  `.map(-> ($k, @n) { … })` or `sub f(($a, $b))`, and `--target=js` has no
-  `flatmap`.
+  compiles a sub-signature in a pointy block or a sub,
+  `.map(-> ($k, @n) { … })` or `sub f(($a, $b))`, by bundling the
+  interpreter. (Building it at all, where clang refused it, and
+  `--target=js`'s `flatmap` are fixed by 9102ff01 and 2867e40e, above.)
+- Found with 689728bf to 9102ff01, the same before them (each in
+  TODO-FOLLOW-UPS.md): a JavaScript block's itemized result loses its
+  container, a JavaScript Set maps over its elements and its `.flat` takes
+  no `:hammer`; a sub-signature's arity refusal leaves out the routine's
+  name, and `sub q(($a, $b)) { }; q(5)` lives where Rakudo refuses it.
 
 - Found with 5f6d78e4, the same before it (TODO-FOLLOW-UPS.md): four
   word-list spellings still read differently from Rakudo, `« :x\<a »`,

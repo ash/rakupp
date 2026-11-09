@@ -415,18 +415,20 @@ function newMap(src) { const h = newHash(src); h.ty = T.Map; return h; }
 // flat: recursive flattening of what is not itemized. An Array's slots are
 // scalar containers, so they are pushed as they are (`flat [[1,2],[3,4]]` is two
 // items, `flat ((1,2),(3,4))` four); a List's elements descend unless they are items.
+// What `.flat` makes of one value, read as it is asked for
+function* flatWalk(x, slot) {
+    if (slot) yield item(x);   // an Array slot is a container: its list or hash stays an item
+    else if (x !== null && typeof x === 'object' && x.item === true) yield x;
+    else if (x instanceof RList) { const isArr = x.ty === T.Array; for (const y of x.arr()) yield* flatWalk(y, isArr); }
+    else if (x instanceof RSeq || x instanceof RRange || x instanceof RSlip) for (const y of iter(x)) yield* flatWalk(y, false);
+    else if (x instanceof RHash) yield* iter(x);   // a Hash in a list spreads into its pairs
+    else yield x;
+}
 function flat(v) {
     if (v !== null && typeof v === 'object' && v.item === true) return mkSeq([v]);
+    if (v instanceof RList || v instanceof RSeq || v instanceof RRange || v instanceof RSlip) return mkSeq([...flatWalk(v, false)]);
     const out = [];
-    const walk = (x, slot) => {
-        if (slot) out.push(item(x));   // an Array slot is a container: its list or hash stays an item
-        else if (x !== null && typeof x === 'object' && x.item === true) out.push(x);
-        else if (x instanceof RList) { const isArr = x.ty === T.Array; for (const y of x.arr()) walk(y, isArr); }
-        else if (x instanceof RSeq || x instanceof RRange || x instanceof RSlip) for (const y of iter(x)) walk(y, false);
-        else out.push(x);
-    };
-    if (v instanceof RList || v instanceof RSeq || v instanceof RRange || v instanceof RSlip) walk(v, false);
-    else for (const x of iter(v)) walk(x, false);   // a Hash's pairs, an object's own iterator
+    for (const x of iter(v)) out.push(...flatWalk(x, false));   // a Hash's pairs, an object's own iterator
     return mkSeq(out);
 }
 function slip(v) { return new RSlip(itemsOf(decont(v)).slice()); }      // |$x slips the container's contents
@@ -525,6 +527,12 @@ function mapList(v, f) {
             if (buf.length) { const r = f(...buf); if (r instanceof RSlip) yield* r.a; else yield r; }
         }
     })(), lazy);
+}
+// `flatmap` is `map` then `.flat`, and as lazy as the map: an endless gather
+// a block answers is read only as far as the result is
+function flatmapList(v, f) {
+    const m = mapList(v, f);
+    return new RSeq((function* () { for (const r of iter(m)) yield* flatWalk(r, false); })(), m.lazy);
 }
 function grepList(v, f) {
     const src = iter(v);
