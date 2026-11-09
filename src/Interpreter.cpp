@@ -673,6 +673,29 @@ std::string asciiDecimalDigits(std::string_view s) {
     return t2;
 }
 
+// A Date or DateTime FIELD given as a Str is read as Rakudo's `.Int` reads it,
+// and one that is no number dies where Rakudo's dies, inside its native
+// unboxing, in those words (X::AdHoc): a date field (and a timezone beside
+// fields) "cannot unbox to a native integer", an hour or a minute fails
+// `get_boxed_ref`, and a timezone beside a timestamp, a POSIX time or `.now`
+// ("timezone!") takes no Str at all. Any other field is its `.Int`, as before.
+long long temporalField(const Value& v, const char* what) {
+    if (v.t != VT::Str || v.isAllomorph()) return v.toInt();
+    const std::string_view w(what);
+    if (w == "timezone!") throw RakuError{Value::typeObj("X::AdHoc"), "This type cannot unbox to a native integer: P6opaque, Str"};
+    const bool date = w == "year" || w == "month" || w == "day" || w == "timezone", time = w == "hour" || w == "minute";
+    if ((date || time) && !v.s.empty() && !isDefined(numifyStr(asciiDecimalDigits(v.s.str()))))
+        throw RakuError{Value::typeObj("X::AdHoc"), date ? "This type cannot unbox to a native integer: P6opaque, Failure"
+                                                         : "P6opaque: get_boxed_ref could not unbox for the representation 'P6bigint' of type Failure"};
+    return v.toInt();
+}
+// …and a SECOND given as a Str: one that is a number is kept as given (`"1.5"`,
+// as Rakudo keeps it), anything else out of range, as Rakudo's DateTime says it
+Value temporalSecond(const Value& v) {
+    if (v.t != VT::Str || v.isAllomorph() || isDefined(numifyStr(asciiDecimalDigits(v.s.str())))) return v;
+    throw RakuError{Value::typeObj("X::OutOfRange"), "Second out of range. Is: \"" + v.s.copyText() + "\", should be in ^61"};
+}
+
 Value numifyStr(std::string_view in) {
     size_t a = in.find_first_not_of(" \t\n\r\f\v");
     if (a == std::string::npos) return Value::integer(0); // empty/whitespace -> 0

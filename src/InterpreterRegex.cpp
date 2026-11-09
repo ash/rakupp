@@ -4527,12 +4527,22 @@ static bool topicWriteFree(const Expr* e) {
     bool shared = false, boundToValue = false;
     if (head && head->kind == NK::VarExpr && l.t != VT::Array && l.t != VT::Hash) {
         PRef<Value> cell;
-        if (static_cast<VarExpr*>(head)->name != "$_") cell = I.exprVarCell(head, &boundToValue);
+        const std::string& hn = static_cast<VarExpr*>(head)->name;
+        if (hn != "$_") cell = I.exprVarCell(head, &boundToValue);
         // …and down a chain, the topic before it: `$x orelse .=new andthen
         // .=new: 43` — only when that `$_` already IS a shared cell, since
         // promoting a loop's own `$_` slot would break its copy-back
-        else if (Value* raw = Interpreter::tctx().cur->findRaw("$_"); raw && raw->isCell()) cell = raw->cellS();
-        if (cell) { scope->define("$_", Value::cellHolder(cell)); shared = true; }
+        else if (Value* raw = Interpreter::tctx().cur->findRaw("$_"); raw && (raw->isCell() || I.keptTyped(*raw))) {
+            if (raw->isCell()) cell = raw->cellS();
+            else { scope->define("$_", *raw); shared = true; }   // (a typed variable's Proxy, handed on)
+        }
+        if (cell && hn != "$_") {   // (a TYPED variable's container comes with its type, as `with`'s does: scalarAliasOf)
+            Env* own = nullptr;
+            Value* traw = Interpreter::tctx().cur->findRaw(hn, &own);
+            scope->define("$_", traw && I.keptTyped(*traw) ? *traw : I.scalarAliasOf(own, hn, cell));
+            shared = true;
+        }
+        else if (cell) { scope->define("$_", Value::cellHolder(cell)); shared = true; }
     }
     // a LITERAL has none to give: `1 andthen $_ = 5` dies, as `with 1 { … }`
     // does, and so does a readonly parameter or `my $x := 42` (exprVarCell's boundToValue)
@@ -4575,7 +4585,7 @@ static bool topicWriteFree(const Expr* e) {
         // a BARE block's `$_` is the topic itself: `$x andthen { $_ = 9 }` assigns $x
         auto* be = static_cast<BlockExpr*>(rhs);
         if (shared && be->params.empty() && !be->isPointy && !be->isSub)
-            if (Value* raw = scope->localRaw("$_"); raw && raw->isCell()) arg = *raw;
+            if (Value* raw = scope->localRaw("$_"); raw && (raw->isCell() || I.keptTyped(*raw))) arg = *raw;
         return I.callCallable(r, ValueList{arg});
     }
     return r;

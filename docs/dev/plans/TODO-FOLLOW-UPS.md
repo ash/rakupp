@@ -198,17 +198,6 @@ moves to [TODO.md](TODO.md).
 
 ## Operators and types
 
-- [ ] **Role clashes Rakudo refuses that pass here** (found 2026-11-08 with
-  846ae003; on its parent too):
-
-  ```raku
-  role S { multi method m($a) { } }; role R does S { method m { } }; class E does R { }   # runs, Rakudo: Cannot have a multi candidate for 'm' …
-  role A[$t] { method m { } }; class E does A[1] does A[2] { }   # … roles (A[2], A[1]), Rakudo (A, A)
-  ```
-
-  refuseRoleClashes sees the methods each composed role holds; a role
-  composed by a role has merged its methods into that role's by then.
-
 - [ ] **A Range of objects** (found 2026-11-08 making a FALLBACK leave Any's
   methods to Any, 34e48087; Any's list methods and mutators on a plain
   object answer since 586a7f14 and a343a825):
@@ -221,23 +210,20 @@ moves to [TODO.md](TODO.md).
   A Range here holds numbers or strings; its ends would need to be any
   value, compared with `cmp`.
 
-- [ ] **A write through a `$_` that aliases a typed variable skips its type
-  check** (found 2026-10-20 while fixing issue #185; andthen now shares the
-  gap `with` already had):
+- [ ] **A write through a `$_` that aliases a `where` variable skips its
+  clause** (found 2026-10-20 while fixing issue #185; a type, a smiley, a
+  subset and a coercion are carried by `with`, `given`, `for` and, since
+  43dbcefb, `andthen`):
 
   ```raku
-  my Int $x = 1; with $x { $_ = "s" }; say $x     # s, Rakudo: Type check failed in assignment to $x
-  my Int $x = 1; $x andthen $_ = "s"; say $x      # s, same
+  my $x where * > 0 = 1; with $x { $_ = -1 }; say $x   # -1, Rakudo: Type check failed in assignment to $x; expected <anon>
   ```
 
-  Also `:D`, `where`, subsets, and `for $a { $_ = "s" }` over a typed
-  scalar. Assignment checks are keyed by the target NAME (varDefault /
-  varSmiley / varWhere, VarExpr declType, around evalAssignInner); the
-  `$_` bound to the variable's cell (`Value::cellHolder`, from
-  execGivenStmt and topicAliasedRhs in src/InterpreterRegex.cpp) has no
-  constraint of its own. Carry the constraint with the cell, or give the
-  aliasing scope's `$_` the source's entries. Plain `with $x { … }` loops
-  must not get measurably slower (instructions retired).
+  The `$_` is scalarAliasOf's Proxy, whose record (keptVarTags) has the
+  type, smiley, coercion and default, not the `where`, which runs in the
+  declaring scope (the same gap as an alias's `$w := $wh`, under "A typed
+  scalar's container handed out by an expression"). Plain `with $x { … }`
+  loops must not get measurably slower (instructions retired).
 
 - [ ] **Two types cannot share a short name** (found 2026-10-27 while making
   DateTime::Timezones install, 50aebf54; on v5.5.0 too). Types are known by
@@ -281,20 +267,11 @@ moves to [TODO.md](TODO.md).
   `with` send both since 0ca4968e. Done when the line answers as in Rakudo 2026.09
   and the loop benchmarks hold.
 
-- [ ] **Date and DateTime: a non-numeric field and a Str timezone** (found
-  2026-10-28 while fixing issue #208, 0f19ab0e; the rest of DT-08 and DT-19
-  answers as Rakudo's since de67ca59):
-
-  ```raku
-  try Date.new(2015, "x", 1); say $!.^name                    # X::Temporal::OutOfRange (month 0), Rakudo X::AdHoc
-  try DateTime.new("2012-12-22T07:02:00", :timezone("3600")); # accepted, Rakudo X::AdHoc
-  ```
-
-  Rakudo dies inside its own code there ("This type cannot unbox to a
-  native integer: P6opaque, Failure"), which is no wording to copy; a
-  refusal of its type would do. The JS runtime has a check of its own
-  (src/js-rt/40-objects.js, the `pos.length === 1` line, mirrored in
-  src/JsRuntimeSrc.cpp): by reading, its DateTime pattern is not anchored
+- [ ] **The JS runtime's DateTime string check** (found 2026-10-28 while
+  fixing issue #208, 0f19ab0e; the interpreter's non-numeric field and Str
+  timezone answer as Rakudo's since e8a8ba53): src/js-rt/40-objects.js has a
+  check of its own (the `pos.length === 1` line, mirrored in
+  src/JsRuntimeSrc.cpp). By reading, its DateTime pattern is not anchored
   at the end, so trailing text passes, and it wants a time, so
   `DateTime.new('2023-03-04')` is refused where Rakudo gives midnight.
   Unchecked: there is no node on the Mac this was found on. The
@@ -625,10 +602,14 @@ moves to [TODO.md](TODO.md).
   - `Kid.^find_method('foo').candidates` lists a role's multi candidate
     twice when Kid does the role and declares candidates of its own, and
     leaves out a parent class's (Rakudo: each once, the parent's first);
-    a role's candidate shows no invocant in `.signature.raku`;
-  - an undeclared variable inside a string (`my $y = "a $x b"`) is refused
-    when the statement runs, where Rakudo refuses it at compile time;
-  - `.polymod` answers a List, Rakudo a Seq (found 2026-11-09, fd4495e3);
+    a role's candidate shows no invocant in `.signature.raku`; and a
+    role a role does lists its candidate twice too, `role R4 does S4`
+    giving (Int, Str, Int) where Rakudo gives (Str, Int), each with its
+    `E4 $::` (mergeParentRoleMultis, src/InterpreterModules.cpp; found
+    again 2026-11-09);
+  - an undeclared variable's suggestions leave out the routines Rakudo
+    offers: `qq[$nope]` suggests '&none' and '&note' there, nothing here
+    (found 2026-11-09, 024a0905);
   - a Proxy bound to a variable answers `.VAR` as its value:
     `my $p := Proxy.new(…); $p.VAR.^name` is Int, Rakudo Proxy;
   - Cro::HTTP's t/http2-request-parser.rakutest fails now and then (3 runs
