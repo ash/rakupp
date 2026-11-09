@@ -9239,9 +9239,10 @@ struct Codegen {
         // Falling back costs the whole program its native compilation, which is
         // why emitting the check is the better answer and the follow-up; this is
         // the stop-the-bleeding half, and it is what the multi paths already do.
-        for (const Param& p : ps) {
+        for (const Param& p : ps) {   // (…and a sub-signature, whose names were never declared)
             if (p.whereExpr)      unsupported("a `where` constraint on a routine parameter");
             if (p.defConstraint)  unsupported("a `:D`/`:U` constraint on a routine parameter");
+            if (p.subSig)         unsupported("a sub-signature on a routine parameter");
         }
         size_t pi = hasSelf ? 1 : 0;
         int anon = 0;
