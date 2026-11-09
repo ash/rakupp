@@ -6314,6 +6314,7 @@ ExprPtr Parser::parseDeclarator(const std::string& scope) {
         std::string sig = advance().text;
         auto ve = std::make_unique<VarExpr>(sig + freshAnonSlot());
         ve->declare = true; ve->dm().declScope = scope; ve->dm().declType = type;
+        if (declSmiley && declSmiley != '_') ve->dm().declSmiley = declSmiley;   // `my Int:D % = …`, as a named one
         // anonymous object hash `my %{Str:D} is default(…)` — the braced key type
         if (sig == "%" && isKind(Tok::LBrace) && peek().kind == Tok::Ident) {
             advance();

@@ -16601,15 +16601,15 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
                 checkElemType(want, rhs, containerNameOf(mct->inv.get(), mct->method == "AT-KEY" ? '%' : '@'));
             }
         }
-        // `my Int:D @a … ; @a[0] = Int` — the element smiley (Nil is a reset,
-        // checked where the default lands)
-        if (opEq(a->op, "=") && a->target->kind == NK::Index && rhs.t != VT::Nil) {
+        // `my Int:D @a … ; @a[0] = Int` — the element smiley (Nil is a reset to its default)
+        if (opEq(a->op, "=") && a->target->kind == NK::Index) {
             auto* ixt = static_cast<Index*>(a->target.get());
             if (ixt->base && ixt->base->kind == NK::VarExpr) {
                 const std::string& cn = static_cast<VarExpr*>(ixt->base.get())->name;
                 if (elemSmileyOf(cn)) {
                     Value* cv = tctx().cur->find(cn);
-                    checkElemSmiley(cn, cv ? elemTypeOf(*cv) : std::string(), rhs);
+                    checkElemSmiley(cn, cv ? elemTypeOf(*cv) : std::string(),
+                                    rhs.t == VT::Nil && cv && cv->elemDefault() ? *cv->elemDefault() : rhs);
                 }
             }
         }

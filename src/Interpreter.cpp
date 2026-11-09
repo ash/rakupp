@@ -1409,7 +1409,16 @@ Value Interpreter::declInitial(const VarExpr* ve, char sigil) {
             return typedDefault(ve->d().declCoerce + "(" + (ve->d().declCoerceFrom.empty() ? "Any" : ve->d().declCoerceFrom) +
                                 ")" + (comma == std::string::npos ? std::string() : dt.substr(comma)), sigil);
     }
-    return typedDefault(ve ? ve->d().declType : std::string(), sigil);
+    Value out = typedDefault(ve ? ve->d().declType : std::string(), sigil);
+    // …and a smiley is the container's too: `my Int:D @a` is an Array[Int:D], as
+    // `Array[Int:D].new` is (its `.of`, `.raku` and `.^name` say so), whose default
+    // is the bare type, as the variable's is (`@a[5]` is `(Int)`)
+    if (ve && (sigil == '@' || sigil == '%') && (ve->d().declSmiley == 'D' || ve->d().declSmiley == 'U') &&
+        !out.ofType().empty() && out.ofType().find_first_of(",:") == std::string::npos) {
+        out.elemDefaultM() = std::make_shared<Value>(Value::typeObj(out.ofType()));
+        out.ofTypeM() = out.ofType() + ":" + ve->d().declSmiley;
+    }
+    return out;
 }
 
 void nativeAssignCheck(const Value& v, int bits, bool isFloat, const std::string& what, bool sign) {
