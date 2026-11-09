@@ -46,7 +46,8 @@ and five more: add45aeb, 43dbcefb, 57dad570, e8a8ba53, 024a0905;
 and three more: e205f9ae, f371f8b2, e4ec869c;
 and three more: 07dd7b4a, 793c6d61, d5186165;
 and one more: 5932b773;
-and three more: edc36182, 3d4a3a91, 57cc8291.*
+and three more: edc36182, 3d4a3a91, 57cc8291;
+and two more: c1c8743d, 628ad9cb.*
 
 ---
 
@@ -713,6 +714,12 @@ and three more: edc36182, 3d4a3a91, 57cc8291.*
 - **A typed `where` variable refuses what its type refuses as its subset**
   (edc36182), "expected <anon>": `my Int $x where * > 0; $x = "s"` died
   converting the Str. `t/regression/typed-where-variable-refusal.raku`.
+- **`q;…;`, `q,…,` and `q.….` are quotes** (c1c8743d), as Rakudo reads them, where
+  `say q;abc;` called a routine `q`; a sigilless term named q is still the
+  term. `t/regression/q-quote-semicolon-comma-dot.raku`.
+- **An undeclared variable's suggestions take in the routines in scope** (628ad9cb),
+  scored as Rakudo's: `$prnt` suggests `&print`, `$frob` beside `sub frob`
+  `&frob`. `t/regression/undeclared-variable-routine-suggestions.raku`.
 
 ### Platforms and packaging
 
@@ -826,9 +833,9 @@ and three more: edc36182, 3d4a3a91, 57cc8291.*
   element refusal names the variable it is bound to, where Rakudo names
   none ("in assignment to ;"). (`.polymod`'s List is fixed by add45aeb, above.)
 - Found with add45aeb to 024a0905, the same before them (each in
-  TODO-FOLLOW-UPS.md): an undeclared variable's suggestions leave out the
-  routines Rakudo offers (`$nope` gets '&none' and '&note' there); and a
-  role a role does lists its multi candidate twice in `.candidates`.
+  TODO-FOLLOW-UPS.md): a role a role does lists its multi candidate twice
+  in `.candidates`. (An undeclared variable's suggestions of routines are
+  fixed by 628ad9cb, above.)
 - Found with e205f9ae to e4ec869c, the same before them (in TODO-FOLLOW-UPS.md):
   `.AST.DEPARSE` writes a one-statement block over three lines and leaves
   out the `;` after a statement that ends in a block, where Rakudo writes
@@ -840,3 +847,6 @@ and three more: edc36182, 3d4a3a91, 57cc8291.*
   variable's `$x = Nil` resets it to Any, where Rakudo resets it to the
   anonymous subset. (`my Int $x where * > 0; $x = "s"`, which died
   converting the Str, is fixed by edc36182, above.)
+- Found with 628ad9cb, the same before it (in TODO-FOLLOW-UPS.md): an undeclared
+  routine (`say &nope`) is refused when the call runs, where Rakudo refuses
+  it at compile time with its suggestions.

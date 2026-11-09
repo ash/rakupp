@@ -117,22 +117,6 @@ moves to [TODO.md](TODO.md).
   (the cache in grammarParse's `fired` is keyed by the child map, which a
   replay shares). Done when the count matches Rakudo's without a JSON-grammar
   slowdown (tools/bench/grammar-json).
-- [ ] **`q;…;`, `q,…,` and `q.….` are not quotes** (found 2026-10-30, 594d4aac,
-  which made the rest of a bare `m`'s punctuation delimiters the q
-  family's):
-
-  ```raku
-  say q;abc;   # Undefined routine 'q', Rakudo abc
-  say q,abc,   # the same
-  say q.abc.   # a parse error, Rakudo abc
-  ```
-
-  Left out on purpose in bareRxDelim (src/Lexer.cpp): those three are what
-  follows a sigilless term named `q`, and the lexer knows only the terms it
-  has seen declared (`my \q`, `\q`, `|q`, `constant q`). dist-suite-quartet's
-  `-> \s, |q { $cap = q; callsame };` read as a quote to the `;` before
-  `|q` counted as one. Done when a declared term wins over the quote however
-  it was declared, and these three then follow Rakudo.
 - [ ] **A sub the main program imports is visible to a module that never
   imported it** (found 2026-10-31 hiding the program's operators from
   modules, 8a6c9d9a, which did that for operators only):
@@ -592,9 +576,10 @@ moves to [TODO.md](TODO.md).
     again 2026-11-09); and a multi method's refusal, which lists the
     candidates since 07dd7b4a, lists only the role's when the class has its
     own beside it (Rakudo lists both, the class's first);
-  - an undeclared variable's suggestions leave out the routines Rakudo
-    offers: `qq[$nope]` suggests '&none' and '&note' there, nothing here
-    (found 2026-11-09, 024a0905);
+  - an undeclared ROUTINE is refused when the call runs, "Undefined
+    routine 'nope'", where Rakudo refuses it at compile time with its
+    suggestions: `say &nope` is "Undeclared routine: nope used at line 1.
+    Did you mean 'note', 'none'?" there (found 2026-11-09, 628ad9cb);
   - a Proxy bound to a variable answers `.VAR` as its value:
     `my $p := Proxy.new(…); $p.VAR.^name` is Int, Rakudo Proxy;
   - Cro::HTTP's t/http2-request-parser.rakutest fails now and then (3 runs
