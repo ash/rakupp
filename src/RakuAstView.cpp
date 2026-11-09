@@ -463,7 +463,7 @@ struct Builder {
             }
             case NK::BlockExpr: {
                 auto* b = static_cast<BlockExpr*>(e);
-                return blockLike(b->isSub, b->params, b->body);
+                return blockLike(b->isSub, b->params, b->body, b->isPointy);
             }
             case NK::AllomorphLit: {
                 auto* a = static_cast<AllomorphLit*>(e);
@@ -564,10 +564,11 @@ struct Builder {
                      {"body", blockoid(body)}});
     }
 
-    // A block or a pointy block, with its signature when it has one.
-    Value blockLike(bool isSub, const std::vector<Param>& params, const std::vector<StmtPtr>& body) {
+    // A block or a pointy block, with its signature when it has one (and an
+    // arrow with none, `-> { }`, is a PointyBlock still).
+    Value blockLike(bool isSub, const std::vector<Param>& params, const std::vector<StmtPtr>& body, bool pointy = false) {
         Value bd = blockoid(body);
-        if (params.empty())
+        if (params.empty() && !(pointy && !isSub))
             return node(isSub ? "Sub" : "Block", {{"body", bd}});
         ValueList ps;
         for (auto& p : params) ps.push_back(parameter(p));
@@ -941,8 +942,9 @@ struct Builder {
                 // block anyway rendered `for 1, 2 -> { … }`, which takes no
                 // parameter at all, so the body saw the OUTER `$_`. It parses,
                 // so the round trip called it stable; it is a different program.
+                // (…while `for 1, 2 -> { … }`, written with its arrow, is that pointy block)
                 Value bd = f->body ? blockoid(f->body->stmts) : blockoid({});
-                Value body = ps.empty()
+                Value body = ps.empty() && !f->emptyPointy
                     ? node("Block", {{"body", bd}})
                     : node("PointyBlock",
                            {{"signature", node("Signature", {{"parameters", list(ps)}})},

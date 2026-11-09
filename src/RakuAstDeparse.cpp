@@ -325,10 +325,10 @@ struct Deparser {
     }
 
     std::string blockoid(const Value* body, int indent) {
-        if (!body || !isNode(*body)) return "{\n" + pad(indent) + "}";
+        if (!body || !isNode(*body)) return "{ }";
         const Value* sl = attr(*body, "statement-list");
         std::string inner = (sl && isNode(*sl)) ? statements(*sl, indent + 1) : std::string();
-        return "{\n" + inner + pad(indent) + "}";
+        return inner.empty() ? "{ }" : "{\n" + inner + pad(indent) + "}";   // (an empty one is `{ }`, as Rakudo writes it)
     }
 
     std::string render(const Value& node, int indent) {
@@ -758,7 +758,8 @@ struct Deparser {
             // a submethod is a Method upstream, so `BUILD` is a keyword in both
             if (c != "Sub" && isSystemMethodName(nm)) nm = xs("system", nm);
             std::string sig = opt(attr(node, "signature"), indent);
-            return kw + nm + (sig.empty() ? "" : "(" + sig + ")") + " " +
+            if (nm.empty() && sig.empty() && kw.back() == ' ') kw.pop_back();   // (an anonymous `sub { … }`; `sub ($x)` keeps it)
+            return kw + nm + (sig.empty() ? "" : "(" + sig + ")") + traits(node, indent) + " " +
                    blockoid(attr(node, "body"), indent);
         }
         if (c == "Statement::If" || c == "Statement::Elsif" || c == "Statement::Unless") {
