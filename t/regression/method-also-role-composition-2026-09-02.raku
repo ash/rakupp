@@ -5,7 +5,10 @@
 # group (its `is_dispatcher` guard), never a plain method. rakupp's role
 # composition dropped the alias entirely, so Method::Also #19's own t/01-basic
 # died 9/11 with `No such method 'bar-ber'`. Every expectation here is the
-# Rakudo 2026.08 answer. See ClassInfo::alsoRoleAliases.
+# Rakudo 2026.09 answer with Method::Also 0.0.10. See ClassInfo::alsoRoleAliases.
+# (A proto with two aliases is not CALLED through them: Rakudo answers "Ambiguous
+# call", as Method::Also adds the candidates once per alias, and rakupp does not
+# copy that; both are installed on both.)
 use Method::Also;
 
 my $fails = 0;
@@ -32,7 +35,8 @@ role Multi {
     multi method run (Int $n) { $n * 2 }
 }
 class M does Multi { }
-ok(M.go(5) == 10 && M.do-it(5) == 10, 'is also<a b> installs every alias');
+ok(M.^lookup('go').defined && M.^lookup('do-it').defined, 'is also<a b> installs every alias');
+ok(M.run(5) == 10, '…and the real name still dispatches');
 
 # --- a PLAIN method alias in a role is NOT composed (the is_dispatcher guard) -
 role Plain { method solo() is also<lonely> { 'x' } }
@@ -58,12 +62,14 @@ class Direct {
 ok(Direct.m-alias(1) eq 'int' && Direct.m-alias('x') eq 'str',
    'a class-declared proto alias is unaffected');
 
-# --- the consuming class's own same-name method wins over the alias ----------
+# --- a class's own method of the alias's name is a duplicate ------------------
 role Own {
     proto method z (|) is also<zed> { * }
     multi method z (Int) { 'role' }
 }
-class WithOwn does Own { method zed { 'mine' } }
-ok(WithOwn.zed eq 'mine', "the class's own method beats a composed alias");
+my $dup = (try EVAL q[class WithOwn does Own { method zed { 'mine' } }; 'composed']) // $!;
+ok($dup ~~ X::Method::Duplicate, "the class's own method clashes with a composed alias");
+ok($dup.message eq "Package 'WithOwn' already has a method 'zed' (did you mean to declare a multi method?)",
+   "…in Rakudo's words");
 
 say $fails ?? "FAIL ($fails)" !! "PASS";

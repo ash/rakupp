@@ -5405,6 +5405,44 @@ static void takeRoleMethodHandles(ClassInfo* ci, const ClassDecl* cd, const std:
                 ci->delegatedNames.insert(kv.first);
 }
 
+// Carry a composed role's `is also` dispatcher-aliases onto the type: the alias
+// is a second name for the multi group the role provides — found in the type's
+// merged methods, or in the role's own when it arrives as a parent (walked, not
+// copied). A CLASS installs the alias; a ROLE only remembers it, so `role B does
+// A` still delivers A's alias to the class that eventually does B. Only a role
+// that carried `is also` has anything here. (See ClassInfo::alsoRoleAliases;
+// Method::Also #19's role case.) A class that declares a method of the alias's
+// name is refused, as on Rakudo, where Method::Also's `specialize` adds the
+// alias to a class that has one already: the name is answered, and execDeclStmt
+// throws.
+static std::string carryAlsoRoleAliases(ClassInfo* ci, const ClassDecl* cd, const std::vector<ClassInfo*>& roles) {
+    for (ClassInfo* role : roles) {
+        for (auto& ra : role->alsoRoleAliases) {
+            // the group may be merged into us, or up the composed chain (roles
+            // that arrive as parents are walked, not copied) — a full lookup
+            // finds it either way, incl. `role B does A`.
+            Value group;
+            if (Value* g = ci->findMethod(ra.first)) group = *g;
+            if (!(group.t == VT::Code && group.code() && group.code()->ci().isMultiDispatcher)) {
+                auto rit = role->methods.find(ra.first);
+                if (rit != role->methods.end()) group = rit->second;
+            }
+            if (!(group.t == VT::Code && group.code() && group.code()->ci().isMultiDispatcher)) continue;
+            for (auto& alias : ra.second) {
+                if (cd->isRole) {
+                    auto& v = ci->alsoRoleAliases[ra.first];
+                    if (std::find(v.begin(), v.end(), alias) == v.end()) v.push_back(alias);
+                }
+                else if (std::any_of(cd->methods.begin(), cd->methods.end(), [&](const auto& md) {
+                             return md && !md->isPrivate && md->name == alias; }))
+                    return alias;
+                else if (!ci->methods.count(alias)) ci->methods[alias] = group;
+            }
+        }
+    }
+    return "";
+}
+
 // A role in the PARENT slot (`class C does R` with no `is`) is walked, not
 // copied — so a class's own `multi method m` group shadowed R's candidates for
 // `m` instead of joining them, and the narrower role candidate never competed.
@@ -7669,37 +7707,11 @@ static void refuseRoleClashes(Interpreter& I, const std::string& clsName, const 
             // a role used as a parent (`class C does R` where R lands as parent) also counts
             if (ci->parent && ci->parent->isRole) ci->doneRoles.insert(ci->parent->name);
             for (auto& p : ci->extraParents) if (p && p->isRole) ci->doneRoles.insert(p->name);
-            // Carry a composed role's `is also` dispatcher-aliases onto THIS type:
-            // the alias is a second name for the multi group the role provides —
-            // found in our merged methods, or in the role's own when it arrives as
-            // a parent (walked, not copied). A CLASS installs the alias (its own
-            // same-named method wins); a ROLE only remembers it, so `role B does A`
-            // still delivers A's alias to the class that eventually does B. Only a
-            // role that carried `is also` has anything here. (See
-            // ClassInfo::alsoRoleAliases; Method::Also #19's role case.)
-            for (ClassInfo* role : composedRoles) {
-                if (role->alsoRoleAliases.empty()) continue;
-                for (auto& ra : role->alsoRoleAliases) {
-                    // the group may be merged into us, or up the composed chain
-                    // (roles that arrive as parents are walked, not copied) — a
-                    // full lookup finds it either way, incl. `role B does A`.
-                    Value group;
-                    if (Value* g = ci->findMethod(ra.first)) group = *g;
-                    if (!(group.t == VT::Code && group.code() && group.code()->ci().isMultiDispatcher)) {
-                        auto rit = role->methods.find(ra.first);
-                        if (rit != role->methods.end()) group = rit->second;
-                    }
-                    if (!(group.t == VT::Code && group.code() &&
-                          group.code()->ci().isMultiDispatcher)) continue;
-                    for (auto& alias : ra.second) {
-                        if (cd->isRole) {
-                            auto& v = ci->alsoRoleAliases[ra.first];
-                            if (std::find(v.begin(), v.end(), alias) == v.end()) v.push_back(alias);
-                        }
-                        else if (!ci->methods.count(alias)) ci->methods[alias] = group;
-                    }
-                }
-            }
+            if (std::string clash = carryAlsoRoleAliases(ci.get(), cd, composedRoles); !clash.empty())
+                throwTypedV("X::Method::Duplicate", {{"method-type", Value::str("method")},
+                            {"method", Value::str(clash)}, {"typename", Value::str(clsName)}},
+                            "Package '" + clsName + "' already has a method '" + clash +
+                            "' (did you mean to declare a multi method?)");
             ci->isGrammar = cd->isGrammar;
             ci->isMonitor = cd->isMonitor;
             ci->classRw = cd->classRw;
