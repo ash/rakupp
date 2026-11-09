@@ -4762,6 +4762,7 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
                     // post-GLR: map keeps each block result as ONE element; only a
                     // Slip (or flatmap, which flattens one level by design) spreads.
                     if (m == "flatmap") {
+                        forceLazy(r);   // a block answering a `gather` spreads its ELEMENTS (#235)
                         if (r.t == VT::Array) for (auto& x : *r.arr()) out.arr()->push_back(x);
                         else if (r.t == VT::Range) for (auto& x : r.flatten()) out.arr()->push_back(x);
                         else out.arr()->push_back(r);
