@@ -2486,9 +2486,10 @@ std::string rakuReprImpl(const Value& v, int depth, std::set<const void*>& seen)
                 if (v.isList && v.arr()->size() == 1) o += ",";
                 // a 1-element ARRAY holding an iterable disambiguates with a
                 // trailing comma too: [1..5,] (else the raku form would flatten)
-                // — not an enum's type object, which is no list: [Color]
+                // — not an enum's type object, which is no list: [Color], nor a Junction
                 if (!v.isList && v.arr()->size() == 1 &&
-                    ((*v.arr())[0].t == VT::Range || ((*v.arr())[0].t == VT::Array && !isEnumTypeObject((*v.arr())[0])) ||
+                    ((*v.arr())[0].t == VT::Range || ((*v.arr())[0].t == VT::Array && !isEnumTypeObject((*v.arr())[0]) &&
+                                                      !isJunction((*v.arr())[0])) ||
                      ((*v.arr())[0].t == VT::Hash && (*v.arr())[0].hashKind != "Pod")))   // (a Pod block is no list)
                     o += ",";
                 seen.erase(v.arr());
@@ -3342,6 +3343,7 @@ Value makeInfArray(long long start) {
 
 ValueList toList(const Value& v) {
     forceLazy(v);   // an unpulled gather lists its ELEMENTS
+    if (isJunction(v)) return ValueList{v};   // a Junction is no Iterable: one item (`@a.append(1|2)`)
     if (v.t == VT::Array && v.arr()) {
         // a HOLE of an `is default(v)` array lists as v, the value reading
         // that slot gives: `@a.grep`, `.kv`, `.pairs` see 7 where it is unset
@@ -6538,6 +6540,11 @@ Value Interpreter::methodCall(const Value& inv, const std::string& m, ValueList 
         if (inv.t == VT::Hash && inv.hashKind == "FileHandle" &&
             (opEq(m, "say") || opEq(m, "print") || opEq(m, "note") || opEq(m, "put"))) break;
         if (methodTakesJunction(inv, m, ai)) continue;  // the signature asked for it whole
+        // …and so do the built-ins whose parameters are slurpies or Mu: a list's
+        // push/append/unshift/prepend/splice, and a QuantHash's `.new`
+        static const std::set<std::string> kJunctionWhole = {"push", "append", "unshift", "prepend", "splice"};
+        static const std::set<std::string> kQuantHash = {"Set", "SetHash", "Bag", "BagHash", "Mix", "MixHash"};
+        if (kJunctionWhole.count(m) || (m == "new" && inv.t == VT::Type && kQuantHash.count(std::string(inv.s.str())))) continue;
         if (first == args.size()) first = ai;
         if (args[ai].enumName == "all" || args[ai].enumName == "none") { first = ai; break; }
     }
@@ -10320,11 +10327,25 @@ Value Interpreter::methodCallUnresolved(const Value& inv, const MName& m, ValueL
             "elems", "end", "list", "List", "Array", "flat", "cache", "eager",
             "values", "keys", "pairs", "antipairs", "kv", "head", "tail",
             "first", "map", "grep", "sort", "reverse", "reduce", "unique",
-            "squish", "skip", "batch", "rotor", "combinations", "permutations"};
+            "squish", "skip", "batch", "rotor", "combinations", "permutations",
+            "max", "min", "minmax", "maxpairs", "minpairs", "Seq", "invert", "classify", "categorize",
+            "deepmap", "nodemap", "duckmap", "flatmap", "repeated", "pairup", "produce", "collate",
+            "slice", "toggle", "hash", "Hash", "Map"};
         if (kOneElem.count(m)) {
             Value one = Value::array(); one.arr()->push_back(inv); one.isList = true;
             return methodCall(one, m, args);
         }
+        // …and its subscript protocol: position 0 is the object, a key is none, and nothing is deleted
+        const auto at0 = [&] { return !args.empty() && args[0].t == VT::Int && args[0].i == 0; };
+        if (m == "is-lazy" && args.empty()) return Value::boolean(false);
+        if ((m == "ZEN-KEY" || m == "serial") && args.empty()) return inv;
+        if (m == "EXISTS-KEY" && args.size() == 1) return Value::boolean(false);
+        if (m == "EXISTS-POS" && args.size() == 1) return Value::boolean(at0());
+        if (m == "AT-POS" && args.size() == 1)
+            return at0() ? inv : armedFailure("X::OutOfRange", "Index out of range. Is: " + args[0].toStr() + ", should be in 0..0");
+        if ((m == "DELETE-KEY" || m == "DELETE-POS") && args.size() == 1)
+            throw RakuError{Value::typeObj("X::AdHoc"), std::string("Can not remove ") + (m == "DELETE-KEY" ? "values" : "elements") +
+                                                        " from a " + inv.typeName()};
     }
     // `.CREATE` on an INSTANCE allocates another of its TYPE: Rakudo's CREATE is
     // Mu's, and nothing in it needs a type object. `$obj.CREATE` died here for

@@ -982,11 +982,10 @@ void Interpreter::runStaticPhasers(const std::vector<StmtPtr>& stmts, const std:
     // any of this runs, and its declaration does not reset what a phaser put
     // there, so a phaser that reads or writes one may run early as well:
     // `"{ BEGIN { $hist ~= 'B' } }"` in an interpolation block.
-    std::set<std::string> unitBare;
+    std::set<std::string> unitBare, init;   // (…and an INIT may read an initialized one: the initializer runs after it)
     if (!unitIsLive && unitEnv) {
         std::vector<const VarExpr*> decls;
         spDeclaredIn(stmts, decls);
-        std::set<std::string> init;
         for (auto& st : stmts)
             if (st && st->kind == NK::ExprStmt) {
                 const Expr* e = static_cast<const ExprStmt*>(st.get())->e.get();
@@ -1044,7 +1043,7 @@ void Interpreter::runStaticPhasers(const std::vector<StmtPtr>& stmts, const std:
             if (initialized.count(n) && r.kind != "INIT") return true;   // an INIT's value is then wiped, as in Rakudo
             if (declared.count(n)) continue;
             if (unitIsLive && unitEnv && unitEnv->find(n)) continue;
-            if (unitBare.count(n) && unitEnv->find(n)) continue;
+            if ((unitBare.count(n) || (r.kind == "INIT" && init.count(n))) && unitEnv->find(n)) continue;
             return true;
         }
         return false;
@@ -1120,9 +1119,7 @@ void Interpreter::runStaticPhasers(const std::vector<StmtPtr>& stmts, const std:
             tctx().cur = saved;
             RakuError re{Value::typeObj("X::ControlFlow::Return"), "Attempt to return outside of any Routine"};
             if (r.kind == "INIT") throw re;
-            Value inner = exceptionFor(re);
-            throwTypedV("X::Comp::BeginTime", {{"exception", inner}, {"use-case", Value::str("evaluating a " + r.kind)}},
-                        "An exception occurred while evaluating a " + r.kind + ": " + re.message);
+            throwBeginTime(re, r.kind);
         } catch (...) { tctx().cur = saved; throw; }
         tctx().cur = saved;
         staticPhaserVal_[key] = v;

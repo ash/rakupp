@@ -13947,14 +13947,12 @@ Value Interpreter::evalAssign(Assign* a, bool sink) {
         catch (RakuError& e) {
             // (a no-match is raised as an instance, carrying .dispatcher and .capture)
             const std::string tn = e.payload.t == VT::Type ? e.payload.s.copyText()
-                                 : isMultiNoMatch(e) ? std::string("X::Multi::NoMatch") : std::string();
+                                 : isMultiNoMatch(e) ? std::string("X::Multi::NoMatch") : e.payload.t == VT::Object ? e.payload.typeName() : std::string();
             if (tn.empty() || tn.rfind("X::Comp", 0) == 0 || tn.rfind("X::Syntax", 0) == 0 ||
-                tn.rfind("X::Undeclared", 0) == 0 || tn.rfind("X::TypeCheck", 0) == 0 ||
-                tn == "X::ParametricConstant" || tn == "X::Redeclaration" || tn == "X::AdHoc")
+                tn.rfind("X::Undeclared", 0) == 0 || tn.rfind("X::TypeCheck", 0) == 0 || tn.rfind("X::Hash::Store", 0) == 0 ||
+                tn == "X::ParametricConstant" || tn == "X::Redeclaration")   // (the store's own refusals, as Rakudo's)
                 throw;
-            Value inner = exceptionFor(e);
-            throwTypedV("X::Comp::BeginTime", {{"exception", inner}, {"use-case", Value::str("evaluating a constant")}},
-                        "An exception " + tn + " occurred while evaluating a constant: " + e.message);
+            throwBeginTime(e, "BEGIN");   // (Rakudo's use-case for a constant's initializer too)
         }
     }
     // `my $x := 42`, `my \z := once 42`: the name is bound to a VALUE, with no

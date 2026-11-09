@@ -3586,6 +3586,7 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
         if (m == "not") { (*inv.hash())["handled"] = Value::boolean(true); return Value::boolean(true); }
         if (m == "handled") return inv.hash()->count("handled") ? (*inv.hash())["handled"] : Value::boolean(false);
         if (m == "self" || m == "Failure") return inv;
+        if ((m == "backtrace" || m == "mess") && args.empty()) return failureBacktrace(inv, m == "mess");
         // Mu's print/say/put take no arguments: `$failure.print: 42` finds no
         // candidate, and the capture it reports holds the Failure itself
         if ((m == "print" || m == "say" || m == "put") && !args.empty()) {
@@ -3605,10 +3606,9 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
             if (ex.t == VT::Object) throw RakuError{ex, msg};
             throw RakuError{ex.t == VT::Type ? ex : Value::typeObj("X::AdHoc"), msg};
         }
-        // .message reads the diagnostic without detonating; .Str/.gist USE the
-        // value, so an UNHANDLED Failure throws there (Rakudo). The NUMERIC
-        // coercions use it just as much — `.Int` on an unhandled Failure used to
-        // return the hash's element count, a 2 out of nowhere.
+        // .message reads the diagnostic without detonating; .Str/.gist USE the value, so an
+        // UNHANDLED Failure throws there (Rakudo). The NUMERIC coercions use it just as much —
+        // `.Int` on an unhandled Failure used to return the hash's element count, a 2 out of nowhere.
         // (`.raku` is deliberately NOT in this list, though Rakudo detonates
         // there too. Two Roast files reach it on a Failure that Rakudo never
         // makes — a failed `Grammar.parse` under 6.e and a missing symbol in
@@ -4772,29 +4772,20 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
             { formatter = *a.pairVal(); haveFmt = true; }
         auto mk = [&](long long y, long long mo, long long d, long long h, long long mi, Value sec, long long posix, long long tz) {
             // reject out-of-range fields (Rakudo dies): month 1..12, day 1..days-in-month,
-            // and for DateTime hour 0..23, minute 0..59 (seconds are leap-checked separately).
+            // and for DateTime hour 0..23, minute 0..59 (seconds are leap-checked separately);
+            // `.got` the Int, `.range` its Str, `.comment` unset, as Rakudo's
             {
-                if (mo < 1 || mo > 12)
-                    throwTyped("X::Temporal::OutOfRange",
-                        {{"what", "Month"}, {"got", std::to_string(mo)}, {"range", "1..12"}},
-                        "Month out of range. Is: " + std::to_string(mo) + ", should be in 1..12");
+                auto oor = [&](const char* what, long long got, const std::string& range) {
+                    throwTypedV("X::Temporal::OutOfRange", {{"what", Value::str(what)}, {"got", Value::integer(got)},
+                        {"range", Value::str(range)}, {"comment", Value::any()}},
+                        std::string(what) + " out of range. Is: " + std::to_string(got) + ", should be in " + range); };
+                if (mo < 1 || mo > 12) oor("Month", mo, "1..12");
                 static const int mlen[] = {31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31};
                 long long dim = mlen[mo - 1];
                 if (mo == 2 && ((y % 4 == 0 && y % 100 != 0) || y % 400 == 0)) dim = 29;
-                if (d < 1 || d > dim)
-                    throwTyped("X::Temporal::OutOfRange",
-                        {{"what", "Day"}, {"got", std::to_string(d)}, {"range", "1.." + std::to_string(dim)}},
-                        "Day out of range. Is: " + std::to_string(d) + ", should be in 1.." + std::to_string(dim));
-                if (inv.s == "DateTime") {
-                    if (h < 0 || h > 23)
-                        throwTyped("X::Temporal::OutOfRange",
-                            {{"what", "Hour"}, {"got", std::to_string(h)}, {"range", "0..23"}},
-                            "Hour out of range. Is: " + std::to_string(h) + ", should be in 0..23");
-                    if (mi < 0 || mi > 59)
-                        throwTyped("X::Temporal::OutOfRange",
-                            {{"what", "Minute"}, {"got", std::to_string(mi)}, {"range", "0..59"}},
-                            "Minute out of range. Is: " + std::to_string(mi) + ", should be in 0..59");
-                }
+                if (d < 1 || d > dim) oor("Day", d, "1.." + std::to_string(dim));
+                if (inv.s == "DateTime" && (h < 0 || h > 23)) oor("Hour", h, "0..23");
+                if (inv.s == "DateTime" && (mi < 0 || mi > 59)) oor("Minute", mi, "0..59");
             }
             Value v = Value::makeHash(); v.hashKind = inv.s;
             (*v.hash())["year"] = Value::integer(y); (*v.hash())["month"] = Value::integer(mo); (*v.hash())["day"] = Value::integer(d);
@@ -4912,6 +4903,9 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
                     // (#208): the reading below is sscanf's, which took "" and
                     // "2020-01-01 " and "2020-01-01T10:00" for dates. A string
                     // among several positionals with no dash is a y/m/d field.
+                    // (any decimal digit is its value there, as Rakudo's `\d` and `.Int` read it)
+                    if (std::string iso = asciiDecimalDigits(a.s); iso != a.s.copyText() && isoTemporalShape(iso, inv.s == "DateTime"))
+                        a = Value::str(iso);
                     if (!isoTemporalShape(a.s.copyText(), inv.s == "DateTime")) {
                         const char* fmt = inv.s == "Date" ? "yyyy-mm-dd"
                             : "an ISO 8601 timestamp (yyyy-mm-ddThh:mm:ssZ or yyyy-mm-ddThh:mm:ss+01:00)";
@@ -4973,10 +4967,10 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
                                 long long oh = (off[0] - '0') * 10 + (off[1] - '0');
                                 long long om = off.size() == 4 ? (off[2] - '0') * 10 + (off[3] - '0')
                                              : off.size() == 5 ? (off[3] - '0') * 10 + (off[4] - '0') : 0;
-                                if (om >= 60)
-                                    throwTyped("X::OutOfRange",
-                                        {{"what", "minute"}, {"got", std::to_string(om)}, {"range", "0..59"}},
-                                        "Minute out of range. Is: " + std::to_string(om) + ", should be in 0..59");
+                                if (om >= 60)   // (Rakudo's wording, and its Rat)
+                                    throwTypedV("X::OutOfRange", {{"what", Value::str("minutes of timezone")},
+                                        {"got", Value::ratZ(BigInt(om), BigInt(1LL))}, {"range", Value::str("0..^60")}},
+                                        "minutes of timezone out of range. Is: " + std::to_string(om) + ", should be in 0..^60");
                                 tz = (is[zp] == '-' ? -1 : 1) * (oh * 3600 + om * 60);
                             }
                         }
@@ -8240,12 +8234,12 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
             return Value::str("Something went wrong in (" + tn + ")");
         }
     }
-    // `.backtrace` on an exception object: the frames its .throw recorded
-    // (captured NOW for a never-thrown one). A class defining its own
-    // backtrace method still wins — this only fills the built-in gap.
+    // `.backtrace` on an exception object: the frames its .throw recorded (Nil for
+    // a never-thrown one, as Rakudo's: a Failure's exception too). A class defining
+    // its own backtrace method still wins — this only fills the built-in gap.
     if (m == "backtrace" && inv.t == VT::Object && inv.obj() &&
         !(!m.skipOwn && inv.obj()->cls && inv.obj()->cls->findMethod("backtrace"))) {
-        return backtraceOf(inv);   // materializes the throw-time chain, once
+        return inv.obj()->attrs.count("__bt") ? backtraceOf(inv) : Value::nil();   // (materialized once)
     }
     // user object: dispatch to class methods / public accessors first
     if (inv.t == VT::Object && inv.obj() && inv.obj()->cls) {

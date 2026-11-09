@@ -1765,8 +1765,8 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
                     inv.hashKind.rfind("Bag", 0) == 0 || inv.hashKind.rfind("Mix", 0) == 0)) {
             // a Setty/Baggy competes on its counts (elem => count pairs)
             for (auto& kv : *inv.hash()) kvs.push_back({Value::str(kv.first), kv.second});
-        } else {
-            out.arr()->push_back(Value::pair("0", inv));
+        } else {   // (its key the Int 0, as a list's are)
+            Value p0 = Value::pair("0", inv); p0.setPairKey(Value::integer(0)); out.arr()->push_back(p0);
             return out;
         }
         // holes in a sparse array (and undefined values generally) do not compete

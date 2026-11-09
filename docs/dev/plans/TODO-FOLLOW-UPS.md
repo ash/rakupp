@@ -198,51 +198,16 @@ moves to [TODO.md](TODO.md).
 
 ## Operators and types
 
-- [ ] **What dies at BEGIN time is not wrapped as Rakudo wraps it** (found
-  2026-11-08 making a compile-time X::AdHoc an X::Comp, c2dcfeb9; on its parent
-  too):
+- [ ] **A Hash's `.values.map` with an `is rw` parameter writes nothing back**
+  (found 2026-11-08 making `.map` bind an `is rw` parameter to an Array's
+  element, 0579b6c2; on its parent too):
 
   ```raku
-  try EVAL q[BEGIN die "b"]; say $!.^name     # X::AdHoc, Rakudo X::Comp::BeginTime
-  BEGIN die "b"                               # "An exception occurred while evaluating a BEGIN: b"
-  # Rakudo: ===SORRY!=== An exception X::AdHoc+{X::Comp} occurred while evaluating a BEGIN:⏎b
-  try EVAL q[CHECK die "k"]; say $!.^name     # X::AdHoc, Rakudo X::Comp::BeginTime ("… a CHECK:⏎k")
-  try EVAL q[constant C = die "x"]; say $!.^name             # X::AdHoc, Rakudo X::Comp::BeginTime ("… a BEGIN")
-  try EVAL q[constant C = (1,2).sum(3)]; say $!.^name        # Nil (it lives), Rakudo X::Comp::BeginTime
+  my %h = a => 1; %h.values.map(-> $v is rw { $v++ }).eager; say %h   # {a => 1}, Rakudo {a => 2}
   ```
 
-  Rakudo's message names the inner exception's type and puts its message
-  on a line of its own; rakupp's four wrappers (execBareBlockRare and
-  runBegin in src/InterpreterModules.cpp, the static-phaser runner in
-  src/InterpreterOperators.cpp, a constant's in src/InterpreterCore.cpp)
-  say "An exception occurred while …: msg", and an EVAL's BEGIN takes none
-  of them.
-
-- [ ] **`.map` with an `is rw` routine writes nothing back** (found
-  2026-11-08 making `&postfix:<++>` a routine, 25f02957; on its parent too):
-
-  ```raku
-  sub inc($x is rw) { $x++ }; my @a = 1, 2; @a.map(&inc); say @a   # [1 2], Rakudo [2 3]
-  my @b = 1, 2; @b.map(&postfix:<++>); say @b                       # the same
-  ```
-
-  A `for @a { inc($_) }` and a call through a variable write back.
-
-- [ ] **An undeclared variable's message: Rakudo 2026.09's hint and
-  suggestions** (found 2026-11-08 checking the line of one, which is right
-  now):
-
-  ```raku
-  say $x;                       # Variable '$x' is not declared
-  # Rakudo: Variable '$x' is not declared. Perhaps you forgot a 'sub' if this was intended to be part of a signature?
-  my $foo = 1; say $fo;         # no suggestion in both, and Rakudo's hint
-  my $foo = 1; try EVAL q[say $fo]; say $!.message   # "Did you mean '$foo'?", Rakudo the hint
-  my $y = "a $x b";             # "Did you mean '$y'?" and at run time, Rakudo the hint at compile time
-  ```
-
-  Rakudo adds the hint whenever it has no suggestion, and suggests less
-  than rakupp (`$foO` gets '$foo', `$fo` nothing). Fifteen files under t/
-  mention "is not declared"; check each against the oracle.
+  RwSlotScope (src/MethodCallTail.cpp) has slots only for an Array invocant
+  whose items are its elements; `.values` hands `.map` a list of copies.
 
 - [ ] **Role clashes Rakudo refuses that pass here** (found 2026-11-08 with
   846ae003; on its parent too):
@@ -255,49 +220,21 @@ moves to [TODO.md](TODO.md).
   refuseRoleClashes sees the methods each composed role holds; a role
   composed by a role has merged its methods into that role's by then.
 
-- [ ] **Any's methods a plain object lacks here** (found 2026-11-08 making a
-  FALLBACK leave Any's methods to Any, 34e48087; on its parent too):
+- [ ] **Any's mutators and `.sum` on a plain object, and a Range of objects**
+  (found 2026-11-08 making a FALLBACK leave Any's methods to Any, 34e48087;
+  the rest of Any's list methods answer since 586a7f14):
 
   ```raku
-  class P { }; say P.new.max;        # No such method 'max', Rakudo P.new
-  say P.new.is-lazy, P.new.EXISTS-KEY("a");   # the same, Rakudo FalseFalse
+  class P { }; say P.new.sum;          # No such method 'sum', Rakudo: Cannot resolve caller Numeric(P:D: )
+  P.new.push(1);                       # No such method 'push', Rakudo: Cannot resolve caller push(P:D: Int:D)
+  say (P.new .. P.new).raku;           # 0..0, Rakudo P.new..P.new
+  say P.new.minmax.raku;               # (P.new, P.new), Rakudo P.new..P.new
   ```
 
-  `.min`, `.minmax`, `.Seq`, `.AT-POS`, `.sum` (Rakudo: "Cannot resolve
-  caller Numeric"), `.hash`, `.push`, `.invert`, `.classify`, `.deepmap`,
-  `.flatmap`, `.repeated` and `.pairup` die the same way on a user object;
-  methodCallUnresolved's one-item list arm answers `.first`, `.elems`,
-  `.map`, `.list` and `.head` only. On an object with a FALLBACK these still
-  reach the FALLBACK (34e48087 leaves them there rather than die). Done when
-  each answers as Rakudo's Any does, and `tabledTypeHasMethod("Any", …)`
-  alone decides FALLBACK.
-
-- [ ] **A Failure has no `.mess` or `.backtrace`, and a `fail`'s backtrace
-  leaves out its routine** (found 2026-11-08 writing X::TypeCheck's priors,
-  0cee5c8f; on its parent too):
-
-  ```raku
-  sub fi { fail "inner" }; my $g = fi();
-  say $g.exception.backtrace;   # in block <unit>, Rakudo: in sub fi, then in block <unit>
-  say $g.mess;                  # the Failure explodes, Rakudo "inner" and the backtrace
-  say $g.backtrace.^name;       # the same, Rakudo Backtrace
-  ```
-
-  So a type check that refuses such a Failure says one frame fewer than
-  Rakudo's "Earlier failure:". Done when the three lines answer as in
-  Rakudo 2026.09.
-
-- [ ] **An INIT in a routine that reads an outer variable runs on each call**
-  (found 2026-11-08 with 8e5b2dc0; on its parent too):
-
-  ```raku
-  my $n = 0; sub g { INIT { $n++ }; 1 }; g(); g(); say $n   # 2, Rakudo 0
-  sub h { INIT { say "init" }; 1 }; h(); h();               # init once in both
-  ```
-
-  Rakudo runs every INIT once, at program start, before the mainline's
-  `my $n = 0` runs. Here an INIT that names an outer lexical is not hoisted
-  (runHoistedInit, src/InterpreterCalls.cpp) and runs where it is written.
+  `.append`, `.prepend`, `.unshift` and `.splice` die as `.push` does. A
+  Range here holds numbers or strings; its ends would need to be any
+  value, compared with `cmp`. On an object with a FALLBACK these still
+  reach it (34e48087 leaves them there rather than die).
 
 - [ ] **A write through a `$_` that aliases a typed variable skips its type
   check** (found 2026-10-20 while fixing issue #185; andthen now shares the
@@ -359,49 +296,38 @@ moves to [TODO.md](TODO.md).
   `with` send both since 0ca4968e. Done when the line answers as in Rakudo 2026.09
   and the loop benchmarks hold.
 
-- [ ] **Date and DateTime strings: what is left of the semantics sheet's
-  DT-08 and DT-19** (found 2026-10-28 while fixing issue #208, 0f19ab0e, which made
-  every malformed string X::Temporal::InvalidFormat):
+- [ ] **Date and DateTime: a non-numeric field and a Str timezone** (found
+  2026-10-28 while fixing issue #208, 0f19ab0e; the rest of DT-08 and DT-19
+  answers as Rakudo's since de67ca59):
 
   ```raku
-  say Date.new("٢٠١٠-٠١-٠٢");                       # InvalidFormat, Rakudo 2010-01-02
-  try Date.new(2015, 13, 1); say $!.comment;        # No such method 'comment', Rakudo (Any)
-  try DateTime.new("2012-12-22T07:02:00+00:99");
-  say $!.what, "|", $!.range, "|", $!.got.^name;    # minute|0..59|Str, Rakudo minutes of timezone|0..^60|Rat
-  try DateTime.new("2012-13-22T07:02:00Z"); say $!.got.^name;   # Str, Rakudo Int
+  try Date.new(2015, "x", 1); say $!.^name                    # X::Temporal::OutOfRange (month 0), Rakudo X::AdHoc
+  try DateTime.new("2012-12-22T07:02:00", :timezone("3600")); # accepted, Rakudo X::AdHoc
   ```
 
-  isoTemporalShape (src/MethodCallPart2.cpp) takes ASCII digits only, and
-  the reading after it is sscanf's; Rakudo's `\d` is any decimal digit, which
-  `.Int` reads. The three exceptions are thrown in the same `m == "new"` arm.
-  The JS runtime has a check of its own (src/js-rt/40-objects.js, the
-  `pos.length === 1` line, mirrored in src/JsRuntimeSrc.cpp): by reading, its
-  DateTime pattern is not anchored at the end, so trailing text passes, and
-  it wants a time, so `DateTime.new('2023-03-04')` is refused where Rakudo
-  gives midnight. Unchecked: there is no node on the Mac this was found on.
-  Done when the lines above and both probe lines of DT-08 and DT-19 in
-  docs/dev/findings/semantics/Date-Time.md answer as in Rakudo 2026.09,
-  less the two Rakudo bugs the sheet says not to copy.
+  Rakudo dies inside its own code there ("This type cannot unbox to a
+  native integer: P6opaque, Failure"), which is no wording to copy; a
+  refusal of its type would do. The JS runtime has a check of its own
+  (src/js-rt/40-objects.js, the `pos.length === 1` line, mirrored in
+  src/JsRuntimeSrc.cpp): by reading, its DateTime pattern is not anchored
+  at the end, so trailing text passes, and it wants a time, so
+  `DateTime.new('2023-03-04')` is refused where Rakudo gives midnight.
+  Unchecked: there is no node on the Mac this was found on. The
+  semantics sheet's two Rakudo bugs (DT-19's date-only `2012-13-22` and its
+  `.got` Str) are not to be copied.
 
-- [ ] **A built-in method whose parameter takes a Junction whole threads it
-  instead** (found 2026-10-28 while fixing issue #192, f483f0e6; on f30323e3 too):
+- [ ] **`polymod` threads a Junction Rakudo takes whole** (found 2026-10-28
+  while fixing issue #192, f483f0e6; the rest of that item fixed 2026-11-08,
+  3f7f2856):
 
   ```raku
-  say 1.polymod(2 & 3);                              # all((1 0), (1 0)), Rakudo (all(1, 1) 0)
-  my @b; @b.append(1|2); say @b.raku;                # [1, 2], Rakudo [any(1, 2)]
-  my @c; @c.unshift(1&2); say @c.raku;               # [2, 1], Rakudo [all(1, 2)]
-  say Set.new(1|2).raku;                             # any(Set.new(1), Set.new(2)), Rakudo Set.new(any(1, 2))
-  say [1, 2].splice(0, 1, 5|6).raku;                 # any([1], [5]), Rakudo [1]
-  my @a; @a.push(1|2); say @a.raku;                  # [any(1, 2),], Rakudo [any(1, 2)]
+  say 1.polymod(2 & 3);   # all((1 0), (1 0)), Rakudo (all(1, 1) 0)
   ```
 
-  Rakudo's candidates take these as slurpies or `Mu`, so the junction is a
-  value there. methodCall (src/Builtins.cpp) threads every junction argument
-  that methodTakesJunction does not exempt, and that asks only about methods
-  a program declares; the built-ins need a list of their own, as the
-  matcher methods have. `.push` keeps it whole already, and its `.raku`
-  alone is wrong: a one-element Array holding a junction gets a trailing
-  comma. Done when the lines above are Rakudo 2026.09's.
+  Rakudo's `+@mods` takes it whole, and its answer does not follow from
+  running its loop on a Junction (that gives `all(0, 0)` last, not 0):
+  read Rakudo's Int.polymod before changing it.
+
 - [ ] **A metaclass `compose` finds the accessors early through `.^can`
   and `.^find_method`** (found 2026-10-28 while fixing `rakupp install
   AttrX::Lazy`, 8c871a25; on v5.5.0 too):
@@ -732,7 +658,11 @@ moves to [TODO.md](TODO.md).
 
 - [ ] **Smaller differences met on the way** (2026-10-30):
   - `Kid.^find_method('foo').candidates` lists a role's multi candidate
-    twice when Kid and a parent both declare candidates (Rakudo: once);
+    twice when Kid does the role and declares candidates of its own, and
+    leaves out a parent class's (Rakudo: each once, the parent's first);
+    a role's candidate shows no invocant in `.signature.raku`;
+  - an undeclared variable inside a string (`my $y = "a $x b"`) is refused
+    when the statement runs, where Rakudo refuses it at compile time;
   - Cro::HTTP's t/http2-request-parser.rakutest fails now and then (3 runs
     in 20 at 12a8fee3, 2 in 20 after it): the "Header1 + Continuation1 +
     Header2 + Data1" case passes as soon as its second request is checked,

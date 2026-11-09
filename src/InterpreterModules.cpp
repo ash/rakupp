@@ -4267,6 +4267,29 @@ std::vector<std::string> suggestNames(const std::string& name, const std::vector
     return out;
 }
 
+// An undeclared VARIABLE's suggestions, as Rakudo's: within a third of its length
+// past the sigil (`$fo` finds no `$foo`, `$baz` finds `$bar`, `$foO` its `$foo`)
+std::vector<std::string> variableSuggestions(const std::string& name, const std::vector<std::string>& cands) {
+    std::vector<std::string> out;
+    for (auto& c : suggestNames(name, cands))
+        if (suggestDistance(name, c) <= (name.size() - 1) / 3.0) out.push_back(c);
+    return out;
+}
+// …and its message: those, or Rakudo 2026.09's hint when there are none, filled
+// to 71 columns as Rakudo's naive-word-wrapper fills it
+std::string undeclaredVariableMessage(const std::string& name, const std::vector<std::string>& sug) {
+    std::string m = "Variable '" + name + "' is not declared" + didYouMean(sug), out, line;
+    if (sug.empty()) m += ". Perhaps you forgot a 'sub' if this was intended to be part of a signature?";
+    for (size_t i = 0, e; i < m.size(); i = e + 1) {
+        e = m.find(' ', i); if (e == std::string::npos) e = m.size();
+        std::string w = m.substr(i, e - i);
+        if (line.empty()) line = w;
+        else if (line.size() + 1 + w.size() <= 71) line += " " + w;
+        else { out += (out.empty() ? "" : "\n") + line; line = w; }
+    }
+    return out + (out.empty() ? "" : "\n") + line;
+}
+
 // A misspelled TYPE name: the core types and every type this program declared
 // Is `t`, written where a parameter's type goes, something nothing declares?
 // Only a certainty counts (see declTypeIsKnown): a core enum member or term
@@ -5315,8 +5338,6 @@ static void mergeParentRoleMultis(ClassInfo* ci, const SigKey& sigKeyParams) {
         }
 }
 
-// The declaration statements exec dispatches here, kept out of its frame.
-//
 // execDeclStmt's refusals of what two roles bring a class, in Rakudo's words: an
 // only method from one role beside a multi of its name from another (a stub
 // aside), whatever the class declares itself; then a method two roles bring and
@@ -5358,6 +5379,8 @@ static void refuseRoleClashes(Interpreter& I, const std::string& clsName, const 
         }
 }
 
+// The declaration statements exec dispatches here, kept out of its frame.
+//
 // exec is one switch over every statement kind, and a switch's stack frame is
 // sized to the MAXIMUM over all its cases — so the ~100 Value temporaries that
 // `class`, `sub`, `enum`, `subset`, a named regex and `use` need between them
@@ -9010,6 +9033,19 @@ static void refuseRoleClashes(Interpreter& I, const std::string& clsName, const 
     return execBlock(b, scope, sink, handOff); // a sunk bare block sinks its final value too
 }
 
+// What dies in a BEGIN, a CHECK or a constant's initializer is a compile-time
+// failure: X::Comp::BeginTime holding it as `.exception`, worded as Rakudo's,
+// "An exception X::AdHoc+{X::Comp} occurred while evaluating a BEGIN:⏎msg". A
+// BEGIN's (and a constant's, which Rakudo evaluates as one) does X::Comp; a
+// CHECK's is as it was thrown.
+void Interpreter::throwBeginTime(const RakuError& e, const std::string& kind) {
+    Value inner = exceptionFor(e);
+    if (kind == "BEGIN" && inner.t == VT::Object && inner.obj() && !typeOrSubsetMatches(inner, "X::Comp"))
+        inner = mixinValue(inner, Value::typeObj("X::Comp"), true, false, nullptr);
+    throwTypedV("X::Comp::BeginTime", {{"exception", inner}, {"use-case", Value::str("evaluating a " + kind)}},
+                "An exception " + inner.typeName() + " occurred while evaluating a " + kind + ":\n" + e.message);
+}
+
 [[gnu::noinline]] Value Interpreter::execBareBlockRare(Block* b, bool sink) {
     // A registered END belongs to program exit. The statement runners
     // skip it (isBlockPhaser), so this is the UNIT-level path — a
@@ -9025,15 +9061,15 @@ static void refuseRoleClashes(Interpreter& I, const std::string& clsName, const 
     // compile-time failure, as at the top level
     struct BeginDepth { int& d; bool on; BeginDepth(int& x, bool o) : d(x), on(o) { if (on) d++; } ~BeginDepth() { if (on) d--; } }
         beginDepthGuard{beginDepth_, b->phaser == "BEGIN"};
-    if (b->phaser == "BEGIN" && !b->stmtForm) {   // (`BEGIN my $x = …` declares out here: left alone)
+    // …and a CHECK too; the statement form (`BEGIN my $x = …`) runs in this scope, where it declares
+    if (b->phaser == "BEGIN" || b->phaser == "CHECK") {
+        const std::string kind = b->phaser;
         b->phaser.clear();
-        struct Restore { Block* b; ~Restore() { b->phaser = "BEGIN"; } } rs{b};
-        try { return exec(b, sink); }
+        struct Restore { Block* b; const std::string& k; ~Restore() { b->phaser = k; } } rs{b, kind};
+        try { return b->stmtForm ? execBlock(b, tctx().cur, sink) : exec(b, sink); }
         catch (RakuError& e) {
             if (e.payload.t == VT::Type && e.payload.s == "X::Undeclared::Symbols") throw;
-            Value inner = exceptionFor(e);
-            throwTypedV("X::Comp::BeginTime", {{"exception", inner}, {"use-case", Value::str("evaluating a BEGIN")}},
-                        "An exception occurred while evaluating a BEGIN: " + e.message);
+            throwBeginTime(e, kind);
         }
     }
     // `{*}` inside a `proto` body: THE dispatch point. It hands the proto's
@@ -9474,10 +9510,7 @@ int Interpreter::run(Program& prog) {
             catch (RakuError& e) {
                 // a routine not declared YET is a compile-time refusal of its own
                 if (e.payload.t == VT::Type && e.payload.s == "X::Undeclared::Symbols") throw;
-                Value inner = exceptionFor(e);
-                std::string im = e.message;
-                throwTypedV("X::Comp::BeginTime", {{"exception", inner}, {"use-case", Value::str("evaluating a BEGIN")}},
-                            "An exception occurred while evaluating a BEGIN: " + im);
+                throwBeginTime(e, "BEGIN");
             }
         };
         // …and the top-level constants among them, in the same source order, when
@@ -9501,7 +9534,8 @@ int Interpreter::run(Program& prog) {
             }
             for (; bi < beginP.size(); bi++) runBegin(beginP[bi]);
         }
-        for (auto it = checkP.rbegin(); it != checkP.rend(); ++it) runPhaser(*it); // CHECK: reverse
+        for (auto it = checkP.rbegin(); it != checkP.rend(); ++it)   // CHECK: reverse
+            try { runPhaser(*it); } catch (RakuError& e) { throwBeginTime(e, "CHECK"); }
         if (ctValues_) ctAfterCheck(*this, prog);   // a binary's build-time pass: no INIT, no ENTER
         else {
             for (auto* b : initP) runHoistedInit(b);                              // INIT: source order, program-wide

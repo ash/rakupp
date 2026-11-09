@@ -107,6 +107,8 @@ uint64_t chanWakeGen();
 void chanWaitFor(uint64_t seen, int ms);
 const std::set<std::string>& coreTypeNames(); // …the set itself, for "Did you mean" ranking
 std::vector<std::string> suggestNames(const std::string& name, const std::vector<std::string>& cands);
+std::vector<std::string> variableSuggestions(const std::string& name, const std::vector<std::string>& cands);   // (DeclCheck.h too)
+std::string undeclaredVariableMessage(const std::string& name, const std::vector<std::string>& sug);
 std::string didYouMean(const std::vector<std::string>& sug); // ". Did you mean 'X'?" or ""
 std::string unknownParentMessage(const std::string& child, const std::string& parent,
                                  const std::vector<std::string>& sug);   // X::Inheritance::UnknownParent's
@@ -164,6 +166,7 @@ Value makeBaggy(const ValueList& items, const std::string& kind,
 // Numify a string with Raku-correct result type (Int/Rat/Num), BigInt-aware
 // (defined in Interpreter.cpp). Non-numeric input yields an undefined value.
 Value numifyStr(std::string_view in);
+std::string asciiDecimalDigits(std::string_view s);   // "٢٠١٠" → "2010": any Nd digit as its ASCII one
 // numifyStr, but a string that isn't a number THROWS X::Str::Numeric the way
 // Rakudo does in numeric context (`"a" + 1`), instead of silently reading as 0.
 Value numifyStrOrThrow(std::string_view in);
@@ -2855,6 +2858,7 @@ public:
     std::optional<Value> catchAllDelegation(const Value& inv, const struct MName& m, ValueList& args,
                                             const std::vector<ExprPtr>* rwArgs);
     Value exceptionFor(const RakuError& e); // $!/$_ value for a caught error: always a DEFINED exception instance
+    [[noreturn]] void throwBeginTime(const RakuError& e, const std::string& kind);   // X::Comp::BeginTime (InterpreterModules.cpp)
     // A Failure stores its exception as a bare TYPE plus a message; anything
     // that hands the exception to user code (`$!`, `.exception`, `.throw`) must
     // hand over a defined instance instead, or `if $!` is False and `.message`
@@ -5003,6 +5007,7 @@ public:
     // The frames a caught exception object carries (`__bt`), materialized into
     // a Backtrace list on first ask and cached back onto the object.
     Value backtraceOf(const Value& exObj);
+    Value failureBacktrace(const Value& failure, bool mess);   // a Failure's `.backtrace` / `.mess` (InterpreterBinding.cpp)
     std::string srcLineOf(const std::string& file, int line); // one source line, cached ("" = unavailable)
     // The whole diagnostic an uncaught error prints: message, type, frames, and
     // the alt section when there is one. Also what `warn` and the REPL render.

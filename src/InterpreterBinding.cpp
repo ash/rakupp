@@ -421,14 +421,12 @@ void Interpreter::throwTypedV(const std::string& type,
                               const std::string& message) {
     // A type check that refused a FAILURE says what that failure was first, as
     // Rakudo's X::TypeCheck.priors does with its `.mess`, the message and the
-    // backtrace: "Earlier failure:\n boom\n  in block <unit> …\n\nFinal error:\n …"
+    // backtrace of where it was made: "Earlier failure:\n boom\n  in sub f …\n\nFinal error:\n …"
     if (type.rfind("X::TypeCheck", 0) == 0)
         for (auto& kv : attrs)
             if (kv.first == "got" && kv.second.t == VT::Hash && kv.second.hashKind == "Failure" && kv.second.hash()) {
-                auto mi = kv.second.hash()->find("message"), ei = kv.second.hash()->find("exception");
-                std::string was = (mi != kv.second.hash()->end() ? mi->second.toStr() : std::string()) + "\n";
-                if (ei != kv.second.hash()->end() && ei->second.t == VT::Object)
-                    try { was += methodCall(methodCall(ei->second, "backtrace", {}), "Str", {}).toStr(); } catch (...) {}
+                std::string was;
+                try { was = failureBacktrace(kv.second, true).toStr(); } catch (...) {}
                 const std::string full = "Earlier failure:\n " + was + "\nFinal error:\n " + message;
                 Value ex = makeTypedEx(type, std::move(attrs), full);
                 throw RakuError{ex, full};
@@ -485,7 +483,7 @@ void Interpreter::throwUndeclaredVar(const std::string& name, const std::vector<
                 for (auto& a : c->attrs) cands.push_back(std::string(1, a.sigil) + "!" + a.name);
         }
     }
-    std::vector<std::string> sug = suggestNames(name, cands);
+    std::vector<std::string> sug = variableSuggestions(name, cands);
     // …and a TYPE the bare name nearly spells: `$foo` next to `class Foo`
     // suggests Foo (Rakudo's X::Undeclared lists types among its suggestions)
     if (name.size() > 1 && (name[0] == '$' || name[0] == '@' || name[0] == '%')) {
@@ -497,15 +495,9 @@ void Interpreter::throwUndeclaredVar(const std::string& name, const std::vector<
         if (typeCands.size() < 2000)
             for (auto& t : suggestNames(name.substr(1), typeCands)) sug.push_back(t);
     }
-    std::string msg = "Variable '" + name + "' is not declared";
+    std::string msg = undeclaredVariableMessage(name, sug);
     Value sl = Value::array(); sl.isList = true;
     for (auto& n : sug) sl.arr()->push_back(Value::str(n));
-    if (sug.size() == 1) msg += ". Did you mean '" + sug[0] + "'?";
-    else if (!sug.empty()) {
-        msg += ". Did you mean any of these: ";
-        for (size_t i = 0; i < sug.size(); i++) msg += (i ? ", '" : "'") + sug[i] + "'";
-        msg += "?";
-    }
     Value he = Value::array(); he.isList = true;
     throwTypedV("X::Undeclared", {{"symbol", Value::str(name)}, {"what", Value::str("Variable")},
                                   {"suggestions", sl}, {"pre", Value::str("")}, {"post", Value::str(name)},
@@ -5975,6 +5967,18 @@ Value Interpreter::backtraceOf(const Value& exObj) {
     }
     at["__bt"] = bt;   // cached: a program that walks it twice pays once
     return bt;
+}
+
+// A Failure's `.backtrace`: where it was made (rakuppNewFailure kept the frames in
+// its ext), as Rakudo's Failure holds its own; and `.mess`, its message and that.
+Value Interpreter::failureBacktrace(const Value& failure, bool mess) {
+    Value holder; holder.t = VT::Object; holder.setObj(makePayload<ObjectData>());
+    Value hd = Value::any(); hd.extM() = failure.ext(); holder.obj()->attrs["__bt"] = hd;
+    Value bt = backtraceOf(holder);
+    if (!mess) return bt;
+    auto mm = failure.hash() ? failure.hash()->find("message") : decltype(failure.hash()->end()){};
+    return Value::str((failure.hash() && mm != failure.hash()->end() ? mm->second.toStr() : std::string()) + "\n" +
+                      methodCall(bt, "Str", {}).toStr());
 }
 
 // The call chain as a list of BacktraceFrame values, innermost first — what
