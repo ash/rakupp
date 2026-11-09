@@ -614,9 +614,21 @@ bool textDeclares(const std::string& src, const std::string& name) {
         size_t cut = pre.find_last_of(";{}");
         if (cut != std::string::npos) pre = pre.substr(cut + 1);
         if (pre.find("->") != std::string::npos) return true;   // a pointy signature
-        for (const char* kw : {"my", "our", "state", "has", "constant",
-                               "sub", "method", "multi", "submethod"})
+        for (const char* kw : {"sub", "method", "multi", "submethod"})
             if (wordAt(pre, kw)) return true;
+        // …and a variable declarator declares what stands before its initializer
+        // only: `my $y = $x` (or `:=`, `.=`) declares $y, and leaves $x a finding
+        const auto assigns = [](std::string_view s) {
+            for (size_t i = 0; i < s.size(); i++)
+                if (s[i] == '=' && (i + 1 == s.size() || !std::strchr("=>~", s[i + 1])) && (i == 0 || !std::strchr("=!<>~", s[i - 1])))
+                    return true;
+            return false;
+        };
+        for (std::string_view kw : {"my", "our", "state", "has", "constant"})
+            for (size_t k = pre.find(kw); k != std::string::npos; k = pre.find(kw, k + 1))
+                if ((!k || !identChar(pre[k - 1])) && (k + kw.size() == pre.size() || !identChar(pre[k + kw.size()])) &&
+                    !assigns(std::string_view(pre).substr(k + kw.size())))
+                    return true;
     }
     return false;
 }
