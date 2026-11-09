@@ -300,13 +300,22 @@ Value Interpreter::mixinValue(Value base, const Value& rhs, bool copy, bool rhsI
     // which is why this is a second pass rather than part of the loop above.
     {
         std::set<ClassInfo*> composedRoles(roleInfos.begin(), roleInfos.end());
+        // A name is the role in this role's own `does` slots when one carries
+        // it: the candidates of a role GROUP share one name and `classes_` has
+        // the latest, so for `role W['X'] does W` the name W was W['X'] again,
+        // and `$obj does W['X']` got none of what the bare W declares.
+        auto doneRole = [&](ClassInfo* role, const std::string& name) -> ClassInfo* {
+            if (role->parent && role->parent->isRole && role->parent->name == name) return role->parent.get();
+            for (auto& r : role->composedRoles) if (r && r->name == name) return r.get();
+            for (auto& r : role->extraParents) if (r && r->isRole && r->name == name) return r.get();
+            auto sit = classes_.find(name);
+            return sit == classes_.end() ? nullptr : sit->second.get();
+        };
         std::function<void(ClassInfo*)> composeChain = [&](ClassInfo* role) {
             for (auto& sub : role->doneRoles) {
                 nc->doneRoles.insert(sub);
-                auto sit = classes_.find(sub);
-                if (sit == classes_.end() || !sit->second) continue;
-                ClassInfo* sr = sit->second.get();
-                if (!composedRoles.insert(sr).second) continue;
+                ClassInfo* sr = doneRole(role, sub);
+                if (!sr || !composedRoles.insert(sr).second) continue;
                 for (auto& kv : sr->methods) nc->methods.emplace(kv.first, kv.second);
                 for (auto& kv : sr->rules) {
                     if (nc->rules.count(kv.first)) continue;

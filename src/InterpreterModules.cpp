@@ -7092,8 +7092,15 @@ static void refuseRoleClashes(Interpreter& I, const std::string& clsName, const 
                 bool paramSelf = false;
                 for (auto& ra : cd->roleArgs)
                     if (ra.first == parentName && !ra.second.empty()) { paramSelf = true; break; }
+                // …and so is the GROUP a role with its own `[...]` joins: in
+                // `role W { }; role W['X'] does W { }` the W it does is the one
+                // declared before it (PDF::Content's XObject['Form'] is declared so)
+                const bool joinsGroup = cd->isRole && cd->parameterized && [&] {
+                    auto prev = classes_.find(parentName);
+                    return prev != classes_.end() && prev->second && prev->second->isRole;
+                }();
                 const bool selfNamed = parentName == cd->name && !cd->name.empty() &&
-                                       parentName == cd->parent && !paramSelf;
+                                       parentName == cd->parent && !paramSelf && !joinsGroup;
                 const bool outerType = selfNamed && parentIsOuterType(classes_, cd, parentName, clsName, ci);
                 if (!cd->isRole) refuseCoreNamesake(*this, classes_, clsName, parentName);
                 if (selfNamed && !outerType)
