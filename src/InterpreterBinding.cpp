@@ -6969,6 +6969,8 @@ static void lastCallLines(const Expr* e, int line, std::map<std::string, int>& o
             lastCallLines(t->then.get(), line, out); lastCallLines(t->els.get(), line, out); return; }
         case NK::ListExpr: for (auto& i : static_cast<const ListExpr*>(e)->items) lastCallLines(i.get(), line, out); return;
         case NK::BlockExpr: for (auto& st : static_cast<const BlockExpr*>(e)->body) lastCallLinesS(st.get(), out); return;
+        case NK::VarExpr: if (static_cast<const VarExpr*>(e)->name.size() > 1 && static_cast<const VarExpr*>(e)->name[0] == '&') {
+            int& l = out[static_cast<const VarExpr*>(e)->name.substr(1)]; l = std::max(l, line); } return;
         default: return;
     }
 }
