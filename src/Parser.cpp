@@ -12361,7 +12361,8 @@ std::vector<Param> Parser::parseSignature(Tok closeTok) {
             // variable tight behind it.
             if (isOp(":") && !(peek().kind == Tok::Var && !peek().spaceBefore)) {
                 advance();
-                p.invocant = true; p.type = "Mu"; p.name = ""; p.sigil = '$';
+                p.invocant = true; p.name = ""; p.sigil = '$';   // (its type the class, as below: `(E:U $:: …)`)
+                p.type = typeStack_.empty() || (!typeIsRole_.empty() && typeIsRole_.back()) ? std::string("Mu") : typeStack_.back();
                 params.push_back(std::move(p));
                 continue;
             }
