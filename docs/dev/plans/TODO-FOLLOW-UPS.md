@@ -1,6 +1,6 @@
 # Follow-ups
 
-*Collected 2026-10-20; added to 2026-11-08.*
+*Collected 2026-10-20; added to 2026-11-09.*
 
 Findings that sessions on 2026-10-19 and 2026-10-20 proposed as follow-up
 work and nobody started: gaps found in passing while doing something else.
@@ -665,6 +665,27 @@ moves to [TODO.md](TODO.md).
   out not to be rakupp's.
 
 ## Backends
+
+- [ ] **`--exe` cannot compile a sub-signature in a pointy block or a sub**
+  (found 2026-11-09 fixing #235; the same before it):
+
+  ```raku
+  say ((1, <a b>), (2, <c d>)).map(-> ($k, @n) { "$k:@n[]" });  # error: use of undeclared identifier 'v_sk'
+  sub f(($a, $b)) { $a + $b }; say f((1, 2));                     # 'v_sa'
+  for (1, 2), (3, 4) -> ($a, $b) { say $a + $b }                 # compiles
+  ```
+
+  The generated C++ names the sub-signature's variables without declaring
+  them, so clang fails and no binary is written. REBASELINE-PLAN.md has the
+  `sub k([$b, @c])` form as a lead; t/exe/run.raku counts such a program
+  as refused, so no gate fails on it. Done when both forms compile and
+  agree with the interpreter.
+
+- [ ] **`--target=js` has no `flatmap`** (found 2026-11-09 fixing #235):
+  `say (1, 2).flatmap({ ($_, $_) })` dies "No such method 'flatmap' for
+  invocant of type 'List'". src/js-rt/60-methods.js has `map` on a List, a
+  Hash, a Set and a Code, but no `flatmap`. It is `map` then `.flat`, as on
+  the interpreter since #235's fix.
 
 - [ ] **Python: `dir()` of a package that comes back as an Object lists
   Python's attributes** (found 2026-11-03 with 992c75cf; the same for any
