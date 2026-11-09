@@ -2019,13 +2019,14 @@ char Interpreter::elemSmileyOf(const std::string& symbol) {
 void Interpreter::checkElemSmiley(const std::string& symbol, const std::string& type, const Value& v) {
     char sm = elemSmileyOf(symbol);
     if (!sm) return;
-    const bool def = v.t != VT::Nil && isDefined(v);
+    const std::string base = type.empty() ? std::string("Any") : type;
+    const Value got = v.t == VT::Nil ? Value::typeObj(base) : v;   // (a Nil is the default it resets to)
+    const bool def = isDefined(got);
     if ((sm == 'D' && def) || (sm == 'U' && !def)) return;
-    std::string want = (type.empty() ? std::string("Any") : type) + (sm == 'D' ? ":D" : ":U");
+    std::string want = base + (sm == 'D' ? ":D" : ":U");
     throwTypedV("X::TypeCheck::Assignment",
-        {{"got", v}, {"expected", Value::typeObj(want)}, {"symbol", Value::str(symbol)}},
-        "Type check failed for an element of " + symbol + "; expected " + want +
-        " but got " + (v.t == VT::Nil ? std::string("Nil") : v.typeName()));
+        {{"got", got}, {"expected", Value::typeObj(want)}, {"symbol", Value::str(symbol)}},
+        "Type check failed for an element of " + symbol + "; expected " + want + " but got " + smileyGot(got, sm));
 }
 
 void Interpreter::checkElemType(const std::string& want, const Value& v, const std::string& symbol) {

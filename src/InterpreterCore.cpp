@@ -17176,12 +17176,8 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
                 for (Env* en = tctx().cur.get(); en; en = en->parent.get()) {
                     auto si = en->xr().varSmiley.find(nm);
                     if (si != en->xr().varSmiley.end()) {
-                        if (si->second == 'D') {
-                            std::string want = (dv.t == VT::Type ? std::string(dv.s.c_str()) : std::string("Any")) + ":D";
-                            throwTypedV("X::TypeCheck::Assignment",
-                                {{"got", Value::nil()}, {"expected", Value::typeObj(want)}, {"symbol", Value::str(nm)}},
-                                "Type check failed in assignment to " + nm + "; expected " + want + " but got Nil");
-                        }
+                        if (si->second == 'D')   // (the default it resets to is what it got, in Rakudo's words)
+                            smileyRefused(nm, Value::nil(), dv.t == VT::Type ? std::string(dv.s.c_str()) : std::string("Any"), 'D');
                         break;
                     }
                     if (en->local(nm)) break;
