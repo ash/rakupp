@@ -288,9 +288,9 @@ moves to [TODO.md](TODO.md).
   accessors still build before changing it. Done when the three lines
   are Rakudo 2026.09's.
 
-- [ ] **A declarator block's `.raku` is its text, a trailing `#=` after a
-  routine's `}` is lost, and `for $=pod` does not iterate** (found 2026-11-08
-  making a Pod block's `.raku` its constructor):
+- [ ] **A declarator block's `.raku` is its text, and a trailing `#=` after a
+  routine's `}` is lost** (found 2026-11-08 making a Pod block's `.raku` its
+  constructor; `for $=pod` iterates since 3d4a3a91):
 
   ```raku
   #| a
@@ -299,11 +299,10 @@ moves to [TODO.md](TODO.md).
   #= b
   say &f.WHY.raku;   # "a", Rakudo Pod::Block::Declarator.new(WHEREFORE => sub f { … }, leading => ["a"], trailing => [["b"],], config => {}, contents => [])
   say ~&f.WHY;       # a, Rakudo "a\nb"
-  for $=pod { }      # one pass with the whole list, Rakudo one per block
   ```
 
   A declarator block keeps only its text and `declLine`: no WHEREFORE, no
-  leading/trailing split. `$=pod` is held itemized.
+  leading/trailing split.
 
 - [ ] **A WhateverCode gists as `WhateverCode.new`** (found 2026-11-08 making
   arithmetic on a Whatever value die):
@@ -387,10 +386,9 @@ moves to [TODO.md](TODO.md).
   attribute: S32-trig/cos.t's NotComplex, the YAMLish suite), so a Pair's
   value would need its type kept apart from its cell. The routine's tail
   reaches the store as a slot pointer with no name (lvalueThroughRw). A
-  `where` variable has two more of its own: `$x = Nil` resets it to Any,
-  where Rakudo resets it to the anonymous subset `(<anon>)`, and `my Int $x
-  where * > 0; $x = "s"` dies "Cannot convert string to number", where
-  Rakudo refuses it, "expected <anon>" (found 5932b773).
+  `where` variable has one more of its own: `$x = Nil` resets it to Any,
+  where Rakudo resets it to the anonymous subset `(<anon>)` (found
+  5932b773; its type is asked before its clause since edc36182).
 - [ ] **A refusal through a copy-in/copy-out alias comes at the write-back**
   (found 2026-10-28 while fixing issue #184, 17e33a45). A `for` loop's `$_`,
   `given`'s topic and `.map`'s `$_` hold a copy of the element, written back

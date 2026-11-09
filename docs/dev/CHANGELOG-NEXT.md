@@ -45,7 +45,8 @@ and seven more: fd4495e3, a343a825, 3341d028, e56816cc, 0d6168fb, cd1e7aa9, 07e9
 and five more: add45aeb, 43dbcefb, 57dad570, e8a8ba53, 024a0905;
 and three more: e205f9ae, f371f8b2, e4ec869c;
 and three more: 07dd7b4a, 793c6d61, d5186165;
-and one more: 5932b773.*
+and one more: 5932b773;
+and three more: edc36182, 3d4a3a91, 57cc8291.*
 
 ---
 
@@ -493,6 +494,10 @@ and one more: 5932b773.*
 - **A `where` clause is asked of a store through an alias** (5932b773): `my $w :=
   $wh`, `with $x { $_ = … }` and an `is rw` parameter stored past it.
   `t/regression/where-alias-checked.raku`.
+- **`for $=pod` takes one block at a time** (3d4a3a91), where it made one pass
+  with the whole list. `t/regression/for-over-pod-variable.raku`.
+- **`=finish` is no block of `$=pod`** (57cc8291): one pod block and a `=finish`
+  section made two. `t/regression/pod-finish-not-a-block.raku`.
 
 ### Fixed: crashes
 
@@ -705,6 +710,9 @@ and one more: 5932b773.*
   `t/regression/multi-method-nomatch-signatures.raku`.
 - **An explicit `::?CLASS` invocant is typed by the class** (793c6d61):
   `(E:D $:: $y, *%_)`, where it was `Mu:D`. `t/regression/class-invocant-typed-by-class.raku`.
+- **A typed `where` variable refuses what its type refuses as its subset**
+  (edc36182), "expected <anon>": `my Int $x where * > 0; $x = "s"` died
+  converting the Str. `t/regression/typed-where-variable-refusal.raku`.
 
 ### Platforms and packaging
 
@@ -783,9 +791,9 @@ and one more: 5932b773.*
 - Found with 483370b7 to e9bb987d, the same before them (each in
   TODO-FOLLOW-UPS.md): an unknown parent is refused when its declaration
   runs, where Rakudo refuses it at compile time; a declarator block's
-  `.raku` is its text, a trailing `#=` after a routine's `}` is lost, and
-  `for $=pod` makes one pass. (An `exit` on a worker thread is fixed by
-  e205f9ae; a sunk `start` that dies, and a tapper that dies on an
+  `.raku` is its text, and a trailing `#=` after a routine's `}` is lost.
+  (An `exit` on a worker thread and `for $=pod` are fixed by e205f9ae and
+  3d4a3a91; a sunk `start` that dies, and a tapper that dies on an
   interval's or a Channel's value, are fixed by bc6faf15 and ea460d2a,
   above.)
 - Found with 592afa33 to ea460d2a, the same before them: none left open.
@@ -830,5 +838,5 @@ and one more: 5932b773.*
   has its own beside them, the group the dispatch reports being the role's.
 - Found with 5932b773, the same before it (in TODO-FOLLOW-UPS.md): a `where`
   variable's `$x = Nil` resets it to Any, where Rakudo resets it to the
-  anonymous subset; and `my Int $x where * > 0; $x = "s"` dies "Cannot
-  convert string to number", where Rakudo refuses it.
+  anonymous subset. (`my Int $x where * > 0; $x = "s"`, which died
+  converting the Str, is fixed by edc36182, above.)
