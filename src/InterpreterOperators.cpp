@@ -1373,12 +1373,12 @@ static void swapExecContext(ExecContext& a, ExecContext& b) {
     swap(a.forceRoutineFrame, b.forceRoutineFrame); swap(a.loopPhaserCtl, b.loopPhaserCtl);
     swap(a.loopCtlLabel, b.loopCtlLabel); swap(a.labelLoops, b.labelLoops);
     swap(a.uninitName, b.uninitName); swap(a.bindingParams, b.bindingParams); swap(a.keepListOf, b.keepListOf); swap(a.lvalueListSlot, b.lvalueListSlot);
-    swap(a.compiledTry, b.compiledTry); swap(a.evalRoutineFrame, b.evalRoutineFrame);
+    swap(a.compiledTry, b.compiledTry); swap(a.evalRoutineFrame, b.evalRoutineFrame); swap(a.lastLvalueElemArr, b.lastLvalueElemArr);
     // (framePool is not listed, deliberately: it is the OS thread's scratch —
     // a free list of unused frames — and either side may use it)
 }
 #if defined(__APPLE__) && defined(__aarch64__) && defined(_LIBCPP_VERSION) && !defined(RAKUPP_IN_AUDIT) && !defined(RAKUPP_STR_CENSUS)
-static_assert(sizeof(ExecContext) == 1496,
+static_assert(sizeof(ExecContext) == 1504,
               "ExecContext changed: list the new member in swapExecContext (Interpreter.cpp), "
               "then update this size");
 #endif
@@ -2390,9 +2390,13 @@ Value Interpreter::evalTempLet(Call* c) {
     if (c->args[0]->kind == NK::Assign) {
         auto* as = static_cast<Assign*>(c->args[0].get());
         if (!pushVarRestore(as->target.get())) {
+            // (an array's element is re-found at the restore: a push in the
+            // scope moves the storage, as the `temp @a[$i]` arm below knows)
+            tctx().lastLvalueElemArr = nullptr;
             if (Value* lv = lvalue(as->target.get())) {
+                ElemHome home; home.take(tctx(), lv);
                 Value snapshot = snap(*lv);
-                restores.push_back([lv, snapshot]() { *lv = snapshot; });
+                restores.push_back([lv, home, snapshot]() { *home.now(lv) = snapshot; });
             }
         }
         return eval(c->args[0].get());

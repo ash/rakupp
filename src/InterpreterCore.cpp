@@ -219,11 +219,12 @@ struct TopicAlias {
     Value* slot = nullptr; Env* sc = nullptr; Value orig;
     Interpreter* I = nullptr; std::string natT;   // a native array's element: Interpreter::nativeElemTag
     Value guard;   // …a typed container's: Interpreter::elemAliasGuard (#184)
+    ElemHome home;   // …and an array's, which the block may grow
     // The write-back, once. A block that ends normally calls it, so what the
     // element refuses dies there; every other exit leaves it to the destructor.
     void flush() {
         if (!slot || !sc) return;
-        Value* s = slot; slot = nullptr;
+        Value* s = home.now(slot); slot = nullptr;
         auto it = sc->vars.find("$_");
         if (it == sc->vars.end() || !topicChanged(it->second, orig)) return;
         Value v = it->second;
@@ -2578,7 +2579,7 @@ Value Interpreter::execGivenStmt(Stmt* s, bool sink) {
         // has to rewrite $str. Only a plain scalar variable is aliased
         // here — an array/hash topic already writes through its elements,
         // and a literal or call result has nowhere to write back to.
-        Value* topicSlot = topicAliasSlot(g->topic.get(), skip);
+        Value* topicSlot = topicAliasSlot(g->topic.get(), skip); ElemHome topicHome; topicHome.take(tctx(), topicSlot);
         const std::string natT = topicSlot ? nativeElemTypeAt(g->topic.get()) : std::string();
         nativeElemTag(natT, topic);   // (`$_ = 1.5 given @n[0]` dies: nativeElemTag)
         const Value elemGuard = topicSlot && natT.empty() ? elemGuardAt(g->topic.get()) : Value::any();   // (#184)
@@ -2629,7 +2630,7 @@ Value Interpreter::execGivenStmt(Stmt* s, bool sink) {
                   else if (elemGuard.t == VT::Array) back = elemAliasStore(elemGuard, std::move(back));
                   else if (keptTyped(varGuard)) back = keptTypedStore(varGuard, std::move(back)); }
             catch (...) { if (hadTopic) env->vars["$_"] = savedTopic; else env->vars.erase("$_"); throw; }
-            *topicSlot = std::move(back);   // write the alias back
+            *topicHome.now(topicSlot) = std::move(back);   // write the alias back
         }
         // …and the ELSE branch of `with`/`without` aliases the topic too:
         // `with %h<k> { } else { $_ = … }` writes through the container, which
@@ -2648,10 +2649,11 @@ Value Interpreter::execGivenStmt(Stmt* s, bool sink) {
     auto scope = makeSlabShared<Env>(); scope->parent = tctx().cur;
     // the same aliasing as the modifier form above: `given $str { s/x/y/ }`
     // rewrites $str
-    Value* topicSlot = topicAliasSlot(g->topic.get(), skip);
+    Value* topicSlot = topicAliasSlot(g->topic.get(), skip); ElemHome topicHome; topicHome.take(tctx(), topicSlot);
     const std::string natT = topicSlot ? nativeElemTypeAt(g->topic.get()) : std::string();
     nativeElemTag(natT, topic);   // (`given @n[0] { $_ = 1.5 }` dies: nativeElemTag)
     TopicAlias tback{topicSlot, scope.get(), topic, this, natT};   // however the block exits
+    tback.home = std::move(topicHome);
     if (topicSlot && natT.empty()) tback.guard = elemGuardAt(g->topic.get());
     // A POINTY block binds its own parameter and leaves `$_` alone:
     // `with 1 -> $a { .flip }` flips the OUTER topic, and `$_ = 7` in it
@@ -12384,7 +12386,7 @@ Value* Interpreter::lvalue(Expr* e, bool asInvocant) {
             // just overwrites it; the gaps stay holes)
             growToIndex(*this, *base->arr(), i, [&] { return containerFill(*base); },
                         grown ? base->elemDefault().get() : nullptr);
-            tctx().lastLvalueElemIdx = i;
+            tctx().lastLvalueElemIdx = i; tctx().lastLvalueElemArr = &*base->arr();
             return raceNoteElem(&(*base->arr())[i], base->arr(), (size_t)i);
         }
     }
@@ -14467,10 +14469,10 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
         if ((tc->name == "temp" || tc->name == "let") && tc->args.size() == 1 &&
             !tctx().cur->find(callAmpName(tc))) {
             evalTempLet(tc);                  // snapshot + register the restore
-            Value* lv = nullptr;
-            try { lv = lvalue(tc->args[0].get()); } catch (RakuError&) {}
+            Value* lv = nullptr; ElemHome home; tctx().lastLvalueElemArr = nullptr;
+            try { lv = lvalue(tc->args[0].get()); home.take(tctx(), lv); } catch (RakuError&) {}
             if (lv) {
-                Value rhs = eval(a->value.get());
+                Value rhs = eval(a->value.get()); lv = home.now(lv);
                 std::string bin = a->op.substr(0, a->op.size() - 1);   // "+=" -> "+"
                 raceW(lv) = opEq(a->op, "=") ? rhs : applyBinOp(bin, *lv, rhs);
                 return sink ? Value::any() : *lv;
@@ -17410,7 +17412,8 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
             std::string scElemWant;
             const bool scElem = a->target->kind == NK::Index;
             if (scElem) tctx().lastLvalueElemType.clear();
-            if (!deferLv) { try { lv = lvalue(a->target.get()); } catch (RakuError&) {} }
+            ElemHome scHome; tctx().lastLvalueElemArr = nullptr;
+            if (!deferLv) { try { lv = lvalue(a->target.get()); scHome.take(tctx(), lv); } catch (RakuError&) {} }
             if (scElem) { scElemWant = tctx().lastLvalueElemType; tctx().lastLvalueElemType.clear(); }
             // (through an alias, `my $x := @a[0]; $x ||= 5`, the value is the element's)
             const auto aliasOf = [&](const Value* p) { return p && p->t == VT::Hash && p->hashKind == proxyKind() && p->hash(); };
@@ -17424,7 +17427,7 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
                 static_cast<VarExpr*>(a->target.get())->name[0] == '$';
             auto itemize = [&](Value v) { if (scalarTarget && (v.t == VT::Array || v.t == VT::Hash)) v.itemized = true; return v; };
             if (keep) return sink ? Value::any() : itemize(cur);
-            Value rhs = eval(a->value.get());
+            Value rhs = eval(a->value.get()); lv = scHome.now(lv);
             if (!lv) {
                 if (scElem) tctx().lastLvalueElemType.clear();
                 try { lv = lvalue(a->target.get()); } catch (RakuError&) {}
@@ -17509,7 +17512,9 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
     g_lvAttrSigil = 0;
     const bool opElemTarget = a->target->kind == NK::Index;
     if (opElemTarget) { tctx().viewMirrorArr.reset(); tctx().lastLvalueElemType.clear(); }
+    tctx().lastLvalueElemArr = nullptr;
     Value* lv = lvalue(a->target.get());
+    ElemHome opElemHome; opElemHome.take(tctx(), lv);   // (the RHS may grow the array the target is in)
     // a TYPED container's element checks (and coerces) what OP= leaves in it,
     // and keeps what it held when that is refused: `my Int @a; @a[0] ~= "x"`
     std::string opElemWant;
@@ -17560,6 +17565,7 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
     if (lv->readonly)
         throwNotWritableOp(*this, *lv);
     Value rhs = eval(a->value.get());
+    if (Value* p = opElemHome.now(lv); p != lv) { lv = p; mirrorG2.lv = p; if (opViewMirror.lv) opViewMirror.lv = p; }
     rhs.readonly = rhs.immutableBind = false;                  // the flag marks the container, not the value
     // a Proxy-bound target (`$a := $x`) routes OP= through FETCH/STORE so the
     // update reaches the underlying container instead of clobbering the Proxy

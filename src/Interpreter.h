@@ -1982,6 +1982,7 @@ struct ExecContext {
     // (checkElemTypeOrShrink). Null for anything else.
     Value* lastLvalueGrowBase = nullptr;
     long long lastLvalueElemIdx = 0;   // …and the index of the element it named (nativeElemStore's message)
+    ValueList* lastLvalueElemArr = nullptr;   // …and the array that element is in: good only for an ElemHome::take right after
     size_t lastLvalueGrowSize = 0;
     // An element write through a list of an Array's elements (ElemView): the
     // array and the index there the write is mirrored to, set by lvalue() and

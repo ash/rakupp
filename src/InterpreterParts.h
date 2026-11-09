@@ -202,6 +202,24 @@ static bool boxedIteration(const Value& v);
 void spDeclaredInRaw(const std::vector<StmtPtr>& body, std::vector<const VarExpr*>& out);
 bool pureSubscriptBase(const Expr* b);
 
+// An array element lvalue() answered, kept FINDABLE while code that can grow
+// the array runs: a push moves the storage, and a Value* taken before it then
+// points into the freed block — `@a[0] += do { @a.push(…); 5 }` wrote there.
+// The caller clears ExecContext::lastLvalueElemArr, asks lvalue(), take()s at
+// once, and asks now() for the element when that code has run.
+struct ElemHome {
+    PRef<ValueList> arr; size_t idx = 0; mutable Value gone;
+    void take(ExecContext& t, Value* lv) {
+        ValueList* h = t.lastLvalueElemArr; t.lastLvalueElemArr = nullptr;
+        const size_t i = (size_t)t.lastLvalueElemIdx;
+        if (h && lv && i < h->size() && &(*h)[i] == lv) { arr = PRef<ValueList>::fromObject(h); idx = i; }
+    }
+    // `lv` itself when it never was an element; a container nothing holds when
+    // the array no longer reaches that far (`@a[0] += do { @a = (); 5 }`
+    // leaves @a empty, as on Rakudo)
+    Value* now(Value* lv) const { return !arr ? lv : idx < arr->size() ? &(*arr)[idx] : &gone; }
+};
+
 bool valueEqv(const Value& a, const Value& b);
 
 static inline Value defaultFor(char sigil) {
