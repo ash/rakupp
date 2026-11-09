@@ -9683,10 +9683,11 @@ bool Interpreter::intRangeReduce(const std::string& op, const Value& v, Value& o
     if (v.t != VT::Range || v.itemized || v.rNum() || v.ofType() == "Str" || rangeEnds(v) || v.big()) return false;
     // (an operator DECLARED in scope folds with itself)
     if (tctx().cur && tctx().cur->find("&infix:<" + op + ">")) return false;
-    const long long lo = v.rFrom() + (v.rExFrom() ? 1 : 0), hi = v.rTo() - (v.rExTo() ? 1 : 0);
+    const long long lo = v.rFrom() + (v.rExFrom() && v.rFrom() != LLONG_MAX ? 1 : 0), hi = v.rTo() - (v.rExTo() && v.rTo() != LLONG_MIN ? 1 : 0);
     if (v.rTo() == 9223372036854775807LL) return false;   // endless: endlessReduce's
     if (op == "+") { out = methodCall(v, "sum", ValueList{}); return true; }
-    if (lo > hi) { out = Value::number(op == "min" ? INFINITY : -INFINITY); return true; }
+    // (…and one that excludes the int64 minimum as its end is empty too: `hi` above wrapped to the maximum)
+    if (lo > hi || (v.rExTo() && v.rTo() == LLONG_MIN)) { out = Value::number(op == "min" ? INFINITY : -INFINITY); return true; }
     out = Value::integer(op == "min" ? lo : hi);
     return true;
 }
