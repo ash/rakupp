@@ -57,7 +57,8 @@ and five from reviewing the open pull requests #232-#234: c0aa3e0e, 6004f84a,
 f11a9f04, 88f81c1f, 655d13dd;
 and three more: 63b92af7, f929935a, ae3321f2;
 and from the review of src/ (docs/dev/findings/src-review-2026-11-09.md): d389b329,
-9c5c4d82, 7e9c0387, 0c64680d, 60e9df1f, c6791c72.*
+9c5c4d82, 7e9c0387, 0c64680d, 60e9df1f, c6791c72, fbfa041a, 9d2cf3bf, 016f8d57,
+6d62482c, 96c81b9a.*
 
 ---
 
@@ -197,6 +198,29 @@ and from the review of src/ (docs/dev/findings/src-review-2026-11-09.md): d389b3
 
 ### Fixed: silent wrong answers
 
+- **A `temp` or `let` of an enclosing block is restored when an inner block's
+  LEAVE dies** (fbfa041a): `my $x = 1; try { { temp $x = 2; { LEAVE { die "L" };
+  die "B" } } }; say $x` said 2 — the inner block left without closing its
+  scope, and the enclosing one drained its restores against it. Finding A10 of
+  the review of src/. `t/regression/temp-restored-when-leave-dies.raku`.
+- **`$blob[0] += 1` is refused** (9d2cf3bf), as `=` is: the in-place lane for a
+  Buf element took a Blob too, and changed it. Finding A9.
+  `t/regression/blob-element-op-assign-refused.raku`.
+- **A subrule's action method sees the span its `<(` or `)>` marks, once**
+  (016f8d57): `token x { a <( b }` over "abc" called `method x` with "bc" from
+  1 to 0, then again with the right match. Finding F1.
+  `t/regression/subrule-action-sees-capture-span.raku`.
+- **`.log(0)`, `.log(1)`, `.words(-1)`, `.lines(-1)` and a `.substr` length
+  near the int64 maximum** (6d62482c): `5.log(0)` is -0 and `5.log(1)` a
+  division by zero, where both took a base of 0 for none; a negative limit is
+  no words or lines, where it was all of them; and `"abc".substr(1,
+  9223372036854775807)` is "bc", where it was empty (Rakudo dies there, on the
+  overflow this had). Findings D3, D4 and D1.
+  `t/regression/method-argument-edges.raku`.
+- **`[max]` and `[min]` over an Int Range that excludes the int64 minimum as
+  its end** (96c81b9a) are -Inf and Inf, where the end wrapped and they were
+  9223372036854775807 and the start. Finding B1.
+  `t/regression/range-reduce-excludes-int-minimum.raku`.
 - **A `use` that failed fails again** (7e9c0387): `try EVAL 'use No::Such';
   EVAL 'use No::Such; say "alive"'` printed alive — the name was entered as
   loaded before the search, and stayed. Rakudo dies both times. Finding C2 of
@@ -1025,3 +1049,8 @@ and from the review of src/ (docs/dev/findings/src-review-2026-11-09.md): d389b3
 - Found with d389b329, the same before it: `for @a[0] { $_ = 42 }` does not
   write the element (`@a[0]` stays as it was, where Rakudo has 42) — only a
   `$`-variable source is aliased; no crash.
+- Found with 96c81b9a, the same before it: a Range that ends past 9e18 or
+  starts below -9e18 is taken for an endless one — `[max]
+  1..9223372036854775807` is Inf and `[min] -9223372036854775807..5` -Inf,
+  where Rakudo has the endpoints. The mark is a value (9000000000000000000 in
+  76 places), not a flag.
