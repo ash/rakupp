@@ -9106,6 +9106,14 @@ void Interpreter::metaComposeHooks(ClassInfo* ci, const ClassDecl* cd, const std
         if (!role || !role->decl) continue;
         auto own = roleOwnHows_.find(role->decl);
         if (own == roleOwnHows_.end() || !userHowMethod(own->second, "specialize_with")) continue;
+        // Rakudo calls specialize_with from inside the HOW's `specialize`, so a
+        // metaobject that overrides `specialize` too wraps the call in what that
+        // sets up, and may not make it at all: Method::Also's declares the
+        // `$*TYPE-ENV` its specialize_with assigns, and died "not found" here.
+        // rakupp runs no user `specialize` (the work Method::Also does in it,
+        // a role's dispatcher aliases, is ClassInfo::alsoRoleAliases), and so
+        // calls no specialize_with that only it would have reached.
+        if (userHowMethod(own->second, "specialize")) continue;
         const Value roleHow = own->second;
         Value r = Value::typeObj(group);   // the role as its own body sees it
         r.hashKind = "\x01role-body";
