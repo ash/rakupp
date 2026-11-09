@@ -494,6 +494,12 @@ bool Interpreter::hyperSeqCall(const Value& inv, const std::string& m, ValueList
     // the elements of its own batches
     ValueList* const src = ar == 1 && inv.t == VT::Array && inv.arr() &&
                            items.size() == inv.arr()->size() ? inv.arr() : nullptr;
+    // …through the typed array's guard, as the serial map's (`my Int @a; @a.hyper.map({ $_ = "x" })` dies)
+    const Value wbGuard = src ? elemAliasGuard(inv, false, "") : Value::any();
+    auto alias = [&](size_t i) {
+        tctx().topicWriteback = &(*src)[i];
+        if (wbGuard.t == VT::Array) tctx().topicWritebackGuard = {&(*src)[i], &wbGuard};
+    };
     const bool asRoutine = c.ci().isBlock;
     const size_t total = items.size();
     const auto cfg = hyperCfgOf(inv);
@@ -511,7 +517,7 @@ bool Interpreter::hyperSeqCall(const Value& inv, const std::string& m, ValueList
                     throw RakuError{Value::typeObj("X::AdHoc"),
                         "Too few positionals passed; expected " + std::to_string(required) +
                             " arguments but got " + std::to_string(ca.size())};
-                if (src) tctx().topicWriteback = &(*src)[i];
+                if (src) alias(i);
                 tctx().forceRoutineFrame = asRoutine;
                 Value r;
                 try { r = callCallable(fn, std::move(ca)); }
@@ -524,7 +530,7 @@ bool Interpreter::hyperSeqCall(const Value& inv, const std::string& m, ValueList
             }
             for (;;) {   // (again from the top on a `redo`)
                 const Value v = items[i];
-                if (src) tctx().topicWriteback = &(*src)[i];
+                if (src) alias(i);
                 tctx().forceRoutineFrame = asRoutine;
                 bool match;
                 try { match = predAnswerTruthy(*this, callCallable(fn, ValueList{v}), v); }

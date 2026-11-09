@@ -2989,6 +2989,9 @@ Value Interpreter::execForStmt(Stmt* s, bool sink) {
                 return k < fs->varTraits.size() && (fs->varTraits[k] & ForStmt::VT_RW);
             };
             const std::string natT = nativeElemTypeOf(*src);   // (an element's alias: nativeElemTag)
+            // …and a typed array's element answers to its type when the body changed it (`$v = "x"` dies)
+            const Value kvGuard = (src->ofType().empty() && !src->elemDefault()) || le->kind != NK::VarExpr ? Value::any()
+                                : elemAliasGuard(*src, false, static_cast<VarExpr*>(le)->name);
             auto bindVar = [&](Env* sc, size_t k, Value v) {
                 if (!isRwVar(k)) v.readonly = true;
                 else if (!kvMode || k == 1) nativeElemTag(natT, v);
@@ -2996,6 +2999,7 @@ Value Interpreter::execForStmt(Stmt* s, bool sink) {
             };
             auto back = [&](size_t at, Value v) {
                 if (!natT.empty()) nativeElemStore(natT, v, 'o', (long long)at);
+                else if (kvGuard.t == VT::Array && !sameBoundValue(v, (*arr)[at])) v = elemAliasStore(kvGuard, std::move(v));
                 (*arr)[at] = std::move(v);
             };
             for (size_t i = 0; i < total; i += step) {
@@ -3040,7 +3044,10 @@ Value Interpreter::execForStmt(Stmt* s, bool sink) {
                 bool cont = runLoopBody(fs->body.get(), scope, fs->label, i == 0, i + 1 == keys.size(), col);
                 auto it = scope->vars.find(fs->vars[1]);
                 auto it1 = h->find(keys[i]);
-                if (it != scope->vars.end() && it1 != h->end()) it1->second = *it->second.deref();
+                if (it != scope->vars.end() && it1 != h->end()) {   // (a typed hash's value answers to its type)
+                    Value nv = *it->second.deref(); const bool typed = !src->ofType().empty() && le->kind == NK::VarExpr;
+                    it1->second = typed && !sameBoundValue(nv, it1->second) ? elemAliasStore(elemAliasGuard(*src, true, static_cast<VarExpr*>(le)->name), std::move(nv)) : nv;
+                }
                 if (!cont) break;
             }
             return forResult();
