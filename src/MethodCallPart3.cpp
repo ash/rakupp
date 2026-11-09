@@ -775,6 +775,156 @@ Value Interpreter::byCallableMinMaxPairs(const std::vector<std::pair<Value, Valu
     return out;
 }
 
+// `.polymod`, as Rakudo's Polymod iterators run it (Rakudo::Iterator): each
+// divisor leaves `n mod d` and goes on with `n div d` (a Real's: `n % d`, then
+// `(n - that) / d`); a divisor of 1 (an Int's: anything not over 1) ends it with
+// what is left, a 0 dies, and an infinite list stops once both are 0. A step
+// that leaves something false gives 0 in its place. A Junction divisor is taken
+// whole and runs through the same steps in Raku's own operators, so
+// `1.polymod(2 & 3)` is `(all(1, 1) 0)`, as `all(0, 0) || 0` is 0.
+static Value polymodSteps(Interpreter& I, const Value& inv, const ValueList& fin, const Value& tail, bool lazy) {
+    const bool isInt = inv.t == VT::Int || inv.t == VT::Bool;
+    Value out = Value::array(); out.isList = true;
+    size_t fi = 0, ti = 0;
+    ValueList tcache;
+    std::shared_ptr<LazySeqState> st;
+    if (tail.t == VT::Array && tail.arr()) { tcache = *tail.arr(); st = std::static_pointer_cast<LazySeqState>(tail.ext()); }
+    long long rnext = tail.t == VT::Range ? tail.rFrom() + (tail.rExFrom() ? 1 : 0) : 0;
+    auto next = [&](Value& d) -> bool {
+        if (fi < fin.size()) { d = fin[fi++]; return true; }
+        if (tail.t == VT::Range) { d = Value::integer(rnext++); return true; }
+        if (!st) return false;
+        while (ti >= tcache.size()) if (!st->appendNext(tcache)) return false;
+        d = tcache[ti++];
+        return true;
+    };
+    const Value one = Value::integer(1);
+    Value n = inv, d;
+    while (next(d)) {
+        if (isInt ? !I.applyBinOpPublic(">", d, one).truthy() && d.truthy() : I.applyBinOpPublic("==", d, one).truthy()) break;
+        if (!d.truthy()) {   // (a Junction's first eigenstate, as Rakudo's threaded `divide-by-zero` call names it)
+            Value shown = n;
+            while (isJunction(shown) && !shown.arr()->empty()) shown = Value((*shown.arr())[0]);
+            throw RakuError{Value::typeObj("X::Numeric::DivideByZero"), "Attempt to divide " + shown.toStr() + " by zero using polymod"};
+        }
+        const Value v = I.applyBinOpPublic(isInt ? "mod" : "%", n, d);
+        n = isInt ? I.applyBinOpPublic("div", n, d) : I.applyBinOpPublic("/", I.applyBinOpPublic("-", n, v), d);
+        if (v.truthy()) out.arr()->push_back(v);
+        else if (n.truthy() || !lazy) out.arr()->push_back(Value::integer(0));
+        else return out;
+    }
+    if (n.truthy()) out.arr()->push_back(n);
+    else if (!lazy) out.arr()->push_back(Value::integer(0));
+    return out;
+}
+static Value polymodOf(Interpreter& I, const Value& inv, const ValueList& args) {
+    // A NEGATIVE invocant has no polymod at all: Rakudo fails it with
+    // X::OutOfRange rather than running the loop on a negative remainder
+    // (it answered `(-1, 0)` for `(-1).polymod(2)`). N-22.
+    const bool isInt = inv.t == VT::Int || inv.t == VT::Bool;
+    if (isInt ? (inv.big() ? inv.big()->sign < 0 : inv.toInt() < 0) : inv.toNum() < 0)
+        return armedFailure("X::OutOfRange",
+            "invocant to polymod out of range. Is: " + inv.toStr() + ", should be in 0..^Inf");
+    Value out = Value::array(); out.isList = true;
+    long long n = inv.toInt();
+    // an infinite divisor list (10 xx *, 2..*) switches to pull-driven mode:
+    // stop as soon as n hits 0 (no trailing remainder); an exhausted list or
+    // a divisor of 1 pushes the remaining n and stops (Rakudo's rules)
+    bool lazy = false;      // (an infinite list only: `lazy 2, 3` is Rakudo's `2, 3`)
+    ValueList fin;          // finite divisor prefix
+    Value tail;             // an INFINITE tail (lazy array / endless Range)
+    for (auto& a : args) {
+        if (a.t == VT::Array && a.ext() &&
+            std::static_pointer_cast<LazySeqState>(a.ext())->infinite) { lazy = true; tail = a; break; }
+        if (a.t == VT::Range && a.rTo() >= 9000000000000000000LL) { lazy = true; tail = a; break; }
+        if (isJunction(a)) { fin.push_back(a); continue; }
+        for (auto& d : a.flatten()) fin.push_back(d);
+    }
+    if (!isInt || std::any_of(fin.begin(), fin.end(), [](const Value& d) { return isJunction(d); }))
+        return polymodSteps(I, inv, fin, tail, lazy);
+    if (!lazy) {
+        // A bigint invocant divides in BigInt: `inv.toInt()` saturates, so
+        // `0xFFFF_FFFF_FFFF_FFFF.polymod(256 xx 7)` answered a leading 0x7F
+        // instead of 0xFF — which is how SHA-512 lost its top byte on the way
+        // out of the digest. (The lazy-divisor branch below still works in
+        // long long; a bigint there wants the same treatment when something
+        // needs it.)
+        if (inv.big()) {
+            BigInt bn = *inv.big();
+            auto emit = [&](const BigInt& v) {
+                out.arr()->push_back(v.fitsLL() ? Value::integer(v.toLL()) : Value::bigint(v));
+            };
+            for (auto& d : fin) {
+                long long dv = d.toInt(); if (dv == 0) break;
+                BigInt q, r;
+                BigInt::divmod(bn, BigInt(dv), q, r);
+                emit(r);
+                bn = q;
+            }
+            emit(bn); // trailing remainder
+            return out;
+        }
+        for (auto& d : fin) {
+            // A divisor of ONE OR LESS stops the sequence and hands back
+            // what is left — `120.polymod(1, 10, 100)` is `(120,)`, not six
+            // zeros around a 12 (rakudo/rakudo#4523, which Roast asserts).
+            // A ZERO divisor is the divide-by-zero it looks like.
+            if (d.toNum() == 0)
+                throw RakuError{Value::typeObj("X::Numeric::DivideByZero"),
+                                "Attempt to divide " + std::to_string(n) +
+                                " by zero using polymod"};
+            if (d.toNum() <= 1) break;
+            long long dv = d.toInt();
+            out.arr()->push_back(Value::integer(n % dv));
+            n /= dv;
+        }
+        out.arr()->push_back(Value::integer(n)); // trailing remainder
+        return out;
+    }
+    size_t fi = 0, ti = 0;
+    ValueList tcache;
+    std::shared_ptr<LazySeqState> st;
+    if (tail.t == VT::Array && tail.arr()) { tcache = *tail.arr(); st = std::static_pointer_cast<LazySeqState>(tail.ext()); }
+    long long rnext = tail.t == VT::Range ? tail.rFrom() + (tail.rExFrom() ? 1 : 0) : 0;
+    auto next = [&](long long& d) -> bool {
+        if (fi < fin.size()) { d = fin[fi++].toInt(); return true; }
+        if (tail.t == VT::Range) { d = rnext++; return true; }
+        if (st) {
+            while (ti >= tcache.size()) if (!st->appendNext(tcache)) return false;
+            d = tcache[ti++].toInt();
+            return true;
+        }
+        return false;
+    };
+    // a bigint invocant divides in BigInt here too — `parse-base($hex,
+    // 16).polymod(256 xx *)` is how Digest's tests spell an expected blob,
+    // and the long-long path saturated it to 0x7FFF… bytes
+    if (inv.big()) {
+        BigInt bn = *inv.big();
+        while (!bn.isZero()) {
+            long long d;
+            if (!next(d) || d == 1) {
+                out.arr()->push_back(bn.fitsLL() ? Value::integer(bn.toLL()) : Value::bigint(bn));
+                break;
+            }
+            if (d == 0) break;
+            BigInt q, r;
+            BigInt::divmod(bn, BigInt(d), q, r);
+            out.arr()->push_back(r.fitsLL() ? Value::integer(r.toLL()) : Value::bigint(r));
+            bn = q;
+        }
+        return out;
+    }
+    while (n != 0) {
+        long long d;
+        if (!next(d) || d == 1) { out.arr()->push_back(Value::integer(n)); break; }
+        if (d == 0) break;
+        out.arr()->push_back(Value::integer(n % d));
+        n /= d;
+    }
+    return out;
+}
+
 // (a path that names a directory: `.slurp` and `.lines` refuse one)
 static bool isDirPath(const std::string& p) {
     struct stat st;
@@ -1192,135 +1342,8 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
         std::string out = frac.empty() ? istr : istr + "." + frac;
         return Value::str(neg && out.find_first_not_of("0.") != std::string::npos ? "-" + out : out);
     }
-    if (m == "polymod" && (inv.t == VT::Num || inv.t == VT::Rat)) {
-        // non-integer polymod stays in Value arithmetic (Rat exactness, Num):
-        // v % d is pushed, v becomes (v - mod) / d; a lazy list stops at v == 0
-        Value out = Value::array(); out.isList = true;
-        bool lazy = false; ValueList fin;
-        for (auto& a : args) {
-            if (a.t == VT::Array && a.ext() &&
-                std::static_pointer_cast<LazySeqState>(a.ext())->infinite) { lazy = true; break; }
-            if (a.t == VT::Array && a.b) lazy = true; // `lazy 2, 3`
-            for (auto& d : a.flatten()) fin.push_back(d);
-        }
-        Value v = inv;
-        for (size_t i = 0; ; i++) {
-            bool have = i < fin.size();
-            if (lazy) {
-                if (!v.truthy()) break;
-                if (!have || fin[i].toNum() == 1.0) { out.arr()->push_back(v); break; }
-            }
-            else if (!have) { out.arr()->push_back(v); break; }
-            Value mod = applyBinOp("%", v, fin[i]);
-            out.arr()->push_back(mod);
-            v = applyBinOp("/", applyBinOp("-", v, mod), fin[i]);
-        }
-        return out;
-    }
-    if (m == "polymod" && (inv.t == VT::Int || inv.t == VT::Bool)) { // successive divmod by each divisor
-        // A NEGATIVE invocant has no polymod at all: Rakudo fails it with
-        // X::OutOfRange rather than running the loop on a negative remainder
-        // (it answered `(-1, 0)` for `(-1).polymod(2)`). N-22.
-        if (inv.big() ? inv.big()->sign < 0 : inv.toInt() < 0)
-            return armedFailure("X::OutOfRange",
-                "invocant to polymod out of range. Is: " + inv.toStr() + ", should be in 0..^Inf");
-        Value out = Value::array(); out.isList = true;
-        long long n = inv.toInt();
-        // a lazy divisor list (10 xx *, lazy 2,3) switches to pull-driven mode:
-        // stop as soon as n hits 0 (no trailing remainder); an exhausted list or
-        // a divisor of 1 pushes the remaining n and stops (Rakudo's rules)
-        bool lazy = false;
-        ValueList fin;          // finite divisor prefix
-        Value tail;             // an INFINITE tail (lazy array / endless Range)
-        for (auto& a : args) {
-            if (a.t == VT::Array && a.ext() &&
-                std::static_pointer_cast<LazySeqState>(a.ext())->infinite) { lazy = true; tail = a; break; }
-            if (a.t == VT::Range && a.rTo() >= 9000000000000000000LL) { lazy = true; tail = a; break; }
-            if (a.t == VT::Array && a.b) lazy = true; // `lazy 2, 3` — finite but lazy
-            for (auto& d : a.flatten()) fin.push_back(d);
-        }
-        if (!lazy) {
-            // A bigint invocant divides in BigInt: `inv.toInt()` saturates, so
-            // `0xFFFF_FFFF_FFFF_FFFF.polymod(256 xx 7)` answered a leading 0x7F
-            // instead of 0xFF — which is how SHA-512 lost its top byte on the way
-            // out of the digest. (The lazy-divisor branch below still works in
-            // long long; a bigint there wants the same treatment when something
-            // needs it.)
-            if (inv.big()) {
-                BigInt bn = *inv.big();
-                auto emit = [&](const BigInt& v) {
-                    out.arr()->push_back(v.fitsLL() ? Value::integer(v.toLL()) : Value::bigint(v));
-                };
-                for (auto& d : fin) {
-                    long long dv = d.toInt(); if (dv == 0) break;
-                    BigInt q, r;
-                    BigInt::divmod(bn, BigInt(dv), q, r);
-                    emit(r);
-                    bn = q;
-                }
-                emit(bn); // trailing remainder
-                return out;
-            }
-            for (auto& d : fin) {
-                // A divisor of ONE OR LESS stops the sequence and hands back
-                // what is left — `120.polymod(1, 10, 100)` is `(120,)`, not six
-                // zeros around a 12 (rakudo/rakudo#4523, which Roast asserts).
-                // A ZERO divisor is the divide-by-zero it looks like.
-                if (d.toNum() == 0)
-                    throw RakuError{Value::typeObj("X::Numeric::DivideByZero"),
-                                    "Attempt to divide " + std::to_string(n) +
-                                    " by zero using polymod"};
-                if (d.toNum() <= 1) break;
-                long long dv = d.toInt();
-                out.arr()->push_back(Value::integer(n % dv));
-                n /= dv;
-            }
-            out.arr()->push_back(Value::integer(n)); // trailing remainder
-            return out;
-        }
-        size_t fi = 0, ti = 0;
-        ValueList tcache;
-        std::shared_ptr<LazySeqState> st;
-        if (tail.t == VT::Array && tail.arr()) { tcache = *tail.arr(); st = std::static_pointer_cast<LazySeqState>(tail.ext()); }
-        long long rnext = tail.t == VT::Range ? tail.rFrom() + (tail.rExFrom() ? 1 : 0) : 0;
-        auto next = [&](long long& d) -> bool {
-            if (fi < fin.size()) { d = fin[fi++].toInt(); return true; }
-            if (tail.t == VT::Range) { d = rnext++; return true; }
-            if (st) {
-                while (ti >= tcache.size()) if (!st->appendNext(tcache)) return false;
-                d = tcache[ti++].toInt();
-                return true;
-            }
-            return false;
-        };
-        // a bigint invocant divides in BigInt here too — `parse-base($hex,
-        // 16).polymod(256 xx *)` is how Digest's tests spell an expected blob,
-        // and the long-long path saturated it to 0x7FFF… bytes
-        if (inv.big()) {
-            BigInt bn = *inv.big();
-            while (!bn.isZero()) {
-                long long d;
-                if (!next(d) || d == 1) {
-                    out.arr()->push_back(bn.fitsLL() ? Value::integer(bn.toLL()) : Value::bigint(bn));
-                    break;
-                }
-                if (d == 0) break;
-                BigInt q, r;
-                BigInt::divmod(bn, BigInt(d), q, r);
-                out.arr()->push_back(r.fitsLL() ? Value::integer(r.toLL()) : Value::bigint(r));
-                bn = q;
-            }
-            return out;
-        }
-        while (n != 0) {
-            long long d;
-            if (!next(d) || d == 1) { out.arr()->push_back(Value::integer(n)); break; }
-            if (d == 0) break;
-            out.arr()->push_back(Value::integer(n % d));
-            n /= d;
-        }
-        return out;
-    }
+    if (m == "polymod" && (inv.t == VT::Int || inv.t == VT::Bool || inv.t == VT::Num || inv.t == VT::Rat))
+        return polymodOf(*this, inv, args);   // successive divmod by each divisor
     // trigonometry as methods (radians): $x.sin, $x.asin, ... (Str is Cool -> numeric)
     //
     // EVERY Cool gets these, not just the numeric ones: a List/Array/Hash/Range

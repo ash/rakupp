@@ -1734,6 +1734,10 @@ size_t topLevelComma(const std::string& s) {   // (shared: MethodCallPart3.cpp)
     }
     return std::string::npos;
 }
+char ofTypeSmiley(const std::string& ofType) {
+    const size_t n = std::min(topLevelComma(ofType), ofType.size());   // (the value type of `Int:D,Str`)
+    return n > 2 && ofType[n - 2] == ':' && ofType[n - 3] != ':' && (ofType[n - 1] == 'D' || ofType[n - 1] == 'U') ? ofType[n - 1] : 0;
+}
 std::string elemTypeOfSpec(const std::string& ofType) {
     if (ofType.empty()) return "";
     std::string first = ofType.substr(0, topLevelComma(ofType));
@@ -2016,8 +2020,8 @@ char Interpreter::elemSmileyOf(const std::string& symbol) {
 }
 // …and the check: an element of a `:D` container must be defined, of a `:U`
 // one undefined (X::TypeCheck::Assignment naming the container).
-void Interpreter::checkElemSmiley(const std::string& symbol, const std::string& type, const Value& v) {
-    char sm = elemSmileyOf(symbol);
+void Interpreter::checkElemSmiley(const std::string& symbol, const std::string& type, const Value& v, char sm) {
+    if (!sm) sm = elemSmileyOf(symbol);
     if (!sm) return;
     const std::string base = type.empty() ? std::string("Any") : type;
     const Value got = v.t == VT::Nil ? Value::typeObj(base) : v;   // (a Nil is the default it resets to)
@@ -2029,19 +2033,22 @@ void Interpreter::checkElemSmiley(const std::string& symbol, const std::string& 
         "Type check failed for an element of " + symbol + "; expected " + want + " but got " + smileyGot(got, sm));
 }
 
-void Interpreter::checkElemType(const std::string& want, const Value& v, const std::string& symbol) {
-    if (!want.empty() && !typeNameLead(want[0]) && isNativeTypeName(want)) return;   // (coerceElemValue checked it)
-    // Nil RESETS the element to its default — the bare type, which a `:D`
-    // element type refuses (`my Int:D @a; @a[2] = Nil` dies)
-    if (v.t == VT::Nil && want.size() > 2 && want.compare(want.size() - 2, 2, ":D") == 0) {
-        const std::string base = want.substr(0, want.size() - 2);
-        throwTypedV("X::TypeCheck::Assignment",
-                    {{"got", Value::typeObj(base)}, {"expected", Value::typeObj(want)}},
-                    "Type check failed for an element of " +
-                        (symbol.empty() ? std::string("the container") : symbol) +
-                        "; expected " + want + " but got " + base + " (" + base + ")");
-    }
+void Interpreter::checkElemType(const std::string& spec, const Value& v, const std::string& symbol) {
+    if (!spec.empty() && !typeNameLead(spec[0]) && isNativeTypeName(spec)) return;   // (coerceElemValue checked it)
+    // Nil RESETS the element to its default, which is judged where it lands
+    // (`my Int:D @a; @a[2] = Nil` dies there, an `is default(7)` takes it)
     if (v.t == VT::Nil) return;
+    // an `Int:D` element type is the type, then the smiley: `my Int:D @a;
+    // @a.push(Int)` dies, and a refusal names the whole of it, as Rakudo's does
+    const char sm = ofTypeSmiley(spec);
+    const std::string want = sm ? spec.substr(0, spec.size() - 2) : spec;
+    const auto refused = [&](const std::string& got) {   // (`.symbol` names the container, when there is a name)
+        std::vector<std::pair<std::string, Value>> attrs{{"got", v}, {"expected", Value::typeObj(spec)}};
+        if (!symbol.empty()) attrs.emplace_back("symbol", Value::str(symbol));
+        throwTypedV("X::TypeCheck::Assignment", std::move(attrs),
+                    "Type check failed for an element of " + (symbol.empty() ? std::string("the container") : symbol) +
+                        "; expected " + spec + " but got " + got);
+    };
     // a COERCION type's element is its target once coerceElemValue ran
     // (the message still names the whole `Int(Str)`)
     std::string target = coercionTarget(want);
@@ -2057,13 +2064,11 @@ void Interpreter::checkElemType(const std::string& want, const Value& v, const s
         if (typeOrSubsetMatches(v, want.substr(0, br)) &&
             v.ofType() == want.substr(br + 1, want.size() - br - 2)) return;
     }
-    else if (typeOrSubsetMatches(v, want)) return;
-    throwTypedV("X::TypeCheck::Assignment",
-                {{"got", v}, {"expected", Value::typeObj(want)}},
-                "Type check failed for an element of " +
-                    (symbol.empty() ? std::string("the container") : symbol) +
-                    "; expected " + want + " but got " + v.typeName() +
-                    (isDefined(v) ? " (" + typeCheckRepr(v) + ")" : " " + v.gist()));
+    else if (typeOrSubsetMatches(v, want)) {
+        if (sm && (sm == 'D') != isDefined(v)) refused(smileyGot(v, sm));
+        return;
+    }
+    refused(v.typeName() + (isDefined(v) ? " (" + typeCheckRepr(v) + ")" : " " + v.gist()));
 }
 
 // A store through an ALIAS of an element answers to the container the element

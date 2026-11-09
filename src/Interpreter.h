@@ -168,6 +168,7 @@ Value makeBaggy(const ValueList& items, const std::string& kind,
 Value numifyStr(std::string_view in);
 std::string asciiDecimalDigits(std::string_view s);   // "٢٠١٠" → "2010": any Nd digit as its ASCII one
 std::string smileyGot(const Value& got, char sm);   // "Int (Int) (perhaps Nil was assigned …)" (InterpreterOperators.cpp)
+char ofTypeSmiley(const std::string& ofType);       // 'D' of an `Int:D` element type, 'U' of `Int:U`, else 0 (InterpreterBinding.cpp)
 // numifyStr, but a string that isn't a number THROWS X::Str::Numeric the way
 // Rakudo does in numeric context (`"a" + 1`), instead of silently reading as 0.
 Value numifyStrOrThrow(std::string_view in);
@@ -2738,7 +2739,7 @@ public:
     void reviewUserInfixPending();   // after a class or a subset is declared
     Value declInitial(const VarExpr* ve, char sigil); // a declaration's starting value (parameterized types included)
     char elemSmileyOf(const std::string& symbol);
-    void checkElemSmiley(const std::string& symbol, const std::string& type, const Value& v);
+    void checkElemSmiley(const std::string& symbol, const std::string& type, const Value& v, char sm = 0);
     void checkDeclDefault(const std::string& declType, char sigil, const Value& dv, bool attr, char smiley = 0); // `is default(v)` vs the declared type
     Value containerOfExpr(Expr* e);                  // the container an expression denotes, for BIND-POS
     Value rtNameTerm(const std::string& n); // bareword: env value / &call / builtin / type object (used by codegen)
@@ -3532,6 +3533,7 @@ public:
     Value elemGuardAt(const Expr* e, std::string* nativeT = nullptr);   // …of the element `@a[i]` names, or Any
     Value elemLoopGuard(const Expr* e);                  // …of the array behind a `for`'s view (`@a.grep(…)`)
     bool bindElemMethodAlias(Assign* a, Value& out);     // `$x := @a.AT-POS(1)`: the element's container
+    bool mapHashValues(MethodCall* mc, Value& out);      // `%h.values.map(…)` over the hash's own values (MethodCallTail.cpp)
     Value sliceElemStore(const Value& container, bool isHash, Value& v, const std::string& symbol);
     Value sliceStoreResult(const Value& container);
     void checkElemType(const std::string& want, const Value& v, const std::string& symbol);

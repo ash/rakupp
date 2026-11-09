@@ -6545,10 +6545,11 @@ Value Interpreter::methodCall(const Value& inv, const std::string& m, ValueList 
             (opEq(m, "say") || opEq(m, "print") || opEq(m, "note") || opEq(m, "put"))) break;
         if (methodTakesJunction(inv, m, ai)) continue;  // the signature asked for it whole
         // …and so do the built-ins whose parameters are slurpies or Mu: a list's
-        // push/append/unshift/prepend/splice, and a QuantHash's `.new`
+        // push/append/unshift/prepend/splice, a QuantHash's `.new` and a number's `.polymod`
         static const std::set<std::string> kJunctionWhole = {"push", "append", "unshift", "prepend", "splice"};
         static const std::set<std::string> kQuantHash = {"Set", "SetHash", "Bag", "BagHash", "Mix", "MixHash"};
-        if (kJunctionWhole.count(m) || (m == "new" && inv.t == VT::Type && kQuantHash.count(std::string(inv.s.str())))) continue;
+        if (kJunctionWhole.count(m) || (m == "new" && inv.t == VT::Type && kQuantHash.count(std::string(inv.s.str()))) ||
+            (opEq(m, "polymod") && (inv.t == VT::Int || inv.t == VT::Num || inv.t == VT::Rat))) continue;
         if (first == args.size()) first = ai;
         if (args[ai].enumName == "all" || args[ai].enumName == "none") { first = ai; break; }
     }
@@ -10350,6 +10351,17 @@ Value Interpreter::methodCallUnresolved(const Value& inv, const MName& m, ValueL
         if ((m == "DELETE-KEY" || m == "DELETE-POS") && args.size() == 1)
             throw RakuError{Value::typeObj("X::AdHoc"), std::string("Can not remove ") + (m == "DELETE-KEY" ? "values" : "elements") +
                                                         " from a " + inv.typeName()};
+        // …and Any's mutators and `.sum` (its `.Numeric`), whose candidates take no defined object, in Rakudo's words
+        if (m == "push" || m == "append" || m == "unshift" || m == "prepend" || m == "splice" || (m == "sum" && args.empty())) {
+            if (m == "sum" && inv.t == VT::Object && inv.obj()->cls->findMethod("Numeric")) return methodCall(inv, "Numeric", {});
+            const std::string prof = noMatchProfile(inv, args, m != "splice");
+            throw RakuError{Value::typeObj("X::Multi::NoMatch"), m == "splice"
+                ? "Cannot resolve caller splice(" + inv.typeName() + ":D" + (prof.empty() ? "" : ", " + prof) + "); Routine does not have any candidates.  Is only the proto defined?"
+                : "Cannot resolve caller " + (m == "sum" ? std::string("Numeric") : m.s) + "(" + prof + (prof.back() == ':' ? " " : "") +
+                  "); none of these signatures matches:\n    " + (m == "sum" ? "(Mu:U \\v:: *%_)" : "(Any:U \\SELF:: |values)")};
+        }
+        if (m == "sum")
+            throw RakuError{Value::typeObj("X::AdHoc"), "Too many positionals passed; expected 1 argument but got " + std::to_string(args.size() + 1)};
     }
     // `.CREATE` on an INSTANCE allocates another of its TYPE: Rakudo's CREATE is
     // Mu's, and nothing in it needs a type object. `$obj.CREATE` died here for

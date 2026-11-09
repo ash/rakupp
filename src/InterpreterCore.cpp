@@ -11960,6 +11960,7 @@ Value* Interpreter::lvalue(Expr* e, bool asInvocant) {
         // lastLvalueAttrType). Cleared by the assignment before it asks.
         if (base) {
             tcx.lastLvalueElemType = elemTypeForStore(*base, idx->isHash);
+            if (const char sm = ofTypeSmiley(base->ofType()); sm && !tcx.lastLvalueElemType.empty()) (tcx.lastLvalueElemType += ':') += sm;   // (`Int:D`)
             if (!tcx.lastLvalueElemType.empty() && !idx->isHash && base->t == VT::Array && base->arr()) {
                 tcx.lastLvalueGrowBase = base;
                 tcx.lastLvalueGrowSize = base->arr()->size();
@@ -13208,9 +13209,9 @@ static bool intOpAssignInPlace(Interpreter& I, Value* slot, const Value& rhs, si
     return true;
 }
 
-// The element an OP= into a typed container refused, as Rakudo names it:
-// `@a[0]`, `%h{'a'}`. An index that is not a literal or a variable would
-// have to run a second time, so that keeps the container's bare name.
+// The element a `//=`, `||=` or `&&=` into a typed container refused, as Rakudo
+// names it: `@a[0]`, `%h{'a'}` (another OP= names the container). An index that is
+// not a literal or a variable would run twice, so that keeps the bare name.
 static std::string opAssignElemName(Interpreter& I, Index* ix) {
     std::string base = containerNameOf(ix->base.get(), ix->isHash ? '%' : '@');
     if (!ix->index || ix->multiDim || base.empty() || (base[0] != '@' && base[0] != '%')) return base;
@@ -16608,16 +16609,15 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
                 checkElemType(want, rhs, containerNameOf(mct->inv.get(), mct->method == "AT-KEY" ? '%' : '@'));
             }
         }
-        // `my Int:D @a … ; @a[0] = Int` — the element smiley (Nil is a reset to its default)
+        // `my Int:D @a … ; @a[0] = Int` — the element smiley (Nil is a reset to its default, an `Array[Int:D]`'s too)
         if (opEq(a->op, "=") && a->target->kind == NK::Index) {
             auto* ixt = static_cast<Index*>(a->target.get());
             if (ixt->base && ixt->base->kind == NK::VarExpr) {
                 const std::string& cn = static_cast<VarExpr*>(ixt->base.get())->name;
-                if (elemSmileyOf(cn)) {
-                    Value* cv = tctx().cur->find(cn);
-                    checkElemSmiley(cn, cv ? elemTypeOf(*cv) : std::string(),
-                                    rhs.t == VT::Nil && cv && cv->elemDefault() ? *cv->elemDefault() : rhs);
-                }
+                char sm = elemSmileyOf(cn);
+                Value* cv = sm || rhs.t == VT::Nil ? tctx().cur->find(cn) : nullptr;
+                if (!sm && cv) sm = ofTypeSmiley(cv->ofType());
+                if (sm) checkElemSmiley(cn, cv ? elemTypeOf(*cv) : std::string(), rhs.t == VT::Nil && cv && cv->elemDefault() ? *cv->elemDefault() : rhs, sm);
             }
         }
         tctx().lastLvalueElemType.clear();
@@ -17536,7 +17536,7 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
             auto* ixt = static_cast<Index*>(a->target.get());
             try {
                 coerceElemValue(*this, opElemWant, *lv);
-                checkElemType(opElemWant, *lv, opAssignElemName(*this, ixt));
+                checkElemType(opElemWant, *lv, containerNameOf(ixt->base.get(), ixt->isHash ? '%' : '@'));
             } catch (...) { *lv = opElemPrev; throw; }
         }
         return sink ? Value::any() : slotRead(lv);
@@ -31947,64 +31947,9 @@ Value Interpreter::evalMethodCallExpr(Expr* e, Value* handedInv) {
                 }
         }
     }
-    // `%h.values.map({ $_ = 0 })` — Rakudo's `.values` hands out the hash's
-    // own containers, so a write to the topic lands in the hash; in a
-    // SetHash/BagHash/MixHash a weight of 0 deletes the key (quanthash.t).
-    // Our `.values` is a list of copies, so the shape is walked here, one
-    // key at a time, with each slot's topic written back after the block.
-    if ((opEq(mc->method, "map") || opEq(mc->method, "grep")) && mc->args.size() == 1 && !mc->meta &&
-        !mc->hyper && !mc->methodExpr && mc->inv && mc->inv->kind == NK::MethodCall && mc->args[0] &&
-        mc->args[0]->kind == NK::BlockExpr) {
-        auto* vm = static_cast<MethodCall*>(mc->inv.get());
-        if (opEq(vm->method, "values") && vm->args.empty() && !vm->meta && !vm->hyper && !vm->methodExpr &&
-            vm->inv && vm->inv->kind == NK::VarExpr) {
-            auto* ve = static_cast<VarExpr*>(vm->inv.get());
-            Value* hv = !ve->declare && !ve->name.empty() && (ve->name[0] == '%' || ve->name[0] == '$')
-                ? tctx().cur->find(ve->name) : nullptr;
-            const std::string hk = hv && hv->t == VT::Hash ? hv->hashKind : std::string("-");
-            if (hv && hv->hash() && (hk.empty() || hk == "SetHash" || hk == "BagHash" || hk == "MixHash")) {
-                Value fn = eval(mc->args[0].get());
-                if (fn.t == VT::Code && fn.code() && !fn.code()->ci().builtin && codeArity(fn) == 1 &&
-                    (!fn.code()->ci().params || fn.code()->ci().params->empty())) {
-                    auto h = hv->hashS();
-                    std::vector<std::string> keys;
-                    for (auto& kv : *h) keys.push_back(kv.first);
-                    Value out = Value::array(); out.isList = true; out.s = "Seq";
-                    // (a typed hash's value refuses what its type does: #184)
-                    const Value vGuard = hk.empty() ? elemAliasGuard(*hv, true, ve->name) : Value::any();
-                    for (auto& k : keys) {
-                        auto it0 = h->find(k);
-                        if (it0 == h->end()) continue;
-                        Value slot = it0->second;
-                        const Value before = slot;
-                        tctx().topicWriteback = &slot;
-                        Value r;
-                        try { r = callCallable(fn, ValueList{slot}); }
-                        catch (LastEx&) { tctx().topicWriteback = nullptr; break; }
-                        catch (NextEx&) { tctx().topicWriteback = nullptr; continue; }
-                        tctx().topicWriteback = nullptr;
-                        if (!valueEqv(slot, before) && h->count(k)) {
-                            if (hk.empty()) (*h)[k] = vGuard.t == VT::Array ? elemAliasStore(vGuard, slot) : slot;
-                            else if (hk == "SetHash") { if (slot.truthy()) (*h)[k] = Value::boolean(true); else h->erase(k); }
-                            else if (hk == "BagHash") {
-                                long long n = slot.toInt();
-                                if (n <= 0) h->erase(k); else (*h)[k] = Value::integer(n);
-                            }
-                            else if (slot.toNum() == 0.0) h->erase(k);
-                            else (*h)[k] = slot;
-                        }
-                        if (opEq(mc->method, "map")) {
-                            if (r.t == VT::Array && r.isList && r.s == "Slip")
-                                for (auto& x : *r.arr()) out.arr()->push_back(x);
-                            else out.arr()->push_back(r);
-                        }
-                        else if (predAnswerTruthy(*this, r, slot)) out.arr()->push_back(slot);
-                    }
-                    return out;
-                }
-            }
-        }
-    }
+    // `%h.values.map({ $_ = 0 })` writes the hash's own values (mapHashValues, MethodCallTail.cpp)
+    if ((opEq(mc->method, "map") || opEq(mc->method, "grep")) && mc->inv && mc->inv->kind == NK::MethodCall)
+        if (Value out; mapHashValues(mc, out)) return out;
     // This call is the TAIL of a binding's right-hand side, so `.value`
     // names the Pair's CONTAINER rather than a copy of what it holds —
     // `my $node-value := do with $stream { … } else { $node.value }` is

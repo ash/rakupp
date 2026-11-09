@@ -654,6 +654,73 @@ static size_t firstMatchIndex(Interpreter& I, const Value& inv, ValueList& items
     return items.size();
 }
 
+// `%h.values.map({ $_ = 0 })` — Rakudo's `.values` hands out the hash's
+// own containers, so a write to the topic lands in the hash; in a
+// SetHash/BagHash/MixHash a weight of 0 deletes the key (quanthash.t).
+// Our `.values` is a list of copies, so the shape is walked here, one
+// key at a time, with each slot's topic written back after the block —
+// or, for an `is rw`, raw or `\x` parameter, bound to it (RwSlotScope):
+// `%h.values.map(-> $v is rw { $v++ })`. False leaves the call to the
+// general path, before anything ran.
+bool Interpreter::mapHashValues(MethodCall* mc, Value& out) {
+    if ((opEq(mc->method, "map") || opEq(mc->method, "grep")) && mc->args.size() == 1 && !mc->meta &&
+        !mc->hyper && !mc->methodExpr && mc->inv && mc->inv->kind == NK::MethodCall && mc->args[0] &&
+        (mc->args[0]->kind == NK::BlockExpr || mc->args[0]->kind == NK::VarExpr)) {
+        auto* vm = static_cast<MethodCall*>(mc->inv.get());
+        if (opEq(vm->method, "values") && vm->args.empty() && !vm->meta && !vm->hyper && !vm->methodExpr &&
+            vm->inv && vm->inv->kind == NK::VarExpr) {
+            auto* ve = static_cast<VarExpr*>(vm->inv.get());
+            Value* hv = !ve->declare && !ve->name.empty() && (ve->name[0] == '%' || ve->name[0] == '$')
+                ? tctx().cur->find(ve->name) : nullptr;
+            const std::string hk = hv && hv->t == VT::Hash ? hv->hashKind : std::string("-");
+            if (hv && hv->hash() && (hk.empty() || hk == "SetHash" || hk == "BagHash" || hk == "MixHash")) {
+                Value fn = eval(mc->args[0].get());
+                const bool rw = takesRwParam(fn);
+                if (fn.t == VT::Code && fn.code() && !fn.code()->ci().builtin && codeArity(fn) == 1 &&
+                    (!fn.code()->ci().params || fn.code()->ci().params->empty() || rw)) {
+                    auto h = hv->hashS();
+                    std::vector<std::string> keys;
+                    for (auto& kv : *h) keys.push_back(kv.first);
+                    out = Value::array(); out.isList = true; out.s = "Seq";
+                    // (a typed hash's value refuses what its type does: #184)
+                    const Value vGuard = hk.empty() ? elemAliasGuard(*hv, true, ve->name) : Value::any();
+                    for (auto& k : keys) {
+                        auto it0 = h->find(k);
+                        if (it0 == h->end()) continue;
+                        Value slot = it0->second;
+                        const Value before = slot;
+                        if (!rw) tctx().topicWriteback = &slot;
+                        Value r;
+                        RwSlotScope rws(tctx(), rw ? &slot : nullptr, 1);
+                        try { r = callCallable(fn, ValueList{slot}); }
+                        catch (LastEx&) { tctx().topicWriteback = nullptr; break; }
+                        catch (NextEx&) { tctx().topicWriteback = nullptr; continue; }
+                        tctx().topicWriteback = nullptr;
+                        if (!valueEqv(slot, before) && h->count(k)) {
+                            if (hk.empty()) (*h)[k] = vGuard.t == VT::Array ? elemAliasStore(vGuard, slot) : slot;
+                            else if (hk == "SetHash") { if (slot.truthy()) (*h)[k] = Value::boolean(true); else h->erase(k); }
+                            else if (hk == "BagHash") {
+                                long long n = slot.toInt();
+                                if (n <= 0) h->erase(k); else (*h)[k] = Value::integer(n);
+                            }
+                            else if (slot.toNum() == 0.0) h->erase(k);
+                            else (*h)[k] = slot;
+                        }
+                        if (opEq(mc->method, "map")) {
+                            if (r.t == VT::Array && r.isList && r.s == "Slip")
+                                for (auto& x : *r.arr()) out.arr()->push_back(x);
+                            else out.arr()->push_back(r);
+                        }
+                        else if (predAnswerTruthy(*this, r, slot)) out.arr()->push_back(slot);
+                    }
+                    return true;
+                }
+            }
+        }
+    }
+    return false;
+}
+
 // The elements `.append(LIST)` / `.prepend(LIST)` add: a FINITE lazy list is
 // read to its end first, since its buffer holds only what was pulled — a map
 // a routine returned appended nothing. (An endless one was refused already.)
@@ -5227,6 +5294,7 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
             // way — that is the half natCheck left out, and it is why
             // `has Str @.data` silently accepted Ints (issue #63).
             const std::string boxedElem = elemTypeOf(inv);
+            const std::string boxedSpec = ofTypeSmiley(inv.ofType()) ? boxedElem + ':' + ofTypeSmiley(inv.ofType()) : boxedElem;
             // Both checks see the value that ACTUALLY LANDS, so they run per
             // arm, after append/prepend's one-level flattening: `my int @a;
             // @a.append([1,2])` appends two ints and is legal (natCheck read
@@ -5236,7 +5304,7 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
                 natCheck(v);
                 if (!boxedElem.empty()) {
                     coerceElemValue(*this, boxedElem, v);   // `my Int() @a; @a.push: "3"`
-                    checkElemType(boxedElem, v, "");
+                    checkElemType(boxedSpec, v, "");          // (`my Int:D @a; @a.push: Int` dies)
                 }
             };
             // P3 (the no-crash contract): in parallel mode the structural

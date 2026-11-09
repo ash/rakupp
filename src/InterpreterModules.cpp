@@ -8373,6 +8373,9 @@ static void refuseRoleClashes(Interpreter& I, const std::string& clsName, const 
                     auto sug = typeSuggestions(tn);
                     Value sl = Value::array();   // (an Array, as Rakudo's)
                     for (auto& n : sug) sl.arr()->push_back(Value::str(n));
+                    // (…and the refused type leaves nothing behind: `class C {}` may follow it, as on Rakudo)
+                    if (auto it = classes_.find(clsName); it != classes_.end() && it->second == ci) classes_.erase(it);
+                    lastDecl_.erase(clsName);
                     throwTypedV("X::Inheritance::UnknownParent",
                         {{"child", Value::str(cd->name)}, {"parent", Value::str(tn)}, {"suggestions", sl}},
                         unknownParentMessage(cd->name, tn, sug));
