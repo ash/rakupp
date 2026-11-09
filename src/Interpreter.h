@@ -6156,6 +6156,8 @@ std::string rtInterpStr(const Value& v);
 // `@a[*-1] = v` (native codegen): a Whatever/WhateverCode subscript resolved
 // against the array's element count, then the ordinary autovivifying slot.
 Value& rtIndexRefW(Value& base, const Value& key);
+// …and the subscript it resolves: `*` and a `*-1` against the elements there are
+Value rtStarKey(const Value& base, const Value& key);
 // `$buf.push(…)` (native codegen): a mutator on a Buf/Blob writes its result
 // back into the invocant's variable, as the interpreter's does (AotModules.cpp).
 Value rtMutMethod(Interpreter& I, Value& inv, const char* name, ValueList args);

@@ -3549,15 +3549,16 @@ void Interpreter::rtUse(const std::string& module, const std::string& arg, bool 
 // a one-level splice marker — the consumer (map, list assignment) splices the
 // top-level elements; itemized inner arrays stay whole. Mirrors the interp,
 // where the value-position slip returns the array and the consumer flattens.
-Value& rtIndexRefW(Value& base, const Value& key) {
+Value rtStarKey(const Value& base, const Value& key) {
     Value idx = key;
-    Value* b = base.deref();
+    const Value* b = base.deref();
     const long long n = b->t == VT::Array && b->arr() ? (long long)b->arr()->size() : 0;
     if (key.t == VT::Whatever) idx = Value::integer(n);
     else if (key.t == VT::Code && key.code() && key.code()->ci().isWhateverCode)
         if (Interpreter* I = Interpreter::liveTarget()) idx = I->callCallable(key, ValueList{Value::integer(n)});
-    return rtIndexRef(base, idx, false);
+    return idx;
 }
+Value& rtIndexRefW(Value& base, const Value& key) { return rtIndexRef(base, rtStarKey(base, key), false); }
 
 std::string rtInterpStr(const Value& v) {
     if (v.t == VT::Str && v.hashKind.empty() && v.enumName.empty()) return v.s.copyText();
