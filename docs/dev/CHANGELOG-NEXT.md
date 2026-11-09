@@ -49,7 +49,9 @@ and one more: 5932b773;
 and three more: edc36182, 3d4a3a91, 57cc8291;
 and two more: c1c8743d, 628ad9cb;
 and two more: 49808203, 25975633;
-and 0d87a53e (#235) and 5a0e9868.*
+and 0d87a53e (#235) and 5a0e9868;
+and five from reviewing the open pull requests #232-#234: c0aa3e0e, 6004f84a,
+f11a9f04, 88f81c1f, 655d13dd.*
 
 ---
 
@@ -514,6 +516,17 @@ and 0d87a53e (#235) and 5a0e9868.*
   list, an Array's element and an Array inside an Array were spread where
   `.flat` keeps them whole, and a Hash stayed one element where `.flat` gives
   its pairs. `t/regression/flatmap-is-map-then-flat.raku`.
+- **A class's `does W['B']` composes the candidate the arguments fit**
+  (c0aa3e0e). With `role W['A']` beside `role W['B']` the class got W['A']
+  and none of W['B']'s methods: a literal parameter took any value of its
+  type, and the earliest candidate won (a run-time `but W['B']` was right).
+  The choice is Rakudo's multi-dispatch over the candidates' signatures now:
+  the narrowest types (an untyped role parameter is Mu), then a literal,
+  `where` or captured type that accepted, in declaration order, then the one
+  taking exactly that many arguments; none that fits, or two still tied, is
+  X::Role::Parametric::NoSuchCandidate, where `does W['C']` and
+  `role R[$x]` beside `role R[$y]` were taken silently.
+  `t/regression/role-group-candidate-by-value.raku`.
 
 ### Fixed: crashes
 
@@ -741,6 +754,38 @@ and 0d87a53e (#235) and 5a0e9868.*
 - **An EVAL's undeclared routines are reported in Rakudo's words** (25975633),
   "Undeclared routine:\n    prnt used at line 1. …", every name at once.
   `t/regression/eval-undeclared-routine-report.raku`.
+- **A role with a Method::Also `is also` method composes again** (6004f84a):
+  every class doing one died "Dynamic variable $*TYPE-ENV not found" since
+  0b29ef00. rakupp called the role metaobject's `specialize_with` hook on
+  its own, where Rakudo calls it from the metaobject's `specialize`, which
+  Method::Also overrides to declare that variable; a metaobject that
+  overrides `specialize` too is not called there now (rakupp runs no user
+  `specialize`; the aliases are its own). The suite's Method::Also case was
+  skipped wherever the module was absent, the suite's machines included;
+  `t/regression/role-how-specialize-wraps-specialize-with.raku` is that
+  shape with no module. Reported by pull request #234.
+- **`role W { }; role W['X'] does W { }` declares a candidate of W's group**
+  (f11a9f04) over the W declared before it, where it was refused "Role 'W'
+  cannot inherit from / compose itself", and a run-time `$obj does W['X']`
+  gets the bare W's methods and attributes. PDF::Content declares its
+  XObject['Form'] so and mixes it in at run time.
+  `t/regression/role-group-candidate-does-bare-role.raku`. Reported by pull
+  request #232.
+- **A method's `handles` delegation implements a role's stub** (88f81c1f), as
+  an attribute's did: `class C does R { method Pages handles <page> { … } }`
+  died "Method 'page' must be implemented by C", whether the delegation was
+  the class's own, inherited or a role's; PDF::Lite answers
+  PDF::Content::API that way. A role's method delegation in a later `does`
+  slot, and any delegation from a second parent (`class D is B is A`), is
+  dispatched too, where it was "No such method".
+  `t/regression/handles-delegation-satisfies-and-dispatches.raku`. Reported
+  in part by pull request #233.
+- **A class's own method named as a composed role's Method::Also alias is
+  X::Method::Duplicate** (655d13dd), "Package 'WithOwn' already has a method
+  'zed' …", as on Rakudo; the class's method won.
+  `t/regression/method-also-role-composition-2026-09-02.raku`, whose other
+  non-Rakudo expectation, calling a proto through one of two aliases, it no
+  longer asks (Rakudo answers "Ambiguous call" there, from Method::Also).
 
 ### Platforms and packaging
 
@@ -780,6 +825,12 @@ and 0d87a53e (#235) and 5a0e9868.*
   goes at the end too. Not run on Windows.
 
 ### Left open
+
+- Found with c0aa3e0e and 88f81c1f, each the same before them
+  (TODO-FOLLOW-UPS.md): a method's renaming delegation, `method x
+  handles(:page<pg>)`, is not parsed; `.can` and `.^methods` list no
+  delegated name; and X::Role::Parametric::NoSuchCandidate lacks the
+  "Cannot resolve caller" / "Ambiguous call" line Rakudo adds.
 
 - Found with 0d87a53e, the same before it (TODO-FOLLOW-UPS.md): `--exe`
   cannot compile a sub-signature in a pointy block or a sub,
