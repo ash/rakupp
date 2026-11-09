@@ -2093,14 +2093,15 @@ struct Codegen {
             return nullptr;
         return &p;
     }
-    // (a `$` one boxes a native, as the interpreter's binder does — a
-    // parameter, a placeholder, a loop variable — and a native one, `nat` its
-    // natParamKind, holds the native: rtNatItem tags what rtTypedFast passed)
-    static std::string bindAs(char sigil, const std::string& init, char nat = 0) {
+    // (a `$` one boxes a native, as the interpreter's binder does — a parameter,
+    // a placeholder, a loop variable — and a native one, `nat` its natParamKind,
+    // holds the native: rtNatItem tags what rtTypedFast passed; an `is copy` `@`
+    // or `%` one is a fresh container of what came, as `my @b = …` makes one)
+    static std::string bindAs(char sigil, const std::string& init, char nat = 0, bool copy = false) {
         if (sigil == '$')
             return nat == 'i' || nat == 'n' ? "rtNatItem(" + init + ", '" + nat + "')"
                  : nat ? "itemizedScalar(" + init + ")" : "rtBoxedItem(" + init + ")";
-        if (sigil == '@' || sigil == '%') return "unitemized(" + init + ")";
+        if (sigil == '@' || sigil == '%') return !copy ? "unitemized(" + init + ")" : sigil == '@' ? "rtSelfPack(rtArrayVal(unitemized(" + init + ")))" : "rtCoerceHash(unitemized(" + init + "))";
         return init;
     }
     std::string declVar(const std::string& rakuName, const std::string& init) {
@@ -7561,13 +7562,11 @@ struct Codegen {
 
     // ---- -O fast-call eligibility ----
     // A sub qualifies for direct `Value` parameters when every param is a plain
-    // required positional scalar (no named/slurpy/optional/default/destructuring).
-    // A `where` or `:D`/`:U` constraint keeps the boxed path, whose bindParams
-    // refuses it as the plain build does: the direct-Value body checked neither,
-    // so -O compiled `sub f(Int:D $n)` natively with its smiley silently absent.
-    // A plain `@x` / `%h` qualifies too: bindParams binds it unitemized and
-    // checks nothing, so the direct body can do the same to the Value it is
-    // passed — through a ValueList it cost ~12 ns a call more than `$x`.
+    // positional (no named/slurpy/default/destructuring). A `where` or `:D`/`:U`
+    // keeps the boxed path, whose bindParams refuses it as the plain build does
+    // (the direct body checked neither). A plain `@x` / `%h` qualifies too: the
+    // direct body binds and checks it as bindParams does (rtSigilArg); through
+    // a ValueList it cost ~12 ns a call more than `$x`.
     static bool simpleSig(const std::vector<Param>& ps) {
         for (const Param& p : ps)
             if (p.named || p.slurpy || p.invocant || p.defaultVal || p.subSig || p.isRw ||
@@ -9225,20 +9224,14 @@ struct Codegen {
     // hasSelf: `__a[0]` is the invocant (methods), so positionals start at 1.
     void bindParams(const std::vector<Param>& ps, int ind, bool hasSelf) {
         // A `where` or a `:D`/`:U` smiley on an ORDINARY routine was never
-        // emitted. The guard for this existed, but only on the two multi-candidate
-        // paths (undecidableMulti and the multi dispatcher), so a plain sub
-        // compiled NATIVELY with its constraint silently absent:
-        // `sub f(Int $n where * > 0)` bound -1 and ran the body, and a counter
-        // inside the constraint proved it was never evaluated at all rather than
-        // evaluated and ignored. Same for `sub f(Int:D $n)` called with `Int`.
-        // That is a wrong answer, not a slow one, and it is the shape a program
-        // uses to VALIDATE its input — so it loses its validation on the way to
-        // becoming a binary, silently, which also breaks the invariant that the
-        // three execution modes agree.
-        //
-        // Falling back costs the whole program its native compilation, which is
-        // why emitting the check is the better answer and the follow-up; this is
-        // the stop-the-bleeding half, and it is what the multi paths already do.
+        // emitted (only the two multi-candidate paths refused one), so a plain
+        // sub compiled NATIVELY with its constraint silently absent: `sub f(Int
+        // $n where * > 0)` bound -1 and ran the body, and `sub f(Int:D $n)` took
+        // `Int`. That is the shape a program uses to VALIDATE its input, so it
+        // lost its validation on the way to becoming a binary. Falling back
+        // costs the program its native compilation, which is why emitting the
+        // check is the better answer and the follow-up; this is the
+        // stop-the-bleeding half, and it is what the multi paths already do.
         for (const Param& p : ps) {   // (…and a sub-signature, whose names were never declared)
             if (p.whereExpr)      unsupported("a `where` constraint on a routine parameter");
             if (p.defConstraint)  unsupported("a `:D`/`:U` constraint on a routine parameter");
@@ -9253,11 +9246,14 @@ struct Codegen {
             std::string pd;
             if (typed) pd = typedParamDesc(p, ind);
             auto typedInit = [&](const std::string& got) { return typed ? bindTypedExpr(got, pd, p) : got; };
+            // …and an `@` or `%` one refuses what its sigil does, when it came, as the binder's (rtSigilArg)
+            const std::string sd = (p.sigil == '@' || p.sigil == '%') && !p.slurpy && !p.invocant && !p.isRw && !p.isRaw ? typedParamDesc(p, ind) : "";
+            auto sigilled = [&](const std::string& v, const std::string& came) { return sd.empty() ? v : "rtSigilArg(RT, " + v + ", " + sd + ", " + came + ")"; };
             // a param mutated by an inner closure binds as a shared cell (declVar)
             auto bind = [&](const std::string& got) {
                 // (`is raw` binds the container as it came; the invocant and a
                 // slurpy are never an item)
-                const std::string init = p.invocant || p.slurpy || p.isRaw ? got : bindAs(p.sigil, got, natParamKind(p.type));
+                const std::string init = p.invocant || p.slurpy || p.isRaw ? got : bindAs(p.sigil, got, natParamKind(p.type), p.isCopy);
                 if (p.name.empty()) line(ind, "Value __anon" + std::to_string(anon++) + " = " + init + ";");
                 else line(ind, declVar(p.name, init) + ";");
             };
@@ -9308,7 +9304,7 @@ struct Codegen {
                 std::string lastKey = cesc(keys.back());
                 std::string has;   // any of its keys passed
                 for (auto& k : keys) has += (has.empty() ? "" : " || ") + std::string("rtHasNamed(__a, ") + cesc(k) + ")";
-                if (p.defaultVal) bind(typedInit(chain + "(rtHasNamed(__a, " + lastKey + ") ? rtNamed(__a, " + lastKey + ") : (" + ex(p.defaultVal.get()) + "))"));
+                if (p.defaultVal) bind(sigilled(typedInit(chain + "(rtHasNamed(__a, " + lastKey + ") ? rtNamed(__a, " + lastKey + ") : (" + ex(p.defaultVal.get()) + "))"), "true"));
                 else if (typed)    // an unpassed typed named parameter holds its type object
                     bind("(" + has + ") ? " + typedInit(chain + "rtNamed(__a, " + lastKey + ")") +
                          " : Value::typeObj(" + cesc(p.type) + ")");
@@ -9316,15 +9312,17 @@ struct Codegen {
                     // …and an unpassed `:@a` or `:%h` an empty container of its
                     // type, as a `my Str @a` starts: `sub MAIN(Str :@mode)` given
                     // no --mode had Any, so `@mode.push` died (issue #191)
-                    bind("(" + has + ") ? " + chain + "rtNamed(__a, " + lastKey + ") : " + declInit(p.type, p.sigil));
+                    bind("(" + has + ") ? " + sigilled(chain + "rtNamed(__a, " + lastKey + ")", "true") + " : " + declInit(p.type, p.sigil));
                 else bind(chain + "rtNamed(__a, " + lastKey + ")");
                 attrParam(p.defaultVal ? "true" : has);
                 continue;
             }
-            if (p.defaultVal) bind(typedInit("rtHasPos(__a, " + pos + ") ? rtPos(__a, " + pos + ") : (" + ex(p.defaultVal.get()) + ")"));
+            if (p.defaultVal) bind(sigilled(typedInit("rtHasPos(__a, " + pos + ") ? rtPos(__a, " + pos + ") : (" + ex(p.defaultVal.get()) + ")"), "true"));
             else if (typed && p.optional)   // …and so does an unpassed typed optional one
                 bind("rtHasPos(__a, " + pos + ") ? " + typedInit("rtPos(__a, " + pos + ")") + " : Value::typeObj(" + cesc(p.type) + ")");
-            else bind(typedInit("rtPos(__a, " + pos + ")"));
+            else if (p.optional && !sd.empty())   // (an unpassed `@a?` an empty container, as a named one's)
+                bind("rtHasPos(__a, " + pos + ") ? " + sigilled("rtPos(__a, " + pos + ")", "true") + " : " + declInit(p.type, p.sigil));
+            else bind(sigilled(typedInit("rtPos(__a, " + pos + ")"), "true"));
             attrParam(p.defaultVal || !p.optional ? "true" : "rtHasPos(__a, " + pos + ")");
             if (p.name == "$/" || p.name == "$!") boundSpecials.insert(p.name);
             if (p.name.size() > 1 && p.name[0] == '&') codeVars.insert(p.name.substr(1)); // sub bin(&op) — op(...) calls the param
@@ -9609,11 +9607,12 @@ struct Codegen {
             for (size_t i = 0; i < ps.size(); i++) {
                 if (i) { sig += ", "; fwd += ", "; }
                 sig += "Value " + (anyCell ? "__p" + std::to_string(i) : mangleVar(ps[i].name));
-                // (an unpassed typed optional one is its type object)
-                if (ps[i].optional && checkedParam(ps[i]))
-                    fwd += "rtHasPos(__a, " + std::to_string(i) + ") ? rtPos(__a, " + std::to_string(i) +
-                           ") : Value::typeObj(" + cesc(ps[i].type) + ")";
-                else fwd += "rtPos(__a, " + std::to_string(i) + ")";
+                // (an unpassed typed optional one is its type object, an `@` or `%` one an empty container)
+                const std::string at = std::to_string(i);
+                if (ps[i].optional && (checkedParam(ps[i]) || ps[i].sigil != '$'))
+                    fwd += "rtHasPos(__a, " + at + ") ? rtPos(__a, " + at + ") : " +
+                           (ps[i].sigil != '$' ? declInit(ps[i].type, ps[i].sigil) : "Value::typeObj(" + cesc(ps[i].type) + ")");
+                else fwd += "rtPos(__a, " + at + ")";
             }
             line(0, "static Value " + fnName + "(" + sig + ") {");
             for (size_t i = 0; i < ps.size(); i++) {
@@ -9638,9 +9637,10 @@ struct Codegen {
                 // `@` / `%` one unitemized, as the boxed path's bindParams has it
                 // (bindAs)
                 // (and a native one boxed, or a native's tag given: bindAs)
-                if (!ps[i].isRaw) {
+                if (!ps[i].isRaw) {   // (an `@` or `%` one refuses what its sigil does: rtSigilArg)
                     const char k = natParamKind(ps[i].type);
-                    line(1, ps[i].sigil != '$' ? nm + " = unitemized(std::move(" + nm + "));"
+                    line(1, ps[i].sigil != '$' ? nm + " = " + bindAs(ps[i].sigil, "rtSigilArg(RT, std::move(" + nm + "), " +
+                              typedParamDesc(ps[i], 1) + ", true)", 0, ps[i].isCopy) + ";"
                           : k == 'i' || k == 'n' ? "rtNatItemIn(" + nm + ", '" + k + "');"
                           : k ? "itemizeScalar(" + nm + ");" : "rtBoxItemIn(" + nm + ");");
                 }
