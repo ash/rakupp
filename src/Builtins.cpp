@@ -2464,7 +2464,11 @@ std::string rakuReprImpl(const Value& v, int depth, std::set<const void*>& seen)
                 if (v.arr()) for (auto& e : *v.arr()) {
                     if (!tyFirst) ty += ", ";
                     tyFirst = false;
-                    ty += rakuRepr(arrayHoleFill(v, e), depth + 1, seen);
+                    // (an undefined element shows as the array's type, as Rakudo writes it:
+                    // `Array[Cool].new(Cool, 1)`, a `my Int:D @a`'s hole `Int:D`)
+                    const Value ev = arrayHoleFill(v, e);
+                    const bool undef = ev.t == VT::Type || ev.t == VT::Any || ev.t == VT::Nil;
+                    ty += undef && ctor[0] == 'A' ? v.ofType() : rakuRepr(ev, depth + 1, seen);
                 }
                 g_reprInArrayElem = wasTyElem;
                 if (v.arr()) seen.erase(v.arr());
