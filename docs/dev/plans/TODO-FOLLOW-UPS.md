@@ -117,22 +117,6 @@ moves to [TODO.md](TODO.md).
   (the cache in grammarParse's `fired` is keyed by the child map, which a
   replay shares). Done when the count matches Rakudo's without a JSON-grammar
   slowdown (tools/bench/grammar-json).
-- [ ] **`q;…;`, `q,…,` and `q.….` are not quotes** (found 2026-10-30, 594d4aac,
-  which made the rest of a bare `m`'s punctuation delimiters the q
-  family's):
-
-  ```raku
-  say q;abc;   # Undefined routine 'q', Rakudo abc
-  say q,abc,   # the same
-  say q.abc.   # a parse error, Rakudo abc
-  ```
-
-  Left out on purpose in bareRxDelim (src/Lexer.cpp): those three are what
-  follows a sigilless term named `q`, and the lexer knows only the terms it
-  has seen declared (`my \q`, `\q`, `|q`, `constant q`). dist-suite-quartet's
-  `-> \s, |q { $cap = q; callsame };` read as a quote to the `;` before
-  `|q` counted as one. Done when a declared term wins over the quote however
-  it was declared, and these three then follow Rakudo.
 - [ ] **A sub the main program imports is visible to a module that never
   imported it** (found 2026-10-31 hiding the program's operators from
   modules, 8a6c9d9a, which did that for operators only):
@@ -205,21 +189,6 @@ moves to [TODO.md](TODO.md).
 
   A Range here holds numbers or strings; its ends would need to be any
   value, compared with `cmp`.
-
-- [ ] **A write through a `$_` that aliases a `where` variable skips its
-  clause** (found 2026-10-20 while fixing issue #185; a type, a smiley, a
-  subset and a coercion are carried by `with`, `given`, `for` and, since
-  43dbcefb, `andthen`):
-
-  ```raku
-  my $x where * > 0 = 1; with $x { $_ = -1 }; say $x   # -1, Rakudo: Type check failed in assignment to $x; expected <anon>
-  ```
-
-  The `$_` is scalarAliasOf's Proxy, whose record (keptVarTags) has the
-  type, smiley, coercion and default, not the `where`, which runs in the
-  declaring scope (the same gap as an alias's `$w := $wh`, under "A typed
-  scalar's container handed out by an expression"). Plain `with $x { … }`
-  loops must not get measurably slower (instructions retired).
 
 - [ ] **Two types cannot share a short name** (found 2026-10-27 while making
   DateTime::Timezones install, 50aebf54; on v5.5.0 too). Types are known by
@@ -303,9 +272,9 @@ moves to [TODO.md](TODO.md).
   accessors still build before changing it. Done when the three lines
   are Rakudo 2026.09's.
 
-- [ ] **A declarator block's `.raku` is its text, a trailing `#=` after a
-  routine's `}` is lost, and `for $=pod` does not iterate** (found 2026-11-08
-  making a Pod block's `.raku` its constructor):
+- [ ] **A declarator block's `.raku` is its text, and a trailing `#=` after a
+  routine's `}` is lost** (found 2026-11-08 making a Pod block's `.raku` its
+  constructor; `for $=pod` iterates since 3d4a3a91):
 
   ```raku
   #| a
@@ -314,11 +283,10 @@ moves to [TODO.md](TODO.md).
   #= b
   say &f.WHY.raku;   # "a", Rakudo Pod::Block::Declarator.new(WHEREFORE => sub f { … }, leading => ["a"], trailing => [["b"],], config => {}, contents => [])
   say ~&f.WHY;       # a, Rakudo "a\nb"
-  for $=pod { }      # one pass with the whole list, Rakudo one per block
   ```
 
   A declarator block keeps only its text and `declLine`: no WHEREFORE, no
-  leading/trailing split. `$=pod` is held itemized.
+  leading/trailing split.
 
 - [ ] **A WhateverCode gists as `WhateverCode.new`** (found 2026-11-08 making
   arithmetic on a Whatever value die):
@@ -384,23 +352,27 @@ moves to [TODO.md](TODO.md).
   5f87f445; on v5.5.0 too; a list assignment into one checks it since 73940d6e).
   An alias of a typed variable refuses what the variable refuses now
   (scalarAliasOf), but these containers are not made by an alias, and store
-  as they come (a list literal's item, `($a, 2)[0] = 'l'`, refuses since d5186165):
+  as they come (a list literal's item, `($a, 2)[0] = 'l'`, refuses since d5186165,
+  and a `where` alias since 5932b773):
 
   ```raku
   my Int $a = 1;
   my Int $p = 1; (k => $p).value = 'pv';    # stores; Rakudo refuses, naming $p
   sub r() is rw { $a }; r() = 'rr';   # stores; Rakudo refuses, naming $a
-  my $wh where Int = 1; my $w := $wh; $w = 'q';   # stores; Rakudo: expected <anon>
   class C { has Int $.x is rw = 1 }; my $o = C.new; my $ox := $o.x; $ox = 5;
   say $o.x;                           # 1: the bind took a copy; Rakudo 5
   ```
 
   The first two hand out the variable's cell (a Pair's value, an `is rw`
-  routine's tail), so each could take scalarAliasOf's Proxy instead of the
-  bare cell, as `f(($a, 2))` already does; the routine's tail reaches the
-  store as a slot pointer with no name
-  (lvalueThroughRw). A `where` clause runs in the declaring scope, which the
-  alias's record does not keep.
+  routine's tail). A Pair cannot simply hold scalarAliasOf's Proxy: tried
+  2026-11-09, `:$value` as a named argument then handed the Proxy itself
+  to the parameter it bound (`self.bless(:$value)` stored it in the
+  attribute: S32-trig/cos.t's NotComplex, the YAMLish suite), so a Pair's
+  value would need its type kept apart from its cell. The routine's tail
+  reaches the store as a slot pointer with no name (lvalueThroughRw). A
+  `where` variable has one more of its own: `$x = Nil` resets it to Any,
+  where Rakudo resets it to the anonymous subset `(<anon>)` (found
+  5932b773; its type is asked before its clause since edc36182).
 - [ ] **A refusal through a copy-in/copy-out alias comes at the write-back**
   (found 2026-10-28 while fixing issue #184, 17e33a45). A `for` loop's `$_`,
   `given`'s topic and `.map`'s `$_` hold a copy of the element, written back
@@ -604,9 +576,10 @@ moves to [TODO.md](TODO.md).
     again 2026-11-09); and a multi method's refusal, which lists the
     candidates since 07dd7b4a, lists only the role's when the class has its
     own beside it (Rakudo lists both, the class's first);
-  - an undeclared variable's suggestions leave out the routines Rakudo
-    offers: `qq[$nope]` suggests '&none' and '&note' there, nothing here
-    (found 2026-11-09, 024a0905);
+  - an undeclared ROUTINE is refused when the call runs, "Undefined
+    routine 'nope'", where Rakudo refuses it at compile time with its
+    suggestions: `say &nope` is "Undeclared routine: nope used at line 1.
+    Did you mean 'note', 'none'?" there (found 2026-11-09, 628ad9cb);
   - a Proxy bound to a variable answers `.VAR` as its value:
     `my $p := Proxy.new(…); $p.VAR.^name` is Int, Rakudo Proxy;
   - Cro::HTTP's t/http2-request-parser.rakutest fails now and then (3 runs

@@ -2857,14 +2857,14 @@ bool Lexer::tryQuoteForm(Token& out) {
     // decision apart. A `=` that starts `=>` is a pair, never a delimiter.
     // The q family and its word lists take the same set on the same terms:
     // `q+{{planet}}+` is how Template::Mustache's spec tests write a lambda
-    // whose body is full of braces. Not `; , .`, though Rakudo takes them:
-    // those are what follows a sigilless term NAMED q whose declaration this
-    // lexer cannot see (`$cap = q; callsame };` read as a quote to the `;`).
+    // whose body is full of braces, and `q;abc;`, `q,abc,` and `q.abc.` are
+    // quotes too, as Rakudo reads them: a sigilless term NAMED q is one the
+    // lexer has seen declared (refreshTermNames: `my \q`, `\q`, `|q`,
+    // `constant q`), and the quote is never asked for it.
     const bool qForm = w == "q" || w == "qq" || w == "Q" || isWords;
     auto bareRxDelim = [&](char dc) -> bool {
         if (!((isRegex && w != "mm") || w == "s" || w == "ss" || qForm)) return false;
         if (!std::strchr("^$%@&=?*+;.,\"`", dc) || dc == '\0') return false;
-        if (qForm && std::strchr(";,.", dc)) return false;
         if (dc == '=' && p + 1 < src_.size() && (src_[p + 1] == '>' || src_[p + 1] == '=')) return false;
         size_t need = isSubst ? 2 : 1, q = p + 1;
         for (; q < src_.size() && src_[q] != '\n' && need; q++) {

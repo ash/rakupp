@@ -45,8 +45,8 @@ struct Checker {
 
     // Only `$`/`@`/`%` names are ever asked about — `&foo` is exempt by
     // isSpecialVar — so registering anything else is work nobody reads.
-    static bool worthTracking(const std::string& n) {
-        return n.size() > 1 && (n[0] == '$' || n[0] == '@' || n[0] == '%');
+    static bool worthTracking(const std::string& n) {   // (an `&name` is never checked, only suggested)
+        return n.size() > 1 && (n[0] == '$' || n[0] == '@' || n[0] == '%' || n[0] == '&');
     }
     // Every lexical scope this pass opens goes through these two, so that a
     // `no strict` inside one is undone at its closing brace.
@@ -189,7 +189,11 @@ struct Checker {
                 collectExpr(d->init.get());
                 return;
             }
-            case NK::SubDecl:       return;  // a `&name` is exempt; nothing to register
+            case NK::SubDecl: {     // a `&name` is exempt, but it is in scope: `$frob` suggests `&frob`
+                auto* d = static_cast<const SubDecl*>(s);
+                if (!d->name.empty() && !d->isMethod) declare("&" + d->name);
+                return;
+            }
             case NK::NamedRegexDecl: return;
             case NK::Block: {
                 auto* b = static_cast<const Block*>(s);
@@ -735,6 +739,45 @@ bool declCheckEnabled() {
     return !(off && *off && std::string(off) != "0");
 }
 
+// The routines Rakudo 2026.09's core setting holds as lexicals (`CORE::.keys`
+// that start with `&`, its operators aside, which no variable's spelling comes
+// near): an undeclared variable's suggestions take them in, as Rakudo's
+// suggest_lexicals does, so `$prnt` suggests `&print` and `$nope` `&none` and
+// `&note`. Generated from that release; a routine Raku++ has and Rakudo's core
+// lacks is not suggested, nor the other way round.
+const std::vector<std::string>& coreRoutineNames() {
+    static const std::vector<std::string> names = [] {
+        std::vector<std::string> v;
+        const std::string all =
+        "DEFINITE DYNAMIC-FALLBACK EVAL EVALFILE HOW NYI REPR RUN-MAIN VAR WHAT WHERE WHICH WHO abs "
+        "acos acosec acosech acosh acotan acotanh all any append asec asech asin asinh atan atan2 "
+        "atanh atomic-add-fetch atomic-assign atomic-dec-fetch atomic-fetch atomic-fetch-add "
+        "atomic-fetch-dec atomic-fetch-inc atomic-fetch-sub atomic-inc-fetch atomic-sub-fetch await "
+        "bag cache callframe callsame callwith cas categorize ceiling chars chdir chmod chomp chop "
+        "chown chr chrs cis classify close comb combinations copy cos cosec cosech cosh cotan cotanh "
+        "cross deepmap defined die dir done duckmap elems emit end exit exp expmod fail fc first flat "
+        "flip floor full-barrier get getc gist goto grep hash head index indices indir infix:«(<)» "
+        "infix:«(<+)» infix:«(<=)» infix:«(>)» infix:«(>+)» infix:«(>=)» infix:«+<» infix:«+>» "
+        "infix:«<=>» infix:«<=» infix:«<» infix:«=>» infix:«>=» infix:«>» infix:«~<» infix:«~>» "
+        "is-prime item join keys kv last lastcall lc leave lines link list log log10 log2 lsb make "
+        "map max min minmax mix mkdir move msb next nextcallee nextsame nextwith nodemap none not "
+        "note one open ord ords pair pairs parse-base parse-names permutations pick pop prepend print "
+        "printf proceed produce prompt push put rand redo reduce rename repeated repl return "
+        "return-rw reverse rindex rmdir roll roots rotate round roundrobin run samecase samemark "
+        "samewith say sec sech set shell shift sign signal sin sinh skip sleep sleep-timer "
+        "sleep-until slip slurp so sort splice split sprintf spurt sqrt squish srand subbuf-rw substr "
+        "substr-rw succeed sum symlink tail take take-rw tan tanh tc tclc trim trim-leading "
+        "trim-trailing truncate uc undefine unimatch uniname uninames uniparse uniprop uniprops "
+        "unique unival univals unlink unpolar unshift val values warn wordcase words zip ";
+        for (size_t i = 0, e; i < all.size(); i = e + 1) {
+            e = all.find(' ', i); if (e == std::string::npos) e = all.size();
+            if (e > i) v.push_back("&" + all.substr(i, e - i));
+        }
+        return v;
+    }();
+    return names;
+}
+
 int reportUndeclaredVars(const std::vector<UndeclaredVar>& findings,
                          const std::string& fileName, const std::string& src) {
     // The source split lazily: only a reported line is ever looked up.
@@ -768,7 +811,9 @@ int reportUndeclaredVars(const std::vector<UndeclaredVar>& findings,
     std::cerr << "===SORRY!=== Error while compiling " << fileName << "\n";
     for (auto& f : findings) {
         int line = locate(f);
-        std::cerr << undeclaredVariableMessage(f.name, variableSuggestions(f.name, f.inScope)) << "\n"
+        std::vector<std::string> cands = f.inScope;
+        cands.insert(cands.end(), coreRoutineNames().begin(), coreRoutineNames().end());
+        std::cerr << undeclaredVariableMessage(f.name, variableSuggestions(f.name, cands)) << "\n"
                   << "at " << fileName << ":" << line << "\n";
         std::string ln = sourceLine(line);
         if (ln.empty()) continue;

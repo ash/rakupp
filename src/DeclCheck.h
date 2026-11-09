@@ -20,6 +20,7 @@ struct UndeclaredVar {
 // An undeclared variable's suggestions and message, Rakudo's (InterpreterModules.cpp)
 std::vector<std::string> variableSuggestions(const std::string& name, const std::vector<std::string>& cands);
 std::string undeclaredVariableMessage(const std::string& name, const std::vector<std::string>& sug);
+const std::vector<std::string>& coreRoutineNames();   // Rakudo's core routines, `&name`, for those suggestions
 
 // Whole-unit "is every variable declared?" check, run before the program does.
 //

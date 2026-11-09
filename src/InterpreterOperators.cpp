@@ -2867,6 +2867,20 @@ void Interpreter::rtSmileyStore(const Value& rhs, char sm, const char* want, con
 
 // `my $x where Int|Num` — every assignment asks the constraint, a smartmatch
 // (a Code is called) evaluated in the declaring scope with $_ as the value
+void Interpreter::varWhereCheckIn(const std::shared_ptr<Env>& owner, const Expr* where, const std::string& nm, const Value& rhs) {
+    auto wenv = makeSlabShared<Env>();
+    wenv->parent = owner;
+    wenv->define("$_", rhs);
+    auto saved = tctx().cur; tctx().cur = wenv;
+    bool ok;
+    try {
+        Value cv = eval(const_cast<Expr*>(where));
+        if (cv.t == VT::Code && cv.code()) ok = boolify(callCallable(cv, ValueList{rhs}));
+        else ok = boolify(smartmatchValue("~~", rhs, cv));
+    } catch (...) { tctx().cur = saved; throw; }
+    tctx().cur = saved;
+    if (!ok) rtWhereRefused(rhs, nm.c_str());
+}
 void Interpreter::varWhereCheck(const std::string& nm, const Value& rhs) {
     if (nm.empty() || nm[0] != '$') return;
     // Walked by raw pointer: this runs for every scalar assignment, and a
@@ -2877,20 +2891,17 @@ void Interpreter::varWhereCheck(const std::string& nm, const Value& rhs) {
             auto wi = en->xr().varWhere.find(nm);
             if (wi != en->xr().varWhere.end()) {
                 if (rhs.t == VT::Nil) return;   // Nil resets to the default
+                // …and a TYPED one is a subset of its type: what the type refuses is
+                // refused as that subset, `expected <anon>`, the clause never run on it
+                if (auto di = en->xr().varDefault.find(nm); di != en->xr().varDefault.end() && !en->xr().varDefaultUntyped.count(nm)) {
+                    auto dti = en->xr().varDefaultType.find(nm);   // (the declared type, where `is default` holds the reset value)
+                    const Value& dty = dti != en->xr().varDefaultType.end() ? dti->second : di->second;
+                    if (dty.t == VT::Type && dty.s != "Any" && dty.s != "Mu" && rtIsDefined(rhs) && !typeOrSubsetMatches(rhs, dty.s.copyText()))
+                        rtWhereRefused(rhs, nm.c_str());
+                }
                 std::shared_ptr<Env> owner = tctx().cur;
                 while (owner.get() != en) owner = owner->parent;
-                auto wenv = makeSlabShared<Env>();
-                wenv->parent = owner;
-                wenv->define("$_", rhs);
-                auto saved = tctx().cur; tctx().cur = wenv;
-                bool ok;
-                try {
-                    Value cv = eval(const_cast<Expr*>(wi->second));
-                    if (cv.t == VT::Code && cv.code()) ok = boolify(callCallable(cv, ValueList{rhs}));
-                    else ok = boolify(smartmatchValue("~~", rhs, cv));
-                } catch (...) { tctx().cur = saved; throw; }
-                tctx().cur = saved;
-                if (!ok) rtWhereRefused(rhs, nm.c_str());
+                varWhereCheckIn(owner, wi->second, nm, rhs);
                 return;
             }
         }

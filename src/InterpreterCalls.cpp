@@ -3124,16 +3124,31 @@ bool Interpreter::keptVarTags(Env* own, const std::string& nm, Value& proxy) {
     }
     if (!coerce.empty()) if (auto fi = x.varCoerce.find(nm + "\x01from"); fi != x.varCoerce.end()) from = fi->second;
     const char sm = si != x.varSmiley.end() ? si->second : 0;
+    auto wi = x.varWhere.find(nm);
     // (a native carries its own tags on the value, and an untyped variable with
-    // no `is default` resets to Any anyway: nothing to keep)
+    // no `is default` or `where` resets to Any anyway: nothing to keep)
     if (!type.empty() && !typeNameLead(type[0]) && isNativeTypeName(type)) return false;
-    if (type.empty() && !sm && coerce.empty() && (dflt.t == VT::Any || (dflt.t == VT::Type && dflt.s == "Any")))
+    if (type.empty() && !sm && coerce.empty() && wi == x.varWhere.end() && (dflt.t == VT::Any || (dflt.t == VT::Type && dflt.s == "Any")))
         return false;
+    // …and a `where`, run in the scope that declared it (held weakly: the record
+    // lives in that scope's own keptAliases)
+    Value wc = Value::any();
+    if (wi != x.varWhere.end())
+        for (std::shared_ptr<Env> e = tctx().cur; e; e = e->parent)
+            if (e.get() == own) {
+                std::weak_ptr<Env> wown = e; const Expr* we = wi->second; const std::string vn = nm;
+                wc.t = VT::Code; wc.setCode(makePayload<Callable>());
+                wc.code()->ciM().builtin = [wown, we, vn](Interpreter& I, ValueList& a) -> Value {
+                    if (auto o = wown.lock(); o && !a.empty()) I.varWhereCheckIn(o, we, vn, a[0]);
+                    return Value::any();
+                };
+                break;
+            }
     static const std::set<std::string> kCore = {"Int", "Num", "Rat", "Complex", "Str", "Bool"};
     const bool core = kCore.count(type) > 0;
     Value g = Value::array();
     ValueList& l = *g.arr();
-    l.reserve(7);
+    l.reserve(8);
     l.push_back(Value::str(nm));
     l.push_back(std::move(dflt));
     l.push_back(Value::str(std::move(type)));
@@ -3141,6 +3156,7 @@ bool Interpreter::keptVarTags(Env* own, const std::string& nm, Value& proxy) {
     l.push_back(Value::str(std::move(coerce)));
     l.push_back(Value::str(std::move(from)));
     l.push_back(Value::boolean(core));
+    l.push_back(std::move(wc));
     proxy.hash()->addFresh(kKeptKey().s, kKeptKey().h, std::move(g));
     return true;
 }
@@ -3154,7 +3170,7 @@ void Interpreter::noteKeptVarType(const Expr* it, Value& proxy) {
 static const Value* keptRecord(const Value& proxy) {
     if (!keptTagged(proxy)) return nullptr;
     const Value* g = proxy.hash()->findPre(kKeptKey().s, kKeptKey().h);
-    return g && g->t == VT::Array && g->arr() && g->arr()->size() == 7 ? g : nullptr;
+    return g && g->t == VT::Array && g->arr() && g->arr()->size() == 8 ? g : nullptr;
 }
 bool Interpreter::keptTyped(const Value& proxy) const { return keptRecord(proxy) != nullptr; }
 Value Interpreter::keptTypedStore(const Value& proxy, Value v) {
@@ -3166,12 +3182,16 @@ Value Interpreter::keptTypedStore(const Value& proxy, Value v) {
     const std::string_view sm = k[3].s;
     const std::string_view coerce = k[4].s;
     // Nil — or the undefined hole a callee's `$x = Nil` leaves — resets it
-    if (v.t == VT::Nil || v.t == VT::Any) v = k[1];
+    const bool reset = v.t == VT::Nil || v.t == VT::Any;
+    if (reset) v = k[1];
+    // (a `where` variable's type is its subset's: what the type refuses is refused as that, `<anon>`)
+    else if (k[7].t == VT::Code && !type.empty() && rtIsDefined(v) && !typeOrSubsetMatches(v, type)) rtWhereRefused(v, std::string(nm).c_str());
     else if (k[6].b && rtIsDefined(v) && rtTypeMatch(v, type)) {}   // (the common store: it fits)
     else {
         if (!coerce.empty() && v.typeName() != coerce) v = coerceVarValue(v, std::string(coerce), k[5].s.copyText(), std::string(nm));
         if (!type.empty()) enforceTypedValue(std::string(nm), type, v, global_.get());
     }
+    if (k[7].t == VT::Code && !reset) callCallable(k[7], ValueList{v});   // (its `where`; a reset is not judged by it)
     if (sm.empty() || isDefined(v) == (sm == "D")) return v;
     const bool def = isDefined(v);
     const std::string want = (type.empty() ? std::string("Any") : type) + ":" + std::string(sm);
@@ -3192,7 +3212,7 @@ Value Interpreter::keptTypedStore(const Value& proxy, Value v) {
 // Proxy of the variable's carries it, and one made for that is not kept.
 Value Interpreter::scalarAliasOf(Env* own, const std::string& nm, const PRef<Value>& cell) {
     if (own && own->ex && (own->ex->varDefault.count(nm) || own->ex->varSmiley.count(nm) ||
-                           own->ex->varCoerce.count(nm))) {
+                           own->ex->varCoerce.count(nm) || own->ex->varWhere.count(nm))) {
         auto& kept = own->ex->keptAliases;
         if (auto it = kept.find(nm); it != kept.end() && (!cell || cellOfProxy(&it->second) == cell)) return it->second;
         Value proxy = makeSharedCellProxy(cell ? cell : makePayload<Value>());

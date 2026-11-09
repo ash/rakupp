@@ -4267,12 +4267,55 @@ std::vector<std::string> suggestNames(const std::string& name, const std::vector
     return out;
 }
 
-// An undeclared VARIABLE's suggestions, as Rakudo's: within a third of its length
-// past the sigil (`$fo` finds no `$foo`, `$baz` finds `$bar`, `$foO` its `$foo`)
+// An undeclared VARIABLE's suggestions, as Rakudo's suggest_lexicals makes them
+// (Perl6/World.nqp): the Levenshtein distance of the whole names, where a
+// sigil for another costs 0.5 and a change of case 0.1, over the variable's
+// length; a name whose length differs by 30% or more is not asked; those
+// within 0.1, 0.2 and 0.35 are three tiers, and up to five are taken from them,
+// the first tier first. So `$fooo` finds `$foo`, `$fo` no `$foo`, `$nope`
+// `&none` and `&note`, `$prnt` `&print`, and `$sya` no `&say`.
+// (Rakudo's `levenshtein`, step for step: a `-` or `_` added or dropped costs
+// 0.5, and two letters switched 1)
+static double rakuLevenshtein(const std::string& a, const std::string& b) {
+    const size_t al = a.size(), bl = b.size();
+    if (!al || !bl) return 0;
+    auto sigil = [](char c) { return c && std::strchr("$@%&|", c) != nullptr; };
+    auto cost = [&](char x, char y) {
+        if (x == y) return 0.0;
+        if (ascii::tolower((unsigned char)x) == ascii::tolower((unsigned char)y)) return 0.1;
+        return sigil(x) && sigil(y) ? 0.5 : 1.0;
+    };
+    std::vector<std::vector<double>> d(al + 1, std::vector<double>(bl + 1));
+    for (size_t i = al + 1; i-- > 0; )
+        for (size_t j = bl + 1; j-- > 0; ) {
+            if (j == bl) { d[i][j] = (double)(al - i); continue; }
+            if (i == al) { d[i][j] = (double)(bl - j); continue; }
+            const double del = a[i] == '-' || a[i] == '_' ? 0.5 : 1, add = b[j] == '-' || b[j] == '_' ? 0.5 : 1;
+            double dist = std::min({d[i + 1][j] + del, d[i][j + 1] + add, d[i + 1][j + 1] + cost(a[i], b[j])});
+            if (i + 1 < al && j + 1 < bl && a[i + 1] == b[j] && b[j + 1] == a[i]) dist = std::min(dist, d[i + 2][j + 2] + 1);
+            d[i][j] = dist;
+        }
+    return d[0][0];
+}
 std::vector<std::string> variableSuggestions(const std::string& name, const std::vector<std::string>& cands) {
-    std::vector<std::string> out;
-    for (auto& c : suggestNames(name, cands))
-        if (suggestDistance(name, c) <= (name.size() - 1) / 3.0) out.push_back(c);
+    std::vector<std::string> tier[3], out;
+    std::set<std::string> seen{name};
+    const double len = (double)name.size();
+    for (auto& c : cands) {
+        if (!seen.insert(c).second) continue;
+        const double lendiff = std::abs((double)c.size() - len);
+        if (lendiff >= len * 0.3) continue;
+        const double d = rakuLevenshtein(name, c) / len;
+        if (d <= 0.1) tier[0].push_back(c);
+        else if (d <= 0.2) tier[1].push_back(c);
+        else if (d <= 0.35) tier[2].push_back(c);
+    }
+    int toAdd = 5;   // (levenshtein_candidate_heuristic)
+    for (auto& c : tier[0]) if (toAdd-- > 0) out.push_back(c);
+    if (!tier[0].empty()) toAdd--;
+    for (auto& c : tier[1]) if (toAdd-- > 0) out.push_back(c);
+    if (!tier[1].empty()) toAdd -= 2;
+    for (auto& c : tier[2]) if (toAdd-- > 0) out.push_back(c);
     return out;
 }
 // …and its message: those, or Rakudo 2026.09's hint when there are none, filled

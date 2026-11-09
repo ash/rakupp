@@ -1145,6 +1145,12 @@ ValueList parsePod(const std::string& src, bool strict) {
     { std::stringstream ss(src); std::string ln; while (std::getline(ss, ln)) lines.push_back(ln); }
     ValueList top; size_t i = 0;
     parseSeq(lines, i, "", false, top, 0);
+    // `=finish` ends the pod: what follows it is `$=finish`, no block of `$=pod`
+    top.erase(std::remove_if(top.begin(), top.end(), [](const Value& b) {
+        if (b.t != VT::Hash || !b.hash()) return false;
+        auto it = b.hash()->find("name");
+        return it != b.hash()->end() && it->second.toStr() == "finish";
+    }), top.end());
     // Declarator blocks: a run of `#|` lines (leading) or a `#=` tail (trailing)
     // documents the declaration beside it, and Rakudo lists each as a
     // Pod::Block::Declarator in `$=pod` — Pod::Load's suite reads a class's
