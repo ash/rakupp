@@ -198,17 +198,6 @@ moves to [TODO.md](TODO.md).
 
 ## Operators and types
 
-- [ ] **A Hash's `.values.map` with an `is rw` parameter writes nothing back**
-  (found 2026-11-08 making `.map` bind an `is rw` parameter to an Array's
-  element, 0579b6c2; on its parent too):
-
-  ```raku
-  my %h = a => 1; %h.values.map(-> $v is rw { $v++ }).eager; say %h   # {a => 1}, Rakudo {a => 2}
-  ```
-
-  RwSlotScope (src/MethodCallTail.cpp) has slots only for an Array invocant
-  whose items are its elements; `.values` hands `.map` a list of copies.
-
 - [ ] **Role clashes Rakudo refuses that pass here** (found 2026-11-08 with
   846ae003; on its parent too):
 
@@ -220,21 +209,17 @@ moves to [TODO.md](TODO.md).
   refuseRoleClashes sees the methods each composed role holds; a role
   composed by a role has merged its methods into that role's by then.
 
-- [ ] **Any's mutators and `.sum` on a plain object, and a Range of objects**
-  (found 2026-11-08 making a FALLBACK leave Any's methods to Any, 34e48087;
-  the rest of Any's list methods answer since 586a7f14):
+- [ ] **A Range of objects** (found 2026-11-08 making a FALLBACK leave Any's
+  methods to Any, 34e48087; Any's list methods and mutators on a plain
+  object answer since 586a7f14 and a343a825):
 
   ```raku
-  class P { }; say P.new.sum;          # No such method 'sum', Rakudo: Cannot resolve caller Numeric(P:D: )
-  P.new.push(1);                       # No such method 'push', Rakudo: Cannot resolve caller push(P:D: Int:D)
-  say (P.new .. P.new).raku;           # 0..0, Rakudo P.new..P.new
-  say P.new.minmax.raku;               # (P.new, P.new), Rakudo P.new..P.new
+  class P { }; say (P.new .. P.new).raku;   # 0..0, Rakudo P.new..P.new
+  say P.new.minmax.raku;                    # (P.new, P.new), Rakudo P.new..P.new
   ```
 
-  `.append`, `.prepend`, `.unshift` and `.splice` die as `.push` does. A
-  Range here holds numbers or strings; its ends would need to be any
-  value, compared with `cmp`. On an object with a FALLBACK these still
-  reach it (34e48087 leaves them there rather than die).
+  A Range here holds numbers or strings; its ends would need to be any
+  value, compared with `cmp`.
 
 - [ ] **A write through a `$_` that aliases a typed variable skips its type
   check** (found 2026-10-20 while fixing issue #185; andthen now shares the
@@ -315,18 +300,6 @@ moves to [TODO.md](TODO.md).
   Unchecked: there is no node on the Mac this was found on. The
   semantics sheet's two Rakudo bugs (DT-19's date-only `2012-13-22` and its
   `.got` Str) are not to be copied.
-
-- [ ] **`polymod` threads a Junction Rakudo takes whole** (found 2026-10-28
-  while fixing issue #192, f483f0e6; the rest of that item fixed 2026-11-08,
-  3f7f2856):
-
-  ```raku
-  say 1.polymod(2 & 3);   # all((1 0), (1 0)), Rakudo (all(1, 1) 0)
-  ```
-
-  Rakudo's `+@mods` takes it whole, and its answer does not follow from
-  running its loop on a Junction (that gives `all(0, 0)` last, not 0):
-  read Rakudo's Int.polymod before changing it.
 
 - [ ] **A metaclass `compose` finds the accessors early through `.^can`
   and `.^find_method`** (found 2026-10-28 while fixing `rakupp install
@@ -472,19 +445,27 @@ moves to [TODO.md](TODO.md).
   carries its tags (nativeElemTag); a typed element could carry its guard
   the same way, on the loop variable's Env (varDefault plus a table naming
   the container, so the message is "for an element of @a").
-- [ ] **A typed element's refusal through `.map` names "the container"**
-  (found 2026-10-28 while fixing issue #184, 17e33a45; the three aliases
-  that took anything refuse since ba6f7edf and 4c47943e):
+- [ ] **A typed element's refusal through `.map` or `.push` names "the
+  container"** (found 2026-10-28 while fixing issue #184, 17e33a45; the
+  three aliases that took anything refuse since ba6f7edf and 4c47943e, and
+  a push of a type object into a `:D` array since 3341d028):
 
   ```raku
   my Int @a = 1, 2;
   @a.map({ $_ = 'x' }).eager;   # "… for an element of the container; …", Rakudo "… of @a; …"
+  @a.push('x');                 # the same
   ```
 
-  `.map`, `.grep`, `.first` and their hyper forms see the array's value,
-  not the expression that named it, so their elemAliasGuard is given no
-  name (MethodCallTail.cpp passes ""). The call's invocant expression has
-  it, as containerNameOf finds it for an assignment.
+  `.map`, `.grep`, `.first`, their hyper forms, and `.push`, `.append`,
+  `.unshift` and `.prepend` see the array's value, not the expression that
+  named it, so elemAliasGuard and checkElemType are given no name
+  (MethodCallTail.cpp passes ""). The call's invocant expression has it,
+  as containerNameOf finds it for an assignment; a lookup on every method
+  call would cost the calls that never refuse anything. And an
+  `Array[Str:D].new`, which no variable declared, names nothing on Rakudo:
+  `my @a := Array[Str].new; @a[0] = 5` says "Type check failed in
+  assignment to ; expected Str but got Int (5)" there, "for an element of
+  @a" here.
 - [ ] **An untyped array's element alias answers `.VAR` as a value**
   (found 2026-10-28 while fixing issue #184, 17e33a45; on v5.5.0 too; a
   Nil through it resets the element since 649cb2b1):
@@ -647,9 +628,7 @@ moves to [TODO.md](TODO.md).
     a role's candidate shows no invocant in `.signature.raku`;
   - an undeclared variable inside a string (`my $y = "a $x b"`) is refused
     when the statement runs, where Rakudo refuses it at compile time;
-  - a `:D` element's type refusal names the bare type: `my Int:D @d = 1;
-    @d[0] = "s"` says "expected Int but got Str", Rakudo "expected Int:D"
-    (elemTypeOfSpec drops the smiley; found 2026-11-09, a776b42a);
+  - `.polymod` answers a List, Rakudo a Seq (found 2026-11-09, fd4495e3);
   - a Proxy bound to a variable answers `.VAR` as its value:
     `my $p := Proxy.new(…); $p.VAR.^name` is Int, Rakudo Proxy;
   - Cro::HTTP's t/http2-request-parser.rakutest fails now and then (3 runs
@@ -679,13 +658,6 @@ moves to [TODO.md](TODO.md).
   - IO::Socket::Async::SSL's t/encoding.rakutest failed once in a fresh
     `rakupp install` (it read "¸ВО" for "ПИВО": the reply's first bytes were
     lost) and has passed 80 runs since, idle and under load;
-  - `.^roles` of a class that does a value-parameterized role names it as
-    written, `(R2[1])`, where Rakudo names it by type, `(R2[Int])`; and
-    `R2[1].^roles` is `((R2[1]))`, Rakudo `()`;
-  - a class refused for an unknown parent leaves its name behind: after
-    `try EVAL 'class C is nosuch {}'`, `EVAL 'class C {}'` is a
-    redeclaration, and so for a role (Rakudo 2026.09: neither; it refuses a
-    subset redeclared after `subset S is nosuch of Int`, which runs here);
   - a program that `use`s a module other than Test is not checked for a
     gobbled block, since the module may export the name; Rakudo knows its
     exports and refuses `use JSON::Fast; if Nope { }`. And `given 1 { when

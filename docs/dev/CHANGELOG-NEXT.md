@@ -40,7 +40,8 @@ and ten more: cae1cb63, a72b133c, c2dcfeb9, 25f02957, b8d8799d, 1c8c779c, 01673b
 846ae003, 1695a062, 75213a10;
 and nine more: 586a7f14, 1c32f010, a5cb94fa, 3f7f2856, d9fb551b, 0579b6c2, 2108a08b,
 de67ca59, c77965fc;
-and seven more: 868dbe53, 564eec50, a776b42a, 649cb2b1, 73940d6e, ba6f7edf, 4c47943e.*
+and seven more: 868dbe53, 564eec50, a776b42a, 649cb2b1, 73940d6e, ba6f7edf, 4c47943e;
+and seven more: fd4495e3, a343a825, 3341d028, e56816cc, 0d6168fb, cd1e7aa9, 07e940ce.*
 
 ---
 
@@ -459,6 +460,17 @@ and seven more: 868dbe53, 564eec50, a776b42a, 649cb2b1, 73940d6e, ba6f7edf, 4c47
 - **A typed element written through `.hyper.map`, `.hyper.grep` or a `.kv`
   loop answers to its type** (4c47943e), and a typed Hash's value under `.kv`:
   each stored "x" into a `my Int @a`. `t/regression/typed-element-alias-guards.raku`.
+- **`.polymod` takes a Junction divisor whole, and a Real stops at 1** (fd4495e3):
+  `1.polymod(2 & 3)` is `(all(1, 1) 0)` where it threaded the call, and
+  `2.5.polymod(1, 2)` is `(2.5)` where it was `(0.5 0 1)`.
+  `t/regression/polymod-junction-and-real-steps.raku`.
+- **An element type with a smiley is checked whole** (3341d028): `my Int:D @d;
+  @d.push(Int)` stored the type object, and an `Array[Str:D]`'s element
+  took one or a Nil; a refusal says "expected Int:D".
+  `t/regression/smiley-element-type-checked.raku`.
+- **`%h.values.map` binds an `is rw` parameter to the hash's value** (07e940ce):
+  `-> $v is rw { $v++ }`, `&inc` and `-> \v` left %h as it was.
+  `t/regression/hash-values-map-rw-param.raku`.
 
 ### Fixed: crashes
 
@@ -643,6 +655,18 @@ and seven more: 868dbe53, 564eec50, a776b42a, 649cb2b1, 73940d6e, ba6f7edf, 4c47
 - **A `:D` or `:U` element type stays on the container** (a776b42a): `my Int:D @d`
   is an Array[Int:D] and `my Int:D %h` a Hash[Int:D], where both were typed
   Int, and `@d[0] = Nil` is refused. `t/regression/smiley-element-type-kept.raku`.
+- **Any's mutators and `.sum` on a plain object are Rakudo's X::Multi::NoMatch**
+  (a343a825): "Cannot resolve caller push(P:D: Int:D); …", where they died "No
+  such method". `t/regression/plain-object-any-mutators.raku`.
+- **An OP= refused into a typed element names the container** (e56816cc): `@a[0]
+  ~= "x"` says "of @a", where it said "of @a[0]"; `//=` keeps the element.
+  `t/regression/op-assign-element-refusal-name.raku`.
+- **`.^roles` lists a class's roles last-declared first, a value argument by
+  its type** (0d6168fb): `R2[Int]` for `does R2[1]`, and `R2[1].^roles` is
+  empty. `t/regression/roles-order-and-value-arguments.raku`.
+- **A class or role refused for an unknown parent leaves nothing behind**
+  (cd1e7aa9): `class C {}` after it was a redeclaration.
+  `t/regression/refused-parent-leaves-no-type.raku`.
 
 ### Platforms and packaging
 
@@ -726,15 +750,13 @@ and seven more: 868dbe53, 564eec50, a776b42a, 649cb2b1, 73940d6e, ba6f7edf, 4c47
   phaser. (A sunk `start` that dies, and a tapper that dies on an
   interval's or a Channel's value, are fixed by bc6faf15 and ea460d2a,
   above.)
-- Found with 592afa33 to ea460d2a, the same before them (each in
-  TODO-FOLLOW-UPS.md): `.^roles` of a class doing a
-  value-parameterized role names it as written, `R2[1]`, where Rakudo names
-  it `R2[Int]`; and an element store into `Array[Str:D]` still checks the
-  nominal type alone. (A FIRST or INIT written last, and a user `multi` on
-  a built-in operator, are fixed by 8e5b2dc0 and 25f02957, above.)
+- Found with 592afa33 to ea460d2a, the same before them: none left open.
+  (`.^roles` of a class doing a value-parameterized role, an element store
+  into `Array[Str:D]`, a FIRST or INIT written last, and a user `multi` on
+  a built-in operator are fixed by 0d6168fb, 3341d028, 8e5b2dc0 and 25f02957, above.)
 - Found with 853b606b to c7c4e564, the same before them (each in
-  TODO-FOLLOW-UPS.md): Any's mutators and `.sum` on a plain object die "No
-  such method"; and a `for` loop's `-> @a` still binds an Int. (`~` of two
+  TODO-FOLLOW-UPS.md): a `for` loop's `-> @a` still binds an Int. (Any's
+  mutators and `.sum` on a plain object are fixed by a343a825; `~` of two
   utf8 values, the named-argument arity message and a compile-time
   X::AdHoc's X::Comp are fixed by a72b133c, cae1cb63 and c2dcfeb9, and Any's
   list methods on an object, a Failure's `.mess` and an INIT in a routine
@@ -746,11 +768,15 @@ and seven more: 868dbe53, 564eec50, a776b42a, 649cb2b1, 73940d6e, ba6f7edf, 4c47
   and an undeclared variable's message are fixed by d9fb551b, 0579b6c2 and 2108a08b,
   above.)
 - Found with 586a7f14 to de67ca59, the same before them (each in
-  TODO-FOLLOW-UPS.md): a Range of objects is `0..0`; a Hash's `.values.map`
-  with an `is rw` parameter writes nothing back; `polymod` threads a
-  Junction Rakudo takes whole; and an undeclared variable inside a string
-  is refused when the statement runs.
+  TODO-FOLLOW-UPS.md): a Range of objects is `0..0`; and an undeclared
+  variable inside a string is refused when the statement runs. (A Hash's
+  `.values.map` with an `is rw` parameter and `polymod` with a Junction are
+  fixed by 07e940ce and fd4495e3, above.)
 - Found with 868dbe53 to 4c47943e, the same before them (each in
-  TODO-FOLLOW-UPS.md): a `:D` element's type refusal says "expected Int"
-  where Rakudo says "expected Int:D"; and a Proxy bound to a variable
-  answers `.VAR` as its value.
+  TODO-FOLLOW-UPS.md): a Proxy bound to a variable answers `.VAR` as its
+  value. (A `:D` element's type refusal is fixed by 3341d028, above.)
+- Found with fd4495e3 to 07e940ce, the same before them (each in
+  TODO-FOLLOW-UPS.md): `.push` and its kin name "the container" in a
+  refusal, as `.map` does, where Rakudo names `@a`; an `Array[T].new`'s
+  element refusal names the variable it is bound to, where Rakudo names
+  none ("in assignment to ;"); and `.polymod` answers a List, Rakudo a Seq.
