@@ -6969,6 +6969,8 @@ static void lastCallLines(const Expr* e, int line, std::map<std::string, int>& o
             lastCallLines(t->then.get(), line, out); lastCallLines(t->els.get(), line, out); return; }
         case NK::ListExpr: for (auto& i : static_cast<const ListExpr*>(e)->items) lastCallLines(i.get(), line, out); return;
         case NK::BlockExpr: for (auto& st : static_cast<const BlockExpr*>(e)->body) lastCallLinesS(st.get(), out); return;
+        case NK::VarExpr: if (static_cast<const VarExpr*>(e)->name.size() > 1 && static_cast<const VarExpr*>(e)->name[0] == '&') {
+            int& l = out[static_cast<const VarExpr*>(e)->name.substr(1)]; l = std::max(l, line); } return;
         default: return;
     }
 }
@@ -7020,7 +7022,7 @@ void Interpreter::checkUndeclaredCalls(const std::vector<StmtPtr>& stmts, bool u
         if (tctx().cur && tctx().cur->find("&" + n)) continue;
         if (global_ && global_->find("&" + n)) continue;
         // (`pi()` is an undeclared VARIABLE)
-        if (!unit || termConstantName(n)) undeclaredRoutine(n);
+        if (termConstantName(n)) undeclaredRoutine(n);
         unknown.push_back(n);
     }
     if (unknown.empty()) return;
@@ -7060,11 +7062,13 @@ void Interpreter::checkUndeclaredCalls(const std::vector<StmtPtr>& stmts, bool u
         (*sugs.hash())[n] = sl;
     }
     // filename+line make it a compile-time error: the top-level printer gives
-    // it the ===SORRY!=== banner
-    throwTypedV("X::Undeclared::Symbols",
-                {{"unk_routines", unk}, {"routine_suggestion", sugs}, {"type_suggestion", Value::makeHash()},
-                 {"line", Value::integer(first)}, {"filename", Value::str(srcFile_.empty() ? "-e" : srcFile_)}},
-                msg);
+    // it the ===SORRY!=== banner. An EVAL's report is worded the same, as
+    // Rakudo's is, and carries neither: the snippet has no file of its own here
+    std::vector<std::pair<std::string, Value>> attrs{{"unk_routines", unk}, {"routine_suggestion", sugs},
+                                                     {"type_suggestion", Value::makeHash()}};
+    if (unit) { attrs.emplace_back("line", Value::integer(first)); attrs.emplace_back("filename", Value::str(srcFile_.empty() ? "-e" : srcFile_)); }
+    else msg += "\n";   // (Rakudo's message ends a line)
+    throwTypedV("X::Undeclared::Symbols", std::move(attrs), msg);
 }
 bool Interpreter::fatalHere() const {
     for (const Env* e = tctx().cur.get(); e; e = e->parent.get())

@@ -47,7 +47,8 @@ and three more: e205f9ae, f371f8b2, e4ec869c;
 and three more: 07dd7b4a, 793c6d61, d5186165;
 and one more: 5932b773;
 and three more: edc36182, 3d4a3a91, 57cc8291;
-and two more: c1c8743d, 628ad9cb.*
+and two more: c1c8743d, 628ad9cb;
+and two more: 49808203, 25975633.*
 
 ---
 
@@ -720,6 +721,12 @@ and two more: c1c8743d, 628ad9cb.*
 - **An undeclared variable's suggestions take in the routines in scope** (628ad9cb),
   scored as Rakudo's: `$prnt` suggests `&print`, `$frob` beside `sub frob`
   `&frob`. `t/regression/undeclared-variable-routine-suggestions.raku`.
+- **A routine named by its `&` and declared nowhere is refused at compile
+  time** (49808203), as a call to it is: `say "hi"; say &nope` printed hi first.
+  `t/regression/undeclared-routine-reference.raku`.
+- **An EVAL's undeclared routines are reported in Rakudo's words** (25975633),
+  "Undeclared routine:\n    prnt used at line 1. …", every name at once.
+  `t/regression/eval-undeclared-routine-report.raku`.
 
 ### Platforms and packaging
 
@@ -847,6 +854,6 @@ and two more: c1c8743d, 628ad9cb.*
   variable's `$x = Nil` resets it to Any, where Rakudo resets it to the
   anonymous subset. (`my Int $x where * > 0; $x = "s"`, which died
   converting the Str, is fixed by edc36182, above.)
-- Found with 628ad9cb, the same before it (in TODO-FOLLOW-UPS.md): an undeclared
-  routine (`say &nope`) is refused when the call runs, where Rakudo refuses
-  it at compile time with its suggestions.
+- Found with 628ad9cb, the same before it: none left open. (An undeclared
+  `&nope`, and an EVAL's undeclared routines, are fixed by 49808203 and 25975633,
+  above.)

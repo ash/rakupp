@@ -921,6 +921,14 @@ void spCallsE(const Expr* e, std::set<std::string>& out) {
             return;
         }
         case NK::SymbolicRef: out.insert("\x01other"); return;   // `&::("infix:<x>")` — a name decided at run time
+        case NK::VarExpr: {   // …and `&nope` mentions a routine as a call does (not `&?ROUTINE`, `&*x`, `&A::b`)
+            auto* v = static_cast<const VarExpr*>(e);
+            const char c1 = v->name.size() > 1 ? v->name[1] : 0;
+            if (!v->declare && v->name[0] == '&' && ((c1 >= 'a' && c1 <= 'z') || (c1 >= 'A' && c1 <= 'Z') || c1 == '_') &&
+                v->name.find("::") == std::string::npos)
+                out.insert(v->name.substr(1));
+            return;
+        }
         default: return;
     }
 }

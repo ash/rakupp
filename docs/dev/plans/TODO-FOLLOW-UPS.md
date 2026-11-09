@@ -576,10 +576,6 @@ moves to [TODO.md](TODO.md).
     again 2026-11-09); and a multi method's refusal, which lists the
     candidates since 07dd7b4a, lists only the role's when the class has its
     own beside it (Rakudo lists both, the class's first);
-  - an undeclared ROUTINE is refused when the call runs, "Undefined
-    routine 'nope'", where Rakudo refuses it at compile time with its
-    suggestions: `say &nope` is "Undeclared routine: nope used at line 1.
-    Did you mean 'note', 'none'?" there (found 2026-11-09, 628ad9cb);
   - a Proxy bound to a variable answers `.VAR` as its value:
     `my $p := Proxy.new(…); $p.VAR.^name` is Int, Rakudo Proxy;
   - Cro::HTTP's t/http2-request-parser.rakutest fails now and then (3 runs

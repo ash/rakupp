@@ -33,10 +33,11 @@ sub refused(Str $code, Str $name, Str $stdout, Str $desc) {
 }
 
 # --- the four spellings ----------------------------------------------------
-# A call is refused before anything runs, as `nope()` is; the `&` form when it
-# is reached, as `&nope` is (the pre-run check walks calls, not `&` names).
+# A call is refused before anything runs, as `nope()` is, and so is the `&`
+# form, as `&nope` is (the pre-run check takes `&` names as calls since
+# undeclared-routine-reference.raku).
 refused('say 0; say infix:<nosuch>(42);',    'infix:<nosuch>',  '',    'one-argument infix call is refused');
-refused('say 0; say &infix:<nosuch>;',       'infix:<nosuch>',  "0\n", '`&infix:<…>` of nothing is refused');
+refused('say 0; say &infix:<nosuch>;',       'infix:<nosuch>',  '',    '`&infix:<…>` of nothing is refused');
 refused('say 0; say infix:<nosuch>(1, 2);',  'infix:<nosuch>',  '',    'two-argument infix call is refused');
 refused('say 0; say prefix:<nosuch>(1);',    'prefix:<nosuch>', '',    'prefix call is refused');
 
