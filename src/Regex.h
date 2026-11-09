@@ -440,6 +440,7 @@ private:
         // time (GrammarHooks::dynRule) — so there is no callee to own here.
         std::string dynCode;
         mutable const GrammarRuleMeta* metaCache = nullptr; // per-node name resolution (grammar path)
+        mutable uint64_t metaOwner = 0;                     // …and the GrammarMatcher::serial it was resolved in
         // Look: zero-width assertion — kids[0] is the inner pattern; `negate` = <!…>,
         // `behind` = lookbehind (<?after…>) vs lookahead (<?before…>/<?…>).
         bool behind = false;
@@ -813,6 +814,11 @@ public:
     }
 
     using NameMeta = GrammarRuleMeta;
+    // This matcher among all there have been: what a node's cached NameMeta is
+    // checked against (nodeMeta, Regex.cpp). An address would not do — the
+    // next parse's matcher is a local at the same one.
+    const uint64_t serial = nextSerial();
+    static uint64_t nextSerial() { static std::atomic<uint64_t> n{0}; return ++n; }
     const NameMeta& nameMeta(const std::string& name);      // cached per-name metadata (see GrammarRuleMeta)
     // The LTM expansion route for this grammar's rules (see LtmExpand::grammar):
     // 0 refuse, 1 = regexOut is the rule's compiled no-arg body, 2 = <ws>,

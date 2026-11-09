@@ -12787,7 +12787,7 @@ std::vector<Param> Parser::parseSignature(Tok closeTok) {
                 else if (isKind(Tok::IntLit) &&
                          (peek().kind == Tok::Comma || peek().kind == Tok::Semicolon ||
                           peek().kind == Tok::RBracket)) {
-                    p.shapeDims.push_back(std::stoll(advance().text));
+                    p.shapeDims.push_back(advance().ival);   // (the VALUE: `0x10` is 16, `1_000` a thousand, and one past an int64 no throw)
                     p.shapeDimExprs.emplace_back();
                 }
                 else {   // an expression dimension (`@a[$n]`): checked when the call binds

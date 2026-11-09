@@ -56,7 +56,8 @@ and three more: f907b840, 8f55e40a, 9b0073c8;
 and five from reviewing the open pull requests #232-#234: c0aa3e0e, 6004f84a,
 f11a9f04, 88f81c1f, 655d13dd;
 and three more: 63b92af7, f929935a, ae3321f2;
-and the first from the review of src/ (docs/dev/findings/src-review-2026-11-09.md): d389b329.*
+and from the review of src/ (docs/dev/findings/src-review-2026-11-09.md): d389b329,
+9c5c4d82, 7e9c0387, 0c64680d, 60e9df1f, c6791c72.*
 
 ---
 
@@ -196,6 +197,14 @@ and the first from the review of src/ (docs/dev/findings/src-review-2026-11-09.m
 
 ### Fixed: silent wrong answers
 
+- **A `use` that failed fails again** (7e9c0387): `try EVAL 'use No::Such';
+  EVAL 'use No::Such; say "alive"'` printed alive — the name was entered as
+  loaded before the search, and stayed. Rakudo dies both times. Finding C2 of
+  the review of src/. `t/regression/failed-use-fails-again.raku`.
+- **`-$obj` negates what the object's `Numeric` answered as what it is**
+  (0c64680d): a `Numeric` of 2**100 gave -9223372036854775807, one of 1/3 a
+  Num, one of 1+2i a real. Finding C3.
+  `t/regression/prefix-minus-object-keeps-numeric-kind.raku`.
 - **`return-rw` wrote into, or read from, the frame it had just left**
   (7a09c596). When a routine returns, its frame goes back to a pool and its
   variables are cleared. Two paths used one of those variables afterwards.
@@ -559,6 +568,21 @@ and the first from the review of src/ (docs/dev/findings/src-review-2026-11-09.m
 
 ### Fixed: crashes
 
+- **A `<{ code }>` pattern that calls a rule of its grammar parses a second
+  time** (9c5c4d82): `grammar G { token TOP { <{ '<foo>' }> }; token foo { a } };
+  G.parse("a"); G.parse("a")` died with a segfault at the second parse — the
+  pattern's regex is compiled once and kept, and its `<foo>` remembered where
+  the first parse's matcher, destroyed since, had found foo. Finding F2 of the
+  review. `t/regression/dynamic-subrule-second-parse.raku`.
+- **`+<` refuses a count past 2**31** (c6791c72), as Rakudo does and in its
+  words ("Error in mp_mul_2d: Value out of range"): `1 +< 9223372036854775807`
+  ran, taking memory, until it was killed. Finding A8.
+  `t/regression/shift-left-count-is-bounded.raku`.
+- **A shaped parameter's dimension past an int64 compiles** (60e9df1f):
+  `sub f(@a[99999999999999999999]) {}` ended with "Internal error: stoll: out
+  of range". The dimension is the literal's value now, not its spelling, so
+  `@a[0x10]` is 16, where it was 0, and `@a[1_0]` 10, where it was 1. Finding
+  G2. `t/regression/shaped-param-dimension-is-its-value.raku`.
 - **An array element written after code that grew the array is still the
   element** (d389b329): `my @a = 1,2; @a[0] += do { @a.push($_) for ^100000; 5 }`
   left @a[0] at 1, where Rakudo has 6, and the process died at exit — the store

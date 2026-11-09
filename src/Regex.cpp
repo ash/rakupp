@@ -56,6 +56,14 @@ namespace rakupp {
 
 static int32_t namedCp(const std::string& nm); // \c[NAME] resolver (defined below)
 
+// A subrule node's name, resolved in THIS matcher and cached on the node. A
+// node can outlive the matcher that first resolved it — a `<{ code }>` pattern
+// is compiled once and kept for the interpreter's life, and the next parse's
+// matcher is another — so the cache says whose it is (GrammarMatcher::serial).
+template <class N> static inline void nodeMeta(const N* n, GrammarMatcher& g) {
+    if (n->metaOwner != g.serial) { n->metaCache = &g.nameMeta(n->ruleName); n->metaOwner = g.serial; }
+}
+
 Regex::Regex(const std::string& pattern, const std::string& flags) : pat_(pattern) {
     for (char f : flags) {
         if (f == 'i') icase_ = true;
@@ -3553,7 +3561,7 @@ Regex::RxWidth Regex::nodeWidth(const Node* n, MState& st) const {
         case K::Subrule:
             if (n->inlineRx || !n->dynCode.empty()) return {0, UNB, UNB}; // a CALLED pattern: any width
             if (st.grammar) {
-                if (!n->metaCache) n->metaCache = &st.grammar->nameMeta(n->ruleName);
+                nodeMeta(n, *st.grammar);
                 // one CHARACTER, whose UTF-8 encoding is 1..n bytes — this is only
                 // used to bound a lookbehind window, so an open upper bound is a
                 // wider scan, never a wrong answer (`<ident>` shares the class
@@ -3746,10 +3754,9 @@ bool Regex::matchNode(const Node* n, MState& st, long pos, const FnRef& k) const
                 return re ? matchInlineSub(n, re, st, pos, k) : false;
             }
             // Grammar path: backtrackable — thread `k` through the callee. The name→meta
-            // resolution is cached on the node (compiled Regexes live in the matcher's cache,
-            // so node and matcher share a lifetime).
+            // resolution is cached on the node, for this matcher (nodeMeta).
             if (st.grammar) {
-                if (!n->metaCache) n->metaCache = &st.grammar->nameMeta(n->ruleName);
+                nodeMeta(n, *st.grammar);
                 if (n->noBack)
                     return st.grammar->matchSubCommitted(*n->metaCache, n->ruleName, n->ruleArgs,
                                             n->ruleCapture ? (n->ruleAlias.empty() ? n->ruleName : n->ruleAlias) : std::string(),

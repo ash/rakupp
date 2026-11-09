@@ -1313,7 +1313,11 @@ void Interpreter::loadModuleImpl(const std::string& name, const std::vector<std:
     noteSymbolMutation("module load (use/need)");
     loadedModules_.insert(name);
     modulesLoading_.insert(name);
-    struct LoadingG { std::set<std::string>& s; std::string n; ~LoadingG() { s.erase(n); } } loadingG{modulesLoading_, name};
+    // (a load that THROWS has loaded nothing: the name is forgotten again, so
+    // the next `use` of it fails as this one did — it answered as loaded, and
+    // `try EVAL 'use No::Such'; EVAL 'use No::Such; …'` ran the second)
+    struct LoadingG { std::set<std::string>& s; std::set<std::string>& done; std::string n; int ex = std::uncaught_exceptions();
+                      ~LoadingG() { s.erase(n); if (std::uncaught_exceptions() > ex) done.erase(n); } } loadingG{modulesLoading_, loadedModules_, name};
 
     // RAKUPP_TRACE also reports where a module's load time went: `parse` is the
     // lex+parse of its source, `run` is executing its top level (declarations,

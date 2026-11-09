@@ -655,6 +655,10 @@ static Value negInt(long long i) {
 }
 
 Value Interpreter::prefixNumeric(const std::string& op, const Value& v) {
+    // what an object numified to, negated AS WHAT IT IS: a big Int stays one
+    // and a Rat or a Complex stays exact (`-A.new` with a `Numeric` of 2**100
+    // was -9223372036854775807, and of 1/3 a Num)
+    const auto negOf = [&](const Value& n) { return n.t == VT::Object ? Value::number(-n.toNum()) : prefixNumeric("-", n); };
     // An element BOUND to another (`%a<x> := %b<y>`) is read through its
     // Proxy, as `~` reads it (strOf): `+` counted the Proxy record's own
     // three entries, so Template::Mustache's spec runner planned 3 tests
@@ -681,7 +685,7 @@ Value Interpreter::prefixNumeric(const std::string& op, const Value& v) {
         for (const char* nm : {"Numeric", "Bridge", "Int"})
             if (Value* m = v.obj()->cls->findMethod(nm)) {
                 ValueList none; Value n = invokeMethod(*m, v, none);
-                if (op == "-") return n.t == VT::Int ? negInt(n.toInt()) : Value::number(-n.toNum());
+                if (op == "-") return negOf(n);
                 return n;
             }
         // …and a class deriving a built-in numifies as the value it BOXES:
@@ -690,7 +694,7 @@ Value Interpreter::prefixNumeric(const std::string& op, const Value& v) {
             Value b = v.obj()->boxed();
             ValueList none;
             Value n = b.isNumeric() ? b : methodCall(b, "Numeric", none);
-            if (op == "-") return n.t == VT::Int ? negInt(n.toInt()) : Value::number(-n.toNum());
+            if (op == "-") return negOf(n);
             return n;
         }
     }

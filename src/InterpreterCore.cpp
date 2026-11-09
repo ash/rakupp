@@ -19710,6 +19710,8 @@ static Value applyArithGeneral(const std::string& op, const Value& l, const Valu
             }
         }
 #endif
+        // (a count past 2**31 is refused, in Rakudo's words: `1 +< 9223372036854775807` asked BigInt for that power of two)
+        if (sh > 2147483647LL) throw RakuError{Value::typeObj("X::AdHoc"), "Error in mp_mul_2d: Value out of range"};
         BigInt lb = l.big() ? *l.big() : BigInt(l.toInt());
         BigInt res = lb * BigInt(2).pow(sh);
         return res.fitsLL() ? Value::integer(res.toLL()) : Value::bigint(res);
