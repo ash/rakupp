@@ -178,6 +178,38 @@ moves to [TODO.md](TODO.md).
 
 ## Operators and types
 
+- [ ] **A method's `handles` delegations: the renaming form, `.can` and
+  `.^methods`** (found 2026-11-09 reviewing pull request #233, 88f81c1f;
+  each the same before it):
+
+  ```raku
+  class Pg { method pg { "p" } }
+  class H { method x handles(:page<pg>) { Pg.new } }
+  say H.new.page;      # rakupp: No such method 'page'   Rakudo: p
+  class A { has $.p handles <page> }
+  say A.can("page").elems, A.^methods.grep(*.name eq "page").elems;  # 00, Rakudo 11
+  ```
+
+  The parser's method trait ladder (Parser.cpp, the `handles` arm beside
+  `is export`) takes words and strings, not colonpairs; an attribute's
+  `handles` keeps `handlesTo` for the renaming, and a method's would need
+  the same in `methodHandles`. Rakudo makes each delegated name a real
+  method, which is why `.can` and `.^methods` list it; rakupp keeps
+  delegations in tables (ClassAttr::handles, ClassInfo::methodHandles), so
+  both would have to look there. In the same spirit, a class's own `method
+  page` beside a composed role's `method P handles <page>` is
+  X::Method::Duplicate on Rakudo and the class's method here.
+
+- [ ] **Role and method declaration errors' words and types** (found
+  2026-11-09 fixing c0aa3e0e and 655d13dd; each the same before them):
+  X::Role::Parametric::NoSuchCandidate says "No appropriate parametric role
+  variant available for 'R'" where Rakudo adds a colon and the dispatch's
+  own line, "Cannot resolve caller (C, Str:D); none of these signatures
+  matches: …" or "Ambiguous call to '(C, Int)'; …"; and two methods of one
+  name in a class are X::Redeclaration, Rakudo's X::Method::Duplicate
+  (`class A { method m { 1 }; method m { 2 } }`, InterpreterModules.cpp's
+  "one name, two ONLY methods" check), in the same words.
+
 - [ ] **A Range of objects** (found 2026-11-08 making a FALLBACK leave Any's
   methods to Any, 34e48087; Any's list methods and mutators on a plain
   object answer since 586a7f14 and a343a825):
@@ -1058,6 +1090,17 @@ moves to [TODO.md](TODO.md).
   under 300 MB, one copy of the file and the interpreter.
 
 ## Gates
+
+- [ ] **A `#?requires` regression case is skipped on every machine without
+  its module, the suite's own included** (found 2026-11-09 reviewing pull
+  request #234): t/regression/method-also-role-composition-2026-09-02.raku
+  died on every build from 0b29ef00 (2026-10-30) to 6004f84a, and t/run.raku
+  said "skip" each time, because Method::Also is installed nowhere it runs.
+  6004f84a added a case with no module for that shape; the rest of the
+  `#?requires` cases (`grep -l '^#?requires' t/regression/*.raku`) have no
+  such twin. Either install those modules where the suite runs (the
+  opt-in `t/deps` route), or have t/run.raku name, at the end, every case
+  it skipped for a missing module, so a run says how much it did not test.
 
 - [ ] **t/jit/run.raku: 5 of its 21 tier-up cases enter no kernel** (found
   2026-10-22 gating the FLOAT-HEAVY-ISSUES work; on v5.5.0 too, on macOS

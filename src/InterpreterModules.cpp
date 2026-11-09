@@ -4483,7 +4483,7 @@ std::shared_ptr<ClassInfo> Interpreter::pickRoleVariant(const std::shared_ptr<Cl
 }
 
 // …and by the ARGUMENTS when they are there to look at: the candidates whose
-// positional parameters accept them (type, where-clause), narrowest first —
+// positional parameters accept them (type, literal, where-clause), narrowest first —
 // `role R[Str $x]`, `role R[A $x]`, `role R[B $x]` (B is A), `role R[::T]`
 // pick 1, 3, 2, 4 for "hi", B, A, Pair.
 std::shared_ptr<ClassInfo> Interpreter::pickRoleVariantArgs(const std::shared_ptr<ClassInfo>& group,
@@ -4542,6 +4542,13 @@ std::shared_ptr<ClassInfo> Interpreter::pickRoleVariantValues(const std::shared_
         for (size_t i = 0; i < ps.size() && i < av.size(); i++) {
             const Param* p = ps[i];
             if (p->slurpy) break;
+            // `role W['A']` beside `role W['B']`: a literal takes only itself
+            if (p->litVal) {
+                bool ok = false;
+                try { ok = literalParamAccepts(*p, av[i]); } catch (RakuError&) {}
+                if (!ok) return false;
+                continue;
+            }
             if (p->typeCapture) {
                 std::string cn = !p->captureName.empty() ? p->captureName : p->type;
                 captured[cn] = av[i].t == VT::Type ? av[i] : Value::typeObj(av[i].typeName());
@@ -4582,12 +4589,35 @@ std::shared_ptr<ClassInfo> Interpreter::pickRoleVariantValues(const std::shared_
     if (ok.empty())
         throwTyped("X::Role::Parametric::NoSuchCandidate", {{"role", group->name}},
                    "No appropriate parametric role variant available for '" + group->name + "'");
+    // `T $b` after `::T $a`: typed by what the call binds, a check made at bind time
+    auto generic = [](const std::vector<const Param*>& ps, size_t i) {
+        if (ps[i]->typeFromCapture) return true;
+        for (size_t j = 0; j < i; j++)
+            if (ps[j]->typeCapture && !ps[i]->type.empty() &&
+                (!ps[j]->captureName.empty() ? ps[j]->captureName : ps[j]->type) == ps[i]->type) return true;
+        return false;
+    };
+    // a parameter's nominal type: an untyped one in a role's signature is Mu,
+    // as Rakudo has it (`R[Any $x]` is narrower than `R[$x]`), and a literal's is
+    // the literal's own (`'A'` is a Str)
+    auto nominal = [&](const std::vector<const Param*>& ps, size_t i) -> std::string {
+        const Param* p = ps[i];
+        if (p->typeCapture || generic(ps, i)) return "Mu";
+        if (!p->type.empty()) return p->type;
+        if (p->litVal) {
+            try {
+                Value lv = eval(p->litVal.get());
+                if (lv.isAllomorph()) lv = methodCall(lv, "Numeric", {});
+                return lv.typeName();
+            } catch (RakuError&) {}
+        }
+        return "Mu";
+    };
     // narrowest: a candidate none of whose parameters is wider than the other's
     auto narrowerEq = [&](ClassInfo* a, ClassInfo* b) {
         auto pa = positionals(a), pb = positionals(b);
         for (size_t i = 0; i < pa.size() && i < pb.size(); i++) {
-            std::string ta = pa[i]->typeCapture ? "Mu" : pa[i]->type.empty() ? "Any" : pa[i]->type;
-            std::string tb = pb[i]->typeCapture ? "Mu" : pb[i]->type.empty() ? "Any" : pb[i]->type;
+            std::string ta = nominal(pa, i), tb = nominal(pb, i);
             if (ta == tb) continue;
             if (tb == "Mu" || (tb == "Any" && ta != "Mu")) continue;
             if (ta == "Mu" || ta == "Any") return false;
@@ -4597,13 +4627,39 @@ std::shared_ptr<ClassInfo> Interpreter::pickRoleVariantValues(const std::shared_
         }
         return true;
     };
+    std::vector<size_t> tier;
     for (size_t i = 0; i < ok.size(); i++) {
         bool best = true;
         for (size_t j = 0; j < ok.size() && best; j++)
             if (i != j && !narrowerEq(ok[i], ok[j]) && narrowerEq(ok[j], ok[i])) best = false;
-        if (best) return okp[i];
+        if (best) tier.push_back(i);
     }
-    return okp.front();
+    if (tier.empty()) return okp.front();
+    // …and among the narrowest, as Rakudo's multi-dispatch over the group's
+    // signatures: a candidate whose literal, `where` or captured type accepted
+    // the arguments first, in declaration order (`R[Int $x where * > 0]` beside
+    // `R[Int $x]` takes 5, `R[::T $a, T $b]` beside `R[$a, $b]` takes Array,
+    // Array); then one taking exactly that many positionals (`R[$a]` beside
+    // `R[$a, $b?]` or `R[*@a]`); two still tied are ambiguous, and Rakudo
+    // refuses them: `role R[$x]` beside `role R[$y]` has no candidate for R[5].
+    auto constrained = [&](ClassInfo* v) {
+        auto ps = positionals(v);
+        for (size_t i = 0; i < ps.size() && i < av.size(); i++)
+            if (!ps[i]->slurpy && (ps[i]->litVal || ps[i]->whereExpr || generic(ps, i))) return true;
+        return false;
+    };
+    for (size_t i : tier) if (constrained(ok[i])) return okp[i];
+    std::vector<size_t> exact;
+    for (size_t i : tier) {
+        auto ps = positionals(ok[i]);
+        bool slurpy = false; for (auto* p : ps) if (p->slurpy) slurpy = true;
+        if (!slurpy && ps.size() == av.size()) exact.push_back(i);
+    }
+    const std::vector<size_t>& left = exact.empty() ? tier : exact;
+    if (left.size() > 1)
+        throwTyped("X::Role::Parametric::NoSuchCandidate", {{"role", group->name}},
+                   "No appropriate parametric role variant available for '" + group->name + "'");
+    return okp[left.front()];
 }
 
 Value Interpreter::makeRolePun(ClassInfo* role, const std::string& roleName, ValueList& argv) {
@@ -5334,6 +5390,57 @@ static void methodTermJoinsClass(StrMap<std::shared_ptr<ClassInfo>>& classes,
 // enum` publishes nothing.
 static bool enumNameIsGlobal(const std::string& name, bool loadingModule, const std::string& pkgPrefix) {
     return !name.empty() && ((loadingModule && pkgPrefix.empty()) || name.find("::") != std::string::npos);
+}
+
+// A composed role's `method x handles <n>` delegations are the type's, as its
+// methods are, and outrank what it inherits unless it declares n itself: a role
+// in a later `does` slot is in no parent slot that dispatch and the role
+// requirement check walk. (Out here: execDeclStmt sits at its size ceiling.)
+static void takeRoleMethodHandles(ClassInfo* ci, const ClassDecl* cd, const std::vector<ClassInfo*>& roles) {
+    for (ClassInfo* role : roles)
+        for (auto& kv : role->methodHandles)
+            if (ci->methodHandles.insert(kv).second &&
+                std::none_of(cd->methods.begin(), cd->methods.end(),
+                             [&](const auto& md) { return md && md->name == kv.first; }))
+                ci->delegatedNames.insert(kv.first);
+}
+
+// Carry a composed role's `is also` dispatcher-aliases onto the type: the alias
+// is a second name for the multi group the role provides — found in the type's
+// merged methods, or in the role's own when it arrives as a parent (walked, not
+// copied). A CLASS installs the alias; a ROLE only remembers it, so `role B does
+// A` still delivers A's alias to the class that eventually does B. Only a role
+// that carried `is also` has anything here. (See ClassInfo::alsoRoleAliases;
+// Method::Also #19's role case.) A class that declares a method of the alias's
+// name is refused, as on Rakudo, where Method::Also's `specialize` adds the
+// alias to a class that has one already: the name is answered, and execDeclStmt
+// throws.
+static std::string carryAlsoRoleAliases(ClassInfo* ci, const ClassDecl* cd, const std::vector<ClassInfo*>& roles) {
+    for (ClassInfo* role : roles) {
+        for (auto& ra : role->alsoRoleAliases) {
+            // the group may be merged into us, or up the composed chain (roles
+            // that arrive as parents are walked, not copied) — a full lookup
+            // finds it either way, incl. `role B does A`.
+            Value group;
+            if (Value* g = ci->findMethod(ra.first)) group = *g;
+            if (!(group.t == VT::Code && group.code() && group.code()->ci().isMultiDispatcher)) {
+                auto rit = role->methods.find(ra.first);
+                if (rit != role->methods.end()) group = rit->second;
+            }
+            if (!(group.t == VT::Code && group.code() && group.code()->ci().isMultiDispatcher)) continue;
+            for (auto& alias : ra.second) {
+                if (cd->isRole) {
+                    auto& v = ci->alsoRoleAliases[ra.first];
+                    if (std::find(v.begin(), v.end(), alias) == v.end()) v.push_back(alias);
+                }
+                else if (std::any_of(cd->methods.begin(), cd->methods.end(), [&](const auto& md) {
+                             return md && !md->isPrivate && md->name == alias; }))
+                    return alias;
+                else if (!ci->methods.count(alias)) ci->methods[alias] = group;
+            }
+        }
+    }
+    return "";
 }
 
 // A role in the PARENT slot (`class C does R` with no `is`) is walked, not
@@ -7036,8 +7143,14 @@ static void refuseRoleClashes(Interpreter& I, const std::string& clsName, const 
                 bool paramSelf = false;
                 for (auto& ra : cd->roleArgs)
                     if (ra.first == parentName && !ra.second.empty()) { paramSelf = true; break; }
+                // …and so is the GROUP a role with its own `[...]` joins: in
+                // `role W { }; role W['X'] does W { }` the W it does is the one
+                // declared before it (PDF::Content's XObject['Form'] is declared so)
+                auto prevRole = classes_.find(parentName);
+                const bool joinsGroup = cd->isRole && cd->parameterized && prevRole != classes_.end() &&
+                                        prevRole->second && prevRole->second->isRole;
                 const bool selfNamed = parentName == cd->name && !cd->name.empty() &&
-                                       parentName == cd->parent && !paramSelf;
+                                       parentName == cd->parent && !paramSelf && !joinsGroup;
                 const bool outerType = selfNamed && parentIsOuterType(classes_, cd, parentName, clsName, ci);
                 if (!cd->isRole) refuseCoreNamesake(*this, classes_, clsName, parentName);
                 if (selfNamed && !outerType)
@@ -7594,37 +7707,11 @@ static void refuseRoleClashes(Interpreter& I, const std::string& clsName, const 
             // a role used as a parent (`class C does R` where R lands as parent) also counts
             if (ci->parent && ci->parent->isRole) ci->doneRoles.insert(ci->parent->name);
             for (auto& p : ci->extraParents) if (p && p->isRole) ci->doneRoles.insert(p->name);
-            // Carry a composed role's `is also` dispatcher-aliases onto THIS type:
-            // the alias is a second name for the multi group the role provides —
-            // found in our merged methods, or in the role's own when it arrives as
-            // a parent (walked, not copied). A CLASS installs the alias (its own
-            // same-named method wins); a ROLE only remembers it, so `role B does A`
-            // still delivers A's alias to the class that eventually does B. Only a
-            // role that carried `is also` has anything here. (See
-            // ClassInfo::alsoRoleAliases; Method::Also #19's role case.)
-            for (ClassInfo* role : composedRoles) {
-                if (role->alsoRoleAliases.empty()) continue;
-                for (auto& ra : role->alsoRoleAliases) {
-                    // the group may be merged into us, or up the composed chain
-                    // (roles that arrive as parents are walked, not copied) — a
-                    // full lookup finds it either way, incl. `role B does A`.
-                    Value group;
-                    if (Value* g = ci->findMethod(ra.first)) group = *g;
-                    if (!(group.t == VT::Code && group.code() && group.code()->ci().isMultiDispatcher)) {
-                        auto rit = role->methods.find(ra.first);
-                        if (rit != role->methods.end()) group = rit->second;
-                    }
-                    if (!(group.t == VT::Code && group.code() &&
-                          group.code()->ci().isMultiDispatcher)) continue;
-                    for (auto& alias : ra.second) {
-                        if (cd->isRole) {
-                            auto& v = ci->alsoRoleAliases[ra.first];
-                            if (std::find(v.begin(), v.end(), alias) == v.end()) v.push_back(alias);
-                        }
-                        else if (!ci->methods.count(alias)) ci->methods[alias] = group;
-                    }
-                }
-            }
+            if (std::string clash = carryAlsoRoleAliases(ci.get(), cd, composedRoles); !clash.empty())
+                throwTypedV("X::Method::Duplicate", {{"method-type", Value::str("method")},
+                            {"method", Value::str(clash)}, {"typename", Value::str(clsName)}},
+                            "Package '" + clsName + "' already has a method '" + clash +
+                            "' (did you mean to declare a multi method?)");
             ci->isGrammar = cd->isGrammar;
             ci->isMonitor = cd->isMonitor;
             ci->classRw = cd->classRw;
@@ -8054,6 +8141,7 @@ static void refuseRoleClashes(Interpreter& I, const std::string& clsName, const 
             }
             // (a class's or a role's own multi groups join its parent roles')
             mergeParentRoleMultis(ci.get(), sigKeyParams);
+            takeRoleMethodHandles(ci.get(), cd, composedRoles);
             // aggregate role requirements (composed roles already carry the ones
             // they inherited from roles they compose, so this is transitive) and
             // record this role's own stub methods as requirements
@@ -8086,7 +8174,8 @@ static void refuseRoleClashes(Interpreter& I, const std::string& clsName, const 
             // role composition check: a non-role class that composes a role must
             // implement every method the role requires — via its own methods, a
             // composed/inherited implementation, a public attribute's accessor,
-            // or an attribute `handles` delegation. Roles compose freely.
+            // or a `handles` delegation, an attribute's or a method's. Roles
+            // compose freely.
             if (!cd->isRole) {
                 std::set<std::string> classOwn;
                 for (auto& md : cd->methods) classOwn.insert(md->isPrivate ? "!" + md->name : md->name);
@@ -8113,6 +8202,7 @@ static void refuseRoleClashes(Interpreter& I, const std::string& clsName, const 
                 std::function<bool(ClassInfo*, const std::string&)> attrCovers =
                     [&](ClassInfo* c, const std::string& n) -> bool {
                     if (!c) return false;
+                    if (c->methodHandles.count(n)) return true;   // `method x handles <n>` as well
                     for (auto& a : c->attrs) {
                         if (a.pub && a.name == n) return true; // accessor counts as the method
                         for (auto& h : a.handles) if (h == n) return true;
