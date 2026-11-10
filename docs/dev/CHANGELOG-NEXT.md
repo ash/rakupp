@@ -58,7 +58,7 @@ f11a9f04, 88f81c1f, 655d13dd;
 and three more: 63b92af7, f929935a, ae3321f2;
 and from the review of src/ (docs/dev/findings/src-review-2026-11-09.md): d389b329,
 9c5c4d82, 7e9c0387, 0c64680d, 60e9df1f, c6791c72, fbfa041a, 9d2cf3bf, 016f8d57,
-6d62482c, 96c81b9a.*
+6d62482c, 96c81b9a, 31565ae4, a8ac64a6, 3d5ae806, ab615543, 44502bd4, 7e251a18.*
 
 ---
 
@@ -198,6 +198,28 @@ and from the review of src/ (docs/dev/findings/src-review-2026-11-09.md): d389b3
 
 ### Fixed: silent wrong answers
 
+- **An error a user `infix:<OP>` raises reaches the caller of `OP=`**
+  (31565ae4): `sub infix:<+>(A $a, $b) { die "boom" }; my $x = A.new; $x += 1`
+  dropped the boom, ran the built-in `+` and left $x a Num. Only a call the
+  operator declined falls back now. Finding A4 of the review of src/.
+  `t/regression/op-assign-infix-error-propagates.raku`.
+- **sprintf's integer directives at the edges** (a8ac64a6): `sprintf("%d",
+  1e30)` is 1000000000000000019884624838656, where it was the int64 maximum
+  (and `%x`, `%o`, `%b`, `%u` the same); an infinite or NaN argument is refused,
+  where it printed that maximum and 0; `%c` refuses -1 and 0x110000, where each
+  became four bytes that are no UTF-8. Findings E2 and E3.
+  `t/regression/sprintf-integer-directive-edges.raku`.
+- **`chrs` refuses what is no codepoint** (3d5ae806), as `chr` does: `chrs(65,
+  -1)` and `(65, 0x110000).chrs` were Strs of invalid UTF-8. Finding E3.
+  `t/regression/chrs-refuses-non-codepoints.raku`.
+- **A string's `:N<…>` radix that no int holds is no number** (ab615543):
+  `+":4294967298<11>"` was read in base 2 and answered 3. Finding B2.
+  `t/regression/radix-prefix-too-long-is-no-number.raku`.
+- **`--target=js`: a NUL before a digit, and a Num from 1e15** (44502bd4):
+  `"a\x[0]1b".ords` was (97 1 98) and `say 1e15` 1e+15; both are the
+  interpreter's answers now. Findings H2 and H3.
+  `t/regression/js-nul-before-digit-and-num-boundary.raku`, which
+  `t/js/run.raku` transpiles.
 - **A `temp` or `let` of an enclosing block is restored when an inner block's
   LEAVE dies** (fbfa041a): `my $x = 1; try { { temp $x = 2; { LEAVE { die "L" };
   die "B" } } }; say $x` said 2 — the inner block left without closing its
@@ -592,6 +614,10 @@ and from the review of src/ (docs/dev/findings/src-review-2026-11-09.md): d389b3
 
 ### Fixed: crashes
 
+- **Ref, PayRef and PRef read the source's pointer before releasing their own**
+  (7e251a18) in a copy-assignment: the source may live in what the target alone
+  owned, and was read after that was freed. Hidden by the slab pool's free
+  list; no test shows it without the pools off. Finding I3.
 - **A `<{ code }>` pattern that calls a rule of its grammar parses a second
   time** (9c5c4d82): `grammar G { token TOP { <{ '<foo>' }> }; token foo { a } };
   G.parse("a"); G.parse("a")` died with a segfault at the second parse — the
@@ -1054,3 +1080,10 @@ and from the review of src/ (docs/dev/findings/src-review-2026-11-09.md): d389b3
   1..9223372036854775807` is Inf and `[min] -9223372036854775807..5` -Inf,
   where Rakudo has the endpoints. The mark is a value (9000000000000000000 in
   76 places), not a flag.
+- Found with 31565ae4, the same before it: `OP=` falls back to the built-in
+  operator when a user `infix:<OP>` declines the operands, and a plain `$x + 1`
+  does too — `class A {}; sub infix:<->(A $a, Str $b) { 1 }; my $z = A.new;
+  $z -= 1` makes $z a Num, where Rakudo dies with
+  X::TypeCheck::Binding::Parameter (an only-sub shadows the built-in).
+- Found with a8ac64a6, the same before it: `sprintf("%c", 0xD800)` encodes the
+  surrogate, where Rakudo refuses it.

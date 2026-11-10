@@ -44,7 +44,7 @@ string jsStr(const string& s) {
             case '\n': o += "\\n"; break;
             case '\r': o += "\\r"; break;
             case '\t': o += "\\t"; break;
-            case 0: o += "\\0"; break;
+            case 0: o += "\\x00"; break;   // (not `\\0`: a digit after it made a legacy octal escape, and `"a\\x[0]1b"` lost a character)
             default:
                 if (c < 0x20 || c == 0x7f) { char b[8]; std::snprintf(b, sizeof b, "\\x%02x", c); o += b; }
                 else o += (char)c;

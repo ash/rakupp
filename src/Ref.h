@@ -57,7 +57,9 @@ public:
     Ref(Ref&& o) noexcept : p_(o.p_) { o.p_ = nullptr; }
     ~Ref() { release(); }
     Ref& operator=(const Ref& o) noexcept {
-        if (p_ != o.p_) { o.retain(); release(); p_ = o.p_; }
+        // (o.p_ is read BEFORE the release: `o` may live in what this alone
+        // owned — `node = node->next` — and is gone once that is released)
+        if (p_ != o.p_) { auto* n = o.p_; o.retain(); release(); p_ = n; }
         return *this;
     }
     Ref& operator=(Ref&& o) noexcept {
@@ -234,7 +236,7 @@ public:
     PayRef(PayRef&& o) noexcept : p_(o.p_) { o.p_ = nullptr; }
     ~PayRef() { release(); }
     PayRef& operator=(const PayRef& o) noexcept {
-        if (p_ != o.p_) { o.retain(); release(); p_ = o.p_; }
+        if (p_ != o.p_) { auto* n = o.p_; o.retain(); release(); p_ = n; }   // (as Ref's)
         return *this;
     }
     PayRef& operator=(PayRef&& o) noexcept {
@@ -280,7 +282,7 @@ public:
     PRef(PRef&& o) noexcept : b_(o.b_) { o.b_ = nullptr; }
     ~PRef() { release(); }
     PRef& operator=(const PRef& o) noexcept {
-        if (b_ != o.b_) { o.retain(); release(); b_ = o.b_; }
+        if (b_ != o.b_) { auto* n = o.b_; o.retain(); release(); b_ = n; }   // (as Ref's)
         return *this;
     }
     PRef& operator=(PRef&& o) noexcept {

@@ -5887,6 +5887,17 @@ inline Value rtCallB(Interpreter& I, const BuiltinFn* f, const char* name, Value
 // disabled while any `augment` is live).
 Value rtBAbsSlow(Interpreter& I, const Value& v);  // full abs (BuiltinsSupply.cpp)
 Value rtBChr(Interpreter& I, const Value& v);      // chr: codepoint → Str (BuiltinsSupply.cpp)
+// One codepoint of `chrs`, as UTF-8 — or Rakudo's refusal of what is none: the
+// sub and the method both encoded whatever integer they were given.
+inline std::string chrsCp(const Value& x) {
+    const long long cp = x.toInt();
+    if (cp < 0) throw RakuError{Value::typeObj("X::AdHoc"), "chr codepoint " + std::to_string(cp) + " cannot be negative"};
+    if (cp > 0x10FFFF) {
+        char hex[24]; std::snprintf(hex, sizeof hex, "%llX", (unsigned long long)cp);
+        throw RakuError{Value::typeObj("X::AdHoc"), "chr codepoint " + std::to_string(cp) + " (0x" + hex + ") is out of bounds"};
+    }
+    return cpToU8((uint32_t)cp);
+}
 Value rtBOrd(Interpreter& I, const Value& v);      // ord: Str → first codepoint (BuiltinsSupply.cpp)
 inline Value rtBAbs(Interpreter& I, const Value& v) {
     if (v.t == VT::Int && !v.big() && I.builtinExt_.empty() && v.i != std::numeric_limits<long long>::min())

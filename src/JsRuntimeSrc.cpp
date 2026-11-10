@@ -855,7 +855,8 @@ function numToStr(n) {
     if (n === -Infinity) return '-Inf';
     if (Number.isNaN(n)) return 'NaN';
     if (n === 0) return Object.is(n, -0) ? '-0' : '0';
-    if (Number.isInteger(n) && Math.abs(n) < 1e15) return String(n);
+    // (1e16 is Rakudo's integer-form boundary, and the C++ runtime's: `say 1e15` is 1000000000000000)
+    if (Number.isInteger(n) && Math.abs(n) < 1e16) return String(n);
     // a subnormal's shortest form can be under 15 digits (9e-320)
     for (let prec = Math.abs(n) < 2.2250738585072014e-308 ? 1 : 15; prec <= 17; prec++) {
         const s = fmtG(n, prec);
@@ -997,10 +998,10 @@ function gist(v) {
             }
             if (v instanceof RJunction) return junctionGist(v);
             if (v instanceof RWhatever) return '*';
-            if (v instanceof RSetty) return v.gist();
-            if (v instanceof RComplex) return v.Str();
 )RKJS",
-R"RKJS(            if (v instanceof RIOPath) return strLit(v.path) + '.IO';
+R"RKJS(            if (v instanceof RSetty) return v.gist();
+            if (v instanceof RComplex) return v.Str();
+            if (v instanceof RIOPath) return strLit(v.path) + '.IO';
             if (v instanceof RVersion) return 'v' + v.Str();
             if (v instanceof RDate) return v.Str();
             if (v instanceof RCapture) return v.gist();
@@ -1279,9 +1280,9 @@ function gbProp(cp) {
     if (cp >= 0x1F1E6 && cp <= 0x1F1FF) return GB_RI;
     if ((cp >= 0x1100 && cp <= 0x115F) || (cp >= 0xA960 && cp <= 0xA97C)) return GB_L;
     if ((cp >= 0x1160 && cp <= 0x11A7) || (cp >= 0xD7B0 && cp <= 0xD7C6)) return GB_V;
-    if ((cp >= 0x11A8 && cp <= 0x11FF) || (cp >= 0xD7CB && cp <= 0xD7FB)) return GB_T;
 )RKJS",
-R"RKJS(    if (cp >= 0xAC00 && cp <= 0xD7A3) return ((cp - 0xAC00) % 28 === 0) ? GB_LV : GB_LVT;
+R"RKJS(    if ((cp >= 0x11A8 && cp <= 0x11FF) || (cp >= 0xD7CB && cp <= 0xD7FB)) return GB_T;
+    if (cp >= 0xAC00 && cp <= 0xD7A3) return ((cp - 0xAC00) % 28 === 0) ? GB_LV : GB_LVT;
     let lo = 0, hi = GBRANGE.length / 3;
     while (lo < hi) {
         const mid = (lo + hi) >> 1;
@@ -1538,9 +1539,9 @@ function strTrans(s, pairs, named) {
         if (compTo === null && from.length) compTo = to.length ? to[0] : '';
         for (let i = 0; i < from.length; i++) map.set(from[i], del ? (i < to.length ? to[i] : '') : (to.length ? to[Math.min(i, to.length - 1)] : ''));
     }
-    let out = '', prev = null;   // :squash — a run of characters mapping to the same replacement becomes one
 )RKJS",
-R"RKJS(    for (const g of graphemes(s)) {
+R"RKJS(    let out = '', prev = null;   // :squash — a run of characters mapping to the same replacement becomes one
+    for (const g of graphemes(s)) {
         if (comp && compTo !== null) {
             if (map.has(g)) { out += g; prev = null; continue; }
             if (squash && prev === compTo) continue;

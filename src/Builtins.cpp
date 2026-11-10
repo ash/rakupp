@@ -3540,6 +3540,17 @@ static std::string fixedFromShortest(double av, int prec, bool halfEven = false)
 // value to render, so Raku names the directive and the type rather than
 // collapsing it. (Rakudo raises this for every non-numeric value; we raise it
 // where the value genuinely has no scalar reading.)
+// A Num argument of an integer directive that an int64 cannot hold, as its
+// exact integer: `sprintf("%d", 1e30)` printed the int64 maximum, where Rakudo
+// prints 1000000000000000019884624838656. (False for NaN, which no integer is:
+// the caller refuses that and an infinity first.)
+static bool sprintfBigNum(const Value& av, BigInt& out) {
+    if (av.t != VT::Num || !(std::fabs(av.toNum()) >= 9.2e18)) return false;
+    int e; const double m = std::frexp(std::fabs(av.toNum()), &e);
+    out = BigInt::fromU64((unsigned long long)std::ldexp(m, 53)) * BigInt(2).pow(e - 53);
+    if (av.toNum() < 0) out = -out;
+    return true;
+}
 [[noreturn]] static void sprintfBadType(char conv, const Value& v, const std::string& fmt) {
     std::string type = isJunction(v) ? "Junction" : v.typeName();
     std::string msg = std::string("Directive %") + conv + " not applicable for value of type " +
@@ -3655,6 +3666,8 @@ std::string doSprintf(const std::string& fmt, const ValueList& args, int langRev
                     Interpreter::UninitNameScope nm(*g_revInterp, av.t == VT::Nil ? std::string() : std::string("element"));
                     g_revInterp->warnUninitNum(av);
                 }
+                if (av.t == VT::Num && !std::isfinite(av.toNum())) sprintfBadType(conv, av, fmt);
+                if (BigInt bn; sprintfBigNum(av, bn)) { out += fmtBigDec(bn.toString(), flags, width, prec); break; }
                 if (av.t == VT::Int && av.big()) { out += fmtBigDec(av.big()->toString(), flags, width, prec); break; }
                 if (av.t == VT::Rat && av.ratN() && av.ratD() && !av.ratD()->isZero()) {
                     BigInt q, r; BigInt::divmod(*av.ratN(), *av.ratD(), q, r);
@@ -3675,6 +3688,8 @@ std::string doSprintf(const std::string& fmt, const ValueList& args, int langRev
                 }
                 Value av = nextArg();
                 if (isJunction(av)) sprintfBadType(conv, av, fmt);
+                if (av.t == VT::Num && !std::isfinite(av.toNum())) sprintfBadType(conv, av, fmt);
+                if (BigInt bn; sprintfBigNum(av, bn)) { out += fmtBigDec(bigRadixDigits(bn, radix, upper), flags2, width, prec); break; }
                 if (av.t == VT::Int && av.big()) { // arbitrary-precision: exact digits
                     out += fmtBigDec(bigRadixDigits(*av.big(), radix, upper), flags2, width, prec);
                     break;
@@ -3691,7 +3706,9 @@ std::string doSprintf(const std::string& fmt, const ValueList& args, int langRev
                 break;
             }
             case 'c': { // codepoint → UTF-8; width counts characters, not bytes
-                uint32_t cp = (uint32_t)nextArg().toInt();
+                Value cv = nextArg();   // (what is no codepoint is refused, as Rakudo refuses it: -1 and 0x110000 made four bytes that are no UTF-8)
+                if (cv.toInt() < 0 || cv.toInt() > 0x10FFFF) sprintfBadType(conv, cv, fmt);
+                uint32_t cp = (uint32_t)cv.toInt();
                 std::string s;
                 if (cp < 0x80) s += (char)cp;
                 else if (cp < 0x800) { s += (char)(0xC0 | (cp >> 6)); s += (char)(0x80 | (cp & 0x3F)); }
