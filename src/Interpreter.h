@@ -5939,8 +5939,8 @@ inline Value rtMInt(Interpreter& I, const Value& v) {
 // ValueList and the constructor checks in front of it (`@a.elems` ~25 ns).
 // A plain untyped Array, no List or Seq or Slip, nothing it must check or wrap:
 inline bool rtPushPlainTarget(const Value& inv) {
-    return inv.t == VT::Array && inv.arr() && !inv.isList && inv.s.empty() && inv.enumName().empty() &&
-           inv.enumType().empty() && inv.hashKind.empty() && inv.pk_ != PK::Packed && !inv.ext() &&
+    return inv.t == VT::Array && inv.noWords() && inv.arr() && !inv.isList && inv.s.empty() && inv.enumName().empty() &&
+           inv.enumType().empty() && inv.hashKind.empty() && !inv.ext() &&
            inv.ofType().empty() && !inv.pairVal() && !(inv.shape() && !inv.shape()->empty()) &&
            !inv.holdsContainers();
 }
@@ -5956,7 +5956,7 @@ inline bool rtQueryPlain(const Value& v) {
 }
 // `.elems` of a plain reified Array: not lazy, packed, shaped or a Seq
 inline bool rtElemsPlain(const Value& v) {
-    return v.t == VT::Array && v.arr() && v.s.empty() && !v.ext() && v.pk_ != PK::Packed &&
+    return v.t == VT::Array && v.noWords() && v.arr() && v.s.empty() && !v.ext() &&
            !(v.shape() && !v.shape()->empty());
 }
 inline Value rtMElems(Interpreter& I, const Value& v) {
@@ -6491,8 +6491,9 @@ inline void rtIndexStore(Interpreter& I, Value& base, const Value& key, Value v)
 // long way; anything else as rtIndexGet. (Codegen asks for these two only
 // for an array declared native: an ordinary one pays nothing for them.)
 Value rtIndexGet(const Value& base, const Value& key, bool isHash);
-// `my @a = …` compiled: an untyped Array of plain Nums packs itself (selfPack)
-inline Value rtSelfPack(Value v) { selfPack(v); return v; }
+// `my @a = …` compiled: an untyped Array of plain Nums packs itself (selfPack).
+// One of plain Ints does not, here: compiled code has no lane for an Int word.
+inline Value rtSelfPack(Value v) { selfPack(v, false); return v; }
 // …`@a[$i] = v;` into one: the word, when v is a plain Num in range (rtPackedStore)
 inline bool rtSelfPackedStore(Interpreter& I, Value& base, const Value& key, const Value& v) {
     return base.pk_ == PK::Packed && base.packedLive() && base.packed()->selfPacked && rtPackedStore(I, base, key, v);

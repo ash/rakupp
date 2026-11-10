@@ -150,6 +150,7 @@ bytes an element, with none of a handle's indirection. If element size is the
 goal, widening what packs itself is the direction this data points in: an
 untyped Array of Nums does today (SELFPACK-EXPERIMENT), and an untyped Array
 of plain Ints is the obvious next question. That is a separate piece of work
-and was not started here.
+and was not started here. (It was done the same day for the interpreter:
+[SELFPACK-EXPERIMENT.md](../experiments/SELFPACK-EXPERIMENT.md), *Ints*.)
 
 `Value` stays inline at 32 bytes.

@@ -40,6 +40,34 @@ static std::uint64_t bodySerial(const Payload* p) {
 void whichForget(Payload* p) noexcept {
     try { std::lock_guard<std::mutex> lk(whichMut()); whichIds().erase(p); } catch (...) {}
 }
+// The body an Array identifies by: its payload, or, once packed words have
+// unpacked, the list the body answers with — which a holder that has settled
+// on it (Value::packedSettle) holds directly, so both name one Array.
+static const Payload* arrayIdBody(const Value& v) {
+    if (v.pk_ == PK::Packed && !v.packedLive()) return v.packed()->boxed.slot().get();
+    return v.p_.get();
+}
+// An Array keeps its identity when its storage changes form: `from`'s serial,
+// if a WHICH ever asked for one, is `to`'s from here on. A list assignment
+// that packs the Array (arrayStore) and the one-time unpack call it.
+static void whichMoveBody(const Payload* from, const Payload* to) noexcept {
+    if (!from || !to || from == to || !(from->pflags_.load(std::memory_order_relaxed) & kPayWhichId)) return;
+    try {
+        std::lock_guard<std::mutex> lk(whichMut());
+        auto it = whichIds().find(from);
+        if (it == whichIds().end()) return;
+        whichIds()[to] = it->second;
+        whichIds().erase(it);
+        to->pflags_.fetch_or(kPayWhichId, std::memory_order_relaxed);
+        from->pflags_.fetch_and(~kPayWhichId, std::memory_order_relaxed);
+    } catch (...) {}
+}
+void whichCarry(const Value& from, const Value& to) noexcept {
+    if (from.t == VT::Array && to.t == VT::Array) whichMoveBody(arrayIdBody(from), arrayIdBody(to));
+}
+void whichCarryUnpacked(const Value& packedHolder) noexcept {
+    if (packedHolder.pk_ == PK::Packed) whichMoveBody(packedHolder.p_.get(), packedHolder.packed()->boxed.slot().get());
+}
 // `Type|serial`, as Rakudo's `Array|2340682431952` reads
 static std::string serialWhich(const std::string& type, std::uint64_t id) { return type + "|" + std::to_string(id); }
 
@@ -207,7 +235,7 @@ std::string whichOf(const Value& v) {
                           if (v.s == "Slip" && v.arr() && v.arr()->empty()) return "Slip|Empty";
                           if (!v.p_) return v.typeName() + "|<null>";
                           return serialWhich(v.typeName() + (v.ofType().empty() ? "" : "[" + v.ofType() + "]"),
-                                             bodySerial(v.p_.get()));
+                                             bodySerial(arrayIdBody(v)));
         // a TYPE OBJECT is undefined, and Rakudo marks that with a `U` before
         // the type's own number: `Rat|U4360041773904`. The number here is the
         // name's hash, so it is stable for the run and distinct per type.

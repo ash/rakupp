@@ -222,7 +222,7 @@ std::optional<Value> Interpreter::methodCallEntry(const Value& inv, const std::s
                 if (opEq(m, "elems") && rtElemsPlain(inv)) { raceLen(inv.arr(), RaceAcc::Read); return Value::integer((long long)inv.arr()->size()); }
                 // `.kv` of a plain Array: (0, a, 1, b, …), the Seq the list arm builds
                 if (opEq(m, "kv") && inv.arr() && inv.s.empty() && !inv.ext() &&
-                    inv.pk_ != PK::Packed && !(inv.shape() && !inv.shape()->empty()) &&
+                    inv.noWords() && !(inv.shape() && !inv.shape()->empty()) &&
                     !inv.holdsContainers() && !inv.elemDefault() && inv.ofType().empty()) {
                     Value out = Value::array(); out.isList = true; out.s = "Seq"; raceLen(inv.arr(), RaceAcc::Read);
                     const ValueList& src = *inv.arr();

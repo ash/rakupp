@@ -389,7 +389,9 @@ int rk_st_idxsetw(F* f, int64_t* r, uint8_t* t) {
     const RkCnpView* v = &f->views[OP0];
     uint64_t k = OP1, x = OP2;
     if (t[OP0] != RK_T_BOX || !v->w || t[k] != RK_T_INT || *v->gone || *f->workers) SLOW;
-    if (t[x] != v->tag && !(t[x] == RK_T_BOOL && v->tag == RK_T_INT)) SLOW;   // (True as 1)
+    // (True as 1, into a declared `int` array's words alone: bit 8 of the tag
+    // marks an untyped Array's, which hold a Bool as a Bool)
+    if (t[x] != (uint8_t)v->tag && !(t[x] == RK_T_BOOL && v->tag == RK_T_INT)) SLOW;
     int64_t* w = v->w[0];
     uint64_t i = (uint64_t)r[k];
     if (i >= (uint64_t)(v->w[1] - w)) SLOW;   // (a negative key too)

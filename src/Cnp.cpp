@@ -169,7 +169,8 @@ void setView(RkCnpFrame* f, uint64_t k) {
     PackedArr* pa = b.packed();
     vw.w = reinterpret_cast<int64_t* const*>(&pa->w);
     vw.gone = reinterpret_cast<const volatile uint8_t*>(&pa->unpacked);
-    vw.tag = pa->isNum ? RK_T_NUM : RK_T_INT;
+    // (bit 8: an untyped Array's Int words, which take no Bool as 1 — rk_st_idxsetw)
+    vw.tag = pa->isNum ? RK_T_NUM : pa->selfPacked ? RK_T_INT | 0x100 : RK_T_INT;
 }
 
 Value regValue(RkCnpFrame* f, uint64_t k) {
@@ -531,7 +532,7 @@ int rk_cnp_idxset(RkCnpFrame* f, uint64_t site, uint64_t val) {
             size_t at;
             Interpreter& I = interpOf(f);
             if (PackedArr* pa = packedAt(f, (uint64_t)s.base, (uint64_t)s.keys[0], at))
-                if ((f->t[val] == (pa->isNum ? RK_T_NUM : RK_T_INT) || (!pa->isNum && f->t[val] == RK_T_BOOL)) &&
+                if ((f->t[val] == (pa->isNum ? RK_T_NUM : RK_T_INT) || (!pa->isNum && !pa->selfPacked && f->t[val] == RK_T_BOOL)) &&
                     !(I.parallelMode_ && I.liveWorkers_.load(std::memory_order_relaxed) > 0)) {
                     pa->w[at] = f->r[val];   // (a Num register holds its bits)
                     return 0;

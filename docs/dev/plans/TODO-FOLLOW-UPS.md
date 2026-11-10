@@ -1,6 +1,6 @@
 # Follow-ups
 
-*Collected 2026-10-20; added to 2026-11-09.*
+*Collected 2026-10-20; added to 2026-11-10.*
 
 Findings that sessions on 2026-10-19 and 2026-10-20 proposed as follow-up
 work and nobody started: gaps found in passing while doing something else.
@@ -177,6 +177,33 @@ moves to [TODO.md](TODO.md).
   `+{X::Comp}`.
 
 ## Operators and types
+
+- [ ] **A Range of big Ints assigned to an array reads as endless** (found
+  2026-11-10 testing self-packed Int arrays; the same on 62474b1f and on a
+  build of 30 October):
+
+  ```raku
+  my @r = 2**64 .. 2**64 + 19;
+  say @r.elems;   # rakupp: Cannot elems a lazy list   Rakudo: 20
+  say @r[0];      # rakupp: 9223372036854775807        Rakudo: 18446744073709551616
+  ```
+
+  `coerceArray`'s Range arm (`src/Interpreter.cpp`) asks `rTo() >=
+  9000000000000000000` for an endless Range before it looks at the carried
+  big-Int ends, which `Value::flatten()` walks correctly:
+  `(2**64 .. 2**64 + 3).elems` is 4. The other tests of that sentinel may make
+  the same mistake.
+
+- [ ] **An enum value's `.WHAT` is not `eqv` to its type** (found 2026-11-10
+  writing the same test; the same on 62474b1f and on a build of 30 October):
+
+  ```raku
+  enum Colour <Red Green Blue>;
+  my $g = Green;
+  say $g.WHAT eqv Colour;            # rakupp: False   Rakudo: True
+  say (Green.WHAT,) eqv (Colour,);   # rakupp: False   Rakudo: True
+  say $g.WHAT === Colour;            # True in both
+  ```
 
 - [ ] **A method's `handles` delegations: the renaming form, `.can` and
   `.^methods`** (found 2026-11-09 reviewing pull request #233, 88f81c1f;
@@ -925,6 +952,37 @@ moves to [TODO.md](TODO.md).
   ```
 
 ## Performance
+
+- [ ] **Untyped Int arrays as words: what the interpreter's packing left**
+  (2026-11-10, branch `claude/selfpack-ints`;
+  [SELFPACK-EXPERIMENT.md](../experiments/SELFPACK-EXPERIMENT.md), *Ints*). An
+  untyped Array of machine Ints is 8-byte words in the interpreter, and a
+  sieve to 2M went 2,396M → 1,395M instructions and 198 → 107 MB. Left, in
+  the order worth taking:
+
+  - **Compiled code packs Nums only** (`rtSelfPack` passes `ints = false`).
+    Int words need what Num words have in `src/Codegen.cpp`: the statement
+    store (`rtSelfPackedStore` takes them already), reads and stores in the
+    `-O` loop lanes (`rtNumWords`), and `++` and `op=`. With Ints packed and
+    none of that, an `--exe -O` `@h[$x % 1000]++` loop retired 45% more
+    instructions and a store loop 21% more. `src/Codegen.cpp` is at its line
+    ceiling.
+  - **An array that packs and is then asked for its elements costs more than
+    it did**: 2.5% more instructions and 5–8% more memory on a million Ints
+    through `.map`, `.sort` and `.grep`, and on `tools/bench/sortnums.raku`.
+    `.sort`, `.map`, `.grep`, `.join` and a slice could read the words;
+    `.sort` of machine words would be faster than of Values. An unpacked
+    array also keeps its words, 8 bytes an element beside the 32.
+  - **`0 xx N`, a `.map` result and other built lists** are built as Values
+    and packed after, so the peak holds both: `0 xx 1_000_000` stored by index
+    peaks at 57 MB where the words alone are 8.
+  - **Arrays that start empty never pack**, Ints or Nums: only an assignment
+    packs. `my @a; @a.push($_) for …` is the commonest way an array is built.
+  - **A loop kernel that pushes unpacks the array on entry.** A push may move
+    the words under a store's undo log and a read.
+  - **Gates owed:** perf-guard on a quiet machine, the module battery, the
+    ASan and TSan builds, and Linux. Roast and `t/run.raku` are in
+    SELFPACK-EXPERIMENT.md.
 
 - [ ] **A user method call is still ~3.5 times Rakudo's** (found 2026-11-01
   fixing issue #217, 608774f1 and 5321f41c; the encoders that issue timed

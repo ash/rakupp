@@ -134,7 +134,7 @@ enum class KOp : uint8_t {
     // `a` the subscript, `nargs` the kFlag bits below. Every write is logged
     // first, so a bail can put the container back (KRun::undo).
     CGet, SCGet,          // @a[i] / %h{k} as an Int / a Str (`slot`: a string temporary)
-    PNGet, PNSet,         // @a[i] of a packed Num array, its word; … = b (plainPackedNum)
+    PNGet, PNSet,         // @a[i] of a packed Num array, its word; … = b (plainPackedWords)
     CElems,               // @a.elems / %h.elems
     CSet, SCSet,          // … = b
     CAddTo, CSubTo, CMulTo, CSApp,
@@ -219,7 +219,7 @@ struct LOuter { std::string name; KT t; int slot; bool written; bool nat = false
 // A container of the program the loop reads or writes in place: `@a` or `%h`,
 // and the kind of element it holds (Int or Str, from its contents or from the
 // first value the loop stores; Void while neither has said).
-struct LCont { std::string name; bool hash; KT elem; bool written; bool packed = false; };   // (packed: plainPackedNum)
+struct LCont { std::string name; bool hash; KT elem; bool written; bool packed = false; bool pushed = false; };   // (packed: a Num array's words; pushed: `.push`ed onto)
 struct LoopCx {
     Env* env = nullptr;                      // where the loop's free names resolve (this entry)
     // other threads are live (PARALLEL-SCALING-PLAN P5): a variable another
@@ -453,9 +453,15 @@ inline bool plainContainer(const Value& v, bool hash) {
 }
 // …or a packed Num array (a self-packed one, JSC-VALUES-2026-11-07, or a
 // `my num @a`), whose words a kernel reads and stores in place as Nums
-// (PNGet, PNSet): nothing in a kernel can unpack, grow or replace it
-inline bool plainPackedNum(const Value& v) {
-    return v.t == VT::Array && v.packedLive() && v.packed()->isNum && !v.isList && !v.itemized && !v.objKeyed &&
+// (PNGet, PNSet): nothing in a kernel can unpack, grow or replace it. An
+// untyped Array that packed itself as Ints is an Int container like a plain
+// Array of Ints, and the same kernel takes either: CGet, CSet and the op= and
+// step nodes look, on each access, whether the container is words (it may
+// pack, or unpack, between two entries of one compiled loop). A `my int @a`
+// is no such container: its stores wrap, and a kernel's Ints do not.
+inline bool plainPackedWords(const Value& v, bool isNum) {
+    return v.t == VT::Array && v.packedLive() && v.packed()->isNum == isNum &&
+           (isNum || v.packed()->selfPacked) && !v.isList && !v.itemized && !v.objKeyed &&
            v.hashKind.empty() && v.s.empty() && v.enumName().empty() && v.enumType().empty() && !v.elemDefault() &&
            !v.shape();
 }
@@ -551,9 +557,14 @@ int Compiler::cont(const std::string& name, bool hash, std::string& why) {
     if (L->threads) { why = "container " + name + " while other threads are live"; return -1; }
     Value* raw = L->env->findRaw(name);
     if (!raw) { why = "container " + name + " is not in scope"; return -1; }
-    const Value& cv = *raw->deref();
-    if (!hash && plainPackedNum(cv)) {   // its words, Nums (PNGet, PNSet)
+    Value& cv = *raw->deref();
+    cv.packedSettle();   // (an Array that packed itself and unpacked since is a plain one again)
+    if (!hash && plainPackedWords(cv, true)) {   // its words, Nums (PNGet, PNSet)
         L->conts.push_back({name, false, KT::Num, false, true});
+        return (int)L->conts.size() - 1;
+    }
+    if (!hash && plainPackedWords(cv, false)) {   // Int words: an Int container
+        L->conts.push_back({name, false, KT::Int, false});
         return (int)L->conts.size() - 1;
     }
     if (!plainContainer(cv, hash)) { why = "container " + name + " of a kind a plain store would not honour"; return -1; }
@@ -1151,9 +1162,10 @@ KNode* Compiler::expr(IKernel& k, const Callable* c, Expr* e, bool cond, KT& t) 
                         KNode* v = expr(k, c, m->args[0].get(), false, vt);
                         if (!v) return nullptr;
                         LCont& ct = L->conts[ci];
+                        if (ct.packed) return refuse(".push onto a packed Num array");
                         if (vt != KT::Int && vt != KT::Str) return refuse(".push of this type");
                         if (ct.elem != KT::Void && ct.elem != vt) return refuse("a push that would change a container's element type");
-                        ct.elem = vt; ct.written = true;
+                        ct.elem = vt; ct.written = ct.pushed = true;
                         KNode* n = k.node(vt == KT::Str ? KOp::SCPush : KOp::CPush); n->lit = ci; n->a = v;
                         t = KT::Void;
                         return n;
@@ -2494,8 +2506,10 @@ void undoContainers(KConts& cc) {
 // Containers in place. contSlot finds the element a node names: null when it
 // is absent (an index past the end, a missing key) and `write` is false, or
 // on a bail. A write is logged before anything changes: a key or a stretch of
-// array the store creates, then what the element held.
-Value* contSlot(const KNode* n, int64_t* fr, KRun& R, bool write) {
+// array the store creates, then what the element held. (Inline in each node
+// that asks: with the word forms beside it the compiler stopped doing so on
+// its own, and a read of a list cost 16 instructions more.)
+[[gnu::always_inline]] inline Value* contSlot(const KNode* n, int64_t* fr, KRun& R, bool write) {
     const Value& c = *R.cc->conts[n->lit];
     if (n->nargs & kCHash) {
         ValueHash& h = *c.hash();
@@ -2549,7 +2563,21 @@ inline Value* contStore(const KNode* n, int64_t* fr, KRun& R) {
     if (el && !plainIntValue(*el) && !plainStrValue(*el) && !plainAnyValue(*el)) { R.bail = true; return nullptr; }
     return el;
 }
+// An Int container that is words (an untyped Array that packed itself): the
+// word the node names, null out of range, which bails as a read of a hole or
+// a store the generic path must make does
+inline int64_t* contWord(const Value& c, const KNode* n, int64_t* fr, KRun& R) {
+    const int64_t i = krun(n->a, fr, R);
+    if (R.bail) return nullptr;
+    std::vector<int64_t>& w = c.packed()->w;
+    if ((uint64_t)i >= w.size()) { R.bail = true; return nullptr; }
+    return &w[(size_t)i];
+}
 int64_t cgetFn(const KNode* n, int64_t* fr, KRun& R) {
+    if (const Value& c = *R.cc->conts[n->lit]; c.pk_ == PK::Packed) {
+        const int64_t* w = contWord(c, n, fr, R);
+        return w ? *w : 0;
+    }
     const Value* el = contSlot(n, fr, R, false);
     if (!el || !plainIntValue(*el)) { R.bail = true; return 0; }
     return el->i;
@@ -2590,6 +2618,13 @@ int64_t celemsFn(const KNode* n, int64_t*, KRun& R) {
 int64_t csetFn(const KNode* n, int64_t* fr, KRun& R) {
     const int64_t v = krun(n->b, fr, R);
     if (R.bail) return 0;
+    if (const Value& c = *R.cc->conts[n->lit]; c.pk_ == PK::Packed) {
+        int64_t* w = contWord(c, n, fr, R);
+        if (!w) return 0;
+        R.cc->words.note(w);
+        *w = v;
+        return v;
+    }
     Value* el = contStore(n, fr, R);
     if (!el) return 0;
     *el = Value::integer(v);
@@ -2613,11 +2648,19 @@ int64_t cmodFn(const KNode* n, int64_t* fr, KRun& R) {
         v = krun(n->b, fr, R);
         if (R.bail) return 0;
     }
-    Value* el = contStore(n, fr, R);
-    if (!el) return 0;
+    int64_t* word = nullptr;
+    Value* el = nullptr;
+    if (const Value& c = *R.cc->conts[n->lit]; c.pk_ == PK::Packed) {
+        word = contWord(c, n, fr, R);
+        if (!word) return 0;
+    }
+    else {
+        el = contStore(n, fr, R);
+        if (!el) return 0;
+    }
     // (a postfix one answers that identity too: `my $x; $x++` is 0)
-    const bool hole = el->t == VT::Any;
-    const int64_t old = hole ? (OP == KOp::CMulTo ? 1 : 0) : el->i;
+    const bool hole = el && el->t == VT::Any;
+    const int64_t old = word ? *word : hole ? (OP == KOp::CMulTo ? 1 : 0) : el->i;
     long long z = 0;
     bool ovf;
     if constexpr (OP == KOp::CAddTo) ovf = add_ovf(old, v, &z);
@@ -2626,7 +2669,8 @@ int64_t cmodFn(const KNode* n, int64_t* fr, KRun& R) {
     else if constexpr (OP == KOp::CPreInc || OP == KOp::CPostInc) ovf = add_ovf(old, 1, &z);
     else ovf = sub_ovf(old, 1, &z);
     if (ovf) { R.bail = true; return 0; }
-    *el = Value::integer(z);
+    if (word) { R.cc->words.note(word); *word = z; }
+    else *el = Value::integer(z);
     return (OP == KOp::CPostInc || OP == KOp::CPostDec) ? old : z;
 }
 int64_t csappFn(const KNode* n, int64_t* fr, KRun& R) {
@@ -3322,8 +3366,15 @@ bool Interpreter::tryLoopKernel(Stmt* loop, const std::string& var, long long lo
         Env* owner = nullptr;
         Value* cell = outerCell(env, L->conts[i].name, &owner);
         if (!cell) return notEntered("no container", L->conts[i].name);
-        if (L->conts[i].packed ? !plainPackedNum(*cell) : !plainContainer(*cell, L->conts[i].hash))
-            return notEntered("a container of another kind:", L->conts[i].name);
+        cell->packedSettle();
+        const LCont& lc = L->conts[i];
+        // (a loop that pushes takes the Array as a list: a push may move the
+        // words a store's undo log and a read point into)
+        if (lc.pushed && cell->packedLive() && plainPackedWords(*cell, false)) { (void)cell->arr(); cell->packedSettle(); }
+        if (lc.packed ? !plainPackedWords(*cell, true)
+                      : !plainContainer(*cell, lc.hash) &&
+                            !(!lc.hash && lc.elem == KT::Int && plainPackedWords(*cell, false)))
+            return notEntered("a container of another kind:", lc.name);
         conts[i] = cell;
     }
     int64_t stackInts[33];   // kDenSlot first
@@ -3383,7 +3434,7 @@ bool Interpreter::tryLoopKernel(Stmt* loop, const std::string& var, long long lo
     kc.scow = scow;
     if (nc) kc.size(nc);
     for (size_t i = 0; i < nc; i++)
-        if (L->conts[i].packed && L->conts[i].written) {
+        if (L->conts[i].written && conts[i]->pk_ == PK::Packed) {   // (a Num array's words, or an Int container's)
             std::vector<int64_t>& w = conts[i]->packed()->w;
             kc.words.add(w.data(), w.size());
         }

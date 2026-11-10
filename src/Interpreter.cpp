@@ -3937,7 +3937,7 @@ Value rtArrayVal(const Value& v) {
     // builds the List form its other callers want, so untag it here (LA-04).
     if (v.t == VT::Hash && v.hash()) { Value a = hashToPairs(v); a.isList = false; return a; }
     // a packed Num array's words, copied, where arr() would unpack the source (selfPackCopy)
-    if (v.t == VT::Array && v.pk_ == PK::Packed) { Value r; if (selfPackCopy(v, r)) return r; }
+    if (v.t == VT::Array && v.pk_ == PK::Packed) { Value r; if (selfPackCopy(v, r, false)) return r; }
     if (v.t == VT::Array && v.arr()) {
         // …and so is an itemized Array, as coerceArray has it for the interpreter:
         // `my $x = [1, 2, 3]; my @a = $x` is [[1 2 3]], and compiled it was three

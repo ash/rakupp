@@ -525,7 +525,7 @@ reasons it is not a PEG parser.
 
 **Packed array** — an array whose elements are stored as machine words, not
 as one `Value` each. `my int @a` and `my num @a` are packed, and so is a fresh
-Array of plain Nums past a minimum length. A packed array unpacks itself into
+Array of plain Nums, or of plain machine Ints, past a minimum length. A packed array unpacks itself into
 an ordinary list the first time something asks for one.
 
 **Pad** — the storage for one scope's variables, laid out once per scope rather
