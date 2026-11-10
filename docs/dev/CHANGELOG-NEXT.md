@@ -60,7 +60,7 @@ and from the review of src/ (docs/dev/findings/src-review-2026-11-09.md): d389b3
 9c5c4d82, 7e9c0387, 0c64680d, 60e9df1f, c6791c72, fbfa041a, 9d2cf3bf, 016f8d57,
 6d62482c, 96c81b9a, 31565ae4, a8ac64a6, 3d5ae806, ab615543, 44502bd4, 7e251a18,
 33adda5f, 91f64325, 03b3879f, 853fc96e, 6cb23670, cfa535d7, 1fae9cc8, 9454d20f,
-6f4bee22, 3178a8ca, a8f46ba4.*
+6f4bee22, 3178a8ca, a8f46ba4; 2073eec8 (`Value` 64 → 32 bytes).*
 
 ---
 
@@ -95,6 +95,41 @@ and from the review of src/ (docs/dev/findings/src-review-2026-11-09.md): d389b3
   holds every link over examples/ to its source bytes.
 
 ### Faster
+
+- **Less memory: a `Value` is 32 bytes, not 64** (2073eec8; VALUE32-PLAN, the
+  four steps of 2026-11-10). Every reference count is kept. On 64-bit macOS
+  and Linux:
+  - the tag block is 4 bytes: a native width is held in bytes, in 4 bits;
+  - an enum's name and type, a Junction's kind and a Blob's subtype live in
+    the cold block, which copies share;
+  - the payload and the cold block are reached by 32-bit handles into one
+    reserved region, which the new `BodyPool` allocates from in 64 KB spans
+    and gives back to the system as they empty;
+  - a Str of up to 7 bytes lives in the value's 8-byte string slot, and a
+    longer one is a handle to a shared body. A Str of 8 to 15 bytes costs an
+    allocation where it cost none.
+
+  Windows, a 32-bit target and an AddressSanitizer build keep pointers and a
+  48-byte `Value` (`-DRAKUPP_BODY_HANDLES=0` chooses that anywhere).
+
+  Peak memory, against the commit before:
+  - a million Ints built by `.map`: 134.6 → 73.8 MB;
+  - a million short Strs: 134.5 → 73.7 MB;
+  - a million Rats: 211.4 → 150.0 MB;
+  - 200,000 two-element arrays: 70.7 → 46.2 MB;
+  - 200,000 two-attribute objects: 122.5 → 94.4 MB;
+  - `hashfill`: 44.6 → 33.2 MB.
+
+  A small program peaks about 0.25 MB higher: the region's first spans.
+
+  Instructions retired over perf-guard's 27 kernels, 32 bytes against 48: 18
+  within ±0.6%, the call and string kernels +1.1% to +1.8%, `junctionwide`
+  +4.7%. The steps from 64 to 48 lowered them on most kernels (to −4.7%).
+  Over the tools/bench programs, 21 of 23 are within ±1.7%.
+
+  `t/run.raku` 2,174 of 2,174; Roast 1,425 of 1,425, and again with handles
+  off; the ThreadSanitizer stress matrix 37 pass, 14 known-bad, none new.
+  **Not run:** Linux, an ASan build, the module battery.
 
 - **Less memory: a `Value` is 64 bytes, not 80** (02e52fa2; VALUE32-PLAN
   design C). A Str of up to 15 bytes now lives in the value's own 16-byte
