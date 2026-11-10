@@ -27,9 +27,12 @@ std::set<std::string> userPrefix_, userPostfix_;
 std::map<std::string, std::string> userCircumfix_, userPostcircumfix_;
 ```
 
-Five containers, all keyed by the operator's spelling. `userInfix_` maps to a
+Six containers, all keyed by the operator's spelling. `userInfix_` maps to a
 binding power so a user infix can sit at any level; the bracket maps go from
-opening delimiter to closing delimiter.
+opening delimiter to closing delimiter. They are the core. Around them the
+parser now keeps a few smaller sets of the same kind — the infixes declared
+`is assoc<non>`, `<list>` and `<chain>`, a binding power for a prefix declared
+`is looser`, and the names a file declares through `sub term:<…>`.
 
 ## Registration happens mid-parse
 
@@ -38,24 +41,36 @@ followed by a colon, it pulls the operator's spelling out of the `<…>` and
 writes it into the tables **on the spot**:
 
 ```cpp
-// src/Parser.cpp — parseSub, operator declaration
+// src/Parser.cpp — parseSub, operator declaration, abridged
 if ((s->name == "infix" || s->name == "prefix" || s->name == "postfix" ||
      s->name == "circumfix" || s->name == "postcircumfix") && isOp(":")) {
-    std::string cat = s->name; advance();               // ':'
+    std::string cat = s->name;
+    advance(); // :
     std::vector<std::string> w;
     if (isOp("<")) { advance(); w = readAngleWords(">"); }
+    // … the other spellings of a name: <<…>>, «…», ["…"], [$constant] …
     std::string opname = w.empty() ? "" : w[0];
+    // … a circumfix or postcircumfix takes two words and goes to a map …
     s->name = cat + ":<" + opname + ">";
-    if (cat == "infix") { userInfix_[opname] = BP_ADD; declInfix = opname; }
-    else if (cat == "prefix")  userPrefix_.insert(opname);
-    else if (cat == "postfix") userPostfix_.insert(opname);
+    if (cat == "infix") { regInfix(opname, BP_ADD); declInfix = opname; }
+    else if (cat == "prefix") { regSet('p', userPrefix_, opname); /* … */ }
+    else if (cat == "postfix") { regSet('P', userPostfix_, opname); /* … */ }
 }
 ```
+
+`regInfix`, `regSet` and `regMap` write the table and log the write; the log is
+what a later section rolls back.
 
 From that token onward, the operator is live. Everything *later* in the file
 sees it; everything earlier does not. That asymmetry is not a limitation
 invented here — it is Raku's own rule, and it falls out of the single pass for
 free.
+
+A routine keyword is not the only way in. `my &infix:<plus> = sub ($a, $b) {…}`
+declares the same operator by assignment to a code variable, and
+`registerOperatorVarName` registers it through the same three functions. A
+module that builds its operators inside `sub EXPORT` can spell them no other
+way.
 
 The declaration is otherwise an ordinary sub. Its name becomes the string
 `"postfix:<!>"`, and subs live in the environment under a `&`-prefixed key, so
@@ -72,9 +87,10 @@ loops and reaches the user-postfix arm:
 
 ```cpp
 // src/Parser.cpp — parsePostfix
-} else if ((cur().kind == Tok::Op ||
-            (cur().kind == Tok::Ident && !cur().spaceBefore)) &&
-           userPostfix_.count(cur().text)) {
+} else if ((cur().kind == Tok::Op || cur().kind == Tok::Ident) &&
+           !cur().spaceBefore &&
+           userPostfix_.count(cur().text) &&
+           !stopPostfix_.count(cur().text)) {
     std::string opname = advance().text;
     auto call = std::make_unique<Call>();
     call->name = "postfix:<" + opname + ">";
@@ -87,7 +103,9 @@ loops and reaches the user-postfix arm:
 never learns that an operator was involved; it dispatches a named call. Infixes
 work the same way through a branch at the top of the `parseExpr` loop, building
 a two-argument `Call` named `infix:<op>` and honouring the recorded binding
-power and associativity.
+power and associativity. That branch takes a symbolic operator as readily as a
+word; it once keyed on an identifier alone, and `3 ± 1` then died at the use
+site with the declaration registered and in scope.
 
 That is the whole trick, and it is worth stating plainly: **a user-defined
 operator is a parse-time spelling for an ordinary sub call.** Every mechanism
@@ -100,18 +118,31 @@ A user infix registers at `BP_ADD` by default. A precedence trait resolves the
 referenced operator's level and slots the new one five away:
 
 ```cpp
-// src/Parser.cpp — parseSub, `is tighter/looser/equiv(&infix:<+>)`
-int refBp = infixBpOf(refOp);
-userInfix_[declInfix] = trait == "equiv"   ? refBp
-                      : trait == "tighter" ? refBp + 5
-                      :                      refBp - 5;
-if (kind == "right") userInfixRight_.insert(declInfix);
+// src/Parser.cpp — applyInfixTrait, abridged
+if (trait == "assoc") {
+    if (arg == "right") regSet('r', userInfixRight_, op);
+    // … "non", "chain" and "list" go to sets of their own …
+} else {
+    // … `ref` is the operator the trait names, in any spelling …
+    const int refBp = infixBpOf(ref);
+    regInfix(op, trait == "equiv"   ? refBp
+               : trait == "tighter" ? refBp + 5 : refBp - 5);
+}
 ```
+
+`parseSub` calls it for the file's own declaration and the module scan of a
+later section calls it for an imported one, so the two cannot drift.
 
 This is what the by-ten spacing in the binding-power enum was reserved for.
 `is tighter(&infix:<+>)` yields 125: tighter than `+` at 120, looser than `*`
 at 130. `infixBpOf` resolves the referenced operator whether it is built in or
 itself user-declared, so traits chain.
+
+Associativity has five values in Raku and all five parse. `right` flips the
+recursive bound. `chain` builds a `ChainExpr`, the node a built-in comparison
+chain uses, so `5 eog 4 eog 3` evaluates each operand once. `list` gathers
+every operand of a run into one call. `non` makes the same operator twice in a
+row an error that asks for parentheses.
 
 The obvious question is what happens when someone declares eight operators each
 tighter than the last. The answer is that they collide at the same level after
@@ -187,13 +218,18 @@ lexer's business rather than the operator table's, and Chapter 3 has it.)
 about the enclosing program's operators. So the evaluator pre-seeds them:
 
 ```cpp
-// src/Parser.h
+// src/Parser.h — abridged
 void declareUserOp(const std::string& kind, const std::string& name) {
-    if (kind == "infix") userInfix_[name] = 120;
-    else if (kind == "prefix")  userPrefix_.insert(name);
+    if (kind == "infix") userInfix_[name] = 120 /*BP_ADD default*/;
+    else if (kind == "infix-non") userInfixNon_.insert(name);
+    else if (kind == "prefix") userPrefix_.insert(name);
     else if (kind == "postfix") userPostfix_.insert(name);
+    // … a bracketing pair is spelled "OPEN CLOSE" and goes to its map …
 }
 ```
+
+An operator seeded this way arrives at the default level: the evaluator hands
+over names, not the binding powers the enclosing parse had worked out.
 
 which is why this works:
 
@@ -204,7 +240,7 @@ say EVAL("40 z 2");                    # 402
 ```
 
 **String interpolation**, shown at the end of the previous chapter, copies the
-live tables wholesale into the sub-parser.
+live tables into the sub-parser.
 
 ## `use Foo` and imported operators
 
@@ -214,23 +250,46 @@ compile-time action, and it is not a parse:
 
 ```cpp
 // src/Parser.h
-void scanModuleOps(const std::string& module);
-void scanOpsIn(const std::string& src, const std::string& srcPath);
+bool scanModuleOps(const std::string& module);
+bool scanOpsIn(const std::string& src, const std::string& srcPath);
 ```
 
 `scanModuleOps` resolves the module's *source file* through the same search
-path the loader uses and **text-scans** it — a substring search over raw bytes,
-no lexing, no parsing — for `sub`, `multi`, `proto` and `only` declarations of
-the five operator categories, registering what it finds.
+path the loader uses — the lib directories, then the installed repositories —
+and **text-scans** it: a substring search over raw bytes, no lexing, no
+parsing, for `sub`, `multi`, `proto` and `only` declarations of the five
+operator categories, and for the `my &infix:<…>` spelling. It registers what it
+finds, with the precedence and associativity traits the declaration carries.
+Both functions answer `true` when something they registered would be cut
+differently by the lexer, and the `use` then re-lexes the rest of the file
+(Chapter 4).
 
-Two consequences worth knowing:
+Four consequences worth knowing:
 
-- An operator spelled only in ASCII operator characters is **skipped**. A
+- A `sub` operator is registered only if it is **exported**. One with no
+  `is export` stays the module's own.
+- A prefix or postfix spelled only in ASCII operator characters is
+  **skipped**, and so is an infix that redeclares a symbolic built-in. A
   `multi infix:<*>(Color, Real)` is almost always extending a built-in, and
   registering it as a user operator would give it the default precedence and
-  silently reshape every expression in the importing file.
+  silently reshape every expression in the importing file. An ASCII infix that
+  is *not* a built-in, such as `%%%`, is a new operator and is registered. A
+  redeclared *word* operator, such as `gcd`, is registered at the built-in's
+  own precedence, so that the module's candidates are reached and no
+  expression changes shape.
+- The scan follows the module's own `use` lines, because a module that
+  re-exports another one's names passes on its operators too.
 - The scan can in principle be fooled by an operator declaration inside a
   string or a comment. Nothing has tripped on it yet.
+
+Operators are no longer all the scan collects. Each of the following is a name
+the importing file would otherwise parse wrongly, and each is read off the
+source the same way: a `sub` named like a word operator (`div`, `min`) or like
+a quote form (`tr`, `q`), which is then a call and not the operator; a
+`sub term:<…>`; a capitalised sub, so that `Foo { … }` passes the block; the
+types the module declares; a sigilless `constant`, which is a term and not a
+listop; and a package declarator a module supplies through
+`EXPORTHOW::DECLARE`, so that Red's `model Foo { … }` declares a class.
 
 Every source the scan read is recorded in `opScanned_` as a (path, content)
 pair. That is not for the parse; it is for the cache. A file's parse is only

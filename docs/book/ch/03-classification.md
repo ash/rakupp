@@ -25,8 +25,8 @@ Chapter 1 opened with, seen from the compiler-theory side.
 
 *Single-pass* is the load-bearing word in that sentence, and it is the one with
 exceptions. The parse proper reads the token vector once; the lexer scans the
-source once before it, two seams throw the unread tail away and lex it again,
-and one of those runs the user's own code to do it. They are set out under
+source once before it, a `use` can throw the unread tail away and lex it again,
+and one kind of `use` runs the user's own code to do it. They are set out under
 "The pass structure" below, because a reader who takes the one-liner unqualified
 will predict the wrong limitation list — which is the opposite of what this
 chapter is for.
@@ -37,7 +37,7 @@ chapter is for.
 returns a flat `std::vector<Token>`. Only then is a parser built over it:
 
 ```cpp
-// src/Parser.cpp
+// src/ParserWordPairs.cpp
 Lexer lx(src);
 Parser p(lx.tokenize());
 ```
@@ -51,9 +51,9 @@ lexer has finished.
 
 The *other* direction is not empty, though, and this chapter used to say it was.
 A parser that reaches a `use` can discard the tokens it has not read yet and lex
-the remaining source again: `relexForQuoteWords` and `activateSlang` in
-`src/Parser.cpp` both truncate `toks_` at the cursor and splice on a freshly
-lexed tail. The lexer is still closed over its input and still answers no
+the remaining source again: `relexForImports` in `src/Parser.cpp` truncates
+`toks_` at the cursor and splices on a freshly lexed tail, and `activateSlang`
+ends by calling it. The lexer is still closed over its input and still answers no
 questions — it is simply run more than once. What forces that is always the same
 shape of event: a `use` teaches the *lexer* something, and the lexer is already
 past.
@@ -63,14 +63,17 @@ reads the source for `sub q`, `sub s` and `sub tr` declarations
 (`scanQuoteWordSubs`), because a routine of that name beats the quote form of
 the same name from its declaration onward, and the lexer has no scopes to ask.
 It is textual and deliberately narrow — a comment is skipped, quoted text is not
-code — but it is a pre-scan by any reasonable definition.
+code — but it is a pre-scan by any reasonable definition. The constructor runs a
+second one, `scanUserOps`, for the spellings of the operators and terms the
+file declares, so that each lexes as one token (Chapter 4).
 
 Raku's context-sensitivity is real, so the work has to happen somewhere; here it
 is resolved from the lexer's **own one-token history**. A bare `/` opens a regex
 in term position and divides in operator position, and `regexContext()` decides
-by inspecting the previous token alone — after most operators a term is
-expected, so a regex follows; after a value, a `)`, or a postfix `++`, division
-does. Chapter 4 gives the rule and the keyword set that patches the identifier
+by inspecting the previous token — after most operators a term is expected, so
+a regex follows; after a value, a `)`, or a postfix `++`, division does. Only
+after a bare name does it look further: one token back, and ahead to the end of
+the line. Chapter 4 gives the rule and the keyword set that patches the identifier
 case.
 
 Two consequences follow from a lexer that is closed over its input before
@@ -78,9 +81,11 @@ parsing begins, and both matter later:
 
 **The operator vocabulary is static.** `lexOperator` matches against a
 hand-ordered table, first match wins, entries arranged longest-first by hand
-rather than by a maximal-munch scanner. It tracks no user declarations. An
-operator spelling it does not know falls through to a single-character token —
-which is precisely how a user-declared operator reaches the parser at all.
+rather than by a maximal-munch scanner. The table tracks no user declarations.
+An operator spelling it does not know falls through to a single-character
+token — which was once the only way a user-declared operator reached the
+parser, and is still the way one reaches it that neither pre-scan nor import
+has named.
 
 **Rule bodies are not Raku tokens.** A `token`, `rule` or `regex` body is
 captured whole as one opaque token and re-lexed later by the regex engine
@@ -101,14 +106,15 @@ The split is not a matter of taste. Raku's operator table runs to some two
 dozen precedence levels, and pure recursive descent spends one mutually
 recursive function per level to express them — the textbook
 `expr → term → factor` ladder, with twenty-odd rungs. Precedence climbing
-collapses the ladder into a single loop driven by sixteen named binding powers,
-which is why `parseExpr` fits on a page (Chapter 5).
+collapses the ladder into a single loop driven by eighteen named binding powers,
+which is why the skeleton of `parseExpr` fits on a page (Chapter 5).
 
 Placing it in the LL/LR hierarchy: it is **top-down, LL family, and neither
 LL(1) nor any fixed LL(k)**. The honest description is *recursive descent with
 bounded local backtracking*. The parser walks the token vector once, left to
-right, and rewinds at exactly four places in ten and a half thousand lines,
-each a short speculative probe that restores the position on failure. Because it
+right, and sets its position back at sixteen places in eighteen and a half
+thousand lines, each a short speculative probe that restores the position on
+failure, or a second reading of one bracketed span. Because it
 memoizes nothing, it is not a packrat or PEG parser; because it builds no parse
 forest, it is not GLR or Earley. Ambiguity is resolved where it is met, not
 afterwards.
@@ -126,12 +132,15 @@ Three things qualify that, and together they are the honest answer to *is it
 one-pass?*
 
 **The lexer pre-scans.** `Lexer::tokenize()` reads the source for quote-word
-`sub` declarations before it tokenizes, as above. Nothing pre-scans it for
-*operators* — that is the pre-scan the limitation list further down is about,
-and the two are easy to conflate.
+`sub` declarations before it tokenizes, and the constructor for the spellings
+of declared operators, as above. Neither tells the *parser* that an operator
+exists — that is the pre-scan the limitation list further down is about, and
+the two are easy to conflate.
 
-**Two seams re-lex the tail.** A `use` of a module that declares `sub tr`, or of
-a slang, rebuilds the token stream from the cursor on. The parse is still a
+**A `use` can re-lex the tail.** An import that changes how the rest of the
+file *lexes* rebuilds the token stream from the cursor on. There are three such
+imports: a module that exports a `sub tr`, a module that exports an operator or
+a term whose spelling the built-in rules would split, and a slang. The parse is still a
 single left-to-right walk; the tape under it was replaced mid-walk.
 
 **A slang runs user code during the parse.** This is the one that changed.
@@ -144,12 +153,15 @@ variable, a pointy block or a routine declarator. `src/Slang.h` is the
 enumeration. Until September 2026 this chapter said flatly that no user code
 runs during the parse; for everything that is not a slang, it still does not.
 
-One further pass sits between the parser and every back end, and it is not part
-of the parse at all: `DeclCheck` (Chapter 38) asks whether each variable the
-unit mentions is declared anywhere in its lexical chain, and refuses the program
-before it starts. It is a gate rather than an analysis — it computes nothing a
-later stage consumes, beyond the list of `no strict` names the native back end
-needs in order to emit no local for them.
+Two further passes sit between the parser and every back end, and they are not
+part of the parse at all. `DeclCheck` (Chapter 39) asks whether each variable
+the unit mentions is declared anywhere in its lexical chain, and refuses the
+program before it starts. `CallCheck` (Chapter 14) asks whether a call to one of
+the unit's own subs can ever bind, given argument types it can see, and refuses
+the ones that cannot. Both are gates rather than analyses: a finding must be a
+certainty, each stands down where it cannot see enough, and neither computes
+anything a later stage consumes, beyond the list of `no strict` names the
+native back end needs in order to emit no local for them.
 
 ## The part with no textbook box
 
@@ -172,7 +184,7 @@ The extension mechanism is deliberately narrow, and Chapter 6 is about exactly
 how narrow. `use Foo` does not parse the module at compile time: the parser
 *text-scans* the module source for declarations of `infix:<…>` and its
 relatives, and registers those names so the importing file can parse them. That
-is lexical bookkeeping, not execution — the distinction Chapter 32 returns to.
+is lexical bookkeeping, not execution — the distinction Chapter 33 returns to.
 
 One kind of module is the exception. If the source registers a slang — `use
 Slangify`, or a direct `define_slang` — bookkeeping cannot answer what it
@@ -199,10 +211,10 @@ grammar adds on top of it.
 answer "how far can each alternation branch's declarative prefix reach?", and
 the NFA answers it in one linear, execution-free scan of the input. It never
 matches on behalf of the engine — the real backtracking matcher then runs on the
-branches it ranked. It is also not yet the default: the shipped ranker probes
-each branch for its greedy full-match end, and the NFA ranker is behind an
-environment variable, for reasons Chapter 23 sets out along with the phase plan
-for flipping it.
+branches it ranked. It has been the default ranker since v3.0.0. The ranker it
+replaced, which probes each branch for its greedy full-match end, is still the
+fallback for an alternation the NFA cannot decide, and `RAKUPP_LTM=0` selects
+it everywhere; Chapter 23 sets out both.
 
 So the engine is a backtracking matcher that borrows one automaton for one
 question. Describing it as "an NFA engine" would be wrong in both directions.
@@ -246,6 +258,15 @@ representation, one loop wide, built and thrown away in about 15 µs, with no
 pass of any kind run over it. The rest of the classification stands: the AST is
 still the sole representation of your *program*, and neither back end is
 reached unless it is asked for. Chapter 44 is both of them end to end.
+
+A second exception is on by default, and smaller. A sub or a loop whose values
+are all machine integers, or plain numbers and strings in a loop, is rebuilt
+as a *kernel* (`src/IntKernel.cpp`): a second tree, of nodes that each carry a
+function pointer and work on `int64` slots instead of `Value`s. It is a
+narrower tree over the same syntax and not a lowering — there is no
+instruction list and no pass — and a kernel that meets anything it cannot
+answer exactly bails, after which the AST runs the call or the loop from the
+start. Chapter 13 has it.
 
 ## What it is not
 
@@ -293,9 +314,10 @@ Nearly every front-end limitation in this book is downstream of the
 classification above, and worth reading as a consequence rather than a bug list:
 
 - **Operators must be declared before use.** The only way the parser learns of
-  one is by reaching its declaration, and nothing pre-scans the file *for
-  operators* — the lexer's own pre-scan looks for quote-word subs and nothing
-  else. Subs are exempt only because the interpreter hoists them.
+  one is by reaching its declaration, and nothing pre-scans the file to fill
+  the *parser's* tables — the lexer's own pre-scans decide how a spelling is
+  cut into tokens and nothing else. Subs are exempt only because the
+  interpreter hoists them.
 - **No macros, and slangs only where there is a seam.** A macro needs user code
   to run during the parse *and* to yield the AST that replaces the call; the
   first half now exists and the second does not. A slang works only at the
@@ -305,8 +327,9 @@ classification above, and worth reading as a consequence rather than a bug list:
 - **Block versus hash stays a heuristic.** It follows Raku's documented rules,
   but a case a backtracking full grammar would settle by trying both can still be
   decided wrongly here.
-- **No whole-program analysis.** `DeclCheck` does walk the tree before execution,
-  but it answers one question and hands the back end nothing to optimize with;
+- **No whole-program analysis.** `DeclCheck` and `CallCheck` do walk the tree
+  before execution, but each answers one question and hands the back end
+  nothing to optimize with;
   with no IR, an `--exe` optimization still has to be expressible as a local
   rewrite during emission.
 

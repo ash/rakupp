@@ -2,8 +2,8 @@
 
 Three parts of Raku resist a straightforward tree-walker: infinite lists,
 values that are several values at once, and `gather`/`take`, which wants a
-coroutine. None of the three gets a new `VT`. All three are an existing tag plus
-some state.
+coroutine — and since 2026-09-27 has one. None of the three gets a new `VT`.
+All three are an existing tag plus some state.
 
 ## Lazy and infinite sequences
 
@@ -12,16 +12,22 @@ a materialised `ValueList`. Raku++ attaches a generator to an otherwise ordinary
 array value.
 
 ```cpp
-// src/Interpreter.h
+// src/Interpreter.h — abridged
 struct LazySeqState {
-    std::function<bool(ValueList&)> appendNext;  // one more; false = exhausted
+    std::function<bool(ValueList&)> appendNext;  // more; false = exhausted
     bool infinite = false;   // truly unbounded: elems/pop/[*-1] must die
+    bool gatherSeq = false;  // a gather: finiteness unknown until pulled
+    bool mapView = false;    // a .map that runs its block as it is read
+    bool exhausted = false;
+    size_t pullHint = 0;     // how many the next appendNext is wanted for
+    …
 };
 ```
 
-The already-computed **prefix** lives in the `Value`'s `arr`; the generator
-lives in the opaque `ext` slot — the same slot a `Promise` or a `Channel` would
-use. `appendNext` appends exactly one element and reports whether more exist.
+The already-computed **prefix** lives in the `Value`'s array payload; the
+generator lives in the opaque `ext` slot — the same slot a `Promise` or a
+`Channel` would use. `appendNext` appends the next element — or several, when
+the source has them at hand — and reports whether more exist.
 
 ### Building one
 
@@ -31,17 +37,22 @@ endpoint. A bounded endpoint (`1 ... 10`) is computed eagerly in a loop, capped
 at a million. An infinite endpoint builds a `LazySeqState`:
 
 ```cpp
-// src/Interpreter.cpp — seqOp
-if (infinite) {
+// src/Interpreter.cpp — seqOp, abridged
+if (infinite || (hasGen && !endCode)) {
+    …
     auto st = std::make_shared<LazySeqState>();
-    st->infinite = true;
+    …
+    st->infinite = !boundedGen;
     st->appendNext = [...](ValueList& cache) -> bool {
         /* feed the last `arity` cached elements to the generator, or step
            the detected progression; push the next value */
     };
-    out.ext = st;
+    …
 }
 ```
+
+A sequence with a generator and a literal endpoint, `1, {-$_} ... 3`, is lazy
+too: it stops only on an exact match with the endpoint, which may never come.
 
 When there is no explicit generator, the operator *detects the progression*
 from the seed: a constant arithmetic difference, a constant geometric ratio, or
@@ -52,16 +63,16 @@ from the seed: a constant arithmetic difference, a constant geometric ratio, or
 are one operator over a list of lists, where each group's first element closes
 the previous segment. That is `seqOpGroups`, shared with the compiled backend.
 
-A bare `1..Inf` assigned to an array builds a simpler counting generator, in
-`coerceArray`:
+A bare `1..Inf` assigned to an array builds a simpler counting generator:
 
 ```cpp
+// src/Interpreter.cpp
 auto st = std::make_shared<LazySeqState>(); st->infinite = true;
 auto next = std::make_shared<long long>(start);
 st->appendNext = [next](ValueList& cache) -> bool {
     cache.push_back(Value::integer((*next)++)); return true;
 };
-a.ext = st;
+a.extM() = st;
 ```
 
 ### Forcing elements
@@ -71,29 +82,47 @@ Consumers grow the prefix on demand:
 ```cpp
 // src/InterpreterBinding.cpp
 void Interpreter::materializeLazy(const Value& v, size_t n) {
-    auto st = std::static_pointer_cast<LazySeqState>(v.ext);
-    while (v.arr->size() < n && v.arr->size() < CAP)
-        if (!st->appendNext(*v.arr)) break;
+    if (!v.ext() || !v.arr()) return;
+    auto st = std::static_pointer_cast<LazySeqState>(v.ext());
+    if (!st->appendNext) return;
+    const size_t CAP = 1000000;
+    while (v.arr()->size() < n && v.arr()->size() < CAP) {
+        st->pullHint = std::min(n, CAP) - v.arr()->size();
+        if (!st->appendNext(*v.arr())) { st->exhausted = true; break; }
+    }
 }
 ```
+
+`pullHint` tells the source how many elements are wanted. Most generators
+ignore it and append one; a `gather` uses it to produce the whole share in
+one switch into its block.
 
 So `@lazy[5]` materialises six elements and then indexes; `.head(3)`
 materialises three; `.first(&pred)` pulls one at a time until the predicate
 matches.
 
-Operations that need the *end* of an infinite list cannot complete, and say so:
+Operations that need the *end* of an infinite list cannot complete, and say
+so, as Rakudo says it. Some answer a `Failure`, which throws only if used,
+and some throw at once:
 
 ```cpp
-// src/MethodCallTail.cpp
-if (m == "elems" || m == "end" || m == "pop" || m == "tail" ||
-    m == "reverse" || m == "sort" || m == "sum" || m == "min" ||
-    m == "max" || m == "join" || m == "Str" || m == "gist")
-    throw RakuError{Value::typeObj("X::Cannot::Lazy"),
-                    "Cannot " + m + " a lazy list onto an Array"};
+// src/MethodCallTail.cpp — abridged
+static const std::set<std::string> kLazyFailure = {
+    "elems", "reverse", "sum", "pick", "roll", "Capture", "rotate",
+    "Numeric", "Int", "pop"};
+static const std::set<std::string> kLazyThrow = {
+    "end", "tail", "sort", "min", "max", "eager", "reduce",
+    "push", "append", "grab"};
+…
+if (kLazyFailure.count(m))
+    return armedFailure("X::Cannot::Lazy", "Cannot " + m + " a lazy list");
+if (kLazyThrow.count(m))
+    throwTyped("X::Cannot::Lazy", {{"action", m.s}},
+               "Cannot " + m + " a lazy list");
 ```
 
-A *finite* lazy value — a `gather` that outgrew its probe — instead forces full
-materialisation, which is the right answer for it.
+A *finite* lazy value — a `gather` nothing has read to its end yet — instead
+forces full materialisation, which is the right answer for it.
 
 ### Lazy `.map` and `.grep`
 
@@ -102,15 +131,30 @@ source on demand, which is what makes `(1..Inf).grep(*.is-prime).head(5)`
 terminate:
 
 ```cpp
-// src/MethodCallTail.cpp — .map over a lazy source
-st->appendNext = [self, src, fn](ValueList& cache) -> bool {
-    size_t si = cache.size();
-    self->materializeLazy(src, si + 1);          // pull one more
-    if (si >= src.arr->size()) return false;
-    cache.push_back(self->callCallable(fn, { (*src.arr)[si] }));
-    return true;
+// src/MethodCallTail.cpp — .map over a lazy source, abridged
+st->appendNext = [self, src, fn, spos, ended, …](ValueList& cache) -> bool {
+    for (;;) {
+        if (*ended) return false;
+        size_t si = *spos;
+        self->materializeLazy(src, si + 1);      // pull one more
+        if (si >= src.arr()->size()) return false;
+        (*spos)++;
+        ValueList one{ (*src.arr())[si] };
+        …
+        try {
+            Value r = self->callCallable(fn, one);
+            …
+            cache.push_back(std::move(r)); return true;
+        }
+        catch (LastEx& le) { …; *ended = true; …; return false; }
+        catch (NextEx& ne) { … }               // skip it: ask for the next
+    }
 };
 ```
+
+The view keeps its own source position, because a `next` in the block skips
+an element and the cache and the source then part company. A `last` ends the
+view whatever the source still holds.
 
 `.grep` loops pulling source elements until its predicate matches; `.skip`
 builds a shifted view.
@@ -190,8 +234,8 @@ throw RakuError{Value::typeObj("X::Cannot::Lazy"), "Cannot reduce a lazy list"};
 ```
 
 Whether it will drain cannot be decided when the view is built. A `.map` over an
-endless source is endless, always — it inherits the flag. A `.grep` over one may
-still end, because the predicate can stop it:
+endless source inherits the flag, and loses it only if its block says `last`.
+A `.grep` over one may still end, because the predicate can stop it:
 
 ```raku
 (^Inf).grep({ last if $_ > 5; True }).eager.join   # 012345
@@ -228,18 +272,96 @@ sums instead of building a lazy sequence of them. And `.flat` over a list
 containing an endless range materialises the prefix without marking the result
 endless, so a reduce downstream of it never learns that anything ran away.
 
-## `gather` and `take`, without coroutines
+## `gather` and `take`
 
 `gather { … take … }` should suspend the block at each `take` and resume it when
 another element is demanded. That is a coroutine, and a tree-walker built on the
-C++ stack does not have one.
+C++ stack does not have one for free.
 
-The strategy is **probe and double**. The collector and a per-gather element cap
-live on the execution context:
+### The coroutine
+
+Since 2026-09-27 it has one that was built for the purpose. `src/Coro.h` is a
+stackful coroutine: a function that runs on a stack of its own and can hand
+control back to whoever resumed it, from any depth, and later carry on from
+exactly there. The context switch is hand-written for x86-64, arm64 and
+riscv64 on every ELF and Mach-O system, and Windows uses Fibers. Each stack
+reserves 256 MiB of address space, as a worker thread's does.
+
+A `gather` evaluates to a `Seq` whose generator owns a `GatherCoro`:
+
+```cpp
+// src/InterpreterOperators.cpp — abridged
+struct GatherCoro {
+    Interpreter* I = nullptr;
+    Unary* gu = nullptr;          // the `gather` node
+    Value block;                  // its closure, for a block operand
+    std::shared_ptr<Env> env;     // the scope a statement operand runs in
+    …
+    PRef<ValueList> buf = makePayload<ValueList>();
+    size_t want = 1;              // hand back once buf holds this many
+    bool cancel = false;          // resumed only to unwind
+    std::exception_ptr err;       // what ended the block, raised at the pull
+    GatherRegs regs;              // the block's registers while suspended
+    Coro co{&GatherCoro::entry, this};
+};
+```
+
+Nothing runs when the `gather` is evaluated. The first pull resumes the
+coroutine, the block runs until a `take` has put `want` elements into `buf`,
+and `take` yields:
+
+```cpp
+// src/InterpreterOperators.cpp — gatherTakeYield, abridged
+if (coll.size() < g->want) return;
+g->co.yield();
+if (g->cancel) throw StopGatherEx{};
+```
+
+The pull moves `buf` into the `Seq`'s cache and returns. The block stays
+suspended in the middle of whatever it was doing — inside nested loops and
+calls, at any depth — until the next pull. So the block runs **once**, and
+only as far as it has been read:
+
+```
+$ rakupp -e 'my $n = 0; my $g = gather { loop { $n++; take $n } };
+             say $g[3], " ", $n; say $g[70], " ", $n'
+4 4
+71 71
+```
+
+**What a switch has to carry.** The interpreter keeps the state of the code
+it is running in per-thread registers: the `ExecContext` of Chapter 13 and a
+set of statics. A suspended block is in the middle of that state, and so is
+its consumer, so every switch swaps the whole set (`GatherRegs`). Three kinds
+are not simply swapped. The dynamic chains — dynamic variables, `CONTROL`
+handlers, call frames — are the consumer's with the block's own frames on
+top, because Rakudo resolves `$*X` in a gather's block through whoever is
+reifying it. The counted scopes the block inherits the same way keep the
+block's own net change. And the recursion guard measures the stack that is
+actually running.
+
+**How a block ends.** A block that dies, or a `last` in it aimed at a label
+outside, ends its gather: the exception is carried to the consumer in `err`
+and raised where the pull happened. A `return` has no routine to return from
+and is `X::ControlFlow::Return`.
+
+**A gather dropped while suspended** still has C++ frames on its stack that
+own things. It goes to a graveyard, and at the next gather operation on its
+thread it is resumed once more with `cancel` set: its `take` throws
+`StopGatherEx`, the frames unwind, and `LEAVE` phasers stay silent on the way
+out, as in Rakudo. A started gather is thread-affine. Its suspended frames
+hold thread-local addresses the compiler cached, so pulling from it on
+another thread is refused with an error.
+
+### The fallback: probe and double
+
+A target with no context switch — WebAssembly among them — keeps the older
+strategy, and `-DRAKUPP_HAVE_CORO=0` forces it anywhere so it stays tested.
+The collector and a per-gather element cap live on the execution context:
 
 ```cpp
 // src/Interpreter.h — ExecContext
-std::vector<std::shared_ptr<ValueList>> gatherStack;
+std::vector<PRef<ValueList>> gatherStack;
 std::vector<size_t> gatherLimits;   // 0 = unlimited
 ```
 
@@ -249,10 +371,11 @@ becomes a `LazySeqState` that grows by **re-running the block** with a larger
 cap:
 
 ```cpp
-// src/Interpreter.cpp
+// src/Interpreter.cpp — rtGather, the fallback
 st->appendNext = [this, runGather](ValueList& out) -> bool {
     ValueList grown;
-    bool more = runGather(out.size() + std::max<size_t>(64, out.size()), grown);
+    bool more = runGather(out.size() + std::max<size_t>(64, out.size()),
+                          0, grown);
     for (size_t i = out.size(); i < grown.size(); i++) out.push_back(grown[i]);
     return more;
 };
@@ -262,30 +385,25 @@ Doubling keeps the re-run cost amortised linear. A `take` that pushes past the
 current cap unwinds the block with an empty marker exception:
 
 ```cpp
-// src/InterpreterCalls.cpp — take
-auto& coll = *tctx().gatherStack.back();
-for (auto& x : a) coll.push_back(x);
+// src/InterpreterCalls.cpp — take, abridged
+size_t lim = tctx().gatherLimits.empty() ? 0 : tctx().gatherLimits.back();
 if (lim && coll.size() >= lim) throw StopGatherEx{};
 ```
 
-So an infinite `gather` runs its block only far enough to satisfy each demand,
-stops, and re-enters later for more.
-
-The honest cost of this design: **the block runs more than once, from the
-start.** A `gather` whose block has side effects — printing, or mutating a
-counter — will repeat them. That is a genuine divergence from a coroutine
-implementation, and the reason the initial probe cap is generous enough that
-most real `gather`s never re-run at all.
+The honest cost of that design: **the block runs more than once, from the
+start**, and ahead of its consumer. A `gather` whose block has side effects —
+printing, or mutating a counter — repeats them. That divergence from Rakudo is
+now confined to the targets that have no coroutine.
 
 ## Junctions
 
 A junction has no `VT` of its own. `any(1, 2, 3)` is a `VT::Array` whose
-elements are the eigenstates, tagged by `enumName`:
+elements are the eigenstates, tagged by `enumName()`:
 
 ```cpp
 // src/Value.cpp — typeName(), the VT::Array case
-if (enumName == "any" || enumName == "all" ||
-    enumName == "one" || enumName == "none") return "Junction";
+if (enumName() == "any" || enumName() == "all" ||
+    enumName() == "one" || enumName() == "none") return "Junction";
 ```
 
 They are built by the `any`/`all`/`one`/`none` routines, the matching methods,
@@ -300,10 +418,11 @@ junction type; any other operator produces a **new** junction of the
 per-eigenstate results:
 
 ```cpp
-// src/InterpreterCore.cpp — applyArith
-Value out = Value::array(); out.enumName = j.enumName;
-for (auto& e : *j.arr)
-    out.arr->push_back(applyArith(op, jleft ? e : l, jleft ? r : e));
+// src/InterpreterCore.cpp — applyArith, abridged
+Value out = Value::array(); out.setEnumName(j.enumName());
+…
+for (auto& e : *j.arr())
+    out.arr()->push_back(applyArith(op, jleft ? e : l, jleft ? r : e));
 return out;                       // any(1,2) + 10  ==>  any(11, 12)
 ```
 
@@ -317,8 +436,8 @@ One escape hatch exists, because `Junction.THREAD` must pass each eigenstate —
 junctions included — through whole:
 
 ```cpp
-// src/Interpreter.h
-static thread_local bool noAutothread_;   // one-shot, consumed by the next call
+// src/Interpreter.h — ExecContext
+bool noAutothread = false;   // one-shot, consumed by the next call
 ```
 
 ## `Whatever` and `WhateverCode`
@@ -327,7 +446,7 @@ static thread_local bool noAutothread_;   // one-shot, consumed by the next call
 `WhateverCode` — a `Callable` with a flag and an arity:
 
 ```cpp
-// src/Value.h — Callable
+// src/Value.h — CodeInfo
 bool isWhateverCode = false;
 long long whateverArity = 0;   // `* + *` consumes 2
 ```
@@ -377,10 +496,13 @@ program has two independent latches:
 ```cpp
 // src/Interpreter.h
 struct FlipFlop { bool on = false; long long seq = 0; };
-std::unordered_map<const void*, FlipFlop> ffState_;
+std::map<std::pair<const void*, const void*>, FlipFlop> ffState_;
 ```
 
-keyed on the AST node's address, which is stable for the life of the program.
+keyed on the AST node's address, which is stable for the life of the program,
+paired with the closure clone it runs in: a `sub` declared inside a loop body
+is a fresh closure each time round, and each clone gets its own latch, as it
+gets its own `state` variables.
 The `seq` counter is there because the result while the latch is on is the
 *count of elements since it fired*, not a plain `Bool`.
 

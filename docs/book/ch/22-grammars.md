@@ -14,6 +14,8 @@ its methods:
 ```cpp
 // src/Value.h — ClassInfo, the grammar fields
 std::map<std::string, std::string> rules;      // name → pattern text
+std::map<std::string, std::shared_ptr<Env>> ruleHome;  // a role's rule: its
+                                               // own scope
 std::vector<std::string> ruleOrder;            // DECLARATION order
 std::map<std::string, std::string> ruleKind;   // token / rule / regex
 std::map<std::string, std::vector<std::string>> ruleParams;
@@ -21,7 +23,10 @@ bool isGrammar = false;
 ```
 
 Inheritance works because `findRule` walks the parent chain exactly as
-`findMethod` does, so `grammar Mine is Base` overrides individual rules.
+`findMethod` does, so `grammar Mine is Base` overrides individual rules. A
+rule composed in from a role keeps the scope it was written in, in
+`ruleHome`, so a `<?{ f() }>` in it sees the subs the role's file imported
+and not only the grammar's.
 
 The pattern text is stored **unparsed**, as the lexer captured it (Chapter 4).
 Compilation happens lazily, per rule, on first use.
@@ -32,16 +37,25 @@ Compilation happens lazily, per rule, on first use.
 // src/Regex.h
 class GrammarMatcher {
 public:
-    struct Rule { std::string pattern, kind; std::vector<std::string> params; };
+    struct Rule {
+        std::string pattern, kind; std::vector<std::string> params;
+        struct Lit { std::vector<std::string> args;
+                     std::string pattern, kind; };
+        std::vector<Lit> lits;     // `multi rule expr(0)` candidates
+        bool litOnly = false;      // …and there is no generic body
+        int home = 0;              // the scope it was written in
+    };
     std::map<std::string, Rule> rules;
     std::map<std::string, std::vector<std::string>> protos;
     GrammarHooks hooks;
 
     bool parse(const std::string& input, const std::string& top, bool subparse,
-               ParseNode& out, long& endOut);
+               ParseNode& out, long& endOut, long startPos = 0);
     bool matchSub(const std::string& name, const std::string& args,
                   const std::string& capKey, Regex::MState& st, long pos,
                   const FnRef& k);
+    long hwPos = -1;               // furthest position a rule failed at
+    std::string hwRule;            // …and which rule
 private:
     std::unordered_map<uint64_t, MemoEntry> memo_;
     std::unordered_map<std::string, NameMeta> nameMeta_;
@@ -56,7 +70,27 @@ packrat memo, the longest-token automata — dies with the parse, so none of the
 needs invalidation logic.
 
 `Interpreter::grammarParse` builds one, fills `rules` and `protos` from the
-`ClassInfo`, wires the hooks to the interpreter, and runs it.
+`ClassInfo`, wires the hooks to the interpreter, and runs it. The rules are
+collected most derived first, through the parent and through every composed
+role, and a name already taken is skipped, so a derived declaration wins
+exactly as a method would. A lexical `my token` in scope is added under its
+name when the grammar chain declares no rule of that name.
+
+"Dies with the parse" has one refinement. Destroying the memo walks every
+frozen subtree in it, which the source records as about 28% of a capturing
+parse when it was measured. The trees are refcounted and the finished parse holds its own
+references, so `reapMemo` hands a memo of 512 entries or more to a detached
+thread and returns. At most four such threads run at once; past that, and on
+a build without threads, the memo is destroyed inline as before.
+
+When a parse fails, the matcher has kept one fact about why. Every named rule
+that fails calls `noteFail`, which records the position and the rule's name
+if the position is further than any before. Recursive descent fails
+innermost first and the comparison is strict, so at one position the deepest
+rule wins: `<key>`, not the `<entry>` around it. The interpreter converts the
+byte offset to a character position, and after a failed parse the
+`rakupp-parse-diagnosis` built-in answers both. It is a Raku++ extension;
+Rakudo's grammars have no such call.
 
 ## A subrule call, in full
 
@@ -69,8 +103,16 @@ engine's cleverness lives. In order:
 3. **Compile the rule body**, if this is its first use, and cache it.
 4. **Bind parameters**, if the call was `<r($x, 'lit')>`.
 5. **Match**, threading the caller's continuation through.
-6. **Record a `ParseNode`** in the parent's capture frame.
-7. **Fire the action method**, if the grammar's action object has one.
+6. **Fire the action method**, if the grammar's action object has one.
+7. **Record a `ParseNode`** in the parent's capture frame, and run the
+   caller's continuation.
+
+Four kinds of name leave that sequence at step 1. A proto dispatches to its
+candidates (below). A name that is an ordinary method of the grammar is
+called through the `callMethod` hook. A built-in such as `<alpha>` or `<ws>`
+that the grammar does not redefine goes to `builtinRuleMatch`, the same
+function the plain-regex path uses. And a rule whose body is one character
+is tested in place (Chapter 20), with no memo and no frame.
 
 ### The per-name metadata
 
@@ -83,6 +125,8 @@ struct GrammarRuleMeta {
     Regex* noArg = nullptr;        // pre-compiled parameterless body
     const std::vector<std::string>* proto = nullptr;
     bool isWs = false;
+    bool isMethod = false;         // an ordinary method of the grammar
+    bool viaHow = false;           // the grammar's HOW overrides find_method
     bool scoped = false;           // body declares `:my`
     bool dynDep = false;           // …or reads a dynamic var: do not memoise
     std::string builtinClass;      // unknown name → built-in class flags
@@ -119,19 +163,25 @@ struct MemoEntry {
     long litPrefix = 0;    // leading literal run, for the LTM tie-break
     long capFrom = -1, capTo = -1;
     std::vector<std::pair<long, long>> caps;
-    std::map<std::string, std::pair<long, long>> named;
+    GrammarHooks::NamedMap named;
     std::shared_ptr<const ChildMap> kids;      // frozen: replays share
     std::shared_ptr<const std::set<std::string>> listNames;
     std::shared_ptr<const std::set<int>> listCaps;
     std::shared_ptr<const std::map<int,
         std::vector<std::pair<long,long>>>> capReps;
+    bool fired = false;    // its action has run
 };
 std::unordered_map<uint64_t, MemoEntry> memo_;
 ```
 
-The key is a 64-bit integer built from the rule id, the position and the bound
-parameters — not a string, because a string key would allocate on every subrule
-call.
+The key is a 64-bit integer built from the rule id, the position and the
+values of the call's arguments — not a string, because a string key would
+allocate on every subrule call.
+
+Two completions are not stored. A rule with `dynDep` set is one, as above.
+The other is a rule whose body, under a ranking probe, stepped over a grammar
+method: the probe measured a stand-in, and that must not answer for the real
+match later.
 
 The child map is stored **frozen behind a `shared_ptr`**, which is the detail
 that makes the memo pay. Replaying a memoised match is then a refcount bump
@@ -146,15 +196,18 @@ struct ParseNode {
     std::string name;
     std::string actualRule;    // for a proto: the winning name:sym<…>
     long from = 0, to = 0;
+    int capLocal = -1;         // which $n of its parent, if positional
+    uint64_t aliasId = 0;      // nonzero: one capture filed under two keys
     std::vector<std::pair<long, long>> caps;
-    std::map<std::string, std::pair<long, long>> named;
+    GrammarHooks::NamedMap named;
     std::shared_ptr<const ChildMap> kids;     // null = leaf
     std::shared_ptr<const std::set<std::string>> listNames;
     std::shared_ptr<const std::set<int>> listCaps;
     std::shared_ptr<const std::map<int,
         std::vector<std::pair<long,long>>>> capReps;
+    std::shared_ptr<const void> dynScope;     // the `*` dynamics live then
 };
-using ChildMap = std::map<std::string, std::vector<ParseNode>>;
+using ChildMap = FlatMap<std::vector<ParseNode>>;
 ```
 
 The child map is a map to a **vector**, so repeated captures of the same name
@@ -169,6 +222,10 @@ compiled `Regex` rather than rebuilt per node.
 The interpreter walks the finished tree and builds `Match` values from it, with
 `$<name>` reading the child map and `$0` reading the positional spans.
 
+`<alias=rule>` files one capture under two keys, the alias and the rule name.
+Both records carry the same `aliasId`, so the builder makes one `Match`,
+publishes it under each key, and fires the rule's action once.
+
 ## Actions
 
 An action object is an ordinary Raku object whose methods are named after the
@@ -180,11 +237,16 @@ The engine fires actions **during** the match, through the hooks:
 ```cpp
 // src/Regex.h — GrammarHooks
 std::function<bool(const std::string&)> hasAction;
-std::function<void(const ParseNode&)> onRule;
+std::function<void(ParseNode)> onRule;
 ```
 
 `hasAction` gates the node assembly, so a rule with no corresponding method
-costs nothing. `onRule` fires the method with the completed node.
+costs nothing. `onRule` fires the method with the completed node: the
+interpreter builds the node's `Match` then and there, runs the method, and
+keeps the result. The parent's build, a code block's `$/` and the finished
+tree all take that same `Match`, so each node is built, and fired, once. That
+is what lets a `<?{ $<tag>.made … }>` right after the call read what the
+action made.
 
 Three properties of that design, all deliberate:
 
@@ -195,6 +257,15 @@ Three properties of that design, all deliberate:
 - **`make` writes into a target on the execution context** —
   `ExecContext::makeTargets` — which is how the value attaches to the right
   match rather than to a global.
+- **A probe fires nothing.** A completion reached while a `|` or a proto is
+  only being ranked is stored with `fired` clear, and its action runs on the
+  first real replay.
+
+A rule that declares `:my $*X` has its dynamic scope rolled back when it
+exits, and a node with no action of its own is built after the parse is
+over. So the dynamics that were live when the rule completed travel with its
+node, in `dynScope`, and the build puts them back around the node's subtree.
+The pointer is null for a parse that declared none.
 
 ## Parameterised rules
 
@@ -211,9 +282,19 @@ std::string interpParams(const std::string& pat,
 ```
 
 Bindings are strings, and they are interpolated into the pattern *text* before
-compilation. So `token line($indent) { $indent \N* }` compiles a different
-`Regex` for each distinct indent value — and the compiled-rule cache is keyed on
-name plus argument values for exactly that reason.
+compilation, quoted as literals. So `token line($indent) { $indent \N* }`
+compiles a different `Regex` for each distinct indent value — and the
+compiled-rule cache is keyed on name plus argument values for exactly that
+reason. A value that is not a `Str` travels with a one-letter type tag in
+front, so a code block in the callee gets a `Bool`, an `Int` or the object
+itself back, and only the interpolation reads its string form.
+
+Arguments are sorted as a method call's are: `:name(v)` and `:$name` bind a
+named parameter, a parameter may have a default, and `|[…]` spreads. A rule
+may also have candidates constrained to literal values, `multi token e(0)`
+beside `multi token e($n)`. A call evaluates its arguments once and takes the
+first candidate whose literals all match, and otherwise the generic body.
+That is the base case of a recursive rule such as `<e($n - 1)>`.
 
 That design has a clear cost (a compilation per distinct argument tuple) and a
 clear benefit: parameterised rules need no support at all in the matcher. It is
@@ -240,7 +321,9 @@ std::map<std::string, std::vector<std::string>> protos;
 ```
 
 and `<sym>` inside a candidate matches that candidate's own `:sym<…>` literal —
-which is why `MState` carries a `curSym` pointer.
+which is why `MState` carries a `curSym` pointer. A candidate may also be
+spelled `:sym«…»`, `name:<…>`, or with a plain adverb as in
+`token match:character-class`.
 
 Candidate selection is **longest-token matching**, not declaration order, and
 that is the next chapter.
@@ -252,7 +335,7 @@ tell an `if` from a `while`.
 
 ```cpp
 bool parse(const std::string& input, const std::string& top, bool subparse,
-           ParseNode& out, long& endOut);
+           ParseNode& out, long& endOut, long startPos = 0);
 ```
 
 `.parse` requires the whole input to be consumed; `.subparse` does not.

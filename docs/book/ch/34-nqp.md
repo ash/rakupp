@@ -39,7 +39,7 @@ This is a hard design constraint, not an aspiration, and it holds by
 **construction** rather than by optimisation.
 
 - The parser carries one boolean, `useNqp_`, that starts false and is set only
-  by seeing `use nqp` or `MONKEY-GUTS`. Every recognition site is guarded by it,
+  by seeing `use nqp`, `MONKEY-GUTS` or `MONKEY`. Every recognition site is guarded by it,
   so in a normal program those checks are a single already-false branch on a
   token that begins with `nqp::` — which no ordinary identifier does.
 - The `NqpOp` node is **only ever constructed** inside that guarded path. A
@@ -57,20 +57,25 @@ Inside a `use nqp` unit, a recognised `nqp::op(...)` becomes one of three things
 **at parse time**.
 
 **Constants fold to literals.** `nqp::const::CCLASS_NUMERIC` is replaced by the
-integer `8` in the parser; it never exists as a call. All the character-class
-flags and normalization modes are handled this way.
+integer `8` in the parser; it never exists as a call. All 56 constants are
+handled this way: the character-class flags, the normalization modes, the
+`BINARY_` size and endian flags, the `STAT_` field selectors and the
+`CONTROL_` exception categories.
 
 **Control forms become native or lazy nodes,** because their arguments must not
 all evaluate eagerly. `nqp::if` and `nqp::unless` compile to Raku++'s own
 ternary node, so the untaken branch never runs. `nqp::while`, `nqp::until`,
-`nqp::repeat_while`, `nqp::repeat_until`, `nqp::stmts` and `nqp::ifnull` become
+`nqp::repeat_while`, `nqp::repeat_until`, `nqp::stmts`, `nqp::ifnull` and
+`nqp::handle` become
 `NqpOp` nodes whose evaluator drives its own argument evaluation. The two
 `repeat_` forms differ from their plain counterparts in one way that matters:
 the body runs once before the test is ever taken.
 
 **Leaf ops become eager `NqpOp` nodes** — integer maths, string and list
 primitives — which evaluate their arguments normally and then do the low-level
-operation over Raku++'s own `Value`s.
+operation over Raku++'s own `Value`s. An op that takes no arguments may be
+written without parentheses, `nqp::null` or `nqp::list_i`, and is recognised
+the same way.
 
 An `nqp::` op **outside** the implemented subset is left as an ordinary call and
 fails loudly at run time rather than silently misbehaving. The subset grows by
@@ -124,7 +129,7 @@ Value Interpreter::evalNqpOp(NqpOp* n) {
     switch (n->op) {
         case NqpOpc::AddI:  return Value::integer(I(0) + I(1));   // int64
         case NqpOpc::IseqI: return Value::integer(I(0) == I(1));
-        // … about 40 more leaf ops …
+        // … about 165 more leaf ops …
     }
 }
 ```
@@ -170,10 +175,10 @@ bundling.
 ```console
 $ rakupp --cpp -e 'use nqp; say nqp::add_i(1, 2)'
 …
-rtCallB(RT, __bfp0, "say", ValueList{
+rtSinkStmt(RT, rtCallB(RT, __bfp0, "say", ValueList{
     ([&]()->Value{ ValueList __na = ValueList{Value::integer(1LL),
                                               Value::integer(2LL)};
-                   return rtNqpOp(NqpOpc(10), __na); }())});
+                   return rtNqpOp(NqpOpc(10), __na); }())}));
 ```
 
 Two emission strategies, mirroring how the ops evaluate:
@@ -185,33 +190,53 @@ Two emission strategies, mirroring how the ops evaluate:
   binary cannot drift from the interpreted meaning.
 - **Lazy control forms** do not route through a runtime call — they emit native
   C++ directly, a real `while` and a statement sequence, preserving their
-  non-eager evaluation.
+  non-eager evaluation. `nqp::handle` becomes a `try` and `catch`.
+
+The two `repeat_` forms are the exception, and it is a gap: the generator has
+no case for them, emits them as leaf ops, and `rtNqpOp` has no such op. A
+natively compiled `nqp::repeat_while` dies with "nqp op not implemented in
+this build" where the interpreter runs the loop.
 
 The zero-cost guarantee extends here too: a program without `use nqp` emits zero
 references to `rtNqpOp` or any nqp machinery.
 
 ## What is covered
 
-Ninety-nine opcodes, reached under 112 spellings, chosen from the actual
-inventory of the modules in the ecosystem compatibility battery. The tables
-below are the shape of the coverage rather than the whole list — read
+176 opcodes, reached under 196 spellings in the parser's table — `unbox_s`,
+`unbox_i`, `decont_s` and `hllize` are all the one `Decont` — plus `nqp::if`
+and `nqp::unless`, which have no opcode. They were chosen from the actual
+inventory of the modules in the ecosystem compatibility battery. The table
+below is the shape of the coverage rather than the whole list — read
 `NqpOpc` in `src/Ast.h` for that:
 
 | Group | Ops |
 |---|---|
-| **Control (lazy)** | `if` `unless` `while` `until` `stmts` `ifnull` |
-| **Integer** (int64, no bignum promotion) | `iseq_i` `isne_i` `islt_i` `isle_i` `isge_i` `isgt_i` `add_i` `sub_i` `mul_i` `bitand_i` |
-| **String** (codepoint-indexed) | `ordat` `eqat` `substr` `chars` `concat` `join` `index` `chr` `strfromcodes` `strtocodes` `findnotcclass` `iscclass` |
-| **List** | `list` `list_i` `list_s` `elems` `atpos` `atpos_i` `bindpos` `push` `push_i` `push_s` `pop_s` `shift_i` `splice` |
-| **Hash** | `hash` `bindkey` |
-| **Object / attr** | `create` `istype` `getattr` `bindattr` `p6bindattrinvres` `null` `isnanorinf` |
-| **Constants** | `const::CCLASS_*`, `const::NORMALIZE_*` |
+| **Control (lazy)** | `if` `unless` `while` `until` `repeat_while` `repeat_until` `stmts` `ifnull` `handle` |
+| **Integer** (int64, no bignum promotion) | `iseq_i` `isne_i` `islt_i` `isle_i` `isge_i` `isgt_i` `cmp_i` `add_i` `sub_i` `mul_i` `div_i` `mod_i` `not_i` `bitand_i` `bitor_i` `bitxor_i` `bitshiftl_i` `bitshiftr_i` |
+| **Bignum** (the `_I` family) | `add_I` `sub_I` `mul_I` `div_I` `mod_I` `pow_I` `gcd_I` `lcm_I` `neg_I` `abs_I` `cmp_I` `iseq_I` `isbig_I` `tostr_I` `fromstr_I` and the bit ops |
+| **String** (codepoint-indexed) | `ordat` `eqat` `substr` `chars` `concat` `join` `index` `rindex` `indexic` `flip` `split` `x` `chr` `iseq_s` `cmp_s` `strfromcodes` `strtocodes` `findcclass` `findnotcclass` `iscclass` |
+| **List** | `list` `list_i` `list_s` `elems` `atpos` `atpos_i` `bindpos` `push` `push_i` `push_s` `pop` `pop_s` `shift` `shift_i` `splice` |
+| **Hash** | `hash` `bindkey` `atkey` `existskey` `deletekey` |
+| **Object / attr** | `create` `clone` `istype` `can` `what` `where` `eqaddr` `isconcrete` `getattr` `bindattr` `p6bindattrinvres` `null` `isnull` `decont` `box_i` `isnanorinf` |
+| **Buffers** | `readuint` `readint` `readnum` `writeuint` `writeint` `writenum` `slice` `decode` `setelems` |
+| **Files** | `open` `readfh` `closefh` `stat` `lstat` `stat_time` `opendir` `nextfiledir` `closedir` `filereadable` `fileislink` `readlink` |
+| **Unicode properties** | `unipropcode` `unipvalcode` `getuniprop_str` `getuniprop_bool` `getuniprop_int` `matchuniprop` `hasuniprop` |
+| **Exceptions** | `newexception` `setmessage` `setextype` `setpayload` `getmessage` `getextype` `getpayload` `throw` |
+| **Other** | `getcomp` `sha1` `time` `print` `say` `lock` `unlock` `hllbool` |
+| **Constants** | `const::CCLASS_*` `NORMALIZE_*` `BINARY_*` `STAT_*` `CONTROL_*` |
 
-Integer ops use plain `int64` semantics, matching NQP's native integers — **no
-overflow to bignum** — and string ops index by codepoint rather than by
-grapheme. Both of those are deliberate: an NQP op is supposed to be the
-low-level primitive, and a module reaching for one is reaching past Raku's
-semantics on purpose.
+The `_i` integer ops use plain `int64` semantics, matching NQP's native
+integers — **no overflow to bignum** — and string ops index by codepoint
+rather than by grapheme. Both of those are deliberate: an NQP op is supposed to
+be the low-level primitive, and a module reaching for one is reaching past
+Raku's semantics on purpose. The `_I` family is the other half of the same
+design: it is the bignum-safe spelling of arithmetic Raku++ already does, so
+those ops delegate to the ordinary arithmetic rather than re-deriving it.
+
+MoarVM is not self-consistent in this corner, and the ops follow what it does
+rather than what would be tidy: `div_i` and `div_I` floor (-7 div 2 is -4),
+`mod_i` truncates (-7 mod 2 is -1), and `mod_I` floors. The values were read
+off Rakudo, and `t/regression/lizmat-nqp-ops.raku` pins them.
 
 ## Scope and non-goals
 
@@ -220,7 +245,7 @@ semantics on purpose.
   needs them.
 - **Semantics match Rakudo's observable behaviour, not its internal
   representation.** `nqp::create(IterationBuffer)` gives back a plain Raku++
-  buffer, because what the calling module does with it is all that matters.
+  array, because what the calling module does with it is all that matters.
 - **`use nqp` is an opt-in for module code**, not an invitation for application
   code. There is no reason to reach for `nqp::` operations in a program you are
   writing, and no support commitment for operations beyond the measured subset.
@@ -233,6 +258,6 @@ model to keep in step with the first — for a feature whose entire purpose is t
 let a handful of modules load.
 
 Recognising that `nqp::foo(…)` is *already* valid syntax in the host language
-turned a compiler project into about a thousand lines of parser branch and evaluator
-arm. The general principle generalises: **before implementing a foreign
+turned a compiler project into about two thousand lines of parser branch and
+evaluator arm. The general principle generalises: **before implementing a foreign
 language, check whether its surface syntax is already legal in yours.**

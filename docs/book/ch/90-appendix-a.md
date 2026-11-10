@@ -5,12 +5,17 @@
 
 # The Tag Sets
 
-The three closed enumerations everything else switches on.
+The closed enumerations everything else switches on.
 
 ## `VT` — runtime value tags
 
 `src/Value.h`. Eighteen tags. Several Raku types are an existing tag plus a
 marker rather than a tag of their own; those are listed in the second table.
+
+The field names are the original struct's. In the 32-byte `Value` only `i`,
+`n`, `s`, `hashKind` and the flags are members; every other name in the table
+is an accessor of the same spelling — `v.arr()`, `v.ratN()`, `v.rFrom()` —
+over the payload slot or the cold block (Chapter 8).
 
 | Tag | Live fields | Notes |
 |---|---|---|
@@ -52,7 +57,28 @@ marker rather than a tag of their own; those are listed in the second table.
 | an enum value | `Int` with `enumName` and `enumType` |
 | `FatRat` | `Rat` with `fatRat` |
 | a native integer container | any numeric tag with `natBits` and `natSigned` |
+| `my int @a`, `my num @a` | `Array` whose payload is the elements as machine words (`PK::Packed`); it unpacks itself into an ordinary list when something asks for one |
 | `Promise`, `Channel`, `Supply`, `Tap`, `Lock` | a tag plus state in `ext` |
+
+## `PK` — payload kinds
+
+`src/Value.h`. Ten kinds. A `Value` has one payload slot, and this byte says
+what is in it. It is distinct from `VT` on purpose: a handful of sites convert
+a value in place, tag first and payload after, and a slot that describes
+itself keeps that legal.
+
+| Kind | The slot holds |
+|---|---|
+| `None` | nothing |
+| `List` | a `ValueList`: an Array, List or Seq |
+| `Hash` | a `ValueHash` |
+| `Code` | a `Callable` |
+| `PairV` | a Pair's value |
+| `Obj` | an `ObjectData` |
+| `Match` | a `MatchData`: positional captures, named captures and `.made` at once |
+| `Cell` | a shared container: the one `Value` every name bound to a variable holds. Only a scope's storage holds one |
+| `Packed` | a native int or num array's elements as machine words |
+| `Rat` | a Rat's numerator and denominator |
 
 ## `NK` — AST node kinds
 
@@ -100,14 +126,19 @@ A great deal of Raku's surface syntax lowers into a few of these. Every operator
 
 ## `NqpOpc` — the `use nqp` subset
 
-`src/Ast.h`. About fifty operation codes in seven groups: lazy control forms,
-64-bit integer operations, codepoint-indexed string operations, list and hash
-primitives, object and attribute helpers, buffer read and write, and folded
-constants. The full list is in Chapter 35.
+`src/Ast.h`. 176 operation codes. The first groups are the ones the subset
+began with: lazy control forms, 64-bit integer operations, codepoint-indexed
+string operations, list and hash primitives, object and attribute helpers, and
+buffer read and write. The enum is append-only, because the AST cache stores
+the codes, and what has been appended since is whatever a real module was
+found reaching for: the big-integer `_I` family, file handles, `stat` and
+directory walks, the Unicode property lookups, and exception objects.
+Chapter 35 has the mechanism.
 
 ## Exception and control structs
 
-`src/Interpreter.h`.
+`src/Interpreter.h` for the control structs; the last six are declared beside
+the component that throws them.
 
 | Struct | Meaning |
 |---|---|
@@ -120,6 +151,8 @@ constants. The full list is in Chapter 35.
 | `ResumeEx` | `.resume` inside a `CATCH` |
 | `DoneEx` | `done` in a supply, whenever or react body |
 | `StopGatherEx` | a lazy `gather` has produced enough |
+| `ControlHandledEx` | a `CONTROL` phaser handled a warning and did not resume; its block is left |
+| `BuildFailureEx` | a `BUILD` or `TWEAK` answered a Failure, which `.new` then returns |
 | `ExitEx` | `exit` |
 | `WorkerAbortEx` | unwind a background worker at shutdown — deliberately **not** a `RakuError` |
 | `ParseError` | a compile-time diagnostic, optionally typed |

@@ -15,7 +15,7 @@ That is O(length) **per operation**, which makes any tokenizer written in Raku
 quadratic. `JSON::Fast` needed 13.9 seconds on a 421 KB document that Rakudo
 parses in 51 milliseconds, and the profile was copying, not parsing.
 
-Measured, 20,000 operations on a 200 KB string:
+Measured when the class was introduced, 20,000 operations on a 200 KB string:
 
 | | `std::string` | `CowStr` |
 |---|---:|---:|
@@ -24,30 +24,54 @@ Measured, 20,000 operations on a 200 KB string:
 
 ## What it is
 
-Two arms, exactly one live:
+One word of bytes, in one of two forms that its last byte tells apart:
 
 ```cpp
-// src/Value.h
+// src/Value.h — abridged
 class CowStr {
-    std::string s_;                        // short: inline
-    std::shared_ptr<const StrBody> p_;     // long: shared, immutable
-    static constexpr size_t kPromote = 23;
+    static constexpr size_t kBytes = RAKUPP_BODY_HANDLES ? 8 : 16;
+    static constexpr size_t kInline = kBytes - 1;
+    static constexpr size_t kTag = kBytes - 1;   // says which form
+    static constexpr unsigned char kBody = 0x80;
+    alignas(8) char raw_[kBytes];
 
-    void take(std::string x) {
-        if (x.size() >= kPromote) {
-            p_ = std::make_shared<const StrBody>(std::move(x)); s_.clear();
-        } else { s_ = std::move(x); p_.reset(); }
+    unsigned char tag() const { return (unsigned char)raw_[kTag]; }
+    bool isBody() const { return tag() == kBody; }
+    size_t ilen() const { return kInline - tag(); }   // (inline only)
+
+    void store(std::string x) {
+        if (x.size() > kInline)
+            setBody(makeRef<const StrBody>(std::move(x)));
+        else setInline(x.data(), x.size());
     }
 public:
-    const std::string& str() const { return p_ ? p_->text : s_; }
-    std::string& mut() { if (p_) { s_ = p_->text; p_.reset(); } return s_; }
+    std::string_view str() const {
+        return isBody() ? std::string_view(bodyRaw()->str())
+                        : std::string_view(raw_, ilen());
+    }
 };
 ```
 
-Short strings stay inline, where `std::string`'s own small-buffer optimisation
-already makes a copy free and sharing would cost an allocation to save nothing.
-Long strings are promoted once into a shared immutable body, after which
-copying is a refcount bump.
+- **Inline**, a text of up to `kInline` bytes. The text is at the front and the
+  bytes after it are zero. The last byte holds `kInline` minus the length, so
+  the NUL of a text that fills the form is that byte, and every text is
+  NUL-terminated. With the tail kept at zero, two inline texts are equal
+  exactly when their bytes are, so comparing two short strings compares one
+  word.
+- **A body.** The first bytes are the address of a `StrBody` that holds one
+  count, the rest are zero, and the last byte is the tag `0x80`. Copying is
+  the bytes and one more count.
+
+On 64-bit macOS and Linux the class is 8 bytes: a text of up to 7 bytes
+inline, or the body's 32-bit handle in the first four (Chapter 8 has the
+handles). Where handles are off it is 16 bytes, 15 inline, and the body's
+address is a pointer. It is one source text for both widths.
+
+A text longer than `kInline` is always a body. A shorter one is a body only
+when something asked for one: `promote()`, for a `Buf` whose address is handed
+to C, or a body with one owner that was rewritten in place and shrank. Nothing
+in the bytes points at them, so a `CowStr` may be moved bitwise, which the
+list container of Chapter 12 relies on.
 
 Three decisions inside that deserve their own paragraphs.
 
@@ -61,9 +85,12 @@ Eager promotion means **a `const CowStr` is never written to at all**, which is
 what makes the type safe to share without a lock. That single property is what
 lets everything else here be lock-free.
 
-### The threshold is 23, and it used to be 64
+### The threshold was 64, then 23, and is now what fits
 
-The relevant numbers are the small-buffer capacities, measured:
+From 2026-08 to 2026-11 the class was two members side by side, a
+`std::string` for short text and a shared pointer to a body for long text,
+with a constant `kPromote` choosing between them. The relevant numbers were the small-buffer
+capacities, measured:
 
 | standard library | `sizeof(std::string)` | SSO capacity |
 |---|---:|---:|
@@ -77,43 +104,68 @@ being paid for. It was not a tuned number; it was a deliberately safe one.
 
 It was also, by construction, wrong at one end. Between libc++'s 22 and the
 threshold's 64 sat a band where the inline arm had already stopped being free:
-a 30-byte string is a heap `std::string` that mallocs **on every copy**, while
-a 70-byte one is a shared body that copies by refcount. A 33-byte string cost
+a 30-byte string was a heap `std::string` that mallocs **on every copy**, while
+a 70-byte one was a shared body that copies by refcount. A 33-byte string cost
 more to pass around than a 68-byte one, for no reason but the constant.
 
-So the threshold moved to 23 — libc++'s boundary, the point where the inline
-representation stops being free — and the policy inverted with it: promote
-wherever `std::string` would allocate anyway, rather than wherever sharing is
-obviously worth it. On libstdc++, whose capacity is 15, the new value leaves a
-16..22 band that is now promoted where it need not be; that is the cost of
-having one constant rather than a per-library one, and it is small.
+So on 2026-09-02 the threshold moved to 23 — libc++'s boundary, the point where
+the inline representation stops being free — and the policy inverted with it:
+promote wherever `std::string` would allocate anyway, rather than wherever
+sharing is obviously worth it.
 
-The honest ledger for the change, measured as instruction counts at best of
+The honest ledger for that change, measured as instruction counts at best of
 five runs: mid-band strings copied twice **+19.8%**, built and read once
 **+4.9%**, `textsplit` **+3.0%**, and one measured counter-case at **−5.6%**.
-Grammar parsing, string comparison and string appending are all flat, because
-their strings are not in the band. The change is kept because the shapes it
-helps are commoner than the shape it hurts, not because the measurement is
+Grammar parsing, string comparison and string appending were all flat, because
+their strings are not in the band. The change was kept because the shapes it
+helps are commoner than the shape it hurts, not because the measurement was
 emphatic — and the counter-case is the next section.
+
+The constant is gone now. When the `std::string` left the class (2026-11-07)
+the threshold became the length the inline form can hold: 15 bytes in a
+16-byte `CowStr`, and 7 in the 8-byte one that followed on 2026-11-10. Each
+step moved a band of short strings into bodies, and each was priced first.
+
+A census of Roast counted the texts a `Value` wrote inline: 86% are 1 to 7
+bytes, 11.5% are 8 to 15, and 2.6% are 16 to 22. The same census priced the
+alternative of every string in a body, which would have kept the old read
+interface: 7 to 17% more allocations over whole corpora, against half a
+percent for the inline form.
+
+- **At 15 bytes inline,** the 16-to-22 band became bodies. Over 44 benchmark
+  and example programs that was 0.39% more allocations. `textsplit`, which
+  keeps 20,000 strings in that band, made 6.25% more and still ran faster,
+  91.3 ms against 100.3.
+- **At 7 bytes inline,** the 8-to-15 band became bodies. The string programs
+  the band should tax measured, against the 48-byte build:
+  `textsplit` −0.4%, `sortby` −0.2%, `streq` +0.2%, `strcat` +1.5%, `regex`
+  +1.7%. A body no longer comes from `malloc` at this step, so its
+  allocations were not counted the way the earlier step's were.
 
 ### The counter-case: a mid-band string used as a hash key
 
-A promoted string costs **two** allocations, not one: `make_shared` fuses the
+This was measured at the threshold of 23, in the two-member layout, and has not
+been measured again in the present one.
+
+A promoted string cost **two** allocations, not one: `make_shared` fused the
 control block with `StrBody`, but `StrBody::text` heap-allocates its own
-buffer. An unpromoted mid-band string costs the single `std::string` malloc.
+buffer. An unpromoted mid-band string cost the single `std::string` malloc.
 Copies are free afterwards, so promotion pays from roughly the second copy
 onward.
 
 A hash key never gets there. It is built, hashed, and copied *out* into the
 hash's own key storage, and the `Value` is then dropped — one construction,
 one read, no copy that a shared body could make cheap. Two hundred thousand
-mid-band keys measure 5.6% more instructions after the threshold change, and
+mid-band keys measured 5.6% more instructions after the threshold change, and
 that is the whole shape of the trade written in one program.
 
-The fix is not the threshold. It is `StrBody` storing its text inline rather
-than as a `std::string` member, which would collapse promotion to a single
-allocation and remove the loss entirely — the same change the 32-byte `Value`
-design needs, for the same reason.
+The fix named then was `StrBody` storing its text inline, which would collapse
+promotion to a single allocation. That is not what happened. `StrBody::text` is
+still a `std::string`. What changed is the block: it has an intrusive count
+and comes from a pool, `SlabPool` first and `BodyPool`'s region now, so making
+a body is a free-list pop. A text short enough for the `std::string`'s own
+small buffer then costs no `malloc` at all, and a longer one costs one, for
+the characters.
 
 ### The body caches string properties
 
@@ -121,12 +173,16 @@ This is the part no general-purpose string type can do, and the real reason
 `CowStr` exists rather than a third-party copy-on-write string.
 
 ```cpp
-// src/Value.h
-struct StrBody {
-    std::string text;
+// src/Value.h — abridged
+struct StrBody : RefCounted {
+    std::string text;           // empty for a view, which reads `view`
+    StrView* view = nullptr;    // owned; set for a range of a StrBuf
     mutable std::atomic<signed char> allAscii{-1};
     mutable std::atomic<signed char> crFree{-1};
+    mutable std::atomic<signed char> nfc{-1};
     mutable std::atomic<long long>   nGraphemes{-1};
+    mutable std::atomic<const std::vector<uint32_t>*> cpIndex{nullptr};
+    mutable std::atomic<const std::vector<uint32_t>*> gIndex{nullptr};
 };
 ```
 
@@ -137,12 +193,13 @@ character examined — which is the *other* half of the quadratic, independent o
 copying.
 
 Because the promoted body is immutable, the answer can be computed once and
-cached on it. Three flags suffice:
+cached on it. Four cheap values cover the common questions:
 
 - `allAscii`: every byte below 0x80, so a byte index is a codepoint index;
 - `crFree`: no carriage return which, together with `allAscii`, means a byte
   index is a **grapheme** index — CR LF is the one ASCII sequence that clusters
   under UAX #29;
+- `nfc`: the text is in NFC, so a join renormalizes only where two texts meet;
 - `nGraphemes`: the answer to `.chars`.
 
 They are reached through `cowAllAscii`, `cowByteIsGraphemeIndex` and
@@ -150,8 +207,11 @@ They are reached through `cowAllAscii`, `cowByteIsGraphemeIndex` and
 
 The caches need no lock. Two threads may each compute one, but the text is
 immutable, so they compute the same answer and the store is idempotent. They
-live on the body, so they exist only for promoted strings — which is exactly
+live on the body, so they exist only for body strings — which is exactly
 the case that needs them; short strings are cheap to rescan.
+
+One writer breaks the immutability on purpose: a body with a single owner is
+rewritten in place, and `invalidate()` resets every cached value first.
 
 ## Does C++ have this already? It did, and removed it
 
@@ -171,18 +231,18 @@ keeps it, an element stored into a list.
 
 **None of the reasons copy-on-write was banned apply to `CowStr`,** because it
 is not trying to be a `std::string`. Its `operator[]`, `data()`, `begin()` and
-`substr` are `const`-only; the mutation door for text is `mut()`, which detaches
-explicitly and hands back a real `std::string&`. What C++11 outlawed was
-copy-on-write *hiding behind* an interface that promises O(1) non-`const`
-element access. `CowStr` promises no such thing.
+`substr` are `const`-only; the mutation door for text is `edit(f)`, which
+detaches explicitly and lends `f` a real `std::string&` for the call. What
+C++11 outlawed was copy-on-write *hiding behind* an interface that promises
+O(1) non-`const` element access. `CowStr` promises no such thing.
 
 ### The alternatives, and why each is not it
 
 | | why not |
 |---|---|
-| `std::string_view` | non-owning; `Value` owns its string |
-| small-buffer optimisation | already the short arm — that is what `s_` relies on |
-| `shared_ptr<const std::string>` | already the long arm; `CowStr` is mostly the *policy* for choosing between the two |
+| `std::string_view` | non-owning; `Value` owns its string. It is what `str()` answers with |
+| small-buffer optimisation | already the inline form, written by hand since the `std::string` member left |
+| `shared_ptr<const std::string>` | what the long arm was; the count is in the body now, and the body carries the caches |
 | `std::atomic<std::shared_ptr<T>>` | only needed if the pointer were rebound concurrently, which eager promotion guarantees it never is |
 
 Outside the standard the pattern is thoroughly proven and lives attached to
@@ -201,35 +261,34 @@ all give the copy elision and none of the `allAscii`/`crFree`/`nGraphemes`
 caching, which is the half of the fix that removed the *scanning* quadratic.
 Bolting that onto a third-party string means a side table keyed on the buffer
 address, with its own lifetime and thread-safety problem — strictly worse than
-owning forty lines.
+owning the class.
 
 The threshold difference makes the same argument from the other end.
 `fbstring` promotes at 255 because copy avoidance is all it buys. `CowStr`
-promotes at 23 because promotion also buys the cache — an order of magnitude
-earlier, for a type that gets something out of the body besides sharing.
+makes a body past 7 bytes, for a type that gets something out of the body
+besides sharing and whose inline form has to fit one word of a 32-byte struct.
 
 ## What it costs
+
+Printed by a probe compiled against the headers on 2026-11-10 (arm64 macOS,
+libc++):
 
 | | bytes |
 |---|---:|
 | `std::string` (libc++) | 24 |
-| `std::shared_ptr` | 16 |
-| **`CowStr`** | **40** |
-| `StrBody` | 56 |
+| `Ref<const StrBody>` | 8 |
+| **`CowStr`** | **8**, and 16 where handles are off |
+| `StrBody` | 72 |
 
-Both arms are stored side by side even though only one is ever live, so
-`CowStr` is the sum rather than the maximum. That was a 16-byte, 4% growth of
-`Value` when this was written and `Value` was 392 bytes; `Value` is 128 now, so
-the same 16 bytes are an eighth of it. Paid on every `Value` everywhere. The performance gate passed and
-Roast came out marginally up, so it is bought and paid for — but it is a real
-tax and should be named as one. On libstdc++ the same layout is 48 bytes,
-because `sizeof(std::string)` is 32 there.
+The class was the sum of its two arms at first: a 24-byte `std::string` and a
+16-byte `shared_ptr`, 40 bytes, of a `Value` that was then 392. It was 48 on
+libstdc++, whose `std::string` is 32. An intrusive count made it 32, one form
+in shared bytes made it 16, and a handle for the body made it 8. Those are a
+quarter of today's `Value`, paid on every `Value` everywhere, most of which
+are not strings: in Roast three quarters of all string copies were the empty
+string of a `Value` that is not a `Str`.
 
-A promoted string also costs **two** allocations: `make_shared` fuses the
-control block with `StrBody`, but `StrBody::text` heap-allocates its own buffer
-for anything past the small-buffer capacity.
-
-`StrBody` grew to 56 bytes for a reason worth knowing, because it is the other
+`StrBody` is 72 bytes for a reason worth knowing, because it is the other
 half of the string-scan story. Beside the cheap scanning flags it carries two
 lazily built byte-offset tables — `cpIndex`, the byte offset of codepoint *i*,
 and `gIndex`, the byte offset of grapheme *g*, each with an end sentinel. They
@@ -239,49 +298,105 @@ fast path had already closed. They are installed by compare-and-swap rather than
 by the idempotent store the flags use: two threads may both build one, and the
 loser deletes its own copy.
 
+## A body can be a view
+
+Three ways of building a string need the old text to survive unchanged while a
+new one is made from it: `$k = $s; $s ~= "x"`, `$s = "x" ~ $s`, and
+`$s = $s.substr(5)`. A flat string can only do that by copying all of it at
+every step, so all three were quadratic.
+
+A body may therefore hold a **view** instead of a text: a range of a shared,
+growable `StrBuf`. Bytes inside a buffer's written region are never moved or
+changed, so any number of views, on any number of threads, may read them. A
+view whose end is the region's end may claim the free space after it with one
+compare-and-swap and write there, and the same at the front. When the space
+runs out, the view's bytes move to a buffer twice the size with room on both
+sides.
+
+Views are made only by the paths that build a `Str` and ask for one:
+`appendText`, `prependText`, and the static `joinPrepend`, `joinAppend` and
+`sub`. Plain `+=` never makes one, because a `Buf`'s storage is handed to C and
+must stay one flat `std::string`. A reader that needs contiguous text gets it
+from `StrBody::str()`, which flattens a view once and keeps the copy.
+
+Measured when views landed (2026-10-06), 100,000 steps of each perf-guard
+kernel: prepend 4.53 s to 0.01 s, shared append 0.56 s to 0.01 s, the `substr`
+loop 1.61 s to 0.05 s. Setting `RAKUPP_APPEND=force` makes every body a view,
+which is the debug mode that proves the readers.
+
+## A literal keeps its `Value`
+
+A string literal used to build a new `Value` from the AST's `std::string` on
+every evaluation, and a literal too long for the inline form allocated a body
+each time. The `StrLit` node now builds its `Value` once, into storage inside
+the node, and every later evaluation copies it. A long literal's body is
+therefore shared by every evaluation of it. That is sound because no writer can
+reach it in place: the in-place writers of a `Str` check that the body has one
+owner, and `mutInPlace` serves only `Buf` values.
+
+A double-quoted string with nothing interpolated takes the same road. The
+parser makes it an `InterpStr` whose one part is the `StrLit`, and the
+evaluator answers that part's `Value` itself. Measured on 2026-11-07, a 36-byte
+literal pushed onto an array 200,000 times by the interpreter went from 604,514
+allocations to 4,512.
+
 ## Rules for working with it
 
-The type forwards about 1,100 read sites unchanged, which is the point. The
-places where it does not behave like a `std::string` are worth knowing.
+The type forwarded about 1,100 read sites unchanged when it was introduced,
+which was the point. The move to views as the read type (2026-11-06) broke 816
+sites the compiler listed, of about 3,164 textual uses of `.s`; the rest still
+compile through the forwarding members. The places where it does not behave
+like a `std::string` are worth knowing.
 
-- **`mut()` is the write door for text, and it detaches.** After `mut()` the
-  string is inline again and stays inline until it is next *assigned*, which is
-  where promotion happens. A long string mutated in a loop is therefore unpromoted for
-  the whole loop; if that ever shows up in a profile, build into a local
-  `std::string` and assign once at the end.
-- **References from `str()` do not survive an assignment.** The same rule as
-  `std::string`, but easier to forget through the implicit conversion.
+- **`str()` answers a `std::string_view`,** and that is the only implicit
+  conversion. The view is valid while the `CowStr` is unchanged *and where it
+  is*: an inline text moves with its `Value`. `c_str()` and `data()` are
+  NUL-terminated.
+- **A copy is `copyText()`, not `std::string(s.str())`.** A string built from
+  a view calls `memmove` for its bytes however short it is; `copyText()`
+  copies a short one at a fixed length without a call.
+- **`edit(f)` is the write door for text, and it detaches.** It lends `f` a
+  `std::string&` for the call only. A body that other values share is copied
+  into a new body first. A body with one owner is written where it is, which
+  is what keeps `$s ~= …` in a loop linear. An inline text has no
+  `std::string`, so `f` gets a copy and what it leaves is stored back.
+- **`+=`, `pop_back`, `resize` and `erase` write an inline text in place** and
+  keep its tail zero. An append that overflows the inline form moves the text
+  into a body.
+- **`mutInPlace()` is for a `Buf`.** It keeps the shared body, because a `Buf`
+  has reference semantics and its storage may be bound into C.
 - **Both converting constructors are `explicit` on purpose.** With an implicit
-  `std::string` to `CowStr` conversion alongside the `CowStr` to
-  `const std::string&` one, every `cond ? value.s : someString` became ambiguous
-  in both directions.
+  `std::string` to `CowStr` conversion alongside the one from `CowStr` to a
+  view, every `cond ? value.s : someString` became ambiguous in both
+  directions.
 - **Comparisons and `+` are spelled out by hand.** Two real reasons: no
   conversion is considered for a built-in operator when neither operand is a
   class type with a candidate, so `CowStr == CowStr` needs its own overload; and
   `std::string`'s comparisons are templates, and template deduction never
   considers a user-defined conversion, so `value.s == "Int"` needs a real
-  candidate too. A macro generates the twenty-four resulting overloads.
+  candidate too. A macro generates the ordering overloads. `==` and `!=`
+  against a string literal are templates over the array's length, so a literal
+  of a different length is rejected by one integer compare and no `strlen` —
+  the trick Chapter 10 describes for method names.
 - **Do not add a non-`const` `operator[]`, `begin()` or `data()`.** That is
   exactly the interface that made copy-on-write non-conforming for
-  `std::string`. Reach for `mut()`.
+  `std::string`. Reach for `edit()`.
 - **Do not cache `body()` across an assignment.** It is the raw `StrBody*`, and
-  the `shared_ptr` that owns it can be replaced.
+  the count that owns it can be dropped.
 
-## Deliberately left on the table
+## What was left on the table, and where it went
 
-Both are real, both unmeasured, and neither should be done on faith — the
-project's rule is that a performance change is an interleaved A/B against
-`perf-guard` under the same conditions.
+This section used to list two changes that were real, unmeasured, and not to be
+done on faith. Both have since been measured.
 
-- **A union instead of two side-by-side members.** `fbstring` is a union and
-  stays at `sizeof(std::string)`; the same here returns 16 bytes per `CowStr`.
-  It costs the very readable `p_ ? p_->text : s_` and needs hand-written
-  copy, move and destroy. Worth it only if `Value`'s size shows up in a
-  measurement — and one attempt to blame `Value`'s size has already been
-  measured and rejected.
+- **A union instead of two side-by-side members.** Done, as design C of the
+  `Value` size plan: one set of bytes holds either form, with hand-written
+  copy, move and destroy. It was worth it once `Value`'s size did show up in a
+  measurement, which Chapter 8 walks through.
 - **One allocation instead of two** for a promoted string, by storing the
-  refcount and the caches inline ahead of the characters. Only matters if the
-  promotion *rate* is high.
+  count and the caches ahead of the characters. Half done: the count is in the
+  body and the body comes from a pool, but the characters past the small
+  buffer are still a `std::string`'s own allocation.
 
 ## Checking that it is working
 
@@ -293,8 +408,8 @@ path costs time and nothing else. Two cheap checks.
 exists to prevent. That is the test which found `findnotcclass` after four
 other sites had already been fixed.
 
-**Confirm promotion is actually happening.** A string that never crosses 23
-bytes is never promoted and caches nothing — which is correct, but means a
-benchmark built from short strings proves nothing about either mechanism. The
-bar is low enough now that most real text clears it; it was 64, and a good
-deal of plausible-looking test data used to sit under it.
+**Confirm a body is actually being made.** A string of 7 bytes or fewer has no
+body and caches nothing — which is correct, but means a benchmark built from
+very short strings proves nothing about either mechanism. The bar is low
+enough now that most real text clears it; it was 64, and a good deal of
+plausible-looking test data used to sit under it.

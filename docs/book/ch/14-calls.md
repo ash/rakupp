@@ -18,19 +18,16 @@ something measurable was in the way.
 
 ```cpp
 // src/InterpreterCore.cpp — evalArgs, abridged
-} else if (a->kind == NK::Unary && ((Unary*)a.get())->op == "|") {
-    Value v = eval(…);                                  // a Slip: |@a / |%h
-    if (v.t == VT::Array || v.t == VT::Range)
-        for (auto& x : v.flatten()) args.push_back(x);
-    else if (v.t == VT::Hash && v.hash)
-        for (auto& kv : *v.hash) {                      // |%h → named args
-            Value p = Value::pair(kv.first, kv.second);
-            p.namedArg = true; args.push_back(p);
-        }
+} else if (a->kind == NK::Unary &&
+           static_cast<Unary*>(a.get())->op == "|") {
+    Value v = eval(static_cast<Unary*>(a.get())->operand.get());
+    forceLazy(v);
+    …
+    spreadSlipArg(*this, args, v);   // |@a positionally, |%h as nameds
 } else {
     Value v = eval(a.get());
-    if (v.t == VT::Pair && a->kind == NK::Pair &&
-        !((PairExpr*)a.get())->quotedKey && ident)
+    …
+    if (v.t == VT::Pair && syntacticNamedArg(a.get(), v))
         v.namedArg = true;
     args.push_back(std::move(v));
 }
@@ -67,10 +64,12 @@ differently, so the check is deliberately narrow.
 // src/Interpreter.h
 Value callCallable(const Value& codeVal, ValueList args,
                    const std::vector<ExprPtr>* rwArgs = nullptr,
-                   bool ownFrame = false, bool arityCheck = false);
+                   bool ownFrame = false, bool arityCheck = false,
+                   bool whereVerified = false);
 Value callCallableRaw(const Value& codeVal, ValueList args,
                       const std::vector<ExprPtr>* rwArgs,
-                      bool ownFrame = false, bool arityCheck = false);
+                      bool ownFrame = false, bool arityCheck = false,
+                      bool whereVerified = false);
 ```
 
 `callCallable` is a thin **wrapper layer**: if the routine has been
@@ -78,9 +77,10 @@ Value callCallableRaw(const Value& codeVal, ValueList args,
 the next; otherwise it passes straight through:
 
 ```cpp
-// src/InterpreterCore.cpp — callCallable
-if (codeVal.code && !codeVal.code->wrappers.empty()) { /* run the stack */ }
-return callCallableRaw(codeVal, std::move(args), rwArgs);
+// src/InterpreterCore.cpp — callCallable, abridged
+if (codeVal.t == VT::Code && codeVal.code() &&
+    !codeVal.code()->cold().wrappers.empty()) { /* run the stack */ }
+return dropNativeTag(callCallableRaw(codeVal, std::move(args), …));
 ```
 
 `callCallableRaw` handles the special callables first — a native FFI sub, a
@@ -88,12 +88,18 @@ return callCallableRaw(codeVal, std::move(args), rwArgs);
 activates a user routine:
 
 ```cpp
-PooledFrame frame;                                     // a per-call frame, reused
-auto& env = frame.env;
-c.state.env->parent = c.closure ? c.closure : global_; // once
-env->parent = c.state.env;        // frame → state env → closure → … → global
-tctx().dynStack.push_back(caller_scope);                // the OTHER chain
+// src/InterpreterCore.cpp — callCallableRaw, abridged
+PooledFrame frame_{tcx};                    // a per-call frame, reused
+auto& env = frame_.env;
+env->parent = stateFrameOf(c);  // frame → state env → closure → … → global
+…
+tcx.dynStack.push_back(saved ? saved.get() : global_.get());
+                                            // …the caller: the OTHER chain
 ```
+
+`stateFrameOf` answers the routine's `state` scope, made on its first call. A
+body that a scan shows can reach no `state` variable has none, and the frame
+hangs from the closure directly.
 
 The frame is *pooled*, not freshly allocated, and the reason is one of the
 sharper measurements in this book. A call frame is a `shared_ptr<Env>`: a
@@ -118,30 +124,62 @@ on `dynStack`, used only for `$*foo`.
 — records its own frame number as `curRoutineFrame`. Those two counters drive
 the cooperative control flow in the next chapter.
 
+### Two shorter roads
+
+Most of `callCallableRaw` exists for what a simple sub does not have, and two
+tests at its entry take such a sub elsewhere.
+
+A **plain sub** is a routine, not a block, method or multi, whose signature
+is plain `$x` positionals with no default, trait or `where`, typed at most
+`Int`, `Num`, `Str` or a native `int` or `num`, and whose body has no phaser,
+`CATCH`, `CONTROL`, nested named sub or hoisted `my`. That is decided once,
+after the first call, and published on the routine as `plainShape`. Called
+with exactly its arity and no named, Junction, `Mu` or `Buf` argument, it runs
+in `callPlainSub`: the pooled frame, the parameters moved straight into pad
+slots, the call bookkeeping, the statement loop and the exits, and nothing
+else. When it landed, `fib` ran 22.6% faster
+(`docs/dev/plans/INTERP-SPEED-PLAN.md`).
+
+A sub whose body is closed integer arithmetic — its own `$` parameters,
+integer literals, the integer operators and comparisons, `if`, `return`, and
+calls to subs that qualify themselves — is tried before that as an **integer
+kernel** (`tryIntKernel`, `src/IntKernel.cpp`). The kernel computes on
+`int64_t` values, not on `Value`s. Its arguments must be
+plain Ints, and a result that would need a BigInt, a zero divisor or the
+recursion limit makes it bail, after which the call runs the ordinary way from
+the start. It is the sub-shaped twin of the loop kernel in Chapter 13, and
+`RAKUPP_NO_KERNELS=1` turns both off.
+
 ### The call registers
 
 A handful of one-shot parameters are passed to the next activation without
 widening every signature:
 
 ```cpp
-// src/Interpreter.h
-static thread_local Value* topicWriteback_;
-static thread_local Value* builtinTopicWB_;
-static thread_local bool noAutothread_;
-static thread_local int loopPhaserCtl_;
-static thread_local const std::vector<Value*>* pendingRwSlots_;
+// src/Interpreter.h — ExecContext
+Value* topicWriteback = nullptr;
+const std::vector<Value*>* pendingRwSlots = nullptr;
+const CallArgWriter* pendingArgWriter = nullptr;
+bool noAutothread = false;
+bool forceRoutineFrame = false;
+int loopPhaserCtl = 0;
 ```
 
 Each is set immediately before a call and consumed at the top of
-`callCallableRaw`. `topicWriteback_` is how `@a.grep({ $_++; True })` writes
+`callCallableRaw`. `topicWriteback` is how `@a.grep({ $_++; True })` writes
 into `@a`'s element: the driver points it at the element, and the mutated
 implicit `$_` is copied back after the call.
 
-They are `static thread_local` and the comment in the header explains why in
-one sentence: as plain members they were written by *every* call on *every*
-thread, and they were ThreadSanitizer's top report — 2,761 lines on a program
-with no sharing in it at all. The set-then-consume window is contiguous within
-one thread, so thread-local is not a workaround, it is exactly their semantics.
+They are per thread, and the comment in the header explains why in one
+sentence: as plain members of the interpreter they were written by *every*
+call on *every* thread, and they were ThreadSanitizer's top report — 2,761
+lines on a program with no sharing in it at all. The set-then-consume window
+is contiguous within one thread, so per-thread is not a workaround, it is
+exactly their semantics. They were `static thread_local` variables first, which
+cost every call a thread-local lookup apiece; as members of the context the
+call path already holds they cost none. One relative, `builtinTopicWB_`, is
+still a `static thread_local`: it re-exposes the consumed `topicWriteback` to a
+builtin callable, which has no scope for the `$_` copy-back.
 
 ## Binding parameters
 
@@ -149,19 +187,28 @@ one thread, so thread-local is not a workaround, it is exactly their semantics.
 and a general path.
 
 ```cpp
-// src/InterpreterCore.cpp — bindParams
+// src/InterpreterCore.cpp — bindParams, abridged
 if (simple) {                       // all plain positional $ params, no nameds
     for (size_t i = 0; i < params.size(); i++) {
-        Value v = i < args.size() ? args[i]
-                                  : typedDefault(params[i].type, '$');
-        v.readonly = true;
-        env->define(params[i].name, std::move(v));
+        if (i < args.size()) {
+            Value v = args[i];
+            if (!params[i].type.empty() || isMuTypeObject(v) || …)
+                typeCheckBind(params[i], v, blockParams, whereVerified,
+                              env.get());
+            if (!params[i].isCopy)
+                v.readonly = !params[i].isRw && !params[i].isRaw;
+            …
+            /* into the parameter's pad slot, or: */
+            e->define(params[i].name, std::move(v));
+        } else { /* the type's default for an unpassed parameter */ }
     }
     return;
 }
-for (auto& a : args)                // general: split named from positional
-    if (isNamedArg(a)) named[a.s] = a.pairVal ? *a.pairVal : Value::any();
+for (auto& a : args) {              // general: split named from positional
+    if (isNamedArg(a))
+        named[a.s.copyText()] = a.pairVal() ? *a.pairVal() : Value::any();
     else positional.push_back(a);
+}
 ```
 
 Whether a signature qualifies for the fast path is a static property of the
@@ -180,7 +227,7 @@ The general path covers everything else:
   readonly unless it is one of those or the invocant:
 
   ```cpp
-  if (p.sigil == '$' && !p.isRw && !p.isCopy && !p.invocant)
+  if (p.sigil == '$' && !p.isRw && !p.isCopy && !p.isRaw && !p.invocant)
       v.readonly = true;
   ```
 
@@ -193,16 +240,39 @@ The general path covers everything else:
 - the implicit **`$_`** topic, and placeholder parameters `$^a`, `$^b`, bound in
   sorted order.
 
-### What is *not* checked here
+### What is checked here
 
-**Type constraints, `where` clauses and `:D`/`:U` smileys are not enforced for
-an ordinary, non-multi call.** Single dispatch is largely duck-typed at the bind
-boundary. Those checks live in `scoreCandidate`, which is multi dispatch's
-business (Chapter 16).
+When this chapter was first written, a single-dispatch call was largely
+duck-typed at the bind boundary: type constraints, `where` clauses and the
+`:D`/`:U` smileys were enforced only by `scoreCandidate`, which is multi
+dispatch's business (Chapter 16). That is no longer so. Both paths above call
+`typeCheckBind` for every parameter that has something to check, and a
+mismatch raises what Rakudo raises:
 
-There is one exception, `typeCheckBind`, used when a lone candidate is being
-bound and a mismatch should raise `X::TypeCheck::Binding`. It caches its
-verdict on the parameter — but **only once true**:
+```
+$ rakupp -e 'sub f($x where * > 3) { say $x }; f(1)'
+Constraint type check failed in binding to parameter '$x'; expected
+anonymous constraint to be met but got Int (1)
+  (X::TypeCheck::Binding::Parameter)
+$ rakupp -e 'sub f(Int:D $x) { say $x }; f(Int)'
+Parameter '$x' must be an object instance of type 'Int', not a type object
+  (X::Parameter::InvalidConcreteness)
+```
+
+A call that can be proved wrong without running it does not get that far.
+`findDoomedCalls` (`src/CallCheck.cpp`) reads the whole unit before it runs
+and refuses a call to a sub the unit declares whose arguments, by their
+literal or declared types, can never bind. It is Rakudo's compile-time
+check, and it reports nothing wherever it cannot see enough:
+
+```
+$ rakupp -e 'sub f(Int $x) { say $x }; f("a")'
+===SORRY!=== Error while compiling -e
+Calling f(Str) will never work with declared signature (Int $x)
+```
+
+`typeCheckBind` caches on the parameter whether its type names something
+enforceable — but **only once true**:
 
 ```cpp
 // src/Ast.h — Param
@@ -218,21 +288,47 @@ declarations are ordered a particular way.
 ## The `Callable`, and what it caches
 
 ```cpp
-// src/Value.h — Callable, abridged
-std::string pkg, name;
-const std::vector<Param>* params;      // borrowed from the AST
-const std::vector<StmtPtr>* body;      // borrowed from the AST
-std::shared_ptr<Env> closure;
-StateSlot state;                       // { shared_ptr<Env> env; once_flag init; }
-BuiltinFn builtin;                     // set ⇒ this is a builtin
-ValueList candidates;                  // multi-dispatch candidates
-ValueList wrappers;                    // .wrap stack, outermost last
-PublishedOnce<signed char> hoistNeed{-1};
-PublishedOnce<signed char> arityShape{-1};
-int arityMaxPos = 0, arityReqPos = 0; bool arityUnbounded = false;
-PublishedOnce<signed char> catchScan{-1};
-Stmt* catchBlkCache = nullptr;
+// src/Value.h — abridged
+struct CodeInfo : RefCounted {         // the code: shared by its closures
+    std::string pkg, name;
+    const std::vector<Param>* params;      // borrowed from the AST
+    const std::vector<StmtPtr>* body;      // borrowed from the AST
+    BuiltinFn builtin;                     // set ⇒ this is a builtin
+    mutable DecidedOnce<signed char> hoistNeed{-1};
+    mutable PublishedOnce<signed char> plainShape{-1};
+    mutable KernelSlot intKernel;
+    mutable PublishedOnce<signed char> arityShape{-1};
+    mutable DecidedOnce<int> arityMaxPos{0}, arityReqPos{0};
+    mutable DecidedOnce<bool> arityUnbounded{false};
+    mutable std::shared_ptr<const PadLayout> padLayout;
+    mutable PublishedOnce<signed char> catchScan{-1};
+    mutable DecidedOnce<Stmt*> catchBlkCache{nullptr};
+    …
+};
+struct CallableCold {                  // what most routines never set
+    ValueList candidates;                  // multi-dispatch candidates
+    std::string retType;
+    ValueList wrappers;                    // .wrap stack, outermost last
+    …
+};
+struct Callable {                      // the routine as a value
+    CodeInfoPtr info;                      // ci() reads it, ciM() writes
+    std::shared_ptr<Env> closure;
+    StateSlot state;                       // { shared_ptr<Env> env;
+                                           //   once_flag init; … }
+    …
+};
 ```
+
+A routine is three structs since the chapter was first written. `CodeInfo` is
+the code apart from the closure it was made in: the signature and body borrowed
+from the AST, what was declared about the routine, and the caches decided at
+its first call. Every closure made from the same code shares one, copy on
+write: `ci()` reads it, and `ciM()` gives a `Callable` its own before a write.
+`CallableCold` holds the fields most routines never set — the multi
+candidates, the wrappers, the native-call state, a declared return type — behind
+one pointer. What is left in `Callable` belongs to the one object: the scope it
+closed over, its `state` storage, a dispatcher's cache.
 
 The `state` env and its `once_flag` are wrapped in a `StateSlot` for a reason
 worth knowing: `std::once_flag` is not copyable, so a bare pair of members would
@@ -240,15 +336,18 @@ make `Callable` uncopyable. The holder's copy constructor is empty, which also
 gets the semantics right — a cloned routine starts with fresh `state` slots
 rather than sharing the origin's, as it does in Rakudo.
 
-The four published-once fields are all static properties of the routine's AST
-that `callCallableRaw` used to recompute **on every call**: whether anything
-needs hoisting, whether an arity pre-check applies and what its bounds are, and
-whether the body contains an inline `CATCH` block. Each is cheap once and
-worthless repeated — a parse that calls a routine 73,603 times paid for them
-73,603 times.
+The decided-once fields of `CodeInfo` are all static properties of the
+routine's AST that `callCallableRaw` used to recompute **on every call**:
+whether anything needs hoisting, whether an arity pre-check applies and what
+its bounds are, whether the body contains an inline `CATCH` block, and — added
+since — the pad layout and whether the lean path or a kernel takes the routine.
+Each is cheap once and worthless repeated — a parse that calls a routine 73,603
+times paid for them 73,603 times. They fill in place on the shared copy, which
+is sound because they depend only on what the sharers hold identically.
 
-`state.env` is created exactly once, under that `once_flag`, and chained
-between the per-call frame and the closure. That is the whole implementation of
+`state.env` is created exactly once, under that `once_flag`, by the first call
+of a routine that can reach a `state` variable, and chained between the
+per-call frame and the closure. That is the whole implementation of
 `state`: the variable lives in a scope that is created once per routine rather
 than once per call.
 
@@ -256,19 +355,30 @@ than once per call.
 
 Because arguments are `Value` copies, a mutated `is rw` parameter must be
 written back. The call site passes the argument *expressions* alongside the
-values, and on a normal return each such parameter's final value is written back
-by re-resolving its expression:
+values, and `setupRwLinks` records, per such parameter, the expression and the
+caller's scope. An assignment *inside* the callee then pushes through
+immediately, by re-resolving the expression, so the caller sees the change
+mid-call. `copyOutRw` is the backstop on a normal return, for a mutation that
+bypassed the assignment hook — `s///`, `.=`:
 
 ```cpp
-// src/InterpreterCore.cpp — copyOutRw
-if ((p.isRw || p.sigil == '\\') && pi < rwArgs->size())
-    if (Value* lv = lvalue((*rwArgs)[pi].get()))
-        *lv = env->vars[p.name];
+// src/InterpreterBinding.cpp — copyOutRw, abridged
+if ((p.isRw || p.isRaw || p.sigil == '\\' || hasSynced(p.name)) && ae &&
+    !env->xr().rwCelled.count(p.name)) {
+    Value* pv = env->local(p.name);
+    if (pv) {
+        Value cur = paramValue(pv);
+        if (!syncedUnchanged(p.name, cur))
+            …
+            if (Value* lv = lvalue(peelIncDec(ae))) storeInto(lv, cur);
+    }
+}
 ```
 
-`setupRwLinks` additionally arranges for an assignment *inside* the callee to
-push through immediately, so the caller sees the change mid-call. The
-bookkeeping that keeps those two mechanisms from fighting is described in
+A parameter whose value still matches the last one pushed is skipped: copying
+it back late would put a stale value over the callee's own edits. A parameter
+in `rwCelled` was bound to the caller's container itself and needs neither
+mechanism. The bookkeeping that keeps the two from fighting is described in
 Chapter 12.
 
 The whole thing is guarded by a sticky flag, `anyRwLinks_`, so a program that

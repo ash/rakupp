@@ -20,7 +20,8 @@ optimisation in Chapters 19, 27 and 28 exists because of it.
 // src/Interpreter.h
 Value eval(Expr* e);
 Value exec(Stmt* s, bool sink = false);
-Value execBlock(Block* b, std::shared_ptr<Env> scope, bool sink = false);
+Value execBlock(Block* b, std::shared_ptr<Env> scope, bool sink = false,
+                std::unique_ptr<HandedError>* handOff = nullptr);
 ```
 
 `exec` takes a **sink** flag. When a statement's value is discarded — a loop
@@ -30,7 +31,10 @@ that turns the naive `$s ~= …` in a loop from quadratic into linear, in
 combination with the in-place append described in Chapter 27.
 
 `execBlock` runs a statement list in a given scope, handling the phaser
-schedule around it.
+schedule around it. It is two halves: a block with no entry or exit work of its
+own — no phaser, no `CATCH`, no named sub, no hoisted `my`, which is every
+plain loop body — runs on the lean `execPlainBlock`, and everything else on
+`execBlockFull`. The `handOff` slot belongs to Chapter 15.
 
 ## Execution registers
 
@@ -41,10 +45,10 @@ struct rather than scattered across interpreter members:
 // src/Interpreter.h — ExecContext, abridged
 struct ExecContext {
     std::shared_ptr<Env> cur;            // current lexical scope
-    std::vector<Env*> dynStack;          // the dynamic ($*foo) caller chain
+    DynStack dynStack;                   // the dynamic ($*foo) caller chain
     int callDepth = 0;
     Env* curStateEnv = nullptr;
-    std::vector<std::shared_ptr<ValueList>> gatherStack;
+    std::vector<PRef<ValueList>> gatherStack;
     std::vector<ValueList*> supplyStack;
     std::vector<Value*> makeTargets;
     std::string pkgPrefix;
@@ -54,13 +58,16 @@ struct ExecContext {
     int loopCtl = 0;         uint64_t curLoopFrame = kNoFrame;
     int givenCtl = 0;        Value givenV;  uint64_t curGivenFrame = kNoFrame;
 
-    struct CallSite { int line; const Value* code; };
+    struct CallSite { int line; const Value* code; /* … */ };
     std::vector<CallSite> callFrames;            // for callframe(N), backtraces
     int wantLvalue = 0;  Value* lvalueOut = nullptr;
 };
 
 static ExecContext& tctx();   // this thread's context
 ```
+
+`DynStack` is a vector of `Env*` with a small memo beside it, so a `$*foo`
+read from deep in a call chain does not walk every caller's scope each time.
 
 It is per thread — a `thread_local` context, reached through a
 constant-initialized `thread_local` pointer — so each real worker thread owns
@@ -77,23 +84,47 @@ dynamic scoping both correct and both cheap.
 
 ## Evaluating an expression
 
-`eval` is a switch. The interesting arms are the ones that are *not* a
-straightforward recursion.
-
-**`VarExpr`** is the hottest node in most programs. Its fast path is a `find`
-and a copy:
+`eval` is a switch, with one test in front of it:
 
 ```cpp
-// src/InterpreterCore.cpp — eval(VarExpr), the plain-lexical fast path
-if (Value* p = tctx().cur->find(ve->name))
-    if (!(p->t == VT::Hash && p->hashKind == "Proxy"))
-        return *p;
+// src/InterpreterCore.cpp — eval
+if (Expr::EvalFn h = e->handler) return h(*this, e);
+switch (e->kind) {
 ```
 
-with the `Proxy` check placed so that the common case is one comparison. Names
-with a twigil — `$*dyn`, `$?FILE`, `$^a`, `$/` — never reach this path; each has
-its own lookup rule, and the fast paths in Chapter 19 exclude them by testing
-the second character of the name.
+A node whose shape has been decided can be given a **handler**, a plain
+function pointer kept on the node, and `eval` calls it in place of switching on
+the kind. Three exist: one for the specialised `Binary` shapes of Chapter 19,
+one for a numeric subtree, and one for the negation of a plain lexical. Every
+other node has a null handler and takes the switch.
+
+The interesting arms of the switch are the ones that are *not* a
+straightforward recursion.
+
+**`VarExpr`** is the hottest node in most programs. Its fast path is a pad
+slot and a copy:
+
+```cpp
+// src/InterpreterCore.cpp — eval(VarExpr), the plain read, abridged
+if (Value* p = padPtrIn(ve, tc.cur.get())) {
+    if (!(p->t == VT::Hash && p->hashKind == "Proxy")) {
+        Value out = *p;
+        out.readonly = out.immutableBind = false;
+        return /* out */;
+    }
+}
+else if (/* the name's second character is a letter or `_` */) {
+    if (Value* p = tc.cur->find(ve->name)) { /* the same copy */ }
+}
+return evalVarExpr(e);
+```
+
+A variable that the resolution pass gave a slot (the pads of Chapter 41) is
+read by index; one it did not is found by name, walking the parent chain. The
+`Proxy` check is placed so that the common case is one comparison. Names
+with a twigil — `$*dyn`, `$?FILE`, `$^a`, `$/` — never reach the by-name
+branch; each has its own lookup rule in `evalVarExpr`, and the fast paths in
+Chapter 19 exclude them by testing the second character of the name.
 
 **`Binary`** dispatches through `applyArith`, but first consults two
 decided-once fields on the node: `simpleOp`, which records whether this operator
@@ -138,7 +169,8 @@ rather than once per entry:
 ```cpp
 // src/Interpreter.h
 void hoistExprDecls(const std::vector<StmtPtr>& stmts, Env* env,
-                    DecidedOnce<signed char>* cache = nullptr);
+                    DecidedOnce<signed char>* cache = nullptr,
+                    bool everyDecl = false);
 ```
 
 ```cpp
@@ -165,10 +197,12 @@ the first entry is reading one byte.
 
 ```cpp
 // src/Interpreter.h
-void runEnterPhasers(const std::vector<StmtPtr>& stmts);
-void runLeavePhasers(const std::vector<StmtPtr>& stmts, bool ok = true);
+void runEnterPhasers(const std::vector<StmtPtr>& stmts,
+                     Callable* firstOnce = nullptr);
+void runLeavePhasers(const std::vector<StmtPtr>& stmts, bool ok = true,
+                     size_t tempMark = 0, int postOk = -1);
 void runNextPhasers(const std::vector<StmtPtr>& stmts,
-                    std::shared_ptr<Env>& scope);
+                    const std::shared_ptr<Env>& scope);
 ```
 
 The program-level phasers — `BEGIN`, `CHECK`, `INIT`, `END` — are scheduled by
@@ -184,7 +218,7 @@ Every loop form funnels through one function:
 
 ```cpp
 // src/Interpreter.h
-bool runLoopBody(Block* b, std::shared_ptr<Env> scope,
+bool runLoopBody(Block* b, const std::shared_ptr<Env>& scope,
                  const std::string& label = "",
                  bool isFirst = true, bool isLast = true,
                  ValueList* collect = nullptr,
@@ -200,6 +234,17 @@ for @y { … }` appends each iteration's value rather than discarding it. The
 Concentrating this in one function is what makes `for`, `while`, `until`,
 `loop` and `repeat` agree about control flow, which they historically did not.
 
+One kind of loop is tried another way first. A `for` over a Range of machine
+integers, a `while`, or a C-style `loop` whose body reads and writes only `$`
+variables holding a plain Int, Num, Str or Bool is offered to `tryLoopKernel`
+(`src/IntKernel.cpp`). A **loop kernel** runs the body on a frame of machine
+values: copies of those variables, written back when the whole loop is done.
+A kernel that meets anything it cannot answer exactly, such as a result that
+needs a BigInt or a variable whose type changed, bails, and the loop runs the
+ordinary way from the start, through `runLoopBody`. Kernels are on by default;
+`RAKUPP_NO_KERNELS=1` turns them off. They are not the tier-up of Chapter 44,
+which emits machine code and is off by default.
+
 ## Aliasing loops
 
 `for @a { $_ = … }` must write **into** `@a`, so the topic has to alias the
@@ -209,10 +254,11 @@ functions that peer at the source expression:
 
 ```cpp
 // src/Interpreter.h
-std::shared_ptr<std::map<std::string, Value>> valuesAliasSource(Expr*);
-std::shared_ptr<ValueList> derefArrayAlias(Expr*);
-bool scalarListAlias(Expr*, std::vector<Value*>& slots);
-Value* topicAliasSlot(Expr* topic, bool skip);
+PRef<ValueMap> valuesAliasSource(Expr* listExpr);
+PRef<ValueList> derefArrayAlias(Expr* listExpr);
+bool scalarListAlias(Expr* listExpr, std::vector<Value*>& slots,
+                     std::vector<Value>* guards = nullptr);
+Value* topicAliasSlot(Expr* topic, bool skip, bool allowObject = false);
 Expr* peelGrepFilter(Expr* listExpr, Expr*& pred);
 ```
 
@@ -233,6 +279,20 @@ assignment: in sink context, `evalAssign` does not need to produce the assigned
 value as a result, so `@big = @other` does not build a second copy to throw
 away. Combined with `rtCatAssign`'s in-place append (Chapter 27), this is what
 makes string building in a loop linear.
+
+When the value *is* wanted, the assignment paths hand it out through one
+helper:
+
+```cpp
+// src/Interpreter.h
+Value slotOut(const Value* p, bool sink) const {
+    return sink ? Value::any() : slotRead(p);
+}
+```
+
+`slotRead` copies the slot under its stripe lock (Chapter 38). The store has
+let the stripe go by then, and a plain `*p` after it counted a body that a
+second thread's store could already have freed.
 
 ## Recursion, and the stack it needs
 

@@ -5,37 +5,57 @@ downstream — the interpreter, the two compiling back ends, the linter, the
 highlighter, the serialiser — consumes that one tree.
 
 ```cpp
-// src/Ast.h
-struct Node { NK kind; int line; virtual ~Node() = default; };
-struct Expr : Node { using Node::Node; };
-struct Stmt : Node { using Node::Node; std::string label; };
+// src/Ast.h — abridged
+struct Node {
+    NK kind;
+    bool inParens = false;    // written inside ( … )
+    bool blockPart = false;   // a string's {…} part, inlined
+    int line = 0;
+    virtual ~Node() = default;
+};
+struct Expr : Node {
+    using EvalFn = Value (*)(Interpreter&, Expr*);
+    mutable DecidedOnce<EvalFn> handler{nullptr};
+};
+struct Stmt : Node { std::string label; /* … three run-time slots … */ };
 using ExprPtr = std::unique_ptr<Expr>;
 using StmtPtr = std::unique_ptr<Stmt>;
-struct Program { std::vector<StmtPtr> stmts; };
+struct Program { std::vector<StmtPtr> stmts; /* … what the unit declares … */ };
 ```
+
+The base classes are no longer bare. `inParens` is read by nothing that runs
+the tree; it is there so the `RakuAST` view can render a written `(1 + 2) * 3`
+with its parentheses, and it sits in the bytes a 16-bit `NK` leaves before
+`line`, so no node grew. `handler` is the interpreter's: an expression whose
+shape has been decided can be given a function to call in place of the switch
+on its kind (Chapter 13). A `Stmt` has three slots that belong to one run and
+are never serialised — where a loop's tier-up site, a body's integer kernel and
+a module routine's native body hang. A `Program` also carries what the parser
+learned about the unit as a whole: the type names, sigilless terms and labels
+it declares, whether it imports a module, and its language revision.
 
 ## A class hierarchy here, a fat struct there
 
-The runtime's `Value` is a single struct with a tag and a field for every
-payload (Chapter 8). The AST is the opposite: a real C++ class hierarchy, one
+The runtime's `Value` is a single struct with a tag, the same 32 bytes whatever
+it holds (Chapter 8). The AST is the opposite: a real C++ class hierarchy, one
 `struct` per node type, each with exactly the fields it needs. Both choices are
 right, for opposite reasons.
 
 An AST node is **built once, lives for the whole run, and is visited by a
 `switch` on its tag**. Nodes are few, long-lived, and heterogeneous — some carry
-two pointers, `ClassDecl` carries seventeen fields including four vectors. A fat
+two pointers, `ClassDecl` carries forty fields including twelve vectors. A fat
 struct there would waste far more than it saved, and the virtual destructor
 costs nothing that matters when construction happens once.
 
 A `Value`, by contrast, is created and destroyed millions of times per second
-and must be trivially copyable into vectors. Same program, opposite trade.
+and must be cheap to copy into vectors. Same program, opposite trade.
 
 The `NK` enum tags every node so both the interpreter and the code generator
 can `switch` rather than dispatch virtually:
 
 ```cpp
 // src/Ast.h
-enum class NK {
+enum class NK : uint16_t {
     IntLit, NumLit, StrLit, InterpStr, BoolLit, VarExpr, ListExpr,
     Assign, Binary, Unary, Call, MethodCall, Index, Ternary, Range,
     Pair, BlockExpr, ArrayLit, HashLit, NameTerm, RegexLit, SubstLit,
@@ -87,7 +107,7 @@ None of that is validated at parse time. It is data for the binder
 **`SubDecl`** carries the routine: name, parameters, alternate signatures
 sharing one body, the body, non-built-in traits kept as unevaluated
 expressions, the `multi`/`proto`/`method`/`submethod`/private flags, export and
-`our` scoping, the declared return type, declarator pod, and the four fields
+`our` scoping, the declared return type, declarator pod, and the six fields
 that describe an `is native` declaration.
 
 **`ClassDecl`** covers `class`, `role`, `grammar`, `module` and `package` at
@@ -120,8 +140,11 @@ and similarly:
 ```
 Block::hoistNeed          ForStmt::hasStateCache
 NumLit::ratCache          Param::sigSimple, natSpec, typeKnown
-Callable::arityShape, catchScan
+CodeInfo::arityShape, catchScan
 ```
+
+That list is a sample. `src/Ast.h` declares sixty-three such fields, and
+`src/Value.h` twenty-nine more, on a routine's `CodeInfo` and on `ClassInfo`.
 
 **Two templates, and the difference between them is a real bug.** `DecidedOnce`
 is fine when the cached thing *is* the value: two threads compute the same
@@ -133,8 +156,9 @@ that; arm64 is weakly ordered and does not, and this project ships arm64
 binaries. ThreadSanitizer reported it as a read of a `Value`'s type tag racing
 that `Value`'s constructor.
 
-So the pointer-valued fields — `Binary::litVal`, `NumLit::ratCache`,
-`Callable::arityShape` and `catchScan` — are `PublishedOnce`: release on
+So the pointer-valued fields, `Binary::litVal` and `NumLit::ratCache`, and the
+flags that guard a payload written just before them, `CodeInfo::arityShape` and
+`catchScan`, are `PublishedOnce`: release on
 publish, acquire on read, and the publish is a compare-exchange, so a racing
 double-build has one winner and the loser frees its copy instead of leaking it.
 The template deliberately has the same drop-in shape as `DecidedOnce`, so a
@@ -173,7 +197,7 @@ when the parser saw `use nqp` and then met an `nqp::` call:
 ```cpp
 // src/Ast.h
 enum class NqpOpc : uint16_t { Stmts, While, Until, IfNull, IseqI, AddI,
-                               Substr, Chars, Concat, /* ~50 more */ };
+                               Substr, Chars, Concat, /* 167 more */ };
 struct NqpOp : Expr {
     NqpOpc op;
     std::vector<ExprPtr> args;
@@ -187,7 +211,7 @@ optimisation.
 
 **`AllomorphLit`** exists because a numeric word inside a `<…>` list is
 simultaneously a number and its own source spelling: `<42>` is an `IntStr`,
-`<1/3>` a `RatStr`. The node keeps both the parsed numeric expression and the
+`<3.14>` a `RatStr`. The node keeps both the parsed numeric expression and the
 original text.
 
 ## Borrowed pointers, and why the tree is immortal
@@ -196,13 +220,23 @@ A `Callable` — the runtime object behind every sub, block and method — does 
 own its code:
 
 ```cpp
-// src/Value.h — Callable, excerpt
-const std::vector<Param>* params = nullptr;   // borrowed from the AST
-const std::vector<StmtPtr>* body = nullptr;   // borrowed from the AST
-std::shared_ptr<Env> closure;                 // owned
+// src/Value.h — CodeInfo and Callable, excerpt
+struct CodeInfo : RefCounted {
+    const std::vector<Param>* params = nullptr;   // borrowed from AST
+    const std::vector<StmtPtr>* body = nullptr;    // borrowed from AST
+    // …
+};
+struct Callable {
+    const CodeInfo& ci() const { return *info.p; }
+    std::shared_ptr<Env> closure;
+    // …
+};
 ```
 
-Only the environment is owned. The parameter list and the body are raw pointers
+A routine's code — the signature and body, what was declared about it, and the
+caches decided at its first call — is a `CodeInfo`, which every closure made
+from that code shares copy-on-write. The `Callable` adds what differs between
+them. Only the environment is owned. The parameter list and the body are raw pointers
 into the tree. Calling a sub walks those AST statements directly; there is no
 copy, no bytecode, and no intermediate representation.
 
@@ -239,14 +273,22 @@ and node specialisation was (Chapter 19).
 Two back ends consume the tree structurally rather than semantically, and both
 break loudly if a field is added and forgotten.
 
-**`AstEmit.cpp`** (`--aot`) emits C++ that rebuilds the identical tree. It
-throws `AstEmitError` on any construct it cannot reconstruct, and the driver
-answers by bundling the source instead — so a missed field degrades to a slower
-binary rather than a wrong one.
+**`AstEmit.cpp`** (`--aot`) used to be the weaker of the two. It emitted C++
+that rebuilt the tree with one builder function per node, listing each node
+type's fields by hand, and that was quietly lossy: a field nobody listed did
+not survive, and the binary ran a program subtly unlike the source.
+`my Int(Str) $n = "42"` compiled into something that threw a type error,
+because the coercion was not among the fields emitted, and diagnostics lost
+their line numbers the same way. It now carries the tree as bytes written by
+the serialiser below, and knows no field at all. It still throws `AstEmitError`
+for a tree the serialiser refuses, and the driver answers by bundling the
+source instead.
 
-**`AstSerial.cpp`** (the precompiled parse) writes and reads a binary encoding.
-Its defence is stronger, and worth copying: **both directions are driven by one
+**`AstSerial.cpp`** (the precompiled parse, and now `--aot` and the modules a
+binary embeds) writes and reads a binary encoding. Its defence is the strong
+one, and worth copying: **both directions are driven by one
 visitor per node type**, so a field cannot be written but not read. That is the
 failure mode which makes a format like this quietly wrong rather than loudly
-broken. A version constant in the header is bumped whenever the shape changes,
-and a mismatched entry is ignored rather than reinterpreted.
+broken. A version constant in the header is bumped whenever the shape changes
+— it stands at 62 — and a mismatched entry is ignored rather than
+reinterpreted.

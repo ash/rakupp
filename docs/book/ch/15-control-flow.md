@@ -45,9 +45,12 @@ The statement loops check the flag after each statement and bail out, and
 
 ```cpp
 // src/InterpreterCore.cpp — after each statement in the activation loop
-if (tctx().returning) {
-    if (isRoutine) { tctx().returning = false; last = std::move(tctx().returnV); }
-    break;               // a bare block just propagates it to its routine
+if (tcx.returning) {     // cooperative return reached this routine
+    if (isRoutine) {
+        tcx.returning = false; last = std::move(tcx.returnV);
+        …
+    }
+    break;               // a bare block propagates the flag to its routine
 }
 ```
 
@@ -68,11 +71,12 @@ uint64_t curLoopFrame = kNoFrame;    // frameTop of the innermost native loop
 ```
 
 ```cpp
-// src/InterpreterCore.cpp — LastStmt
-if (t.empty() && tctx().frameTop == tctx().curLoopFrame) {
-    tctx().loopCtl = 2; return Value::any();
+// src/InterpreterCore.cpp — LastStmt, abridged
+if (tctx().frameTop == tctx().curLoopFrame) {
+    if (t.empty()) { tctx().loopCtl = 2; …; return Value::any(); }
+    if (ls->coop && coopLabelLoopIn(tctx(), t, 2)) return Value::any();
 }
-throw LastEx{t};              // labelled, or across a frame: unwind
+throw LastEx{t};              // across a frame: unwind
 ```
 
 That sentinel is worth a paragraph, because the obvious spelling was wrong in a
@@ -92,13 +96,26 @@ a data set means a throw per row:
 // src/Interpreter.h — ExecContext
 int givenCtl = 0;             // 1 = a when matched; break the given
 Value givenV;
-uint64_t curGivenFrame = 0;
+uint64_t curGivenFrame = kNoFrame;
 ```
 
-In each case the rule is the same: **same frame, set a flag; different frame or
-a label, throw.** Labelled control always throws, because a labelled `last`
-targets a specific enclosing loop that may be several frames up, and walking to
-it is exactly what unwinding is for.
+In each case the rule is the same: **same frame, set a flag; different frame,
+throw.**
+
+Labelled control used to throw always, because a labelled `last` targets a
+specific enclosing loop that may be several frames up, and walking to it is
+what unwinding is for. Most labelled jumps do not go that far. `next OUTER`
+written two loops down in the same routine crossed no callable, and as an
+exception it cost about 60 microseconds a jump, nearly all of it the unwinder
+reading the call-site tables of every interpreter frame it crossed. So the
+front end marks a labelled `last` or `next` as `coop` when it reaches the loop
+wearing its label through statement-level constructs alone — `if`,
+`given`/`when`, bare blocks and statement loops, with no phaser, `CATCH`,
+closure or expression between. At run time `coopLabelLoopIn` checks that the
+innermost running loop with that label runs its body in this frame, and sets
+`loopCtl` with the label beside it, so every loop between ends on seeing a
+label that is not its own. A labelled jump that fails either test still
+throws.
 
 ## The rest of the control exceptions
 
@@ -106,21 +123,27 @@ Everything that genuinely has to cross frames is still an exception, and they
 are all tiny structs:
 
 ```cpp
-// src/Interpreter.h
-struct ReturnEx { Value v; };
-struct ExitEx { int code = 0; };
-struct LastEx { std::string label; };
-struct NextEx { std::string label; };
+// src/Interpreter.h — abridged
+struct ReturnEx { Value v; uint64_t target = 0; };
+struct ExitEx { int code = 0; /* … */ };
+struct LastEx { std::string label; Value val; bool hasVal = false; };
+struct NextEx { std::string label; Value val; bool hasVal = false; };
 struct RedoEx { std::string label; };
 struct DoneEx {};                    // exits a whenever/supply/react body
 struct BreakGivenEx { Value v; bool hasVal = false; };
 struct LeaveEx { Value v; bool hasVal = false; };
 struct ResumeEx {};                  // .resume inside a CATCH
+struct ControlHandledEx { Block* handler; };   // a CONTROL took a warning
 struct StopGatherEx {};              // a lazy gather has enough
+struct BuildFailureEx { Value failure; };      // BUILD/TWEAK answered one
 struct ProceedEx {};                 // leave a when, keep matching later ones
-struct RakuError { Value payload; std::string message; };
+struct RakuError { Value payload; std::string message; /* … */ };
 struct WorkerAbortEx {};             // unwind a background worker at shutdown
 ```
+
+`ReturnEx::target` is the frame number of the routine the `return` was
+*written* in. A block that carries a `return` can be called from some other
+routine, and that one must let it fly past.
 
 `RakuError` is the user-visible one: every Raku exception is a `RakuError`
 carrying a payload `Value` — normally an exception object — and a message.
@@ -131,12 +154,12 @@ accidentally swallow a shutdown (Chapter 38).
 
 A `CATCH` block is a `Block` statement with `isCatch` set, sitting inside the
 block it guards. Finding it means scanning the body — so the answer is cached on
-the `Callable`:
+the routine's `CodeInfo` (Chapter 14):
 
 ```cpp
-// src/Value.h — Callable
-DecidedOnce<signed char> catchScan{-1};   // 1 = the body holds an inline CATCH
-Stmt* catchBlkCache = nullptr;            // …and which one
+// src/Value.h — CodeInfo
+mutable PublishedOnce<signed char> catchScan{-1};  // 1 = an inline CATCH
+mutable DecidedOnce<Stmt*> catchBlkCache{nullptr}; // …and which one
 ```
 
 When a `RakuError` reaches a block that has one, the handler runs with `$_` and
@@ -144,7 +167,8 @@ When a `RakuError` reaches a block that has one, the handler runs with `$_` and
 always *defined*, whatever was actually thrown, because a `when X::Foo` inside
 the handler needs something to smartmatch against.
 
-`.resume` throws `ResumeEx`, caught at the throw point. Because a bare
+`.resume` throws `ResumeEx` out of the handler, and whatever ran the handler
+catches it and carries on after the statement that died. Because a bare
 `ResumeEx` with nothing to absorb it would reach `std::terminate`, the
 interpreter tracks how many `CATCH` handlers are live and turns a `.resume`
 outside any of them into a catchable Raku error:
@@ -212,15 +236,48 @@ it once. `raised` keeps the original C++ exception when there was one, so the
 object that propagates is the object that was thrown.
 
 The loop above now runs without a throw, and the file takes 0.4 seconds. Only
-`execBlock`'s statement loop works this way. A routine body, and therefore a
-`try` block, runs its statements in `callCallableRaw`, where a `die` still
-raises.
+`execBlock`'s statement loop works this way. A routine body runs its
+statements in `callCallableRaw`, where a `die` still raises.
+
+### A handler that runs before the unwinding
+
+Rakudo runs the handler that takes an error *before* the blocks between it
+and the `die` are left. That order is visible: a `LEAVE` in one of those
+blocks runs after the `CATCH`, and it is what lets `.resume` carry on from
+the `die`. A C++ `catch` runs after the unwinding by construction, so the
+interpreter keeps a register of the handlers in reach:
+
+```cpp
+// src/Interpreter.h — ExecContext, abridged
+struct CatchFrame {
+    Block* catchBlk = nullptr;       // null: a `try`, which takes everything
+    const std::vector<StmtPtr>* stmts = nullptr;
+    std::shared_ptr<Env> env;
+    uint64_t serial = 0, frameTop = 0, /* … */;
+};
+std::vector<CatchFrame> catchFrames;
+```
+
+When an error is about to leave a block that has exit work — a `LEAVE`, an
+`UNDO`, a `temp` to restore — or when the built-in `die` finds a handler
+registered, `dispatchBeforeUnwind` walks that register innermost first and
+runs each `CATCH` there and then, in its own block's scope and routine. The
+first handler that takes the error is recorded on the `RakuError` itself, in
+`takenBy`, with how it left. The C++ exception is then thrown as before, the
+blocks between run their exit work, and when the unwinding reaches the
+handler's block, `catchSeen` tells it the handler has already run and the
+block only finishes the job. A handler that matched nothing is recorded as
+passed, so it does not run a second time. The walk stops at a frame a plain
+call did not enter, such as a builtin's callback or a `try` block, because
+what lies past one may keep the error to itself.
 
 ## Backtraces
 
 ```cpp
 // src/Interpreter.h — ExecContext
-struct CallSite { int line; const Value* code; };
+struct CallSite { int line; const Value* code; Env* callerEnv = nullptr;
+                  const std::vector<ExprPtr>* args = nullptr;
+                  Env* calleeEnv = nullptr; };
 std::vector<CallSite> callFrames;
 ```
 
@@ -233,7 +290,7 @@ That is what `callframe(N)` walks — `Log::Async` stamps every message with
 the chain at the point of call; an `Int` argument drops that many innermost
 frames, so a routine can report its caller's position rather than its own.
 
-The routine's declaring file comes from `Callable::declFile`, recorded when the
+The routine's declaring file comes from `CodeInfo::declFile`, recorded when the
 routine was declared, because by the time a backtrace is taken the module that
 declared it is long gone from the current scope. Frames with no declaring
 routine — the mainline, a bare block — take the file whose *top level* is
@@ -254,7 +311,10 @@ chapter has been about. `callFrames` is maintained by a scope guard:
 
 ```cpp
 struct CFGuard { ExecContext& t; Interpreter* self; int line;
-    ~CFGuard() { if (!t.callFrames.empty()) t.callFrames.pop_back(); self->curLine_ = line; }
+    ~CFGuard() {
+        if (!t.callFrames.empty()) t.callFrames.pop_back();
+        self->curLine_ = line;
+    }
 };
 ```
 
@@ -272,8 +332,9 @@ routine return* in the interpreter, and it needs a discipline at every `catch`
 site to stop frames from a swallowed exception leaking into the next trace.
 
 The other is the throw. `RakuError` is the one type every Raku-level error is
-raised as, so giving it a constructor makes every one of the roughly 320 throw
-sites in the tree capture without any of them being edited:
+raised as, so giving it a constructor made every one of the roughly 320 throw
+sites then in the tree capture without any of them being edited (`src/*.cpp`
+has 585 lines that throw one as of 2026-11-10):
 
 ```cpp
 RakuError::RakuError(Value p, std::string m)
@@ -290,7 +351,7 @@ rare case and slower in the common one, which is the wrong way round.
 The record is one shared allocation:
 
 ```cpp
-struct BtFrame  { std::shared_ptr<Callable> code; int line = 0; };
+struct BtFrame  { PRef<Callable> code; int line = 0; unsigned char kind = 0; };
 struct BtRecord { std::vector<BtFrame> frames; std::string originFile; };
 ```
 

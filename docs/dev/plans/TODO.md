@@ -121,10 +121,10 @@ The same items grouped by theme, with a complexity estimate for each:
   races of that kind: the relaxed `liveWorkers_` gate and `Promise.status`).
   To take them off, the stripe has to cover the slot-flag reads ahead of a
   store (`readonly`, `natBits`, `t`, `hashKind` in `evalAssign`'s lane,
-  `evalAssignInner` and `selfCatAssign`), the result copy of an unsunk
-  assignment (`*lv` in `evalAssignInner`, the lane's `*slot` returns, made
-  after the store releases the stripe), and the cell-tag read in
-  `Value::deref` from `padPtrIn`, `Env::local` and `Env::find`. The cost lands
+  `evalAssignInner` and `selfCatAssign`) and the cell-tag read in
+  `Value::deref` from `padPtrIn`, `Env::local` and `Env::find`. The result
+  copy of an unsunk assignment, the third item of this list, is under the
+  stripe since 295617a3 (`slotOut`). The cost lands
   only while workers are live and the slot is shared. Then the entries leave
   `%tsan-parallel-reads` one by one, and `ub-torn-values` can come off
   `%tsan-parallel-skip`.

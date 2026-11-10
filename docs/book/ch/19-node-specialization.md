@@ -19,10 +19,13 @@ that verdict on the node, and take a short path.
 
 Three costs disappear on those paths.
 
-**The variable's copy.** `eval()` on a `VarExpr` returns the value *by value* —
-hundreds of bytes, several strings, eleven refcount increments. The fast path
-takes a `Value*` out of the environment and hands it to `applyArith`, which
-already took `const&`.
+**The variable's copy.** `eval()` on a `VarExpr` returns the value *by value*.
+When this was built that was a 376-byte `Value`: several strings and eleven
+refcount increments. The fast path takes a `Value*` out of the environment and
+hands it to `applyArith`, which already took `const&`. A `Value` is 32 bytes
+on 64-bit macOS and Linux since 2026-11-10, so the copy this saves is far
+smaller than the one the table below measured; the pointer is still cheaper
+than the copy.
 
 **The literal's reconstruction.** The `1` in `$n - 1` was rebuilt into a fresh
 `Value` on every visit. It is now built once and kept on the node.
@@ -70,8 +73,8 @@ one pointer. No table, no map, no key, nothing global:
 
 ```cpp
 // src/Ast.h — Binary
-mutable DecidedOnce<signed char> fastShape{-1};   // which shape this node is
-mutable DecidedOnce<const void*> litVal{nullptr}; // the literal, shapes 1 and 2
+mutable DecidedOnce<signed char> fastShape{-1};    // which shape this node is
+mutable PublishedOnce<const void*> litVal{nullptr}; // the literal, shapes 1, 2
 ```
 
 Walk one node, `$n - 1`, through its life.
@@ -109,9 +112,13 @@ So the two fields hold two different kinds of thing.
   a literal is a constant by definition: if the source says `1`, it is 1 forever.
 
 **`$n` appears in neither field** — not its value, not its address, not the
-scope it was found in. Every evaluation does a fresh lookup by name through the
-current environment and a fresh type check on whatever comes back. Which is why
-all of this behaves normally:
+scope it was found in. Every evaluation does a fresh lookup through the
+current environment and a fresh type check on whatever comes back. The lookup
+was by name when this was built. Since lexical pads (Chapter 41) the
+`VarExpr` usually carries a slot number, and the lookup is an index into the
+pad of the frame that is running now — still nothing about the variable kept
+on the `Binary`. A variable with no slot is found by name as before. Which is
+why all of this behaves normally:
 
 ```raku
 my $v = 1;
@@ -128,6 +135,9 @@ several branches: check both child node kinds, check the variable name's second
 character, check the literal is not a bignum or a `Rat`. Asking that once per
 *node* instead of once per *evaluation* is the whole optimisation. A `fib(29)`
 run evaluates `$n - 1` about 1.6 million times and answers the question once.
+(That was the count when this was built. A `fib` over plain Ints now runs as
+an integer kernel, Chapter 14, and never reaches `evalBinary`;
+`RAKUPP_NO_KERNELS=1` puts it back on this path.)
 
 It is less a cache than a **sticky note on the node**, written the first time
 anyone reads it. The precedent sits directly above it in the same struct:
@@ -149,7 +159,9 @@ The fast path is declined, and the untouched general path runs, unless:
   undefined values;
 - **for a subscript**: no adverb, not multidimensional, not a slice, a plain
   materialised `Array` (no `ext`, so no lazy sequence), and a **non-negative**
-  in-range integer index.
+  in-range integer index. A multidimensional `@m[$i; $j]` of plain lexicals
+  and literals on a shaped array has since got a shape of its own, and a packed
+  `int` or `num` array answers from its words.
 
 `Rat` is deliberately left out even though it would probably qualify; so is
 anything with a shared payload, so that a cached literal can never be mutated
@@ -197,6 +209,11 @@ the second time.
 
 Roast came out identical: 196,590 assertions, 631 files fully passing, with not
 one file moving in either direction.
+
+Those figures are the first version's, on a 376-byte `Value`, by-name lookup
+and no kernels. They show what the specialisation was worth when it landed,
+not what the same kernels take today: `fib` and `loopsum` now run as kernels
+(Chapters 13 and 14), and the other rows read their variables from pads.
 
 ## What went wrong on the way
 
@@ -254,7 +271,7 @@ identical):
 So the op-string temporary is free — it is a one-character SSO string, and
 hoisting it is within noise. The whole win is `Value::integer(1LL)` being
 rebuilt every iteration: an object constructed and destroyed three million times
-to hold the number 1. (`Value` was 376 bytes when that was measured and is 128
+to hold the number 1. (`Value` was 376 bytes when that was measured and is 32
 now, so the ratio has moved; the shape of the finding has not.)
 
 That is the same finding as on the interpreter side in a different costume, and
@@ -263,16 +280,56 @@ reference it. Not implemented — it only affects `--exe` *without* `-O`, since
 with `-O` the int lane never builds the `Value` at all, and it needs its own
 pass through the `--exe` golden tests and `run-optbench`.
 
-## Extending it
+## What was built on it
 
-The same treatment fits other shapes, in rough order of expected value:
+The first version of this chapter ended with a list of shapes the same
+treatment would fit. Most of them have been built, each as another verdict
+kept on a node and another early exit in front of an unchanged general path.
 
-- `Assign` where the target and the left operand are the same variable
-  (`$x = $x + 1`) — write through the slot instead of building and storing;
-- `%h{$k}` and `%h<lit>`, the associative twin of the array path;
-- `Unary` on a plain lexical (`-$x`, `!$x`, `++$i`);
-- method calls on a plain lexical invocant, which is where the *other* half of
-  the profile lives.
+**A handler on the node.** A `Binary` that has reached its fast shape is
+given `binaryFastHandler`, a function pointer kept on the node as
+`Expr::handler`, and `eval` calls it before its `switch` (Chapter 13). It is
+the same fast shape in a frame sized for the one thing it does. What the
+shape cannot answer on a given evaluation — a shadowing `infix:<…>` now in
+scope, an operand that no longer holds a plain scalar — goes to `evalBinary`
+as before.
 
-Whatever is added, the two rules that made this one safe still apply: **guard on
-the runtime value every time, and leave the general path underneath untouched.**
+**Conditions without a `Bool`.** `while $n < 10` built a `Value` per iteration
+only to boolify and destroy it. `tryCondBool` answers the six Int comparisons,
+and the six string ones over two plain Strs, for the shapes above, and
+returns −1 when it does not apply.
+
+**Assignment into the slot.** `$x = $x + 1`, the self-update of the list, and
+`$x = $a + $b` in general: the verdict is `Assign::simpleSlot`, and for
+plain machine Ints and Nums the result is written into the target's slot
+without a `Value` being built and stored. `my $x = EXPR` with no type or trait has a
+declaration lane of the same kind.
+
+**`++` and `--` in place**, on a plain lexical, and on an element or attribute
+that exists and holds a plain Int: `@a[$i]++`, `%h{$k}++`, `$!n++`. On the
+perf-guard `hash` kernel that measured −24%
+(`docs/dev/plans/INTERP-SPEED-PLAN.md`).
+
+**Negation of a plain lexical**, `-$x`, with a handler of its own.
+
+**Typed subtrees.** A node the fast shape declines because an operand is
+itself an expression — `$a * $b + $c` — may still be the root of a numeric
+subtree: arithmetic operators and comparisons over plain lexicals, literals
+and negations. Such a tree is evaluated on machine numbers, with no `Value`
+built at the inner nodes and one at the root. Only the shape is decided once
+(`Binary::typedTree`); every leaf is read and its type checked on every
+evaluation. A node whose leaves refuse it more than 63 evaluations in a row
+has its handler retired. With Num in the fast shape and the declaration lane,
+this took `types/mandel-plain` from 0.71 s to 0.26 s (same document).
+
+**Method calls** took a road of their own. A `MethodCall` node decides once,
+from the syntax, whether it is a plain `$x.name` that may be an attribute
+accessor (`plainShape`), or a call none of the special arms is written for
+(`leanCall`), and skips those arms.
+
+Still on the list: `%h{$k}` and `%h<lit>` as plain reads, the associative
+twin of the array path in `evalIndex`.
+
+Whatever is added, the two rules that made the first one safe still apply:
+**guard on the runtime value every time, and leave the general path
+underneath untouched.**

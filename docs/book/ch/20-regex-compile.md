@@ -18,9 +18,17 @@ public:
     bool search(const std::string& subject, long startPos, RxMatch& out) const;
     bool matchAt(const std::string& subject, long pos, RxMatch& out,
                  const SubResolver& r,
-                 const std::set<std::string>* lexNames = nullptr) const;
+                 const std::set<std::string>* lexNames = nullptr,
+                 const GrammarHooks* hooks = nullptr) const;
 };
 ```
+
+The interpreter does not construct one per match. `compileRegexCached` keeps
+compiled objects in a per-thread map keyed on the pattern text after
+interpolation plus the flags, holds up to 512 of them, and skips patterns
+over 4,096 bytes. A regex literal in a loop is compiled once per thread. That
+is why the hook set is a per-call parameter of `search` and `matchAt`: a
+shared object cannot carry one caller's hooks.
 
 ## The pattern text arrives unparsed
 
@@ -63,22 +71,34 @@ struct Node {
     std::vector<std::string> clusterMembers;        // multi-codepoint graphemes
     std::string classFlags, negClassFlags, uprop;
     bool negate = false, icase = false, imark = false, multiline = false;
+    const Node* recTarget = nullptr;                // <~~>: its own pattern
     mutable uint32_t byteset[8];                    // built on first use
     mutable std::atomic<bool> bytesetReady{false};
     long min = 0, max = -1; bool greedy = true, possessive = false;  // Rep
+    bool forceBack = false;                         // a*! backtracks anyway
     std::unique_ptr<Node> sep; bool sepTrail = false;    // X+ % Y
     std::string repCode;                            // ** { … }
     bool runOnly = false, ltmStop = false;          // Code
     bool firstMatch = false, classCombo = false;    // Alt
     int capIndex = -1; std::string capName; bool listCap = false;   // Group
+    int capLocal = -1;                              // its $n in its own scope
     std::string ruleName, ruleArgs, ruleAlias;      // Subrule
     bool aliasDotted = false, ruleCapture = true;
+    bool noBack = false;                            // written under :ratchet
+    const Regex* inlineRx = nullptr;                // <$var>: a called pattern
+    std::string dynCode;                            // <{ code }>
     mutable const GrammarRuleMeta* metaCache = nullptr;
+    mutable uint64_t metaOwner = 0;                 // …and whose cache it is
     bool behind = false;                            // Look
-    mutable long lookMin = 0, lookMax = -1;
+    mutable long lookMin = 0, lookMax = -1, lookChars = -1;
     mutable std::unique_ptr<LtmNfa> ltmNfa;         // Alt
 };
 ```
+
+`capIndex` is the flat slot the matcher writes a capture's span to. `capLocal`
+is the number the capture answers to. The two differ because every capture
+opens a numbering scope of its own: the `(b)` of `( (a) (b) )` is the outer
+capture's `$1` and has no top-level number.
 
 Three fields deserve attention now; the rest appear where they are used.
 
@@ -103,8 +123,9 @@ place in the codebase where the weaker ordering used everywhere else would be
 wrong, and it is worth noticing as a general point — `DecidedOnce` is safe
 because it publishes a *single word*.
 
-Codepoints above 255 do not fit a byteset, so they live in `cpRanges` and are
-tested separately. Multi-codepoint graphemes — a class member written
+The table answers for bytes, and a character outside ASCII is more than one
+byte, so its bits from 0x80 up stay clear. Such a character is decoded and
+tested whole against `cpRanges`. Multi-codepoint graphemes — a class member written
 `\c[A, COMBINING ACUTE ACCENT]` — live in `clusterMembers` and are compared as
 whole clusters.
 
@@ -130,12 +151,13 @@ assertions `<?{…}>` and `<!{…}>`, side-effect blocks `{…}` and `:my`
 declarations, `$var` interpolation, the capture-span markers `<(` and `)>`,
 anchors, and word boundaries.
 
-Two parse-time pieces of state make the adverbs scoped rather than global:
+Three parse-time pieces of state make the adverbs scoped rather than global:
 
 ```cpp
 // src/Regex.h
 bool curIcase_ = false;   // :i / :!i, scoped to the enclosing group
 bool curImark_ = false;   // :m / :ignoremark, likewise
+bool curRatchet_ = false; // :r / :ratchet, likewise
 int assertDepth_ = 0;     // >0 inside an assertion, so parseSeq stops at `>`
 ```
 
@@ -167,11 +189,20 @@ matches commit — no backtracking into a token once it has matched.
 bool ratchet_ = false;
 ```
 
-The flag makes every `Rep` node possessive at compile time. It is also what
-makes the packrat memo in Chapter 22 sound: a rule that does not backtrack has
-exactly one match at a given position, so caching it is safe.
+The matcher reads the flag in the `Rep` case: a greedy quantifier under it
+takes its run and hands nothing back, as one written `a*:` does. `a*!` sets
+`forceBack` on its node and backtracks all the same. Two more things commit
+under `:ratchet`, both decided by the parser from `curRatchet_`. A subrule
+call gets `noBack` and keeps the callee's first match, so a `token` does not
+back into a `regex` it calls. A group holding an alternation is wrapped in a
+possessive `Rep` of exactly one, so `:r [ab | a] b` does not come back for
+`a`.
 
-## Two whole-pattern optimisations
+The flag is also what makes the packrat memo in Chapter 22 sound: a rule that
+does not backtrack has exactly one match at a given position, so caching it
+is safe.
+
+## Three whole-pattern optimisations
 
 **A single-character rule is inlined at its call sites.** A grammar full of
 `token space { <[\ \t]> }` would otherwise pay a full subrule call per
@@ -180,11 +211,14 @@ character:
 ```cpp
 // src/Regex.h
 bool rootIsSingleChar() const;
-long trySingleChar(const std::string& s, long pos) const;   // pos+1, or -1
+long trySingleChar(const std::string& s, long pos) const;
 ```
 
 The call site tests the property once, caches the answer on the rule's metadata,
-and thereafter tests the character directly.
+and thereafter tests the character directly. `trySingleChar` answers the
+position after the character or -1, and -2 when the byte table cannot decide:
+a multibyte character at `pos`, or an ASCII one with a non-ASCII byte after
+it that may be a combining mark. The caller then runs the real matcher.
 
 **Lookbehind width is computed once.** A naive lookbehind scans every earlier
 start position, which is O(pos) per attempt. Instead the inner pattern's
@@ -192,20 +226,46 @@ possible width is derived and the scan window bounded:
 
 ```cpp
 // src/Regex.h
-std::pair<long, long> nodeWidth(const Node* n, MState& st) const;
+struct RxWidth { long lo, hi, chars; };   // bytes, bytes, characters
+RxWidth nodeWidth(const Node* n, MState& st) const;
 ```
 
 ```cpp
-// src/Regex.cpp — the Look case
+// src/Regex.cpp — the Look case, abridged
+long lookMin = n->lookMin, lookMax = n->lookMax, lookChars = n->lookChars;
 if (!n->lookWidthReady) {
     auto w = nodeWidth(child, st);
-    n->lookMin = w.first; n->lookMax = w.second; n->lookWidthReady = true;
+    lookMin = w.lo; lookMax = w.hi; lookChars = w.chars;
+    …   // cached on the node, unless it read a lexical token's width
 }
-long hi = pos - n->lookMin;
-long lo = n->lookMax < 0 ? 0 : pos - n->lookMax;
+long hi = pos - lookMin;
+long lo = lookMax >= 0 ? pos - lookMax
+        : lookChars >= 0 ? charsBack(st.s, pos, lookChars) : 0;
 ```
 
-O(width) instead of O(position).
+O(width) instead of O(position). The third number is there because a
+one-character rule such as `<.alnum>` is one to several bytes wide: its byte
+bound is open, and the character bound still closes the window.
+
+**An unanchored search skips positions that cannot start a match.** Two facts
+are computed when the pattern is compiled:
+
+```cpp
+// src/Regex.h
+bool pfFirstOn_ = false;             // pfFirst_ is a usable start-byte filter
+uint32_t pfFirst_[8] = {0};          // the bytes a match can start with
+int pfSingle_ = -1;                  // …when that is one ASCII byte
+std::vector<std::string> pfReqLits_; // one of these is in every match
+```
+
+`search` makes no attempt at a position whose byte is not in `pfFirst_`, and
+when the set is a single ASCII byte it finds the next candidate with
+`memchr`. If none of the required literals occurs in the subject from the
+start position on, it returns without an attempt. Both are conservative:
+anything the analysis does not understand means "any byte" and "no literal".
+The literal test is used only for a pattern with no code block, subrule or
+interpolation, because skipping an attempt that would have run code on its
+way to failing is observable.
 
 ## Retired Perl 5 metacharacters
 
@@ -217,12 +277,14 @@ meaning something else:
 // src/Regex.h
 struct ObsoleteEscape { std::string seq; };
 const std::string& obsolete() const;   // non-empty: a retired P5 metachar
+const std::string& badEscape() const;  // non-empty: an unknown \x escape
 ```
 
 The constructor records the offending sequence — `\A`, `\z`, `\G`, `\p`, `\Q`,
 `\1` — so the caller can raise `X::Obsolete` instead of reporting a failed
 match. Distinguishing "this pattern is wrong" from "this pattern did not match"
-is worth the extra field.
+is worth the extra field. An unknown backslash letter such as `\y` is
+recorded the same way, in `badEscape`, and is a compile error.
 
 Retired, that is, in *Raku* syntax. Every one of those spellings is alive and
 meaningful under the `:P5` adverb, where the same constructor parses the same
@@ -242,8 +304,23 @@ std::string rxInterpArrays(const std::string& pat);     // /@arr/ → alternatio
 
 An array interpolates as a **longest-first literal alternation**, which is the
 semantics Raku specifies and which the sorting has to implement explicitly. A
-regex-valued variable is spliced in as source text at construction, so
-`rx/ $x /` where `$x` is a `Regex` composes.
+regex-valued variable is spliced in as source text at construction, grouped
+in `[ … ]`, so `rx/ $x /` where `$x` is a `Regex` composes.
+
+Text is not always enough. A `:P5` regex pasted into a Raku pattern would be
+read with the wrong syntax, and a pattern that says `<~~>` would recurse into
+its host. Those go in as a marked splice, which the parser compiles with the
+splice's own front-end:
+
+```
+\x01 KIND LENGTH \x01 SOURCE        KIND = 'P' (Perl 5) | 'R' (Raku)
+```
+
+The length makes the marker opaque to every scanner on the way: the source
+may hold any character. The assertion form `<$var>` uses a third kind, `S`.
+It is a call: the sub-pattern is compiled whole, owned by the host regex, and
+matched in its own capture frame, so its groups fill the sub-match's `$0` and
+not the host's.
 
 A `$var` that must be read *at match time* — because the variable changes during
 the match — is a different node, `K::VarMatch`, evaluated through the hooks in
@@ -268,6 +345,10 @@ compiled pattern, so it is computed once by `collectListNames` walking each
 quantified atom, and then shared — as a `shared_ptr` to a frozen set — into
 every match result the pattern produces. Sharing rather than copying matters
 because a grammar parse produces one of these per rule invocation.
+
+The tree has one other consumer. `toJsTree` writes it out as a JavaScript
+object literal for the `--target=js` back end, whose runtime carries a matcher
+that interprets it.
 
 ## `:P5` — the same engine wearing Perl 5 syntax
 

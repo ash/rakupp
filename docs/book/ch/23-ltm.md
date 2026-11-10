@@ -37,6 +37,13 @@ It is cheap and it is wrong twice: it ranks by the wrong length, and it descends
 into user-code paths that true longest-token matching never visits. That is why
 it is no longer what runs.
 
+The second fault has since been narrowed, because the probe is still the
+fallback and its side effects were visible. While it measures, a bare `{…}`
+block in the probed pattern is skipped, a grammar method is skipped in every
+rule the probe descends into, and no action fires (Chapter 21). Assertions
+still run, since they decide the branch, and so do the blocks and `:my`
+declarations of a rule the probe calls, since its assertions may read them.
+
 **The NFA** (the default since v3.0.0) builds a Thompson automaton per alternation, lazily,
 from the compiled node tree, and answers "how far could each branch's
 declarative prefix reach?" in one linear scan of the input. No code execution, no
@@ -54,12 +61,31 @@ correctness argument.
 **Spec enders** — the prefix genuinely ends here, and ranking at this point is
 *correct*: a bare `{…}` code block, a back-reference (`$0`, `$<name>`), a `||`
 tail (the first branch's prefix continues, per the specification), runtime
-quantifier bounds `** {$n}`, and `&` conjunction.
+quantifier bounds `** {$n}`, a `<{ code }>` pattern, a lookaround, a recursive
+call to a rule already being expanded, a call qualified with another
+grammar's name, and `<ws>`.
 
 **Model gaps** — the *builder* could not model the construct, so ranking might
 unfairly demote this branch: an unexpandable subrule, Unicode-property and
 grapheme-cluster classes, `:m` on a character *class*, non-ASCII `:i` folding,
-lookarounds, and a blown build bound (200 depth or 4,000 states).
+and `&` conjunction.
+
+Two entries moved from the second list to the first on 2026-09-08, both found
+through one grammar whose `|` was picking the earlier-declared of two
+branches that matched the same text. A lookaround had been a gap, and the gap
+sent the whole alternation to the probe, which ranks by full-match length
+and took the tie by declaration order. Checked against Rakudo, the prefix
+stops at a lookaround and the branch stays a candidate at the length reached:
+on `r1abcdefgh`, `'r1ab' <?before 'c'> 'cdefgh' | 'r1ab' 'cdefgh'` takes the
+second branch.
+
+The build bound was the other. It is 200 levels of depth or 4,000 states, and
+it was counted across the whole alternation, so a bushy early branch spent
+it and every later branch was cut off at its first node. The count is per
+branch now, and a branch that exhausts it ends its prefix there as a spec
+ender does. A truncated prefix is an under-estimate: it can demote a branch,
+but every candidate is still tried in rank order and the commit engine still
+decides.
 
 Zero-width assertions are **transparent**: anchors, word boundaries, `:my`
 declarations, and the code assertions `<?{…}>` / `<!{…}>` are epsilon
@@ -106,6 +132,11 @@ struct State {
     int litDepth = 0;
 };
 ```
+
+Two more kinds are assigned in `LtmNfa.cpp` and missing from that comment.
+`'M'` is a literal under `:m`, compared by base codepoint, and `'k'` is the
+self-loop after it that takes the cluster's combining marks. `'S'` is still
+matched and no longer built: `<ws>` ends the prefix now.
 
 Transitions are codepoint predicates that **reuse the `Class` node's own match
 data** — byte ranges, codepoint ranges, negation, folding. There is no second
@@ -170,16 +201,20 @@ prefix recursively. Recursion is treated as a spec prefix end.
 **Grammar.** Already-compiled rule bodies from the grammar's own table, so
 nothing is recompiled and the automaton borrows the `Regex`'s nodes. The
 resolver answers with a small integer: refuse, here is a compiled body, this is
-`<ws>`, or this is a single-character built-in class. Protos, parameterised rules
-and dynamically-dependent bodies refuse, which becomes a model gap and therefore
-a probe fallback.
+`<ws>`, this is a single-character built-in class, or this is `<ident>`, which
+is built as `<alpha> \w*`. Protos, grammar methods and parameterised rules
+refuse, which becomes a model gap and therefore a probe fallback. A body that
+declares `:my` or reads a dynamic variable is not refused. That property only
+keeps the packrat memo off; the automaton reads the body's nodes, and each of
+them already has its place: `:my` is transparent, an assertion is code.
 
 **`<sym>`** inlines as the current candidate's `:sym<…>` literal, for proto
 dispatch.
 
-`<ws>` is modelled as `\s*` for ranking. That is deliberately approximate — the
-commit engine enforces the real `<!ww>` word-boundary gate — and it is
-ranking-grade rather than semantics-grade, which is all the ranker needs.
+`<ws>` ends the prefix. It was first modelled as `\s*`, which let a prefix
+run on through the spaces. Rakudo's `ws` opens with `<!ww>`, a lookaround, so
+the implicit `<.ws>` of a `rule` stops the prefix where it stands:
+`rule { \w+ '-'+ }` ranks at the word, below `token { \w+ '-' }`.
 
 ### The composed character class
 
@@ -212,6 +247,11 @@ One union automaton over all candidates' bodies, one branch per candidate, with
 matcher is per-parse, that cache dies with the parse and needs no staleness
 management at all. Any model gap in any candidate discards the automaton and the
 probe dispatch stands.
+
+Declaration order, the last tie-break, is the order the interpreter collected
+the rules in: most derived grammar first, then its parents and composed
+roles. A derived grammar's candidate therefore wins a tie against its
+parent's, as a method of the same name would.
 
 ## The tie-break must be per-path
 
@@ -286,14 +326,19 @@ comparison they were, not as today's count):
 | NFA (now the default) | 197,117 | 47/62 | 10/10 |
 
 The NFA's failure set on the alternation file is a strict subset of the
-probe's, which is what made the flip safe. A grammar benchmark — twenty compiles of a JSON grammar corpus — runs
+probe's, which is what made the flip safe. The plan's entry of 2026-09-08
+records the alternation file at 56/72 and the proto file at 10/10 under the
+NFA. A grammar benchmark — twenty compiles of a JSON grammar corpus — runs
 in 28 to 34 milliseconds in both settings, so automaton construction is fully
 amortised by the node cache. The twenty-eight grammar showcase runs are
 byte-identical across settings.
 
-The default changed in v3.0.0 and `RAKUPP_LTM=0` is kept for one release after
-it, which is the general policy for a switch that changes behaviour rather than
-speed: an escape hatch and a bisection tool, then the probe path retires.
+The default changed in v3.0.0 and `RAKUPP_LTM=0` was to be kept for one
+release after it, which is the general policy for a switch that changes
+behaviour rather than speed: an escape hatch and a bisection tool, then the
+probe path retires. It has not retired. The switch is still read in 5.6.3,
+and the probe cannot go while any alternation with a model gap falls back to
+it.
 
 Two details that live in the resolver rather than the automaton: `namedRule` and
 `ltmResolve` are what a protoregex dispatch goes through, and a lexically scoped

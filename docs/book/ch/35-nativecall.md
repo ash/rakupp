@@ -75,6 +75,7 @@ struct Lib {
     int (*prep_var)(void*, int, unsigned, unsigned, Type*, Type**);
     void (*call)(void*, void (*)(void), void*, void**);
     void* (*closure_alloc)(size_t, void**);
+    void (*closure_free)(void*);
     int (*prep_closure_loc)(void*, void*,
                             void (*)(void*, void*, void**, void*),
                             void*, void*);
@@ -97,8 +98,11 @@ rakupp --ffi-info      # libffi: libffi.dylib (abi 1)
 Not everything keeps working, and being clear-eyed about that is part of the
 design. The fallback is a **narrower** FFI, not a transparent substitute.
 
-Calls go through a fixed prototype that hands eight integer and eight
-floating-point arguments to the platform ABI and lets it place them. That is
+Calls go through a fixed prototype that hands sixteen integer and eight
+floating-point arguments to the platform ABI and lets it place them. (Sixteen
+integers, not eight, because the Win32 API routinely goes past eight —
+`CreateWindowExW` takes twelve — and Windows is where libffi is usually
+absent.) That is
 correct for a large majority of real C signatures: pointers, `Str`, integers of
 every width, `num64`, `CArray`, struct and union handles, `is rw`
 out-parameters, `nativecast`, `cglobal` and synchronous callbacks all behave
@@ -111,8 +115,15 @@ than computing a wrong answer:
 |---|---|
 | a `num32` argument or return | a real C `float` cannot be placed by the fixed prototype |
 | a variadic signature | needs `ffi_prep_cif_var` to say where `...` begins |
-| more than 8 integer or 8 float arguments | the prototype is that wide and no wider |
+| more than 16 integer or 8 float arguments | the prototype is that wide and no wider |
 | more than 64 distinct callbacks | the trampoline pool holds 64 |
+
+Two targets differ. Windows x64 assigns argument registers by position, not
+by bank, so there the prototype cannot place a floating-point argument at all,
+and one throws like the rest. And a 32-bit x86 build, where every argument
+goes on the stack, lays the arguments out in 32 stack words as cdecl would:
+that places `num32` and variadic arguments too, and its limit is 128 bytes of
+arguments.
 
 `RAKUPP_FFI=0` forces this path, and the fallback is tested through it: the
 regression test `t/regression/nativecall-libffi.raku` re-runs the cases only
@@ -159,7 +170,8 @@ than a fast one and a general one.
 `nativeLibExpr` handles a genuinely awkward case: `is native(EXPR)` where the
 expression could not be evaluated at declaration time. It is retried once at the
 first call, and the raw `Expr*` is safe to keep because the AST outlives the
-interpreter.
+interpreter. A sibling field, `nativeSymExpr`, does the same for a C symbol
+name computed by `is symbol(EXPR)`.
 
 ## Variadics
 
@@ -209,7 +221,8 @@ mode, and `ioctl` reachable at all.
 | `bool` | `bool` | 1 |
 | `int16` `uint16` | `int16_t` `uint16_t` | 2 |
 | `int32` `uint32` | `int32_t` `uint32_t` | 4 |
-| `int` `int64` `long` `size_t` | 64-bit integer | 8 |
+| `int` `int64` `longlong` | 64-bit integer | 8 |
+| `long` `size_t` | C's own `long` and `size_t` | 8 (4 on a 32-bit target) |
 | `num32` | `float` | 4 |
 | `num` `num64` | `double` | 8 |
 | `Str` | `char*` | pointer |
@@ -241,6 +254,18 @@ static long long ncStructSize(ClassInfo* ci);
 static long long ncStructAlign(ClassInfo* ci);
 ```
 
+## Three helper modules the engine answers itself
+
+The ecosystem's `NativeHelpers::Blob`, `NativeHelpers::CStruct` and
+`NativeHelpers::Pointer` are built on MoarVM's own memory layout and on
+`nqp::` operations, and cannot run here. Raku++ carries its own versions under `rakulib/`, written in
+ordinary Raku over the same `Pointer` and `CArray` and keeping the same
+exported surface, and the build compiles their text into the binary. A `use`
+of one of these three names resolves to that copy ahead of any `-I` path or
+installed distribution — `isShadowedModule` in `InterpreterBinding.cpp` is the
+list — so a module that depends on them, DBIish's MySQL driver for one, loads
+with nothing more installed.
+
 ## Callbacks
 
 A `Callable` handed to C becomes a real C function pointer built with an
@@ -248,8 +273,9 @@ A `Callable` handed to C becomes a real C function pointer built with an
 
 ```cpp
 // src/Interpreter.h
-long runCallback(int slot, long a0, long a1, long a2,
-                 long a3, long a4, long a5);
+long long runCallback(int slot, long long a0, long long a1,
+                      long long a2, long long a3, long long a4,
+                      long long a5);
 void runFfiClosure(void* closure, void* ret, void** args);
 bool onRakuThread() const { return (bool)tctx().cur; }
 ```
@@ -315,8 +341,8 @@ interpreted and compiled — and a compiled binary looks for libffi at *its* run
 time, not at build time.
 
 A few shapes make `--exe` fall back to bundling: `is native(&lib-sub)`, a
-library name computed by an expression, `is rw` out-parameters, and buffer or
-`CArray` parameters needing copy-back. The compiler says so and produces a
+library name computed by an expression, a `multi` native sub, `is rw`
+out-parameters, and buffer or `CArray` parameters needing copy-back. The compiler says so and produces a
 bundled binary instead.
 
 ## Not supported

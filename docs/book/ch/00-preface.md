@@ -6,7 +6,8 @@ Raku++ is a hand-written implementation of the Raku programming language,
 written in C++17, with no third-party dependencies. It lexes, parses,
 interprets, and — in two of its five run modes — transpiles Raku to C++ and to
 JavaScript, and
-compiles it to a native binary. It carries its own regular-expression and
+compiles it to a native binary. A sixth target writes a subset of the language
+as an Arduino sketch. It carries its own regular-expression and
 grammar engine, its own Unicode subsystem built from the pinned UCD tables, its
 own arbitrary-precision arithmetic, a foreign-function interface that loads
 libffi at run time rather than linking it, a C ABI for native extension
@@ -14,8 +15,8 @@ modules, and a concurrency runtime that runs interpreter compute on all cores by
 default, with a global interpreter lock kept as the opt-in escape hatch.
 
 None of that is unusual for a language implementation. What is unusual is that
-all of it fits in about a hundred thousand hand-written lines that one person
-can read,
+all of it fits in about a quarter of a million hand-written lines that one
+person can read,
 and that almost every non-obvious decision in it was made against a
 measurement. This book is an attempt to write down both: the mechanisms, and
 the reasons.
@@ -113,13 +114,16 @@ more instructive than the surviving one.
 
 ## A word about honesty {-}
 
-Raku is a very large language, and Raku++ does not implement all of it. About
-ninety per cent of the declared Roast suite passes. The method resolution order
-is a depth-first walk rather than C3 linearisation. Multiple dispatch resolves
-ties by declaration order instead of raising an ambiguity error. Modules publish
-their whole environment to the global scope rather than only their exports.
-Macros are not implemented at all, and slangs only where the lexer has a seam
-to hang a token on.
+Raku is a very large language, and Raku++ does not implement all of it. Every
+test the Roast suite expects an implementation to pass does pass — 219,395 of
+219,395 at v5.6.0, skip and todo left out — and that is a statement about the
+suite, not about the language. Method dispatch walks
+the parents depth-first rather than in C3 order, so a diamond hierarchy can
+pick a different method than Rakudo does. Macros are not implemented at all,
+and slangs only where the lexer has a seam to hang a token on. Two entries
+that stood in this list when the book was first written have gone: multiple
+dispatch now raises `X::Multi::Ambiguous` on a tie, and a module's importer
+sees its exports and not the rest of its environment.
 
 Every one of those is stated in the chapter where it belongs, under a heading
 that says so. A book about compiler internals that only described the parts

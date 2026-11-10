@@ -7,29 +7,43 @@ in a browser tab, with no server.
 
 It is not a fifth back end. It is mode 1, the tree walk, with a different host.
 What makes it worth a chapter is that the host removes almost everything the
-interpreter assumes, and the adaptation is **94 lines that live entirely outside
-`src/` and change nothing in the interpreter**.
+interpreter assumes, and the adaptation is **one file of 128 lines that lives
+outside `src/` and changes nothing in the interpreter**. It is written against
+the public embedding API, `rakupp.h` (Chapter 37), and not against the
+interpreter's classes. The build script links one more file of its own beside
+it, an empty stencil table: the copy-and-patch back end of Chapter 44 has
+nothing to patch here, because WebAssembly cannot execute code it writes into
+its own memory.
 
 ## The whole boundary
 
 ```cpp
-// rakujs/rakupp_web.cpp — the three exported functions
+// rakujs/rakupp_web.cpp — the five exported functions
 EMSCRIPTEN_KEEPALIVE int         rakupp_run(const char* src,
                                             const char* stdin_text);
 EMSCRIPTEN_KEEPALIVE const char* rakupp_highlight(const char* src);
+EMSCRIPTEN_KEEPALIVE const char* rakupp_lsp(const char* body,
+                                            const char* reference);
+EMSCRIPTEN_KEEPALIVE const char* rakupp_doc_links(const char* src);
 EMSCRIPTEN_KEEPALIVE const char* rakupp_version();
 ```
 
-`rakupp_run` calls `rakupp::rakuppRun` — the same public entry point the native
-CLI uses — which lexes, parses, builds an `Interpreter`, runs it, and catches
-`ParseError`, `RakuError` and `std::exception`, reporting them to stderr exactly
-as the CLI does. The exit code that comes back is the process exit code the CLI
-would have produced.
+`rakupp_run` builds an interpreter with `rk_new`, runs the program with
+`rk_run` and frees the interpreter with `rk_free`, so no `my $x` leaks from one
+run into the next. `rk_run` is the embedding API's whole-program entry point:
+it lexes, parses and runs in that interpreter, honours `MAIN` and `exit`, and
+reports a parse or run-time error to stderr exactly as the CLI does. The exit
+code that comes back is the process exit code the CLI would have produced.
 
-The other two exports matter more than they look: `rakupp_highlight` is the
+The other exports matter more than they look. `rakupp_highlight` is the
 tokenizer behind `rakupp --highlight` (Chapter 39), and it is what lets a
 browser editor paint Raku with the compiler's own knowledge rather than a
 JavaScript approximation. That thread is picked up at the end of this chapter.
+`rakupp_lsp` is the language server taking one JSON-RPC message at a time, and
+`rakupp_doc_links` returns the JSON of `rakupp --doc-links --json`, which the
+playground's Docs pane shows; it parses and never runs the program. None of
+the three is part of `rakupp.h`: they are tools built on the lexer and the
+parser, not part of embedding a language.
 
 ## Input is one `rdbuf` swap
 
@@ -39,15 +53,22 @@ EOF state. So feeding a program is a stream-buffer swap and nothing else:
 
 ```cpp
 // rakujs/rakupp_web.cpp
-static std::istringstream web_stdin;
-web_stdin.clear();
-web_stdin.str(stdin_text ? stdin_text : "");
-std::streambuf* old_in = std::cin.rdbuf(web_stdin.rdbuf());
+RkInterp rk = rk_new(0);            // 0 = default config
+if (stdin_text) rk_set_input(rk, stdin_text, std::strlen(stdin_text));
+int rc = 3;
+rk_run(rk, src ? src : "", "web", &rc);
+rk_free(rk);                        // also restores stdin
 
-int rc = rakupp::rakuppRun(src ? src : "", {}, "web", "rakupp.wasm", {});
-
-std::cin.rdbuf(old_in);
+// src/EmbedApi.cpp — rk_set_input
+p->inBuf.clear();
+p->inBuf.str(std::string(text, len));
+std::streambuf* prev = std::cin.rdbuf(p->inBuf.rdbuf());
+if (!p->oldIn) p->oldIn = prev;
 ```
+
+The swap used to be written out in the web entry point. It moved into the
+embedding API as `rk_set_input` when the entry point was rewritten on
+`rakupp.h`, and the Jupyter kernel now uses the same call.
 
 `get`, `lines`, `prompt` and `$*IN.slurp` read that text and then see
 end-of-file, so **nothing ever blocks** — which matters, because a blocking read
@@ -56,8 +77,8 @@ in a WebAssembly module with no thread to park is a hung tab.
 Two details make it reliable across repeated runs. `rdbuf()` clears `cin`'s
 eof and fail bits as a side effect, so a program that read to EOF does not
 poison the next run. And a caller built against the older one-argument
-signature passes no second argument, which arrives as null and means an empty
-stdin rather than undefined behaviour.
+signature passes no second argument, which arrives as null: the swap is then
+skipped, and nothing dereferences the pointer.
 
 ## Output, and the flush that is not optional
 
@@ -88,14 +109,14 @@ Every native entry point runs the program on a thread with a very large stack
 (Chapter 13), because the tree walker's recursion depth is the Raku recursion
 budget. A single-threaded WebAssembly build cannot spawn that thread.
 
-So the web entry point deliberately calls `rakuppRun` rather than
-`rakuppRunBigStack`, and reserves a large *WebAssembly* stack at link time
+So the web entry point passes `rk_new` the default configuration, which leaves
+`own_stack` off, and reserves a *WebAssembly* stack at link time
 instead. The interpreter's own recursion guard measures the real stack and
 throws `X::Recursion` before it overflows, so this is safe rather than merely
 lucky.
 
 The honest consequence is a much lower ceiling, and the browser sets it rather
-than the build. On v4.0.1 a plain recursive sub reached **58 levels in a Chrome
+than the build. On v4.0.1 a plain recursive sub reached **59 levels in a Chrome
 Web Worker and 115 on Chrome's main thread; in Safari, 32 and 419**. The next
 section is most of the reason in Chrome; the worker section below is the reason
 in Safari. By v5.6.3, with the same build flags, Chrome reaches about 1,350 in
@@ -172,8 +193,10 @@ much recursion` in Firefox — and the worker tells the page which it was:
 catch (err) {
   Module = null;
   ready = makeModule();
-  post('runerror', { message: String(err),
-                     deep: /call stack|too much recursion/i.test(String(err)) });
+  post('runerror', {
+    message: String(err),
+    deep: /call stack|too much recursion/i.test(String(err)),
+  });
 }
 ```
 
@@ -214,8 +237,9 @@ worker.onmessage = function (e) {
     case 'out':       if (b) b.feed(m.text, m.cls);             break;
     case 'done':      if (b) b.finish(m.rc, m.ms);
                       current = null; next();                   break;
-    case 'runerror':  if (b) { b.error(…); b.finish(1, 0); }
-                      current = null;                           break;
+    case 'runerror':  if (b && m.deep) { runOnMain(b); break; }
+                      if (b) { b.error(…); b.finish(1, 0); }
+                      current = null; next();                   break;
     case 'loaderror': …                                         break;
   }
 };
@@ -328,15 +352,16 @@ this.finish = function (rc, ms) {
   if (self._clearNext) { self._screen = []; chars = 0;
                          self._clearNext = false; }
   if (!self._screen.length) push('(no output)', 'meta');
-  push('\n— exit ' + rc + ' · ' + ms + ' ms —', 'meta');
-  stEl.textContent = 'exit ' + rc + ' · ' + ms + ' ms';
+  if (!hide.exit) push('\n— exit ' + rc + ' · ' + ms + ' ms —', 'meta');
+  status(hide.exit ? '' : 'exit ' + rc + ' · ' + ms + ' ms');
 };
 ```
 
 The exit code and elapsed time are pushed as an ordinary screen entry with a
 `meta` class, so they are styled apart from the program's own output — and the
 Copy button filters `meta` entries out, so copying an example gives you what the
-program printed and not the footer the page added.
+program printed and not the footer the page added. A block whose `data-hide`
+attribute names `exit` gets neither the footer nor the status text.
 
 A run that produced nothing says so, because an empty pane is indistinguishable
 from a pane that never updated.
@@ -527,9 +552,10 @@ Nothing is sent anywhere. The program runs in the visitor's browser.
 
 | | |
 |---|---|
-| **deep recursion** | about 1,350 Raku levels in a Chrome worker on v5.6.3 (58 on v4.0.1), 32 in a Safari one on v4.0.1; an overflowed run goes again on the page's main thread (about 2,700 in Chrome, 419 in Safari), and past that the page reports a recursion-limit message and recovers |
+| **deep recursion** | about 1,350 Raku levels in a Chrome worker on v5.6.3 (59 on v4.0.1), 32 in a Safari one on v4.0.1; an overflowed run goes again on the page's main thread (about 2,700 in Chrome, 419 in Safari), and past that the page reports a recursion-limit message and recovers |
 | **`start` / `Promise`** | needs real threads; a threaded build needs cross-origin isolation headers, awkward for static hosting (Chapter 38) |
 | **sockets** | not available in the browser sandbox |
+| **files on disk** | file IO works, against Emscripten's in-memory filesystem: the tree starts empty and is discarded with the module instance |
 | **NativeCall** | takes its no-libffi fallback path by construction — there is no shared library to open (Chapter 36) |
 | **`--exe` and the code generator** | irrelevant: this ships the interpreter, not the transpiler |
 | **`exit`** | aborts the module instance; the worker rebuilds a fresh one |

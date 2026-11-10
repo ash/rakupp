@@ -12,16 +12,20 @@ own — is in Appendix D.
 | a user-declared operator | `Parser.cpp` `parseSub`, the `userInfix_` family | Chapter 6 |
 | what a value *is* | `Value.h` | Chapter 8 |
 | string performance | `Value.h` `CowStr`, `BuiltinsShared.h` | Chapters 9 and 24 |
+| where a value's out-of-line blocks live | `Ref.h`, `BodyPool.h`, `SlabPool.h` | Chapter 41, VALUE32-PLAN.md |
 | the number tower | `BigInt.cpp`, `IntOps.h`, `Value::rat` | Chapter 11 |
 | scoping, assignment, binding | `InterpreterCore.cpp` `lvalue`, `evalAssign` | Chapter 12 |
+| cyclic garbage | `Cycle.cpp` | Chapter 12 |
 | how lists and argument lists are stored | `ValueVec.h` `RVec`, `Value.h`'s `ValueList` | Chapter 12 |
 | calls and signatures | `InterpreterCore.cpp` `callCallableRaw`, `bindParams` | Chapter 14 |
 | `return`, `next`, `last`, `when` | the cooperative registers in `ExecContext` | Chapter 15 |
 | a built-in routine | `BuiltinsRegister*.cpp` `registerBuiltins` | Chapter 16 |
 | a built-in **method** | the six `methodCall` segments, **in order** | Chapters 2 and 16 |
 | classes, roles, mixins | `InterpreterModules.cpp` `ClassDecl` handling, `Value.h` | Chapter 17 |
-| laziness, `gather` | `LazySeqState`, `seqOp`, the gather stack | Chapter 18 |
+| laziness, `gather` | `LazySeqState`, `seqOp`, the gather stack, `Coro.cpp` | Chapter 18 |
 | interpreter speed | `evalBinary`, `evalIndex`, the decided-once fields | Chapter 19 |
+| integer, loop and hyper kernels | `IntKernel.cpp`; the hyper kernels in `InterpreterRegex.cpp` | Chapter 41, KERNEL-PLAN.md |
+| packed native arrays | `Value.h` `PackedArr`, `Value.cpp` `selfPack` | PACKED-ARRAY-PLAN.md |
 | regex syntax | `Regex.cpp` `parseAtom` | Chapter 20 |
 | regex matching | `Regex.cpp` `matchNode` | Chapter 21 |
 | grammars | `GrammarMatcher`, `Interpreter::grammarParse` | Chapter 22 |
@@ -42,15 +46,24 @@ own — is in Appendix D.
 | the extension ABI | `rakupp_ext.h`, `ExtApi.cpp` | Chapter 37 |
 | embedding — Raku inside a host | `rakupp.h`, `EmbedApi.cpp` | Chapter 37 |
 | threads, the GIL, supplies | `Interpreter.h`'s concurrency section | Chapter 38 |
+| the race detector | `RaceDetector.cpp` | RACE-DETECTOR-PLAN.md |
+| the sandbox | `Sandbox.cpp`, `SandboxOs.cpp` | SANDBOX-PLAN.md |
 | lint, highlight, profile, REPL | `Lint.cpp`, `Highlight.cpp`, `Profiler.cpp`, `Repl.cpp` | Chapter 39 |
 | the undeclared-variable gate | `DeclCheck.cpp`, `isSpecialVar` in `Interpreter.cpp` | Chapter 39 |
+| the will-never-work call gate | `CallCheck.cpp` | Chapter 39 |
+| the formatter | `Fmt.cpp` | Chapter 39, FMT-PLAN.md |
+| the language server | `Lsp.cpp`, `LspIndex.cpp`, `editors/` | Chapter 39 |
+| documentation links | `DocLinks.cpp`, `raku_docs_index_gen.cpp` | Chapter 39 |
+| the RakuAST view | `RakuAstView.cpp`, `RakuAstClasses.cpp`, `RakuAstDeparse.cpp` | RAKUAST-PLAN.md |
 | the MCP server | `McpServer.cpp` | Chapter 39 |
+| the Jupyter kernel | `JupyterKernel.cpp`, `Digest.cpp`, `JsonLite.h` | Chapter 39 |
+| the Arduino back end | `src/codegen/Arduino.cpp`, `ArduinoSim.h` | ARDUINO-PLAN.md |
 
 ## Rules that are easy to break by accident
 
 Collected here because each has cost real debugging time.
 
-**The method-dispatch chain is order-sensitive.** The four segments are ordered
+**The method-dispatch chain is order-sensitive.** The six segments are ordered
 slices of one function; later arms deliberately catch what earlier ones decline.
 Moving an arm for readability is a behaviour change.
 
@@ -78,9 +91,17 @@ with a `memcpy`, which is sound only while every member survives having its
 bytes moved without the source being destroyed. A field with an interior
 pointer, a self-registering handle or an intrusive list node breaks it — and
 breaks it silently, by producing wrong data rather than by failing to compile.
-The near-miss is already in the struct: libstdc++'s short `std::string` points
-at its own inline buffer, which is why the path is chosen by a run-time probe.
-Run `tools/reloc-probe.cpp` after touching the struct.
+The near-miss was in the struct until 2026-11-07: `CowStr` held a
+`std::string`, and libstdc++'s short one points at its own inline buffer, which
+is why the path is chosen by a run-time probe. A `Value` holds no `std::string`
+now and the probe is still there. Run `tools/reloc-probe.cpp` after touching
+the struct.
+
+**Every block a `Value` refers to comes from `BodyPool`.** Where handles are
+on, the payload slot, the cold block and a long string's body are 32-bit
+offsets into one reserved region, so a block made with plain `new` has no
+handle. Make payloads with `makePayload`, which also holds each one to the
+pool's 4,096-byte limit with a `static_assert`.
 
 **Add an early exit, never restructure the general path underneath it.** The
 first node specialisation cost the control 5.7% by doing the latter.

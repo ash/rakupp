@@ -12,8 +12,8 @@ Once a program is a tree, several useful things become short. This chapter
 covers the tools that are built on the front end rather than on the runtime, one
 that is built on the call path, one that is built on the published C ABI and
 serves the engine to a program that is not a person, and one thing that is not a
-tool at all: a check the compiler always runs, whose only job is to stop the
-program.
+tool at all: a pair of checks the compiler always runs, whose only job is to
+stop the program.
 
 ## `--lint`: static analysis that runs nothing
 
@@ -24,6 +24,7 @@ struct LintFinding {
     char severity = 'W';        // 'E' error, 'W' warning, 'N' note
     std::string rule;           // a stable id, e.g. "unused-variable"
     std::string message;
+    std::string subject;        // the token the finding is about, or ""
 };
 std::vector<LintFinding> lintProgram(Program& prog);
 ```
@@ -51,17 +52,28 @@ printed alike: a warning is something to consider, an error is a file that will
 not compile. The exit code says the same thing twice over, 1 for warnings and 2
 for anything fatal.
 
+`--lint --json` prints the same findings as a JSON array of objects with five
+keys — `file`, `line`, `severity`, `rule`, `message` — and `-c --json` does the
+same for the compile check alone, `[]` when the file is clean. `subject` is not
+printed by either. Only the language server reads it, to underline one token
+instead of a whole line.
+
 ## The undeclared-variable gate: the same principle, with the program stopped
 
 ```cpp
 // src/DeclCheck.h
-struct UndeclaredVar { std::string name; int line; };
+struct UndeclaredVar {
+    std::string name; int line;
+    std::vector<std::string> inScope;    // for "Did you mean"
+    bool heredoc = false;
+};
 
 using Path = std::vector<std::string>;   // the module search path
 
 std::vector<UndeclaredVar> findUndeclaredVars(const Program& prog,
                                               const std::string& src,
-                                              const Path& searchPath);
+                                              const Path& searchPath,
+                                              bool scoped = false);
 ```
 
 `--lint` is opt-in and only warns. This one nobody asks for and it refuses to
@@ -99,10 +111,15 @@ answer is a compile-time report:
 
 ```
 ===SORRY!=== Error while compiling 1.raku
-Variable '$y' is not declared
+Variable '$y' is not declared. Perhaps you forgot a 'sub' if this was
+intended to be part of a signature?
 at 1.raku:3
 ------> say ⏏$y;
 ```
+
+The second sentence is Rakudo's, and so is the other form the message takes:
+when a name in scope is close to the one written, the report lists it after
+"Did you mean". That is what `inScope` carries.
 
 ### Where it hangs
 
@@ -112,16 +129,23 @@ Not on the interpreter, and deliberately not on every entry point.
 rakuppRun ─────► rakuppRunOn(…, declCheck = true)  ─► [gate] ─► run
 rk_run ────────► rakuppRunOn(…, declCheck = false) ─────────► run
 -c --cpp --bundle --aot --exe ─► [gate] ─► the mode's own pipeline
-REPL ──────────────────────────► one line at a time, no gate
+EVAL, a REPL line ─► evalString(…, mainlinePH = true) ─► [gate] ─► run
+rk_eval ───────► evalString(…) ──────────────────────────────► run
 ```
 
 `rakuppRun` is the CLI's funnel and asks for the gate; `rakuppRunOn` is what an
 **embedding host** calls through `rk_run`, and it does not. A host's interpreter
 may already hold globals it installed through the extension ABI, and no static
-pass over *this* source can see those. The REPL is exempt for a different
-reason: each line is its own compilation unit, so the late error costs one line,
-which is what a prompt is for. `--mcp` reaches the interpreter through the same
-embedding API and is exempt with it.
+pass over *this* source can see those. `--mcp` reaches the interpreter through
+the same embedding API, as `rk_eval`, and is exempt with it.
+
+An `EVAL` and a REPL line were exempt once and are not now. A snippet is its
+own compilation unit, and Rakudo refuses `EVAL 'say 1; say $typo'` before the
+`say 1` runs, so `evalString` asks the same question of the snippet when it is
+called with `mainlinePH` set, which is how `EVAL` and the REPL call it. The
+pass sees only the snippet, so each candidate is then looked for in the scopes
+the snippet runs in: a variable the caller or the session already holds is no
+finding. At the prompt, `say 1; say $zz` prints the error and no `1`.
 
 The two interpreter call sites bracket both branches of the run path — the fresh
 parse and the precompiled-AST cache hit (Chapter 30) — because a cached tree is
@@ -155,7 +179,9 @@ correctly declared variable look undeclared, and refusing such a program would
 be much worse than the late error being replaced.
 
 What the backstop costs is the cross-scope case — a name declared in one routine
-and used in another is not reported. What it buys is that a finding means *this
+and used in another is not reported. The `scoped` argument leaves the backstop
+out. It is passed only for a snippet already refused for something else, an
+undeclared routine, so that the refusal can name the variable as Rakudo's does. What it buys is that a finding means *this
 name is declared nowhere in this file*, which no gap in the parser can falsify.
 The two layers are not redundant: the AST pass knows about placeholders and
 signatures, which no text scan could; the text scan knows about binders the AST
@@ -240,14 +266,65 @@ the unused-variable warning. An editor showing a clean file that will not run is
 this same failure one layer further out, and it is worse, because nobody
 consults a linter they believe has already run.
 
-Both now build the same list — `lintProgram` plus `findUndeclaredVars`, sorted
-by line and rule — and the server maps `'E'` to LSP severity Error. Two details
+Both now build the same list — `lintProgram`, `findUndeclaredVars` and the call
+check of the next section, sorted by line and rule — and the server maps `'E'`
+to LSP severity Error. Two details
 belong to the server rather than the check. A long-running process may not die
 of an internal error, so a throw out of the declaration check publishes an
 informational diagnostic saying the check did not run, rather than either
 crashing or silently dropping it — a missing error being exactly what this
 paragraph is about. And `RAKUPP_NO_DECLCHECK=1` switches it off in both tools,
 so they cannot disagree about being switched off.
+
+### A second gate: the call that can never bind
+
+```cpp
+// src/CallCheck.h
+struct DoomedCall {
+    int line = 0;
+    std::string name;                     // the routine, as the call names it
+    std::vector<std::string> arguments;   // the argument types
+    std::vector<std::string> signatures;  // one, or one per multi candidate
+    bool multi = false;
+    bool undeclared = false;              // run while compiling, declared below
+};
+```
+
+The declaration gate has had a sibling since 2026-10-07, hung on the same
+hooks and built to the same rule.
+
+```raku
+sub f(Str $x) { $x }
+say "a";
+try f(42);
+```
+
+Rakudo's optimizer refuses this file: the routine is a sub the unit declares,
+the argument is a literal, and no `Int` binds to `Str $x`. The interpreter's
+binder reported the same call only when it ran, so the program printed `a` and
+the `try` swallowed the error. `findDoomedCalls` asks before anything runs:
+
+```
+===SORRY!=== Error while compiling 3.raku
+Calling f(Int) will never work with declared signature (Str $x)
+at 3.raku:3
+------> try ⏏f(42);
+```
+
+A finding has to be a certainty here too. The pass judges only positional,
+unflattened arguments of a type it knows — a literal, a type object, a variable
+declared with a nominal type — against a sub or a multi family the unit itself
+declares. A parameter it does not analyse makes it unsure, and unsure is never
+a finding. It is stricter than Rakudo about one thing: Rakudo types `my @a` as
+`Positional` and refuses `f(@a)` against an `Iterable $x` that an Array
+satisfies at run time, and this pass leaves that call to run.
+
+The `undeclared` flag is the other thing the same walk finds: a routine called
+while the unit is still compiling, from a `constant` initializer or a `BEGIN`
+block, and declared only further down.
+
+It reports through `--lint` and the language server as `will-never-work` or
+`undeclared-routine`, both errors, and `RAKUPP_NO_CALLCHECK=1` switches it off.
 
 ### What it costs
 
@@ -321,14 +398,20 @@ GCC-isms broke the MSVC build once already.
 ```cpp
 // src/Repl.h
 int rakuppRepl(const std::string& exePath,
-               const std::vector<std::string>& libPaths);
+               const std::vector<std::string>& libPaths,
+               bool quiet = false,
+               const std::vector<std::string>& preload = {});
+int rakuppReplAfter(/* …the same, plus the program and its arguments */);
 bool stdinIsTerminal();
 bool replForced();
 ```
 
-The REPL is entered **only** by a bare `rakupp` attached to a terminal. Anything
+The REPL is entered by a bare `rakupp` attached to a terminal. Anything
 arriving on a pipe or a redirect is a complete program and keeps running as one;
-the terminal test in `main` is the whole of that decision.
+the terminal test in `main` is the whole of that decision, unless
+`RAKUPP_REPL=1` forces a session. The one other way in is `--repl-after`, which
+runs a program and then opens the prompt on its state, with its variables, subs
+and classes live.
 
 It lives in the executable rather than the runtime library, so nothing about an
 interactive session is linked into the binaries the compiling modes produce.
@@ -377,7 +460,7 @@ bool atEof = false;
 ```cpp
 // src/Interpreter.h
 Value evalString(const std::string& src, bool mainlinePH = false,
-                 bool* incompleteOut = nullptr);
+                 bool* incompleteOut = nullptr /* , … */);
 ```
 
 The flag is set by the lexer's runaway-construct diagnostics and by the parser
@@ -393,6 +476,7 @@ namespace rakupp::mcp {
 struct Options {
     int timeoutSecs = 120;              // 0 disables the watchdog
     std::vector<std::string> preload;   // -M modules, as `use <module>;`
+    bool quiet = false;                 // -q
 };
 int runServer(const Options& opt);      // serves until stdin closes
 }
@@ -432,9 +516,9 @@ a server reaching into the interpreter directly because it lives in the same
 binary — would have been shorter to write and would have produced a third set of
 semantics to keep in step.
 
-It is also why `--mcp` is exempt from the declaration gate earlier in this
-chapter: every evaluation arrives through `rk_eval`, like any other embedding
-host's, and the embedding path does not ask for the gate.
+It is also why `--mcp` is exempt from the two gates earlier in this chapter:
+every evaluation arrives through `rk_eval`, like any other embedding host's,
+and the embedding path does not ask for them.
 
 ### The watchdog, and a bug worth keeping
 
@@ -515,7 +599,11 @@ Jupyter::Kernel's spelling, is read by the kernel before `rk_eval` sees the
 cell. A typed value is the same `.gist` published under another MIME type.
 The two magics that need I/O, `bash` and `run`, call subs the kernel's
 prelude defines, so they reach processes and files through the engine's own
-`Proc::Async` and `slurp`, never through a door of their own.
+`Proc::Async` and `slurp`, never through a door of their own. `%% always`
+registers code to run around every later cell.
+
+`rakupp --jupyter-install` writes the kernelspec that lets a frontend find the
+binary, under the name `raku` unless `--name` gives another.
 
 ### The transport is the interesting part
 
@@ -535,10 +623,10 @@ peer on the older subscription form and off ZMTP heartbeats — less protocol on
 a link that carries one client — while the code still honours the 3.1
 `SUBSCRIBE` command and answers `PING` with `PONG`, so a libzmq that changes
 its mind does not break it. And every message is signed with HMAC-SHA256 over
-its four JSON parts, using the SHA-256 in `src/Digest.h` (about 120 lines of
-FIPS 180-4, shared with the digest builtins; the kernel keeps a five-line
-wrapper) for the same reason as the JSON: one that does not verify is *dropped*,
-not answered.
+its four JSON parts, using the SHA-256 and HMAC of `src/Digest.cpp` (MD5, SHA-1
+and the SHA-2 family in 426 lines, shared with the digest builtins; the kernel
+keeps a five-line wrapper), hand-written for the same reason as the JSON. A
+message that does not verify is *dropped*, not answered.
 
 ### The bug the capture mechanism sets
 
@@ -568,7 +656,8 @@ implementations of both halves agree.
 
 ```cpp
 // src/Pod.h
-ValueList parsePod(const std::string& src);
+ValueList parsePod(const std::string& src, bool strict = false);
+std::string pod2text(const Value& v);
 ```
 
 Pod blocks are parsed into the `$=pod` DOM — a list of `Pod::Block` values, each
@@ -587,15 +676,16 @@ collected by the lexer keyed by line and attached by the parser, answering
 `--doc` runs `DOC` phasers and prints the rendered content, and `=finish` data
 travels from the lexer to `$=finish`.
 
-## `--dump-ast`, and the tool built on it
+## `--ast`, and the tool built on it
 
 ```sh
-rakupp --dump-ast prog.raku
+rakupp --ast prog.raku
 RAKUPP_DUMPTOKENS=1 rakupp prog.raku
 ```
 
 `AstDump.cpp` prints the tree as an indented outline. It is the first thing to
-reach for when a parse produces something unexpected.
+reach for when a parse produces something unexpected. `--dump-ast` is the older
+spelling and `--target=ast` is Rakudo's; all three are the same mode.
 
 It is also an **interface**, not just a debugging aid. `tools/ast-opportunity.raku`
 reads its output and counts syntactic patterns across a corpus — which is the
@@ -603,6 +693,97 @@ tool that measured, in two minutes, that constant folding had almost nothing to
 fold in real Raku and that operand shapes were 25 per thousand nodes
 (Chapter 19). A textual tree dump turned out to be a perfectly good static
 analysis substrate.
+
+`--rakuast` prints a second tree beside it: the RakuAST view, the same program
+as the node classes Rakudo's `.AST` would build, each line with the Raku that
+node renders back to. It is a view built from this tree on demand
+(`RakuAstView.cpp`), and nothing is cached on the tree's own nodes for it: the
+interpreter goes on walking the tree it always walked.
+
+## `--fmt`: a formatter that refuses
+
+```cpp
+// src/Fmt.h
+enum class FmtStatus { Ok, ParseError, SemanticRefusal, NotIdempotent };
+struct FmtResult {
+    FmtStatus status = FmtStatus::Ok;
+    std::string text;      // the formatted source (Ok only)
+    bool changed = false;
+};
+FmtResult formatSource(const std::string& src);
+```
+
+`rakupp --fmt` prints a program formatted, `--check` lists the files that would
+change and exits 1 if any would, and `--diff` shows the change as a unified
+diff built in the binary. `--target=raku` is the same mode, spelled as a
+target.
+
+It does not print the tree back. A deparser loses comments and the author's
+line breaks, so the formatter edits the source as spans: the lexer says which
+bytes are code, which are a string, a heredoc or a comment, and each rule moves
+whitespace only where the lexer says it is code. The rule set is small —
+indentation by bracket depth, trailing whitespace, one newline at the end of
+the file, `else` on its own line, a space after a comma, runs of blank lines —
+and it never collapses spacing the author chose: `my   $x=42` comes back as
+written.
+
+What makes it safe to run on a whole repository is the three gates inside
+`formatSource`. The input must parse. The output must parse to the same tree
+as the input, compared in the cache's serialised form with line numbers
+stripped. And formatting the output again must change nothing. A failure of any
+of them is a refusal: the formatter emits the formatted text or nothing, never
+a half-formatted file.
+
+## `--lsp`: the same findings, in an editor
+
+`rakupp --lsp` speaks the Language Server Protocol on standard input and
+output. Its diagnostics are the list described above, each underlined on the
+token `subject` names, plus parse errors. Since 2026-10-03 it also answers
+three requests:
+
+- **hover** — what `docs/guide/REFERENCE.md` says about a built-in, or the
+  declaration of a name of the file's own, as written;
+- **completion** — the names visible at the cursor, the file's own first;
+- **go-to-definition** — the declaration of a name, in the open document.
+
+Those three are computed from the **token stream**, not the tree
+(`LspIndex.cpp`). Hover and completion are asked for while a line is half
+typed, and the lexer is tolerant where the parser is not. The server never
+creates an interpreter, so opening a file cannot run it. Find-references,
+rename and signature help are not written.
+
+The clients are in `editors/`: a VS Code extension and Emacs setups for eglot
+and lsp-mode. `lspExchange` is the same server without the transport, one
+message in and its replies out, for a host that carries the messages itself.
+
+## `--doc-links`: every construct, linked to its documentation
+
+```sh
+rakupp --doc-links prog.raku
+```
+
+prints a list of the constructs a program uses — keywords, routines and
+methods, operators, types, special variables, quoting forms — each with the
+lines it appears on and its page on docs.raku.org. `--html` and `--ansi` print
+the program itself with each construct linked, and `--json` the list for a
+tool.
+
+Two layers decide a link, as in the declaration gate. The token stream says
+where each construct is. The tree says what it means where a word cannot: that
+a `-` is prefix or infix, that `.uc` is called on a `Str`, that `Point` is the
+program's own class and has no page. A program that does not parse still gets
+the token layer.
+
+Nothing runs and nothing touches the network. Names resolve against a copy of
+the documentation site's own search index, committed as generated source
+(`raku_docs_index_gen.cpp`), and the report's first line gives the date of
+that copy.
+
+## `--trace`
+
+`--trace` prints each statement to standard error as it runs, with its file,
+line and source text. It is the one tool here that is on the execution path
+and not the tree: a line of a loop body is printed once per iteration.
 
 ## The tools that are not in the binary
 
