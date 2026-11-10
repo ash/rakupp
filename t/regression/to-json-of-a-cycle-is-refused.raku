@@ -5,6 +5,8 @@
 # rakupp's own.) Found by the review of src/
 # (docs/dev/findings/src-review-2026-11-09.md, E1).
 
+#?requires JSON::Fast
+
 use JSON::Fast;
 
 sub ck($got, $want, $desc) {

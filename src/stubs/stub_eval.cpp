@@ -1,6 +1,6 @@
 // SLIM-PLAN P3: the stub half of the `eval` seam — linked in place of
 // librakupp_parse.a when --slim cuts the feature. The parser's entire
-// out-of-line surface is four symbols (measured: linking rt without parse
+// out-of-line surface is four functions and a flag (measured: linking rt without parse
 // leaves exactly these undefined), so a cut binary carries these four throws
 // instead of the Lexer and Parser, and EVAL / require / a runtime-compiled
 // regex is the moment the program learns the feature is out.
@@ -74,3 +74,10 @@ Value rakuAstNameFrom(Interpreter&, const ValueList&) {
 }
 
 }
+
+// Parser.cpp's flag for `--doc`, which Runtime.cpp's rakuppSetDocMode sets.
+// With no parser there is no `DOC` phaser to keep, so it is only a place to
+// store the bit: without it a cut binary does not link where the linker
+// resolves every reference (GNU ld, lld), though Apple's ld strips the
+// reference first.
+namespace rakupp { bool g_docPhasers = false; }
