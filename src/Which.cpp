@@ -85,7 +85,7 @@ bool whichIsObjAt(const Value& v) {
         return v.pairLive() ||   // a live container inside: the Pair is an object (pair.t)
                (v.hasPairKey() && whichIsObjAt(v.nonStrKey())) ||
                (v.pairVal() && whichIsObjAt(*v.pairVal()));
-    return (v.t == VT::Array && v.hashKind != "Capture" && v.enumName.empty()) ||
+    return (v.t == VT::Array && v.hashKind != "Capture" && v.enumName().empty()) ||
            (v.t == VT::Hash && v.hashKind.empty()) ||
            (v.t == VT::Hash && (v.hashKind == "Hash" || v.hashKind == "SetHash" ||
                                 v.hashKind == "BagHash" || v.hashKind == "MixHash")) ||
@@ -175,7 +175,7 @@ std::string whichOf(const Value& v) {
                                        hashIsIdentity(v)))
                               return serialWhich(v.typeName(), bodySerial(v.p_.get()));
                           return v.typeName() + "|" + v.toStr();
-        case VT::Array:   if (!v.enumType.empty() && v.enumName.empty()) goto typeObject; // an enum's type
+        case VT::Array:   if (!v.enumType().empty() && v.enumName().empty()) goto typeObject; // an enum's type
                           if (v.hashKind == "Capture") {
                               std::string pos;
                               std::vector<std::string> named; // named parts are unordered
@@ -192,9 +192,9 @@ std::string whichOf(const Value& v) {
                           // a JUNCTION is a value too: its kind and its eigenstates, so
                           // two `any(True, True)` are one key of a Mu-keyed hash and
                           // `any(True, False)` another (classify.t)
-                          if (v.arr() && (v.enumName == "any" || v.enumName == "all" ||
-                                          v.enumName == "one" || v.enumName == "none")) {
-                              std::string s = "Junction|" + v.enumName.str() + "(";
+                          if (v.arr() && (v.enumName() == "any" || v.enumName() == "all" ||
+                                          v.enumName() == "one" || v.enumName() == "none")) {
+                              std::string s = "Junction|" + v.enumName().str() + "(";
                               for (auto& e : *v.arr()) s += whichOf(e) + ";";
                               return s + ")";
                           }
@@ -226,7 +226,7 @@ std::string whichOf(const Value& v) {
 // keys, not the stringified form). Null for a plain Str — that round-trips
 // through the string key, so Set-of-strings behaviour stays byte-identical.
 std::shared_ptr<Value> baggyKey(const Value& v) {
-    if (v.t == VT::Str && v.hashKind.empty() && v.enumName.empty()) return nullptr;
+    if (v.t == VT::Str && v.hashKind.empty() && v.enumName().empty()) return nullptr;
     return std::make_shared<Value>(v);
 }
 // The LOOKUP key of a quanthash element.

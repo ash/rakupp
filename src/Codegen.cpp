@@ -5137,7 +5137,7 @@ struct Codegen {
                 (nameLetterAt(tv->name, 1) || tv->name[1] == '_') &&
                 !opDeclared("infix:<~>") && coerceFor(tgt, rhs, a->value.get()) == rhs) {
                 return "([&]()->Value&{ Value& __l = " + lvalueExpr(tgt) + ";"
-                       " if (__l.t == VT::Str && __l.hashKind.empty() && __l.enumName.empty()) " +
+                       " if (__l.t == VT::Str && __l.hashKind.empty() && __l.enumName().empty()) " +
                        (back ? "rtCatAssign(__l, " + exArg(b->rhs.get()) + ");"
                              : "rtCatPrepend(__l, " + exArg(b->lhs.get()) + ");") +
                        " else __l = " + rhs + "; return __l; }())";
@@ -6190,16 +6190,16 @@ struct Codegen {
             "// integer subs; a bail leaves the answer to the Value function\n"
             "struct __KR { int depth = 100000; bool bail = false; };\n"
             "static inline bool __kInt(const Value& v) {\n"
-            "    return v.t == VT::Int && !v.x_ && v.pk_ == PK::None && !v.natBits && !v.natSigned &&\n"
-            "           !v.natFloat && !v.b && !v.isList && !v.objKeyed && !v.namedArg && v.enumName.empty() &&\n"
-            "           v.enumType.empty() && v.hashKind.empty() && v.s.empty();\n"
+            "    return v.t == VT::Int && !v.x_ && v.pk_ == PK::None && !v.natBits() && !v.natSigned &&\n"
+            "           !v.natFloat && !v.b && !v.isList && !v.objKeyed && !v.namedArg && v.enumName().empty() &&\n"
+            "           v.enumType().empty() && v.hashKind.empty() && v.s.empty();\n"
             "}\n"
             "// …an `int` parameter's: that, or a native int's own value\n"
             "static inline bool __kIntN(const Value& v) {\n"
-            "    if (!v.natBits) return __kInt(v);\n"
-            "    return v.natBits == 64 && v.natSigned && !v.natFloat && v.t == VT::Int && !v.x_ && v.pk_ == PK::None &&\n"
-            "           !v.b && !v.isList && !v.objKeyed && !v.namedArg && v.enumName.empty() &&\n"
-            "           v.enumType.empty() && v.hashKind.empty() && v.s.empty();\n"
+            "    if (!v.natBits()) return __kInt(v);\n"
+            "    return v.natBits() == 64 && v.natSigned && !v.natFloat && v.t == VT::Int && !v.x_ && v.pk_ == PK::None &&\n"
+            "           !v.b && !v.isList && !v.objKeyed && !v.namedArg && v.enumName().empty() &&\n"
+            "           v.enumType().empty() && v.hashKind.empty() && v.s.empty();\n"
             "}\n"
             "static inline int64_t __kAdd(int64_t a, int64_t b, __KR& r) { long long z = 0; if (rakupp::add_ovf(a, b, &z)) r.bail = true; return z; }\n"
             "static inline int64_t __kSub(int64_t a, int64_t b, __KR& r) { long long z = 0; if (rakupp::sub_ovf(a, b, &z)) r.bail = true; return z; }\n"

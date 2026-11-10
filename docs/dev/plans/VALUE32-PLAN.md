@@ -1039,6 +1039,275 @@ mallocs, where it made 204,626 (`t/regression/hash-elems-size.raku`).
   and the kernels.** It writes through what a kernel loop stored and checks the
   literal and the variable behind it.
 
+### 56 bytes: the tag block is 4 bytes (2026-11-10)
+
+**`sizeof(Value)` is 56.** At 64 the struct had 57 live bytes and 7 of
+padding: 3 after the tag block and 4 after `enumType`. One byte was in the
+way. `natBits` is only ever 0, 8, 16, 32 or 64, so it is held in bytes, as the
+4-bit `natBytes_`, and read and written through `natBits()` and
+`setNatBits()`. That makes the tag block 4 bytes (`t`, `pk_`, 11 flags and
+the 4 bits), and `enumType` moved up beside it into the rest of that word.
+Every other field keeps the offset it had: `p_` at 40 and `x_` at 48.
+`ExecContext` went from 1,504 to 1,472 bytes.
+
+The change is 190 `natBits` sites rewritten mechanically, three of them in the
+C++ that Codegen emits.
+
+**Measured 2026-11-10**, Darwin 25.6 / arm64, Release builds of e050bec7 and
+of this change from one sitting. The machine was loaded (load average 4–8).
+
+| gate | result |
+|---|---|
+| `t/run.raku` | 2,174 of 2,174 |
+| Roast, files fully passing | 1,425 of 1,425 (221,034 assertions) |
+| instructions retired, 27 kernels, the least of 2 | every kernel level or lower: 0 to −4.7% (`junctionwide`), −3.6% `junction`, −2.3% `userplus` |
+| time, 27 kernels × 6 interleaved rounds, order alternating | 19 faster, 8 slower; see below |
+
+| program, peak RSS | 64 | 56 | |
+|---|---:|---:|---:|
+| a million Ints from `.map` | 134.6 MB | 118.9 MB | −11.7% |
+| a million short Strs from `.map` | 134.5 MB | 118.9 MB | −11.6% |
+| a million Rats from `.map` | 211.4 MB | 195.9 MB | −7.3% |
+| 200,000 two-element arrays | 70.7 MB | 64.2 MB | −9.2% |
+| 200,000 two-attribute objects | 122.5 MB | 118.1 MB | −3.6% |
+| a 200,000-key hash | 30.2 MB | 28.5 MB | −5.6% |
+| `tools/bench/hashfill.raku` | 44.6 MB | 41.7 MB | −6.5% |
+| `tools/bench/textsplit.raku` | 23.4 MB | 21.3 MB | −9.0% |
+
+- **Time is placement on the integer kernels.** `asg` and `loopsum` measured
+  −5% to −11% with the same instructions, and with both trees built
+  `-falign-functions=64` they are level (−0.3%, +0.9%).
+- **`multiwhere` and `multimeth` are slower with fewer instructions.** +6.6%
+  and +3.9% as built, 16 rounds; +2.9% and +1.9% with `-falign-functions=64`,
+  20 rounds, with 0.6% fewer instructions each. Most of the gap is placement.
+  Whether the rest is the 56-byte stride (a `Value` no longer starts on a
+  cache line) is not settled: it should be re-timed on a quiet machine before
+  it is called a cost.
+
+**Not run:** the module battery, the ASan and TSan builds, Linux, and
+`tools/value32-probe.cpp`.
+
+### 48 bytes: the enum names are cold (2026-11-10)
+
+**`sizeof(Value)` is 48**: five words and no padding. `i`/`n`, the 16-byte
+`s`, `hashKind` with the tag block, `p_`, `x_`.
+
+`enumName` and `enumType` moved into the cold block (`ValueExt`). Not the one
+`aux` word this plan first proposed, and not narrower indices: the names are
+not disjoint (a Blob carries `hashKind` and its subtype in `enumName`), and a
+narrow index needs a cap. An enum value, a Junction (its kind) and a Blob
+subtype carry these names and nothing else does, which is what the cold block
+is for. `hashKind`, with about 1,900 uses, stays where it was. Copies of an
+enum value share the block by count, so `Order::Less` out of a comparison is a
+copy of a static value, as before, plus one count.
+
+Reads are `enumName()` and `enumType()`, returning an `IStr` by value; writes
+are `setEnumName()` and `setEnumType()`, which do nothing when the name is
+already that. About 600 sites, rewritten mechanically, with the emitted C++ in
+Codegen among them. `p_` moved from offset 40 to 32 and `x_` from 48 to 40.
+`ExecContext` is 1,440 bytes.
+
+**What it costs:** a Value that carries one of these names now has a cold
+block: a slab allocation when the name is first set on a Value that had none,
+and a count on each copy.
+
+**Measured 2026-11-10** against the 56-byte build, same machine and sitting
+(load average 5–6).
+
+| gate | result |
+|---|---|
+| `t/run.raku` | 2,174 of 2,174 |
+| Roast, files fully passing | 1,425 of 1,425; `S17-procasync/stress.t` timed out once beside a compile and passes 24 of 24 alone, twice |
+| instructions retired, 27 kernels, the least of 2 | 23 lower (to −1.9% `userplus`, −1.5% `method`), `junction` +0.70%, `junctionwide` +0.34% |
+| time, 27 kernels × 6 interleaved rounds | `multiwhere` −17%, `multimeth` −8.2%, `attrread` −7.9%, `method` −6.0%; `loopsum` +3.6%, `intcat` +2.3% with the same instructions |
+
+The workloads the change taxes, 8 interleaved rounds:
+
+| program | time | instructions |
+|---|---:|---:|
+| 300,000 `"abc$_".encode.elems` | +2.0% | +0.87% |
+| 300,000 `$_ == 3\|5\|7` | +0.8% | +2.48% |
+| 500,000 `<=>` and `cmp` results compared to `Less`/`More` | +2.0% | −0.31% |
+| an enum value compared a million times | −1.3% | −0.33% |
+| `.sort({ $^a <=> $^b })` of 300,000 | −3.7% | −1.81% |
+
+| program, peak RSS | 56 | 48 | |
+|---|---:|---:|---:|
+| a million Ints from `.map` | 119.0 MB | 103.4 MB | −13.1% |
+| a million short Strs from `.map` | 119.0 MB | 103.5 MB | −13.0% |
+| a million Rats from `.map` | 195.8 MB | 180.3 MB | −7.9% |
+| 200,000 two-element arrays | 64.3 MB | 57.8 MB | −10.1% |
+| 200,000 two-attribute objects | 118.3 MB | 108.1 MB | −8.6% |
+| a 200,000-key hash | 28.5 MB | 27.5 MB | −3.5% |
+| `tools/bench/hashfill.raku` | 41.7 MB | 38.7 MB | −7.2% |
+| `tools/bench/textsplit.raku` | 21.4 MB | 21.2 MB | −0.9% |
+
+`multiwhere` and `multimeth`, which read slower at 56, read faster at 48 than
+at 64, so that was the stride or placement and not a cost of the tag block.
+
+**Not run:** the module battery, the ASan and TSan builds, Linux, and
+`tools/value32-probe.cpp`.
+
+**Left open:** one shared, immutable block per (name, type) pair would take
+back the allocation on `.encode` and on a Junction; the first write through
+`xw()` would clone it as it does any shared block.
+
+### 40 bytes: `p_` and `x_` are 32-bit handles (2026-11-10)
+
+**`sizeof(Value)` is 40** on 64-bit macOS and Linux. The payload slot and the
+cold block are each a 4-byte HANDLE: an offset, in 16-byte units, into one
+reserved region, so the block is at `base + (handle << 4)`. The count is where
+it was, in the block. Nothing about sharing or lifetime changed, and no site
+outside `Ref.h`, `Value.h` and the new [src/BodyPool.h](../../../src/BodyPool.h)
+did: `PayRef` is the handle, `HRef<ValueExt>` replaces `Ref<ValueExt>`, and
+`PRef<T>`, the typed reference every other holder uses, is still a pointer.
+
+**The bodies needed an allocator.** `SlabPool` makes each block with
+`::operator new`, on purpose, so that a block can go back to the system. A
+handle needs every body inside the one region. `BodyPool` reserves 64 GB of
+address space (what 32 bits of 16-byte units reach, less where the system
+gives less) and cuts it into 64 KB spans. A span serves one size class; when
+all its blocks are back it is given up, its pages go back to the system past
+the first 16 kept warm, and it may next serve another class. A class keeps its
+last free span. The hot path is `SlabPool`'s thread-private free list, filled
+and emptied in batches under the class's lock. Bodies up to 4,096 bytes are
+served (`SlabPool` stopped at 512), which a `static_assert` in `makePayload`
+holds every payload to.
+
+**Where handles are off** a `Value` is 48 bytes, `BodyPool` is `SlabPool` and
+the handle is the pointer: Windows, a 32-bit target, and a build with the pools
+off (AddressSanitizer). `-DRAKUPP_BODY_HANDLES=0` turns them off anywhere,
+which is how the base below was built.
+
+**Measured 2026-11-10** against the same tree with `-DRAKUPP_BODY_HANDLES=0`
+(48 bytes), same machine and sitting (load average 5–7).
+
+| gate | result |
+|---|---|
+| `t/run.raku` | 2,174 of 2,174 |
+| Roast, files fully passing | 1,425 of 1,425; `S17-procasync/stress.t` timed out once beside a compile and passes 24 of 24 alone, twice |
+| instructions retired, 27 kernels, the least of 2 | **every kernel but one higher**: +2.9–3.0% `method`, `attrread`, `privmeth`, `subcall`, `multimeth`, `multiwhere`; +3.9% `junctionwide`; +1.3–1.8% the string and object kernels; under +0.2% the integer kernels |
+| time, 27 kernels × 6 interleaved rounds | 5 faster (the integer kernels, placement), 21 slower by 0.5–6.8% |
+
+| program, peak RSS | 48 | 40 | |
+|---|---:|---:|---:|
+| a million Ints from `.map` | 103.4 MB | 88.0 MB | −14.9% |
+| a million short Strs from `.map` | 103.4 MB | 88.0 MB | −14.9% |
+| a million Rats from `.map` | 180.3 MB | 164.4 MB | −8.8% |
+| 200,000 two-element arrays | 57.8 MB | 51.5 MB | −10.9% |
+| 200,000 two-attribute objects | 107.9 MB | 103.9 MB | −3.7% |
+| a 200,000-key hash | 27.5 MB | 26.1 MB | −5.1% |
+| `tools/bench/hashfill.raku` | 38.5 MB | 36.2 MB | −6.0% |
+| `tools/bench/textsplit.raku` | 21.1 MB | 21.2 MB | +0.5% |
+
+**This is the first step that costs time.** The instructions are the decode:
+each use of a payload or its count loads the region's base, shifts and adds.
+With the base a compile-time constant (the region asked for at a fixed
+address, 0x100000000000) the same nine kernels measure +0.9% to +1.9% where
+they measured +1.3% to +3.0%, and `junctionwide` +2.4% for +3.9%. That
+variant is not in the tree: the constant holds only if the system grants that
+exact address, and a first try at 0x4000000000 was refused on this machine.
+
+**Not run:** the module battery, the ASan and TSan builds, Linux, a build with
+handles off through the gates, and `tools/value32-probe.cpp`.
+
+**Left open:**
+
+- **The fixed base**, as above: half the cost back, for a start-up failure
+  where the address is taken.
+- **A dying thread's lists** go back to the spans only if its reaper runs
+  after the last body it frees, as with `SlabPool`.
+- **`MADV_FREE` on macOS** leaves a given-up span's pages counted until the
+  system wants them, so peak RSS after a transient peak reads high there.
+
+### 32 bytes: `s` is 8 (2026-11-10)
+
+**`sizeof(Value)` is 32** where handles are on: `i`/`n`, `s`, `hashKind` with
+the tag block, and the two handles, a word each. This is the size the plan was
+named for, with every count kept and without `s` sharing a word with `i`/`n`.
+
+`CowStr` is 8 bytes there: a text of up to 7 bytes inline with the same last
+tag byte, or the body's 32-bit handle in the first four. `StrBody` is made in
+`BodyPool`'s region (`RefPoolOf<StrBody>` in `Ref.h` says so), and
+`Ref<const StrBody>` is still a pointer everywhere else. The class is one text
+for both widths: `kBytes` is 8 or 16. A text of 8 to 15 bytes, inline at 16,
+is a body at 8.
+
+**Measured 2026-11-10** against the same tree with `-DRAKUPP_BODY_HANDLES=0`
+(48 bytes), same machine and sitting (load average 6).
+
+| gate | result |
+|---|---|
+| `t/run.raku` | 2,174 of 2,174 |
+| Roast, files fully passing | 1,425 of 1,425 (221,034 assertions) |
+| instructions retired, 27 kernels, the least of 2 | 18 within ±0.6%; +1.1% to +1.8% `attrread`, `strpass`, `sharedappend`, `regexloop`, `junction`, `subcall`; +4.7% `junctionwide`; −1.1% `hash` |
+| time, 27 kernels × 6 interleaved rounds | 14 faster, 13 slower; none over +3.8% (`multiwhere`, +0.35% instructions) |
+
+The step from 48 to 40 measured +2.9% on the call kernels. From 48 to 32 the
+same kernels measure +0.4% to +1.8%: a Value copy is 8 bytes of string
+shorter, which pays for most of the decode.
+
+| program, peak RSS | 48 | 32 | |
+|---|---:|---:|---:|
+| a million Ints from `.map` | 103.4 MB | 73.8 MB | −28.6% |
+| a million short Strs from `.map` | 103.3 MB | 73.7 MB | −28.7% |
+| a million Rats from `.map` | 180.3 MB | 150.0 MB | −16.8% |
+| 200,000 two-element arrays | 57.8 MB | 46.2 MB | −20.1% |
+| 200,000 two-attribute objects | 108.1 MB | 94.4 MB | −12.7% |
+| a 200,000-key hash | 27.5 MB | 24.6 MB | −10.5% |
+| `tools/bench/hashfill.raku` | 38.5 MB | 33.2 MB | −13.8% |
+| `tools/bench/textsplit.raku` | 21.1 MB | 21.3 MB | +0.9% |
+
+Against the 64 bytes this sitting began with, a million Ints is 134.6 → 73.8
+MB.
+
+The 23 programs under tools/bench that run in under four seconds, 4
+interleaved rounds each:
+
+- **Instructions:** 21 within ±1.7%; `arrayops` +1.9%, `arraypush` −3.6%.
+- **The string programs,** which the 8-to-15-byte band should tax:
+  `textsplit` −0.4%, `sortby` −0.2%, `streq` +0.2%, `strcat` +1.5%,
+  `regex` +1.7%.
+- **Peak RSS:** −8% to −23% on `arraypush`, `arrayops`, `sortnums`,
+  `hashfill` and `sortby`. The small programs are +2% to +5%, about 0.25 MB on
+  8 MB: the region's first spans, one a size class.
+
+**The ThreadSanitizer stress matrix** (`t/stress/run.raku` under a
+`-fsanitize=thread` build, as the linux-tsan CI job runs it): 51 cases, 37
+pass, 14 on the known-bad list, no new failures and no stale entries — the
+counts step C recorded. No report names `BodyPool`'s own code; the reports in
+the log are the staged races on a shared Value, one of them now read through
+`BodyHandle`.
+
+**With handles off** (`-DRAKUPP_BODY_HANDLES=0`, 48 bytes, the path Windows
+and an ASan build take): Roast 1,425 of 1,425. `t/run.raku` was not run on
+that build.
+
+**Not run:** the module battery, the ASan build, Linux, the malloc census (a
+body no longer comes from `malloc`, so its counts do not compare), and
+`tools/value32-probe.cpp`.
+
+**Decided 2026-11-10: 32.**
+
+**48 or 32.** 40 is not a candidate: it costs more instructions than 32 and
+saves half the memory.
+
+| | 48 | 32 |
+|---|---|---|
+| memory against 64, value-heavy data | −23% | −45% |
+| instructions against 48 | | within ±1% on most kernels, to +1.8% on calls, +4.7% on a wide Junction |
+| new code | none | `BodyPool`, an allocator; 64 GB of address space reserved |
+| layouts to keep building | one | two: Windows, 32-bit and ASan stay at 48 |
+| gates still owed | battery, ASan, Linux | the same, and Linux carries more weight |
+
+### Below 32, with the counts kept
+
+Values stay refcounted, so the 16-byte design is out. At 32 each field is one
+word. Taking another out means `s` over the `i`/`n` word (the audit build of
+batch 1; an allomorph and a type object keep both live), or the cold block
+behind the payload handle together with a narrower `hashKind`. Neither is
+started.
+
 ## Why 16 bytes is an architecture change, not a layout change
 
 Slim16 measures 24x on the array build. It is worth saying plainly what that

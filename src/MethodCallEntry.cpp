@@ -27,7 +27,7 @@ extern std::atomic<uint64_t> g_symbolGen;   // Interpreter.cpp: moves on every s
 // laziness, shape) — doubled for an itemized one. An Int is two kinds, by its
 // sign, which is all UInt asks. 0: none of them.
 static unsigned typeMatchShape(const Value& v) {
-    if (!v.hashKind.empty() || !v.enumName.empty() || !v.enumType.empty() || v.natBits || v.natFloat) return 0;
+    if (!v.hashKind.empty() || !v.enumName().empty() || !v.enumType().empty() || v.natBits() || v.natFloat) return 0;
     unsigned k;
     switch (v.t) {
         case VT::Str:   k = 1; break;
@@ -94,7 +94,7 @@ static bool typeMemoRead(Interpreter& I, std::atomic<uint64_t>& slot, const Valu
 }
 // …and the type object itself: a plain core one, no smiley, parameter or coercion
 static bool typeMemoType(const Value& r) {
-    return r.t == VT::Type && !r.i && !r.x_.get() && r.hashKind.empty() && r.enumType.empty();
+    return r.t == VT::Type && !r.i && !r.x_.get() && r.hashKind.empty() && r.enumType().empty();
 }
 bool Interpreter::typeMatchMemo(const std::string& op, const Value& l, const Value& r, Value& out) {
     if (r.t != VT::Type || op.size() != 2 || op[0] != '~' || op[1] != '~') return false;
@@ -142,7 +142,7 @@ std::optional<Value> Interpreter::methodCallEntry(const Value& inv, const std::s
     // user metaobject all take the long way.
     if (inv.t == VT::Type && m.size() >= 3 && (opEq(m, "new") || opEq(m, "allocate")) &&
         (inv.s == "Buf" || inv.s == "Blob") && !inv.i && !inv.x_.get() && inv.hashKind.empty() &&
-        inv.enumType.empty() && builtinExt_.empty() && !haveCustomHows_.load(std::memory_order_relaxed) &&
+        inv.enumType().empty() && builtinExt_.empty() && !haveCustomHows_.load(std::memory_order_relaxed) &&
         !RAKUPP_RACE_ON() && !classes_.count(inv.s) && !classAliases_.count(inv.s) && !pkgKind_.count(inv.s)) {
         const bool allocate = m[0] == 'a';
         bool words = !allocate || args.size() == 1 || args.size() == 2;
@@ -156,7 +156,7 @@ std::optional<Value> Interpreter::methodCallEntry(const Value& inv, const std::s
     // every string it encodes this way, and most strings have none (#217). Any
     // adverb but :g, an empty or tagged pattern, and a tagged invocant take
     // the long way.
-    if (inv.t == VT::Str && m.size() == 5 && opEq(m, "subst") && inv.hashKind.empty() && inv.enumName.empty() &&
+    if (inv.t == VT::Str && m.size() == 5 && opEq(m, "subst") && inv.hashKind.empty() && inv.enumName().empty() &&
         builtinExt_.empty()) {
         const Value* pat = nullptr;
         size_t npos = 0;
@@ -165,7 +165,7 @@ std::optional<Value> Interpreter::methodCallEntry(const Value& inv, const std::s
             if (a.t == VT::Pair && a.namedArg) { plain = plain && (a.s == "g" || a.s == "global"); continue; }
             if (npos++ == 0) pat = &a;
         }
-        if (plain && npos == 2 && pat->t == VT::Str && pat->hashKind.empty() && pat->enumName.empty() &&
+        if (plain && npos == 2 && pat->t == VT::Str && pat->hashKind.empty() && pat->enumName().empty() &&
             !pat->s.empty() && inv.s.str().find(pat->s.str()) == std::string::npos)
             return Value::str(inv.s);
     }

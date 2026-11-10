@@ -1698,9 +1698,9 @@ bool runIfReady(Site* s, Interpreter& I, Env* env) {
         // store as the interpreter does, and the write-back keeps the tags. A
         // sized native (`int8`, `num32`, `uint`) would have to wrap at another
         // width, and the C++ backend honours none of it.
-        const bool fullNative = isCnp && cell->natBits == 64 &&
+        const bool fullNative = isCnp && cell->natBits() == 64 &&
             ((cell->natFloat) || (!cell->natFloat && cell->natSigned));
-        if ((cell->natBits != 0 && !fullNative) || (cell->natFloat && !fullNative) ||
+        if ((cell->natBits() != 0 && !fullNative) || (cell->natFloat && !fullNative) ||
             (cell->readonly && !ownCounter))
             return refuse(s, "slot " + n + " is a native or readonly container the kernel would write");
         if (owner->ex) {

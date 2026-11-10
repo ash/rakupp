@@ -161,7 +161,7 @@ std::optional<Value> Interpreter::methodCallPart1b(const Value& inv, const MName
             // the array holds the object
             if (ncElemClass(et))
                 for (size_t k = 0; k < items.size(); k++) ncKeepClassElem(c, (long long)k, items[k]);
-            c.enumName = et; // remember the element type
+            c.setEnumName(et); // remember the element type
             return c;
         }
         // `CArray[int32].of` is the element type. Only the PARAMETERISED one
@@ -188,14 +188,14 @@ std::optional<Value> Interpreter::methodCallPart1b(const Value& inv, const MName
                     std::memcpy(c.s.mutInPlace() + k * (size_t)esz, &mem, sizeof mem);
                     ncKeepClassElem(c, k, o);
                 }
-            c.enumName = et;
+            c.setEnumName(et);
             return c;
         }
     }
-    if (inv.t == VT::Str && inv.hashKind == "CArray" && m == "of" && !inv.enumName.empty())
-        return Value::typeObj(inv.enumName.str());
+    if (inv.t == VT::Str && inv.hashKind == "CArray" && m == "of" && !inv.enumName().empty())
+        return Value::typeObj(inv.enumName().str());
     if (inv.t == VT::Str && inv.hashKind == "CArray" && m == "elems") {
-        const std::string& et = inv.enumName;
+        const std::string& et = inv.enumName();
         int esz = Interpreter::ncElemSize(et);
         return Value::integer((long long)(inv.s.size() / esz));
     }
@@ -207,7 +207,7 @@ std::optional<Value> Interpreter::methodCallPart1b(const Value& inv, const MName
     if (inv.t == VT::Str && inv.hashKind == "CArray" && m == "clone" && args.empty()) {
         Value c = Value::str(inv.s.copyText());
         c.hashKind = "CArray";
-        c.enumName = inv.enumName;
+        c.setEnumName(inv.enumName());
         c.s.promote();
         c.extM() = inv.ext();
         return c;
@@ -228,7 +228,7 @@ std::optional<Value> Interpreter::methodCallPart1b(const Value& inv, const MName
          m == "sum" || m == "min" || m == "max" || m == "join" || m == "kv" ||
          m == "pairs" || m == "keys" || m == "head" || m == "tail" || m == "flat" ||
          m == "cache" || m == "reduce" || m == "batch" || m == "rotor")) {
-        std::string et = inv.enumName.empty() ? std::string("int64") : inv.enumName.str();
+        std::string et = inv.enumName().empty() ? std::string("int64") : inv.enumName().str();
         int w = Interpreter::ncElemSize(et);
         long long n = w > 0 ? (long long)(inv.s.size() / (size_t)w) : 0;
         Value out = Value::array(); out.isList = (m != "Array");
@@ -1183,10 +1183,10 @@ std::optional<Value> Interpreter::methodCallPart1b(const Value& inv, const MName
         // …and a typed Blob is NAMED by it: `blob8.new(1).^name` and
         // `Blob[uint8].new(1).^name` are "Blob[uint8]" (Buf shows its [T] from
         // the element type; Blob reads its name)
-        if (b.hashKind == "Blob") b.enumName = "Blob[" + b.ofType() + "]";
+        if (b.hashKind == "Blob") b.setEnumName("Blob[" + b.ofType() + "]");
         // …and `utf8.new(…)` is a utf8, as `.encode` makes one: it decodes
         // under `.Str` and `~` (S03-operators/buf.t)
-        if (inv.s == "utf8" || inv.s == "utf16" || inv.s == "utf32") b.enumName = inv.s;
+        if (inv.s == "utf8" || inv.s == "utf16" || inv.s == "utf32") b.setEnumName(inv.s);
         b.s.promote();   // a native buffer needs stable, shared storage
         if (b.hashKind == "Buf") identify(b);
         return b;
@@ -1378,8 +1378,8 @@ std::optional<Value> Interpreter::methodCallPart1b(const Value& inv, const MName
                             "Must specify a non-empty string as a path"};
         rejectNulPath(path);
         Value p = Value::str(path); p.hashKind = "IO";
-        if (!flavor.empty()) p.enumName = flavor;
-        if (!userSpec.empty()) p.enumType = userSpec;
+        if (!flavor.empty()) p.setEnumName(flavor);
+        if (!userSpec.empty()) p.setEnumType(userSpec);
         // the `:CWD` is the directory this path is relative to; it rides in
         // ofType, which a path value has no other use for. Captured from the
         // current $*CWD by default (Rakudo's model); an explicit :CWD wins.
@@ -1425,7 +1425,7 @@ std::optional<Value> Interpreter::methodCallPart1b(const Value& inv, const MName
                                 "Must specify a non-empty string as a path"};
             if (!haveParts) path = args[0].toStr();
             rejectNulPath(path);
-            Value p = Value::str(path); p.hashKind = "IO"; p.enumName = fl;
+            Value p = Value::str(path); p.hashKind = "IO"; p.setEnumName(fl);
             p.ofTypeM() = cwdName();
             return p;
         }

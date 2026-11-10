@@ -384,13 +384,13 @@ bool plainScalarName(const std::string& n) {
 // bindings are fine for a read; a slot the kernel writes is checked again as a
 // container at entry (bindOuter).
 inline bool plainIntValue(const Value& v) {
-    return v.t == VT::Int && !v.x_ && v.pk_ == PK::None && !v.natBits && !v.natSigned && !v.natFloat &&
-           !v.b && !v.isList && !v.objKeyed && !v.namedArg && v.enumName.empty() && v.enumType.empty() &&
+    return v.t == VT::Int && !v.x_ && v.pk_ == PK::None && !v.natBits() && !v.natSigned && !v.natFloat &&
+           !v.b && !v.isList && !v.objKeyed && !v.namedArg && v.enumName().empty() && v.enumType().empty() &&
            v.hashKind.empty() && v.s.empty();
 }
 inline bool plainNumValue(const Value& v) {
-    return v.t == VT::Num && !v.x_ && v.pk_ == PK::None && !v.natBits && !v.natSigned && !v.natFloat &&
-           !v.b && !v.isList && !v.objKeyed && !v.namedArg && v.enumName.empty() && v.enumType.empty() &&
+    return v.t == VT::Num && !v.x_ && v.pk_ == PK::None && !v.natBits() && !v.natSigned && !v.natFloat &&
+           !v.b && !v.isList && !v.objKeyed && !v.namedArg && v.enumName().empty() && v.enumType().empty() &&
            v.hashKind.empty() && v.s.empty();
 }
 // A FULL-WIDTH native's value, `int` / `int64` or `num` / `num64`: the same
@@ -399,20 +399,20 @@ inline bool plainNumValue(const Value& v) {
 // the number in place, so the cell stays the native it was. (A sized native
 // wraps or rounds at its own width, which nothing here would do.)
 inline bool nativeInt64Value(const Value& v) {
-    return v.t == VT::Int && v.natBits == 64 && v.natSigned && !v.natFloat && !v.x_ && v.pk_ == PK::None &&
-           !v.b && !v.isList && !v.objKeyed && !v.namedArg && v.enumName.empty() && v.enumType.empty() &&
+    return v.t == VT::Int && v.natBits() == 64 && v.natSigned && !v.natFloat && !v.x_ && v.pk_ == PK::None &&
+           !v.b && !v.isList && !v.objKeyed && !v.namedArg && v.enumName().empty() && v.enumType().empty() &&
            v.hashKind.empty() && v.s.empty();
 }
 inline bool nativeNum64Value(const Value& v) {
-    return v.t == VT::Num && v.natBits == 64 && v.natFloat && !v.x_ && v.pk_ == PK::None &&
-           !v.b && !v.isList && !v.objKeyed && !v.namedArg && v.enumName.empty() && v.enumType.empty() &&
+    return v.t == VT::Num && v.natBits() == 64 && v.natFloat && !v.x_ && v.pk_ == PK::None &&
+           !v.b && !v.isList && !v.objKeyed && !v.namedArg && v.enumName().empty() && v.enumType().empty() &&
            v.hashKind.empty() && v.s.empty();
 }
 // A Rat whose numerator and denominator both fit an int64 (not a FatRat, not
 // a zero denominator, no tag, no cold block: its parts are its PK::Rat body)
 inline bool plainRatValue(const Value& v) {
-    if (v.t != VT::Rat || v.x_ || v.pk_ != PK::Rat || v.natBits || v.natSigned || v.natFloat || v.b ||
-        v.isList || v.objKeyed || v.namedArg || !v.enumName.empty() || !v.enumType.empty() ||
+    if (v.t != VT::Rat || v.x_ || v.pk_ != PK::Rat || v.natBits() || v.natSigned || v.natFloat || v.b ||
+        v.isList || v.objKeyed || v.namedArg || !v.enumName().empty() || !v.enumType().empty() ||
         !v.hashKind.empty() || !v.s.empty() || v.fatRat())
         return false;
     const RatBody& x = *v.ratBody();
@@ -420,13 +420,13 @@ inline bool plainRatValue(const Value& v) {
     return x.den.toLL() > 0;
 }
 inline bool plainBoolValue(const Value& v) {
-    return v.t == VT::Bool && !v.x_ && v.pk_ == PK::None && !v.natBits && !v.natSigned && !v.natFloat &&
-           !v.isList && !v.objKeyed && !v.namedArg && v.enumName.empty() && v.enumType.empty() &&
+    return v.t == VT::Bool && !v.x_ && v.pk_ == PK::None && !v.natBits() && !v.natSigned && !v.natFloat &&
+           !v.isList && !v.objKeyed && !v.namedArg && v.enumName().empty() && v.enumType().empty() &&
            v.hashKind.empty() && v.s.empty();
 }
 inline bool plainStrValue(const Value& v) {
-    return v.t == VT::Str && !v.x_ && v.pk_ == PK::None && !v.natBits && !v.natSigned && !v.natFloat &&
-           !v.b && !v.isList && !v.objKeyed && !v.namedArg && v.enumName.empty() && v.enumType.empty() &&
+    return v.t == VT::Str && !v.x_ && v.pk_ == PK::None && !v.natBits() && !v.natSigned && !v.natFloat &&
+           !v.b && !v.isList && !v.objKeyed && !v.namedArg && v.enumName().empty() && v.enumType().empty() &&
            v.hashKind.empty();
 }
 
@@ -435,8 +435,8 @@ inline bool plainStrValue(const Value& v) {
 // not typed, shaped, native or lazy, no `is default`, no bound elements, no
 // object keys, no Set/Bag/Mix or other tagged kind.
 inline bool plainContainer(const Value& v, bool hash) {
-    if (v.isList || v.itemized || v.objKeyed || v.namedArg || !v.enumName.empty() || !v.enumType.empty() ||
-        !v.hashKind.empty() || !v.s.empty() || v.natBits || v.natSigned || v.natFloat)
+    if (v.isList || v.itemized || v.objKeyed || v.namedArg || !v.enumName().empty() || !v.enumType().empty() ||
+        !v.hashKind.empty() || !v.s.empty() || v.natBits() || v.natSigned || v.natFloat)
         return false;
     if (hash ? (v.t != VT::Hash || v.pk_ != PK::Hash || !v.hash() || v.hash()->hasObjKeys())
              : (v.t != VT::Array || v.pk_ != PK::List || !v.arr()))
@@ -456,13 +456,13 @@ inline bool plainContainer(const Value& v, bool hash) {
 // (PNGet, PNSet): nothing in a kernel can unpack, grow or replace it
 inline bool plainPackedNum(const Value& v) {
     return v.t == VT::Array && v.packedLive() && v.packed()->isNum && !v.isList && !v.itemized && !v.objKeyed &&
-           v.hashKind.empty() && v.s.empty() && v.enumName.empty() && v.enumType.empty() && !v.elemDefault() &&
+           v.hashKind.empty() && v.s.empty() && v.enumName().empty() && v.enumType().empty() && !v.elemDefault() &&
            !v.shape();
 }
 // …and an element a container store may simply replace: a plain Int or Str,
 // or the Any of a hole
 inline bool plainAnyValue(const Value& v) {
-    return v.t == VT::Any && !v.x_ && v.pk_ == PK::None && !v.natBits && !v.b && !v.isList &&
+    return v.t == VT::Any && !v.x_ && v.pk_ == PK::None && !v.natBits() && !v.b && !v.isList &&
            v.hashKind.empty() && v.s.empty();
 }
 bool plainContName(const std::string& n, char sigil) {
@@ -2824,15 +2824,15 @@ bool opShadowed(const std::string& op) {
 
 // An argument the kernel may take as its number alone.
 inline bool plainIntArg(const Value& v) {
-    return v.t == VT::Int && !v.x_ && v.pk_ == PK::None && !v.natBits && !v.natSigned && !v.natFloat &&
-           !v.b && !v.isList && !v.objKeyed && !v.namedArg && v.enumName.empty() && v.enumType.empty() &&
+    return v.t == VT::Int && !v.x_ && v.pk_ == PK::None && !v.natBits() && !v.natSigned && !v.natFloat &&
+           !v.b && !v.isList && !v.objKeyed && !v.namedArg && v.enumName().empty() && v.enumType().empty() &&
            v.hashKind.empty() && v.s.empty();
 }
 // …and one an `int` parameter takes as its number: that, or a native int's own value
 inline bool nativeIntArg(const Value& v) {
-    if (v.natBits == 0) return plainIntArg(v);
-    return v.natBits == 64 && v.natSigned && !v.natFloat && v.t == VT::Int && !v.x_ && v.pk_ == PK::None &&
-           !v.b && !v.isList && !v.objKeyed && !v.namedArg && v.enumName.empty() && v.enumType.empty() &&
+    if (v.natBits() == 0) return plainIntArg(v);
+    return v.natBits() == 64 && v.natSigned && !v.natFloat && v.t == VT::Int && !v.x_ && v.pk_ == PK::None &&
+           !v.b && !v.isList && !v.objKeyed && !v.namedArg && v.enumName().empty() && v.enumType().empty() &&
            v.hashKind.empty() && v.s.empty();
 }
 

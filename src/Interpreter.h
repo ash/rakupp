@@ -1193,7 +1193,7 @@ bool rtIsDefined(const Value& v);
 // object. The same as rtIsDefined but for an EMPTY Slip, whose `.defined` is
 // False (Rakudo) while it is still an instance — `--> Slip:D` takes `Empty`.
 inline bool rtIsDefinite(const Value& v) {
-    return rtIsDefined(v) || (v.t == VT::Array && v.s == "Slip" && v.enumType.empty());
+    return rtIsDefined(v) || (v.t == VT::Array && v.s == "Slip" && v.enumType().empty());
 }
 // Does an ARRAY SLOT exist? A hole is the bare undefined scalar; a type object
 // put there on purpose (`my @a = 42, Any, 23`) is an element like any other.
@@ -2892,7 +2892,7 @@ public:
     // an undefined built-in value as an operator meets it (Any, Nil, Int, Str, …)
     static bool uninitOperand(const Value& v) {
         if (v.t == VT::Any || v.t == VT::Nil) return true;
-        if (v.t == VT::Array) return !v.enumType.empty() && isEnumTypeObject(v);   // an enum's type object
+        if (v.t == VT::Array) return !v.enumType().empty() && isEnumTypeObject(v);   // an enum's type object
         if (v.t != VT::Type) return false;
         static const char* const kBuiltin[] = {
             "Any", "Cool", "Str", "Numeric", "Complex", "Int", "UInt", "Num", "Rat", "FatRat", "Bool", "Real"};
@@ -4112,7 +4112,7 @@ public:
         }
         if (!known) return false;
         Value* v = tctx().cur->find(n);
-        return v && (v->t == VT::Type || (v->t == VT::Array && !v->enumType.empty()));
+        return v && (v->t == VT::Type || (v->t == VT::Array && !v->enumType().empty()));
     }
     const std::string& resolveClassAlias(const std::string& n) { const std::string* a = classAliasOf(n); return a ? *a : n; }
     std::string_view resolveClassAlias(std::string_view n) { const std::string* a = classAliasOf(n); return a ? std::string_view(*a) : n; }
@@ -5510,8 +5510,8 @@ void nativeAssignCheck(const Value& v, int bits, bool isFloat, const std::string
 // lane may hold (it bails on overflow to the boxed code, which wraps), but a
 // sized one (`int8`, `uint`) must wrap at its own width on every store.
 inline bool rtIntSlot(const Value& v) {
-    return v.t == VT::Int && !v.big() && v.enumName.empty() &&
-           (!v.natBits || (v.natBits == 64 && v.natSigned && !v.natFloat));
+    return v.t == VT::Int && !v.big() && v.enumName().empty() &&
+           (!v.natBits() || (v.natBits() == 64 && v.natSigned && !v.natFloat));
 }
 // -O unboxed LOOP lanes (UNBOX-PLAN.md): the same question for a float slot.
 // `natFloat` is excluded because a num32 container truncates on assignment and a
@@ -5519,13 +5519,13 @@ inline bool rtIntSlot(const Value& v) {
 // Deliberately NOT accepting an Int here: a lane never changes a variable's
 // runtime type, so a slot the lane holds as a double must already BE a Num.
 inline bool rtNumSlot(const Value& v) {
-    return v.t == VT::Num && (!v.natFloat || v.natBits == 64) && v.enumName.empty();   // num, not num32
+    return v.t == VT::Num && (!v.natFloat || v.natBits() == 64) && v.enumName().empty();   // num, not num32
 }
 // …and a string slot: a plain Str (no Blob/Buf or other tag, no enum, no
 // native width), which a lane holds as a std::string and writes back into `.s`.
 inline bool rtStrSlot(const Value& v) {
-    return v.t == VT::Str && !v.x_ && v.pk_ == PK::None && !v.natBits && !v.natSigned && !v.natFloat &&
-           !v.b && !v.isList && !v.objKeyed && !v.namedArg && v.enumName.empty() && v.enumType.empty() &&
+    return v.t == VT::Str && !v.x_ && v.pk_ == PK::None && !v.natBits() && !v.natSigned && !v.natFloat &&
+           !v.b && !v.isList && !v.objKeyed && !v.namedArg && v.enumName().empty() && v.enumType().empty() &&
            v.hashKind.empty();
 }
 // A Str lane's `~` and `~=`: what the interpreter answers for two plain Strs.
@@ -5661,7 +5661,7 @@ inline Value applyArith(const char* op, const Value& l, const Value& r) {
 inline Value rtNativeArith(const char* op, const Value& l, const Value& r) {
     if (op[0] != '\0' && op[1] == '\0') {
         if (l.t == VT::Int && r.t == VT::Int && !l.big() && !r.big() && l.hashKind.empty() && r.hashKind.empty() &&
-            l.enumName.empty() && r.enumName.empty()) {
+            l.enumName().empty() && r.enumName().empty()) {
             const unsigned long long a = (unsigned long long)l.i, b = (unsigned long long)r.i;
             long long x;
             switch (op[0]) {
@@ -5670,12 +5670,12 @@ inline Value rtNativeArith(const char* op, const Value& l, const Value& r) {
                 case '*': x = (long long)(a * b); break;
                 default: return rtNativeArithSlow(op, l, r);
             }
-            Value out = Value::integer(x); out.natBits = 64; out.natSigned = true;
+            Value out = Value::integer(x); out.setNatBits(64); out.natSigned = true;
             return out;
         }
         double a, b;
         if (Value res; rtNumPair(l, r, a, b) && rtNumArith(op, a, b, res)) {
-            if (res.t == VT::Num) { res.natBits = 64; res.natFloat = true; }
+            if (res.t == VT::Num) { res.setNatBits(64); res.natFloat = true; }
             return res;
         }
     }
@@ -5687,13 +5687,13 @@ inline Value rtNativeArith(const char* op, const Value& l, const Value& r) {
 // three times its untyped twin's rtMul and rtAdd.
 inline bool rtNativeIntPair(const Value& l, const Value& r) {
     return l.t == VT::Int && r.t == VT::Int && !l.big() && !r.big() && l.hashKind.empty() && r.hashKind.empty() &&
-           l.enumName.empty() && r.enumName.empty();
+           l.enumName().empty() && r.enumName().empty();
 }
 inline Value rtNativeIntOf(unsigned long long x) {   // an int's 64 bits, wrapped
-    Value out = Value::integer((long long)x); out.natBits = 64; out.natSigned = true;
+    Value out = Value::integer((long long)x); out.setNatBits(64); out.natSigned = true;
     return out;
 }
-inline Value rtNativeNumOf(double d) { Value out = Value::number(d); out.natBits = 64; out.natFloat = true; return out; }
+inline Value rtNativeNumOf(double d) { Value out = Value::number(d); out.setNatBits(64); out.natFloat = true; return out; }
 inline Value rtNativeAdd(const Value& l, const Value& r) {
     double a, b;
     if (rtNativeIntPair(l, r)) return rtNativeIntOf((unsigned long long)l.i + (unsigned long long)r.i);
@@ -5742,11 +5742,11 @@ inline Value rtNativeIntDiv(const Value& l, const Value& r) {
 // after nativeAssignCheck has nothing to say about either. Anything else takes
 // rtNativeValue / rtNativeValueLike, which built two std::strings per store.
 RAKUPP_ALWAYS_INLINE bool rtNativeStoreFast(Value& v, bool isFloat) {
-    if (v.x_ || v.p_ || !v.enumName.empty() || !v.enumType.empty() || !v.hashKind.empty()) return false;
+    if (v.x_ || v.p_ || !v.enumName().empty() || !v.enumType().empty() || !v.hashKind.empty()) return false;
     if (isFloat ? v.t != VT::Num : v.t != VT::Int) return false;
     v.readonly = v.immutableBind = v.itemized = v.namedArg = v.pairValRO = false;
     v.isList = v.objKeyed = false;
-    v.natBits = 64; v.natFloat = isFloat; v.natSigned = !isFloat;
+    v.setNatBits(64); v.natFloat = isFloat; v.natSigned = !isFloat;
     return true;
 }
 // `kind` is the declared type's, decided where the code was generated: 1 a
@@ -5757,8 +5757,8 @@ RAKUPP_ALWAYS_INLINE bool rtNativeStoreFast(Value& v, bool isFloat) {
 // it (toInt: toward zero, saturating, NaN 0). Only a NATIVE num converts: a
 // boxed one is refused (nativeRefusesKind), and takes the general path.
 RAKUPP_ALWAYS_INLINE bool rtNativeNumToIntFast(Value& v) {
-    if (v.t != VT::Num || !v.natBits || !v.natFloat || v.x_ || v.p_ || !v.enumName.empty() ||
-        !v.enumType.empty() || !v.hashKind.empty())
+    if (v.t != VT::Num || !v.natBits() || !v.natFloat || v.x_ || v.p_ || !v.enumName().empty() ||
+        !v.enumType().empty() || !v.hashKind.empty())
         return false;
     v = rtNativeIntOf((unsigned long long)v.toInt());
     return true;
@@ -5769,9 +5769,9 @@ RAKUPP_ALWAYS_INLINE Value rtNativeStoreK(Value v, int kind, const char* type, c
     return rtNativeValue(v, type, name, srcNative);
 }
 RAKUPP_ALWAYS_INLINE Value rtNativeStoreLike(const Value& slot, Value v, const char* name, bool srcNative) {
-    if (!slot.natBits) return v;   // not (or no longer) a native container
-    if (slot.natBits == 64 && (slot.natFloat || slot.natSigned) && rtNativeStoreFast(v, slot.natFloat)) return v;
-    if (slot.natBits == 64 && slot.natSigned && !slot.natFloat && rtNativeNumToIntFast(v)) return v;
+    if (!slot.natBits()) return v;   // not (or no longer) a native container
+    if (slot.natBits() == 64 && (slot.natFloat || slot.natSigned) && rtNativeStoreFast(v, slot.natFloat)) return v;
+    if (slot.natBits() == 64 && slot.natSigned && !slot.natFloat && rtNativeNumToIntFast(v)) return v;
     return rtNativeValueLike(slot, v, name, srcNative);
 }
 
@@ -5835,9 +5835,9 @@ inline Value rtEq(const Value& l, const Value& r) { double a, b; if (rtBothInt(l
 // whatever the other holds (the interpreter's nativeMixedSignNe; Roast's
 // S02-types/signed-unsigned-native.t): the Int arms below answered `l.i != r.i`
 inline bool rtNativeMixedSignNe(const Value& l, const Value& r) {
-    if (!(l.natBits | r.natBits)) return false;
-    auto uns = [](const Value& v) { return v.natBits && !v.natSigned && !v.natFloat; };
-    auto neg = [](const Value& v) { return v.natBits && v.natSigned && !v.natFloat && v.t == VT::Int && !v.big() && v.i < 0; };
+    if (!(l.natBits() | r.natBits())) return false;
+    auto uns = [](const Value& v) { return v.natBits() && !v.natSigned && !v.natFloat; };
+    auto neg = [](const Value& v) { return v.natBits() && v.natSigned && !v.natFloat && v.t == VT::Int && !v.big() && v.i < 0; };
     return (uns(l) && neg(r)) || (neg(l) && uns(r));
 }
 inline Value rtNe(const Value& l, const Value& r) { double a, b; if (rtBothInt(l, r)) return Value::boolean(l.i != r.i && !rtNativeMixedSignNe(l, r)); if (rtNumPair(l, r, a, b)) return Value::boolean(a != b); return applyArith("!=", l, r); }
@@ -5866,8 +5866,8 @@ inline Value rtDiv(const Value& l, const Value& r) {
 // was two code points compiled -O and one interpreted; and a tagged Str (an
 // allomorph, a Version, an enum's) took the plain arm too.
 inline Value rtConcat(const Value& l, const Value& r) {
-    if (l.t == VT::Str && r.t == VT::Str && l.hashKind.empty() && r.hashKind.empty() && l.enumName.empty() &&
-        r.enumName.empty())
+    if (l.t == VT::Str && r.t == VT::Str && l.hashKind.empty() && r.hashKind.empty() && l.enumName().empty() &&
+        r.enumName().empty())
         return nfcConcatStr(l.s, r.s);
     return applyArith("~", l, r);
 }
@@ -5923,7 +5923,7 @@ inline Value rtMValue(Interpreter& I, const Value& v) {
     return I.methodCall(v, "value", ValueList{});
 }
 inline Value rtMInt(Interpreter& I, const Value& v) {
-    if (v.t == VT::Num && v.hashKind.empty() && v.enumName.empty() && !v.x_ && I.builtinExt_.empty() &&
+    if (v.t == VT::Num && v.hashKind.empty() && v.enumName().empty() && !v.x_ && I.builtinExt_.empty() &&
         v.n > -9.2e18 && v.n < 9.2e18)   // (NaN fails both tests)
         return Value::integer((long long)v.n);   // the cast truncates toward zero, as .Int does
     return I.methodCall(v, "Int", ValueList{});
@@ -5935,8 +5935,8 @@ inline Value rtMInt(Interpreter& I, const Value& v) {
 // ValueList and the constructor checks in front of it (`@a.elems` ~25 ns).
 // A plain untyped Array, no List or Seq or Slip, nothing it must check or wrap:
 inline bool rtPushPlainTarget(const Value& inv) {
-    return inv.t == VT::Array && inv.arr() && !inv.isList && inv.s.empty() && inv.enumName.empty() &&
-           inv.enumType.empty() && inv.hashKind.empty() && inv.pk_ != PK::Packed && !inv.ext() &&
+    return inv.t == VT::Array && inv.arr() && !inv.isList && inv.s.empty() && inv.enumName().empty() &&
+           inv.enumType().empty() && inv.hashKind.empty() && inv.pk_ != PK::Packed && !inv.ext() &&
            inv.ofType().empty() && !inv.pairVal() && !(inv.shape() && !inv.shape()->empty()) &&
            !inv.holdsContainers();
 }
@@ -5944,11 +5944,11 @@ inline bool rtPushPlainTarget(const Value& inv) {
 // flattened), a List, Seq or Slip is not (a Slip slips, and a parenthesized
 // List literal keeps its variables' containers), nor a Nil or a native
 inline bool rtPushPlainArg(const Value& a) {
-    return !((a.t == VT::Array && (a.isList || !a.s.empty())) || a.t == VT::Nil || a.natBits);
+    return !((a.t == VT::Array && (a.isList || !a.s.empty())) || a.t == VT::Nil || a.natBits());
 }
 // A plain value for the zero-argument arms: no enum, allomorph or native tag
 inline bool rtQueryPlain(const Value& v) {
-    return v.hashKind.empty() && v.enumName.empty() && v.enumType.empty() && !v.natBits && !v.natFloat;
+    return v.hashKind.empty() && v.enumName().empty() && v.enumType().empty() && !v.natBits() && !v.natFloat;
 }
 // `.elems` of a plain reified Array: not lazy, packed, shaped or a Seq
 inline bool rtElemsPlain(const Value& v) {
@@ -6058,7 +6058,7 @@ inline bool rtNonFiniteReal(const Value& v) {
 // a NATIVE num stays a num: `ceiling(my num $ = 4.7e0)` is 5e0 (Rakudo's
 // `(num --> num)` candidates), where a Num goes to Int
 inline Value rtNativeNumOp(const Value& v, double r) {
-    Value out = Value::number(r); out.natFloat = true; out.natBits = v.natBits; return out;
+    Value out = Value::number(r); out.natFloat = true; out.setNatBits(v.natBits()); return out;
 }
 inline Value rtBFloor(Interpreter& I, const Value& v) {
     if (v.t == VT::Num && v.natFloat) return rtNativeNumOp(v, std::floor(v.n));
@@ -6109,7 +6109,7 @@ inline Value rtBLog(Interpreter& I, const Value& v) {
 // them (a plain Str's toStr() is its `s`). Anything else falls back to the full
 // operator chain (Version part-compare, enum stringification, junction
 // autothreading, Whatever-currying, numeric coercions).
-inline bool rtPlainStr(const Value& v) { return v.t == VT::Str && v.hashKind.empty() && v.enumName.empty(); }
+inline bool rtPlainStr(const Value& v) { return v.t == VT::Str && v.hashKind.empty() && v.enumName().empty(); }
 inline Value rtEqS(const Value& l, const Value& r) { if (rtPlainStr(l) && rtPlainStr(r)) return Value::boolean(l.s == r.s); return applyArith("eq", l, r); }
 inline Value rtNeS(const Value& l, const Value& r) { if (rtPlainStr(l) && rtPlainStr(r)) return Value::boolean(l.s != r.s); return applyArith("ne", l, r); }
 inline Value rtLtS(const Value& l, const Value& r) { if (rtPlainStr(l) && rtPlainStr(r)) return Value::boolean(l.s <  r.s); return applyArith("lt", l, r); }
@@ -6139,8 +6139,8 @@ void rtCatPrependText(Value& l, std::string_view x);
 // `$s = x ~ $s` (native codegen, cnp): in front of a plain Str in place — into a
 // shared buffer's free space (APPEND-PLAN.md) — and the ordinary `~` otherwise.
 inline void rtCatPrepend(Value& l, const Value& x) {
-    if (l.t == VT::Str && l.hashKind.empty() && l.enumName.empty() && !l.natBits && x.hashKind.empty() &&
-        ((x.t == VT::Str && x.enumName.empty()) || x.t == VT::Int || x.t == VT::Num || x.t == VT::Rat ||
+    if (l.t == VT::Str && l.hashKind.empty() && l.enumName().empty() && !l.natBits() && x.hashKind.empty() &&
+        ((x.t == VT::Str && x.enumName().empty()) || x.t == VT::Int || x.t == VT::Num || x.t == VT::Rat ||
          x.t == VT::Bool)) {
         rtCatPrependText(l, x.t == VT::Str ? x.s.str() : x.toStr());
         return;
@@ -6148,10 +6148,10 @@ inline void rtCatPrepend(Value& l, const Value& x) {
     l = applyArith("~", x, l);
 }
 inline void rtCatAssign(Value& l, const Value& r) {
-    if (l.t == VT::Str && l.hashKind.empty() && l.enumName.empty() && r.hashKind.empty()) {
-        if (r.enumName.empty()) {
+    if (l.t == VT::Str && l.hashKind.empty() && l.enumName().empty() && r.hashKind.empty()) {
+        if (r.enumName().empty()) {
             if (r.t == VT::Str) { rtCatAppendText(l, r.s.str()); return; }
-            if (r.t == VT::Int && !r.natBits) { l.s.appendAscii(r.toStr()); return; }   // (digits)
+            if (r.t == VT::Int && !r.natBits()) { l.s.appendAscii(r.toStr()); return; }   // (digits)
         }
         if (r.t == VT::Int || r.t == VT::Num || r.t == VT::Rat || r.t == VT::Bool) {
             rtCatAppendText(l, r.toStr());   // the text applyArith's `~` takes
@@ -6216,22 +6216,22 @@ inline bool rtForHas(const Value& lst, size_t i) {
 inline Value rtNilToAny(Value v) { if (v.t == VT::Nil) return Value::any(); return v; }
 inline Value rtItemized(Value v) {
     if ((v.t == VT::Array || v.t == VT::Hash || v.t == VT::Range) && !v.itemized) v.itemized = true;
-    if (v.natBits) { v.natBits = 0; v.natSigned = v.natFloat = false; }   // (an untyped container boxes a native)
+    if (v.natBits()) { v.setNatBits(0); v.natSigned = v.natFloat = false; }   // (an untyped container boxes a native)
     return v;
 }
 // …and what a routine answers with a native's value: the boxed number, as
 // the interpreter's routine return has it (Rakudo boxes it, `--> int` too)
-inline Value rtBoxedNum(Value v) { if (v.natBits) { v.natBits = 0; v.natSigned = v.natFloat = false; } return v; }
+inline Value rtBoxedNum(Value v) { if (v.natBits()) { v.setNatBits(0); v.natSigned = v.natFloat = false; } return v; }
 // …and what a boxed `$` parameter binds: the item of the value, a native's
 // boxed (the interpreter's bindNativeParam; Codegen::bindAs)
 // (the tags are bit-fields: tested before they are cleared, as dropNativeTags's callers do)
-inline void rtBoxItemIn(Value& v) { if (v.natBits) { v.natBits = 0; v.natSigned = v.natFloat = false; } itemizeScalar(v); }
+inline void rtBoxItemIn(Value& v) { if (v.natBits()) { v.setNatBits(0); v.natSigned = v.natFloat = false; } itemizeScalar(v); }
 inline Value rtBoxedItem(Value v) { rtBoxItemIn(v); return v; }
 // …and what an `int` or `num` one binds (k 'i' or 'n'): the native, tagged as
 // wrapNative tags it, where rtTypedFast took a boxed Int or Num as it was
 inline void rtNatItemIn(Value& v, char k) {
-    if (!v.natBits && (k == 'n' ? v.t == VT::Num : k == 'i' && v.t == VT::Int && !v.big())) {
-        v.natBits = 64; v.natSigned = k == 'i'; v.natFloat = k == 'n';
+    if (!v.natBits() && (k == 'n' ? v.t == VT::Num : k == 'i' && v.t == VT::Int && !v.big())) {
+        v.setNatBits(64); v.natSigned = k == 'i'; v.natFloat = k == 'n';
     }
     itemizeScalar(v);
 }
@@ -6540,7 +6540,7 @@ struct RtWordUndo {
 };
 inline Value rtIndexGetP(const Value& base, const Value& key) {
     if (base.pk_ == PK::Packed && key.t == VT::Int && base.t == VT::Array && base.packedLive() && !key.big() &&
-        key.hashKind.empty() && key.enumName.empty() && base.hashKind.empty() && !base.elemDefault()) {
+        key.hashKind.empty() && key.enumName().empty() && base.hashKind.empty() && !base.elemDefault()) {
         const PackedArr* pa = base.packed();
         if (key.i >= 0 && key.i < (long long)pa->w.size()) return pa->at((size_t)key.i);
     }
@@ -6551,13 +6551,13 @@ inline Value rtIndexGetP(const Value& base, const Value& key) {
 // a signed int, 'u' an unsigned one, 'n' a num, and a boxed value is none, as
 // scoreCandidate has it
 inline bool rtNatArg(const Value& v, char k) {
-    if (k == 'n') return v.t == VT::Num && v.natBits && v.natFloat;
-    return v.t == VT::Int && v.natBits && !v.natFloat && v.natSigned == (k == 'i');
+    if (k == 'n') return v.t == VT::Num && v.natBits() && v.natFloat;
+    return v.t == VT::Int && v.natBits() && !v.natFloat && v.natSigned == (k == 'i');
 }
 // …and an element of a native array handed to a routine, or kept by a List
 // literal: the native it holds, as the interpreter's nativeIndexTag gives it
 inline Value rtNatElem(Interpreter& I, const Value& arr, Value v) {
-    if ((v.t == VT::Int || v.t == VT::Num) && !v.natBits)
+    if ((v.t == VT::Int || v.t == VT::Num) && !v.natBits())
         if (const Value* a = arr.deref(); a && a->t == VT::Array && !a->ofType().empty()) I.nativeElemsTag(*a, v);
     return v;
 }
@@ -6576,13 +6576,13 @@ inline const Value& rtPosC(const ValueList& a, size_t idx) {
 // it: `multi h(1)` takes True and <1>, not 1.0 — Interpreter::literalAccepts)
 template <class GetRT>
 inline bool rtLitInt(const Value& v, long long n, GetRT&& rt) {
-    if (v.t == VT::Int && !v.big() && v.enumName.empty() && v.hashKind.empty() && !v.natBits) return v.i == n;
+    if (v.t == VT::Int && !v.big() && v.enumName().empty() && v.hashKind.empty() && !v.natBits()) return v.i == n;
     if (v.t == VT::Bool) return (v.b ? 1 : 0) == n;
     return rt().literalAccepts(Value::integer(n), v);
 }
 template <class GetRT>
 inline bool rtLitStr(const Value& v, const std::string& s, GetRT&& rt) {
-    if (v.t == VT::Str && v.enumName.empty() && v.hashKind.empty()) return v.s.str() == s;
+    if (v.t == VT::Str && v.enumName().empty() && v.hashKind.empty()) return v.s.str() == s;
     return rt().literalAccepts(Value::str(s), v);
 }
 // …and what a POSTFIX one yields for an undefined Bool or Num: the type's
@@ -6610,7 +6610,7 @@ struct ViewMirrorWrite {
 template <class GetRT>
 inline Value rtStep(const Value& v, bool up, GetRT&& rt) {
     long long z;
-    if (v.t == VT::Int && !v.big() && !v.natBits && v.enumName.empty() &&
+    if (v.t == VT::Int && !v.big() && !v.natBits() && v.enumName().empty() &&
         !(up ? rakupp::add_ovf(v.i, 1, &z) : rakupp::sub_ovf(v.i, 1, &z)))
         return Value::integer(z);
     return rt().stepValue(v, up);

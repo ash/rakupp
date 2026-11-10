@@ -176,9 +176,9 @@ void Interpreter::registerBuiltinsPart5() {
         // a JUNCTION format autothreads (the format is a Cool parameter):
         // `sprintf ($o, ($o,).any).all` is a junction of formatted strings
         if (a[0].t == VT::Array && a[0].arr() &&
-            (a[0].enumName == "any" || a[0].enumName == "all" ||
-             a[0].enumName == "one" || a[0].enumName == "none")) {
-            Value out = Value::array(); out.enumName = a[0].enumName;
+            (a[0].enumName() == "any" || a[0].enumName() == "all" ||
+             a[0].enumName() == "one" || a[0].enumName() == "none")) {
+            Value out = Value::array(); out.setEnumName(a[0].enumName());
             auto self = I.builtins_.find("sprintf");
             for (auto& e : *a[0].arr()) {
                 ValueList sub = a; sub[0] = e;
@@ -201,8 +201,8 @@ void Interpreter::registerBuiltinsPart5() {
         // a JUNCTION format autothreads: one printf per eigenstate, nested
         // junctions included (`printf ($o, ($o,).any).all` prints twice)
         if (a[0].t == VT::Array && a[0].arr() &&
-            (a[0].enumName == "any" || a[0].enumName == "all" ||
-             a[0].enumName == "one" || a[0].enumName == "none")) {
+            (a[0].enumName() == "any" || a[0].enumName() == "all" ||
+             a[0].enumName() == "one" || a[0].enumName() == "none")) {
             auto self = I.builtins_.find("printf");
             for (auto& e : *a[0].arr()) {
                 ValueList sub = a; sub[0] = e;
@@ -214,8 +214,8 @@ void Interpreter::registerBuiltinsPart5() {
         // a dedicated printf(Str(Cool), Junction:D) candidate. (sprintf does not:
         // there the junction stays one value.)
         if (a.size() == 2 && a[1].t == VT::Array && a[1].arr() &&
-            (a[1].enumName == "any" || a[1].enumName == "all" ||
-             a[1].enumName == "one" || a[1].enumName == "none")) {
+            (a[1].enumName() == "any" || a[1].enumName() == "all" ||
+             a[1].enumName() == "one" || a[1].enumName() == "none")) {
             for (auto& e : *a[1].arr()) {
                 ValueList one{e};
                 I.ioEmit(doSprintf(a[0].t == VT::Object ? I.strOf(a[0]) : a[0].toStr(), one, I.langRev_), "$*OUT", false);
@@ -302,7 +302,7 @@ void Interpreter::registerBuiltinsPart5() {
             // a Slip, which always flattens in
             // …and an ITEMIZED one (`map {…}, $hash`, `${…}`) is one element
             if (a.size() == 2 && (a[1].t == VT::Hash || a[1].t == VT::Array) && a[1].itemized &&
-                a[1].hashKind.empty() && a[1].enumName.empty())
+                a[1].hashKind.empty() && a[1].enumName().empty())
                 emit(a[1]);
             else if (a.size() == 2) { for (auto& v : toList(a[1])) emit(v); }
             else for (size_t i = 1; i < a.size(); i++) {
@@ -1023,7 +1023,7 @@ void Interpreter::registerBuiltinsPart5() {
                 return resolve(inner);
             }
             // a NESTED list of awaitables is awaited all the way down
-            if (p.t == VT::Array && p.arr() && p.enumName.empty() && p.hashKind.empty()) {
+            if (p.t == VT::Array && p.arr() && p.enumName().empty() && p.hashKind.empty()) {
                 Value out = Value::array(); out.isList = true;
                 for (auto& e : *p.arr()) { Value ee = e; out.arr()->push_back(resolve(ee)); }
                 return out;

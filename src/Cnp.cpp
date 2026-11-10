@@ -196,9 +196,9 @@ static Value argValue(RkCnpFrame* f, const rakupp::cnp::KernelCall& cs, size_t k
     if (a.kind == 'i' ? v.t != VT::Int || v.big() : v.t != VT::Num) return v;
     if (a.slot >= 0) {
         const Value* c = static_cast<Value**>(f->slots)[a.slot];
-        v.natBits = c->natBits; v.natSigned = c->natSigned; v.natFloat = c->natFloat;
+        v.setNatBits(c->natBits()); v.natSigned = c->natSigned; v.natFloat = c->natFloat;
     } else {
-        v.natBits = 64;
+        v.setNatBits(64);
         if (a.kind == 'i') v.natSigned = true; else v.natFloat = true;
     }
     return v;
@@ -216,13 +216,13 @@ static Value argValue(RkCnpFrame* f, const rakupp::cnp::KernelCall& cs, size_t k
 void setReg(RkCnpFrame* f, uint64_t k, const Value& v) {
     Value* boxes = static_cast<Value*>(f->boxes);
     uint8_t was = f->t[k];
-    if (v.enumName.empty() && v.t == VT::Int && !v.big()) { f->r[k] = v.i; f->t[k] = RK_T_INT; }
-    else if (v.enumName.empty() && v.t == VT::Num)        { f->r[k] = d2bits(v.n); f->t[k] = RK_T_NUM; }
-    else if (v.enumName.empty() && v.t == VT::Bool)       { f->r[k] = v.b ? 1 : 0; f->t[k] = RK_T_BOOL; }
+    if (v.enumName().empty() && v.t == VT::Int && !v.big()) { f->r[k] = v.i; f->t[k] = RK_T_INT; }
+    else if (v.enumName().empty() && v.t == VT::Num)        { f->r[k] = d2bits(v.n); f->t[k] = RK_T_NUM; }
+    else if (v.enumName().empty() && v.t == VT::Bool)       { f->r[k] = v.b ? 1 : 0; f->t[k] = RK_T_BOOL; }
     // a Rat whose parts fit an int64 rides the Rat lane (a zero denominator,
     // `1/0`, stays boxed: only applyArith knows what it means)
     // (a FatRat stays boxed: the lane's answers would be Rats)
-    else if (v.enumName.empty() && v.t == VT::Rat && v.hashKind.empty() && !v.fatRat() && v.ratN() && v.ratD() &&
+    else if (v.enumName().empty() && v.t == VT::Rat && v.hashKind.empty() && !v.fatRat() && v.ratN() && v.ratD() &&
              v.ratN()->fitsLL() && v.ratD()->fitsLL() && !v.ratD()->isZero()) {
         f->r[k] = v.ratN()->toLL(); f->den[k] = v.ratD()->toLL(); f->t[k] = RK_T_RAT;
     }
@@ -286,7 +286,7 @@ int rk_cnp_binop(RkCnpFrame* f, uint64_t op, uint64_t d, uint64_t a, uint64_t b)
             Value* boxes = static_cast<Value*>(f->boxes);
             const Value& acc = boxes[d];
             if (!(op & RK_OP_SELFCAT) ||
-                (acc.t == VT::Str && acc.hashKind.empty() && acc.enumName.empty() && !acc.natBits)) {
+                (acc.t == VT::Str && acc.hashKind.empty() && acc.enumName().empty() && !acc.natBits())) {
                 const Value vb = regValue(f, b);
                 rtCatAssign(boxes[d], vb);
                 return 0;
@@ -297,7 +297,7 @@ int rk_cnp_binop(RkCnpFrame* f, uint64_t op, uint64_t d, uint64_t a, uint64_t b)
         if (d == b && d != a && op == (uint64_t)(RK_OP_CONCAT | RK_OP_SELFCAT) && f->t[b] == RK_T_BOX) {
             Value* boxes = static_cast<Value*>(f->boxes);
             const Value& acc = boxes[d];
-            if (acc.t == VT::Str && acc.hashKind.empty() && acc.enumName.empty() && !acc.natBits) {
+            if (acc.t == VT::Str && acc.hashKind.empty() && acc.enumName().empty() && !acc.natBits()) {
                 const Value va = regValue(f, a);
                 rtCatPrepend(boxes[d], va);
                 return 0;
@@ -376,9 +376,9 @@ int rk_cnp_call(RkCnpFrame* f, uint64_t site, uint64_t dst) {
         for (size_t i = 0; i < n; i++)
             if (written[i]) {
                 Value* c = slots[i];
-                const int nb = c->natBits; const bool ns = c->natSigned, nf = c->natFloat;
+                const int nb = c->natBits(); const bool ns = c->natSigned, nf = c->natFloat;
                 *c = regValue(f, i);
-                if (nb) { c->natBits = nb; c->natSigned = ns; c->natFloat = nf; }
+                if (nb) { c->setNatBits(nb); c->natSigned = ns; c->natFloat = nf; }
             }
     };
     auto reload = [&] { for (size_t i = 0; i < n; i++) setReg(f, i, *slots[i]); };
@@ -503,11 +503,11 @@ int rk_cnp_alen(RkCnpFrame* f, uint64_t base, uint64_t dst) {
     try {
         if (f->t[base] == RK_T_BOX) {
             const Value& b = static_cast<Value*>(f->boxes)[base];
-            if (b.t == VT::Array && b.packedLive() && b.hashKind.empty() && b.enumName.empty()) {   // (its words)
+            if (b.t == VT::Array && b.packedLive() && b.hashKind.empty() && b.enumName().empty()) {   // (its words)
                 setReg(f, dst, Value::integer((long long)b.packed()->w.size()));
                 return 0;
             }
-            if (b.t == VT::Array && b.arr() && !b.ext() && b.hashKind.empty() && b.enumName.empty()) {
+            if (b.t == VT::Array && b.arr() && !b.ext() && b.hashKind.empty() && b.enumName().empty()) {
                 setReg(f, dst, Value::integer((long long)b.arr()->size()));
                 return 0;
             }
@@ -554,7 +554,7 @@ int rk_cnp_idxset(RkCnpFrame* f, uint64_t site, uint64_t val) {
         if (v.t == VT::Nil) v = cur->ofType().empty() ? Value::typeObj("Any") : typedElemDefault(*cur);   // (`my int @a`: 0)
         v.readonly = v.immutableBind = false;
         if ((v.t == VT::Array || v.t == VT::Hash) && !v.itemized) v.itemized = true;
-        v.natBits = 0; v.natSigned = v.natFloat = false;
+        v.setNatBits(0); v.natSigned = v.natFloat = false;
         rtIndexRef(*cur, regValue(f, (uint64_t)s.keys.back()), s.hash.back() != 0) = std::move(v);
         setView(f, (uint64_t)s.base);   // (the store may have unpacked, grown or replaced it)
         return 0;
@@ -1886,9 +1886,9 @@ bool run(Kernel* k, Interpreter& I, Value** slots, const std::vector<bool>& writ
     for (size_t i = 0; i < n; i++)
         if (written[i]) {
             Value* c = slots[i];
-            const int nb = c->natBits; const bool ns = c->natSigned, nf = c->natFloat;
+            const int nb = c->natBits(); const bool ns = c->natSigned, nf = c->natFloat;
             *c = regValue(&f.abi, i);
-            if (nb) { c->natBits = nb; c->natSigned = ns; c->natFloat = nf; }
+            if (nb) { c->setNatBits(nb); c->natSigned = ns; c->natFloat = nf; }
         }
 
     if (rc != RK_CNP_OK) {

@@ -477,7 +477,7 @@ void Interpreter::registerBuiltins() {
         for (size_t i = 0; i < a.size(); i++) {
             const Value& j = a[i];
             if (j.t == VT::Array && j.arr() &&
-                (j.enumName == "any" || j.enumName == "all" || j.enumName == "one" || j.enumName == "none")) {
+                (j.enumName() == "any" || j.enumName() == "all" || j.enumName() == "one" || j.enumName() == "none")) {
                 for (auto& e : *j.arr()) { ValueList a2 = a; a2[i] = e; I.callBuiltin("put", a2); }
                 return Value::boolean(true);
             }
@@ -803,7 +803,7 @@ void Interpreter::registerBuiltins() {
     for (const char* jn : {"all", "any", "none", "one"}) {
         std::string name = jn;
         B[name] = [name](Interpreter&, ValueList& a) -> Value {
-            Value j = Value::array(); j.enumName = name;
+            Value j = Value::array(); j.setEnumName(name);
             // one-arg rule: any(@a) spreads the single iterable one level;
             // any(x, y, …) keeps each argument as ONE eigenstate (lists whole)
             if (a.size() == 1 && a[0].t == VT::Array && a[0].arr())
@@ -885,26 +885,26 @@ void Interpreter::registerBuiltins() {
             return g.toStr() == e.toStr();
         };
         if (exp.t == VT::Array && exp.arr() &&
-            (exp.enumName == "any" || exp.enumName == "all" || exp.enumName == "one" || exp.enumName == "none")) {
+            (exp.enumName() == "any" || exp.enumName() == "all" || exp.enumName() == "one" || exp.enumName() == "none")) {
             // (…a junction GOT threads inside each branch: `is $x cmp any(…),
             // any(Same, Less)` holds when any pair matches)
             auto gotEq = [&](const Value& e) {
-                if (!(got.t == VT::Array && got.arr() && (got.enumName == "any" || got.enumName == "all" ||
-                                                           got.enumName == "one" || got.enumName == "none")))
+                if (!(got.t == VT::Array && got.arr() && (got.enumName() == "any" || got.enumName() == "all" ||
+                                                           got.enumName() == "one" || got.enumName() == "none")))
                     return scalarEq(got, e);
-                JunctionCollapse gj(got.enumName);
+                JunctionCollapse gj(got.enumName());
                 for (auto& g : *got.arr()) { gj.feed(scalarEq(g, e)); if (gj.done()) break; }
                 return gj.verdict();
             };
-            JunctionCollapse jc(exp.enumName);     // short-circuits; see Value.h
+            JunctionCollapse jc(exp.enumName());     // short-circuits; see Value.h
             for (auto& br : *exp.arr()) { jc.feed(gotEq(br)); if (jc.done()) break; }
             return jc.verdict();
         }
         // …and a junction GOT autothreads the same way: `is any(@names), 'a'`
         // collapses per the junction's kind (HTTP::UserAgent's header tests)
         if (got.t == VT::Array && got.arr() &&
-            (got.enumName == "any" || got.enumName == "all" || got.enumName == "one" || got.enumName == "none")) {
-            JunctionCollapse jc(got.enumName);
+            (got.enumName() == "any" || got.enumName() == "all" || got.enumName() == "one" || got.enumName() == "none")) {
+            JunctionCollapse jc(got.enumName());
             for (auto& br : *got.arr()) { jc.feed(scalarEq(br, exp)); if (jc.done()) break; }
             return jc.verdict();
         }
@@ -922,7 +922,7 @@ void Interpreter::registerBuiltins() {
         if (v.t == VT::Object || proxyish(v)) { v = Value::str(I.strOf(v)); return; }
         // (an element in a NESTED list counts too: `is @done, (('p', 6),)` where
         // @done holds `($path, 6)` with $path's container — strNeedsElementRead)
-        if (v.t == VT::Array && v.arr() && v.enumName.empty())
+        if (v.t == VT::Array && v.arr() && v.enumName().empty())
             for (auto& e : *v.arr())
                 if (strNeedsElementRead(e)) { v = Value::str(I.strOf(v)); return; }
     };

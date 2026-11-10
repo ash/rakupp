@@ -457,7 +457,7 @@ Value makeSignalEnumValueFwd(int sig);
 // an Int-backed enum value, or a plain integer.
 static inline int signalNumberOf(const Value& v) {
     if (v.t == VT::Type) return signalNumberOfName(v.s.copyText());
-    if (v.t == VT::Int && !v.enumName.empty()) { int n = signalNumberOfName(v.enumName); if (n > 0) return n; }
+    if (v.t == VT::Int && !v.enumName().empty()) { int n = signalNumberOfName(v.enumName()); if (n > 0) return n; }
     if (v.isNumeric()) return (int)v.toInt();
     return -1;
 }

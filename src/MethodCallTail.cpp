@@ -32,7 +32,7 @@ static int builtinCmpOp(const Callable* c) {
 // leaves `order` untouched. `desc`: largest first.
 static bool sortPlainStrs(const ValueList& items, std::vector<size_t>& order, bool desc) {
     for (auto& v : items)
-        if (v.t != VT::Str || !v.hashKind.empty() || !v.enumName.empty()) return false;
+        if (v.t != VT::Str || !v.hashKind.empty() || !v.enumName().empty()) return false;
     std::stable_sort(order.begin(), order.end(), [&](size_t x, size_t y) {
         const int c = items[x].s.str().compare(items[y].s.str());
         return desc ? c > 0 : c < 0;
@@ -590,10 +590,10 @@ std::optional<Value> Interpreter::catchAllDelegation(const Value& inv, const MNa
 static std::optional<Value> borrowedNumericFold(const ValueList& a, char how) {
     if (a.empty()) return std::nullopt;
     auto plainInt = [](const Value& v) {
-        return v.t == VT::Int && !v.x_ && v.hashKind.empty() && v.enumName.empty() && v.enumType.empty();
+        return v.t == VT::Int && !v.x_ && v.hashKind.empty() && v.enumName().empty() && v.enumType().empty();
     };
     auto plainNum = [](const Value& v) {
-        return v.t == VT::Num && !v.x_ && v.hashKind.empty() && v.enumName.empty() && v.enumType.empty();
+        return v.t == VT::Num && !v.x_ && v.hashKind.empty() && v.enumName().empty() && v.enumType().empty();
     };
     if (plainInt(a[0])) {
         for (const Value& v : a) if (!plainInt(v)) return std::nullopt;
@@ -1079,7 +1079,7 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
         return out;
     }
     // the KEY/POS protocol on an undefined scalar: vacuously empty (xxKEY.t)
-    if ((inv.t == VT::Any || inv.t == VT::Nil) && inv.enumName.empty()) {
+    if ((inv.t == VT::Any || inv.t == VT::Nil) && inv.enumName().empty()) {
         if (m == "EXISTS-KEY" || m == "EXISTS-POS") return Value::boolean(false);
         if ((m == "AT-KEY" || m == "AT-POS") && !args.empty()) return Value::any();
         if ((m == "DELETE-KEY" || m == "DELETE-POS") && !args.empty()) return Value::nil();
@@ -1143,7 +1143,7 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
     if (inv.t == VT::Array && inv.arr() && m == "BIND-POS" && args.size() >= 2) {
         if (isNativeElemType(inv.ofType()))
             throw RakuError{Value::typeObj("X::Bind"), "Cannot bind to a natively typed array"};
-        if (inv.isList && inv.s.empty() && inv.enumName.empty())
+        if (inv.isList && inv.s.empty() && inv.enumName().empty())
             throwTyped("X::Immutable", {{"method", m}, {"typename", "List"}},
                 "Cannot call 'BIND-POS' on an immutable 'List'");
         long long i = writeIndexInt(args[0]);
@@ -2551,7 +2551,7 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
     // junction (Rakudo: `5.all` === `all(5)`); containers are handled just below.
     if ((m == "all" || m == "any" || m == "none" || m == "one") &&
         inv.t != VT::Array && inv.t != VT::Range && inv.t != VT::Hash) {
-        Value j = Value::array(); j.enumName = m;
+        Value j = Value::array(); j.setEnumName(m);
         j.setArr(makePayload<ValueList>(ValueList{inv}));
         return j;
     }
@@ -2624,7 +2624,7 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
         // `@rows.map({ my @r = $_ })` takes each row whole, and `@rows.grep(…)`
         // and `.head` answer `$[1, 2]`. A List's elements are bare, and `.List`
         // is the one view of an Array that drops the containers (Rakudo).
-        const bool elemItems = inv.t == VT::Array && !inv.isList && inv.hashKind.empty() && inv.enumName.empty();
+        const bool elemItems = inv.t == VT::Array && !inv.isList && inv.hashKind.empty() && inv.enumName().empty();
         if (elemItems && !items.empty() &&
             (m == "map" || m == "flatmap" || m == "grep" || m == "first" || m == "sort" ||
              m == "classify" || m == "categorize" || m == "min" || m == "max" || m == "minmax" ||
@@ -2665,7 +2665,7 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
         }
         // junction methods: @a.any / .all / .none / .one — a tagged-Array junction
         if (m == "any" || m == "all" || m == "none" || m == "one") {
-            Value j = Value::array(); j.enumName = m;
+            Value j = Value::array(); j.setEnumName(m);
             j.setArr(makePayload<ValueList>(items));
             return j;
         }
@@ -3051,19 +3051,19 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
         // `.^enum_value_list` — the members themselves, in declaration order —
         // and `.^enum_values`, the same Map `.enums` is
         // (the `^` is already stripped by the time an enum type gets here)
-        if ((m == "^enum_value_list" || m == "enum_value_list") && !inv.enumType.empty()) {
+        if ((m == "^enum_value_list" || m == "enum_value_list") && !inv.enumType().empty()) {
             Value o = Value::array(); o.isList = true;
             for (auto& v : items) {
                 if (v.t != VT::Pair) continue;
                 Value mv;
-                if (Value* f = tctx().cur->find(std::string(inv.enumType.c_str()) + "::" + v.s)) mv = *f;
+                if (Value* f = tctx().cur->find(std::string(inv.enumType().c_str()) + "::" + v.s)) mv = *f;
                 else if (Value* f2 = tctx().cur->find(v.s.copyText())) mv = *f2;
                 else continue;
                 o.arr()->push_back(mv);
             }
             return o;
         }
-        if (m == "enums" || ((m == "^enum_values" || m == "enum_values") && !inv.enumType.empty())) { // enum type (a pair-list) -> Map of name => value
+        if (m == "enums" || ((m == "^enum_values" || m == "enum_values") && !inv.enumType().empty())) { // enum type (a pair-list) -> Map of name => value
             Value h = Value::makeHash();
             h.hashKind = "Map";
             for (auto& v : items) if (v.t == VT::Pair) (*h.hash())[v.s] = v.pairVal() ? *v.pairVal() : Value::any();
@@ -3986,7 +3986,7 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
         // `.pick(**)` — every element in a random order, then again, endlessly:
         // a LAZY Seq of successive shuffles (S32-list/pick.t)
         if (m == "pick" && args.size() == 1 && args[0].typeName() == "HyperWhatever" &&
-            inv.enumType.empty() && !(inv.t == VT::Hash)) {
+            inv.enumType().empty() && !(inv.t == VT::Hash)) {
             ValueList pool = items;
             Value out = Value::array(); out.isList = true; out.s = "Seq";
             if (pool.empty()) return out;
@@ -4009,9 +4009,9 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
         if (m == "pick" || m == "roll") { // random element(s); pick = without replacement
             // an enum type picks from its VALUES (red/green/blue), not its (key=>val) pairs
             ValueList enumVals;
-            for (auto& pr : items) if (!inv.enumType.empty() && pr.t == VT::Pair) {
+            for (auto& pr : items) if (!inv.enumType().empty() && pr.t == VT::Pair) {
                 Value ev = Value::enumVal(pr.s, pr.pairVal() ? pr.pairVal()->toInt() : 0);
-                ev.enumType = inv.enumType; enumVals.push_back(ev);
+                ev.setEnumType(inv.enumType()); enumVals.push_back(ev);
             }
             // quanthashes pick from their KEYS (Bag/Mix: weighted by count — sampled,
             // never materialized: a bag with a count of 10^9 must not build a pool)
@@ -4103,7 +4103,7 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
                 }
                 return out;
             }
-            const ValueList& pool0 = inv.enumType.empty() ? items : enumVals;
+            const ValueList& pool0 = inv.enumType().empty() ? items : enumVals;
             // Nothing to draw from: a bare `.pick`/`.roll` is Nil, and the
             // counted form is the empty LIST (`.roll(n)` a Seq) — not an empty
             // ARRAY, which compared unequal to `()` (Nil-Any sheet NA-43).
@@ -5251,7 +5251,7 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
             // a DISPATCH failure there (List has no splice candidates, only the
             // proto), so its message differs. Seq/Uni/Junction/Capture-tagged
             // arrays are excluded — they have their own (unfixed) stories.
-            if (inv.isList && inv.enumName.empty() &&
+            if (inv.isList && inv.enumName().empty() &&
                 (inv.s.empty() || inv.s == "Slip")) {
                 if (m == "push" || m == "append" || m == "pop" || m == "unshift" ||
                     m == "prepend" || m == "shift")
@@ -5326,8 +5326,8 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
                 }
                 // a boxed array's element is boxed: a native's tags stay behind
                 // (`@a.push($an-int); @a[0] = 2**70` holds the big Int)
-                if (v.natBits && !isNativeTypeName(inv.ofType())) {
-                    v.natBits = 0; v.natSigned = v.natFloat = false;
+                if (v.natBits() && !isNativeTypeName(inv.ofType())) {
+                    v.setNatBits(0); v.natSigned = v.natFloat = false;
                 }
                 return v;
             };

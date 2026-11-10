@@ -166,7 +166,7 @@ Value divZeroResult(const Value& lhs, const std::string& op) {
 // one it did not — the emitter only reaches for this when the program declares
 // the routine.
 Value rtUserInfix(Value (*fn)(ValueList), const char* op, const Value& l, const Value& r) {
-    if (l.t == VT::Object || r.t == VT::Object || !l.enumType.empty() || !r.enumType.empty()) {
+    if (l.t == VT::Object || r.t == VT::Object || !l.enumType().empty() || !r.enumType().empty()) {
         try { return fn(ValueList{l, r}); }
         // Only "no candidate took these operands" falls back. An error the
         // user's operator RAISED is its answer and must keep being raised.
@@ -240,7 +240,7 @@ Value rtValueInfix(Interpreter& I, const Value& f, const char* op, const Value& 
         else {
             Value out;
             if (I.userInfixOverCoreOf(f, op, l, r, out)) return out;
-            if (l.t == VT::Object || r.t == VT::Object || !l.enumType.empty() || !r.enumType.empty()) {
+            if (l.t == VT::Object || r.t == VT::Object || !l.enumType().empty() || !r.enumType().empty()) {
                 try { return I.callCallable(f, ValueList{l, r}); }
                 catch (RakuError& e) {
                     std::string en = e.payload.t == VT::Type ? e.payload.s.copyText() : e.payload.typeName();
@@ -307,9 +307,9 @@ bool exprNamesContainer(const Expr* e) {
 // The payload index for one key of an object hash. See hashSubKey below.
 std::string objHashIndex(const Value& k) {
     if (k.t == VT::Type) return "(" + k.s + ")";
-    if (k.t == VT::Array && !k.enumType.empty() && k.enumName.empty())
-        return "(" + std::string(k.enumType.str()) + ")";
-    if (k.t == VT::Str && k.hashKind.empty() && k.enumName.empty()) return k.s.copyText();
+    if (k.t == VT::Array && !k.enumType().empty() && k.enumName().empty())
+        return "(" + std::string(k.enumType().str()) + ")";
+    if (k.t == VT::Str && k.hashKind.empty() && k.enumName().empty()) return k.s.copyText();
     return whichOf(k);
 }
 
@@ -456,8 +456,8 @@ bool valueEqv(const Value& a, const Value& b) {
     // compare as the structures they are.
     {
         auto junc = [](const Value& v) {
-            return v.t == VT::Array && v.arr() && (v.enumName == "any" || v.enumName == "all" ||
-                                                   v.enumName == "one" || v.enumName == "none");
+            return v.t == VT::Array && v.arr() && (v.enumName() == "any" || v.enumName() == "all" ||
+                                                   v.enumName() == "one" || v.enumName() == "none");
         };
         const bool ja = junc(a), jb = junc(b);
         if (ja != jb) {
@@ -465,9 +465,9 @@ bool valueEqv(const Value& a, const Value& b) {
             const Value& o = ja ? b : a;
             size_t hits = 0, n = j.arr()->size();
             for (auto& e : *j.arr()) if (ja ? valueEqv(e, o) : valueEqv(o, e)) hits++;
-            if (j.enumName == "any") return hits > 0;
-            if (j.enumName == "all") return hits == n;
-            if (j.enumName == "one") return hits == 1;
+            if (j.enumName() == "any") return hits > 0;
+            if (j.enumName() == "all") return hits == n;
+            if (j.enumName() == "one") return hits == 1;
             return hits == 0;   // none
         }
     }
@@ -532,7 +532,7 @@ bool valueEqv(const Value& a, const Value& b) {
     // the two paths are not equivalent. (Smartmatch asks the weaker question —
     // do they resolve to one absolute path — and lives in applyBinOp.)
     if (a.t == VT::Str && a.hashKind == "IO" && b.hashKind == "IO")
-        return a.s == b.s && a.ofType() == b.ofType() && a.enumName == b.enumName;
+        return a.s == b.s && a.ofType() == b.ofType() && a.enumName() == b.enumName();
     switch (a.t) {
         case VT::Array:
             // An Array, a List, a Seq and a Slip are DIFFERENT TYPES that share
@@ -1127,14 +1127,14 @@ Value typedDefault(const std::string& type, char sigil) {
             {"uint8",8,false},{"int8",8,true},{"byte",8,false},{"uint16",16,false},{"int16",16,true},
             {"uint32",32,false},{"int32",32,true},{"uint64",64,false},{"int64",64,true},
             {"uint",64,false},{"int",64,true}};   // the unsized spellings are 64-bit
-        for (auto& t : nts) if (type == t.n) { Value v = Value::integer(0); v.natBits = t.bits; v.natSigned = t.sgn; return v; }
+        for (auto& t : nts) if (type == t.n) { Value v = Value::integer(0); v.setNatBits(t.bits); v.natSigned = t.sgn; return v; }
         // num32 rounds to float32 precision on assignment (num/num64 are already
         // double, so they need no truncation marker).
-        if (type == "num32") { Value v = Value::number(0); v.natBits = 32; v.natFloat = true; return v; }
+        if (type == "num32") { Value v = Value::number(0); v.setNatBits(32); v.natFloat = true; return v; }
         // …while num/num64 carry the 64-bit float tag: it marks the value as
         // NATIVE (multi dispatch prefers a `num` parameter for it) and makes an
         // Int assigned in a Num
-        if (type == "num" || type == "num64") { Value v = Value::number(0); v.natBits = 64; v.natFloat = true; return v; }
+        if (type == "num" || type == "num64") { Value v = Value::number(0); v.setNatBits(64); v.natFloat = true; return v; }
         if (type.rfind("num", 0) == 0) return Value::number(0);
         if (type == "int" || type.rfind("int", 0) == 0 || type.rfind("uint", 0) == 0 ||
             type == "atomicint") return Value::integer(0);
@@ -1478,7 +1478,7 @@ void nativeUndefCheck(const Value& rv, const Expr* target, const Value* slot) {
                 kind = "int";
         }
     }
-    if (!kind && slot && slot->natBits) kind = slot->natFloat ? "num" : "int";
+    if (!kind && slot && slot->natBits()) kind = slot->natFloat ? "num" : "int";
     if (!kind) return;
     const std::string what = rv.t == VT::Nil ? std::string("Nil") : rv.t == VT::Any ? std::string("Any") : rv.s.copyText();
     throw RakuError{Value::typeObj("X::AdHoc"),
@@ -1496,7 +1496,7 @@ void nativeUndefCheck(const Value& rv, const Expr* target, const Value* slot) {
 static Value nativeStoreValue(const Value& v, int bits, bool sign, bool isFloat,
                               const std::string& name, bool srcNative) {
     Value slotLike = isFloat ? Value::number(0) : Value::integer(0);
-    slotLike.natBits = bits; slotLike.natSigned = sign; slotLike.natFloat = isFloat;
+    slotLike.setNatBits(bits); slotLike.natSigned = sign; slotLike.natFloat = isFloat;
     if (v.t == VT::Nil || v.t == VT::Type || v.t == VT::Any) nativeUndefCheck(v, nullptr, &slotLike);
     Value out = v;
     out.readonly = out.immutableBind = false;
@@ -1513,17 +1513,17 @@ Value rtNativeValue(const Value& v, const std::string& type, const std::string& 
     return nativeStoreValue(v, bits, sign, isFloat, name, srcNative);
 }
 Value rtNativeValueLike(const Value& slot, const Value& v, const std::string& name, bool srcNative) {
-    if (!slot.natBits) return v;   // not (or no longer) a native container
-    return nativeStoreValue(v, slot.natBits, slot.natSigned, slot.natFloat, name, srcNative);
+    if (!slot.natBits()) return v;   // not (or no longer) a native container
+    return nativeStoreValue(v, slot.natBits(), slot.natSigned, slot.natFloat, name, srcNative);
 }
 Value rtNativeArithSlow(const char* op, const Value& l, const Value& r) {
     auto plainInt = [](const Value& v) {
-        return v.t == VT::Int && !v.big() && v.hashKind.empty() && v.enumName.empty();
+        return v.t == VT::Int && !v.big() && v.hashKind.empty() && v.enumName().empty();
     };
     if (plainInt(l) && plainInt(r)) {
         long long x;
         if (rtNativeIntOp(op, l.i, r.i, x)) {
-            Value out = Value::integer(x); out.natBits = 64; out.natSigned = true;
+            Value out = Value::integer(x); out.setNatBits(64); out.natSigned = true;
             return out;
         }
         if (std::string(op) == "**" && r.i < 0) return Value::integer(0);   // see nativeIntPowNegative
@@ -1531,16 +1531,16 @@ Value rtNativeArithSlow(const char* op, const Value& l, const Value& r) {
     Value res;
     double a, b;
     if (!rtNumPair(l, r, a, b) || !rtNumArith(op, a, b, res)) res = applyArith(op, l, r);
-    if (res.t == VT::Num) { res.natBits = 64; res.natFloat = true; }
+    if (res.t == VT::Num) { res.setNatBits(64); res.natFloat = true; }
     return res;
 }
 Value rtNativeNeg(const Value& v) {
     if (v.t == VT::Int && !v.big()) {
         Value out = Value::integer((long long)(0ULL - (unsigned long long)v.i));
-        out.natBits = 64; out.natSigned = true;
+        out.setNatBits(64); out.natSigned = true;
         return out;
     }
-    if (v.t == VT::Num) { Value out = Value::number(-v.n); out.natBits = 64; out.natFloat = true; return out; }
+    if (v.t == VT::Num) { Value out = Value::number(-v.n); out.setNatBits(64); out.natFloat = true; return out; }
     return applyArith("-", Value::integer(0), v);
 }
 // rtNeg's general case, as evalUnary runs it: a junction autothreads. An
@@ -1550,7 +1550,7 @@ Value rtNativeNeg(const Value& v) {
 Value rtNegSlow(Interpreter& I, const Value& v) {
     if (v.t == VT::Any || v.t == VT::Type || v.t == VT::Nil) return applyArith("-", Value::integer(0), v);
     if (isJunction(v)) {
-        Value out = Value::array(); out.enumName = v.enumName;
+        Value out = Value::array(); out.setEnumName(v.enumName());
         for (auto& e : *v.arr()) out.arr()->push_back(I.prefixNumeric("-", e));
         return out;
     }
@@ -1561,13 +1561,13 @@ Value rtNegSlow(Interpreter& I, const Value& v) {
 // `+"=42"` its Failure, where the `0 + $x` this was died "Cannot convert string
 // to number". An undefined operand keeps that, silently, as rtNegSlow's does.
 Value rtPlus(Interpreter& I, const Value& v) {
-    if (v.hashKind.empty() && v.enumName.empty()) {
+    if (v.hashKind.empty() && v.enumName().empty()) {
         if (v.t == VT::Int && !v.big()) return Value::integer(v.i);
         if (v.t == VT::Num) return Value::number(v.n);
     }
     if (v.t == VT::Any || v.t == VT::Type || v.t == VT::Nil) return applyArith("+", Value::integer(0), v);
     if (isJunction(v)) {
-        Value out = Value::array(); out.enumName = v.enumName;
+        Value out = Value::array(); out.setEnumName(v.enumName());
         for (auto& e : *v.arr()) out.arr()->push_back(I.prefixNumeric("+", e));
         return out;
     }
@@ -2191,7 +2191,7 @@ bool Interpreter::mainArgEnum(const std::string& n, Value& out) {
         // the same enumType and is no member — it is an Array, so `prog Color`
         // stays the word it was spelled as, as under Rakudo.
         if (p->t == VT::Bool ||
-            (p->t == VT::Int && (!p->enumType.empty() || !p->enumName.empty()))) { out = *p; return true; }
+            (p->t == VT::Int && (!p->enumType().empty() || !p->enumName().empty()))) { out = *p; return true; }
         return false;   // the name is taken, and not by an enum value
     }
     // A natively compiled program's own enums live in no Env — they are C++
@@ -2457,7 +2457,7 @@ Value Interpreter::seqOp(Value l, Value r, bool exclusive) {
         // endpoint: `E::a...E::c` is (a b c), `False...True` is (False) — any
         // value `~~ True`.
         if (!hasGen && !infinite && !endCode && !seed.empty() &&
-            (seed.back().t == VT::Bool || !seed.back().enumType.empty())) {
+            (seed.back().t == VT::Bool || !seed.back().enumType().empty())) {
             Value cur = seed.back();
             if (!boolify(smartmatchValue("~~", cur, r))) {
                 const bool down = r.t != VT::Bool && applyArith("cmp", cur, r).toInt() > 0;
@@ -3367,7 +3367,7 @@ static const std::unordered_map<std::string, Value, VarNameHash, VarNameEq>& cor
         };
         auto member = [&](const char* type, const char* key, long long ord) {
             Value v = Value::enumVal(key, ord);
-            v.enumType = type;
+            v.setEnumType(type);
             both(type, key, v);
         };
         // Bool's two, which are an enum in Raku however natively they are stored here
@@ -3561,8 +3561,8 @@ Value rtStarKey(const Value& base, const Value& key) {
 Value& rtIndexRefW(Value& base, const Value& key) { return rtIndexRef(base, rtStarKey(base, key), false); }
 
 std::string rtInterpStr(const Value& v) {
-    if (v.t == VT::Str && v.hashKind.empty() && v.enumName.empty()) return v.s.copyText();
-    if ((v.t == VT::Int && !v.big()) && v.hashKind.empty() && v.enumName.empty()) return v.toStr();
+    if (v.t == VT::Str && v.hashKind.empty() && v.enumName().empty()) return v.s.copyText();
+    if ((v.t == VT::Int && !v.big()) && v.hashKind.empty() && v.enumName().empty()) return v.toStr();
     if (Interpreter* I = Interpreter::liveTarget()) return I->strOf(v);
     return v.toStr();
 }
@@ -3956,11 +3956,11 @@ Value rtArrayVal(const Value& v) {
         // (a boxed array's elements are boxed, as coerceArray drops a native's tags)
         if (v.isList) { Value r = listToArray(*v.arr()); r.isList = false;
                         if (v.s == "Seq" || v.holdsContainers()) deproxyElems(r);
-                        for (auto& e : *r.arr()) if (e.natBits) dropNativeTags(e);
+                        for (auto& e : *r.arr()) if (e.natBits()) dropNativeTags(e);
                         return r; }
         Value r = Value::array(*v.arr()); // fresh buffer: `@a = @b` must not alias @b
         if (v.s == "Seq" || v.holdsContainers()) deproxyElems(r); // take-rw's Proxies decontainerize on assign
-        for (auto& e : *r.arr()) if (e.natBits) dropNativeTags(e);
+        for (auto& e : *r.arr()) if (e.natBits()) dropNativeTags(e);
         return r;
     }
     // `my @a = 1..*` is lazy, as interpreted: flattening reached the cap
@@ -4110,7 +4110,7 @@ Value rtArrayVal(Value&& v) {
         for (auto& it : *v.arr())
             if (it.t == VT::Array && it.arr() && it.s == "Slip")
                 return rtArrayVal(static_cast<const Value&>(v));
-        for (auto& it : *v.arr()) if (it.natBits) dropNativeTags(it);   // (boxed elements, as above)
+        for (auto& it : *v.arr()) if (it.natBits()) dropNativeTags(it);   // (boxed elements, as above)
         Value r = Value::array();
         r.setArr(v.arrS());
         return r;
@@ -4171,7 +4171,7 @@ Value coerceArray(const Value& v, bool nativeTarget) {
         // a boxed array's elements are boxed: a native's tags stay behind, or
         // `@a[1] = 0.5` would truncate and `@a[0] + 1` wrap (see dropNativeTags)
         if (!nativeTarget)
-            for (auto& e : *r.arr()) if (e.natBits) dropNativeTags(e);
+            for (auto& e : *r.arr()) if (e.natBits()) dropNativeTags(e);
         return r;
     }
     if (v.t == VT::Range) {
@@ -4197,7 +4197,7 @@ Value coerceArray(const Value& v, bool nativeTarget) {
     Value a = Value::array();
     if (v.t != VT::Nil && v.t != VT::Any) {
         a.arr()->push_back(v);
-        if (!nativeTarget && v.natBits) dropNativeTags(a.arr()->back());   // `my @a = $an-int`
+        if (!nativeTarget && v.natBits()) dropNativeTags(a.arr()->back());   // `my @a = $an-int`
     }
     return a;
 }
@@ -4216,7 +4216,7 @@ Value coerceArrayTake(Value& v, bool nativeTarget) {
     r.isList = false;
     for (auto& e : *r.arr()) {
         decontCopied(e);
-        if (!nativeTarget && e.natBits) dropNativeTags(e);
+        if (!nativeTarget && e.natBits()) dropNativeTags(e);
     }
     return r;
 }
@@ -4273,7 +4273,7 @@ static void itemizeHashValues(Value& h) {
     if (h.t != VT::Hash || !h.hash()) return;
     for (auto& kv : *h.hash()) {
         Value& e = kv.second;
-        if ((e.t == VT::Array && e.hashKind != "Capture" && e.enumName.empty()) ||
+        if ((e.t == VT::Array && e.hashKind != "Capture" && e.enumName().empty()) ||
             (e.t == VT::Hash && e.hashKind.empty()))
             e.itemized = true;
     }
@@ -4389,7 +4389,7 @@ Value coerceHash(const Value& v, bool store, bool objKeyed) {
     if (store)
         for (auto& kv : *h.hash()) {
             decontCopied(kv.second);
-            if (kv.second.natBits) dropNativeTags(kv.second);   // `my %h = a => $an-int`
+            if (kv.second.natBits()) dropNativeTags(kv.second);   // `my %h = a => $an-int`
             // Nil assigned into an element resets it, as into any container:
             // `my %h = point => Nil; %h<point>` is Any (Rakudo), not Nil
             if (kv.second.t == VT::Nil) kv.second = Value::any();
@@ -8031,10 +8031,10 @@ bool Interpreter::distFieldMatches(const std::string& field, const Value& matche
     if (matcher.t == VT::Bool) return matcher.truthy();
     // a Junction matcher threads: each of its values is a matcher in turn
     if (matcher.t == VT::Array && matcher.arr() &&
-        (matcher.enumName == "any" || matcher.enumName == "all" || matcher.enumName == "one" || matcher.enumName == "none")) {
+        (matcher.enumName() == "any" || matcher.enumName() == "all" || matcher.enumName() == "one" || matcher.enumName() == "none")) {
         size_t hits = 0, n = matcher.arr()->size();
         for (auto& m : *matcher.arr()) if (distFieldMatches(field, m, isAuth, starIsWildcard)) hits++;
-        const std::string& k = matcher.enumName;
+        const std::string& k = matcher.enumName();
         return k == "any" ? hits > 0 : k == "all" ? hits == n : k == "one" ? hits == 1 : hits == 0;
     }
     if (matcher.t == VT::Any || matcher.t == VT::Nil) return true;
@@ -8047,7 +8047,7 @@ bool Interpreter::distFieldMatches(const std::string& field, const Value& matche
         Value have = methodCall(Value::typeObj("Version"), "new", ValueList{Value::str(field)});
         const bool matcherIsVersion = matcher.t == VT::Str && matcher.hashKind == "Version";
         Value want = matcherIsVersion || matcher.t == VT::Code || matcher.t == VT::Range || matcher.t == VT::Regex ||
-                     (matcher.t == VT::Array && !matcher.enumName.empty())
+                     (matcher.t == VT::Array && !matcher.enumName().empty())
                    ? matcher : methodCall(Value::typeObj("Version"), "new", ValueList{Value::str(matcher.toStr())});
         return boolify(smartmatchValue("~~", have, want));
     } catch (RakuError&) { return false; }

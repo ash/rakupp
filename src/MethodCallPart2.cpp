@@ -1142,7 +1142,7 @@ void Interpreter::runAttrDefaults(const PRef<ObjectData>& od,
         checkAttrStore(*this, v, at, resolveRoleType(at.type), wasNil, scope);
         // a boxed attribute takes a native's VALUE: its width tags stayed on,
         // so `C.new(v => $an-int8)` then `.v = 300` wrapped to 44
-        if (v.natBits && !isNativeTypeName(at.type)) { v.natBits = 0; v.natSigned = v.natFloat = false; }
+        if (v.natBits() && !isNativeTypeName(at.type)) { v.setNatBits(0); v.natSigned = v.natFloat = false; }
         return v;
     };
     // (a caller's typed container value: see typedAttrContainer)
@@ -1503,7 +1503,7 @@ Value* Interpreter::attrAssignLane(const VarExpr* tv, Expr* value) {
     if (it == od->attrs.end()) return nullptr;
     {
         const Value& s = it->second;
-        if (s.isCell() || s.x_ || s.readonly || s.natBits || !s.hashKind.empty()) return nullptr;
+        if (s.isCell() || s.x_ || s.readonly || s.natBits() || !s.hashKind.empty()) return nullptr;
     }
     Value rv = evalValueOf(value);
     const bool wasNil = rv.t == VT::Nil;
@@ -1527,7 +1527,7 @@ Value* Interpreter::attrAssignLane(const VarExpr* tv, Expr* value) {
         }
     }
     checkAttrStore(*this, v, *at, roleTypeIn(ci, ty, held), wasNil, ci->declEnv.get());
-    if (v.natBits) { v.natBits = 0; v.natSigned = v.natFloat = false; }   // a boxed slot takes the VALUE
+    if (v.natBits()) { v.setNatBits(0); v.natSigned = v.natFloat = false; }   // a boxed slot takes the VALUE
     // a `$` container itemizes what it holds
     if ((v.t == VT::Array || v.t == VT::Hash) && !v.itemized) v.itemized = true;
     // (the right-hand side ran code: the slot is looked up again, not reused,
@@ -3728,7 +3728,7 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
     if ((inv.t == VT::Type && inv.s == "Kernel") ||
         (inv.t == VT::Hash && inv.hashKind == "Kernel")) {
         if (m == "endian") { // all supported targets are little-endian
-            Value e = Value::enumVal("LittleEndian", 1); e.enumType = "Endian"; return e;
+            Value e = Value::enumVal("LittleEndian", 1); e.setEnumType("Endian"); return e;
         }
         // $*KERNEL.bits — the process's native pointer width, an Int. (It used to
         // fall through to the name, so `$*KERNEL.bits == 64` compared "darwin".)
@@ -3766,7 +3766,7 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
         }
         if (args.empty()) return Value::nil();
         const Value& a = args[0];
-        if (a.t == VT::Int && a.enumName.empty()) return Value::integer(a.i);
+        if (a.t == VT::Int && a.enumName().empty()) return Value::integer(a.i);
         if (a.t == VT::Int) return Value::integer(a.i);
         std::string nm = a.toStr();
         int n = signalNumberOfName(nm);
@@ -9598,8 +9598,8 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
             // kept its enumName, so `b.Numeric` and `+b` rendered as `b` rather
             // than 1, while `.Int` and `.value` (which build a fresh Int) were
             // right — the same value answering three ways.
-            if (!inv.enumName.empty()) {
-                Value n = inv; n.enumName.clear(); n.enumType.clear();
+            if (!inv.enumName().empty()) {
+                Value n = inv; n.setEnumName(IStr()); n.setEnumType(IStr());
                 return n;
             }
             // …and an ALLOMORPH numifies to its NUMERIC half, exactly as `.Rat`
@@ -9870,7 +9870,7 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
                     const bool listish =
                         (inv.t == VT::Type && (inv.s == "List" || inv.s == "Array" || inv.s == "Seq" ||
                                                inv.s == "Range" || inv.s == "Map" || inv.s == "Hash")) ||
-                        (inv.t == VT::Array && inv.arr() && inv.enumName.empty() &&
+                        (inv.t == VT::Array && inv.arr() && inv.enumName().empty() &&
                          (inv.s.empty() || inv.s == "Slip" || inv.s == "Seq")) ||
                         inv.t == VT::Range ||
                         (inv.t == VT::Hash && (inv.hashKind.empty() || inv.hashKind == "Map"));
@@ -10125,25 +10125,25 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
     // uses `@x.VAR.name ne "element"` to detect an explicitly-passed array.
     if (m == "name" && (inv.t == VT::Array || inv.t == VT::Hash)) return Value::str("element");
     // enum value introspection (VT::Int carrying an enumName, e.g. `medium` of `enum Size <...>`)
-    if (inv.t == VT::Int && !inv.enumName.empty()) {
-        if (m == "key") return Value::str(inv.enumName);
+    if (inv.t == VT::Int && !inv.enumName().empty()) {
+        if (m == "key") return Value::str(inv.enumName());
         // a non-Int enum value (`One => "Eins"`) rides in pairVal beside the ordinal
         // …and a member whose Int exceeds int64 carries it as its own BigInt
         // payload (see the enum declaration): strip the tag rather than clamp
         auto plain = [&]() -> Value {
             if (inv.pairVal()) return *inv.pairVal();
-            if (inv.big()) { Value n = inv; n.enumName.clear(); n.enumType.clear(); return n; }
+            if (inv.big()) { Value n = inv; n.setEnumName(IStr()); n.setEnumType(IStr()); return n; }
             return Value::integer(inv.toInt());
         };
         if (m == "value") return plain();
-        if (m == "pair") return Value::pair(inv.enumName, plain());
+        if (m == "pair") return Value::pair(inv.enumName(), plain());
         // An enum VALUE's `.kv` is its OWN name and number — `foo.kv` is
         // `("foo", 0)`, a two-element List, not the index/value pair the
         // one-element-list view would give (Nil-Any sheet NA-18; roast
         // S12-enums/basic.t's "Enumeration:D.kv").
         if (m == "kv") {
             Value o = Value::array(); o.isList = true;
-            o.arr()->push_back(Value::str(inv.enumName.str()));
+            o.arr()->push_back(Value::str(inv.enumName().str()));
             o.arr()->push_back(plain());
             return o;
         }
@@ -10151,31 +10151,31 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
         // declaration built. `.enums` was implemented only there, so `Mass.enums`
         // worked and `g.enums` fell off the ladder. The VT::Array guard matters:
         // the type object carries enumType too, and forwarding from it recurses.
-        if ((m == "enums" || m == "elems" || m == "pick" || m == "roll") && !inv.enumType.empty()) {
-            if (Value* et = tctx().cur->find(inv.enumType))
+        if ((m == "enums" || m == "elems" || m == "pick" || m == "roll") && !inv.enumType().empty()) {
+            if (Value* et = tctx().cur->find(inv.enumType()))
                 if (et->t == VT::Array) return methodCall(*et, m, args, rwArgs);
             // …and when the declaration is not in scope here at all. A role's
             // `::EnumBits` capture hands the type object to the role BODY, whose
             // lexical chain never saw the consumer's `my enum MyBits`, so
             // `EnumBits.enums` — the line every BitEnum consumer runs — answered
             // "No such method 'enums'".
-            auto ep = enumPairs_.find(inv.enumType.str());
+            auto ep = enumPairs_.find(inv.enumType().str());
             if (ep != enumPairs_.end() && ep->second.t == VT::Array)
                 return methodCall(ep->second, m, args, rwArgs);
         }
     }
     // `.new` on an enum — its type or a member, Bool included — makes nothing
-    if (m == "new" && ((!inv.enumType.empty() && (inv.t == VT::Array || inv.t == VT::Type || defined(inv))) ||
+    if (m == "new" && ((!inv.enumType().empty() && (inv.t == VT::Array || inv.t == VT::Type || defined(inv))) ||
                        (inv.t == VT::Type && inv.s == "Bool") || inv.t == VT::Bool)) {
         std::string en = inv.t == VT::Bool || (inv.t == VT::Type && inv.s == "Bool") ? std::string("Bool")
-                                                                                     : std::string(inv.enumType.str());
+                                                                                     : std::string(inv.enumType().str());
         throwTypedV("X::Constructor::BadType", {{"type", Value::typeObj(en)}},
                     "Enum '" + en + "' is insufficiently type-like to be instantiated. Did you mean 'class'?");
     }
     // An enum TYPE is Associative over its members: `E.pairs` is (a => 5, b => 7)
     // and `E.keys` the names — not the index-keyed view of the pair-list it is
     // stored as
-    if (inv.t == VT::Array && !inv.enumType.empty() && inv.arr() &&
+    if (inv.t == VT::Array && !inv.enumType().empty() && inv.arr() &&
         (m == "pairs" || m == "keys" || m == "values" || m == "kv" || m == "antipairs" || m == "invert")) {
         Value o = Value::array(); o.isList = true; o.s = "Seq";
         for (auto& e : *inv.arr()) {
@@ -10396,8 +10396,8 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
         // a CArray instance names its element type inside its own name
         // ("CArray[int32]"); its .WHAT carries the parameter where a
         // `CArray[int32]` written in code keeps it, so the two are `===`
-        if (inv.t == VT::Str && inv.hashKind == "CArray" && !inv.enumName.empty()) {
-            Value ty = Value::typeObj("CArray"); ty.ofTypeM() = inv.enumName.str(); return ty;
+        if (inv.t == VT::Str && inv.hashKind == "CArray" && !inv.enumName().empty()) {
+            Value ty = Value::typeObj("CArray"); ty.ofTypeM() = inv.enumName().str(); return ty;
         }
         // ...and so does a live Pointer[T], or a CArray[T] a native call
         // returned, whose element type sits in an "of" slot
@@ -10751,11 +10751,11 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
         }
         const Value* elist = nullptr;
         Value resolved;
-        if (inv.t == VT::Array && !inv.enumType.empty() && inv.enumName.empty()) elist = &inv;
+        if (inv.t == VT::Array && !inv.enumType().empty() && inv.enumName().empty()) elist = &inv;
         else if (inv.t == VT::Type) {
             Value* ev = tctx().cur ? tctx().cur->find(inv.s.copyText()) : nullptr;
             if (!ev && global_) ev = global_->find(inv.s.copyText());
-            if (ev && ev->t == VT::Array && !ev->enumType.empty() && ev->enumName.empty())
+            if (ev && ev->t == VT::Array && !ev->enumType().empty() && ev->enumName().empty())
                 { resolved = *ev; elist = &resolved; }
         }
         if (elist && elist->arr() && !args.empty()) {
@@ -10771,7 +10771,7 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
                                                  : pv.toStr() == a0.toStr();
                 if (!hit) continue;
                 Value out = pv;
-                out.enumName = e.s; out.enumType = elist->enumType;
+                out.setEnumName(e.s); out.setEnumType(elist->enumType());
                 return out;
             }
             return Value::typeObj("Mu");
@@ -10785,7 +10785,7 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
         // an ENUM type object answers an EnumHOW, as Rakudo does — modules
         // pick their enum handling by `$type.HOW ~~ Metamodel::EnumHOW`
         // (Getopt::Long's enum-converter branch)
-        if (inv.t == VT::Array && !inv.enumType.empty() && inv.enumName.empty())
+        if (inv.t == VT::Array && !inv.enumType().empty() && inv.enumName().empty())
             return Value::typeObj("Metamodel::EnumHOW");
         // …including when the enum arrives as a plain TYPE NAME (a Parameter's
         // `.type` is typeObj("Order")) — resolve the name to see what it is.
@@ -10795,7 +10795,7 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
                 return Value::typeObj("Metamodel::EnumHOW");
             Value* ev = tctx().cur ? tctx().cur->find(inv.s.copyText()) : nullptr;
             if (!ev && global_) ev = global_->find(inv.s.copyText());
-            if (ev && ev->t == VT::Array && !ev->enumType.empty() && ev->enumName.empty())
+            if (ev && ev->t == VT::Array && !ev->enumType().empty() && ev->enumName().empty())
                 return Value::typeObj("Metamodel::EnumHOW");
         }
         // a role's own body sees the ROLE, made by ParametricRoleHOW (see
@@ -10958,19 +10958,19 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
         }
         else if (pkg == "Signal") {
             for (auto& [nm, num] : signalNamesAndNumbers()) {
-                Value e = Value::enumVal(nm, num); e.enumType = "Signal";
+                Value e = Value::enumVal(nm, num); e.setEnumType("Signal");
                 (*stash)[nm] = e;
             }
         }
         else if (pkg == "Endian") {
             for (auto& [nm, v] : {std::pair<const char*, long long>{"NativeEndian", 0},
                                   {"LittleEndian", 1}, {"BigEndian", 2}}) {
-                Value e = Value::enumVal(nm, v); e.enumType = "Endian";
+                Value e = Value::enumVal(nm, v); e.setEnumType("Endian");
                 (*stash)[nm] = e;
             }
         }
         else if (Value* et = tctx().cur->find(pkg)) {
-            if (et->t == VT::Array && et->arr() && !et->enumType.empty() && et->enumName.empty())
+            if (et->t == VT::Array && et->arr() && !et->enumType().empty() && et->enumName().empty())
                 for (auto& pr : *et->arr())
                     if (pr.t == VT::Pair)
                         if (Value* ev = tctx().cur->find(pr.s.copyText())) (*stash)[pr.s] = *ev;
@@ -10990,14 +10990,14 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
         w.hashKind = whichIsObjAt(inv) ? "ObjAt" : "ValueObjAt";
         // an enum MEMBER is its type and its place in the declaration: `E|0`,
         // `Order|0` for Less — not its name, and not its value
-        if (!inv.enumName.empty() && !inv.enumType.empty() && inv.t != VT::Bool) {
+        if (!inv.enumName().empty() && !inv.enumType().empty() && inv.t != VT::Bool) {
             long long idx = -1;
-            auto ep = enumPairs_.find(inv.enumType);
+            auto ep = enumPairs_.find(inv.enumType());
             if (ep != enumPairs_.end() && ep->second.arr()) {
                 for (size_t i = 0; i < ep->second.arr()->size(); i++)
-                    if ((*ep->second.arr())[i].s.str() == inv.enumName.str()) { idx = (long long)i; break; }
+                    if ((*ep->second.arr())[i].s.str() == inv.enumName().str()) { idx = (long long)i; break; }
             }
-            else if (inv.enumType == "Order") idx = inv.i + 1;   // Less, Same, More
+            else if (inv.enumType() == "Order") idx = inv.i + 1;   // Less, Same, More
             else if (inv.t == VT::Int && !inv.big()) idx = inv.i;
             if (idx >= 0) w.s = inv.typeName() + "|" + std::to_string(idx);
         }

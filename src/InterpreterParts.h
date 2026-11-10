@@ -532,8 +532,8 @@ static inline bool nativeRefusesKind(const Value& v, bool isFloat) {
     if (v.isNumeric() && (v.hashKind == "Duration" || v.hashKind == "Instant")) return true;
     switch (v.t) {
         case VT::Rat: case VT::Complex: return true;
-        case VT::Num:                   return !isFloat && !(v.natBits && v.natFloat);
-        case VT::Int: case VT::Bool:    return isFloat && !(v.natBits && !v.natFloat);
+        case VT::Num:                   return !isFloat && !(v.natBits() && v.natFloat);
+        case VT::Int: case VT::Bool:    return isFloat && !(v.natBits() && !v.natFloat);
         // a Failure (`my num $r = 1e0 / $zero`) is no number either: it was
         // stored as its hash's size, 2, and the error it carried was lost
         case VT::Hash:                  return v.hashKind == "Failure";
@@ -561,7 +561,7 @@ static inline bool nativeRefusesKind(const Value& v, bool isFloat) {
 // dispatch look at them — but a NON-native container that takes it must drop
 // them, or it starts to wrap and refuse as a native would: `my $n = $an-int;
 // $n = 1/2` stored 0 (and `$n /= 2` truncated) where Rakudo holds 0.5.
-static inline void dropNativeTags(Value& v) { v.natBits = 0; v.natSigned = v.natFloat = false; }
+static inline void dropNativeTags(Value& v) { v.setNatBits(0); v.natSigned = v.natFloat = false; }
 
 
 // A native container cannot hold a type object, Nil included: `my int $x = Nil`
