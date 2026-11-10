@@ -346,6 +346,17 @@ logs and the reviews. This page is the complete list.
   - gfortran's `matmul` intrinsic is 18× Raku's loop.
   - The store undo log now copies the arrays at 1/16 of their size: compiled
     axpy 26.4 → 13.8 ms.
+- **[VALUE-POOL-INDEX-2026-11-10.md](VALUE-POOL-INDEX-2026-11-10.md)**
+  *(2026-11-10, on the 32-byte `Value`)* — would it pay to keep every `Value`
+  in one pre-allocated pool and have variables and elements hold a 32-bit
+  index? A C++ probe of the representation
+  ([tools/value-pool-probe.cpp](../../../tools/value-pool-probe.cpp)), not an
+  engine change. Not pursued.
+  - A pooled value is 40 bytes where an inline one is 32, and once the pool
+    has aged an array builds 2.5× slower and reads 4–6× slower.
+  - The whole win is a small Int held in the index itself (4 bytes an
+    element, half the build time), and that part does not need the pool.
+    It points at packed arrays.
 
 ## One-off bug reports
 

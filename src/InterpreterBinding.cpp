@@ -1885,7 +1885,7 @@ void Interpreter::nativeElemStore(const std::string& t, Value& v, char how, long
     if (fam == 'i' || fam == 'u') {
         if (v.t == VT::Bool) v = Value::integer(v.b ? 1 : 0);
         if (v.t == VT::Int) {
-            if (!v.big() && (v.isAllomorph() || !v.enumName.empty() || !v.enumType.empty())) v = Value::integer(v.toInt());
+            if (!v.big() && (v.isAllomorph() || !v.enumName().empty() || !v.enumType().empty())) v = Value::integer(v.toInt());
             if (how == 'c') return;
             if (v.big() && how != '+') {
                 if (fam == 'u' && v.big()->sign < 0)
@@ -2448,8 +2448,8 @@ bool Interpreter::typeMatchesResolved(const Value& v, const std::string& type) {
     // object of the enum, which does Enumeration and inherits from the type of
     // its values: `enum Color <Red Green>` has the MRO Color, Int, Cool, Any,
     // Mu, so it binds an Int parameter and not a Str one
-    if (v.t == VT::Array && !v.enumType.empty() && v.enumName.empty()) {
-        if (type == v.enumType || type == "Enumeration" || type == "Any" || type == "Mu") return true;
+    if (v.t == VT::Array && !v.enumType().empty() && v.enumName().empty()) {
+        if (type == v.enumType() || type == "Enumeration" || type == "Any" || type == "Mu") return true;
         std::string base;
         if (v.arr())
             for (const Value& pr : *v.arr()) {
@@ -2466,7 +2466,7 @@ bool Interpreter::typeMatchesResolved(const Value& v, const std::string& type) {
     if (v.t == VT::Type && enumPairs_.count(type) && !classes_.count(type)) return v.s == type;
     // a PARAMETERIZED container type: `Array[Bool]` takes an Array whose element
     // type is Bool (what `Array[Array[Bool]].new($(Array[Bool].new(…)))` checks)
-    if (v.t == VT::Array && type.size() > 2 && type.back() == ']' && v.enumName.empty()) {
+    if (v.t == VT::Array && type.size() > 2 && type.back() == ']' && v.enumName().empty()) {
         size_t br = type.find('[');
         if (br != std::string::npos) {
             std::string base = type.substr(0, br), param = type.substr(br + 1, type.size() - br - 2);
@@ -2482,12 +2482,12 @@ bool Interpreter::typeMatchesResolved(const Value& v, const std::string& type) {
     // Message::Opcode $.opcode` names the enum `package Cro::WebSocket::Message
     // { enum Opcode … }` declared, whose values carry only the short name. The
     // qualified name is bound to the enum's type object (its tagged pair-list).
-    if (!v.enumName.empty() && !v.enumType.empty() && type.size() > v.enumType.size() + 2 &&
-        type.compare(type.size() - v.enumType.size() - 2, std::string::npos, "::" + v.enumType) == 0 &&
+    if (!v.enumName().empty() && !v.enumType().empty() && type.size() > v.enumType().size() + 2 &&
+        type.compare(type.size() - v.enumType().size() - 2, std::string::npos, "::" + v.enumType()) == 0 &&
         !typeMatchesArg(v, type)) {
         const Value* tv = tctx().cur ? tctx().cur->find(type) : nullptr;
         if (!tv && global_) tv = global_->find(type);
-        if (tv && tv->t == VT::Array && tv->enumName.empty() && tv->enumType == v.enumType) return true;
+        if (tv && tv->t == VT::Array && tv->enumName().empty() && tv->enumType() == v.enumType()) return true;
     }
     if (v.t != VT::Type) return typeMatchesArg(v, type);
     auto resolve = [&](std::string n) {
@@ -2754,7 +2754,7 @@ void Interpreter::reviewUserInfixPending() {
 // multis a user candidate can be narrower than: `multi infix:«-»(Date:D, Str:D)`)
 static bool userInfixCoreOperand(const Value& v) {
     if (v.t == VT::Hash && (v.hashKind == "Date" || v.hashKind == "DateTime")) return true;
-    return isDefined(v) && v.hashKind.empty() && !v.isAllomorph() && v.enumType.empty() &&
+    return isDefined(v) && v.hashKind.empty() && !v.isAllomorph() && v.enumType().empty() &&
            (v.t == VT::Int || v.t == VT::Num || v.t == VT::Rat || v.t == VT::Str ||
             v.t == VT::Bool || v.t == VT::Complex);
 }
@@ -2948,7 +2948,7 @@ bool isNodalMethod(const std::string& m) {
 
 // A List, an Array or a Slip: a built-in value whose class chain runs through List.
 static bool listBuiltIn(const Value& v) {
-    return v.t == VT::Array && v.arr() && v.enumName.empty() && (v.s.empty() || v.s == "Slip");
+    return v.t == VT::Array && v.arr() && v.enumName().empty() && (v.s.empty() || v.s == "Slip");
 }
 
 // `.+m` / `.*m` — the results of every candidate, as a List. On a user object
@@ -3727,7 +3727,7 @@ Value Interpreter::assignChecked(Expr* target, Value v, const Value* invVal) {
         v.readonly = v.immutableBind = false;                 // the flag marks the container, not the value
         // a native converts or refuses what it is given, as `=` into it does:
         // `$i .= Str` and `@ints[0] .= Str` die
-        const int nb = lv->natBits; const bool ns = lv->natSigned, nf = lv->natFloat;
+        const int nb = lv->natBits(); const bool ns = lv->natSigned, nf = lv->natFloat;
         if (nb) { nativeUndefCheck(v, nullptr, lv); nativeAssignCheck(v, nb, nf, containerNameOf(target, '$'), ns); }
         if (target && target->kind == NK::Index)
             if (std::string t = std::exchange(tctx().lastLvalueElemType, {}); !t.empty() && !typeNameLead(t[0]))
@@ -4183,7 +4183,7 @@ Value rtIndexAdverb(Value& base, const Value& keyIn, bool isHash, const std::str
     if (wantDelete && base.t == VT::Pair)
         throw RakuError{Value::typeObj("X::AdHoc"), "Can not remove values from a Pair"};
     if (wantDelete && base.t == VT::Array && base.isList && base.s != "Seq" &&
-        base.enumName.empty())
+        base.enumName().empty())
         throw RakuError{Value::typeObj("X::AdHoc"), "Can not remove elements from a List"};
     if (wantDelete && exists) {
         if (isHash) base.hash()->erase(key);
@@ -5211,7 +5211,7 @@ Value containerFill(const Value& base) {
         // the slot is NATIVE: a store into it wraps (`@u8[0] = -1` holds 255)
         if (d.t == VT::Int) {
             bool sg = true; int bits = Value::natWidthOfType(base.ofType(), sg);
-            if (bits > 0) { d.natBits = bits; d.natSigned = sg; }
+            if (bits > 0) { d.setNatBits(bits); d.natSigned = sg; }
         }
         if (d.t != VT::Nil) return d;
     }
@@ -5237,7 +5237,7 @@ Value rtIndexGet(const Value& base, const Value& key, bool isHash) {
     // a packed array's element from its word, a self-packed one's too
     // (rtIndexGetP's test): arr() below would unpack it for good
     if (!isHash && base.pk_ == PK::Packed && key.t == VT::Int && base.t == VT::Array && base.packedLive() &&
-        !key.big() && key.hashKind.empty() && key.enumName.empty() && base.hashKind.empty() && !base.elemDefault()) {
+        !key.big() && key.hashKind.empty() && key.enumName().empty() && base.hashKind.empty() && !base.elemDefault()) {
         const PackedArr* pa = base.packed();
         if (key.i >= 0 && key.i < (long long)pa->w.size()) return pa->at((size_t)key.i);
     }
@@ -5385,7 +5385,7 @@ Value rtIndexGet(const Value& base, const Value& key, bool isHash) {
     }
     if (base.t == VT::Str && base.hashKind == "CArray") {
         long long i = key.toInt();
-        std::string et = base.enumName.empty() ? std::string("int64") : base.enumName.str();
+        std::string et = base.enumName().empty() ? std::string("int64") : base.enumName().str();
         int w = Interpreter::ncElemSize(et);
         if (i < 0 || (i + 1) * w > (long long)base.s.size()) return Value::any();
         Value el = Interpreter::ncReadElem((long long)(uintptr_t)base.s.data(), et, i);
@@ -5490,15 +5490,15 @@ unsigned Interpreter::retFastCore(const Callable& c, const std::string& base) {
 // refusal take the full check.
 bool Interpreter::retFastCoreFits(unsigned code, const Value& v) {
     switch (code) {
-        case 1: return v.t == VT::Str && v.hashKind.empty() && v.enumName.empty();
-        case 2: return v.t == VT::Int && v.hashKind.empty() && v.enumName.empty() && v.enumType.empty();
+        case 1: return v.t == VT::Str && v.hashKind.empty() && v.enumName().empty();
+        case 2: return v.t == VT::Int && v.hashKind.empty() && v.enumName().empty() && v.enumType().empty();
         case 3: return v.t == VT::Num && v.hashKind.empty();
         case 4: return v.t == VT::Rat && v.hashKind.empty() && !v.fatRat();
         case 5: return v.t == VT::Str && (v.hashKind == "Buf" || v.hashKind == "Blob");
         case 6: return v.t == VT::Str && v.hashKind == "Buf";
         case 7: return v.t == VT::Hash && v.hashKind.empty() && v.hash();
         case 8: case 9:
-            return v.t == VT::Array && v.hashKind.empty() && v.enumName.empty() && v.enumType.empty() &&
+            return v.t == VT::Array && v.hashKind.empty() && v.enumName().empty() && v.enumType().empty() &&
                    v.ofType().empty() && (code == 9 ? !v.isList || v.s.empty() : !v.isList);
     }
     return false;
@@ -5509,17 +5509,17 @@ bool rtTypeMatch(const Value& v, const std::string& type) {
     if (type.empty() || type == "Any" || type == "Mu" || type == "Cool") return true;
     // an enum's TYPE OBJECT: its own type, Enumeration, and its value type's
     // ancestry (`Color ~~ Int`, `my Int $v = Color`) — as typeMatchesResolved
-    if (v.t == VT::Array && !v.enumType.empty() && v.enumName.empty() && g_revInterp &&
+    if (v.t == VT::Array && !v.enumType().empty() && v.enumName().empty() && g_revInterp &&
         isEnumTypeObject(v)) {
-        if (type == v.enumType || type == "Enumeration") return true;
-        for (auto& a : typeAncestry(g_revInterp->enumBaseType(v.enumType.str()))) if (a == type) return true;
+        if (type == v.enumType() || type == "Enumeration") return true;
+        for (auto& a : typeAncestry(g_revInterp->enumBaseType(v.enumType().str()))) if (a == type) return true;
         return false;
     }
     // an enum VALUE matches the Enumeration role, its own enum type, and its name
-    if (!v.enumName.empty() &&
-        (type == "Enumeration" || type == v.enumType || type == v.enumName)) return true;
+    if (!v.enumName().empty() &&
+        (type == "Enumeration" || type == v.enumType() || type == v.enumName())) return true;
     // …and a Str-valued member is a Str (the enum type derives from Str)
-    if (!v.enumName.empty() && v.pairVal() && v.pairVal()->t == VT::Str &&
+    if (!v.enumName().empty() && v.pairVal() && v.pairVal()->t == VT::Str &&
         (type == "Str" || type == "Stringy")) return true;
     // a TAGGED built-in (Failure, IO::Path, FileHandle, Blob, …) matches its own
     // reported type — nqp::istype($result, Failure) is how JSON::Fast rejects a
@@ -6465,7 +6465,7 @@ void Interpreter::bindNativeParam(const Param& p, Value& v) {
             if (own && (v.t != VT::Str || !v.hashKind.empty())) v = Value::str(v.toStr());   // an allomorph's Str
             return;
         case NatKind::None:
-            if (v.natBits && own && !paramIsNative(p)) dropNativeTags(v);
+            if (v.natBits() && own && !paramIsNative(p)) dropNativeTags(v);
             return;
     }
 }
@@ -6677,7 +6677,7 @@ Value Interpreter::stepValue(const Value& cur, bool up) {
     }
     if (cur.t == VT::Type && cur.s == "Num") return Value::number(up ? 1.0 : -1.0);
     Value n = applyArith(up ? "+" : "-", cur, Value::integer(1));
-    if (cur.natBits) wrapNative(n, cur.natBits, cur.natSigned, cur.natFloat);   // native int wraparound
+    if (cur.natBits()) wrapNative(n, cur.natBits(), cur.natSigned, cur.natFloat);   // native int wraparound
     return n;
 }
 void rtCatAppendText(Value& l, std::string_view r) {
@@ -6735,7 +6735,7 @@ Value rtSlurpyPos(const ValueList& a, size_t from, bool boxed) {
     Value o = Value::array(); size_t p = 0;
     for (auto& v : a) {
         if (isNamedArg(v)) continue;
-        if (p >= from) { o.arr()->push_back(v); if (boxed && v.natBits) dropNativeTags(o.arr()->back()); }
+        if (p >= from) { o.arr()->push_back(v); if (boxed && v.natBits()) dropNativeTags(o.arr()->back()); }
         p++;
     }
     return o;
@@ -6762,7 +6762,7 @@ Value rtSlurpyPos(Interpreter& I, const ValueList& a, size_t from, bool boxed, c
         else o.arr()->push_back(v);
     }
     if (boxed && o.arr())
-        for (auto& e : *o.arr()) if (e.natBits) dropNativeTags(e);
+        for (auto& e : *o.arr()) if (e.natBits()) dropNativeTags(e);
     return o;
 }
 Value rtSlurpyNamed(const ValueList& a) {
@@ -6863,7 +6863,7 @@ Value& rtIndexRef(Value& base, const Value& key, bool isHash, const char* stepOp
     // List. A list of an Array's elements (ElemView) takes the write, which
     // rtViewSync mirrors; so does an element that IS a container.
     if (base.t == VT::Range) refuseImmutablePlace(base, rtIndexGet(base, key, false), "Range", true, stepOp);
-    if (base.t == VT::Array && base.arr() && base.isList && base.s != "Seq" && base.enumName.empty() &&
+    if (base.t == VT::Array && base.arr() && base.isList && base.s != "Seq" && base.enumName().empty() &&
         !base.elemView()) {
         const long long li = key.toInt();
         const bool inList = li >= 0 && li < (long long)base.arr()->size();
@@ -7386,7 +7386,7 @@ void Interpreter::ncKeepClassElem(Value& arr, long long index, const Value& v) {
     else if (arr.ext()) ncCArrayKeep(arr).objs.erase(index);
 }
 Value Interpreter::ncLocalAt(const Value& arr, long long i) {
-    const std::string et = arr.enumName.empty() ? std::string("int64") : arr.enumName.str();
+    const std::string et = arr.enumName().empty() ? std::string("int64") : arr.enumName().str();
     const int w = ncElemSize(et);
     if (i < 0 || (i + 1) * w > (long long)arr.s.size()) {
         // past the end: a class element reads as its type object, a Str as
@@ -7410,7 +7410,7 @@ Value Interpreter::ncLocalAt(const Value& arr, long long i) {
 }
 void Interpreter::ncLocalAssign(Value& arr, long long i, const Value& v) {
     if (i < 0) return;
-    const std::string et = arr.enumName.empty() ? std::string("int64") : arr.enumName.str();
+    const std::string et = arr.enumName().empty() ? std::string("int64") : arr.enumName().str();
     const int esz = ncElemSize(et);
     const size_t need = (size_t)(i + 1) * (size_t)esz;
     if (arr.s.size() < need) arr.s.resize(need, '\0');
@@ -7427,7 +7427,7 @@ void Interpreter::ncLocalAssign(Value& arr, long long i, const Value& v) {
 }
 // Value::toStr's view of a CArray built here: its elements, space-joined
 static std::string carrayStrImpl(const Value& c) {
-    const std::string et = c.enumName.str();
+    const std::string et = c.enumName().str();
     const int w = Interpreter::ncElemSize(et);
     std::string out;
     for (long long i = 0; w > 0 && (i + 1) * w <= (long long)c.s.size(); i++) {
@@ -8603,7 +8603,7 @@ Value Interpreter::callNative(Callable& c, ValueList& args, const std::vector<Ex
                                        : Value::number(*rb.d);
         try {
             if (Value* lv = argSlot(rb.arg - rwArgOff)) {
-                int nb = lv->natBits; bool ns = lv->natSigned;
+                int nb = lv->natBits(); bool ns = lv->natSigned;
                 raceW(lv) = nv;
                 if (nb && rb.ptrType.empty() && !rb.cls) wrapNative(*lv, nb, ns);
             }
@@ -8727,8 +8727,8 @@ bool Interpreter::literalParamAccepts(const Param& p, const Value& v) {
 bool Interpreter::literalAccepts(Value lv, const Value& v) {
     // the usual pair, answered before the type's name is built and looked up:
     // a plain Int against an Int literal, a plain Str against a Str one
-    if (lv.t == v.t && lv.hashKind.empty() && v.hashKind.empty() && v.enumName.empty()) {
-        if (v.t == VT::Int && !lv.big() && !v.big() && !v.natBits) return lv.i == v.i;
+    if (lv.t == v.t && lv.hashKind.empty() && v.hashKind.empty() && v.enumName().empty()) {
+        if (v.t == VT::Int && !lv.big() && !v.big() && !v.natBits()) return lv.i == v.i;
         if (v.t == VT::Str) return lv.s.str() == v.s.str();
     }
     // an angle literal `<1/2>`, `<−1+2i>` is the NUMBER (val gives the
@@ -9057,7 +9057,7 @@ bool Interpreter::cmpEndlessLazy(const Value& l, const Value& r, Value& out) {
     if (le != re) {
         const Value& fin = le ? r : l;
         const Value& inf = le ? l : r;
-        if (fin.t == VT::Array && fin.arr() && fin.enumName.empty()) {
+        if (fin.t == VT::Array && fin.arr() && fin.enumName().empty()) {
             const size_t n = fin.arr()->size();
             materializeLazy(inf, n + 1);
             for (size_t k = 0; k < n && k < inf.arr()->size(); k++) {
@@ -9328,13 +9328,13 @@ Value rtArrayAssignTo(Interpreter& I, Value& lv, Value rhs, const char* name, bo
 // native value's tags are no part of what the element holds.
 bool rtPackedStore(Interpreter& I, Value& base, const Value& key, const Value& v) {
     if (key.t != VT::Int || base.t != VT::Array || !base.packedLive() || key.big() || !key.hashKind.empty() ||
-        !key.enumName.empty() || !base.hashKind.empty() || base.elemDefault() || base.readonly ||
+        !key.enumName().empty() || !base.hashKind.empty() || base.elemDefault() || base.readonly ||
         (I.parallelMode_ && I.liveWorkers_.load(std::memory_order_relaxed) > 0))
         return false;
     PackedArr* pa = base.packed();
     if (key.i < 0 || key.i >= (long long)pa->w.size()) return false;
     Value w = v;
-    w.natBits = 0; w.natSigned = false; w.natFloat = false; w.readonly = false; w.itemized = false;
+    w.setNatBits(0); w.natSigned = false; w.natFloat = false; w.readonly = false; w.itemized = false;
     if (!plainWordValue(w, pa->isNum)) return false;
     pa->w[(size_t)key.i] = w.i;
     return true;
@@ -9472,7 +9472,7 @@ bool Interpreter::typeObjectUserAccepts(const Value& l, const Value& r, Value& o
 // `(1^..5, 7).minmax(*.self)` is 1^..7.
 void Interpreter::minmaxOperands(const ValueList& items, ValueList& each, std::vector<char>* exOf) {
     std::function<void(const Value&, int)> add = [&](const Value& v, int depth) {
-        if (v.t == VT::Array && v.arr() && !v.ext() && v.hashKind.empty() && v.enumName.empty() && depth < 64) {
+        if (v.t == VT::Array && v.arr() && !v.ext() && v.hashKind.empty() && v.enumName().empty() && depth < 64) {
             for (auto& e : *v.arr()) add(e, depth + 1);
             return;
         }

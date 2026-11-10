@@ -20,6 +20,13 @@
 #include "IStr.h"
 #include "SlabPool.h"
 #include "Ref.h"
+
+namespace rakupp {
+// A string's body is reached from a Value by a handle where handles are on
+// (CowStr, below), so it is made in BodyPool's region, as a payload body is.
+struct StrBody;
+template <> struct RefPoolOf<StrBody> { using pool = BodyPool; };
+}
 #include "ValueVec.h"
 
 namespace rakupp {
@@ -158,19 +165,24 @@ class CowStr {
     // 16 bytes (VALUE32-PLAN design C, step 2), in one of two forms that the
     // last byte tells apart:
     // - INLINE, a text of up to kInline bytes: raw_[0, len) is the text, the
-    //   bytes after it are zero, and raw_[15] is kInline - len — so a 15-byte
+    //   bytes after it are zero, and raw_[kTag] is kInline - len — so a 15-byte
     //   text's NUL is that byte, and every text is NUL-terminated as c_str()
     //   promises. With the tail zeroed, two inline texts are equal exactly
     //   when their 16 bytes are.
     // - a BODY: raw_[0, sizeof(void*)) is a StrBody* that holds one count, the
-    //   rest is zero, and raw_[15] is kBody.
+    //   rest is zero, and raw_[kTag] is kBody.
     // A text longer than kInline is always a body. A shorter one is a body only
     // when promote() asked for one (a Buf handed to C), or when a body nothing
     // else held was rewritten in place and shrank. Nothing in the 16 bytes
     // points at them, so a CowStr may be moved bitwise (ValueVec relies on it).
-    static constexpr size_t kInline = 15;
+    // …and 8 bytes where a body is reached by a 32-bit handle (BodyPool.h,
+    // VALUE32-PLAN's step to 32): the same two forms, a text of up to 7 bytes
+    // inline, and the body's handle in the first four.
+    static constexpr size_t kBytes = RAKUPP_BODY_HANDLES ? 8 : 16;
+    static constexpr size_t kInline = kBytes - 1;
+    static constexpr size_t kTag = kBytes - 1;       // the byte that says which form
     static constexpr unsigned char kBody = 0x80;
-    alignas(8) char raw_[16];
+    alignas(8) char raw_[kBytes];
 #ifdef RAKUPP_STR_CENSUS
     // `fresh_`: this instance wrote its inline text (B would hold a body for
     // it). `shared_`: copied since, so B's next write detaches into another.
@@ -180,15 +192,21 @@ class CowStr {
     void cenWrite() { if (shared_ || !fresh_) { cenEnd(); fresh_ = true; } }
 #endif
 
-    unsigned char tag() const { return (unsigned char)raw_[15]; }
+    unsigned char tag() const { return (unsigned char)raw_[kTag]; }
     bool isBody() const { return tag() == kBody; }
     size_t ilen() const { return kInline - tag(); }   // (inline only)
     const StrBody* bodyRaw() const {                    // (body only)
+#if RAKUPP_BODY_HANDLES
+        std::uint32_t h;
+        std::memcpy(&h, raw_, sizeof h);
+        return static_cast<const StrBody*>(BodyPool::dec(h));
+#else
         const StrBody* b;
         std::memcpy(&b, raw_, sizeof b);
         return b;
+#endif
     }
-    void setEmptyRaw() { std::memset(raw_, 0, 15); raw_[15] = (char)kInline; }
+    void setEmptyRaw() { std::memset(raw_, 0, kTag); raw_[kTag] = (char)kInline; }
     // Drop the body's count, if this holds one; the bytes are left as they are.
     void drop() noexcept { if (isBody()) Ref<const StrBody>::releaseRaw(bodyRaw()); }
     // Copy n <= kInline bytes without a call: two fixed-size copies that
@@ -211,22 +229,27 @@ class CowStr {
     // n <= kInline. `x` may point into this string's own text, inline or in the
     // body about to be dropped: it is copied out first.
     void setInline(const char* x, size_t n) {
-        char t[16] = {};
+        char t[kBytes] = {};
         copySmall(t, x, n);
-        t[15] = (char)(kInline - n);
+        t[kTag] = (char)(kInline - n);
         drop();
-        std::memcpy(raw_, t, 16);
+        std::memcpy(raw_, t, kBytes);
     }
     void setBody(Ref<const StrBody> b) {
         const StrBody* p = b.leak();
         drop();
-        std::memset(raw_, 0, 16);
+        std::memset(raw_, 0, kBytes);
+#if RAKUPP_BODY_HANDLES
+        const std::uint32_t h = BodyPool::enc(p);
+        std::memcpy(raw_, &h, sizeof h);
+#else
         std::memcpy(raw_, &p, sizeof p);
-        raw_[15] = (char)kBody;
+#endif
+        raw_[kTag] = (char)kBody;
     }
 public:
     // The same string, cheaply: one shared body, or the same short text.
-    bool sameRep(const CowStr& o) const { return std::memcmp(raw_, o.raw_, 16) == 0; }
+    bool sameRep(const CowStr& o) const { return std::memcmp(raw_, o.raw_, kBytes) == 0; }
 private:
 
     // The text, kept the way its length asks for. take() is what the census
@@ -260,7 +283,7 @@ public:
     explicit CowStr(std::string x) { setEmptyRaw(); take(std::move(x)); }
     // A copy is its 16 bytes and, for a body, one more count.
     CowStr(const CowStr& o) noexcept {
-        std::memcpy(raw_, o.raw_, 16);
+        std::memcpy(raw_, o.raw_, kBytes);
         if (isBody()) bodyRaw()->refs_.fetch_add(1, std::memory_order_relaxed);
         RAKUPP_STR_CEN(strCensusCopy(o.size(), o.isBody()); o.shared_ = true;)
     }
@@ -269,11 +292,11 @@ public:
         if (o.isBody()) o.bodyRaw()->refs_.fetch_add(1, std::memory_order_relaxed);
         RAKUPP_STR_CEN(cenEnd(); strCensusCopy(o.size(), o.isBody()); o.shared_ = true;)
         drop();
-        std::memcpy(raw_, o.raw_, 16);
+        std::memcpy(raw_, o.raw_, kBytes);
         return *this;
     }
     CowStr(CowStr&& o) noexcept {
-        std::memcpy(raw_, o.raw_, 16);
+        std::memcpy(raw_, o.raw_, kBytes);
         o.setEmptyRaw();
         RAKUPP_STR_CEN(fresh_ = o.fresh_; shared_ = o.shared_; o.fresh_ = o.shared_ = false;)
     }
@@ -281,7 +304,7 @@ public:
         if (this == &o) return *this;
         RAKUPP_STR_CEN(cenEnd();)
         drop();
-        std::memcpy(raw_, o.raw_, 16);
+        std::memcpy(raw_, o.raw_, kBytes);
         o.setEmptyRaw();
         RAKUPP_STR_CEN(fresh_ = o.fresh_; shared_ = o.shared_; o.fresh_ = o.shared_ = false;)
         return *this;
@@ -390,7 +413,7 @@ private:
         if (l + n <= kInline) {
             RAKUPP_STR_CEN(cenWrite();)
             if (n) std::memmove(raw_ + l, x, n);   // (x may be this text)
-            raw_[15] = (char)(kInline - l - n);
+            raw_[kTag] = (char)(kInline - l - n);
             return;
         }
         std::string t;
@@ -432,7 +455,7 @@ public:
         RAKUPP_STR_CEN(cenWrite();)
         const size_t l = ilen();   // (> 0, as std::string's pop_back asks)
         raw_[l - 1] = 0;
-        raw_[15] = (char)(kInline - l + 1);
+        raw_[kTag] = (char)(kInline - l + 1);
     }
     void resize(size_t n) { resize(n, '\0'); }
     void resize(size_t n, char c) {
@@ -442,7 +465,7 @@ public:
         RAKUPP_STR_CEN(cenWrite();)
         if (n > l) std::memset(raw_ + l, c, n - l);
         else std::memset(raw_ + n, 0, l - n);
-        raw_[15] = (char)(kInline - n);
+        raw_[kTag] = (char)(kInline - n);
     }
     void erase(size_t p, size_t n = std::string::npos) {
         if (isBody()) { ownText().erase(p, n); return; }
@@ -452,7 +475,7 @@ public:
         RAKUPP_STR_CEN(cenWrite();)
         std::memmove(raw_ + p, raw_ + p + n, l - p - n);
         std::memset(raw_ + l - n, 0, n);
-        raw_[15] = (char)(kInline - (l - n));
+        raw_[kTag] = (char)(kInline - (l - n));
     }
     void replace(size_t p, size_t n, const std::string& x) { edit([&](std::string& t) { t.replace(p, n, x); }); }
     CowStr& operator+=(const std::string& x) { append(x.data(), x.size()); return *this; }
@@ -1091,6 +1114,10 @@ struct ElemView {
 };
 
 struct ValueExt : RefCounted {   // owned by Value::x_, a Ref (batch 4)
+    // Non-empty for enum values: the KEY (e.g. Order: Less/Same/More). It also
+    // carries a Junction's kind and a Blob's subtype.
+    IStr enumName;
+    IStr enumType; // the enum's TYPE name (e.g. "Order", "Color") — set on values and the type-list
     double im = 0; // imaginary part for VT::Complex (real part is Value::n)
     std::shared_ptr<BigInt> big;     // for VT::Int when value exceeds long long
     std::shared_ptr<Value> pairKey; // for Pair key when it's non-scalar (e.g. an array key: [..] => [..])
@@ -1248,8 +1275,9 @@ struct Value {
     // and a trivial copy, where a std::string was 24 bytes with a constructor
     // and a destructor run on every Value copy.
     IStr hashKind;
-    // (beside hashKind, in the half of the 8 bytes it no longer needs)
-    IStr enumName; // non-empty for enum values: the KEY (e.g. Order: Less/Same/More)
+    // enumName and enumType live in the cold block (ValueExt): an enum value,
+    // a Junction and a Blob subtype carry them, and nothing else does. Read
+    // them with enumName()/enumType(), set them with setEnumName()/setEnumType().
     // The tag and every one-byte flag sit TOGETHER so they pack into two
     // 8-byte words instead of scattering padding through the struct (t+b
     // alone at the front of the old layout cost 8 bytes of pure padding).
@@ -1285,13 +1313,20 @@ struct Value {
     // 10). Read a Pair's key through hasPairKey()/pairKeyV()/nonStrKey() and
     // set it through setPairKey(); pairKeyRaw() does not see an inline one.
     bool keyInt : 1;
-    int natBits : 8;      // native int width (uint8/int16/…): 0 = not native; wraps on assignment
+    // Native int width (uint8/int16/…), 0 = not native; wraps on assignment.
+    // Held in BYTES (it is only ever 0/8/16/32/64 bits), so it is 4 bits and
+    // the flags with it are two bytes: read natBits(), write setNatBits().
+    unsigned natBytes_ : 4;
+    int natBits() const { return (int)natBytes_ * 8; }
+    void setNatBits(int bits) { natBytes_ = (unsigned)bits >> 3; }
     // The tag block (VALUE32-PLAN design A, batch 3): `t` and `pk_` stay
     // whole bytes, then the ten flags and `natBits` as bit-fields — 5 bytes
     // where they took 16. `pk_` as a 3-bit field cost the method kernels
     // 3-4% (every payload accessor tests it); as a byte the batch measured
     // −1.5% mean. A 64-byte layout has 32 bits here, so `natBits` (only
-    // ever 0/8/16/32/64) would become a 3-bit code then.
+    // ever 0/8/16/32/64) would become a 3-bit code then. (It became a 4-bit
+    // byte count, above; with it the tag block is 4 bytes, the other half
+    // of `hashKind`'s word.)
 #ifdef RAKUPP_PTR_CENSUS
     // The census that sized the cold block; see tools/ptr-census.md. Compiled
     // out of every normal build.
@@ -1302,9 +1337,8 @@ struct Value {
                (ratN() ? 256u : 0) | (ratD() ? 512u : 0) | (shape() ? 1024u : 0);
     }
 #endif
-    PayRef p_;                       // THE payload slot; pk_ says what it holds (8 bytes: batch 4)
-    Ref<ValueExt> x_;                // the cold block above; null on almost every Value
-    IStr enumType; // the enum's TYPE name (e.g. "Order", "Color") — set on values and the type-list
+    PayRef p_;                       // THE payload slot; pk_ says what it holds (a 4-byte handle: BodyPool.h)
+    HRef<ValueExt> x_;                // the cold block above; null on almost every Value
 
     // The SAME value, field for field: the same payload and cold block by
     // pointer, the same scalar word, string, tags and flags. Not equality
@@ -1314,11 +1348,11 @@ struct Value {
     // writes, as before.
     bool sameRep(const Value& o) const {
         return t == o.t && pk_ == o.pk_ && p_.get() == o.p_.get() && x_.get() == o.x_.get() &&
-               i == o.i && s.sameRep(o.s) && hashKind == o.hashKind && enumName == o.enumName &&
-               enumType == o.enumType && b == o.b && isList == o.isList && itemized == o.itemized &&
+               i == o.i && s.sameRep(o.s) && hashKind == o.hashKind &&
+               b == o.b && isList == o.isList && itemized == o.itemized &&
                objKeyed == o.objKeyed && readonly == o.readonly && immutableBind == o.immutableBind &&
                pairValRO == o.pairValRO && namedArg == o.namedArg && natSigned == o.natSigned && keyInt == o.keyInt &&
-               natFloat == o.natFloat && natBits == o.natBits;
+               natFloat == o.natFloat && natBytes_ == o.natBytes_;
     }
 
     // Payload access. Readers return RAW pointers (null when the slot holds a
@@ -1328,7 +1362,7 @@ struct Value {
     // members held on a Match before the slot existed.
     // The object in the slot's body, as kind T — the caller has checked pk_.
     template <class T> T* pv() const {
-        return BodyOf<T>::obj(static_cast<typename BodyOf<T>::type*>(p_.get()));
+        return BodyOf<T>::obj(static_cast<typename BodyOf<T>::type*>(p_.raw()));
     }
     MatchData* md() const { return pk_ == PK::Match ? pv<MatchData>() : nullptr; }
     ValueList* arr() const {
@@ -1451,9 +1485,20 @@ struct Value {
     // atomic read; the clone path runs only on write-after-copy, which the
     // census says is rare.
     const ValueExt& xr() const { return x_ ? *x_ : emptyValueExt; }
+    IStr enumName() const { return x_ ? x_->enumName : IStr(); }
+    IStr enumType() const { return x_ ? x_->enumType : IStr(); }
+    // A set that changes nothing does not allocate or unshare the block.
+    template <class T> void setEnumName(T&& v) {
+        IStr n; n = std::forward<T>(v);
+        if (!(n == enumName())) xw().enumName = n;
+    }
+    template <class T> void setEnumType(T&& v) {
+        IStr n; n = std::forward<T>(v);
+        if (!(n == enumType())) xw().enumType = n;
+    }
     ValueExt& xw() {
-        if (!x_) x_ = makeRef<ValueExt>();
-        else if (x_.use_count() > 1) x_ = makeRef<ValueExt>(*x_);
+        if (!x_) x_ = makeHRef<ValueExt>();
+        else if (x_.use_count() > 1) x_ = makeHRef<ValueExt>(*x_);
         return *x_;
     }
     double im() const { return xr().im; }
@@ -1536,7 +1581,7 @@ struct Value {
     // and MSVC refuses it under /std:c++17 (clang and gcc accept it).
     Value() : t(VT::Any), b(false), isList(false), itemized(false), objKeyed(false),
               readonly(false), immutableBind(false), pairValRO(false), namedArg(false),
-              natSigned(false), natFloat(false), keyInt(false), natBits(0) {}
+              natSigned(false), natFloat(false), keyInt(false), natBytes_(0) {}
 
     static Value nil() { Value v; v.t = VT::Nil; return v; }
     static Value any() { Value v; v.t = VT::Any; return v; }
@@ -1632,12 +1677,12 @@ struct Value {
     static Value typeObj(const char* name) { return typeObj(std::string_view(name)); }
     static Value whatever() { Value v; v.t = VT::Whatever; return v; }
     static Value object(PRef<ObjectData> o) { Value v; v.t = VT::Object; v.setObj(std::move(o)); return v; }
-    static Value enumVal(std::string_view name, long long val) { Value v; v.t = VT::Int; v.i = val; v.enumName = name; return v; }
+    static Value enumVal(std::string_view name, long long val) { Value v; v.t = VT::Int; v.i = val; v.setEnumName(name); return v; }
     // …and the same member carrying its enum's TYPE name, which is what makes
     // `.WHAT.^name` answer `Color` rather than `Int` and what the MAIN
     // command-line reader tests a looked-up name with.
     static Value enumVal(std::string_view name, long long val, const std::string& type) {
-        Value v = enumVal(name, val); v.enumType = type; return v;
+        Value v = enumVal(name, val); v.setEnumType(type); return v;
     }
     // Order::Less/Same/More — the result of cmp/<=>/leg/unicmp/coll. Tagged with
     // its enum TYPE so `.WHAT.^name` is `Order`, not `Int` (Rakudo parity).
@@ -1649,7 +1694,7 @@ struct Value {
     }
     static Value orderMember(const char* name, long long c) {
         Value v = enumVal(name, c);
-        v.enumType = "Order";
+        v.setEnumType("Order");
         return v;
     }
     static Value regex(std::string pat, std::string flags = "") {
@@ -1727,13 +1772,15 @@ struct Value {
     }
 };
 #if defined(__APPLE__) && defined(__aarch64__) && defined(_LIBCPP_VERSION) && !defined(RAKUPP_IN_AUDIT) && !defined(RAKUPP_PTR_CENSUS) && !defined(RAKUPP_STR_CENSUS)
-// 64 bytes (VALUE32-PLAN: design A's batches 1-4 took it from 128 to 80, and
-// design C's 16-byte CowStr to 64). The size is a measured decision, not a
+// 40 bytes (VALUE32-PLAN: design A's batches 1-4 took it from 128 to 80,
+// design C's 16-byte CowStr to 64, the 4-byte tag block to 56, the enum names
+// in the cold block to 48, `p_` and `x_` as 32-bit handles to 40 and the
+// 8-byte CowStr to 32; it is 48 where handles are off, BodyPool.h). The size is a measured decision, not a
 // packing accident: while the batches ran, every freed byte was held so that
 // each one was judged on its own — 120 bytes cost ~1% against 128, and
 // shifted field offsets alone cost `fib` 7%. Moving it is a deliberate step:
 // measure the kernels and the field order with it.
-static_assert(sizeof(Value) == 64, "sizeof(Value) moved: see VALUE32-PLAN before changing it");
+static_assert(sizeof(Value) == (RAKUPP_BODY_HANDLES ? 32 : 48), "sizeof(Value) moved: see VALUE32-PLAN before changing it");
 #endif
 
 // A string literal's Value: built once in the node, then copied (StrLit::evalState).
@@ -1756,7 +1803,7 @@ template <> struct Body<Value> final : ValueBodyBase {
     void destroySelf() noexcept override {
         if (g_race) raceForgetRange(this, sizeof(Body));   // a cell's inside is a scalar location
         this->~Body();
-        SlabPool::dealloc(static_cast<void*>(this), sizeof(Body));
+        BodyPool::dealloc(static_cast<void*>(this), sizeof(Body));
     }
 };
 struct ValueAliasBody final : ValueBodyBase {
@@ -1764,11 +1811,11 @@ struct ValueAliasBody final : ValueBodyBase {
     ValueAliasBody(std::shared_ptr<void> o, Value* t) : owner(std::move(o)) { target = t; }
     void destroySelf() noexcept override {
         this->~ValueAliasBody();
-        SlabPool::dealloc(static_cast<void*>(this), sizeof(ValueAliasBody));
+        BodyPool::dealloc(static_cast<void*>(this), sizeof(ValueAliasBody));
     }
 };
 inline PRef<Value> makeValueAlias(std::shared_ptr<void> owner, Value* target) {
-    void* mem = SlabPool::alloc(sizeof(ValueAliasBody));
+    void* mem = BodyPool::alloc(sizeof(ValueAliasBody));
     return PRef<Value>::adoptNew(::new (mem) ValueAliasBody(std::move(owner), target));
 }
 
@@ -1803,9 +1850,9 @@ struct PackedArr {
 // number alone: what a packed array may hold as a word (PACKED-ARRAY-PLAN).
 inline bool plainWordValue(const Value& v, bool asNum) {
     return (asNum ? v.t == VT::Num : (v.t == VT::Int && !v.big())) && !v.x_ && v.pk_ == PK::None &&
-           !v.natBits && !v.natSigned && !v.natFloat && !v.readonly && !v.itemized && !v.b &&
+           !v.natBits() && !v.natSigned && !v.natFloat && !v.readonly && !v.itemized && !v.b &&
            !v.isList && !v.objKeyed && !v.immutableBind && !v.pairValRO && !v.namedArg &&
-           v.enumName.empty() && v.enumType.empty() && v.hashKind.empty() && v.s.empty();
+           v.enumName().empty() && v.enumType().empty() && v.hashKind.empty() && v.s.empty();
 }
 // A self-packing Array (JSC-VALUES-2026-11-07; Value.cpp): selfPack turns a
 // fresh untyped Array of plain Nums into the words of one, and selfPackCopy

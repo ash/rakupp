@@ -520,7 +520,7 @@ const std::map<std::string, int>& signalNameMapFwd() { return signalNameMap(); }
 static Value makeSignalEnumValue(int sig) {
     std::string name = signalNameOfNumber(sig);
     Value v = name.empty() ? Value::integer(sig) : Value::enumVal(name, sig);
-    v.enumType = "Signal";
+    v.setEnumType("Signal");
     return v;
 }
 Value makeSignalEnumValueFwd(int sig) { return makeSignalEnumValue(sig); }
@@ -3127,7 +3127,7 @@ Value rtBChr(Interpreter& I, const Value& vIn) {
 // answers with its own `.uc`, a Buf refuses as `.chars` does. A plain Str or
 // Int needs no dispatch to say so.
 static bool rtBPlainText(const Value& v) {
-    return (v.t == VT::Str && v.hashKind.empty() && v.enumName.empty()) || (v.t == VT::Int && v.enumName.empty());
+    return (v.t == VT::Str && v.hashKind.empty() && v.enumName().empty()) || (v.t == VT::Int && v.enumName().empty());
 }
 static Value rtBMeth(Interpreter& I, const Value& v, const char* m);
 Value rtBOrd(Interpreter& I, const Value& v) {
@@ -3151,7 +3151,7 @@ Value rtBTc(Interpreter& I, const Value& v) {
 Value rtBChars(Interpreter& I, const Value& v) {
     // Straight off the cache for a plain Str: `.chars` in a scanning loop was
     // the other per-character O(n).
-    if (v.t == VT::Str && v.hashKind.empty() && v.enumName.empty()) return Value::integer(cowGraphemeCount(v.s));
+    if (v.t == VT::Str && v.hashKind.empty() && v.enumName().empty()) return Value::integer(cowGraphemeCount(v.s));
     if (!rtBPlainText(v)) return rtBMeth(I, v, "chars");
     return Value::integer(graphemeCount(v.toStr()));
 }

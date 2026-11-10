@@ -2004,7 +2004,7 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
         return Value::typeObj(inv.ofType().empty() ? std::string("uint8") : inv.ofType());
     if (m == "new" && inv.t == VT::Array) { // @a.new: fresh array of the same type
         // …built from the arguments as `Array.new(…)` is (`@a .= new(3, 4)`)
-        if (!args.empty() && inv.enumName.empty()) {
+        if (!args.empty() && inv.enumName().empty()) {
             Value ty = Value::typeObj(inv.isList ? "List" : "Array");
             ty.ofTypeM() = inv.ofType();
             return methodCall(ty, "new", args);
@@ -2035,7 +2035,7 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
         return Value::typeObj("Str(Any)");
     }
     // a list-ish value numifies to its element count first (`(^42).Rat` is 42.0)
-    if ((m == "Rat" || m == "FatRat") && (inv.t == VT::Range || (inv.t == VT::Array && inv.enumName.empty()))) {
+    if ((m == "Rat" || m == "FatRat") && (inv.t == VT::Range || (inv.t == VT::Array && inv.enumName().empty()))) {
         Value n = methodCall(inv, "Numeric", {});
         return methodCall(n, m, args, rwArgs);
     }
@@ -2138,16 +2138,16 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
     // an ENUM value steps through its enum's members in DECLARATION order,
     // saturating at either end (`C.pred` is B even when B and C share a value)
     if ((m == "succ" || m == "pred") && args.empty() && inv.t != VT::Bool &&
-        !inv.enumType.empty() && !inv.enumName.empty()) {
-        auto ep = enumPairs_.find(inv.enumType.str());
+        !inv.enumType().empty() && !inv.enumName().empty()) {
+        auto ep = enumPairs_.find(inv.enumType().str());
         if (ep != enumPairs_.end() && ep->second.arr() && !ep->second.arr()->empty()) {
             const ValueList& ps = *ep->second.arr();
             long long idx = -1;
-            for (size_t k = 0; k < ps.size(); k++) if (ps[k].s == inv.enumName.str()) { idx = (long long)k; break; }
+            for (size_t k = 0; k < ps.size(); k++) if (ps[k].s == inv.enumName().str()) { idx = (long long)k; break; }
             if (idx >= 0) {
                 long long j = m == "succ" ? std::min<long long>(idx + 1, (long long)ps.size() - 1)
                                           : std::max<long long>(idx - 1, 0);
-                if (Value* mv = tctx().cur->find(inv.enumType.str() + "::" + ps[(size_t)j].s)) return *mv;
+                if (Value* mv = tctx().cur->find(inv.enumType().str() + "::" + ps[(size_t)j].s)) return *mv;
             }
         }
     }
@@ -2157,7 +2157,7 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
         if (inv.t != VT::Str) return Value::integer(inv.toInt() + 1);
         Value r = Value::str(strSucc(inv.s));
         // an IO::Path stays an IO::Path (`"foo/file_02.txt".IO.succ` is an IO::Path)
-        r.hashKind = inv.hashKind; r.enumName = inv.enumName;
+        r.hashKind = inv.hashKind; r.setEnumName(inv.enumName());
         return r;
     }
     if (m == "pred") {
@@ -2166,7 +2166,7 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
             bool ok; std::string r = strPred(inv.s, ok);
             if (!ok) throw RakuError{Value::typeObj("X::AdHoc"), "Decrement out of range"};
             Value o = Value::str(r);
-            o.hashKind = inv.hashKind; o.enumName = inv.enumName;
+            o.hashKind = inv.hashKind; o.setEnumName(inv.enumName());
             return o;
         }
         if (succPredExact(inv)) return applyArith("-", inv, Value::integer(1));
@@ -2321,11 +2321,11 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
         if (Value* sp = findDynamicLenient("$*SPEC")) {
             if (sp->t == VT::Type && sp->s.str().rfind("IO::Spec::", 0) == 0) {
                 std::string fl(sp->s.str().substr(10));
-                if (fl == "Win32" || fl == "Cygwin" || fl == "QNX") p.enumName = fl;
+                if (fl == "Win32" || fl == "Cygwin" || fl == "QNX") p.setEnumName(fl);
             }
             // …and a user subclass of IO::Spec is the path's SPEC as it stands
             else if (sp->t == VT::Type && sp->s.str() != "IO::Spec" && classes_.count(sp->s.str()))
-                p.enumType = sp->s.str();
+                p.setEnumType(sp->s.str());
         }
         return p;
     }
@@ -2710,7 +2710,7 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
         }
         return Value::str(inv.toStr());
     }
-    if (m == "relative" && !(inv.hashKind == "IO" && !inv.enumName.empty())) {   // a flavored path: below
+    if (m == "relative" && !(inv.hashKind == "IO" && !inv.enumName().empty())) {   // a flavored path: below
         // IO::Path.relative($base = $*CWD) — the path expressed relative to $base.
         // PURELY LEXICAL, as Rakudo's abs2rel is: walk out of $base with `..` for
         // every component the two do not share, then down into the path. Returning
@@ -2779,7 +2779,7 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
         }
         return Value::str(b.substr(0, cut));
     }
-    if (m == "basename" && !(inv.hashKind == "IO" && !inv.enumName.empty())) {
+    if (m == "basename" && !(inv.hashKind == "IO" && !inv.enumName().empty())) {
         // (a FLAVORED path answers through its own IO::Spec, further down)
         // trailing slashes don't count: "/a/b/".basename is "b" (Rakudo; zef's
         // fez mirror "http://360.zef.pm/" must yield "360.zef.pm", not "")
@@ -2795,7 +2795,7 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
         auto asIO = [&](std::string s) { // a derived path keeps its parent's :CWD
             Value v = Value::str(s); v.hashKind = "IO";
             if (!inv.ofType().empty()) v.ofTypeM() = inv.ofType();
-            v.enumName = inv.enumName;   // …and its class: IO::Path::Unix.add is one too
+            v.setEnumName(inv.enumName());   // …and its class: IO::Path::Unix.add is one too
             return v;
         };
         auto dirOf = [](const std::string& s) -> std::string {
@@ -2809,8 +2809,8 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
 
         // a flavored path (IO::Path::Win32 etc., flavor in enumName) answers
         // through ITS IO::Spec instead of the platform default
-        if (!inv.enumName.empty()) {
-            std::string spec = "IO::Spec::" + inv.enumName;
+        if (!inv.enumName().empty()) {
+            std::string spec = "IO::Spec::" + inv.enumName();
             if (m == "volume" || m == "dirname" || m == "basename" || m == "parts") {
                 ValueList sa{Value::str(inv.s)};
                 Value r;
@@ -2824,7 +2824,7 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
                 ValueList sa{Value::str(inv.s)};
                 Value r;
                 if (ioSpecMethod(*this, spec, "canonpath", sa, r)) {
-                    Value p = Value::str(r.toStr()); p.hashKind = "IO"; p.enumName = inv.enumName;
+                    Value p = Value::str(r.toStr()); p.hashKind = "IO"; p.setEnumName(inv.enumName());
                     if (!inv.ofType().empty()) p.ofTypeM() = inv.ofType();
                     return p;
                 }
@@ -2838,11 +2838,11 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
             if (m == "raku") {
                 std::string q = inv.s.copyText(); // escape for a double-quoted literal
                 std::string esc; for (char ch : q) { if (ch == '"' || ch == '\\') esc += '\\'; esc += ch; }
-                return Value::str("IO::Path::" + inv.enumName + ".new(\"" + esc + "\")");
+                return Value::str("IO::Path::" + inv.enumName() + ".new(\"" + esc + "\")");
             }
             if (m == "SPEC") return Value::typeObj(spec);
             auto flav = [&](const std::string& str) {
-                Value p = Value::str(str); p.hashKind = "IO"; p.enumName = inv.enumName;
+                Value p = Value::str(str); p.hashKind = "IO"; p.setEnumName(inv.enumName());
                 if (!inv.ofType().empty()) p.ofTypeM() = inv.ofType();
                 return p;
             };
@@ -2866,7 +2866,7 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
                 return Value::str(specCall("abs2rel", {Value::str(abs), Value::str(base)}).toStr());
             }
             // .add / .child: the flavor's own separator, exactly one of it
-            if ((m == "add" || m == "child") && inv.enumName == "Win32" && args.size() == 1 && args[0].t != VT::Pair) {
+            if ((m == "add" || m == "child") && inv.enumName() == "Win32" && args.size() == 1 && args[0].t != VT::Pair) {
                 std::string b(inv.s), part = args[0].toStr();
                 std::string r;
                 if (b == ".") r = part;   // `.child` of the cwd is just the part (io-path-win.t)
@@ -3122,7 +3122,7 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
             // macOS, where $*TMPDIR is /var/… and the kernel reports /private/var/….
             std::string s = inv.toStr();
             // (a Win32 or Cygwin path separates with `\` as well: `..\bar`)
-            if (inv.enumName == "Win32" || inv.enumName == "Cygwin") std::replace(s.begin(), s.end(), '\\', '/');
+            if (inv.enumName() == "Win32" || inv.enumName() == "Cygwin") std::replace(s.begin(), s.end(), '\\', '/');
             if (!s.empty() && s[0] != '/') {
                 std::string base = inv.ofType().empty() ? cwdName() : inv.ofType();
                 while (base.size() > 1 && base.back() == '/') base.pop_back();
@@ -3179,8 +3179,8 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
                         return resolveFailure();
                 }
                 Value rv = asIO(s);
-                rv.enumName = inv.enumName;
-                rv.ofTypeM() = inv.enumName == "Win32" ? "\\" : "/";
+                rv.setEnumName(inv.enumName());
+                rv.ofTypeM() = inv.enumName() == "Win32" ? "\\" : "/";
                 return rv;
             }
 #endif
@@ -3196,8 +3196,8 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
                     // a resolved path is absolute: its CWD is the root, the
                     // flavor's dir-sep (Rakudo)
                     Value rv = asIO(out);
-                    rv.enumName = inv.enumName;
-                    rv.ofTypeM() = inv.enumName == "Win32" ? "\\" : "/";
+                    rv.setEnumName(inv.enumName());
+                    rv.ofTypeM() = inv.enumName() == "Win32" ? "\\" : "/";
                     return rv;
                 }
                 if (take == 0) break;
@@ -3206,8 +3206,8 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
             if (completely && s.find('/', 1) != std::string::npos) return resolveFailure();
             {
                 Value rv = asIO(s);
-                rv.enumName = inv.enumName;
-                rv.ofTypeM() = inv.enumName == "Win32" ? "\\" : "/";
+                rv.setEnumName(inv.enumName());
+                rv.ofTypeM() = inv.enumName() == "Win32" ? "\\" : "/";
                 return rv;
             }
         }
@@ -3291,8 +3291,8 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
         // the path's OS grammar and the directory it is resolved against
         // (IO::Path only: Str has neither, and `$str.?CWD // …` takes the default)
         if (m == "SPEC" && inv.hashKind == "IO") {
-            if (!inv.enumType.empty()) return Value::typeObj(inv.enumType.str());   // a user IO::Spec
-            return Value::typeObj("IO::Spec::" + (inv.enumName.empty() ? std::string("Unix") : inv.enumName.str()));
+            if (!inv.enumType().empty()) return Value::typeObj(inv.enumType().str());   // a user IO::Spec
+            return Value::typeObj("IO::Spec::" + (inv.enumName().empty() ? std::string("Unix") : inv.enumName().str()));
         }
         if (m == "CWD" && inv.hashKind == "IO") {
             if (!inv.ofType().empty()) return Value::str(inv.ofType()); // the captured :CWD
@@ -4977,7 +4977,7 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
         if (len < 0) len = 0; if (from + len > n) len = n - from;
         Value b = Value::str(inv.s.substr((size_t)from, (size_t)len)); b.hashKind = inv.hashKind;
         // …of the same type: `buf8.new(…).subbuf(…)` is a Buf[uint8]
-        if (b.hashKind == "Blob") b.enumName = inv.enumName;
+        if (b.hashKind == "Blob") b.setEnumName(inv.enumName());
         else if (!inv.ofType().empty()) b.ofTypeM() = inv.ofType();
         if (b.hashKind == "Buf") identify(b); // a subbuf is a NEW Buf, not a view
         return b;
@@ -5177,7 +5177,7 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
                 }
                 Value b = Value::str(bytes);
                 b.hashKind = "Blob";
-                b.enumName = "Blob[uint8]";
+                b.setEnumName("Blob[uint8]");
                 b.ofTypeM() = "uint8";
                 return b;
             }
@@ -5284,12 +5284,12 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
                 if (orderBE || orderLE) {
                     b.ofTypeM() = "uint8";
                     b.hashKind = "Blob";
-                    b.enumName = "Blob[uint8]";
+                    b.setEnumName("Blob[uint8]");
                     return b;
                 }
                 b.ofTypeM() = u16 ? "uint16" : "uint32";
                 b.hashKind = "Blob";
-                b.enumName = u16 ? "utf16" : "utf32";
+                b.setEnumName(u16 ? "utf16" : "utf32");
                 return b;
             } else b = Value::str(inv.s); // utf8/ascii: the bytes as stored
             b.hashKind = "Blob";
@@ -5300,7 +5300,7 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
             // Blob[uint8] for latin-1 — Rakudo reports the latter from `.^name`
             // and renders it that way in `.raku`, which is what the documented
             // `(try $blob.decode) // $blob` fallback prints when it keeps the blob.
-            b.enumName = latin1 ? "Blob[uint8]" : "utf8";
+            b.setEnumName(latin1 ? "Blob[uint8]" : "utf8");
             // SHARED storage from birth: every copy of this blob then points at
             // the same bytes, so `nativecast(CArray[uint8], $blob)` (NativeHelpers::
             // Blob's pointer-to) is a view onto them and C writes are visible
@@ -5312,8 +5312,8 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
         // encoding (Rakudo ties the default to the blob type) — treating the
         // 16-bit words as UTF-8 bytes dies on any surrogate (encode.t #32).
         if (norm.empty()) {
-            if (inv.enumName == "utf16" || inv.ofType() == "uint16" || inv.ofType() == "int16") norm = "utf16";
-            else if (inv.enumName == "utf32" || inv.ofType() == "uint32" || inv.ofType() == "int32") norm = "utf32";
+            if (inv.enumName() == "utf16" || inv.ofType() == "uint16" || inv.ofType() == "int16") norm = "utf16";
+            else if (inv.enumName() == "utf32" || inv.ofType() == "uint32" || inv.ofType() == "int32") norm = "utf32";
         }
         // ASCII has seven bits: a byte past them is not ASCII at all
         if (norm == "ascii" || norm == "usascii") {
@@ -5931,7 +5931,7 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
         // `enumName` is the catch: Value::toStr on a Str-valued ENUM answers the
         // enum key, not the string, so `inv.s` is not interchangeable with
         // `inv.toStr()` for those. Everything else with t == VT::Str is.
-        const bool cowStr = inv.t == VT::Str && inv.enumName.empty();
+        const bool cowStr = inv.t == VT::Str && inv.enumName().empty();
         const bool cowOk = cowStr && m == "substr";
         std::string rawCopy;
         if (!cowOk) rawCopy = inv.toStr();
@@ -6120,9 +6120,9 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
         // shared bodies (STRING-SCAN-QUADRATICS.md §5).
         // …with the same enum caveat as `substr` above: a Str-valued enum
         // stringifies to its KEY, so only a plain Str may be read in place.
-        const bool cowHay = !imark && inv.t == VT::Str && inv.enumName.empty();
+        const bool cowHay = !imark && inv.t == VT::Str && inv.enumName().empty();
         const bool cowNdl = !imark && !args.empty() && args[0].t == VT::Str &&
-                            args[0].enumName.empty();
+                            args[0].enumName().empty();
         std::string hayCopy, ndlCopy;
         if (!cowHay) { hayCopy = inv.toStr(); if (imark) hayCopy = markFold(hayCopy); }
         if (!cowNdl) { ndlCopy = a0().toStr(); if (imark) ndlCopy = markFold(ndlCopy); }
@@ -6256,7 +6256,7 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
     // per-eigenstate answers
     if ((m == "match" || m == "contains" || m == "starts-with" || m == "ends-with") &&
         !args.empty() && isJunction(args[0])) {
-        Value out = Value::array(); out.enumName = args[0].enumName;
+        Value out = Value::array(); out.setEnumName(args[0].enumName());
         for (auto& e : *args[0].arr()) {
             ValueList a2 = args; a2[0] = e;
             out.arr()->push_back(methodCall(inv, m, std::move(a2)));
@@ -6955,8 +6955,8 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
         // went quadratic, the #154 shape. Positions come off the grapheme
         // table cached on the immutable body (what `.index`/`.substr` read);
         // anything this cannot answer exactly falls through to the general path.
-        if (!args.empty() && args.size() <= 2 && inv.t == VT::Str && inv.enumName.empty() &&
-            args[0].t == VT::Str && args[0].enumName.empty() &&
+        if (!args.empty() && args.size() <= 2 && inv.t == VT::Str && inv.enumName().empty() &&
+            args[0].t == VT::Str && args[0].enumName().empty() &&
             (args.size() == 1 || m == "contains") &&
             !(args.size() == 2 && (args[1].t != VT::Int || args[1].big() || args[1].i < 0))) {
             const std::string_view s = inv.s.str();
@@ -7046,7 +7046,7 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
         // caches (what `.index` reads): copying the string twice, counting its
         // characters and taking a substr of the copy cost time in proportion to
         // the whole string on every call
-        if (!icase && !imark && inv.t == VT::Str && inv.enumName.empty() && pargs[0].t == VT::Str &&
+        if (!icase && !imark && inv.t == VT::Str && inv.enumName().empty() && pargs[0].t == VT::Str &&
             (pargs.size() < 2 || pargs[1].t == VT::Int || pargs[1].t == VT::Code)) {
             const std::string_view hay = inv.s.str();
             const std::string_view ndl = pargs[0].s.str();

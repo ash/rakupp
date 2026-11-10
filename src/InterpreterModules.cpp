@@ -1559,7 +1559,7 @@ void Interpreter::loadModuleImpl(const std::string& name, const std::vector<std:
                 if (k == "&EXPORT") continue; // per-module export protocol sub — never republished
                 if (!k.empty() && k[0] != '&' &&
                     (exportedSyms.count(k) || ownTerms.count(k) ||
-                     (!kv.second.enumType.empty() && ownEnums.count(kv.second.enumType.str()))))
+                     (!kv.second.enumType().empty() && ownEnums.count(kv.second.enumType().str()))))
                     continue;
                 // …nor a compile-time `?` variable: `$?DISTRIBUTION`, `%?RESOURCES` are
                 // LEXICAL to the module (its routines close over them), and the
@@ -4427,7 +4427,7 @@ std::vector<std::string> Interpreter::typeSuggestions(const std::string& name) {
         for (auto& kv : e->vars)
             if (!kv.first.empty() && ascii::isupper((unsigned char)kv.first[0]) &&
                 kv.first.find("::") == std::string::npos &&   // (not its `E::` twin)
-                !kv.second.enumType.empty() && !kv.second.enumName.empty())
+                !kv.second.enumType().empty() && !kv.second.enumName().empty())
                 cands.push_back(kv.first);
     std::sort(cands.begin(), cands.end());
     cands.erase(std::unique(cands.begin(), cands.end()), cands.end());
@@ -4798,7 +4798,7 @@ std::string Interpreter::roleArgsDisplay(const std::string& roleName, const Valu
     for (auto& a : argv) {
         if (a.namedArg) continue;
         if (!args.empty()) args += ",";
-        if (byType && (a.t != VT::Type || !a.enumName.empty())) args += a.typeName();   // (a value by its type)
+        if (byType && (a.t != VT::Type || !a.enumName().empty())) args += a.typeName();   // (a value by its type)
         else if (a.t == VT::Type) {
             auto ci = classes_.find(a.s);
             args += (ci != classes_.end() && !ci->second->dispName.empty())
@@ -4862,8 +4862,8 @@ void Interpreter::bindRoleParamsInto(ClassInfo* dest, ClassInfo* role, ValueList
                 // `.^name` and False to `~~ Enumeration`, and `EnumBits.enums`
                 // — the line every BitEnum consumer runs — found no method.
                 const bool enumTypeObj = argv[ai].t == VT::Array &&
-                                         !argv[ai].enumType.empty() &&
-                                         argv[ai].enumType == argv[ai].typeName();
+                                         !argv[ai].enumType().empty() &&
+                                         argv[ai].enumType() == argv[ai].typeName();
                 Value tv = (argv[ai].t == VT::Type || enumTypeObj)
                              ? argv[ai]
                              : Value::typeObj(argv[ai].typeName());
@@ -6465,18 +6465,18 @@ static void refuseRoleClashes(Interpreter& I, const std::string& clsName, const 
                 // it to 2^63-1, so every range test CBOR::Simple wrote against the
                 // constant sent a legal uint64 down the bignum-tag path. Keep the
                 // BigInt payload and tag it with the member name like any other.
-                if (val.t == VT::Int && val.big()) { ev = val; ev.enumName = key; }
+                if (val.t == VT::Int && val.big()) { ev = val; ev.setEnumName(key); }
                 else ev = Value::enumVal(key, val.t == VT::Int ? val.toInt() : counter++);
                 // a NON-Int enum value (`enum Blerp (One => "Eins")`) keeps its real
                 // value beside the ordinal; `.value` and `.pair` answer with it
                 if (val.t != VT::Int) ev.setPairVal(makePayload<Value>(val));
-                ev.enumType = enumTypeName; // carry the enum's type identity (for .^name, ~~, .WHAT)
+                ev.setEnumType(enumTypeName); // carry the enum's type identity (for .^name, ~~, .WHAT)
                 // a short name ANOTHER enum of this scope already claimed is
                 // poisoned: neither can have it (`S1::b` / `S2::b` still work)
                 {
                     Value* prior = tctx().cur->local(key);
                     if (prior && !ed->name.empty() &&
-                        ((!prior->enumType.empty() && prior->enumType.str() != ed->name) ||
+                        ((!prior->enumType().empty() && prior->enumType().str() != ed->name) ||
                          (prior->t == VT::Hash && prior->hashKind == "PoisonedAlias"))) {
                         Value pz = Value::makeHash(); pz.hashKind = "PoisonedAlias";
                         (*pz.hash())["alias"] = Value::str(key);
@@ -6509,7 +6509,7 @@ static void refuseRoleClashes(Interpreter& I, const std::string& clsName, const 
                 }
                 pairs.arr()->push_back(Value::pair(key, val));
             }
-            pairs.enumType = enumTypeName; pairs.itemized = true;   // the type object is the tagged pair-list, and ONE item (isEnumTypeObject)
+            pairs.setEnumType(enumTypeName); pairs.itemized = true;   // the type object is the tagged pair-list, and ONE item (isEnumTypeObject)
             enumPairs_[enumTypeName] = pairs; enumLangRev_[enumTypeName] = langRev_;  // reachable from any scope
             if (!ed->name.empty()) {
                 tctx().cur->define(ed->name, pairs);
@@ -6627,7 +6627,7 @@ static void refuseRoleClashes(Interpreter& I, const std::string& clsName, const 
                 try {
                     NameTerm tn(cd->parent);
                     Value et = eval(&tn);
-                    isEnum = et.t == VT::Array && !et.enumType.empty() && et.enumName.empty();
+                    isEnum = et.t == VT::Array && !et.enumType().empty() && et.enumName().empty();
                 } catch (...) {}
                 if (isEnum) {
                     cd->roles.insert(cd->roles.begin(), cd->parent);
@@ -7545,7 +7545,7 @@ static void refuseRoleClashes(Interpreter& I, const std::string& clsName, const 
                     try {
                         NameTerm tn(rn);
                         Value et = eval(&tn);
-                        if (et.t == VT::Array && !et.enumType.empty() && et.enumName.empty())
+                        if (et.t == VT::Array && !et.enumType().empty() && et.enumName().empty())
                             en = methodCall(et, "enums", ValueList{});
                     } catch (...) {}
                     if (en.t == VT::Hash && en.hash()) {
@@ -7559,7 +7559,7 @@ static void refuseRoleClashes(Interpreter& I, const std::string& clsName, const 
                                 if (a.empty() || a[0].t != VT::Object || !a[0].obj()) return Value::boolean(false);
                                 auto at = a[0].obj()->attrs.find(attr);
                                 return Value::boolean(at != a[0].obj()->attrs.end() &&
-                                                      at->second.enumName.c_str() == key);
+                                                      at->second.enumName().c_str() == key);
                             });
                             m.code()->ciM().isMethod = true;
                             if (!ci->methods.count(key)) ci->methods[key] = m;
@@ -8358,7 +8358,7 @@ static void refuseRoleClashes(Interpreter& I, const std::string& clsName, const 
             // enum member already
             if (!hoistingSubs_ && !cd->isAugment && clsName.find("::") == std::string::npos) {
                 if (Value* ev = tctx().cur->find(clsName))
-                    if (!ev->enumName.empty() && ev->enumName == clsName && !ev->enumType.empty())
+                    if (!ev->enumName().empty() && ev->enumName() == clsName && !ev->enumType().empty())
                         throwTyped("X::Redeclaration", {{"symbol", clsName}},
                                    "Redeclaration of symbol '" + clsName + "'");
             }

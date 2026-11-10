@@ -83,7 +83,7 @@ bool cowIsNfc(const CowStr& s) {
     return c == 1;
 }
 int nfcKnown(const Value& v) {
-    return v.t == VT::Str && v.hashKind.empty() && v.enumName.empty() ? (cowIsNfc(v.s) ? 1 : 0) : -1;
+    return v.t == VT::Str && v.hashKind.empty() && v.enumName().empty() ? (cowIsNfc(v.s) ? 1 : 0) : -1;
 }
 static void markNfc(const CowStr& s) {
     if (const StrBody* b = s.body()) b->nfc.store(1, std::memory_order_relaxed);

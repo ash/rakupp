@@ -47,7 +47,7 @@ void restoreMatchVarQuiet(bool quiet, bool hadSlash) {
 using RxArgTable = std::vector<Value>;
 static std::string rxArgEncode(const Value& v, RxArgTable* tab = nullptr,
                                const std::function<bool(const Value&, const Value&)>& same = nullptr) {
-    const bool plain = v.enumName.empty() && v.enumType.empty() && v.hashKind.empty();
+    const bool plain = v.enumName().empty() && v.enumType().empty() && v.hashKind.empty();
     if (v.t == VT::Bool) return std::string("\x04" "B") + (v.b ? "True" : "False");
     if (v.t == VT::Int && plain && v.s.empty()) return "\x04I" + v.toStr();
     if (v.t == VT::Num && plain) return "\x04N" + v.toStr();
@@ -278,7 +278,7 @@ static Value rxLiteralAlternatives(const Value& v) {
         if (e.t == VT::Nil || e.t == VT::Any || e.t == VT::Type) return;
         els.push_back(e.t == VT::Regex ? e : Value::regex(quoteMetaRx(e.toStr())));
     };
-    if (v.t == VT::Array && v.arr() && v.enumName.empty()) for (auto& e : *v.arr()) add(e);
+    if (v.t == VT::Array && v.arr() && v.enumName().empty()) for (auto& e : *v.arr()) add(e);
     else add(v);
     if (els.empty()) return Value::regex("<!>");
     return Value::list(std::move(els));
@@ -1081,7 +1081,7 @@ std::string Interpreter::interpRegexPattern(const std::string& in) {
                 }
                 // a junction is an alternation of its eigenstates
                 if (v && v->t == VT::Array && v->arr() &&
-                    (v->enumName == "any" || v->enumName == "one")) {
+                    (v->enumName() == "any" || v->enumName() == "one")) {
                     out += "[ ";
                     for (size_t k = 0; k < v->arr()->size(); k++) {
                         if (k) out += " | ";
@@ -3561,7 +3561,7 @@ Value Interpreter::hyperCore(Value& l, Value& r, bool strictL, bool strictR,
     auto carrayList = [](Value& v) {
         if (v.t == VT::Str && v.hashKind == "CArray") {
             Value out = Value::array(); out.isList = true;
-            std::string et = v.enumName.empty() ? std::string("int64") : v.enumName.str();
+            std::string et = v.enumName().empty() ? std::string("int64") : v.enumName().str();
             int w = Interpreter::ncElemSize(et);
             long long n = w > 0 ? (long long)(v.s.size() / (size_t)w) : 0;
             for (long long i = 0; i < n; i++)
@@ -3814,8 +3814,8 @@ struct KNum { bool isInt; long long i; double d; };
 
 // a plain machine Int or Num: the value alone
 inline bool kLeaf(const Value& v, KNum& k) {
-    if (v.x_ || v.pk_ != PK::None || v.natBits || v.natSigned || v.natFloat || v.b || v.isList ||
-        !v.enumName.empty() || !v.enumType.empty() || !v.hashKind.empty() || !v.s.empty())
+    if (v.x_ || v.pk_ != PK::None || v.natBits() || v.natSigned || v.natFloat || v.b || v.isList ||
+        !v.enumName().empty() || !v.enumType().empty() || !v.hashKind.empty() || !v.s.empty())
         return false;
     if (v.t == VT::Int) { k.isInt = true; k.i = v.i; return true; }
     if (v.t == VT::Num) { k.isInt = false; k.d = v.n; return true; }
@@ -3848,7 +3848,7 @@ bool kSide(const Value& v, KSide& s) {
     if (v.t == VT::Array) {
         // (a Junction is a tagged Array; a lazy, shaped or packed-but-unpacked
         // list has rules of its own)
-        if (!v.enumName.empty() || v.ext() || isMultiDimShaped(v)) return false;
+        if (!v.enumName().empty() || v.ext() || isMultiDimShaped(v)) return false;
         if (v.packedLive()) {
             s.packed = v.packed();
             s.n = s.packed->w.size();

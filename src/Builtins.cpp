@@ -1868,7 +1868,7 @@ Value coerceToSigil(Value v, char sigil) {
         // `has @.a is Buf`: a byte buffer IS the Positional container
         if (v.t == VT::Str && (v.hashKind == "Buf" || v.hashKind == "Blob")) return v;
         // an ITEMIZED list (`$[1,2,3]`, a `$x` holding an Array) is ONE element
-        if (v.t == VT::Array && v.itemized && v.enumName.empty()) {
+        if (v.t == VT::Array && v.itemized && v.enumName().empty()) {
             Value a = Value::array();
             a.arr()->push_back(v);
             return a;
@@ -2158,7 +2158,7 @@ static Value arrayHoleFill(const Value& arr, const Value& e) {
 std::string rakuReprImpl(const Value& v, int depth, std::set<const void*>& seen) {
     // an enum's TYPE OBJECT is its pair list here, and renders as its name,
     // nested too: `(Color, 1).raku` is (Color, 1), `{:x(Color)}` no `$[…]`
-    if (v.t == VT::Array && !v.enumType.empty() && isEnumTypeObject(v)) return std::string(v.enumType.str());
+    if (v.t == VT::Array && !v.enumType().empty() && isEnumTypeObject(v)) return std::string(v.enumType().str());
     // an Instant or a Duration renders as its own `.raku` does, nested as at
     // the top: `:a(Instant.from-posix(0.0))`, not the bare number underneath
     // (a Rat-based one) or the `Instant:10` its .Str gives
@@ -2226,8 +2226,8 @@ std::string rakuReprImpl(const Value& v, int depth, std::set<const void*>& seen)
     // key, which is what `3 cmp 5` .raku showing `Less` instead of `Order::Less`
     // came from. Junctions tag themselves with enumName too (any/all/one/none)
     // and are NOT enums — they carry no enumType, which is what tells them apart.
-    if (!v.enumName.empty() && !v.enumType.empty() && v.t != VT::Bool)
-        return v.typeName() + "::" + v.enumName.str();   // (an anonymous enum's is `::A`)
+    if (!v.enumName().empty() && !v.enumType().empty() && v.t != VT::Bool)
+        return v.typeName() + "::" + v.enumName().str();   // (an anonymous enum's is `::A`)
     switch (v.t) {
         case VT::Nil:  return "Nil";
         case VT::Any:  return "Any";
@@ -2246,7 +2246,7 @@ std::string rakuReprImpl(const Value& v, int depth, std::set<const void*>& seen)
             // constructor that rebuilds it, over its ELEMENTS, not a string
             // literal of its raw bytes
             if (v.hashKind == "Buf" || v.hashKind == "Blob") {
-                std::string nm = !v.enumName.empty() ? v.enumName   // an encoding names its own type
+                std::string nm = !v.enumName().empty() ? v.enumName()   // an encoding names its own type
                                : v.hashKind + (v.ofType().empty() ? "" : "[" + v.ofType() + "]");
                 std::string o = nm + ".new("; bool f = true;
                 for (auto& e : v.blobList()) { if (!f) o += ","; f = false; o += std::to_string(e.toInt()); }
@@ -2261,8 +2261,8 @@ std::string rakuReprImpl(const Value& v, int depth, std::set<const void*>& seen)
                                 : v.ofType();
                 // a FLAVORED path names its flavor in the class, so it needs no
                 // :SPEC; the plain one spells the spec out
-                if (!v.enumName.empty())
-                    return "IO::Path::" + v.enumName + ".new(" + rakuStrLit(v.s) +
+                if (!v.enumName().empty())
+                    return "IO::Path::" + v.enumName() + ".new(" + rakuStrLit(v.s) +
                            ", :CWD(" + rakuStrLit(cwd) + "))";
                 return "IO::Path.new(" + rakuStrLit(v.s) +
                        ", :SPEC(IO::Spec::Unix), :CWD(" + rakuStrLit(cwd) + "))";
@@ -2405,7 +2405,7 @@ std::string rakuReprImpl(const Value& v, int depth, std::set<const void*>& seen)
             // …and only a value the Pair holds BY VALUE: a Hash entry's Bool, in
             // its container, is spelled out, `:x(Bool::False)`. (`a => $flag`
             // is one too in Rakudo; nothing marks that Pair here, so it is not.)
-            if (val.t == VT::Bool && val.enumType.empty() && !v.pairLive())
+            if (val.t == VT::Bool && val.enumType().empty() && !v.pairLive())
                 return (val.b ? ":" : ":!") + v.s;
             return ":" + v.s + "(" + rakuRepr(val, depth + 1, seen) + ")";
         }
@@ -2440,9 +2440,9 @@ std::string rakuReprImpl(const Value& v, int depth, std::set<const void*>& seen)
                 return o + ")";
             }
             // Junctions render as their constructor form: none(1, 2, 3)
-            if (!v.enumName.empty() && v.arr() &&
-                (v.enumName == "any" || v.enumName == "all" || v.enumName == "one" || v.enumName == "none")) {
-                std::string o = v.enumName + "(";
+            if (!v.enumName().empty() && v.arr() &&
+                (v.enumName() == "any" || v.enumName() == "all" || v.enumName() == "one" || v.enumName() == "none")) {
+                std::string o = v.enumName() + "(";
                 bool first = true;
                 for (auto& e : *v.arr()) { if (!first) o += ", "; first = false; o += rakuRepr(e, depth + 1, seen); }
                 return o + ")";
@@ -2759,9 +2759,9 @@ bool matcherAccepts(Interpreter& I, const Value& v, const Value& mt) {
     if (mt.t == VT::Regex) { Interpreter::MatchVarGuard noSlash;
                              return I.regexMatch(v.toStr(), mt.s).truthy(); }
     if (mt.t == VT::Array && mt.arr() &&
-        (mt.enumName == "any" || mt.enumName == "all" ||
-         mt.enumName == "one" || mt.enumName == "none")) {
-        JunctionCollapse jc(mt.enumName);          // short-circuits; see Value.h
+        (mt.enumName() == "any" || mt.enumName() == "all" ||
+         mt.enumName() == "one" || mt.enumName() == "none")) {
+        JunctionCollapse jc(mt.enumName());          // short-circuits; see Value.h
         for (auto& e : *mt.arr()) { jc.feed(matcherAccepts(I, v, e)); if (jc.done()) break; }
         return jc.verdict();
     }
@@ -3380,7 +3380,7 @@ ValueList toList(const Value& v) {
             // Rakudo writes `:a(42)`.
             if (kv.second.elemKey()) {
                 const Value& pk2 = *kv.second.elemKey();
-                if (!(pk2.t == VT::Str && pk2.hashKind.empty() && pk2.enumName.empty() && pk2.s == kv.first))
+                if (!(pk2.t == VT::Str && pk2.hashKind.empty() && pk2.enumName().empty() && pk2.s == kv.first))
                     p.pairKeyRawM() = kv.second.elemKey();
             }
             else if (objHash) {
@@ -3921,15 +3921,15 @@ bool deepEq(const Value& a, const Value& b) {
     // is-deeply any(1,2,3), none(4,5,6) collapses to True)
     auto junct = [](const Value& v) {
         return v.t == VT::Array && v.arr() &&
-               (v.enumName == "any" || v.enumName == "all" || v.enumName == "one" || v.enumName == "none");
+               (v.enumName() == "any" || v.enumName() == "all" || v.enumName() == "one" || v.enumName() == "none");
     };
     if (junct(b)) {
-        JunctionCollapse jc(b.enumName);           // short-circuits; see Value.h
+        JunctionCollapse jc(b.enumName());           // short-circuits; see Value.h
         for (auto& e : *b.arr()) { jc.feed(deepEq(a, e)); if (jc.done()) break; }
         return jc.verdict();
     }
     if (junct(a)) {
-        JunctionCollapse jc(a.enumName);
+        JunctionCollapse jc(a.enumName());
         for (auto& e : *a.arr()) { jc.feed(deepEq(e, b)); if (jc.done()) break; }
         return jc.verdict();
     }
@@ -4040,7 +4040,7 @@ Value Interpreter::bufBitOp(Value& buf, const std::string& m, ValueList& args) {
         return buf.s.mutInPlace();
     };
     auto endianOf = [&](const Value& v) -> int { // 0 native, 1 little, 2 big
-        std::string e = !v.enumName.empty() ? v.enumName : v.toStr();
+        std::string e = !v.enumName().empty() ? v.enumName() : v.toStr();
         if (e == "LittleEndian") return 1;
         if (e == "BigEndian") return 2;
         return 0;
@@ -4978,7 +4978,7 @@ Value makeSignature(const Callable* c) {
             // literal parameter — static context, so decode the common literal
             // node kinds directly (StrLit/IntLit). A `where` clause is scored
             // at dispatch here and is not yet carried as a Code eigenstate.
-            Value cj = Value::array(); cj.enumName = "all";
+            Value cj = Value::array(); cj.setEnumName("all");
             // a subset type is a constraint of its own, ahead of any `where`
             if (!p.type.empty() && !p.coerce && g_subsetNominal && !g_subsetNominal(p.type).empty())
                 cj.arr()->push_back(Value::typeObj(p.type));
@@ -5573,9 +5573,9 @@ static void jfEncode(const Value& v, const JfOpts& o, int level, std::string& ou
         return;
     }
     // the ladder is jsonify's, in jsonify's order
-    if (!v.enumName.empty()) {           // enum value: its KEY, or with
+    if (!v.enumName().empty()) {           // enum value: its KEY, or with
         if (!o.enumsAsValue) {           // :enums-as-value its underlying value
-            out += '"'; jfEscape(v.enumName.str(), out); out += '"';
+            out += '"'; jfEscape(v.enumName().str(), out); out += '"';
             return;
         }
         // :enums-as-value wants .value, and this Value carries only the
@@ -5942,8 +5942,8 @@ bool Interpreter::methodTakesJunction(const Value& inv, const std::string& m, si
 static bool kvFamilyAnswersList(const Value& inv, const std::string& m) {
     // An enum VALUE's `.kv` is its own (name, number) List — see the arm that
     // builds it. Only the enum TABLE views (keys/values/pairs) are Seqs.
-    if (m == "kv" && !inv.enumName.empty() && inv.t != VT::Array) return true;
-    const bool enumish = !inv.enumName.empty() || inv.t == VT::Bool ||
+    if (m == "kv" && !inv.enumName().empty() && inv.t != VT::Array) return true;
+    const bool enumish = !inv.enumName().empty() || inv.t == VT::Bool ||
                          (inv.t == VT::Type && inv.s == "Bool");
     if (enumish) return false;
     // `.values` is the narrowest of the family: it is a Seq only where the type
@@ -6310,7 +6310,7 @@ Value Interpreter::methodCall(const Value& inv, const std::string& m, ValueList 
     // `.join($sep)` of a plain list of strings (or ObjAts, `@a».WHICH`): the
     // general arm's loop without its snapshot of the list
     if (args.size() == 1 && !skipOwn && inv.t == VT::Array && m.size() == 4 && opEq(m, "join") &&
-        inv.arr() && inv.s.empty() && inv.hashKind.empty() && inv.enumName.empty() && inv.enumType.empty() && !inv.ext() &&
+        inv.arr() && inv.s.empty() && inv.hashKind.empty() && inv.enumName().empty() && inv.enumType().empty() && !inv.ext() &&
         inv.pk_ != PK::Packed && !inv.elemDefault() && !inv.holdsContainers() &&
         args[0].t == VT::Str && args[0].hashKind.empty() && builtinExt_.empty()) {
         bool plain = true;
@@ -6348,7 +6348,7 @@ Value Interpreter::methodCall(const Value& inv, const std::string& m, ValueList 
     }
     // An ENUM's type object is its tagged pair list here, but to every method
     // but Enumeration's own it is the TYPE it is (InterpreterCalls.cpp)
-    if (inv.t == VT::Array && !inv.enumType.empty() && inv.enumName.empty() && isEnumTypeObject(inv))
+    if (inv.t == VT::Array && !inv.enumType().empty() && inv.enumName().empty() && isEnumTypeObject(inv))
         if (auto r = enumTypeObjectMethod(inv, m, args)) return std::move(*r);
     // `$cool.printf` / `.sprintf` on a user class that `is Cool`: the object's
     // OWN .Str is the format, as Cool's methods are written (`self.Str`)
@@ -6479,8 +6479,8 @@ Value Interpreter::methodCall(const Value& inv, const std::string& m, ValueList 
             noMatch("IO::Handle");
     }
     // an ENUM type's `.^language-revision` — the revision it was declared under
-    if (inv.t == VT::Array && !inv.enumType.empty() && opEq(m, "language-revision") && args.empty()) {
-        auto it = enumLangRev_.find(inv.enumType);
+    if (inv.t == VT::Array && !inv.enumType().empty() && opEq(m, "language-revision") && args.empty()) {
+        auto it = enumLangRev_.find(inv.enumType());
         int r = it != enumLangRev_.end() ? it->second : langRev_;
         return Value::str(r == 0 ? "c" : r == 1 ? "d" : "e");
     }
@@ -6512,7 +6512,7 @@ Value Interpreter::methodCall(const Value& inv, const std::string& m, ValueList 
     // and `Rat.Num` die, since the method wants an instance — except the
     // type's own coercion (`Int.Int` is Int) and the few Cool falls back on
     // (`Str.Rat` is 0.0). Any, Mu, Cool and Numeric keep their 0.
-    if (inv.t == VT::Type && inv.enumName.empty() &&
+    if (inv.t == VT::Type && inv.enumName().empty() &&
         (opEq(m, "Int") || opEq(m, "Num") || opEq(m, "Rat") || opEq(m, "FatRat")) &&
         !classes_.count(inv.s)) {
         static const std::map<std::string, std::string> kDies = {   // type -> methods that die
@@ -6592,15 +6592,15 @@ Value Interpreter::methodCall(const Value& inv, const std::string& m, ValueList 
         if (kJunctionWhole.count(m) || (m == "new" && inv.t == VT::Type && kQuantHash.count(std::string(inv.s.str()))) ||
             (opEq(m, "polymod") && (inv.t == VT::Int || inv.t == VT::Num || inv.t == VT::Rat))) continue;
         if (first == args.size()) first = ai;
-        if (args[ai].enumName == "all" || args[ai].enumName == "none") { first = ai; break; }
+        if (args[ai].enumName() == "all" || args[ai].enumName() == "none") { first = ai; break; }
     }
     if (first < args.size()) {
         if (junctionInvocantThreads(inv, m)) {
-            Value out = Value::array(); out.enumName = inv.enumName;
+            Value out = Value::array(); out.setEnumName(inv.enumName());
             for (auto& el : *inv.arr()) out.arr()->push_back(methodCall(el, m, args, rwArgs));
             return out;
         }
-        Value jr = Value::array(); jr.enumName = args[first].enumName; jr.isList = true;
+        Value jr = Value::array(); jr.setEnumName(args[first].enumName()); jr.isList = true;
         for (auto& e : *args[first].arr()) {
             ValueList a2 = args; a2[first] = e;
             jr.arr()->push_back(methodCall(inv, m, a2));
@@ -6747,12 +6747,12 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
     // .succ / .pred step the BASENAME only (`foo/()`.succ is still `foo/()`)
     if (invIn.t == VT::Str && (opEq(mName, "succ") || opEq(mName, "pred")) && invIn.hashKind == "IO") {
         std::string full = invIn.toStr();
-        auto sl = full.find_last_of(invIn.enumName == "Win32" ? "/\\" : "/");
+        auto sl = full.find_last_of(invIn.enumName() == "Win32" ? "/\\" : "/");
         std::string head = sl == std::string::npos ? "" : full.substr(0, sl + 1);
         std::string base = sl == std::string::npos ? full : full.substr(sl + 1);
         ValueList none;
         Value nb = methodCall(Value::str(base), mName, none);
-        Value p = Value::str(head + nb.toStr()); p.hashKind = "IO"; p.enumName = invIn.enumName;
+        Value p = Value::str(head + nb.toStr()); p.hashKind = "IO"; p.setEnumName(invIn.enumName());
         if (!invIn.ofType().empty()) p.ofTypeM() = invIn.ofType();
         return p;
     }
@@ -7941,10 +7941,10 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
         if (inv.t == VT::Object && inv.obj() && inv.obj()->cls && !inv.obj()->cls->pod.empty())
             return Value::str(inv.obj()->cls->pod);
         // an enum's type object is carried as its value list, tagged by enumType
-        if (inv.t == VT::Array && !inv.enumType.str().empty()) {
-            auto pi = pkgPod_.find(inv.enumType.str());
+        if (inv.t == VT::Array && !inv.enumType().str().empty()) {
+            auto pi = pkgPod_.find(inv.enumType().str());
             if (pi != pkgPod_.end()) {
-                auto pt = pkgPodTrail_.find(inv.enumType.str());
+                auto pt = pkgPodTrail_.find(inv.enumType().str());
                 return declarator(pi->second, pt != pkgPodTrail_.end() ? pt->second : std::string(), 0);
             }
         }
@@ -7959,7 +7959,7 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
     }
     // `.Str` / `.gist` / `~` on a LIST goes through each element's own .Str, so a
     // list of objects with a user `method Str` renders as those strings (see strOf).
-    if (inv.t == VT::Array && inv.arr() && inv.enumName.empty() &&
+    if (inv.t == VT::Array && inv.arr() && inv.enumName().empty() &&
         (m == "Str" || m == "Stringy")) {
         // (…and a Proxy, here or in a nested list, is READ: `@d.push: ($x, 6);
         // @d.Str` printed $x's FETCH/STORE pair — strNeedsElementRead)
@@ -7972,7 +7972,7 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
     if (inv.t == VT::Str && (inv.hashKind == "Buf" || inv.hashKind == "Blob")) {
         if (m == "Numeric" || m == "Int") return Value::integer(inv.blobElems());
         refuseStrOnlyOnBlob(*this, inv, m);   // `$buf.uc`: no such method
-        if (m == "chars" && inv.enumName.empty())
+        if (m == "chars" && inv.enumName().empty())
             throwTyped("X::Buf::AsStr", {{"method", "chars"}},
                        "Cannot use a Buf as a string, but you called the chars method on it");
         if (m == "reverse") {   // a Blob of the same type, back to front
@@ -7988,7 +7988,7 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
     // so (`$output ~= $segment.Str`).
     if (inv.t == VT::Str && (inv.hashKind == "Buf" || inv.hashKind == "Blob") &&
         m == "Str") {
-        if (inv.enumName == "utf8" || inv.enumName == "utf16" || inv.enumName == "utf32") {
+        if (inv.enumName() == "utf8" || inv.enumName() == "utf16" || inv.enumName() == "utf32") {
             ValueList none; return methodCall(inv, "decode", none);
         }
         throwTyped("X::Buf::AsStr", {{"method", "Str"}},
@@ -8129,14 +8129,14 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
         // `(none 3, Str).defined` is False. It is not an alias for `.Bool`:
         // `(any 0, "").defined` is True while `.Bool` is False.
         if (m == "defined") {
-            Value j = Value::array(); j.enumName = inv.enumName;
+            Value j = Value::array(); j.setEnumName(inv.enumName());
             j.setArr(makePayload<ValueList>());
             for (auto& el : *inv.arr()) j.arr()->push_back(Value::boolean(defined(el)));
             return Value::boolean(j.truthy());
         }
         if (m == "THREAD" && !args.empty()) {
             // shallow map: the block sees each eigenstate whole (junctions included)
-            Value out = Value::array(); out.enumName = inv.enumName;
+            Value out = Value::array(); out.setEnumName(inv.enumName());
             out.setArr(makePayload<ValueList>());
             for (auto& el : *inv.arr()) {
                 ValueList one{el};
@@ -8146,7 +8146,7 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
             return out;
         }
         if (junctionInvocantThreads(inv, m)) {
-            Value out = Value::array(); out.enumName = inv.enumName;
+            Value out = Value::array(); out.setEnumName(inv.enumName());
             out.setArr(makePayload<ValueList>());
             for (auto& el : *inv.arr()) out.arr()->push_back(methodCall(el, m, args, rwArgs));
             return out;
@@ -8683,9 +8683,9 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
         // that was not already a type object (Nil-Any sheet NA-02).
         // an ENUM — its type object or a member — linearises as the enum, then
         // its value type's own MRO: `Color.^mro` is (Color Int Cool Any Mu)
-        if ((mm == "mro" || mm == "parents") && !inv.enumType.empty() && inv.t != VT::Bool &&
-            (isEnumTypeObject(inv) || !inv.enumName.empty())) {
-            const std::string et = inv.enumType.str();
+        if ((mm == "mro" || mm == "parents") && !inv.enumType().empty() && inv.t != VT::Bool &&
+            (isEnumTypeObject(inv) || !inv.enumName().empty())) {
+            const std::string et = inv.enumType().str();
             Value base = methodCall(Value::typeObj(enumBaseType(et)), "^mro", ValueList{});
             Value out = Value::array(); out.isList = true;
             if (mm == "mro") out.arr()->push_back(Value::typeObj(et));
@@ -9202,7 +9202,7 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
                         // constraints is now the all(…) junction — an empty one
                         // constrains nothing; a literal eigenstate must match
                         const Value& cjv = ph["constraints"];
-                        if (cjv.t == VT::Array && cjv.enumName == "all" && cjv.arr() && !cjv.arr()->empty()) {
+                        if (cjv.t == VT::Array && cjv.enumName() == "all" && cjv.arr() && !cjv.arr()->empty()) {
                             const Value& cv = (*cjv.arr())[0];
                             bool eq = (a2.isNumeric() && cv.isNumeric()) ? a2.toNum() == cv.toNum()
                                                                          : a2.toStr() == cv.toStr();
@@ -9473,7 +9473,7 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
                 for (auto& e : pos[0].flatten()) j.arr()->push_back(e);
             else type = pos[0].toStr();
         }
-        j.enumName = type;
+        j.setEnumName(type);
         return j;
     }
     // Format.new("%s|%s") — a reusable sprintf: calling it formats its arguments
@@ -9915,9 +9915,9 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
             // the ProtocolFamily enum carries Rakudo's ordinals (PF_INET is 1,
             // PF_INET6 2), not the OS numbers the socket calls want
             else if (a.s == "family")
-                family = pv.enumType == "ProtocolFamily"
-                    ? (pv.enumName == "PF_INET" ? PF_INET : pv.enumName == "PF_INET6" ? PF_INET6
-                       : pv.enumName == "PF_UNSPEC" ? 0 : (long)pv.toInt())
+                family = pv.enumType() == "ProtocolFamily"
+                    ? (pv.enumName() == "PF_INET" ? PF_INET : pv.enumName() == "PF_INET6" ? PF_INET6
+                       : pv.enumName() == "PF_UNSPEC" ? 0 : (long)pv.toInt())
                     : pv.toInt();
         }
         // `:host<name:port>` — the port may ride along in the host string, and an
@@ -9943,7 +9943,7 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
         bool unixFam = false;
         for (auto& a : args)
             if (a.t == VT::Pair && a.s == "family" && a.pairVal() &&
-                (a.pairVal()->enumName == "PF_UNIX" || a.pairVal()->enumName == "PF_LOCAL")) unixFam = true;
+                (a.pairVal()->enumName() == "PF_UNIX" || a.pairVal()->enumName() == "PF_LOCAL")) unixFam = true;
         if (unixFam) {
             const std::string path = listen ? localhost : host;
 #ifdef _WIN32

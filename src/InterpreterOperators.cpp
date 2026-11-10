@@ -372,15 +372,15 @@ Value Interpreter::mixinValue(Value base, const Value& rhs, bool copy, bool rhsI
         // …and an ENUM value mixes in its enum as a role: a method per
         // member, True for the one mixed in (`$x but Maybe(Yes)` answers
         // `.Yes` True and `.No` False)
-        if (!vm.enumName.empty() && !vm.enumType.empty()) {
+        if (!vm.enumName().empty() && !vm.enumType().empty()) {
             Value en;
             try {   // the enum TYPE as its name resolves (not a bare type object)
-                NameTerm tn(std::string(vm.enumType.c_str()));
+                NameTerm tn(std::string(vm.enumType().c_str()));
                 en = methodCall(eval(&tn), "enums", ValueList{});
             } catch (...) {}
             if (en.t == VT::Hash && en.hash())
                 for (auto& kv : *en.hash()) {
-                    const bool mine = kv.first == vm.enumName.c_str();
+                    const bool mine = kv.first == vm.enumName().c_str();
                     Value m = Value::closure([mine](ValueList&) { return Value::boolean(mine); });
                     m.code()->ciM().isMethod = true;
                     if (!nc->methods.count(kv.first)) nc->methods[kv.first] = m;
@@ -480,7 +480,7 @@ bool Interpreter::chainLinkUser(const std::string& op, const Value& l, const Val
         if (Value* f = lexShadowedInfix(op, l, r)) { out = callCallable(*f, ValueList{l, r}); return true; }
         if (userInfixOverCore(op, l, r, out)) return true;
     }
-    if ((l.t == VT::Object || r.t == VT::Object || !l.enumType.empty() || !r.enumType.empty()) &&
+    if ((l.t == VT::Object || r.t == VT::Object || !l.enumType().empty() || !r.enumType().empty()) &&
         boundInfixPossible(op))
         if (Value* f = tctx().cur->find("&infix:<" + op + ">"))
             try { out = callCallable(*f, ValueList{l, r}); return true; }
@@ -678,7 +678,7 @@ Value Interpreter::prefixNumeric(const std::string& op, const Value& v) {
         warnUninitNum(v);
     // an enum's TYPE OBJECT is no count of its members: `+Color` is Color.Numeric,
     // which warns and refuses (InterpreterCalls.cpp's enumTypeObjectMethod)
-    if ((op == "+" || op == "-") && v.t == VT::Array && !v.enumType.empty() && isEnumTypeObject(v))
+    if ((op == "+" || op == "-") && v.t == VT::Array && !v.enumType().empty() && isEnumTypeObject(v))
         return methodCall(v, "Numeric", ValueList{});
     // numeric prefix on an object uses its .Numeric (or .Bridge/.Int): `+$o`, `-$o`
     if ((op == "+" || op == "-") && v.t == VT::Object && v.obj() && v.obj()->cls) {
@@ -700,7 +700,7 @@ Value Interpreter::prefixNumeric(const std::string& op, const Value& v) {
     }
     // a LAZY list (a handle's `.lines`, a gather) counts what it WILL hold,
     // not the part pulled so far: `+$fh.lines` reads to the end
-    if ((op == "+" || op == "-") && v.t == VT::Array && v.ext() && v.hashKind.empty() && v.enumName.empty()) {
+    if ((op == "+" || op == "-") && v.t == VT::Array && v.ext() && v.hashKind.empty() && v.enumName().empty()) {
         ValueList none; Value n = methodCall(v, "elems", none);
         if (op == "-") return n.t == VT::Int ? negInt(n.toInt()) : Value::number(-n.toNum());
         return n;
@@ -806,8 +806,8 @@ Value Interpreter::prefixNumeric(const std::string& op, const Value& v) {
         // +$0 of digits is an Int, like +Str — and of anything else the same
         // Failure (X::Str::Numeric), not an undefined value
         if (v.t == VT::Match) return numifyStrFailure(strOf(v));
-        if (v.isNumeric() && !v.enumName.empty()) { // +EnumValue is a PLAIN Int, not the name
-            Value nv = v; nv.enumName.clear(); nv.enumType.clear(); return nv;
+        if (v.isNumeric() && !v.enumName().empty()) { // +EnumValue is a PLAIN Int, not the name
+            Value nv = v; nv.setEnumName(IStr()); nv.setEnumType(IStr()); return nv;
         }
         // `+"a"` is an error, not an undefined value (Rakudo: X::Str::Numeric)
         if (v.t == VT::Complex) return v;            // `+(3i)` is 3i — Complex is Numeric
@@ -1382,7 +1382,7 @@ static void swapExecContext(ExecContext& a, ExecContext& b) {
     // a free list of unused frames — and either side may use it)
 }
 #if defined(__APPLE__) && defined(__aarch64__) && defined(_LIBCPP_VERSION) && !defined(RAKUPP_IN_AUDIT) && !defined(RAKUPP_STR_CENSUS)
-static_assert(sizeof(ExecContext) == 1504,
+static_assert(sizeof(ExecContext) == (RAKUPP_BODY_HANDLES ? 1376 : 1440),
               "ExecContext changed: list the new member in swapExecContext (Interpreter.cpp), "
               "then update this size");
 #endif
@@ -1745,7 +1745,7 @@ void Interpreter::uninitBinaryOperands(Binary* b, const std::string& op, Value& 
             // would otherwise count as its member count
             if (v.t == VT::Array)
                 throwTypedV("X::Numeric::Uninitialized", {{"type", v}},
-                            "Use of uninitialized value of type " + std::string(v.enumType.str()) + " in numeric context");
+                            "Use of uninitialized value of type " + std::string(v.enumType().str()) + " in numeric context");
             UninitNameScope nm(*this, named ? uninitNameOf(e) : std::string());
             warnUninitNum(v);
             if (op == "mod") warnUninitNum(v);
@@ -2020,7 +2020,7 @@ std::string Interpreter::gistOf(const Value& v, bool skipUser) {
     // still hands back the container so a write can reach STORE.
     if (v.t == VT::Hash && v.hashKind == "Proxy" && v.hash()) return gistOf(deproxy(v));
     // …and so does a Proxy sitting inside a list.
-    if (v.t == VT::Array && v.arr() && v.enumName.empty()) {
+    if (v.t == VT::Array && v.arr() && v.enumName().empty()) {
         bool anyProxy = false;
         for (auto& e : *v.arr()) if (e.t == VT::Hash && e.hashKind == "Proxy") { anyProxy = true; break; }
         if (anyProxy) {
@@ -2188,7 +2188,7 @@ bool isPlatformHash(const Value& v) {
 }
 static bool strNeedsElementRead(const Value& e, int depth) {
     if (e.t == VT::Object || (e.t == VT::Hash && e.hashKind == "Proxy")) return true;
-    if (depth < 8 && e.t == VT::Array && e.arr() && e.enumName.empty())
+    if (depth < 8 && e.t == VT::Array && e.arr() && e.enumName().empty())
         for (auto& x : *e.arr()) if (strNeedsElementRead(x, depth + 1)) return true;
     return false;
 }
@@ -2225,7 +2225,7 @@ std::string Interpreter::strOf(const Value& v) {
     // concatenating — `print 1 & 2` writes "12" (Rakudo). (`say` is different: it
     // uses .gist, which is the junction's own "all(1, 2)".)
     if (v.t == VT::Array && v.arr() &&
-        (v.enumName == "any" || v.enumName == "all" || v.enumName == "one" || v.enumName == "none")) {
+        (v.enumName() == "any" || v.enumName() == "all" || v.enumName() == "one" || v.enumName() == "none")) {
         std::string out;
         for (auto& e : *v.arr()) out += strOf(e);
         return out;
@@ -2244,14 +2244,14 @@ std::string Interpreter::strOf(const Value& v) {
         return methodCall(v, "Str", {}).toStr();
     // An enum's TYPE OBJECT is its pair list here, and undefined: "" with the
     // warning any type object gives (`"{Color}"`, `"a" ~ Color`, `put Color`)
-    if (v.t == VT::Array && !v.enumType.empty() && isEnumTypeObject(v)) {
+    if (v.t == VT::Array && !v.enumType().empty() && isEnumTypeObject(v)) {
         warnUninitStr(v);
         return "";
     }
     // A LIST stringifies its elements space-separated, and each element through
     // ITS OWN .Str — a list of objects with a user `method Str` must not come out
     // as `T<obj> T<obj>` (XML::Element.contents is a list of XML::Text).
-    if (v.t == VT::Array && v.arr() && v.enumName.empty()) {
+    if (v.t == VT::Array && v.arr() && v.enumName().empty()) {
         bool anyObj = false;
         // …and a Proxy ELEMENT is read the same way (URI::Query hands back a list
         // of Proxy containers so the list itself stays immutable) — also one in a
@@ -2484,7 +2484,7 @@ bool Interpreter::userTypeRefuses(const Value& rhs, const std::string& want) {
     if (want.empty() || want == "Any" || want == "Mu") return false;
     // an ENUM type holds only its own values: `my Color $c = "for the fail"` dies
     if (enumPairs_.count(want) && rtIsDefined(rhs))
-        return rhs.enumType.empty() || rhs.enumType.str() != want;
+        return rhs.enumType().empty() || rhs.enumType().str() != want;
     if (rhs.t != VT::Object && rhs.t != VT::Type) {
         // a BUILT-IN value (42, [1], %h, `Any.new`) is no instance of a user
         // class — unless a mixin made it one (`42 but R` does R)
@@ -2710,7 +2710,7 @@ bool Interpreter::catAssignInPlace(Value* lv, const Value& rhs) {
     // whole string — `$s ~= $_ % 10` over 300k iterations took 8.5 s.
     if (rhs.t == VT::Int) {
         if (!lv->hashKind.empty() || rhs.x_ || rhs.pk_ != PK::None || !rhs.hashKind.empty() ||
-            !rhs.enumName.empty() || !rhs.enumType.empty() || rhs.natBits) return false;
+            !rhs.enumName().empty() || !rhs.enumType().empty() || rhs.natBits()) return false;
         lv->s.appendAscii(std::to_string(rhs.i));
         return true;
     }
@@ -3189,7 +3189,7 @@ Value whateverInfixCurry(const std::string& name, const std::string& op, const V
 Value Interpreter::applyUniOp(const std::string& name, const char* builtin, const Value& l, const Value& r) {
     if (whateverish(l) || whateverish(r)) return whateverInfixCurry(name, builtin, l, r);
     if (Value* f = lexShadowedInfix(name, l, r)) return callCallable(*f, ValueList{l, r});
-    if ((l.t == VT::Object || r.t == VT::Object || !l.enumType.empty() || !r.enumType.empty()) &&
+    if ((l.t == VT::Object || r.t == VT::Object || !l.enumType().empty() || !r.enumType().empty()) &&
         boundInfixPossible(name) && tctx().cur)
         if (Value* f = tctx().cur->find("&infix:<" + name + ">"))
             try { return callCallable(*f, ValueList{l, r}); }
@@ -3425,7 +3425,7 @@ Value Interpreter::applyReduce(std::string op, ValueList& items) {
         // the junction constructors reduce to the EMPTY junction of their kind
         if (op == "&" || op == "|" || op == "^") {
             Value j = Value::array(); j.isList = true;
-            j.enumName = op == "&" ? "all" : op == "|" ? "any" : "one";
+            j.setEnumName(op == "&" ? "all" : op == "|" ? "any" : "one");
             return j;
         }
         // the rest of the identities (Rakudo): `if [&&] @checks` with no checks
@@ -3706,7 +3706,7 @@ bool Interpreter::keySubscriptIsSlice(const Expr* ixExpr, const Value& iv) {
     // is ONE key, not a slice — `%converter-for-type{$type}` with an enum
     // $type must answer one entry (Getopt::Long), and a Junction key stays
     // one key for the autothreading layer to handle
-    if (!iv.enumType.empty() || !iv.enumName.empty()) return false;
+    if (!iv.enumType().empty() || !iv.enumName().empty()) return false;
     if (ixExpr && ixExpr->kind == NK::VarExpr) {
         auto* ve = static_cast<const VarExpr*>(ixExpr);
         if (!ve->name.empty() && ve->name[0] == '$') return false;

@@ -109,7 +109,7 @@ RkType rk_type(RkCtx, RkValue v) {
     // and an enum value as the bare word Green. These are RK_OTHER — "no
     // vocabulary; stringify it" — and rk_str_get gives their Str. The one tag
     // that IS the plain thing is Map, rk_map's own: it walks as a hash.
-    if (!x->enumName.empty()) return RK_OTHER;
+    if (!x->enumName().empty()) return RK_OTHER;
     if (!x->hashKind.empty() && !(x->t == VT::Hash && x->hashKind == "Map")) return RK_OTHER;
     switch (x->t) {
         case VT::Bool:  return RK_BOOL;

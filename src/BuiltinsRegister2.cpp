@@ -40,8 +40,8 @@ void Interpreter::registerBuiltinsPart3() {
             // answer the same element after building a list to ask it
             if (a.size() == 2) {
                 auto plainInt = [](const Value& v) {
-                    return v.t == VT::Int && !v.big() && !v.natBits && v.enumName.empty() &&
-                           v.enumType.empty() && !v.namedArg && v.hashKind.empty();
+                    return v.t == VT::Int && !v.big() && !v.natBits() && v.enumName().empty() &&
+                           v.enumType().empty() && !v.namedArg && v.hashKind.empty();
                 };
                 if (plainInt(a[0]) && plainInt(a[1]))
                     return (isMax ? a[1].i > a[0].i : a[1].i < a[0].i) ? a[1] : a[0];
@@ -345,7 +345,7 @@ void Interpreter::registerBuiltinsPart3() {
         if (a.empty()) return Value::integer(0);
         // count without materializing (toList deep-copies every element)
         const Value& v = a[0];
-        if (v.t == VT::Array && !v.enumType.empty() && isEnumTypeObject(v)) return Value::integer(1);   // an enum's type object is one item
+        if (v.t == VT::Array && !v.enumType().empty() && isEnumTypeObject(v)) return Value::integer(1);   // an enum's type object is one item
         if (v.t == VT::Array && v.arr() && !v.ext()) return Value::integer((long long)v.arr()->size());
         if (v.t == VT::Hash && v.hash() && v.hashKind.empty()) return Value::integer((long long)v.hash()->size());
         return Value::integer((long long)toList(v).size());
@@ -353,9 +353,9 @@ void Interpreter::registerBuiltinsPart3() {
     B["defined"] = [](Interpreter& I, ValueList& a) -> Value {
         // a Junction answers through its own `.defined`, which autothreads
         // and collapses (`defined(any(Str, Int))` is False)
-        if (!a.empty() && a[0].t == VT::Array && !a[0].enumName.empty() &&
-            (a[0].enumName == "any" || a[0].enumName == "all" || a[0].enumName == "one" ||
-             a[0].enumName == "none"))
+        if (!a.empty() && a[0].t == VT::Array && !a[0].enumName().empty() &&
+            (a[0].enumName() == "any" || a[0].enumName() == "all" || a[0].enumName() == "one" ||
+             a[0].enumName() == "none"))
             return I.methodCall(a[0], "defined", ValueList{});
         return Value::boolean(!a.empty() && defined(a[0]));
     };
@@ -873,7 +873,7 @@ void Interpreter::registerBuiltinsPart3() {
             }
             // an ITEMIZED list (`$[…]`) is one thing to join, not several
             if ((a[i].t == VT::Array || a[i].t == VT::Hash) && a[i].itemized && a[i].hashKind.empty() &&
-                a[i].enumName.empty()) { items.arr()->push_back(a[i]); continue; }
+                a[i].enumName().empty()) { items.arr()->push_back(a[i]); continue; }
             for (auto& x : toList(a[i])) items.arr()->push_back(x);
         }
         return I.methodCall(items, "join", ValueList{a[0]});

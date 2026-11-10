@@ -46,7 +46,7 @@ bool rtIsDefined(const Value& v) {
     // enumName empty) is a type object — `with Bloop {…}` must not fire, and
     // JSON::Fast renders it "null" through exactly that test. Junctions carry
     // enumName ("any"/"all"/…) and stay defined.
-    if (v.t == VT::Array && !v.enumType.empty() && v.enumName.empty()) return false;
+    if (v.t == VT::Array && !v.enumType().empty() && v.enumName().empty()) return false;
     // an EMPTY Slip is undefined (`Empty.defined` is False, Rakudo-verified; a
     // non-empty one is defined): `with $x // ('Warn' if $w)` must not fire on
     // the Empty a false statement-`if` yields (Template::Mustache's log level)
@@ -115,8 +115,8 @@ static void checkObjHashKey(const Value& base, Value& k) {
 std::string hashSubKey(const Value& k, const Value* base) {
     if (k.t == VT::Type && base && base->objKeyed) return "(" + k.s + ")";
     // an ENUM type object (tagged pair-list) keys like any other type object
-    if (k.t == VT::Array && !k.enumType.empty() && k.enumName.empty())
-        return base && base->objKeyed ? "(" + std::string(k.enumType.str()) + ")"
+    if (k.t == VT::Array && !k.enumType().empty() && k.enumName().empty())
+        return base && base->objKeyed ? "(" + std::string(k.enumType().str()) + ")"
                                       : std::string();
     // An OBJECT-KEYED hash keys by IDENTITY, not by rendering: `my %h{Any}`
     // holds `1` and `"1"` as two entries, and `%h<1>` does not find the Int key
@@ -281,16 +281,16 @@ void wrapNative(Value& v, int bits, bool sign, bool isFloat) {
     if (bits <= 0) return;
     if (isFloat) { // native float container: num32 rounds to float32 precision
         // (a plain Num is its own value: only the tags change, as for an Int below)
-        if (v.t == VT::Num && !v.x_ && !v.p_ && v.enumName.empty() && v.enumType.empty() && v.hashKind.empty()) {
+        if (v.t == VT::Num && !v.x_ && !v.p_ && v.enumName().empty() && v.enumType().empty() && v.hashKind.empty()) {
             if (bits == 32) v.n = (double)(float)v.n;
             v.readonly = v.immutableBind = v.itemized = v.namedArg = v.pairValRO = false;
             v.isList = v.objKeyed = v.natSigned = false;
-            v.natBits = bits; v.natFloat = true;
+            v.setNatBits(bits); v.natFloat = true;
             return;
         }
         if (bits == 32) { float f = (float)v.toNum(); v = Value::number((double)f); }
         else            v = Value::number(v.toNum());
-        v.natBits = bits; v.natFloat = true;
+        v.setNatBits(bits); v.natFloat = true;
         return;
     }
     // A full-width native holding a plain small Int that already fits is its
@@ -298,10 +298,10 @@ void wrapNative(Value& v, int bits, bool sign, bool isFloat) {
     // so it must not pay for the general rebuild below.
     // The flags reset here are the ones the rebuild below would have cleared.
     if (bits == 64 && v.t == VT::Int && !v.x_ && !v.p_ && (sign || v.i >= 0) &&
-        v.enumName.empty() && v.enumType.empty() && v.hashKind.empty()) {
+        v.enumName().empty() && v.enumType().empty() && v.hashKind.empty()) {
         v.readonly = v.immutableBind = v.itemized = v.namedArg = v.pairValRO = false;
         v.isList = v.objKeyed = v.natFloat = false;
-        v.natBits = 64; v.natSigned = sign;
+        v.setNatBits(64); v.natSigned = sign;
         return;
     }
     // A value wider than a long long must keep its LOW bits here, not saturate —
@@ -323,7 +323,7 @@ void wrapNative(Value& v, int bits, bool sign, bool isFloat) {
         v = Value::bigint(BigInt::fromString(std::to_string(u)));
     }
     else v = Value::integer((long long)u);
-    v.natBits = bits; v.natSigned = sign;
+    v.setNatBits(bits); v.natSigned = sign;
 }
 
 // `$i ** -1` with a native int `$i` and an int LITERAL exponent (or another
@@ -333,7 +333,7 @@ void wrapNative(Value& v, int bits, bool sign, bool isFloat) {
 // answered here. Once a native refuses a Rat, `$i = $i ** -1` depends on it.
 static bool nativeIntPowNegative(const Value& l, const Value& r, const Expr* rhsNode) {
     if (l.t != VT::Int || l.big() || r.t != VT::Int || r.big() || r.i >= 0) return false;
-    if (r.natBits && !r.natFloat) return true;
+    if (r.natBits() && !r.natFloat) return true;
     const Expr* e = rhsNode;
     if (e && e->kind == NK::Unary) {
         auto* u = static_cast<const Unary*>(e);
@@ -392,10 +392,10 @@ bool rtNativeIntOp(const std::string& op, long long sa, long long sb, long long&
 static bool nativeIntArith(const std::string& op, const Value& l, const Value& r,
                            const Expr* ln, const Expr* rn, Value& out) {
     auto natInt = [](const Value& v) {
-        return v.natBits && !v.natFloat && (v.natSigned || v.natBits < 64);
+        return v.natBits() && !v.natFloat && (v.natSigned || v.natBits() < 64);
     };
     auto plainInt = [](const Value& v) {
-        return v.t == VT::Int && !v.big() && v.hashKind.empty() && v.enumName.empty();
+        return v.t == VT::Int && !v.big() && v.hashKind.empty() && v.enumName().empty();
     };
     // A native is a STATIC property in Rakudo: the operand names a native
     // variable, or is itself a native operation. A value that merely carries
@@ -412,7 +412,7 @@ static bool nativeIntArith(const std::string& op, const Value& l, const Value& r
     long long x;
     if (!rtNativeIntOp(op, l.i, r.i, x)) return false;
     out = Value::integer(x);
-    out.natBits = 64; out.natSigned = true;
+    out.setNatBits(64); out.natSigned = true;
     return true;
 }
 
@@ -439,19 +439,19 @@ static bool numLitNode(const Expr* e, bool wantNum) {
 }
 static void tagNativeNum(const std::string& op, const Value& l, const Value& r,
                          const Expr* ln, const Expr* rn, Value& res) {
-    if (res.t != VT::Num || res.natBits) return;
+    if (res.t != VT::Num || res.natBits()) return;
     if (!(opEq(op, "+") || opEq(op, "-") || opEq(op, "*") || opEq(op, "**"))) return;
-    const bool lnat = l.natBits && nativeExprNode(ln), rnat = r.natBits && nativeExprNode(rn);
+    const bool lnat = l.natBits() && nativeExprNode(ln), rnat = r.natBits() && nativeExprNode(rn);
     if (!(lnat || rnat)) return;
     if (!lnat && !numLitNode(ln, r.natFloat)) return;
     if (!rnat && !numLitNode(rn, l.natFloat)) return;
-    res.natBits = 64; res.natFloat = true;
+    res.setNatBits(64); res.natFloat = true;
 }
 // `$n op= V` is `$n = $n op V`: native when V is a native, or a literal of the
 // target's own kind — so a native of the other kind then CONVERTS into $n.
 static bool compoundSrcNative(const std::string& op, const Value& rhs, const Expr* node, bool targetFloat) {
     if (!(opEq(op, "+") || opEq(op, "-") || opEq(op, "*") || opEq(op, "**"))) return false;
-    return (rhs.natBits && nativeExprNode(node)) || numLitNode(node, targetFloat);
+    return (rhs.natBits() && nativeExprNode(node)) || numLitNode(node, targetFloat);
 }
 
 // A compound op on a native WRAPS an Int result rather than refusing it, but a
@@ -2786,7 +2786,7 @@ Value Interpreter::execGivenStmt(Stmt* s, bool sink) {
 static inline bool sameBoundValue(const Value& now, const Value& was) {
     return now.t == was.t && now.pk_ == was.pk_ && now.p_.get() == was.p_.get() &&
            now.x_.get() == was.x_.get() && now.i == was.i && now.b == was.b && now.s == was.s &&
-           now.hashKind == was.hashKind && now.enumName == was.enumName && now.enumType == was.enumType;
+           now.hashKind == was.hashKind && now.enumName() == was.enumName() && now.enumType() == was.enumType();
 }
 
 // A Range one of whose carried ends is a BigInt, which rFrom/rTo do not hold
@@ -3434,7 +3434,7 @@ Value Interpreter::execForStmt(Stmt* s, bool sink) {
     Value natProto = natT.compare(0, 3, "num") == 0 ? Value::number(0) : Value::integer(0);
     nativeElemTag(natT, natProto);
     auto natBack = [&](Value& v, size_t at) {
-        if (natProto.natBits && v.natBits == natProto.natBits && v.natSigned == natProto.natSigned &&
+        if (natProto.natBits() && v.natBits() == natProto.natBits() && v.natSigned == natProto.natSigned &&
             v.natFloat == natProto.natFloat && v.t == natProto.t) dropNativeTags(v);
         else if (!natT.empty()) nativeElemStore(natT, v, 'o', (long long)at);
     };
@@ -3494,15 +3494,15 @@ Value Interpreter::execForStmt(Stmt* s, bool sink) {
             markTopic(v, k);
             // a readonly loop variable takes the VALUE, not a native's
             // container: `for $an-int -> $v { $v + 1 }` is Int arithmetic
-            if (v.natBits && !fs->rwVars) dropNativeTags(v);
+            if (v.natBits() && !fs->rwVars) dropNativeTags(v);
         }
         // a SIGILLESS parameter (`-> \v`) is raw by nature: over bare
         // values there is nothing to write to (`for $bag.kv -> \k, \v`)
         else if (!nm.empty() && immSrc && (std::isalpha((unsigned char)nm[0]) || nm[0] == '_'))
             v.readonly = v.immutableBind = true;
-        if (natProto.natBits && v.t == natProto.t &&
+        if (natProto.natBits() && v.t == natProto.t &&
             (loopVars.empty() || (k < fs->varTraits.size() && (fs->varTraits[k] & (ForStmt::VT_RW | ForStmt::VT_RAW)))))
-            { v.natBits = natProto.natBits; v.natSigned = natProto.natSigned; v.natFloat = natProto.natFloat; }
+            { v.setNatBits(natProto.natBits()); v.natSigned = natProto.natSigned; v.natFloat = natProto.natFloat; }
         return v;
     };
     // `for $a -> $v is rw` / `for ($a) -> $v is rw` / `for $a -> \v`: one item, and the
@@ -3564,12 +3564,12 @@ Value Interpreter::execForStmt(Stmt* s, bool sink) {
         else if (immSrc && !var.empty() && (ascii::isalpha((unsigned char)var[0]) || var[0] == '_'))
             probe.readonly = probe.immutableBind = true;
         const bool roInt = probe.readonly, immInt = probe.immutableBind;
-        const int natInt = probe.natBits;
+        const int natInt = probe.natBits();
         const bool natSgn = probe.natSigned;
         auto topicInt = [&](long long n) {
             Value v = Value::integer(n);
             v.readonly = roInt; v.immutableBind = immInt;
-            if (natInt) { v.natBits = natInt; v.natSigned = natSgn; }
+            if (natInt) { v.setNatBits(natInt); v.natSigned = natSgn; }
             return v;
         };
         // Reuse one Env across iterations for speed. This is only safe when
@@ -4552,8 +4552,8 @@ void Interpreter::typeCheckBindImpl(const Param& p, const Value& v, bool blockPa
     // takes every value the Mu check let through
     if (p.type.empty()) return;
     if ((v.t == VT::Type || v.t == VT::Any) && (p.type == "Any" || p.type == "Mu")) return;
-    if (v.t == VT::Array && (v.enumName == "any" || v.enumName == "all" ||
-                             v.enumName == "one" || v.enumName == "none")) {
+    if (v.t == VT::Array && (v.enumName() == "any" || v.enumName() == "all" ||
+                             v.enumName() == "one" || v.enumName() == "none")) {
         // …except a SUBSET that takes the junction whole (one refining Mu): its
         // `where` decides, as `-> Foo $ {}(none True)` shows (Rakudo #1457)
         auto sit = subsets_.find(p.type);
@@ -4603,7 +4603,7 @@ void Interpreter::typeCheckBindImpl(const Param& p, const Value& v, bool blockPa
             if (p.typeCapture || !enumPairs_.count(t)) return false;
             Env* from = sigEnv ? sigEnv : tctx().cur.get();
             const Value* tv = from ? from->find(t) : nullptr;
-            return tv && tv->t == VT::Array && tv->enumName.empty() && tv->enumType == t;
+            return tv && tv->t == VT::Array && tv->enumName().empty() && tv->enumType() == t;
         };
         if (!classes_.count(p.type) && !subsets_.count(p.type) &&
             !isKnownTypeName(p.type) && !isNativeTypeName(p.type) && !rolePunKnown(p.type) &&
@@ -4631,7 +4631,7 @@ void Interpreter::typeCheckBindImpl(const Param& p, const Value& v, bool blockPa
                 Value ev;
                 if (!p.typeCapture && coreEnumValue(p.type, ev)) {
                     std::string et = ev.t == VT::Bool ? std::string("Bool")
-                                   : !ev.enumType.empty() ? ev.enumType.str() : std::string();
+                                   : !ev.enumType().empty() ? ev.enumType().str() : std::string();
                     if (!et.empty() && !typeOrSubsetMatches(v, et))
                         throw RakuError{Value::typeObj("X::TypeCheck::Binding::Parameter"),
                             "Type check failed in binding to parameter '<anon>'; expected " + et +
@@ -4691,7 +4691,7 @@ void Interpreter::typeCheckBindImpl(const Param& p, const Value& v, bool blockPa
                : t == "str" ? 7 : 0;
             p.acceptClass = ac;
         }
-        if (ac > 0 && v.hashKind.empty() && v.enumType.empty() &&
+        if (ac > 0 && v.hashKind.empty() && v.enumType().empty() &&
             !subsets_.count(p.type) && !classes_.count(p.type)) {
             switch (ac) {
                 // A Bool IS an Int — Raku's Bool is an enum over one — so it
@@ -4878,7 +4878,7 @@ void Interpreter::bindParams(const std::vector<Param>& params, ValueList& args,
                         typeCheckBind(params[i], v, blockParams, whereVerified, env.get());
                     // (only a native parameter, or a value carrying native tags,
                     // has anything for it to do: the common call skips the call)
-                    if (v.natBits || paramIsNative(params[i])) bindNativeParam(params[i], v);
+                    if (v.natBits() || paramIsNative(params[i])) bindNativeParam(params[i], v);
                     // `is raw`/`is rw` bind a writable container; `is copy` a FRESH one, whatever came (a constant,
                     // a sigilless `\x`: both readonly), typed as the slow path's varDefault
                     if (!params[i].isCopy) v.readonly = !params[i].isRw && !params[i].isRaw;
@@ -5226,7 +5226,7 @@ void Interpreter::bindParams(const std::vector<Param>& params, ValueList& args,
                 // parts and it round-trips as \(…) (Log::Async's wrap tests)
                 if (capture && !p.name.empty()) { a.hashKind = "Capture"; a.itemized = true; }
                 // `*@a is copy` holds fresh containers: a constant's readonly mark stays behind; a slurpy (not a `|c`) boxes natives
-                for (auto& e : *a.arr()) { if (p.isCopy && p.sigil == '@') e.readonly = e.immutableBind = false; if (!capture && e.natBits) dropNativeTags(e); }
+                for (auto& e : *a.arr()) { if (p.isCopy && p.sigil == '@') e.readonly = e.immutableBind = false; if (!capture && e.natBits()) dropNativeTags(e); }
                 env->define(slotName(p, pidx), a);
                 // …and `*@!items`, an attributive positional slurpy, the same way
                 if (!capture && p.name.size() > 2 && p.name[1] == '!')
@@ -5700,7 +5700,7 @@ void Interpreter::bindParams(const std::vector<Param>& params, ValueList& args,
         const Param& p = params[i];
         if (p.name.empty() || p.slurpy || p.sigil != '$') continue;   // (a named one too: `:$x` boxes)
         if (Value* bound = env->find(slotName(p, i))) {
-            if (!bound->natBits && !paramIsNative(p)) continue;
+            if (!bound->natBits() && !paramIsNative(p)) continue;
             const bool ro = bound->readonly && !p.isCopy;
             bindNativeParam(p, *bound);
             bound->readonly = ro;
@@ -5987,14 +5987,14 @@ bool typeMatchesArg(const Value& arg, const std::string& type) {
         return type[8] == 'e' ? sixE : !sixE;
     }
     // a flavored path (IO::Path::Win32 …) is an IO::Path, and IO, and Cool
-    if (arg.t == VT::Str && arg.hashKind == "IO" && !arg.enumName.empty() &&
-        (type == "IO::Path" || type == "IO" || type == "Cool" || type == "IO::Path::" + arg.enumName.str()))
+    if (arg.t == VT::Str && arg.hashKind == "IO" && !arg.enumName().empty() &&
+        (type == "IO::Path" || type == "IO" || type == "Cool" || type == "IO::Path::" + arg.enumName().str()))
         return true;
     // A member of a Str-VALUED enum is a Str: `our Str enum CSSObject
     // «:AtRule<at-rule>»` derives the enum type from Str, and CSS::Grammar
     // hands its members to `Str :$type` parameters. The member rides here as
     // an ordinal with the real value beside it (see the enum declaration).
-    if (arg.t == VT::Int && !arg.enumName.empty() && arg.pairVal() &&
+    if (arg.t == VT::Int && !arg.enumName().empty() && arg.pairVal() &&
         arg.pairVal()->t == VT::Str && (type == "Str" || type == "Stringy" || type == "Cool"))
         return true;
     // A container is TRANSPARENT to a type test: `$x ~~ Positional` asks what the
@@ -6068,9 +6068,9 @@ bool typeMatchesArg(const Value& arg, const std::string& type) {
     }
     // an enum VALUE as a parameter type (`multi f(\b, int $i, LittleEndian)`)
     // matches exactly that value; the enum TYPE name matches any of its values
-    if (!arg.enumName.empty() && (type == arg.enumName || type == arg.enumType ||
+    if (!arg.enumName().empty() && (type == arg.enumName() || type == arg.enumType() ||
         type == "Enumeration" ||
-        (!arg.enumType.empty() && type == arg.enumType + "::" + arg.enumName))) return true;
+        (!arg.enumType().empty() && type == arg.enumType() + "::" + arg.enumName()))) return true;
     // an allomorph (IntStr/RatStr/NumStr) also binds Str/Stringy params, its own
     // name and the Allomorph class they all derive from (`sub f(Allomorph $a)`)
     if (arg.isAllomorph() && (type == "Str" || type == "str" || type == "Stringy" ||
@@ -6758,7 +6758,7 @@ int Interpreter::scoreCandidate(const Value& cand, const ValueList& args,
         // `.map` topic are natives (nativeIndexTag, nativeElemTag).
         if (p->sigil == '$' && !p->type.empty() && paramIsNative(*p)) {
             const NatKind pk = paramNativeKind(*p);
-            const NatKind ak = pos[i].t == VT::Int && pos[i].natBits && !pos[i].natFloat
+            const NatKind ak = pos[i].t == VT::Int && pos[i].natBits() && !pos[i].natFloat
                                    ? (pos[i].natSigned ? NatKind::Int : NatKind::UInt)
                              : pos[i].t == VT::Num && pos[i].natFloat ? NatKind::Num : NatKind::None;
             if ((pk == NatKind::Int || pk == NatKind::UInt || pk == NatKind::Num) && ak != pk) return -1;
@@ -7048,8 +7048,8 @@ int Interpreter::scoreCandidate(const Value& cand, const ValueList& args,
         // got the gist.
         {   // a Junction is Mu but NOT Any; nor is the Mu type object itself
             bool junc = pos[i].t == VT::Array && pos[i].arr() &&
-                        (pos[i].enumName == "any" || pos[i].enumName == "all" ||
-                         pos[i].enumName == "one" || pos[i].enumName == "none");
+                        (pos[i].enumName() == "any" || pos[i].enumName() == "all" ||
+                         pos[i].enumName() == "one" || pos[i].enumName() == "none");
             // (an untyped `$j` is an Any too, and ties `Any $j`)
             const bool anyTyped = p->type == "Any" ||
                                   (p->type.empty() && (p->sigil == '$' || (p->sigil == '\\' && !p->slurpy)) &&
@@ -7119,7 +7119,7 @@ int Interpreter::scoreCandidate(const Value& cand, const ValueList& args,
             // family, and outranks every boxed candidate, a smiley and a satisfied
             // `where` or subset included: `multi f(int)` beats `multi f(Int $x
             // where * > 0)` for it (Rakudo 2026.09)
-            if ((pos[i].natBits || pos[i].natFloat) && paramIsNative(*p) && pos[i].t != VT::Str) {
+            if ((pos[i].natBits() || pos[i].natFloat) && paramIsNative(*p) && pos[i].t != VT::Str) {
                 const bool pFloat = p->type.rfind("num", 0) == 0;
                 if (pFloat == (bool)pos[i].natFloat) score += 24;
             }
@@ -7727,7 +7727,7 @@ bool Interpreter::boolify(const Value& v) {
             return invokeMethod(*br, v, {}).truthy();
     }
     if (isJunction(v)) { // collapse a junction to Bool per its kind, short-circuiting
-        JunctionCollapse jc(v.enumName);            // see Value.h
+        JunctionCollapse jc(v.enumName());            // see Value.h
         for (auto& e : *v.arr()) { jc.feed(boolify(e)); if (jc.done()) break; }
         return jc.verdict();
     }
@@ -7814,7 +7814,7 @@ struct HideRedispatch {
 // `$v := "s"` gave 0 (found by JSON::Native's Raku parser, whose object
 // values came back as their own .elems).
 static Value dropNativeTag(Value v) {
-    if (v.natBits) dropNativeTags(v);
+    if (v.natBits()) dropNativeTags(v);
     return v;
 }
 
@@ -7934,7 +7934,7 @@ static signed char leanTypeOf(const std::string& t, bool ret) {
 // …and the call-time half: an argument the lean binder takes for `k`
 static inline bool leanArgFits(const Value& v, signed char k) {
     if (k == LeanNone) return true;
-    if (!v.hashKind.empty() || !v.enumName.empty()) return false;
+    if (!v.hashKind.empty() || !v.enumName().empty()) return false;
     switch (k) {
         case LeanNum: case LeanBoxNum: return v.t == VT::Num;
         case LeanInt:                  return v.t == VT::Int && !v.big();
@@ -8018,7 +8018,7 @@ Value Interpreter::callPlainSub(const Value& codeVal, Callable& c, ValueList& ar
         const signed char k = typed ? (signed char)params[i].leanType : LeanNone;
         if (k == LeanNum) wrapNative(v, 64, true, /*isFloat=*/true);   // bindNativeParam's
         else if (k == LeanInt) wrapNative(v, 64, true);
-        else if (v.natBits) dropNativeTags(v);   // a boxed parameter takes the VALUE
+        else if (v.natBits()) dropNativeTags(v);   // a boxed parameter takes the VALUE
         v.readonly = true;
         itemizeScalar(v);
         const int ps = params[i].padSlot;
@@ -8172,7 +8172,7 @@ static void releaseCelledArgCopies(const std::shared_ptr<Env>& env, ValueList& a
 // would treat specially, is left to the ordinary path, untouched.
 bool Interpreter::selfCatAssign(Binary* b, Value* slot, Env* cur) {
     if (b->op != "~" || !b->lhs || !b->rhs) return false;
-    if (!slot->hashKind.empty() || !slot->enumName.empty() || slot->natBits) return false;
+    if (!slot->hashKind.empty() || !slot->enumName().empty() || slot->natBits()) return false;
     // `$s = $s ~ X` appends; `$s = X ~ $s` PREPENDS — into the free space in
     // front of a shared buffer (APPEND-PLAN.md), where a flat string had to
     // move every byte, every time (40,000 of them 0.7 s)
@@ -8194,10 +8194,10 @@ bool Interpreter::selfCatAssign(Binary* b, Value* slot, Env* cur) {
             x = padPtrIn(static_cast<VarExpr*>(xe), cur); break;
         default: return false;
     }
-    if (!x || !x->hashKind.empty() || x->natBits) return false;
+    if (!x || !x->hashKind.empty() || x->natBits()) return false;
     std::string txt;
     if (x->t == VT::Str) {
-        if (!x->enumName.empty() || x->itemized) return false;
+        if (!x->enumName().empty() || x->itemized) return false;
         txt = x->s.copyText();   // (X may be $s itself)
     }
     else if (x->t == VT::Int || x->t == VT::Num || x->t == VT::Rat || x->t == VT::Bool)
@@ -8234,7 +8234,7 @@ static void topicWriteBack(Interpreter& I, Value* wb, const Value* guard, Env& e
     // native tags its read gave it (nativeElemTag); a native scalar keeps them
     const Value* src = &it->second;
     Value bare;
-    if (src->natBits && !wb->natBits) { bare = *src; dropNativeTags(bare); src = &bare; }
+    if (src->natBits() && !wb->natBits()) { bare = *src; dropNativeTags(bare); src = &bare; }
     if (src->sameRep(*wb)) return;
     if (!guard) *wb = *src;
     else if (!soft) *wb = I.elemAliasStore(*guard, *src);
@@ -8261,11 +8261,11 @@ Value Interpreter::callNonCode(const Value& codeVal, ValueList args, const std::
     // an ENUM VALUE is callable like its type: `WARNING(TRACE)` coerces via
     // Loglevels(…) — a same-type arg passes through, else match by value or
     // name in the type's pair list (Log::Async's default level filter)
-    if (!codeVal.enumType.empty() && !codeVal.enumName.empty() && !args.empty()) {
+    if (!codeVal.enumType().empty() && !codeVal.enumName().empty() && !args.empty()) {
         const Value& a0 = args[0];
-        if (a0.enumType == codeVal.enumType) return a0;
-        Value* ty = tctx().cur ? tctx().cur->find(codeVal.enumType) : nullptr;
-        if (!ty && global_) ty = global_->find(codeVal.enumType);
+        if (a0.enumType() == codeVal.enumType()) return a0;
+        Value* ty = tctx().cur ? tctx().cur->find(codeVal.enumType()) : nullptr;
+        if (!ty && global_) ty = global_->find(codeVal.enumType());
         if (ty && ty->t == VT::Array && ty->arr()) {
             long long counter2 = 0;
             for (auto& p : *ty->arr()) {
@@ -8275,7 +8275,7 @@ Value Interpreter::callNonCode(const Value& codeVal, ValueList args, const std::
                 bool hit = a0.t == VT::Str ? (p.s == a0.s) : (pv == a0.toInt());
                 if (hit) {
                     Value ev = Value::enumVal(p.s, pv);
-                    ev.enumType = codeVal.enumType;
+                    ev.setEnumType(codeVal.enumType());
                     return ev;
                 }
             }
@@ -8438,7 +8438,7 @@ Value Interpreter::callCallableRaw(const Value& codeVal, ValueList args, const s
         return Value::str(doSprintf(fmt, args));
     }
     if (isJunction(codeVal)) { // a junction of callables autothreads the invocation
-        Value out = Value::array(); out.enumName = codeVal.enumName; out.isList = true;
+        Value out = Value::array(); out.setEnumName(codeVal.enumName()); out.isList = true;
         out.setArr(makePayload<ValueList>());
         for (auto& e : *codeVal.arr()) { ValueList a2 = args; out.arr()->push_back(callCallable(e, a2)); }
         return out;
@@ -8455,7 +8455,7 @@ Value Interpreter::callCallableRaw(const Value& codeVal, ValueList args, const s
         for (int pass = 0; pass < 2; pass++)
         for (size_t ai = 0; ai < args.size(); ai++) {
             if (!isJunction(args[ai])) continue;
-            const bool conj = args[ai].enumName == "all" || args[ai].enumName == "none";
+            const bool conj = args[ai].enumName() == "all" || args[ai].enumName() == "none";
             if ((pass == 0) != conj) continue;
             const Param* p = nullptr; size_t seen = 0;
             for (auto& pp : ps) {
@@ -8476,7 +8476,7 @@ Value Interpreter::callCallableRaw(const Value& codeVal, ValueList args, const s
             // to Any): `{ say $_ }(1|2)` and `-> $x { … }(1|2)` see the whole
             // junction once. `({ 1 | -1 } ... *)` fed each junction back in.
             if ((!p || p->type.empty()) && codeVal.code()->ci().isBlock) continue;
-            Value out = Value::array(); out.enumName = args[ai].enumName;
+            Value out = Value::array(); out.setEnumName(args[ai].enumName());
             for (auto& e : *args[ai].arr()) {
                 ValueList a2 = args; a2[ai] = e;
                 out.arr()->push_back(callCallable(codeVal, a2, rwArgs));
@@ -8499,7 +8499,7 @@ Value Interpreter::callCallableRaw(const Value& codeVal, ValueList args, const s
             if (p->type == "Mu" || p->type == "Junction" || paramNativeKind(*p) != NatKind::None) continue;
             if (p->type.empty() && codeVal.code()->ci().isBlock) continue;
             const Value jv = *args[ai].pairVal();
-            Value out = Value::array(); out.enumName = jv.enumName;
+            Value out = Value::array(); out.setEnumName(jv.enumName());
             for (auto& e : *jv.arr()) {
                 ValueList a2 = args;
                 Value np = Value::pair(args[ai].s.copyText(), e); np.namedArg = true;
@@ -8743,7 +8743,7 @@ Value Interpreter::callCallableRaw(const Value& codeVal, ValueList args, const s
                 // (recursively, so `mstest(1&2 | 3)` threads down to the leaves)
                 for (size_t ai = 0; ai < as.size(); ai++) {
                     if (!isJunction(as[ai])) continue;
-                    Value out = Value::array(); out.enumName = as[ai].enumName;
+                    Value out = Value::array(); out.setEnumName(as[ai].enumName());
                     for (auto& e : *as[ai].arr()) {
                         ValueList a2 = as; a2[ai] = e;
                         out.arr()->push_back(callCallable(codeVal, a2, rwArgs));
@@ -9266,7 +9266,7 @@ Value Interpreter::callCallableRaw(const Value& codeVal, ValueList args, const s
             // both spellings made two diverging copies (Digest::MD5's padding
             // block pushes via $^b and reads via $b). Lookups of the caret/colon
             // spelling translate to the bare name at resolve time.
-            if (pn[0] == '$') { if (v.natBits) dropNativeTags(v); itemizeScalar(v); }   // `$^a` is a boxed `$` parameter
+            if (pn[0] == '$') { if (v.natBits()) dropNativeTags(v); itemizeScalar(v); }   // `$^a` is a boxed `$` parameter
             env->define(pn.size() > 2 && (pn[1] == '^' || pn[1] == ':') ? std::string(1, pn[0]) + pn.substr(2) : pn, v);
         }
         if (c.ci().implicitArgs & 3) {
@@ -9917,7 +9917,7 @@ Value Interpreter::checkRetType(const Callable& c, Value v) {
             if (cv->t == VT::Type && !cv->s.empty()) retName = cv->s;
             // an ENUM type object (`--> EType`) is a declared type; enum
             // values check nowhere below, so simply accept
-            else if (cv->t == VT::Array && !cv->enumType.empty() && cv->enumName.empty())
+            else if (cv->t == VT::Array && !cv->enumType().empty() && cv->enumName().empty())
                 return v;
             // A definite VALUE as the return type is not a constraint but the
             // ANSWER: `multi sub cardtype($, *% --> NotACreditCard) { }` returns
@@ -9971,7 +9971,7 @@ Value Interpreter::checkRetType(const Callable& c, Value v) {
         if (!nativeParamTakes(v, nk)) throwNativeUnbox(v, nk);
         if (nk == NatKind::Num) return v.t == VT::Num && v.hashKind.empty() ? v : Value::number(v.toNum());
         if (nk == NatKind::Str) return v;   // (an allomorph stays one, as on Rakudo)
-        return (v.t == VT::Int && v.hashKind.empty() && v.enumName.empty()) || (v.t != VT::Int && v.t != VT::Bool)
+        return (v.t == VT::Int && v.hashKind.empty() && v.enumName().empty()) || (v.t != VT::Int && v.t != VT::Bool)
             ? v : Value::integer(v.toInt());
     }
     // a SUBSET return type constrains even an UNDEFINED value — its where
@@ -10785,7 +10785,7 @@ Value Interpreter::invokeMethod(const Value& codeVal, const Value& self, ValueLi
                 // no candidate takes the Junction itself — autothread over it
                 for (size_t ai = 0; ai < as.size(); ai++) {
                     if (!isJunction(as[ai])) continue;
-                    Value out = Value::array(); out.enumName = as[ai].enumName;
+                    Value out = Value::array(); out.setEnumName(as[ai].enumName());
                     for (auto& e : *as[ai].arr()) {
                         ValueList a2 = as; a2[ai] = e;
                         out.arr()->push_back(invokeMethod(dispatcherVal, selfCopy, a2, rwArgs));
@@ -11030,7 +11030,7 @@ Value Interpreter::invokeMethod(const Value& codeVal, const Value& self, ValueLi
                 std::string key = pn.substr(2);
                 for (auto& a : args) if (a.t == VT::Pair && a.s == key && a.pairVal()) { v = *a.pairVal(); break; }
             } else if (posK < args.size()) v = args[posK++];
-            if (pn[0] == '$') { if (v.natBits) dropNativeTags(v); itemizeScalar(v); }   // (boxed, as above)
+            if (pn[0] == '$') { if (v.natBits()) dropNativeTags(v); itemizeScalar(v); }   // (boxed, as above)
             // one slot under the bare name — see the main binder
             if (pn.size() > 2 && (pn[1] == '^' || pn[1] == ':'))
                 env->define(std::string(1, pn[0]) + pn.substr(2), v);
@@ -12145,7 +12145,7 @@ Value* Interpreter::lvalue(Expr* e, bool asInvocant) {
             // (Red counts dirty columns in a SetHash of them).
             const bool quantObj = (base->hashKind == "SetHash" || base->hashKind == "BagHash" ||
                                    base->hashKind == "MixHash") &&
-                                  !(subKey.t == VT::Str && subKey.hashKind.empty() && subKey.enumName.empty());
+                                  !(subKey.t == VT::Str && subKey.hashKind.empty() && subKey.enumName().empty());
             if (base->hash() && (quantObj || !objHashKeyType(*base).empty())) {
                 // DECONTAINERIZED: `my $k = [1,2]` is an itemized Array, and
                 // Rakudo's `.keys` answers the Array, not the item holding it.
@@ -12289,7 +12289,7 @@ Value* Interpreter::lvalue(Expr* e, bool asInvocant) {
             }
             // a list of an Array's elements (ElemView, `@a.reverse`): the write
             // lands in the list, and the assignment mirrors it into the array
-            if (base->t == VT::Array && base->isList && base->enumName.empty() && base->arr() &&
+            if (base->t == VT::Array && base->isList && base->enumName().empty() && base->arr() &&
                 base->elemView()) {
                 Value kv0 = subscriptKey(idx->index.get());
                 if (kv0.t == VT::Code && kv0.code() && kv0.code()->ci().isWhateverCode)
@@ -12315,7 +12315,7 @@ Value* Interpreter::lvalue(Expr* e, bool asInvocant) {
                 viewMiss = Value::any();
                 return &viewMiss;
             }
-            if (base->t == VT::Array && base->isList && base->s != "Seq" && base->enumName.empty()) {
+            if (base->t == VT::Array && base->isList && base->s != "Seq" && base->enumName().empty()) {
                 Value kv0 = subscriptKey(idx->index.get());
                 if (kv0.t == VT::Code && kv0.code() && kv0.code()->ci().isWhateverCode)
                     kv0 = callCallable(kv0, ValueList{Value::integer((long long)base->arr()->size())});
@@ -13170,7 +13170,7 @@ static void collectBindTails(const Expr* e, std::vector<const void*>& out) {
 // Value into the slot, as the general path does, was pure copying. False, with
 // the slot untouched, for anything else.
 static bool intOpAssignInPlace(Interpreter& I, Value* slot, const Value& rhs, signed char sv) {
-    if (!rtIntSlot(*slot) || slot->natBits || slot->pk_ != PK::None || !slot->enumType.empty() ||
+    if (!rtIntSlot(*slot) || slot->natBits() || slot->pk_ != PK::None || !slot->enumType().empty() ||
         !slot->s.empty() || rhs.t != VT::Int || rhs.big())
         return false;
     long long z;
@@ -13203,9 +13203,9 @@ static std::string opAssignElemName(Interpreter& I, Index* ix) {
 // slot loses nothing, which is what lets plain `=` into it take the
 // assignment lane, and a typed subtree's Rat be written into its parts.
 static inline bool bareRatValue(const Value& v) {
-    if (v.t != VT::Rat || v.x_ || v.pk_ != PK::Rat || v.natBits || v.natSigned || v.natFloat ||
+    if (v.t != VT::Rat || v.x_ || v.pk_ != PK::Rat || v.natBits() || v.natSigned || v.natFloat ||
         v.readonly || v.itemized || v.b || v.isList || v.objKeyed || v.immutableBind || v.pairValRO ||
-        v.namedArg || !v.enumName.empty() || !v.enumType.empty() || !v.hashKind.empty() || !v.s.empty())
+        v.namedArg || !v.enumName().empty() || !v.enumType().empty() || !v.hashKind.empty() || !v.s.empty())
         return false;
     // (its parts are its PK::Rat body, and a bare Rat has no cold block at all)
     return !v.fatRat();
@@ -13417,9 +13417,9 @@ Value Interpreter::evalAssign(Assign* a, bool sink) {
                     // accumulator `=` writes.
                     bool coldOk = !slot->x_ ||
                                   (sv >= 2 && slot->t == VT::Int && slot->big() &&
-                                   slot->enumName.empty() && slot->natBits == 0) ||
-                                  (sv >= 2 && slot->t == VT::Rat && slot->enumName.empty() &&
-                                   slot->natBits == 0 && !slot->ext() && !slot->shape() &&
+                                   slot->enumName().empty() && slot->natBits() == 0) ||
+                                  (sv >= 2 && slot->t == VT::Rat && slot->enumName().empty() &&
+                                   slot->natBits() == 0 && !slot->ext() && !slot->shape() &&
                                    slot->ofType().empty() && !slot->elemDefault() && !slot->hasPairKey()) ||
                                   (sv == 1 && bareRatValue(*slot));
                     // …and an op= whose operator a user multi may take over core
@@ -13433,7 +13433,7 @@ Value Interpreter::evalAssign(Assign* a, bool sink) {
                     if (simple && !userOpMaybe &&
                         coldOk && !slot->readonly && slot->hashKind.empty() &&
                         slot->t != VT::Object) {
-                        int nb = slot->natBits; bool nsg = slot->natSigned, nfl = slot->natFloat;
+                        int nb = slot->natBits(); bool nsg = slot->natSigned, nfl = slot->natFloat;
                         if (sv == 1) {
                             if (a->value->kind == NK::Binary &&
                                 (((!nb || (nb == 64 && nsg && !nfl)) &&
@@ -13452,7 +13452,7 @@ Value Interpreter::evalAssign(Assign* a, bool sink) {
                             if (rv.t == VT::Nil) rv = Value::any(); // untyped, no default: Nil resets to Any
                             else {
                                 rv.readonly = rv.immutableBind = false;
-                                if (!nb && rv.natBits) dropNativeTags(rv);   // a boxed $ takes the value, not the native
+                                if (!nb && rv.natBits()) dropNativeTags(rv);   // a boxed $ takes the value, not the native
                                 // a `$` container itemizes what it holds
                                 if ((rv.t == VT::Array || rv.t == VT::Hash) && !rv.itemized)
                                     rv.itemized = true;
@@ -13503,8 +13503,8 @@ Value Interpreter::evalAssign(Assign* a, bool sink) {
                                 // a number or a Bool appends its text in place too. Through
                                 // applyArith every append built a copy of the whole string
                                 // (issue #130: 40,000 `$s ~= $_` 0.7 s, `$s ~= 1.5e0` 0.67 s)
-                                const bool plainInt = rhs.t == VT::Int && rhs.enumName.empty() &&
-                                                      rhs.enumType.empty() && !rhs.natBits;
+                                const bool plainInt = rhs.t == VT::Int && rhs.enumName().empty() &&
+                                                      rhs.enumType().empty() && !rhs.natBits();
                                 std::string txt = rhs.toStr();   // the text applyArith's `~` takes
                                 SlotStripe ws(*this, slot, RaceAcc::Write);
                                 if (plainInt) slot->s.appendAscii(txt);   // (digits)
@@ -13898,16 +13898,16 @@ Value Interpreter::evalAssign(Assign* a, bool sink) {
         // (the typed accumulator) is kept as its number, anything else whole
         const VT bt = ctSlot->t;
         const bool plainNum = (bt == VT::Int || bt == VT::Num) && !ctSlot->p_ && !ctSlot->x_ &&
-                              ctSlot->hashKind.empty() && ctSlot->enumType.empty();
+                              ctSlot->hashKind.empty() && ctSlot->enumType().empty();
         const long long bi = bt == VT::Int ? (long long)ctSlot->i : 0;   // only the live one:
         const double bn = bt == VT::Num ? (double)ctSlot->n : 0;          // they share a word
         Value before;
         if (!plainNum) before = slotRead(ctSlot);
         r = evalAssignInner(a, sink);
         const bool unchangedType = sameTypeOk && ctSlot->t == bt &&
-                                   (plainNum ? ctSlot->hashKind.empty() && ctSlot->enumType.empty()
+                                   (plainNum ? ctSlot->hashKind.empty() && ctSlot->enumType().empty()
                                              : isDefined(before) && ctSlot->hashKind == before.hashKind &&
-                                               ctSlot->enumType == before.enumType);
+                                               ctSlot->enumType() == before.enumType());
         if (!unchangedType) {
             Value nv = slotRead(ctSlot);
             try { enforceTypedAssign(static_cast<VarExpr*>(a->target.get())->name, nv); }
@@ -14635,7 +14635,7 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
         if (!tv->declare && !tv->name.empty() && tv->name[0] == '@' && tctx().cur) {
             Value* slot = tctx().cur->find(tv->name);
             if (slot && slot->t == VT::Array && slot->isList && !slot->itemized && slot->arr() &&
-                !slot->arr()->empty() && slot->enumName.empty()) {
+                !slot->arr()->empty() && slot->enumName().empty()) {
                 bool allCont = true;
                 for (auto& el : *slot->arr()) if (!isContainerElem(el)) { allCont = false; break; }
                 if (allCont) {
@@ -15748,9 +15748,9 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
                 if (del) bp->hash()->erase(key);
                 else {
                     Value nv = bp->hashKind == "SetHash" ? Value::boolean(true)
-                             : bp->hashKind == "BagHash" ? (rhs.t == VT::Int && rhs.enumName.empty() ? rhs : Value::integer(rhs.toInt())) : rhs;
+                             : bp->hashKind == "BagHash" ? (rhs.t == VT::Int && rhs.enumName().empty() ? rhs : Value::integer(rhs.toInt())) : rhs;
                     // the element's own object, for .keys (see the lvalue arm)
-                    if (!(kv.t == VT::Str && kv.hashKind.empty() && kv.enumName.empty())) {
+                    if (!(kv.t == VT::Str && kv.hashKind.empty() && kv.enumName().empty())) {
                         Value stored = kv; stored.itemized = false;
                         nv.setPairKey(stored);
                     }
@@ -15961,7 +15961,7 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
                                     std::string key = ks[i].toStr();
                                     if (hk == "SetHash" ? !v.truthy() : v.toNum() == 0.0) bp->hash()->erase(key);
                                     else (*bp->hash())[key] = hk == "SetHash" ? Value::boolean(true)
-                                                          : hk == "BagHash" ? (v.t == VT::Int && v.enumName.empty() ? v : Value::integer(v.toInt())) : v;
+                                                          : hk == "BagHash" ? (v.t == VT::Int && v.enumName().empty() ? v : Value::integer(v.toInt())) : v;
                                 } else {
                                     // through hashSubKey, so a SLICE into an
                                     // object-keyed hash keys by identity like
@@ -16322,7 +16322,7 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
                 // a shaped array indexes through its own protocol, and an immutable
                 // List has no slot to write — both fall through to the plain bind
                 if (base && base->t == VT::Array && base->arr() && !base->shape() &&
-                    !(base->isList && base->s != "Seq" && base->enumName.empty()))
+                    !(base->isList && base->s != "Seq" && base->enumName().empty()))
                     arr = base->arrS();
                 if (arr) {
                     Value kv = subscriptKey(ix->index.get());
@@ -16866,7 +16866,7 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
                             " but got " + gotRepr(rhs));
             }
         }
-        int nb = lv->natBits; bool ns = lv->natSigned; bool nf = lv->natFloat; // native-int container: preserve width & wrap
+        int nb = lv->natBits(); bool ns = lv->natSigned; bool nf = lv->natFloat; // native-int container: preserve width & wrap
         if (sigil == '@') {
             std::string keepType = lv->ofType(); // the container keeps its element type
             // …and its ELEMENT DEFAULT: `my @a is default(9) = 1,2` still answers
@@ -17314,7 +17314,7 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
             if (nb && opEq(a->op, "=") && (a->target->kind == NK::VarExpr || a->target->kind == NK::NameTerm) &&
                 nativeNeedsCheck(rhs, nf))   // (`sub f(\a) { a = 1.5 }` over a native element too)
                 nativeAssignCheck(rhs, nb, nf, containerNameOf(a->target.get(), '$'), ns);
-            if (!nb && opEq(a->op, "=") && rhs.natBits) dropNativeTags(rhs);   // see dropNativeTags
+            if (!nb && opEq(a->op, "=") && rhs.natBits()) dropNativeTags(rhs);   // see dropNativeTags
             SlotStripe ws(*this, lv, RaceAcc::Write); // paired with the striped copy-out (torn-copy contract)
             raceW(lv) = rhs;
         }
@@ -17330,7 +17330,7 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
         if (!elemPass && nb && opEq(a->op, "=") && a->target->kind == NK::Index && lv->t == VT::Int)
             { elemPass = true; nativePassThrough = *lv; }
         if (nb) wrapNative(*lv, nb, ns, nf);
-        if (elemPass && !sink) { nativePassThrough.natBits = 0; return nativePassThrough; }
+        if (elemPass && !sink) { nativePassThrough.setNatBits(0); return nativePassThrough; }
         // A `constant` is immutable once it holds its value — `constant C = 5;
         // C = 6` silently succeeded and answered 6. Marked AFTER the initial
         // store, since that store is the one write it is allowed.
@@ -17443,7 +17443,7 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
                 checkElemType(scElemWant, rhs, opAssignElemName(*this, ixt));
             }
             if (aliasOf(lv)) { Value p = *lv; proxyStore(p, rhs); return sink ? Value::any() : deproxy(p); }
-            int nb = lv->natBits; bool ns = lv->natSigned; bool nf = lv->natFloat;
+            int nb = lv->natBits(); bool ns = lv->natSigned; bool nf = lv->natFloat;
             if (nb) nativeUndefCheck(rhs, nullptr, lv);   // `$i ||= Nil` dies, as `$i = Nil` does
             if (nb && nativeNeedsCheck(rhs, nf)) nativeAssignCheck(rhs, nb, nf, containerNameOf(a->target.get(), '$'), ns);
             // an `@` or `%` container ASSIGNS what it is given, as `=` does:
@@ -17593,7 +17593,7 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
             return sink ? Value::any() : nv;
         }
     }
-    int nb = lv->natBits; bool ns = lv->natSigned; bool nf = lv->natFloat;
+    int nb = lv->natBits(); bool ns = lv->natSigned; bool nf = lv->natFloat;
     Value before; // what a refused native result puts back
     if (nb) before = *lv;
     std::string binop = a->op.substr(0, a->op.size() - 1); // strip '='
@@ -17790,7 +17790,7 @@ static Value setCoerceOne(const std::string& op, const Value& v) {
     return setWrap(setWeights(v, tier), tier, keepsFlavour && isMutableQuantHash(v));
 }
 bool isJunction(const Value& v) {
-    return v.t == VT::Array && (v.enumName == "any" || v.enumName == "all" || v.enumName == "one" || v.enumName == "none");
+    return v.t == VT::Array && (v.enumName() == "any" || v.enumName() == "all" || v.enumName() == "one" || v.enumName() == "none");
 }
 
 // +&/+|/+^ past int64, on the infinite two's complement.
@@ -17898,7 +17898,7 @@ static ValueList listCtx(const Value& v) {
     // and the Blob arm would have walked its raw bytes; `@v1 Z @v2` over two
     // CArrays is Math::DistanceFunctions' pure fallback path
     if (v.t == VT::Str && !v.itemized && v.hashKind == "CArray") {
-        std::string et = v.enumName.empty() ? std::string("int64") : v.enumName.str();
+        std::string et = v.enumName().empty() ? std::string("int64") : v.enumName().str();
         int w = Interpreter::ncElemSize(et);
         long long n = w > 0 ? (long long)(v.s.size() / (size_t)w) : 0;
         ValueList out;
@@ -18046,9 +18046,9 @@ static bool isRefValue(const Value& v) {
 // does. Roast's S02-types/signed-unsigned-native.t pins exactly that, so the
 // rule is reproduced — and only for two natives; a boxed Int compares plainly.
 static inline bool nativeMixedSignNe(const Value& l, const Value& r) {
-    auto uns = [](const Value& v) { return v.natBits && !v.natSigned && !v.natFloat; };
+    auto uns = [](const Value& v) { return v.natBits() && !v.natSigned && !v.natFloat; };
     auto neg = [](const Value& v) {
-        return v.natBits && v.natSigned && !v.natFloat && v.t == VT::Int && !v.big() && v.i < 0;
+        return v.natBits() && v.natSigned && !v.natFloat && v.t == VT::Int && !v.big() && v.i < 0;
     };
     return (uns(l) && neg(r)) || (neg(l) && uns(r));
 }
@@ -18127,7 +18127,7 @@ Value applyArith(const std::string& op, const Value& l, const Value& r) {
     // the hundred-odd operator tests in front of it (an allomorph, which `cmp`
     // also orders by its string, has a hashKind and does not come here).
     if (l.t == VT::Int && r.t == VT::Int && !l.big() && !r.big() &&
-        l.hashKind.empty() && r.hashKind.empty() && l.enumName.empty() && r.enumName.empty()) {
+        l.hashKind.empty() && r.hashKind.empty() && l.enumName().empty() && r.enumName().empty()) {
         if (op.size() == 3) {
             if (op[0] == '=' && op[1] == '=' && op[2] == '=') return Value::boolean(l.i == r.i);
             if ((op[0] == 'c' && op[1] == 'm' && op[2] == 'p') || (op[0] == '<' && op[1] == '=' && op[2] == '>'))
@@ -18240,7 +18240,7 @@ static Value applyArithGeneral(const std::string& op, const Value& l, const Valu
     }
     // …and the same rule once an operand is too wide for the fast path (a
     // uint64 above 2**63 is a BigInt)
-    if ((l.natBits | r.natBits) && op.size() == 2 && op[0] == '!' && op[1] == '=' &&
+    if ((l.natBits() | r.natBits()) && op.size() == 2 && op[0] == '!' && op[1] == '=' &&
         nativeMixedSignNe(l, r))
         return Value::boolean(false);
     // one-shot (Interpreter::valueSmartmatch_): the left operand is a Whatever
@@ -18389,7 +18389,7 @@ static Value applyArithGeneral(const std::string& op, const Value& l, const Valu
     // (VT::Object) and Whatever-currying all miss this guard and keep their
     // full-chain semantics.
     if (l.t == VT::Str && r.t == VT::Str && !op.empty() && op.size() <= 2 &&
-        l.hashKind.empty() && r.hashKind.empty() && l.enumName.empty() && r.enumName.empty()) {
+        l.hashKind.empty() && r.hashKind.empty() && l.enumName().empty() && r.enumName().empty()) {
         char c0 = op[0], c1 = op.size() > 1 ? op[1] : '\0';
         switch (c0) {
             case '~':
@@ -18525,8 +18525,8 @@ static Value applyArithGeneral(const std::string& op, const Value& l, const Valu
     // junction constructors: 1|2 (any), 1&2 (all), 1^2 (one)
     if (opEq(op, "|") || opEq(op, "&") || opEq(op, "^")) {
         std::string jt = opEq(op, "|") ? "any" : opEq(op, "&") ? "all" : "one";
-        Value j = Value::array(); j.enumName = jt;
-        auto add = [&](const Value& v) { if (v.t == VT::Array && v.enumName == jt) { for (auto& x : *v.arr()) j.arr()->push_back(x); } else j.arr()->push_back(v); };
+        Value j = Value::array(); j.setEnumName(jt);
+        auto add = [&](const Value& v) { if (v.t == VT::Array && v.enumName() == jt) { for (auto& x : *v.arr()) j.arr()->push_back(x); } else j.arr()->push_back(v); };
         add(l); add(r);
         return j;
     }
@@ -18547,16 +18547,16 @@ static Value applyArithGeneral(const std::string& op, const Value& l, const Valu
     // left's first, else the left's anyway) wraps the other, and two of one
     // kind flatten — `any(a,b,c) ~ all(d,e)` is all(any(ad, ae), any(bd, be), …)
     if (opEq(op, "~") && isJunction(l) && isJunction(r)) {
-        auto strong = [](const Value& v) { return v.enumName == "all" || v.enumName == "none"; };
+        auto strong = [](const Value& v) { return v.enumName() == "all" || v.enumName() == "none"; };
         const bool leftOuter = strong(l) || !strong(r);
-        Value out = Value::array(); out.enumName = leftOuter ? l.enumName : r.enumName;
-        const auto innerT = leftOuter ? r.enumName : l.enumName;
+        Value out = Value::array(); out.setEnumName(leftOuter ? l.enumName() : r.enumName());
+        const auto innerT = leftOuter ? r.enumName() : l.enumName();
         for (auto& a : *l.arr()) {
-            if (innerT == out.enumName) {
+            if (innerT == out.enumName()) {
                 for (auto& b : *r.arr()) out.arr()->push_back(applyArith("~", a, b));
                 continue;
             }
-            Value in = Value::array(); in.enumName = innerT;
+            Value in = Value::array(); in.setEnumName(innerT);
             for (auto& b : *r.arr()) in.arr()->push_back(applyArith("~", a, b));
             out.arr()->push_back(std::move(in));
         }
@@ -18566,7 +18566,7 @@ static Value applyArithGeneral(const std::string& op, const Value& l, const Valu
         // when BOTH sides are junctions, all/none is the OUTER (tighter) thread:
         // ('a'|'b') eq ($x & $y) threads the & first, then the | inside it
         bool bothJ = isJunction(l) && isJunction(r);
-        auto rank = [](const Value& v) { return v.enumName == "all" || v.enumName == "none" ? 1 : 0; };
+        auto rank = [](const Value& v) { return v.enumName() == "all" || v.enumName() == "none" ? 1 : 0; };
         bool pickL = !bothJ ? isJunction(l) : (rank(l) >= rank(r));
         const Value& j = pickL ? l : r;
         bool jleft = pickL;
@@ -18597,7 +18597,7 @@ static Value applyArithGeneral(const std::string& op, const Value& l, const Valu
             // negation applies to the COLLAPSED verdict: `2 !~~ (Int|Str)` is
             // !(2 ~~ Int|Str) = False — threading "!~~" per eigenstate made it
             // any(False, True) = True
-            JunctionCollapse jc(j.enumName);        // short-circuits; see Value.h
+            JunctionCollapse jc(j.enumName());        // short-circuits; see Value.h
             for (auto& e : *j.arr()) {
                 jc.feed(eigenMatch(l, e));
                 if (jc.done()) break;
@@ -18619,7 +18619,7 @@ static Value applyArithGeneral(const std::string& op, const Value& l, const Valu
         // threads OUTSIDE a junction matcher, and a regex matcher keeps its
         // junction of Matches.
         if ((opEq(op, "~~") || opEq(op, "!~~")) && isJunction(l) && r.t != VT::Regex) {
-            JunctionCollapse jc(l.enumName);        // short-circuits; see Value.h
+            JunctionCollapse jc(l.enumName());        // short-circuits; see Value.h
             for (auto& e : *l.arr()) {
                 jc.feed(eigenMatch(e, r));
                 if (jc.done()) break;
@@ -18627,15 +18627,15 @@ static Value applyArithGeneral(const std::string& op, const Value& l, const Valu
             bool res = jc.verdict();
             return Value::boolean(opEq(op, "~~") ? res : !res);
         }
-        Value out = Value::array(); out.enumName = j.enumName;
+        Value out = Value::array(); out.setEnumName(j.enumName());
         // A negated comparison flips the junction kind (De Morgan): `X != any(…)`
         // is `!(X == any(…))` = `all(X != …)`. Without this, `0 != 0|1|2` collapses
         // True instead of False (0 matches one eigenstate) — this broke
         // OpenSSL's `while ($err != 0|WANT_READ|WANT_WRITE)` drain loop.
         static const std::set<std::string> negEq = {"!=", "ne", "!==", "!eqv", "!=:="};
         if (negEq.count(op)) {
-            if (out.enumName == "any") out.enumName = "all";
-            else if (out.enumName == "all") out.enumName = "any";
+            if (out.enumName() == "any") out.setEnumName("all");
+            else if (out.enumName() == "all") out.setEnumName("any");
         }
         // an object eigenstate (or other side) numifies through its .Numeric
         bool objStep = (jleft ? r : l).t == VT::Object;
@@ -18656,7 +18656,7 @@ static Value applyArithGeneral(const std::string& op, const Value& l, const Valu
     // why `"a".IO ~~ "./a"` is False while `"./a" ~~ "a".IO` is True.
     if ((opEq(op, "~~") || opEq(op, "!~~")) && r.t == VT::Str && r.hashKind == "IO" && g_cbInterp &&
         (l.t == VT::Str || l.t == VT::Int || l.t == VT::Num ||
-         (l.t == VT::Array && l.arr() && l.enumName.empty())) &&   // any Cool: `["foo"] ~~ $path`
+         (l.t == VT::Array && l.arr() && l.enumName().empty())) &&   // any Cool: `["foo"] ~~ $path`
         !isJunction(l)) {
         Value lp = l;
         if (lp.hashKind != "IO" || lp.t != VT::Str) { lp = Value::str(l.toStr()); lp.hashKind = "IO"; }
@@ -19087,7 +19087,7 @@ static Value applyArithGeneral(const std::string& op, const Value& l, const Valu
                 // `1 + "0+1i"` is 1+1i, not 1
                 if (isExact(t) || t.t == VT::Complex) { out = t; return true; }
             }
-            else if (v.t == VT::Array && v.arr() && v.enumName.empty()) {
+            else if (v.t == VT::Array && v.arr() && v.enumName().empty()) {
                 forceLazy(v);   // an unpulled gather counts what it will take, not its empty buffer
                 out = Value::integer((long long)v.arr()->size()); return true;
             }
@@ -19526,7 +19526,7 @@ static Value applyArithGeneral(const std::string& op, const Value& l, const Valu
                 for (const Value* v : {&l, &r}) for (auto& e : v->blobList()) bytes += (char)(e.toInt() & 0xFF);
             Value out = Value::str(bytes.empty() ? l.s + r.s : bytes);
             out.hashKind = same ? l.hashKind : IStr("Buf");
-            if (same) { out.enumName = l.enumName; out.ofTypeM() = l.ofType(); }
+            if (same) { out.setEnumName(l.enumName()); out.ofTypeM() = l.ofType(); }
             return identify(out);
         }
         // …and a Buf meeting a STRING has no string form to join: `"a" ~ $buf` is
@@ -19534,7 +19534,7 @@ static Value applyArithGeneral(const std::string& op, const Value& l, const Valu
         {
             auto rawBuf = [](const Value& v) {
                 return v.t == VT::Str && (v.hashKind == "Blob" || v.hashKind == "Buf") &&
-                       v.enumName != "utf8" && v.enumName != "utf16" && v.enumName != "utf32";
+                       v.enumName() != "utf8" && v.enumName() != "utf16" && v.enumName() != "utf32";
             };
             if (rawBuf(l) != rawBuf(r))
                 throw RakuError{Value::typeObj("X::Buf::AsStr"),
@@ -19547,7 +19547,7 @@ static Value applyArithGeneral(const std::string& op, const Value& l, const Valu
         // this is a reduction's or a metaop's, which names nothing.
         auto undef = [](const Value& v) {
             bool u = v.t == VT::Any || v.t == VT::Nil || (v.t == VT::Type && v.s != "IterationEnd") ||
-                     (v.t == VT::Array && !v.enumType.empty() && isEnumTypeObject(v));   // an enum's type object
+                     (v.t == VT::Array && !v.enumType().empty() && isEnumTypeObject(v));   // an enum's type object
             if (u && g_revInterp && Interpreter::uninitOperand(v)) g_revInterp->warnUninitStr(v);
             return u;
         };
@@ -19768,7 +19768,7 @@ static Value applyArithGeneral(const std::string& op, const Value& l, const Valu
             // the next stage something it could not treat as bytes.
             Value v = Value::str(out);
             v.hashKind = l.hashKind;
-            v.enumName = l.enumName;   // the Blob SUBTYPE lives here: utf8, utf16, Blob[uint8]
+            v.setEnumName(l.enumName());   // the Blob SUBTYPE lives here: utf8, utf16, Blob[uint8]
             v.ofTypeM()   = l.ofType();
             return v;
         }
@@ -19954,8 +19954,8 @@ static Value applyArithGeneral(const std::string& op, const Value& l, const Valu
         // the two spellings of Any are one object — see isAnyTypeObject
         if (l.t != r.t && isAnyTypeObject(l) && isAnyTypeObject(r)) same = true;
         // an enum's type object is its tagged pair list; `.WHAT` names it
-        else if (l.t != r.t && isEnumTypeObject(l) && r.t == VT::Type) same = std::string(l.enumType.str()) == r.s.str();
-        else if (l.t != r.t && isEnumTypeObject(r) && l.t == VT::Type) same = std::string(r.enumType.str()) == l.s.str();
+        else if (l.t != r.t && isEnumTypeObject(l) && r.t == VT::Type) same = std::string(l.enumType().str()) == r.s.str();
+        else if (l.t != r.t && isEnumTypeObject(r) && l.t == VT::Type) same = std::string(r.enumType().str()) == l.s.str();
         else if (l.t != r.t) same = false;
         else if (l.t == VT::Object)
             // …an object whose class writes its own WHICH is identified by it
@@ -20120,7 +20120,7 @@ static Value applyArithGeneral(const std::string& op, const Value& l, const Valu
         // elements (including none), so (1,2,4,8) ~~ (1,**,8) holds, while a
         // plain `*` matches exactly ONE — (1,2,3) ~~ (1,*,3)
         if (((l.t == VT::Array && l.arr()) || (l.t == VT::Range && !isEndlessRange(l))) &&
-            r.t == VT::Array && r.arr() && r.enumName.empty() &&
+            r.t == VT::Array && r.arr() && r.enumName().empty() &&
             std::any_of(r.arr()->begin(), r.arr()->end(),
                         [](const Value& e) { return e.t == VT::Whatever; })) {
             ValueList xsOwn;
@@ -20147,9 +20147,9 @@ static Value applyArithGeneral(const std::string& op, const Value& l, const Valu
         // text: `when $_ ~~ $regex` (Abbreviations' test-regex) nests a smartmatch
         // inside a `when`, and the inner Match has to stay truthy for the outer one.
         if (r.t == VT::Match) return opEq(op, "~~") ? r : Value::boolean(!r.truthy());
-        if (!r.enumType.empty() && r.t == VT::Array) {
+        if (!r.enumType().empty() && r.t == VT::Array) {
             // $val ~~ EnumType : the enum type object is a tagged pair-list
-            res = (!l.enumType.empty() && l.enumType == r.enumType) || l.typeName() == r.enumType;
+            res = (!l.enumType().empty() && l.enumType() == r.enumType()) || l.typeName() == r.enumType();
             return Value::boolean(opEq(op, "~~") ? res : !res);
         }
         // ITERABLE ~~ LIST is ELEMENT-WISE, not deep equality: same length, and each
@@ -20159,7 +20159,7 @@ static Value applyArithGeneral(const std::string& op, const Value& l, const Valu
         // objects and nested patterns sit in the list. Junctions (Arrays tagged with a
         // junction kind) are not lists and are handled long before here.
         if ((l.t == VT::Array || l.t == VT::Range) && r.t == VT::Array && r.arr() &&
-            l.enumName.empty() && r.enumName.empty()) {
+            l.enumName().empty() && r.enumName().empty()) {
             // a LAZY side never matches — its end is not known — unless both
             // sides are the very same sequence. (A gather is not lazy: it has
             // been read to its end above.)
@@ -20385,9 +20385,9 @@ static Value applyArithGeneral(const std::string& op, const Value& l, const Valu
                   (r.s == "Any" && !(l.t == VT::Type && l.s == "Mu") &&
                    !((l.t == VT::Object || l.t == VT::Type) && classOutsideAny(l))) || r.s == "Mu" ||
                   // an enum VALUE does the Enumeration role (and its own type)
-                  (!l.enumName.empty() && (r.s == "Enumeration" || r.s == l.enumType.str())) ||
+                  (!l.enumName().empty() && (r.s == "Enumeration" || r.s == l.enumType().str())) ||
                   // …and a Str-valued member IS a Str (the enum type derives from it)
-                  (!l.enumName.empty() && l.pairVal() && l.pairVal()->t == VT::Str &&
+                  (!l.enumName().empty() && l.pairVal() && l.pairVal()->t == VT::Str &&
                    (r.s == "Str" || r.s == "Stringy")) ||
                   // A Sub is a Routine and a Block: the type chain is
                   // Block < Code and Sub < Routine < Block, so a plain `sub {}`
@@ -20408,7 +20408,7 @@ static Value applyArithGeneral(const std::string& op, const Value& l, const Valu
                   (r.s == "UInt" && typeMatchesArg(l, "UInt")) ||
                   (l.t == VT::Bool && (r.s == "Int" || r.s == "Real")) || // Bool is an Int-backed enum
                   // …and so is any enum whose members are Ints: `R ~~ Int` (Rakudo)
-                  (l.t == VT::Int && !l.enumName.empty() && !l.enumType.empty() && !l.pairVal() &&
+                  (l.t == VT::Int && !l.enumName().empty() && !l.enumType().empty() && !l.pairVal() &&
                    (r.s == "Int" || r.s == "Real")) ||
                   (r.s == "Exception" && l.typeName().rfind("X::", 0) == 0) || // every X::* isa Exception
                   (l.t == VT::Hash && l.hashKind == "FileHandle" && (r.s == "IO::Handle" || r.s == "IO")) ||
@@ -20574,7 +20574,7 @@ static Value applyArithGeneral(const std::string& op, const Value& l, const Valu
             // `"5.0" ~~ <5>` and `"05" ~~ <5>` are False where `5.0 ~~ <5>` is True.
             res = (l.s == r.s);
         } else if ((r.t == VT::Int || r.t == VT::Num || r.t == VT::Rat) &&
-                   ((l.t == VT::Array && l.enumName.empty() && l.enumType.empty() && l.arr()) ||
+                   ((l.t == VT::Array && l.enumName().empty() && l.enumType().empty() && l.arr()) ||
                     (l.t == VT::Hash && l.hash() && (l.hashKind.empty() || l.hashKind == "Map")))) {
             // a LIST or HASH against a number is its element count, as
             // Numeric.ACCEPTS numifies the topic: `[1,10,1,20,1,30] ~~ 6`
@@ -20857,8 +20857,8 @@ Value Interpreter::regexMatch(const std::string& subject, std::string_view patte
             if (a == "*") { nthStar = true; return; }
             if (a.rfind("*-", 0) == 0) { nthStar = true; nthOfs = std::strtoll(a.c_str() + 2, nullptr, 10); return; }
             Value v; try { v = evalString(a); } catch (FeatureNotBuilt&) { throw; } catch (...) {}
-            if (v.t == VT::Array && v.arr() && (v.enumName == "any" || v.enumName == "all" ||
-                                                v.enumName == "one" || v.enumName == "none")) {
+            if (v.t == VT::Array && v.arr() && (v.enumName() == "any" || v.enumName() == "all" ||
+                                                v.enumName() == "one" || v.enumName() == "none")) {
                 nthJunction = v;
                 return;
             }
@@ -21381,7 +21381,7 @@ Value Interpreter::regexMatch(const std::string& subject, std::string_view patte
         }
         long long total = (long long)all.size();
         if (nthJunction.t == VT::Array) {
-            Value out = Value::array(); out.enumName = nthJunction.enumName;
+            Value out = Value::array(); out.setEnumName(nthJunction.enumName());
             for (auto& e : *nthJunction.arr()) {
                 long long n = e.toInt();
                 out.arr()->push_back(n >= 1 && n <= total ? build(all[n - 1]) : Value::nil());
@@ -21557,7 +21557,7 @@ Value Interpreter::applyBinOp(const std::string& op, const Value& l, const Value
     if (r.t == VT::Regex && (opEq(op, "~~") || opEq(op, "!~~")) && isJunction(l)) {
         // a junction topic threads through Regex.ACCEPTS: a junction of Matches
         if (opEq(op, "!~~")) return Value::boolean(!applyBinOp("~~", l, r).truthy());
-        Value out = Value::array(); out.enumName = l.enumName;
+        Value out = Value::array(); out.setEnumName(l.enumName());
         for (auto& e : *l.arr()) out.arr()->push_back(applyBinOp(op, e, r));
         return out;
     }
@@ -21594,7 +21594,7 @@ Value Interpreter::applyBinOp(const std::string& op, const Value& l, const Value
     // an object or enum operand: a user `multi infix:<op>`, then a .Numeric
     // bridge, as evalBinary gives them (`[+]`, `Z+`, `X+`, `R+` reach here)
     if (l.t == VT::Object || r.t == VT::Object ||
-        ((!l.enumType.empty() || !r.enumType.empty()) && boundInfixPossible(op)))
+        ((!l.enumType().empty() || !r.enumType().empty()) && boundInfixPossible(op)))
         if (Value res; objectOperandInfix(*this, op, l, r, res)) return res;
     // see isStringCmpOp: an object compares by its own `method Str`
     if ((l.t == VT::Object || r.t == VT::Object || isPlatformHash(l) || isPlatformHash(r)) && isStringCmpOp(op))
@@ -21784,7 +21784,7 @@ int Interpreter::tryCondBool(Expr* e) {
         Value* p = padPtr(ve);
         if (!p) p = tctx().cur->find(ve->name); raceRd(p);
         if (!p || p->t != VT::Int || !p->hashKind.empty() || p->big()) return false;
-        if (p->natBits && op[0] == '!') return false; // see nativeMixedSignNe
+        if (p->natBits() && op[0] == '!') return false; // see nativeMixedSignNe
         out = p->i;
         return true;
     };
@@ -21833,11 +21833,11 @@ static inline bool binaryShadowMaybe(const Binary* b) {
 // keeps its native tags; a sized or unsigned native wraps on every store, so
 // it keeps the full path) — every other flag at its default, writable.
 static inline bool plainIntSlotValue(const Value& v) {
-    const bool nativeInt = v.natBits == 64 && v.natSigned && !v.natFloat;
-    return v.t == VT::Int && !v.x_ && v.pk_ == PK::None && (!v.natBits || nativeInt) &&
+    const bool nativeInt = v.natBits() == 64 && v.natSigned && !v.natFloat;
+    return v.t == VT::Int && !v.x_ && v.pk_ == PK::None && (!v.natBits() || nativeInt) &&
            !v.readonly && !v.itemized && !v.b && !v.isList && !v.objKeyed &&
            !v.immutableBind && !v.pairValRO && !v.namedArg && (!v.natSigned || nativeInt) &&
-           !v.natFloat && v.enumName.empty() && v.enumType.empty() && v.hashKind.empty() && v.s.empty();
+           !v.natFloat && v.enumName().empty() && v.enumType().empty() && v.hashKind.empty() && v.s.empty();
 }
 
 // The slot `$n++` may step in place (see evalUnary): a `$` pad variable whose
@@ -21873,14 +21873,14 @@ Value* Interpreter::plainIntStepSlot(VarExpr* ve) {
         Env* const cur = tctx().cur.get();   // (after the shape tests: a thread_local read is a call)
         Value* bp = padPtrIn(bv, cur);
         if (!bp) bp = cur->find(bv->name);
-        if (!bp || bp->readonly || !bp->hashKind.empty() || bp->isList || bp->natBits ||
+        if (!bp || bp->readonly || !bp->hashKind.empty() || bp->isList || bp->natBits() ||
             bp->ext() || bp->shape() || !bp->ofType().empty())
             return nullptr;
         Value k;
         if (!declLaneRhs(ix->index.get(), k)) return nullptr;
         Value* el = nullptr;
         if (!ix->isHash) {
-            if (bp->t != VT::Array || !bp->arr() || k.t != VT::Int || k.big() || k.natBits) return nullptr;
+            if (bp->t != VT::Array || !bp->arr() || k.t != VT::Int || k.big() || k.natBits()) return nullptr;
             auto& a = *bp->arr();
             if (k.i < 0 || (unsigned long long)k.i >= a.size()) return nullptr;
             el = raceNoteElem(&a[(size_t)k.i], &a, (size_t)k.i);
@@ -21889,7 +21889,7 @@ Value* Interpreter::plainIntStepSlot(VarExpr* ve) {
             if (bp->t != VT::Hash || !bp->hash() || bp->objKeyed) return nullptr;
             std::string ks;
             if (k.t == VT::Str) ks = k.s.str();
-            else if (k.t == VT::Int && !k.big() && !k.natBits) ks = std::to_string(k.i);
+            else if (k.t == VT::Int && !k.big() && !k.natBits()) ks = std::to_string(k.i);
             else return nullptr;
             auto it = bp->hash()->find(ks); raceKeys(bp->hash(), RaceAcc::Read);
             if (it == bp->hash()->end()) return nullptr;
@@ -21929,7 +21929,7 @@ static inline const Value* fusedIntLeaf(const Binary* b, Expr* x, bool isLit, En
         p = raceRd(q ? q : cur->find(ve->name));
     }
     return (p && p->t == VT::Int && !p->big() && p->hashKind.empty() &&
-            (!p->natBits || (p->natBits == 64 && p->natSigned && !p->natFloat))) ? p : nullptr;
+            (!p->natBits() || (p->natBits() == 64 && p->natSigned && !p->natFloat))) ? p : nullptr;
 }
 // …and its `div mod gcd lcm min max **`: applyArith's Int arms over two
 // operands with no native width or enum name (a native's operator is
@@ -21942,7 +21942,7 @@ static inline const Value* fusedIntLeaf(const Binary* b, Expr* x, bool isLit, En
     Env* const cur = Interpreter::tctx().cur.get();
     const Value* lp = fusedIntLeaf(b, b->lhs.get(), b->fastShape == 2, cur);
     const Value* rp = lp ? fusedIntLeaf(b, b->rhs.get(), b->fastShape == 1, cur) : nullptr;
-    if (!rp || lp->natBits || rp->natBits || !lp->enumName.empty() || !rp->enumName.empty()) return false;
+    if (!rp || lp->natBits() || rp->natBits() || !lp->enumName().empty() || !rp->enumName().empty()) return false;
     long long z;
     switch (w) {
         case 2: z = lp->i < rp->i ? lp->i : rp->i; break;
@@ -22028,9 +22028,9 @@ Value Interpreter::binaryFastHandler(Interpreter& I, Expr* e) {
         if (lp) {
             const Value* rp = b->fastShape == 1 ? lit : scal(b->rhs.get());
             if (rp) {
-                if (opEq(op, "**") && lp->natBits && !lp->natFloat && nativeIntPowNegative(*lp, *rp, b->rhs.get()))
+                if (opEq(op, "**") && lp->natBits() && !lp->natFloat && nativeIntPowNegative(*lp, *rp, b->rhs.get()))
                     return Value::integer(0);
-                if (lp->natBits || rp->natBits) {
+                if (lp->natBits() || rp->natBits()) {
                     Value nv;
                     if (nativeIntArith(op, *lp, *rp, b->lhs.get(), b->rhs.get(), nv)) return nv;
                     nv = applyArith(op, *lp, *rp);
@@ -22062,7 +22062,7 @@ Value Interpreter::unaryNegHandler(Interpreter& I, Expr* e) {
         auto* ve = static_cast<VarExpr*>(u->operand.get());
         const Value* p = padPtrIn(ve, cur);
         if (!p) p = cur->find(ve->name); raceRd(p);
-        if (p && p->hashKind.empty() && p->enumName.empty() && !p->natBits) {
+        if (p && p->hashKind.empty() && p->enumName().empty() && !p->natBits()) {
             if (p->t == VT::Num) return Value::number(-p->n);
             if (p->t == VT::Int && !p->big() && p->i != LLONG_MIN) return Value::integer(-p->i);
         }
@@ -22333,7 +22333,7 @@ inline Value typedResultValue(const TNum& o) {
     }
     Value v = (o.f & TN_NUM) ? Value::number(o.n) : Value::integer(o.i);
     if (o.f & TN_NAT) {
-        v.natBits = 64;
+        v.setNatBits(64);
         if (o.f & TN_NUM) v.natFloat = true; else v.natSigned = true;
     }
     return v;
@@ -22343,21 +22343,21 @@ inline Value typedResultValue(const TNum& o) {
 // A native or Rat leaf, off typedOperand's line: false if this evaluation
 // cannot be typed.
 [[gnu::noinline]] static bool typedOperandRare(const VarExpr* ve, const Value* p, TNum& o) {
-    if (p->natBits) {
+    if (p->natBits()) {
         // a native read (an unsigned 64-bit one is left to the full path)
         if (p->natFloat) {
             if (p->t != VT::Num || !ve->nativeNumRead) return false;
             o.f = TN_NUM | TN_NAT; o.n = p->n;
             return true;
         }
-        if (p->t != VT::Int || p->big() || !ve->nativeIntRead || (!p->natSigned && p->natBits >= 64))
+        if (p->t != VT::Int || p->big() || !ve->nativeIntRead || (!p->natSigned && p->natBits() >= 64))
             return false;
         o.f = p->natSigned ? TN_NAT : (TN_NAT | TN_UNS); o.i = p->i;
         return true;
     }
     if (p->t != VT::Rat) return false;
     // a Rat whose parts fit an int64: not a FatRat, no tag, a positive denominator
-    if (p->x_ || p->pk_ != PK::Rat || !p->enumName.empty() || !p->s.empty() || p->fatRat()) return false;
+    if (p->x_ || p->pk_ != PK::Rat || !p->enumName().empty() || !p->s.empty() || p->fatRat()) return false;
     const RatBody& x = *p->ratBody();
     if (!x.num.fitsLL() || !x.den.fitsLL()) return false;
     const long long dd = x.den.toLL();
@@ -22375,7 +22375,7 @@ static bool typedOperand(Expr* e, Env* cur, TNum& o) {
             const Value* p = Interpreter::padPtrIn(ve, cur);
             if (!p) p = cur->find(ve->name); raceRd(p);
             if (!p || !p->hashKind.empty()) return false;
-            if (!p->natBits) {
+            if (!p->natBits()) {
                 if (p->t == VT::Int) { if (p->big()) return false; o.f = 0; o.i = p->i; return true; }
                 if (p->t == VT::Num) { o.f = TN_NUM; o.n = p->n; return true; }
             }
@@ -22463,21 +22463,21 @@ bool Interpreter::typedTreeValue(Binary* b, Value& out) {
 // one now, with every other flag at its default and no native width, so the
 // Value the lane would store differs from it in `t` and the `i`/`n` word only.
 static inline bool plainNumberSlotValue(const Value& v) {
-    return (v.t == VT::Int || v.t == VT::Num) && !v.x_ && v.pk_ == PK::None && !v.natBits &&
+    return (v.t == VT::Int || v.t == VT::Num) && !v.x_ && v.pk_ == PK::None && !v.natBits() &&
            !v.natSigned && !v.natFloat && !v.readonly && !v.itemized && !v.b && !v.isList &&
-           !v.objKeyed && !v.immutableBind && !v.pairValRO && !v.namedArg && v.enumName.empty() &&
-           v.enumType.empty() && v.hashKind.empty() && v.s.empty();
+           !v.objKeyed && !v.immutableBind && !v.pairValRO && !v.namedArg && v.enumName().empty() &&
+           v.enumType().empty() && v.hashKind.empty() && v.s.empty();
 }
 
 // A native slot a number may be written into the same way: a `my int` (an
 // unsigned 64-bit one excepted) holding an Int, or a `my num` holding a Num,
 // every other flag at its default.
 static inline bool nativeNumberSlotValue(const Value& v) {
-    if (!v.natBits) return false;
-    if (v.natFloat ? v.t != VT::Num : (v.t != VT::Int || (!v.natSigned && v.natBits >= 64))) return false;
+    if (!v.natBits()) return false;
+    if (v.natFloat ? v.t != VT::Num : (v.t != VT::Int || (!v.natSigned && v.natBits() >= 64))) return false;
     return !v.x_ && v.pk_ == PK::None && !v.readonly && !v.itemized && !v.b && !v.isList &&
-           !v.objKeyed && !v.immutableBind && !v.pairValRO && !v.namedArg && v.enumName.empty() &&
-           v.enumType.empty() && v.hashKind.empty() && v.s.empty();
+           !v.objKeyed && !v.immutableBind && !v.pairValRO && !v.namedArg && v.enumName().empty() &&
+           v.enumType().empty() && v.hashKind.empty() && v.s.empty();
 }
 
 // fusedTypedAssign's store when a Rat is on either side of it. A Rat over a
@@ -22521,7 +22521,7 @@ bool Interpreter::fusedTypedAssign(Binary* b, Value* slot) {
     if (h != &Interpreter::typedTreeHandler && h != &Interpreter::binaryFastHandler) return false;
     const std::string& op = b->op;
     if (!typedOpArith(op) || binaryShadowMaybe(b)) return false;
-    const bool native = slot->natBits != 0;
+    const bool native = slot->natBits() != 0;
     if (native ? !nativeNumberSlotValue(*slot) : !plainNumberSlotValue(*slot) && !bareRatValue(*slot))
         return false;
     Env* const cur = tctx().cur.get();
@@ -22536,7 +22536,7 @@ bool Interpreter::fusedTypedAssign(Binary* b, Value* slot) {
         else { slot->t = VT::Int; slot->i = o.i; }
         return true;
     }
-    const int bits = slot->natBits;
+    const int bits = slot->natBits();
     if (slot->natFloat) {
         if (!(o.f & TN_NUM)) return false;
         SlotStripe ws(*this, slot, RaceAcc::Write);
@@ -22684,8 +22684,8 @@ bool Interpreter::declLaneRhs(Expr* e, Value& out) {
             if (!p) p = cur->find(ve->name);
             if (!p) return false;
             SlotStripe rs(*this, p, RaceAcc::Read);
-            if (p->isCell() || p->natBits || !p->hashKind.empty() || p->x_ || p->pk_ != PK::None ||
-                !p->enumName.empty() || !p->enumType.empty() || p->isList || p->itemized)
+            if (p->isCell() || p->natBits() || !p->hashKind.empty() || p->x_ || p->pk_ != PK::None ||
+                !p->enumName().empty() || !p->enumType().empty() || p->isList || p->itemized)
                 return false;
             if (p->t != VT::Int && p->t != VT::Num && p->t != VT::Str && p->t != VT::Bool) return false;
             out = *p;
@@ -22696,7 +22696,7 @@ bool Interpreter::declLaneRhs(Expr* e, Value& out) {
             const Expr::EvalFn h = b->handler;
             if (h == &Interpreter::typedTreeHandler) {
                 if (!typedTreeValue(b, out)) return false;
-                if (out.natBits) dropNativeTags(out);   // a boxed $ takes the value, not the native
+                if (out.natBits()) dropNativeTags(out);   // a boxed $ takes the value, not the native
                 return true;
             }
             if (h != &Interpreter::binaryFastHandler || binaryShadowMaybe(b)) return false;
@@ -22709,7 +22709,7 @@ bool Interpreter::declLaneRhs(Expr* e, Value& out) {
                     p = padPtrIn(ve, cur);
                     if (!p) p = cur->find(ve->name); raceRd(p);
                 }
-                if (!p || p->natBits || !p->hashKind.empty()) return false;
+                if (!p || p->natBits() || !p->hashKind.empty()) return false;
                 if (p->t == VT::Int) { if (p->big()) return false; o.f = 0; o.i = p->i; return true; }
                 if (p->t == VT::Num) { o.f = TN_NUM; o.n = p->n; return true; }
                 return false;
@@ -22986,9 +22986,9 @@ Value Interpreter::evalBinary(Binary* b) {
                 // tagTemporal is a no-op unless an operand is Instant/Duration,
                 // and both hashKinds are empty here, so the result needs no tag.
                 if (rp) {
-                    if (opEq(op, "**") && lp->natBits && !lp->natFloat && nativeIntPowNegative(*lp, *rp, b->rhs.get()))
+                    if (opEq(op, "**") && lp->natBits() && !lp->natFloat && nativeIntPowNegative(*lp, *rp, b->rhs.get()))
                         return Value::integer(0);
-                    if ((lp->natBits || rp->natBits)) {
+                    if ((lp->natBits() || rp->natBits())) {
                         Value nv;
                         if (nativeIntArith(op, *lp, *rp, b->lhs.get(), b->rhs.get(), nv)) return nv;
                         nv = applyArith(op, *lp, *rp);
@@ -23022,11 +23022,11 @@ Value Interpreter::evalBinary(Binary* b) {
         // (an Order) has a user `&infix:<op>` to look for first.
         {
             auto plain = [](const Value& v) {
-                return v.hashKind.empty() && !v.natBits &&
+                return v.hashKind.empty() && !v.natBits() &&
                        (v.t == VT::Int || v.t == VT::Num || v.t == VT::Str || v.t == VT::Bool);
             };
             if (plain(l) && plain(r) &&
-                ((l.enumType.empty() && r.enumType.empty()) || !boundInfixPossible(name)) &&
+                ((l.enumType().empty() && r.enumType().empty()) || !boundInfixPossible(name)) &&
                 !(op.size() > 1 && (op[0] == 'Z' || op[0] == 'X')) &&                          // Zop Xop
                 !(op.size() >= 5 && (op.compare(0, 2, ">>") == 0 || op.compare(0, 2, "<<") == 0)) &&   // hyper
                 !opEq(op, "o") && !opEq(op, "\xE2\x88\x98"))                                    // ∘
@@ -23204,7 +23204,7 @@ Value Interpreter::evalBinary(Binary* b) {
         }
         // (an Order operand — `($a cmp $b) == Less` — asked on every evaluation,
         // so the walk waits until some scope has bound this spelling at all)
-        if ((l.t == VT::Object || r.t == VT::Object || !l.enumType.empty() || !r.enumType.empty()) &&
+        if ((l.t == VT::Object || r.t == VT::Object || !l.enumType().empty() || !r.enumType().empty()) &&
             boundInfixPossible(name))
             if (Value* f = tctx().cur->find("&infix:<" + name + ">"))
                 try { return callCallable(*f, ValueList{l, r}); }
@@ -23376,9 +23376,9 @@ Value Interpreter::evalBinary(Binary* b) {
             if (l.t == VT::Object) l = Value::str(strInStrContext(l));
             if (r.t == VT::Object) r = Value::str(strInStrContext(r));
         }
-        if (opEq(op, "**") && l.natBits && !l.natFloat && nativeIntPowNegative(l, r, b->rhs.get()))
+        if (opEq(op, "**") && l.natBits() && !l.natFloat && nativeIntPowNegative(l, r, b->rhs.get()))
             return Value::integer(0);
-        if (l.natBits || r.natBits) {
+        if (l.natBits() || r.natBits()) {
             Value nv;
             if (nativeIntArith(op, l, r, b->lhs.get(), b->rhs.get(), nv)) return nv;
         }
@@ -23386,7 +23386,7 @@ Value Interpreter::evalBinary(Binary* b) {
         if (b->uniSpelled && (whateverish(l) || whateverish(r))) return whateverInfixCurry(name, op, l, r);
         Value res = applyArith(op, l, r);
         tagTemporal(op, l, r, res);
-        if (l.natBits || r.natBits) tagNativeNum(op, l, r, b->lhs.get(), b->rhs.get(), res);
+        if (l.natBits() || r.natBits()) tagNativeNum(op, l, r, b->lhs.get(), b->rhs.get(), res);
         return res;
     }
     // A plain operator the fast path did not take has no arm below (they all
@@ -23594,7 +23594,7 @@ Value Interpreter::evalBinary(Binary* b) {
         // An object or enum operand meets a user `multi infix:<~>` first, as on the
         // general path (`Rt.new ~ 1`, `Red ~ "x"`); then an operand that IS-A Str is
         // a Str:D, concatenated by VALUE per operand: `("bb" but R) ~ Plain.new` is "bbplain".
-        if ((l.t == VT::Object || r.t == VT::Object || !l.enumType.empty() || !r.enumType.empty()) && boundInfixPossible(op))
+        if ((l.t == VT::Object || r.t == VT::Object || !l.enumType().empty() || !r.enumType().empty()) && boundInfixPossible(op))
             if (Value res; objectOperandInfix(*this, op, l, r, res)) return res;
         if (l.t == VT::Object || r.t == VT::Object) {
             const std::string lt = strInStrContext(l);   // (composing across the join)
@@ -23792,7 +23792,7 @@ Value Interpreter::evalBinary(Binary* b) {
         // wrongly refuse it.
         // (…onto a plain VALUE, that is: an OBJECT takes a value in place, as
         // a method named after its type — `$o does 'modded'` gives `.Str`)
-        if (opEq(op, "does") && rhs.enumName.empty() &&   // an ENUM value mixes in as its role
+        if (opEq(op, "does") && rhs.enumName().empty() &&   // an ENUM value mixes in as its role
             !(base.t == VT::Object && base.obj()) &&
             (rhs.t == VT::Int || rhs.t == VT::Str || rhs.t == VT::Num ||
              rhs.t == VT::Rat || rhs.t == VT::Bool || rhs.t == VT::Complex))
@@ -23834,8 +23834,8 @@ Value Interpreter::evalBinary(Binary* b) {
                 const std::string nm = static_cast<NameTerm*>(b->lhs.get())->name;
                 const Value& boxed = res.obj()->boxed();
                 if (Value* slot = tctx().cur->find(nm)) *slot = res;
-                if (!boxed.enumType.empty())
-                    if (Value* q = tctx().cur->find(std::string(boxed.enumType.str()) + "::" + nm)) *q = res;
+                if (!boxed.enumType().empty())
+                    if (Value* q = tctx().cur->find(std::string(boxed.enumType().str()) + "::" + nm)) *q = res;
             }
         }
         return res;
@@ -24002,9 +24002,9 @@ Value Interpreter::evalBinary(Binary* b) {
             // a junction LHS autothreads: (any("4","5") ~~ /4/) is a junction of
             // per-eigenstate results — 'any(｢4｣, Nil)' (S03-junctions/misc.t)
             if (l.t == VT::Array && l.arr() &&
-                (l.enumName == "any" || l.enumName == "all" ||
-                 l.enumName == "one" || l.enumName == "none")) {
-                Value out = Value::array(); out.enumName = l.enumName;
+                (l.enumName() == "any" || l.enumName() == "all" ||
+                 l.enumName() == "one" || l.enumName() == "none")) {
+                Value out = Value::array(); out.setEnumName(l.enumName());
                 // the Matches go into the RESULT, not into `$/`: Rakudo answers
                 // `any(｢4｣, Nil)` here with `$/` still undefined
                 MatchVarGuard noSlash;
@@ -24037,7 +24037,7 @@ Value Interpreter::evalBinary(Binary* b) {
                 // the first that matches answers (Regex.ACCEPTS), so
                 // `@a ~~ /^ 'a' $/` is about each string, not their join.
                 // A lazy list keeps the single-string reading: it may not end.
-                if (l.t == VT::Array && l.arr() && !l.ext() && l.enumName.empty() && !l.arr()->empty()) {
+                if (l.t == VT::Array && l.arr() && !l.ext() && l.enumName().empty() && !l.arr()->empty()) {
                     for (auto& e : *l.arr()) { m = regexMatch(rxSubject(e), pat); if (m.truthy()) break; }
                 }
                 else if (l.t == VT::Hash && l.hash() && !l.hash()->empty()) {
@@ -24060,8 +24060,8 @@ Value Interpreter::evalBinary(Binary* b) {
             // Nil. Both are falsy, so only `===`/`.WHAT` can tell them apart —
             // which is exactly what S03-smartmatch/00-sanity.t asks.
             // (a JUNCTION of matches — `m:nth(1|2)//` — answers as the Bool it collapses to)
-            if (opEq(op, "~~") && m.t == VT::Array && !m.enumName.empty() &&
-                (m.enumName == "any" || m.enumName == "all" || m.enumName == "one" || m.enumName == "none"))
+            if (opEq(op, "~~") && m.t == VT::Array && !m.enumName().empty() &&
+                (m.enumName() == "any" || m.enumName() == "all" || m.enumName() == "one" || m.enumName() == "none"))
                 return Value::boolean(m.truthy());
             if (opEq(op, "~~"))
                 return m.t == VT::Array ? m
@@ -24193,7 +24193,7 @@ Value Interpreter::evalBinary(Binary* b) {
         if (isJunction(lTopic) && r.t == VT::Type && (r.s == "Junction" || r.s == "Mu"))
             return Value::boolean(opEq(op, "~~"));
         if (isJunction(lTopic) && r.t != VT::Regex && b->lhs->kind != NK::RegexLit) {
-            JunctionCollapse jc(lTopic.enumName);   // short-circuits; see Value.h
+            JunctionCollapse jc(lTopic.enumName());   // short-circuits; see Value.h
             for (auto& e : *lTopic.arr()) {
                 // the same matcher rules the eigenstate loop below uses, with the
                 // roles the other way round: one matcher, many topics
@@ -24228,7 +24228,7 @@ Value Interpreter::evalBinary(Binary* b) {
             }
             // autothread the smartmatch over the junction's eigenstates (each matched
             // with full ~~ semantics, so a junction of regexes / blocks works too)
-            JunctionCollapse jc(r.enumName);        // short-circuits; see Value.h
+            JunctionCollapse jc(r.enumName());        // short-circuits; see Value.h
             for (auto& e : *r.arr()) {
                 bool m;
                 // the guard is scoped to the REGEX arm alone: a Code eigenstate
@@ -24387,7 +24387,7 @@ Value Interpreter::evalBinary(Binary* b) {
                 cur = static_cast<Binary*>(cur)->lhs.get();
             }
             chain.push_back(cur);
-            Value j = Value::array(); j.enumName = opEq(op, "|") ? "any" : opEq(op, "&") ? "all" : "one";
+            Value j = Value::array(); j.setEnumName(opEq(op, "|") ? "any" : opEq(op, "&") ? "all" : "one");
             for (size_t k = chain.size(); k-- > 0;) j.arr()->push_back(evalValueOf(chain[k]));
             return j;
         }
@@ -24418,16 +24418,16 @@ Value Interpreter::evalBinary(Binary* b) {
   generic:
     Value l = eval(b->lhs.get());
     Value r = eval(b->rhs.get());
-    if (opEq(op, "**") && l.natBits && !l.natFloat && nativeIntPowNegative(l, r, b->rhs.get()))
+    if (opEq(op, "**") && l.natBits() && !l.natFloat && nativeIntPowNegative(l, r, b->rhs.get()))
         return Value::integer(0);
-    if (l.natBits || r.natBits) {
+    if (l.natBits() || r.natBits()) {
         Value nv;
         if (nativeIntArith(op, l, r, b->lhs.get(), b->rhs.get(), nv)) return nv;
     }
     // operator overloading: a built-in operator on a user object dispatches to a
     // user `sub infix:<op>` if one is in scope (falling back to the built-in when
     // no candidate matches the operands).
-    if (l.t == VT::Object || r.t == VT::Object || !l.enumType.empty() || !r.enumType.empty())
+    if (l.t == VT::Object || r.t == VT::Object || !l.enumType().empty() || !r.enumType().empty())
         if (Value* f = tctx().cur->find("&infix:<" + b->written() + ">"))
             try { return callCallable(*f, ValueList{l, r}); }
             catch (RakuError& e) { // only "no candidate took these operands" falls back
@@ -24443,7 +24443,7 @@ Value Interpreter::evalBinary(Binary* b) {
     if ((l.t == VT::Object || r.t == VT::Object || isPlatformHash(l) || isPlatformHash(r)) && isStringCmpOp(op))
         return applyArith(op, l.t == VT::Object ? Value::str(strInStrContext(l)) : l,
                               r.t == VT::Object ? Value::str(strInStrContext(r)) : r);
-    if (l.natBits || r.natBits) {
+    if (l.natBits() || r.natBits()) {
         Value res = applyArith(op, l, r);
         tagNativeNum(op, l, r, b->lhs.get(), b->rhs.get(), res);
         return res;
@@ -25635,7 +25635,7 @@ Value Interpreter::evalUnary(Unary* u) {
                     bool now = opEq(u->op, "++");
                     if (now && !had) {
                         Value tv = Value::boolean(true);
-                        if (!(k.t == VT::Str && k.hashKind.empty() && k.enumName.empty())) {
+                        if (!(k.t == VT::Str && k.hashKind.empty() && k.enumName().empty())) {
                             Value stored = k; stored.itemized = false;
                             tv.setPairKey(stored);
                         }
@@ -25824,7 +25824,7 @@ Value Interpreter::evalUnary(Unary* u) {
     // No user operator can claim it: a plain `sub prefix:<->` sets the shadow
     // flag, and the multi lookup below is for objects only. A native keeps its
     // own arm (it wraps, and stays native).
-    if (path == 3 && v.hashKind.empty() && v.enumName.empty() && !v.natBits &&
+    if (path == 3 && v.hashKind.empty() && v.enumName().empty() && !v.natBits() &&
         !g_userPrefixShadow.load(std::memory_order_relaxed)) {
         // a plain lexical operand: compile the node (see unaryNegHandler)
         if (plainLexVar(u->operand.get()) && !(Expr::EvalFn)u->handler) u->handler = &Interpreter::unaryNegHandler;
@@ -25921,30 +25921,30 @@ Value Interpreter::evalUnary(Unary* u) {
     // which used to carry its own thinner copy of it (see prefixNumeric)
     // a JUNCTION autothreads the numeric prefixes: `+([1, 2] | 5)` is any(2, 5)
     if ((opEq(u->op, "+") || opEq(u->op, "-")) && isJunction(v)) {
-        Value out = Value::array(); out.enumName = v.enumName;
+        Value out = Value::array(); out.setEnumName(v.enumName());
         for (auto& e : *v.arr()) out.arr()->push_back(prefixNumeric(u->op, e));
         return out;
     }
     // `-$m` on a native int is the native negation: `-int.min` wraps to int.min,
     // and the result stays native, so `-$c - 2` wraps too (Rakudo 2026.09)
-    if (opEq(u->op, "-") && v.natBits && !v.natFloat && (v.natSigned || v.natBits < 64) &&
+    if (opEq(u->op, "-") && v.natBits() && !v.natFloat && (v.natSigned || v.natBits() < 64) &&
         nativeIntNode(u->operand.get()) &&
-        v.t == VT::Int && !v.big() && v.hashKind.empty() && v.enumName.empty()) {
+        v.t == VT::Int && !v.big() && v.hashKind.empty() && v.enumName().empty()) {
         Value nv = Value::integer((long long)(0ULL - (unsigned long long)v.i));
-        nv.natBits = 64; nv.natSigned = true;
+        nv.setNatBits(64); nv.natSigned = true;
         return nv;
     }
-    if (opEq(u->op, "-") && v.natBits && v.natFloat && v.t == VT::Num && nativeExprNode(u->operand.get())) {
+    if (opEq(u->op, "-") && v.natBits() && v.natFloat && v.t == VT::Num && nativeExprNode(u->operand.get())) {
         Value nv = Value::number(-v.n);
-        nv.natBits = 64; nv.natFloat = true;
+        nv.setNatBits(64); nv.natFloat = true;
         return nv;
     }
     // …and `+$n` of a native is the BOXED number: prefix:<+> has no native
     // candidate, so `f(+$n)` takes a multi's `Int` where `f($n)` takes its `int`
-    if (opEq(u->op, "+") && v.natBits && (v.t == VT::Int || v.t == VT::Num))
-        { Value nv = v; nv.natBits = 0; nv.natSigned = nv.natFloat = false; return nv; }
+    if (opEq(u->op, "+") && v.natBits() && (v.t == VT::Int || v.t == VT::Num))
+        { Value nv = v; nv.setNatBits(0); nv.natSigned = nv.natFloat = false; return nv; }
     const bool undefOperand = v.t == VT::Any || v.t == VT::Type || v.t == VT::Nil ||
-                              (v.t == VT::Array && v.arr() && v.enumName.empty());
+                              (v.t == VT::Array && v.arr() && v.enumName().empty());
     if (opEq(u->op, "+") || opEq(u->op, "-")) {
         if (!undefOperand) return prefixNumeric(u->op, v);
         UninitNameScope nm(*this, uninitNameOf(u->operand.get()));   // the warning names `$u`
@@ -25957,7 +25957,7 @@ Value Interpreter::evalUnary(Unary* u) {
         if (isJunction(v)) {
             std::function<Value(const Value&)> thread = [&](const Value& jv) -> Value {
                 if (!isJunction(jv)) return Value::str(strOf(jv));
-                Value out = Value::array(); out.isList = true; out.enumName = jv.enumName;
+                Value out = Value::array(); out.isList = true; out.setEnumName(jv.enumName());
                 for (auto& eig : *jv.arr()) out.arr()->push_back(thread(eig));
                 return out;
             };
@@ -26189,7 +26189,7 @@ ValueList Interpreter::evalArgs(const std::vector<ExprPtr>& exprs) {
                 v.hashKind.empty() && !v.isAllomorph())
                 v.natFloat = true;
             // …and an element of a native array the native it holds (nativeIndexTag)
-            if (a->kind == NK::Index && (v.t == VT::Int || v.t == VT::Num) && !v.natBits) nativeIndexTag(static_cast<Index*>(a.get()), v);
+            if (a->kind == NK::Index && (v.t == VT::Int || v.t == VT::Num) && !v.natBits()) nativeIndexTag(static_cast<Index*>(a.get()), v);
             // A Proxy reaching a routine as an argument is READ: run its FETCH.
             // (Not at the subscript — `$.root{$k}` inside an `is rw` AT-KEY has to
             // hand back the container itself, which is how a write reaches STORE.)
@@ -26705,7 +26705,7 @@ Value Interpreter::evalCall(Call* c) {
             return it->second(*this, args);
         }
         // enum-type coercion: `Color(1)` -> the enum value whose number is 1
-        if (Value* v = tctx().cur->find(c->name); v && !v->enumType.empty() && v->t == VT::Array && !args.empty())
+        if (Value* v = tctx().cur->find(c->name); v && !v->enumType().empty() && v->t == VT::Array && !args.empty())
             return enumCoerce(*v, args[0]);
     }
     // `@a»++` / `%h»--` / `@a»!` (user postfix) / `(2,3)»i` — hyper postfix:
@@ -27594,7 +27594,7 @@ Value Interpreter::evalIndex(Index* idx) {
     // junction stay unsupported rather than half-threaded.
     if (isJunction(base) && idx->index && idx->adverb.empty()) {
         Value iv = subscriptKey(idx->index.get());
-        Value out = Value::array(); out.enumName = base.enumName;
+        Value out = Value::array(); out.setEnumName(base.enumName());
         for (auto& el : *base.arr())
             out.arr()->push_back(methodCall(el, idx->isHash ? "AT-KEY" : "AT-POS", ValueList{iv}));
         return out;
@@ -27677,7 +27677,7 @@ Value Interpreter::evalIndex(Index* idx) {
             if (kv.t == VT::Range || (kv.t == VT::Array && kv.arr())) {
                 bool live = base.t == VT::Hash;
                 std::string et = live ? (base.hash()->count("of") ? (*base.hash())["of"].toStr() : "int64")
-                                      : (base.enumName.empty() ? std::string("int64") : base.enumName.str());
+                                      : (base.enumName().empty() ? std::string("int64") : base.enumName().str());
                 long long addr = live ? (*base.hash())["addr"].toInt()
                                       : (long long)(uintptr_t)base.s.data();
                 long long lim = live ? -1 : (long long)(base.s.size() / (size_t)ncElemSize(et));
@@ -27729,7 +27729,7 @@ Value Interpreter::evalIndex(Index* idx) {
             // the arity, and BitEnum's consumers — `BitEnum[MyBits].new(6)` — got
             // neither their enum nor their prefix.
             auto enumTypeObj = [](const Value& v) {
-                return v.t == VT::Array && !v.enumType.empty() && v.enumType == v.typeName();
+                return v.t == VT::Array && !v.enumType().empty() && v.enumType() == v.typeName();
             };
             if (iv.t == VT::Array && iv.isList && !iv.itemized && !enumTypeObj(iv))
                 for (auto& e : *iv.arr()) argv.push_back(e);
@@ -28442,10 +28442,10 @@ Value Interpreter::evalIndex(Index* idx) {
         // `%response{all(<r s i>)}:exists` is all(:exists of each eigenstate)
         // — Auth::SCRAM::Async gates its field check on exactly this
         std::string junctionKind;
-        if (idx->isHash && iv.t == VT::Array && iv.arr() && !iv.enumName.empty() &&
-            (iv.enumName == "any" || iv.enumName == "all" ||
-             iv.enumName == "one" || iv.enumName == "none")) {
-            junctionKind = std::string(iv.enumName.str());
+        if (idx->isHash && iv.t == VT::Array && iv.arr() && !iv.enumName().empty() &&
+            (iv.enumName() == "any" || iv.enumName() == "all" ||
+             iv.enumName() == "one" || iv.enumName() == "none")) {
+            junctionKind = std::string(iv.enumName().str());
             slice = true;
         }
         // An object doing Associative answers the presentation adverbs through its
@@ -28490,11 +28490,11 @@ Value Interpreter::evalIndex(Index* idx) {
         SliceShape shape;
         bool nestedSlice = false;
         if (!idx->isHash && !allElems && !idx->multiDim && iv.t == VT::Array && iv.arr() && iv.isList &&
-            !iv.itemized && iv.enumName.empty()) {
+            !iv.itemized && iv.enumName().empty()) {
             auto isPart = [](const Value& v) {
                 if (v.itemized) return false;
                 if (v.t == VT::Range) return !isEndlessRange(v);
-                return v.t == VT::Array && v.arr() && v.isList && v.enumName.empty() && !v.ext();
+                return v.t == VT::Array && v.arr() && v.isList && v.enumName().empty() && !v.ext();
             };
             for (auto& e : *iv.arr()) if (isPart(e)) { nestedSlice = true; break; }
             if (nestedSlice) {
@@ -28605,7 +28605,7 @@ Value Interpreter::evalIndex(Index* idx) {
         if (wantDelete && base.t == VT::Pair)
             throw RakuError{Value::typeObj("X::AdHoc"), "Can not remove values from a Pair"};
         if (wantDelete && base.t == VT::Array && base.isList && base.s != "Seq" &&
-            base.enumName.empty())
+            base.enumName().empty())
             throw RakuError{Value::typeObj("X::AdHoc"), "Can not remove elements from a List"};
         // A NEGATIVE index is out of range for a delete too, and the answer is
         // the same armed Failure a read gives (sheet LA-15).
@@ -28727,7 +28727,7 @@ Value Interpreter::evalIndex(Index* idx) {
             };
             out = assemble(shape);
         }
-        if (!junctionKind.empty()) { out.enumName = junctionKind; out.isList = false; }
+        if (!junctionKind.empty()) { out.setEnumName(junctionKind); out.isList = false; }
         return out;
         }
     }
@@ -28807,11 +28807,11 @@ Value Interpreter::evalIndex(Index* idx) {
         // a JUNCTION key autothreads the lookup: %h{any(<a b>)} is any of them —
         // unless the hash is keyed by Mu, which takes the Junction itself as a
         // key (a classify over a junction-answering mapper; classify.t)
-        if (iv.t == VT::Array && iv.arr() && !iv.enumName.empty() &&
+        if (iv.t == VT::Array && iv.arr() && !iv.enumName().empty() &&
             !(base.objKeyed && objHashKeyType(base) == "Mu") &&
-            (iv.enumName == "any" || iv.enumName == "all" ||
-             iv.enumName == "one" || iv.enumName == "none")) {
-            Value out = Value::array(); out.enumName = iv.enumName;
+            (iv.enumName() == "any" || iv.enumName() == "all" ||
+             iv.enumName() == "one" || iv.enumName() == "none")) {
+            Value out = Value::array(); out.setEnumName(iv.enumName());
             out.s = "slice"; // provenance: see the junction mutator gate
             for (auto& k : *iv.arr()) out.arr()->push_back(lookup1(hashSubKey(k, &base)));
             return out;
@@ -28919,7 +28919,7 @@ Value Interpreter::evalIndex(Index* idx) {
             // …and an ITEMIZED list is one item too, indexing by its number:
             // `@a[$[3, 4]]` is `@a[2]`
             if (iv.t == VT::Array && iv.itemized && iv.arr() && !isJunction(iv) && !idx->isHash &&
-                !iv.ext() && iv.enumType.empty())
+                !iv.ext() && iv.enumType().empty())
                 iv = Value::integer((long long)iv.arr()->size());
             // Whatever-star index: `@a[*-1]` (WhateverCode called with the length),
             // `@a[*]` (all elements).
@@ -28932,7 +28932,7 @@ Value Interpreter::evalIndex(Index* idx) {
                 isSlice = true;
                 lazyIdx = iv.b; // `lazy` marker set by the lazy() builtin
                 junctionIdx = isJunction(iv); // a junction index autothreads (no defaulting)
-                if (junctionIdx) junctionKind = iv.enumName;
+                if (junctionIdx) junctionKind = iv.enumName();
                 // A LAZY index sequence is pulled until it first leaves the array,
                 // which is where Rakudo stops it: `@a[0, 2 ... *]` is every second
                 // element, not the two seeds that happened to be materialised.
@@ -29048,7 +29048,7 @@ Value Interpreter::evalIndex(Index* idx) {
             Value out = Value::array(); out.isList = true;
             // a junction index autothreads: `@a[any(1,2)]` is a Junction of the
             // elements (Rakudo's type), not a List
-            out.enumName = junctionKind;
+            out.setEnumName(junctionKind);
             if (!junctionKind.empty()) out.s = "slice"; // provenance: see the junction mutator gate
             // a missing slice index reports the element default: a mutable Array
             // yields its typed default (Any / Str / `is default`), a List/Range Nil
@@ -29141,7 +29141,7 @@ Value Interpreter::evalIndex(Index* idx) {
         if (!sadv.empty() && sadv[0] == '!') sadv = sadv.substr(1);
         const bool undefInContainer = sadv.empty() && idx->base &&
             (idx->base->kind == NK::VarExpr || idx->base->kind == NK::Index) &&
-            (base.t == VT::Any || (base.t == VT::Type && base.enumName.empty()));
+            (base.t == VT::Any || (base.t == VT::Type && base.enumName().empty()));
         auto one = [&](const Value& ixv) -> Value {
             // `*-1` resolves against the one element this stands for
             long long i = (ixv.t == VT::Code && ixv.code() && ixv.code()->ci().isWhateverCode)
@@ -30481,7 +30481,7 @@ Value Interpreter::eval(Expr* e) {
             // already reset; only the literal did not.
             auto storeSlot = [&](Value v) {
                 if (v.t == VT::Nil && !a.isList) v = Value::any();
-                if (v.natBits && !a.isList) dropNativeTags(v);   // an Array holds the boxed number
+                if (v.natBits() && !a.isList) dropNativeTags(v);   // an Array holds the boxed number
                 a.arr()->push_back(std::move(v));
             };
             for (auto& it : l->items) {
@@ -32556,7 +32556,7 @@ Value Interpreter::evalMethodCallExpr(Expr* e, Value* handedInv) {
                 if (hb->t == VT::Any) *hb = Value::makeHash();
                 if (hb->hash()) {
                     ValueList as = evalArgs(mc->args);
-                    Value out = Value::array(); out.enumName = key.enumName;
+                    Value out = Value::array(); out.setEnumName(key.enumName());
                     for (auto& k : *key.arr()) {
                         Value& slot = (*hb->hash())[k.toStr()];
                         if (slot.t == VT::Any || slot.t == VT::Nil) slot = Value::array();
@@ -32928,7 +32928,7 @@ Value Interpreter::evalMethodCallExpr(Expr* e, Value* handedInv) {
         // and the answers form a junction of the same kind, so
         // `all(@p)».status` is all((Kept), (Kept)). It was flattened to an Array.
         if (isJunction(inv) && !mc->mutate) {
-            Value j = Value::array(); j.enumName = inv.enumName;
+            Value j = Value::array(); j.setEnumName(inv.enumName());
             for (auto& e : *inv.arr()) j.arr()->push_back(hyperMethodEach(e, hname, args, mc->maybe));
             return j;
         }

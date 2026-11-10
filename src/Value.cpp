@@ -476,7 +476,7 @@ static size_t selfPackMin() {
 // those are at least selfPackMin() plain Nums, its payload becomes their words
 bool selfPack(Value& a) {
     if (!selfPackOn() || a.t != VT::Array || a.pk_ != PK::List || a.isList || a.itemized || !a.hashKind.empty() ||
-        !a.s.empty() || !a.enumName.empty() || !a.enumType.empty() || a.ext() || a.shape() || !a.ofType().empty() ||
+        !a.s.empty() || !a.enumName().empty() || !a.enumType().empty() || a.ext() || a.shape() || !a.ofType().empty() ||
         a.elemDefault() || a.holdsContainers())
         return false;
     const ValueList* l = a.arr();
@@ -597,14 +597,14 @@ bool Value::truthy() const {
             seqTouch();   // a Seq's Bool caches it (SeqToken)
             // a Junction collapses by its kind — since comparisons autothread
             // into PRESERVED junctions, every truthiness site must collapse
-            if (arr() && (enumName == "any" || enumName == "all" ||
-                        enumName == "one" || enumName == "none")) {
-                JunctionCollapse jc(enumName);      // short-circuits; see Value.h
+            if (arr() && (enumName() == "any" || enumName() == "all" ||
+                        enumName() == "one" || enumName() == "none")) {
+                JunctionCollapse jc(enumName());      // short-circuits; see Value.h
                 for (auto& e : *arr()) { jc.feed(e.truthy()); if (jc.done()) break; }
                 return jc.verdict();
             }
             // an enum's TYPE OBJECT is its pair list here, and undefined: False
-            if (!enumType.empty() && isEnumTypeObject(*this)) return false;
+            if (!enumType().empty() && isEnumTypeObject(*this)) return false;
             // A non-empty buffer is true without asking anything else. Only an
             // EMPTY one has to check whether it is merely unpulled: a LAZY list
             // is True whether or not it has reified anything, because its Bool
@@ -953,20 +953,20 @@ std::string Value::toStr() const {
     // (…but a list lazy BY DECLARATION is not read out to be stringified: it
     // Strs as its reified prefix and `...`, in the Array arm below)
     if (!declLazyLive(*this)) forceLazy(*this);   // an unpulled gather stringifies as its ELEMENTS, not as ()
-    // (a Blob/Buf uses enumName for its ENCODING, and a flavored IO::Path for its
+    // (a Blob/Buf uses enumName() for its ENCODING, and a flavored IO::Path for its
     // OS grammar — neither is an enum key)
-    if (!enumName.empty() && hashKind != "Blob" && hashKind != "Buf" && hashKind != "IO") {
-        // a CArray built here (enumName is its element type) Strs as its
+    if (!enumName().empty() && hashKind != "Blob" && hashKind != "Buf" && hashKind != "IO") {
+        // a CArray built here (enumName() is its element type) Strs as its
         // elements, space-joined, as Rakudo's does
         if (t == VT::Str && hashKind == "CArray" && g_carrayStr) return g_carrayStr(*this);
         // a Str-VALUED member stringifies to its value (`enum E (x => "val")`:
         // ~x is "val"), an Int-valued one to its key — Rakudo-verified both ways
         if (t == VT::Int && pairVal() && pairVal()->t == VT::Str) return pairVal()->s.copyText();
-        return enumName;
+        return enumName();
     }
     // …and the enum's TYPE OBJECT, undefined, is "" (the interpreter's strOf
     // warns about it first)
-    if (t == VT::Array && !enumType.empty() && isEnumTypeObject(*this)) return "";
+    if (t == VT::Array && !enumType().empty() && isEnumTypeObject(*this)) return "";
     if (isAllomorph()) return std::string(s); // the allomorph's source string ("0123", "1/3", …)
     // an Instant says what it is: `say now` and `~now` are "Instant:1704067274"
     // in Rakudo, both .Str and .gist (its number is .Numeric / .tai / .to-posix)
@@ -1237,8 +1237,8 @@ std::string Value::gist() const {
     // an enum's TYPE OBJECT is its pair list here, and gists as the type it is,
     // nested too: `say (Color, 1)` is ((Color) 1), by its short name as a class
     // is: `B::Idx` is (Idx)
-    if (t == VT::Array && !enumType.empty() && isEnumTypeObject(*this)) {
-        std::string n = enumType.str();
+    if (t == VT::Array && !enumType().empty() && isEnumTypeObject(*this)) {
+        std::string n = enumType().str();
         auto sep = n.rfind("::");
         return "(" + (sep == std::string::npos ? n : n.substr(sep + 2)) + ")";
     }
@@ -1295,22 +1295,22 @@ std::string Value::gist() const {
     if (t == VT::Str && hashKind == "IO::Special")
         return "IO::Special.new(\"" + s + "\")";
     // A CArray gists (and `.raku`s) as Rakudo's does, element type and all —
-    // its enumName is that type, and the enum arm below printed just "int32".
+    // its enumName() is that type, and the enum arm below printed just "int32".
     if (t == VT::Str && hashKind == "CArray")
-        return "NativeCall::Types::CArray" + (enumName.empty() ? std::string() : "[" + enumName.str() + "]") + ".new";
-    if (!enumName.empty() && hashKind != "Blob" && hashKind != "Buf" && hashKind != "IO") {
+        return "NativeCall::Types::CArray" + (enumName().empty() ? std::string() : "[" + enumName().str() + "]") + ".new";
+    if (!enumName().empty() && hashKind != "Blob" && hashKind != "Buf" && hashKind != "IO") {
         // a Junction gists with its eigenstates: any(1, 2, 3)
         if (t == VT::Array && arr() &&
-            (enumName == "any" || enumName == "all" || enumName == "one" || enumName == "none")) {
-            ReprDepthGuard g; if (g.tooDeep()) return enumName + "(...)";
-            std::string out = enumName + "(";
+            (enumName() == "any" || enumName() == "all" || enumName() == "one" || enumName() == "none")) {
+            ReprDepthGuard g; if (g.tooDeep()) return enumName() + "(...)";
+            std::string out = enumName() + "(";
             for (size_t k = 0; k < arr()->size(); k++) {
                 if (k) out += ", ";
                 out += (*arr())[k].gist();
             }
             return out + ")";
         }
-        return enumName;
+        return enumName();
     }
     switch (t) {
         case VT::Nil:  return "Nil";
@@ -1393,7 +1393,7 @@ std::string Value::gist() const {
             if (hashKind == "Buf" || hashKind == "Blob") { // Buf:0x<01 02 03> / Buf[uint8]:0x<…>
                 // an encoding names its own type (`utf8:0x<…>`); otherwise the
                 // kind plus its element-type parameter
-                std::string h = (!enumName.empty() ? enumName
+                std::string h = (!enumName().empty() ? enumName()
                                  : hashKind + (ofType().empty() ? "" : "[" + ofType() + "]")) + ":0x<";
                 static const char* hx = "0123456789ABCDEF";
                 // one group per ELEMENT, big-endian — a blob32 shows 00000001,
@@ -1615,8 +1615,8 @@ std::string Value::gist() const {
 }
 
 std::string Value::typeName() const {
-    if (!enumType.empty())  // enum value / enum type object -> its enum type
-        return enumType.str()[0] == '\x01' ? std::string() : std::string(enumType.str()); // (an anonymous one has none)
+    if (!enumType().empty())  // enum value / enum type object -> its enum type
+        return enumType().str()[0] == '\x01' ? std::string() : std::string(enumType().str()); // (an anonymous one has none)
     if (isAllomorph()) return hashKind;     // IntStr / RatStr / NumStr / ComplexStr
     // an Instant/Duration rides on an exact Int or Rat (or a Num, from `now`)
     if ((t == VT::Int || t == VT::Rat || t == VT::Num) &&
@@ -1631,11 +1631,11 @@ std::string Value::typeName() const {
         case VT::Complex: return "Complex";
         // A CArray is stored as raw bytes in a Str, and reported itself as "Str" —
         // so `.^name` lied and `$c ~~ CArray` was False. The element type lives in
-        // enumName, which is what makes the parameterized spelling possible.
-        case VT::Str:  return hashKind == "IO" ? (enumName.empty() ? "IO::Path" : "IO::Path::" + enumName) : hashKind == "Version" ? "Version" : hashKind == "Blob" ? (enumName.empty() ? std::string("Blob") : enumName.str()) : hashKind == "Buf" ? (ofType().empty() ? std::string("Buf") : "Buf[" + ofType() + "]") : hashKind == "IO::Special" ? "IO::Special" : hashKind == "CArray" ? (enumName.empty() ? "CArray" : "CArray[" + enumName + "]") : hashKind == "ObjAt" ? "ObjAt" : hashKind == "ValueObjAt" ? "ValueObjAt" : "Str";
+        // enumName(), which is what makes the parameterized spelling possible.
+        case VT::Str:  return hashKind == "IO" ? (enumName().empty() ? "IO::Path" : "IO::Path::" + enumName()) : hashKind == "Version" ? "Version" : hashKind == "Blob" ? (enumName().empty() ? std::string("Blob") : enumName().str()) : hashKind == "Buf" ? (ofType().empty() ? std::string("Buf") : "Buf[" + ofType() + "]") : hashKind == "IO::Special" ? "IO::Special" : hashKind == "CArray" ? (enumName().empty() ? "CArray" : "CArray[" + enumName() + "]") : hashKind == "ObjAt" ? "ObjAt" : hashKind == "ValueObjAt" ? "ValueObjAt" : "Str";
         case VT::Array:
             if (s == "Uni" || s == "NFC" || s == "NFD" || s == "NFKC" || s == "NFKD") return std::string(s);
-            if (enumName == "any" || enumName == "all" || enumName == "one" || enumName == "none") return "Junction";
+            if (enumName() == "any" || enumName() == "all" || enumName() == "one" || enumName() == "none") return "Junction";
             if (hashKind == "Capture") return "Capture"; // \(…) literal
             // a native array names its element: `array[uint8]` — the type
             // CBOR::Simple and NativeHelpers::Blob read back through `.^name`
@@ -2194,8 +2194,8 @@ static int valueCmpImpl(const Value& a, const Value& b) {
     if (a.t == VT::Range || b.t == VT::Range) {
         // …against a LIST, though, a Range is its ELEMENTS: `(5..10) cmp
         // (5,6,7,8,9,10)` is Same.
-        if ((a.t == VT::Array && a.arr() && a.enumName.empty()) ||
-            (b.t == VT::Array && b.arr() && b.enumName.empty())) {
+        if ((a.t == VT::Array && a.arr() && a.enumName().empty()) ||
+            (b.t == VT::Array && b.arr() && b.enumName().empty())) {
             ValueList ea = a.flatten(), eb = b.flatten();
             size_t n = std::min(ea.size(), eb.size());
             for (size_t k = 0; k < n; k++) {
@@ -2273,7 +2273,7 @@ static int valueCmpImpl(const Value& a, const Value& b) {
     }
     // Lists compare elementwise, shorter-is-less on a tie — so a sort key of
     // `{ -.value, .key }` orders by the first element, then the second.
-    if (a.t == VT::Array && b.t == VT::Array && a.arr() && b.arr() && a.enumName.empty() && b.enumName.empty()) {
+    if (a.t == VT::Array && b.t == VT::Array && a.arr() && b.arr() && a.enumName().empty() && b.enumName().empty()) {
         size_t n = std::min(a.arr()->size(), b.arr()->size());
         for (size_t k = 0; k < n; k++) {
             int c = valueCmp((*a.arr())[k], (*b.arr())[k]);

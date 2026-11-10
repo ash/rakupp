@@ -20,6 +20,7 @@
 #include <type_traits>
 #include <utility>
 
+#include "BodyPool.h"
 #include "SlabPool.h"
 
 namespace rakupp {
@@ -33,6 +34,10 @@ struct RefCounted {
     RefCounted& operator=(const RefCounted&) noexcept { return *this; }
 };
 
+// Where a Ref's objects are made: SlabPool, but for a type a Value reaches by
+// handle (a specialization names BodyPool for it, before its first use).
+template <class T> struct RefPoolOf { using pool = SlabPool; };
+
 template <class T>
 class Ref {
     T* p_ = nullptr;
@@ -42,7 +47,7 @@ class Ref {
     // releases one, and the hot paths paid for the code size (asg +2.5%).
     [[gnu::noinline]] static void destroy(T* p) noexcept {
         p->~T();
-        SlabPool::dealloc(static_cast<void*>(const_cast<std::remove_const_t<T>*>(p)), sizeof(T));
+        RefPoolOf<std::remove_const_t<T>>::pool::dealloc(static_cast<void*>(const_cast<std::remove_const_t<T>*>(p)), sizeof(T));
     }
     void release() noexcept {
         if (p_ && p_->refs_.fetch_sub(1, std::memory_order_acq_rel) == 1) destroy(p_);
@@ -95,11 +100,67 @@ public:
 template <class T, class... A>
 inline Ref<T> makeRef(A&&... a) {
     static_assert(alignof(T) <= alignof(std::max_align_t), "makeRef does not serve over-aligned types");
-    void* mem = SlabPool::alloc(sizeof(T));
+    using Pool = typename RefPoolOf<std::remove_const_t<T>>::pool;
+    void* mem = Pool::alloc(sizeof(T));
     T* p;
     try { p = ::new (mem) T(std::forward<A>(a)...); }
-    catch (...) { SlabPool::dealloc(mem, sizeof(T)); throw; }
+    catch (...) { Pool::dealloc(mem, sizeof(T)); throw; }
     return Ref<T>(p);
+}
+
+// HRef<T> — Ref<T> for a block a Value holds by HANDLE (BodyPool.h): the cold
+// block. The same counted reference with the same surface; the block comes
+// from BodyPool, and where handles are on the reference is 4 bytes.
+template <class T>
+class HRef {
+    BodyHandle<T> s_;
+    void retain() const noexcept { if (s_) s_.raw()->refs_.fetch_add(1, std::memory_order_relaxed); }
+    [[gnu::noinline]] static void destroy(T* p) noexcept {   // (out of line, as Ref's)
+        p->~T();
+        BodyPool::dealloc(static_cast<void*>(const_cast<std::remove_const_t<T>*>(p)), sizeof(T));
+    }
+    void release() noexcept {
+        if (s_) { T* p = s_.raw(); if (p->refs_.fetch_sub(1, std::memory_order_acq_rel) == 1) destroy(p); }
+    }
+    template <class U, class... A> friend HRef<U> makeHRef(A&&...);
+    explicit HRef(T* adopt) noexcept { s_.set(adopt); }   // takes the count makeHRef set to 1
+
+public:
+    HRef() noexcept = default;
+    HRef(std::nullptr_t) noexcept {}
+    HRef(const HRef& o) noexcept : s_(o.s_) { retain(); }
+    HRef(HRef&& o) noexcept : s_(o.s_) { o.s_ = {}; }
+    ~HRef() { release(); }
+    HRef& operator=(const HRef& o) noexcept {
+        if (s_ != o.s_) { auto n = o.s_; o.retain(); release(); s_ = n; }   // (as Ref's)
+        return *this;
+    }
+    HRef& operator=(HRef&& o) noexcept {
+        if (this != &o) { release(); s_ = o.s_; o.s_ = {}; }
+        return *this;
+    }
+    HRef& operator=(std::nullptr_t) noexcept { reset(); return *this; }
+    void reset() noexcept { release(); s_ = {}; }
+    T* get() const noexcept { return s_.get(); }
+    T& operator*() const noexcept { return *s_.raw(); }
+    T* operator->() const noexcept { return s_.raw(); }
+    explicit operator bool() const noexcept { return (bool)s_; }
+    long use_count() const noexcept { return s_ ? (long)s_.raw()->refs_.load(std::memory_order_acquire) : 0; }
+
+    friend bool operator==(const HRef& a, const HRef& b) noexcept { return a.s_ == b.s_; }
+    friend bool operator!=(const HRef& a, const HRef& b) noexcept { return a.s_ != b.s_; }
+    friend bool operator==(const HRef& a, std::nullptr_t) noexcept { return !a.s_; }
+    friend bool operator!=(const HRef& a, std::nullptr_t) noexcept { return (bool)a.s_; }
+};
+
+template <class T, class... A>
+inline HRef<T> makeHRef(A&&... a) {
+    static_assert(alignof(T) <= alignof(std::max_align_t), "makeHRef does not serve over-aligned types");
+    void* mem = BodyPool::alloc(sizeof(T));
+    T* p;
+    try { p = ::new (mem) T(std::forward<A>(a)...); }
+    catch (...) { BodyPool::dealloc(mem, sizeof(T)); throw; }
+    return HRef<T>(p);
 }
 
 } // namespace rakupp
@@ -193,7 +254,7 @@ struct Body final : Payload {
         if constexpr (std::is_same<T, ObjectData>::value) n += objectTailOf(v);
         if (g_race) raceForgetRange(this, n);
         this->~Body();
-        SlabPool::dealloc(static_cast<void*>(this), n);
+        BodyPool::dealloc(static_cast<void*>(this), n);
     }
 };
 
@@ -219,39 +280,42 @@ template <> struct BodyOf<Value> {
 // The untyped slot. Copy = one relaxed increment; the last release destroys
 // through the body's own kind, out of line.
 class PayRef {
-    Payload* p_ = nullptr;
-    void retain() const noexcept { if (p_) p_->refs_.fetch_add(1, std::memory_order_relaxed); }
+    BodyHandle<Payload> s_;   // (4 bytes where handles are on: BodyPool.h)
+    void retain() const noexcept { if (s_) s_.raw()->refs_.fetch_add(1, std::memory_order_relaxed); }
     void release() noexcept {
-        if (p_) {
-            std::uint32_t old = p_->refs_.fetch_sub(1, std::memory_order_acq_rel);
-            if ((std::int32_t)old <= 1) payloadReleaseSlow(p_, old);
+        if (s_) {
+            Payload* p = s_.raw();
+            std::uint32_t old = p->refs_.fetch_sub(1, std::memory_order_acq_rel);
+            if ((std::int32_t)old <= 1) payloadReleaseSlow(p, old);
         }
     }
 public:
     PayRef() noexcept = default;
     PayRef(std::nullptr_t) noexcept {}
     // ADOPTS a body whose count was already taken for this handle
-    explicit PayRef(Payload* adopt, bool alreadyRetained) noexcept : p_(adopt) { if (!alreadyRetained) retain(); }
-    PayRef(const PayRef& o) noexcept : p_(o.p_) { retain(); }
-    PayRef(PayRef&& o) noexcept : p_(o.p_) { o.p_ = nullptr; }
+    explicit PayRef(Payload* adopt, bool alreadyRetained) noexcept { s_.set(adopt); if (!alreadyRetained) retain(); }
+    PayRef(const PayRef& o) noexcept : s_(o.s_) { retain(); }
+    PayRef(PayRef&& o) noexcept : s_(o.s_) { o.s_ = {}; }
     ~PayRef() { release(); }
     PayRef& operator=(const PayRef& o) noexcept {
-        if (p_ != o.p_) { auto* n = o.p_; o.retain(); release(); p_ = n; }   // (as Ref's)
+        if (s_ != o.s_) { auto n = o.s_; o.retain(); release(); s_ = n; }   // (as Ref's)
         return *this;
     }
     PayRef& operator=(PayRef&& o) noexcept {
-        if (this != &o) { release(); p_ = o.p_; o.p_ = nullptr; }
+        if (this != &o) { release(); s_ = o.s_; o.s_ = {}; }
         return *this;
     }
     PayRef& operator=(std::nullptr_t) noexcept { reset(); return *this; }
-    void reset() noexcept { release(); p_ = nullptr; }
-    Payload* get() const noexcept { return p_; }
-    explicit operator bool() const noexcept { return p_ != nullptr; }
-    long use_count() const noexcept { return p_ ? (long)(p_->refs_.load(std::memory_order_acquire) & kRefMask) : 0; }
-    friend bool operator==(const PayRef& a, const PayRef& b) noexcept { return a.p_ == b.p_; }
-    friend bool operator!=(const PayRef& a, const PayRef& b) noexcept { return a.p_ != b.p_; }
-    friend bool operator==(const PayRef& a, std::nullptr_t) noexcept { return !a.p_; }
-    friend bool operator!=(const PayRef& a, std::nullptr_t) noexcept { return a.p_ != nullptr; }
+    void reset() noexcept { release(); s_ = {}; }
+    Payload* get() const noexcept { return s_.get(); }
+    // The body, for a caller that knows the slot is not empty (Value's pk_ says so).
+    Payload* raw() const noexcept { return s_.raw(); }
+    explicit operator bool() const noexcept { return (bool)s_; }
+    long use_count() const noexcept { return s_ ? (long)(s_.raw()->refs_.load(std::memory_order_acquire) & kRefMask) : 0; }
+    friend bool operator==(const PayRef& a, const PayRef& b) noexcept { return a.s_ == b.s_; }
+    friend bool operator!=(const PayRef& a, const PayRef& b) noexcept { return a.s_ != b.s_; }
+    friend bool operator==(const PayRef& a, std::nullptr_t) noexcept { return !a.s_; }
+    friend bool operator!=(const PayRef& a, std::nullptr_t) noexcept { return (bool)a.s_; }
 };
 
 // The TYPED handle — what arrS()/codeS()/makePayload<T>() hand out, and what
@@ -338,12 +402,15 @@ public:
 template <class T, class... A>
 inline PRef<T> makePayload(A&&... a) {
     static_assert(alignof(Body<T>) <= alignof(std::max_align_t), "payloads are not over-aligned");
+#if RAKUPP_BODY_HANDLES
+    static_assert(sizeof(Body<T>) + 256 <= BodyPool::kMaxBody, "a payload body larger than BodyPool serves");
+#endif
     if constexpr (std::is_same<T, ObjectData>::value) {
         // the body, then its attribute hash behind it (objectAdoptTail); a copy
         // is made by assignment, into the hash already in place
         static_assert(sizeof...(A) <= 1, "an object is made empty or copied from another");
         const std::size_t n = sizeof(Body<T>) + objectTailSize();
-        void* mem = SlabPool::alloc(n);
+        void* mem = BodyPool::alloc(n);
         Body<T>* b = ::new (mem) Body<T>(std::in_place);
         objectAdoptTail(b->v, static_cast<char*>(mem) + sizeof(Body<T>));
         try { (void(b->v = std::forward<A>(a)), ...); }
@@ -351,10 +418,10 @@ inline PRef<T> makePayload(A&&... a) {
         if (g_cycleTrack) b->refs_.store(1u | kRefTracked, std::memory_order_relaxed);
         return PRef<T>::adoptNew(b);
     }
-    void* mem = SlabPool::alloc(sizeof(Body<T>));
+    void* mem = BodyPool::alloc(sizeof(Body<T>));
     Body<T>* b;
     try { b = ::new (mem) Body<T>(std::in_place, std::forward<A>(a)...); }
-    catch (...) { SlabPool::dealloc(mem, sizeof(Body<T>)); throw; }
+    catch (...) { BodyPool::dealloc(mem, sizeof(Body<T>)); throw; }
     return PRef<T>::adoptNew(b);
 }
 
