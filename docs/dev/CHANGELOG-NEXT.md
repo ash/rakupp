@@ -59,7 +59,8 @@ and three more: 63b92af7, f929935a, ae3321f2;
 and from the review of src/ (docs/dev/findings/src-review-2026-11-09.md): d389b329,
 9c5c4d82, 7e9c0387, 0c64680d, 60e9df1f, c6791c72, fbfa041a, 9d2cf3bf, 016f8d57,
 6d62482c, 96c81b9a, 31565ae4, a8ac64a6, 3d5ae806, ab615543, 44502bd4, 7e251a18,
-33adda5f, 91f64325, 03b3879f, 853fc96e, 6cb23670, cfa535d7.*
+33adda5f, 91f64325, 03b3879f, 853fc96e, 6cb23670, cfa535d7, 1fae9cc8, 9454d20f,
+6f4bee22, 3178a8ca.*
 
 ---
 
@@ -199,6 +200,25 @@ and from the review of src/ (docs/dev/findings/src-review-2026-11-09.md): d389b3
 
 ### Fixed: silent wrong answers
 
+- **An `exit` in a regex's code block ends the program** (1fae9cc8): `"abc" ~~
+  / a { exit 3 } b /; say "still running"` said still running and ended with
+  0 — in a `{ }` block, a `<?{ }>` assertion, a `<{ }>` pattern and a grammar
+  rule alike. Finding A3 of the review of src/.
+  `t/regression/regex-block-exit-leaves.raku`.
+- **`polymod` treats a divisor the same whatever the invocant** (9454d20f):
+  `(2**70).polymod(0)` and `5.polymod(0 xx *)` are refused, where they were
+  (2**70) and (); `(2**70).polymod(1, 10)` ends at the 1; `(2**100).polymod(
+  2**70)` divides by 2**70, where it divided by the int64 maximum. Finding D5.
+  `t/regression/polymod-divisor-rules.raku`.
+- **`.pick(-1)` and `.combinations` over a Range of sizes** (6f4bee22):
+  `(1..5000).pick(-1)` is empty, where it was all 5000; `(1,2,3).pick(-1)` is
+  refused, where it was an empty Seq; `(1,2,3).combinations(
+  -9223372036854775808..1)` is the 4 there are, where it did not come back.
+  Findings D8 and D7. `t/regression/pick-negative-and-combinations-range.raku`.
+- **`nqp::div_i` and `nqp::mod_i` of the int64 minimum by -1** (3178a8ca)
+  answer the minimum and 0 on every machine, where x86-64 trapped. Finding E5.
+  `t/regression/nqp-div-mod-by-minus-one.raku` (which an arm64 machine passed
+  before too).
 - **A string escape past the last codepoint is a compile error** (91f64325),
   as on Rakudo: `"\x[110000]"` was a Str of four bytes that are no UTF-8.
   Finding G8. `t/regression/string-escape-past-last-codepoint.raku`.
@@ -1110,3 +1130,8 @@ and from the review of src/ (docs/dev/findings/src-review-2026-11-09.md): d389b3
   X::TypeCheck::Binding::Parameter (an only-sub shadows the built-in).
 - Found with a8ac64a6, the same before it: `sprintf("%c", 0xD800)` encodes the
   surrogate, where Rakudo refuses it.
+- Found with 1fae9cc8, the same before it: a `last` or `next` in a regex's
+  code block is swallowed where the `exit` was — `my $n = 0; for 1..3 { "abc"
+  ~~ / a { $n++; last } b / }; say $n` says 3, where Rakudo has 1. And the
+  Supply taps of BuiltinsSupply.cpp still run inside 42 catches of everything,
+  which take a `die` and an `exit` in a tap (finding K4.1, not run).

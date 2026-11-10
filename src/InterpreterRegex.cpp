@@ -2787,6 +2787,8 @@ Value Interpreter::grammarParse(ClassInfo* g, const std::string& input, bool sub
         try { for (auto& s : prog->stmts) last = exec(s.get()); }
         catch (FeatureNotBuilt&) { tctx().makeTargets.pop_back(); throw; } // a stub fired INSIDE the block: loud
         catch (RakuError& e) { if (!regexBlockErrorStaysQuiet(e)) { tctx().makeTargets.pop_back(); throw; } } // a `die` in a grammar block LEAVES the parse (Rakudo); a quiet one falls to the pop below
+        catch (ExitEx&) { tctx().makeTargets.pop_back(); throw; }          // (an `exit` in a rule's block leaves too: it was swallowed below, and the parse went on)
+        catch (WorkerAbortEx&) { tctx().makeTargets.pop_back(); throw; }
         catch (...) {}
         tctx().makeTargets.pop_back();
         if (makeTarget.pairVal()) (*pendingMakes)[{from, to}] = *makeTarget.pairVal(); // record the inline make

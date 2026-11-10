@@ -2880,8 +2880,8 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
                 else { lo = hi = k.toInt(); }
             }
             if (hi > (long long)items.size()) hi = (long long)items.size();
+            if (lo < 0) lo = 0;   // (there is no size below 0: `-9223372036854775808..1` stepped through every one of them)
             for (long long k = lo; k <= hi; k++) {
-                if (k < 0) continue;
                 std::vector<bool> mask(items.size(), false);
                 for (long long i = 0; i < k; i++) mask[items.size() - 1 - i] = true; // start: choose last k, then permute mask ascending
                 std::vector<size_t> sel;
@@ -4133,6 +4133,9 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
             long long n = all ? (long long)pool0.size()
                 : args[0].t == VT::Code ? std::max(0LL, callCallable(args[0], ValueList{Value::integer((long long)pool0.size())}).toInt())
                 : args[0].toInt();
+            if (n < 0 && m == "pick" && inv.t != VT::Range)   // (Rakudo's refusal, of a list: it was an empty Seq, as a small Range's still is)
+                throw RakuError{Value::typeObj("X::OutOfRange"),
+                                "Coercion to UInt out of range. Is: " + std::to_string(n) + ", should be in 0..^Inf"};
             Value out = Value::array(); out.isList = true; out.s = "Seq"; // .pick(n)/.roll(n) return a Seq
             if (m == "pick") { // without replacement
                 ValueList pool = pool0;
