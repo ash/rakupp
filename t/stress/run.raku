@@ -102,8 +102,8 @@ my %tsan-parallel-racy =
 # the private-slot work is not what they find. They stage ub-torn-values'
 # shape through each route, and they hit its sites: the assignment paths read
 # a slot's flags (readonly, natBits, t, the cell tag in deref) before they take
-# the stripe, and an unsunk assignment copies `*lv` after the store releases
-# it. Tolerated until the stripe covers those (TODO.md, "TSan: the private-*
+# the stripe. (An unsunk assignment's copy of `*lv` was the other such read;
+# 295617a3 put it under the stripe.) Tolerated until the stripe covers those (TODO.md, "TSan: the private-*
 # stress programs are tolerated"), with one thing kept strict, the one the
 # plan wanted TSan for: a report in which a STORE held no lock fails the case.
 # That is how the relaxed liveWorkers_ gate showed (f13d2620: the owner's
