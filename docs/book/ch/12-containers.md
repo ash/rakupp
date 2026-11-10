@@ -440,6 +440,21 @@ tree-walker alone ran the matrix multiply 16% slower. And an array that
 unpacks keeps both forms. `RAKUPP_NO_SELFPACK=1` turns self-packing off, and
 `RAKUPP_SELFPACK_MIN` sets the fewest elements packed.
 
+**So does one of machine Ints, in the interpreter.** Since 2026-11-10 the same
+holds for 8 or more plain Ints that fit 64 bits, and `my @a = LO .. HI` fills
+the words from the Range without building a `Value`. The words are a
+`my int @a`'s, but its rules are not: a Bool stored stays a Bool, a result
+past 64 bits is a big Int, and a gap is holes; each of those unpacks the
+array. The loop kernels read, store and step the words, and one compiled
+kernel takes the array in either form. A sieve to two million went from
+2,396M to 1,395M instructions and from 198 to 107 MB, and a
+two-million-element `1..N` summed by index from 72 to 24 MB. An array that is
+packed and then asked for its elements, by `.sort` or `.map`, costs 2.5% more
+instructions and 5–8% more memory than it did. An Array keeps its `.WHICH`
+when its storage changes form. Compiled code packs Nums
+only: it has no lane for an Int word yet. `RAKUPP_NO_SELFPACK_INT=1` turns the
+Int kind off alone.
+
 An untyped Array of plain `Int`s does not pack itself. That is the next
 question the measurements point at, and it is not started.
 

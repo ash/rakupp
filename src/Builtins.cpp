@@ -6311,7 +6311,7 @@ Value Interpreter::methodCall(const Value& inv, const std::string& m, ValueList 
     // general arm's loop without its snapshot of the list
     if (args.size() == 1 && !skipOwn && inv.t == VT::Array && m.size() == 4 && opEq(m, "join") &&
         inv.arr() && inv.s.empty() && inv.hashKind.empty() && inv.enumName().empty() && inv.enumType().empty() && !inv.ext() &&
-        inv.pk_ != PK::Packed && !inv.elemDefault() && !inv.holdsContainers() &&
+        inv.noWords() && !inv.elemDefault() && !inv.holdsContainers() &&
         args[0].t == VT::Str && args[0].hashKind.empty() && builtinExt_.empty()) {
         bool plain = true;
         for (auto& e : *inv.arr())

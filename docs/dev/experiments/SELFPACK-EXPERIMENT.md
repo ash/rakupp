@@ -212,8 +212,8 @@ with Bun.
 
 ## What it does not do yet
 
-- **Ints.** JSC's `ArrayWithInt32` has the same shape. The int words exist
-  (`my int @a`). The difference is that a big Int store must unpack.
+- **Ints.** Done on 2026-11-10 for the interpreter: see
+  [Ints](#ints-2026-11-10) below. Compiled code still packs Nums only.
 - **Arrays that start empty.** An array grown by `.push` from empty never
   packs, because only an assignment packs. The interpreter's `typedDefault`
   already makes an empty packed body for a native array; an untyped one would
@@ -223,6 +223,105 @@ with Bun.
 - **More in the lanes.** `@a[$i] op= E`, `.elems` in a loop bound, and `for @a`
   in an `-O` lane.
 - **Objects**, the other half of JSC-VALUES' finding: OBJECT-SLOTS-PLAN.
+
+## Ints (2026-11-10)
+
+*On branch `claude/selfpack-ints`, from 62474b1f, where a `Value` is 32 bytes.
+Apple M4, Release build. It follows
+[VALUE-POOL-INDEX-2026-11-10.md](../findings/VALUE-POOL-INDEX-2026-11-10.md),
+whose verdict was that element size is won by packing more arrays, not by
+shrinking `Value` again.*
+
+**An untyped Array of plain machine Ints packs itself too, in the
+interpreter.** The words are the ones a `my int @a` has, 8 bytes an element
+where a `Value` is 32. None of a native array's rules shows through:
+
+- a Bool stored stays a Bool (a `my int @a` holds `True` as 1);
+- a step, an `op=` or a `.sum` that leaves 64 bits is a big Int and unpacks
+  the array (a `my int @a` wraps);
+- a store past the end with a gap unpacks, and the gap is holes.
+
+**What changed beyond letting `selfPack` take Ints:**
+
+- **`my @a = LO .. HI` fills the words from the Range.** No `Value` is built,
+  so the peak is the words alone. A Range that is endless, fractional, of
+  Strs or of big Ints goes the old way (`plainIntRange`).
+- **One compiled loop kernel takes an Int array in either form**
+  (`src/IntKernel.cpp`). The nodes that read, store, `op=` and step an element
+  look on each access whether the container is words. A word access bails out
+  of range or on a result past 64 bits, with the words put back. A loop that
+  pushes takes the array as a list: it unpacks on entry.
+  - The first version compiled a kernel for the form it met, as the Num
+    kernels do. An array that unpacked between two entries of one loop then
+    never entered its kernel again: 60 passes over 100,000 elements with one
+    `.join` after the third retired 18,328M instructions where they retire
+    1,169M now.
+  - With the word forms beside it, the compiler stopped inlining the list
+    lookup into the read node, 16 instructions a read. `contSlot` is
+    `always_inline` now, and a list read costs less than on `main`.
+- **An Array that unpacked is a plain Array again.** A body that had unpacked
+  kept its Array off every plain-Array fast path for good: the loop kernels,
+  the `.push`, `.elems`, `.kv` and `.join` shortcuts. `Value::noWords()` lets
+  those lanes take it, and a kernel settles the variable on the list itself
+  (`Value::packedSettle`).
+- **An Array keeps its `.WHICH` through every change of form** (`whichCarry`,
+  `src/Which.cpp`). The serial is the payload's, and packing or unpacking
+  replaces the payload. `my @a = 1e0 xx 4; my $w = @a.WHICH; @a = 2e0 xx 10`
+  gave another WHICH on `main` already, for Nums; with Ints packed,
+  `t/regression/issue-221-array-list-which-identity.raku` failed under
+  `RAKUPP_SELFPACK_MIN=1`.
+- **Packing and unpacking are one tight pass each.** Packing compares each
+  element with a plain Int's bytes and gives up at the first that differs;
+  unpacking builds each `Value` in its slot. They cost 65 and 61 instructions
+  an element as first written, and 25 and 28 now.
+- **`--cnp`:** a view of an untyped Array's Int words takes no Bool as 1
+  (bit 8 of `RkCnpView::tag`, `rk_st_idxsetw`).
+- **Compiled code packs Nums only** (`rtSelfPack`). With Ints packed, an
+  `--exe -O` counting loop (`@h[$x % 1000]++`) retired 45% more instructions
+  and a store loop 21% more: the compiled statements and lanes read and store
+  Num words, and sent every Int word the long way.
+
+`RAKUPP_NO_SELFPACK_INT=1` turns the Int kind off and leaves Nums packing.
+
+**Measured against `main` (62474b1f), interpreted:** instructions retired,
+wall time and peak memory from `/usr/bin/time -l`, the least of 7 runs each.
+The wall times have a 10 ms step, and the machine was loaded.
+
+| program | instructions, M | wall, ms | peak, MB |
+|---|--:|--:|--:|
+| `my @a = 1..2_000_000`, summed by index | 617 → 378 | 30 → 10 | 72.1 → 24.5 |
+| `0 xx 1_000_000`, stored by index, summed by `for` | 2,340 → 2,138 | 100 → 80 | 133.1 → 57.4 |
+| a sieve to 2,000,000 | 2,396 → 1,395 | 190 → 70 | 197.8 → 107.2 |
+| 3M `@h[$x % 1000]++` | 1,058 → 817 | 40 → 30 | 10.3 → 9.5 |
+| 300,000 ten-element arrays, one store each | 6,544 → 5,913 | 260 → 240 | 9.5 → 9.6 |
+| a million Ints through `.map`, `.sort`, `.grep`, `.reverse`, then summed by index | 3,974 → 4,075 | 170 → 170 | 192.5 → 207.8 |
+| `tools/bench/sortnums.raku` | 234 → 240 | 10 → 10 | 17.5 → 18.4 |
+| `tools/bench/arraypush.raku` (never packs) | 215 → 209 | 10 → 10 | 36.7 → 36.9 |
+
+The sixth and seventh rows are the cost. An array that packs and is then
+asked for its elements as Values pays for both passes and keeps the words
+beside the list: 2.5% more instructions and 5–8% more memory. On an earlier
+build of the branch, single runs, the other kernels of `tools/bench` and the
+20 programs of `examples/` (Int packing off against on, same binary) were
+within about 1% either way.
+
+**Checked:**
+
+- Roast: 1,425 of 1,425 files on the tree as committed.
+- `t/run.raku`: 2,175 of 2,175 checks, and 2,174 of 2,175 under
+  `RAKUPP_SELFPACK_MIN=1`, on the tree before the `.WHICH` change; the one
+  failure was the `.WHICH` case above. The run on the tree as committed had
+  not finished when this was written (402 checks in, none failing).
+- `t/exe/fuzz.raku --arrays`: no program mismatching, 60 carrying a lane, on
+  the tree before the `.WHICH` change.
+- `t/regression/selfpack-int-arrays.raku` passes under Rakudo 2026.09,
+  interpreted, with `RAKUPP_SELFPACK_MIN=1`, `RAKUPP_NO_SELFPACK=1`,
+  `RAKUPP_NO_SELFPACK_INT=1` and `RAKUPP_NO_KERNELS=1`, under `--cnp`, and as
+  an `--exe -O` binary.
+
+**Left open:** [TODO-FOLLOW-UPS.md](../plans/TODO-FOLLOW-UPS.md), under
+*Performance*: compiled code, the cost of an array that unpacks, lists built
+as Values first, arrays that start empty, and the gates not run.
 
 ## Reproduce
 

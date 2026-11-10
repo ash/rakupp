@@ -1379,6 +1379,15 @@ struct Value {
     PRef<ValueList> packedUnpackS() const;
     PackedArr* packed() const;   // the body, live or not; null unless pk_ == PK::Packed
     bool packedLive() const;
+    // No words behind this Array that a plain Array would not have: true of
+    // every other payload, and of an untyped Array that packed itself and has
+    // unpacked since, which is the Array it would have been (a native one
+    // keeps its own rules). What the plain-Array lanes ask.
+    bool noWords() const;
+    // …and this holder of such an Array takes the list itself, where the body
+    // answered with it: the same ValueList, so no other holder can tell.
+    // Only where no other thread can be reading this Value.
+    void packedSettle();
     ValueMap* hash() const {
         if (pk_ == PK::Hash) return pv<ValueMap>();
         if (pk_ == PK::Match) return pv<MatchData>()->named.get();
@@ -1835,8 +1844,9 @@ namespace rakupp {
 struct PackedArr {
     bool isNum = false;
     // An UNTYPED Array that packed itself (selfPack): its words are plain Nums
-    // only. No lane converts a value into it or pads it past its end, as one
-    // does for a `my num @a`; anything else unpacks it.
+    // only, or plain machine Ints only. No lane converts a value into it (a
+    // Bool is no 1 here), pads it past its end or wraps a result, as one does
+    // for a `my num @a` / `my int @a`; anything else unpacks it.
     bool selfPacked = false;
     std::vector<int64_t> w;
     PRef<ValueList> boxed;
@@ -1855,12 +1865,17 @@ inline bool plainWordValue(const Value& v, bool asNum) {
            v.enumName().empty() && v.enumType().empty() && v.hashKind.empty() && v.s.empty();
 }
 // A self-packing Array (JSC-VALUES-2026-11-07; Value.cpp): selfPack turns a
-// fresh untyped Array of plain Nums into the words of one, and selfPackCopy
-// copies a packed Num array's words into a fresh one. RAKUPP_NO_SELFPACK=1
-// turns both off; RAKUPP_SELFPACK_MIN=n is the fewest elements packed (8).
+// fresh untyped Array of plain Nums, or of plain machine Ints, into the words
+// of one, and selfPackCopy copies a packed array's words into a fresh one.
+// RAKUPP_NO_SELFPACK=1 turns both off, RAKUPP_NO_SELFPACK_INT=1 the Int kind
+// alone; RAKUPP_SELFPACK_MIN=n is the fewest elements packed (8).
 bool selfPackOn();
-bool selfPack(Value& a);
-bool selfPackCopy(const Value& src, Value& out);
+bool selfPackInts(size_t n);   // whether an untyped Array of n plain machine Ints packs itself
+bool plainIntRange(const Value& r, long long& lo, long long& hi);   // a Range that flattens to lo .. hi as machine Ints
+// `ints` false keeps to Nums: what compiled code asks, whose statements and
+// -O lanes read and store Num words and would send every Int word the long way.
+bool selfPack(Value& a, bool ints = true);
+bool selfPackCopy(const Value& src, Value& out, bool ints = true);
 // Callable::ColdPtr's members that copy or free a CallableCold, which holds
 // Values and so is complete only from here
 inline CodeInfo::ColdPtr::ColdPtr(const ColdPtr& o) { if (o.own) { p = new CallableCold(*o.p); own = true; } }
@@ -1935,6 +1950,18 @@ inline void Value::setFatRat(bool f) {
     if (p_.use_count() > 1) setRatBody(makePayload<RatBody>(*pv<RatBody>()));   // (a fresh body is not fat)
     if (f) p_.get()->pflags_.fetch_or(kPayFatRat, std::memory_order_relaxed);
     else p_.get()->pflags_.fetch_and(~(uint32_t)kPayFatRat, std::memory_order_relaxed);
+}
+inline bool Value::noWords() const {
+    if (pk_ != PK::Packed) return true;
+    const PackedArr* p = pv<PackedArr>();
+    return p->selfPacked && p->unpacked.load(std::memory_order_acquire);
+}
+inline void Value::packedSettle() {
+    if (pk_ != PK::Packed) return;
+    const PackedArr* p = pv<PackedArr>();
+    if (!p->selfPacked || !p->unpacked.load(std::memory_order_acquire)) return;
+    PRef<ValueList> l = p->boxed;   // (before the body's count drops)
+    p_ = l.slot(); pk_ = PK::List;
 }
 inline bool Value::packedLive() const {
     return pk_ == PK::Packed && !pv<PackedArr>()->unpacked.load(std::memory_order_acquire);
@@ -2018,6 +2045,11 @@ inline bool identityScalar(const Value& v) {
 // token once this one is gone, and two temporaries would share a WHICH.
 struct IdentityToken { std::uint64_t id; };
 std::uint64_t nextWhichSerial() noexcept;   // Which.cpp
+// An Array's WHICH serial follows it when its storage changes form (Which.cpp):
+// from the Array a list assignment replaces to the packed one that replaces
+// it, and from packed words to the list they unpack into
+void whichCarry(const Value& from, const Value& to) noexcept;
+void whichCarryUnpacked(const Value& packedHolder) noexcept;
 inline std::shared_ptr<void> identityToken() { return std::make_shared<IdentityToken>(IdentityToken{nextWhichSerial()}); }
 inline Value& identify(Value& v) { v.extM() = identityToken(); return v; }
 

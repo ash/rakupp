@@ -405,8 +405,15 @@ static bool packedUnpackBody(PackedArr* p) {   // true: this call unpacked it
     std::lock_guard<std::mutex> lk(g_packedMu);
     if (p->unpacked.load(std::memory_order_relaxed)) return false;
     auto l = makePayload<ValueList>();
-    l->reserve(p->w.size());
-    for (size_t i = 0; i < p->w.size(); i++) l->push_back(p->at(i));
+    // (each Value built in its slot: through push_back an element cost ~60
+    // instructions, which an Array that packs itself and unpacks pays in full)
+    l->appendConstructed(p->w.size(), [p](Value* first, size_t k) {
+        const int64_t* w = p->w.data();
+        if (p->isNum)
+            for (size_t i = 0; i < k; i++) { double d; std::memcpy(&d, &w[i], 8); ::new (static_cast<void*>(first + i)) Value(Value::number(d)); }
+        else
+            for (size_t i = 0; i < k; i++) ::new (static_cast<void*>(first + i)) Value(Value::integer(w[i]));
+    });
     p->boxed = l;
     // The words stay: a reader on another thread may be past its packedLive()
     // test and reading them (parallel mode is the default), and they cost 8
@@ -443,12 +450,12 @@ static void packedCensusNote(void* ra, size_t n) {
 #endif
 ValueList* Value::packedUnpack() const {
     PackedArr* p = pv<PackedArr>();
-    if (packedUnpackBody(p)) RAKUPP_PACKED_NOTE(p);
+    if (packedUnpackBody(p)) { RAKUPP_PACKED_NOTE(p); whichCarryUnpacked(*this); }
     return p->boxed.get();
 }
 PRef<ValueList> Value::packedUnpackS() const {
     PackedArr* p = pv<PackedArr>();
-    if (packedUnpackBody(p)) RAKUPP_PACKED_NOTE(p);
+    if (packedUnpackBody(p)) { RAKUPP_PACKED_NOTE(p); whichCarryUnpacked(*this); }
     return p->boxed;
 }
 
@@ -471,36 +478,68 @@ static size_t selfPackMin() {
     }();
     return m;
 }
+static bool selfPackIntOn() {
+    static const bool on = std::getenv("RAKUPP_NO_SELFPACK_INT") == nullptr;
+    return on;
+}
+// plainWordValue(v, asNum), asked of every element of a list: a plain Int
+// (Num) is `Value::integer(0)` (`number(0)`) with another first word, so one
+// comparison of the rest answers yes. Where a Value is not laid out that way
+// (wordFirst), or the bytes differ, plainWordValue has the last word.
+static const bool g_wordFirst = [] {
+    const Value a = Value::integer(0), b = Value::integer(0x5a5a5a5a5a5a5a5aLL);
+    return static_cast<const void*>(&a.i) == static_cast<const void*>(&a) && sizeof a.i == 8 &&
+           std::memcmp(reinterpret_cast<const char*>(&a) + 8, reinterpret_cast<const char*>(&b) + 8, sizeof(Value) - 8) == 0;
+}();
+static inline bool plainWordLike(const Value& v, const Value& proto, bool asNum) {
+    return (g_wordFirst && std::memcmp(reinterpret_cast<const char*>(&v) + 8, reinterpret_cast<const char*>(&proto) + 8,
+                                       sizeof(Value) - 8) == 0) ||
+           plainWordValue(v, asNum);
+}
+bool selfPackInts(size_t n) { return selfPackOn() && selfPackIntOn() && n >= selfPackMin(); }
 // `a`, a fresh Array no container shares yet: when it has nothing beside its
 // elements (no type, default, shape, laziness, bound element or tag) and
-// those are at least selfPackMin() plain Nums, its payload becomes their words
-bool selfPack(Value& a) {
+// those are at least selfPackMin() plain Nums, or as many plain machine Ints
+// (JSC's ArrayWithInt32; a big Int is none), its payload becomes their words
+bool selfPack(Value& a, bool ints) {
     if (!selfPackOn() || a.t != VT::Array || a.pk_ != PK::List || a.isList || a.itemized || !a.hashKind.empty() ||
         !a.s.empty() || !a.enumName().empty() || !a.enumType().empty() || a.ext() || a.shape() || !a.ofType().empty() ||
         a.elemDefault() || a.holdsContainers())
         return false;
     const ValueList* l = a.arr();
-    if (!l || l->size() < selfPackMin()) return false;
-    for (const Value& e : *l)
-        if (!plainWordValue(e, true)) return false;
+    if (!l || l->empty() || l->size() < selfPackMin()) return false;
+    const bool asNum = (*l)[0].t == VT::Num;
+    if (!asNum && !(ints && selfPackIntOn())) return false;
+    const Value proto = asNum ? Value::number(0) : Value::integer(0);
+    // (the first elements decide for most lists that will not pack, before a word is allocated)
+    const size_t n = l->size(), lead = n < 8 ? n : 8;
+    const Value* e = l->data();
+    for (size_t i = 0; i < lead; i++)
+        if (!plainWordLike(e[i], proto, asNum)) return false;
     auto pa = makePayload<PackedArr>();
-    pa->isNum = pa->selfPacked = true;
-    pa->w.reserve(l->size());
-    for (const Value& e : *l) pa->w.push_back(e.i);   // (`i` and `n` share one word)
+    pa->isNum = asNum;
+    pa->selfPacked = true;
+    pa->w.resize(n);
+    int64_t* w = pa->w.data();
+    for (size_t i = 0; i < n; i++) {
+        if (!plainWordLike(e[i], proto, asNum)) return false;
+        w[i] = e[i].i;   // (`i` and `n` share one word)
+    }
     a.setPacked(pa);
     return true;
 }
-// …and `my @v = @u` from a packed Num array, @u's own or a `my num` one: the
+// …and `my @v = @u` from a packed array, @u's own or a `my num` / `my int` one: the
 // words, into a fresh self-packed Array, where the general copy reads @u's
 // Values and so unpacks it for good
-bool selfPackCopy(const Value& src, Value& out) {
+bool selfPackCopy(const Value& src, Value& out, bool ints) {
     if (!selfPackOn() || src.t != VT::Array || src.itemized || src.isList || !src.packedLive() ||
         !src.hashKind.empty() || src.ext() || src.shape())
         return false;
     const PackedArr* sp = src.packed();
-    if (!sp->isNum || sp->w.size() < selfPackMin()) return false;
+    if ((!sp->isNum && !(ints && selfPackIntOn())) || sp->w.size() < selfPackMin()) return false;
     auto pa = makePayload<PackedArr>();
-    pa->isNum = pa->selfPacked = true;
+    pa->isNum = sp->isNum;
+    pa->selfPacked = true;
     pa->w = sp->w;
     out = Value::array();
     out.setPacked(pa);
@@ -1755,6 +1794,18 @@ ValueList Value::blobList() const {
 
 StrRangeElemsFn g_strRangeElems = nullptr;
 
+// A Range flatten() below walks as the machine Ints lo, lo+1, …, hi and
+// nothing else: finite, Int at both ends, neither end a big Int
+bool plainIntRange(const Value& r, long long& lo, long long& hi) {
+    if (r.t != VT::Range || r.rNum() || !r.ofType().empty() || r.ext() || degenRange(r) != DegenRange::No ||
+        r.rTo() >= 9000000000000000000LL || r.rFrom() <= -9000000000000000000LL)
+        return false;
+    if (const RangeEnds* re = rangeEnds(r))
+        if ((re->from.t == VT::Int && re->from.big()) || (re->to.t == VT::Int && re->to.big())) return false;
+    lo = r.rFrom() + (r.rExFrom() ? 1 : 0);
+    hi = r.rTo() - (r.rExTo() ? 1 : 0);
+    return true;
+}
 ValueList Value::flatten() const {
     ValueList out;
     forceLazy(*this);   // an unpulled gather flattens into its ELEMENTS

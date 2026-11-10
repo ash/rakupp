@@ -5889,16 +5889,21 @@ void Interpreter::arrayStore(Value& lvRef, Value& rhs, bool isAssign, bool dolla
         // PACKED-ARRAY-PLAN: `my int @a = LO .. HI` fills the words
         // straight from the Range, never building the Values a finite
         // Int Range would flatten to (coerceArray's plain Array of plain
-        // Ints, which is what they unpack to)
+        // Ints, which is what they unpack to). An untyped `my @a = LO .. HI`
+        // that would pack itself (selfPack) is filled the same way.
         bool packedNow = false;
         Value nv;
+        const bool selfRange = keepType.empty() && lv->hashKind.empty();
         if (isAssign && rhs.t == VT::Range && !rhs.rNum() && rhs.ofType().empty() &&
-            !rhs.ext() && (keepType == "int" || keepType == "int64") && !keepDefault &&
+            !rhs.ext() && (keepType == "int" || keepType == "int64" || selfRange) && !keepDefault &&
             lv->t == VT::Array && lv->payloadUnique() && !lv->elemDefault() && !lv->shape()) {
-            const long long lo = rhs.rFrom() + (rhs.rExFrom() ? 1 : 0);
-            const long long hi = rhs.rTo() - (rhs.rExTo() ? 1 : 0);
-            if (hi < lo || (unsigned long long)(hi - lo) < (1ull << 31)) {
+            long long lo = rhs.rFrom() + (rhs.rExFrom() ? 1 : 0);
+            long long hi = rhs.rTo() - (rhs.rExTo() ? 1 : 0);
+            if (selfRange ? plainIntRange(rhs, lo, hi) && hi >= lo && (unsigned long long)(hi - lo) < (1ull << 31) &&
+                                selfPackInts((size_t)(hi - lo) + 1)
+                          : hi < lo || (unsigned long long)(hi - lo) < (1ull << 31)) {
                 auto pa = makePayload<PackedArr>();
+                pa->selfPacked = selfRange;
                 if (hi >= lo) {
                     pa->w.reserve((size_t)(hi - lo) + 1);
                     for (long long k = lo; k <= hi; k++) pa->w.push_back(k);
@@ -6034,7 +6039,7 @@ void Interpreter::arrayStore(Value& lvRef, Value& rhs, bool isAssign, bool dolla
         // copy here for a buffer about to be thrown away. A shared buffer
         // (a lazy RHS passes its own arr through) still copies: moving out
         // of it would gut the list the RHS still holds.
-        if (packedNow) {}   // (lv's storage had no other holder: nv's words replace it)
+        if (packedNow) whichCarry(*lv, nv);   // (lv's storage had no other holder: nv's words replace it, and are that Array)
         else if (lv->t == VT::Array && lv->arr() && nv.arr() && lv->arr() != nv.arr()) { raceLen(lv->arr(), RaceAcc::Write);
             // Under the storage's stripe: two threads refilling one array each
             // freed its old buffer, and the second free aborted the process.
@@ -6093,7 +6098,8 @@ bool Interpreter::packedElemStore(Assign* a, Value& out) {
     Value v = eval(a->value.get());
     v.readonly = v.immutableBind = false;
     if (v.natBits() == 64 && (pa->isNum ? v.natFloat : v.natSigned && !v.natFloat)) dropNativeTags(v);
-    if (!pa->isNum && v.t == VT::Bool) v = Value::integer(v.b ? 1 : 0);   // (an int array holds True as 1)
+    // (an int array holds True as 1; an untyped one that packed itself holds True)
+    if (!pa->isNum && !pa->selfPacked && v.t == VT::Bool) v = Value::integer(v.b ? 1 : 0);
     if (!plainWordValue(v, pa->isNum)) return false;
     // past the end (an `=` only): the gap holds the native default, 0 or 0e0,
     // whose bits are all zero — as `my int @a; @a[3] = 7` is (0, 0, 0, 7)

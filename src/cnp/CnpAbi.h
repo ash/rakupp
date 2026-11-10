@@ -56,7 +56,7 @@
 typedef struct RkCnpView {
     int64_t* const* w;               // the words' std::vector: its begin, then its end
     const volatile uint8_t* gone;    // PackedArr::unpacked
-    uint64_t tag;                    // RK_T_INT or RK_T_NUM
+    uint64_t tag;                    // RK_T_INT or RK_T_NUM; | 0x100: no Bool stored as 1
 } RkCnpView;
 
 // `r` and `t` are passed to every stencil as arguments as well as living here,

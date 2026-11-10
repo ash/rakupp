@@ -156,7 +156,7 @@ A first argument that is one of these words is a command, not a program file.
 | `RAKUPP_NO_KERNELS=1` | run subs and loops over plain Ints, Nums and Strs the ordinary way, not as kernels on machine values; under `--exe`, no integer sub twins either. The kernels' oracle is the same build with this set |
 | `RAKUPP_KERNEL_TRACE=1` | name each sub and loop as its kernel is decided |
 | `RAKUPP_HYPER_THREADS=N` | cap the threads the hyper-operator kernels split a long operand over; `1` is serial |
-| `RAKUPP_NO_SELFPACK=1` | do not pack a fresh untyped Array of plain Nums into machine words; `RAKUPP_SELFPACK_MIN=n` is the fewest elements packed |
+| `RAKUPP_NO_SELFPACK=1` | do not pack a fresh untyped Array of plain Nums or plain machine Ints into machine words; `RAKUPP_NO_SELFPACK_INT=1` keeps Nums packing and turns the Ints off; `RAKUPP_SELFPACK_MIN=n` is the fewest elements packed |
 | `RAKUPP_NO_AOT=1` | `--exe`: keep the embedded modules' routines interpreted (`RAKUPP_AOT_VERBOSE=1` says why one stays interpreted) |
 | `RAKUPP_AOT_REPORT=FILE` | `--exe`: write which module routines got native bodies and why the others did not |
 | `RAKUPP_AOT_RUNLOG=FILE` | in a compiled binary: at exit, write how often each native module body was entered or declined |
