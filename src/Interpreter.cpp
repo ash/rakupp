@@ -782,7 +782,7 @@ Value numifyStr(std::string_view in) {
                     (closeCh == 0 || s.back() == closeCh)) {
                     std::string baseStr = s.substr(off + 1, lt - off - 1);
                     if (std::regex_match(baseStr, reDec)) {
-                        int base = std::atoi(baseStr.c_str());
+                        int base = baseStr.size() > 9 ? INT_MAX : std::atoi(baseStr.c_str());   // (atoi wrapped a long one: `:4294967298<11>` was read in base 2)
                         size_t closeLen = closeCh ? 1 : kCloseFr.size();
                         if (base >= 2 && base <= 36)
                             return parseRadix(s.substr(lt + openLen,
