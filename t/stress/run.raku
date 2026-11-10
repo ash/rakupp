@@ -122,12 +122,6 @@ sub unlocked-stores(Str $err) {
         for @l.kv -> $i, $line {
             next unless $line ~~ /^ '  ' ['Write' | 'Previous write'] ' of size' /;
             next if $line.contains('mutexes:');
-            # A new body's count being initialised is no store into a slot: it
-            # is the far side of the tolerated read above, a copy of `*lv`
-            # taken after the stripe is released, whose value the other thread
-            # has dropped and whose memory a new body has taken. It shows now
-            # that a Str of 8 to 15 bytes has a body (the 32-byte Value).
-            next if (@l[$i + 1] // '') ~~ / '__atomic_base<' <-[>]>+ '>::__atomic_base(' | '__cxx_atomic_base_impl<' <-[>]>+ '>::__cxx_atomic_base_impl(' /;
             @hits.push: (@l[$i + 1] // '').trim ~ ' <- ' ~ (@l[$i + 2] // '').trim;
         }
     }

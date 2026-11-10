@@ -13638,7 +13638,7 @@ Value Interpreter::evalAssign(Assign* a, bool sink) {
                     }
                     else *lv = std::move(h);
                 }
-                return sink ? Value::any() : *lv;
+                return slotOut(lv, sink);
             }
         }
     }
@@ -14477,7 +14477,7 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
                 Value rhs = eval(a->value.get()); lv = home.now(lv);
                 std::string bin = a->op.substr(0, a->op.size() - 1);   // "+=" -> "+"
                 raceW(lv) = opEq(a->op, "=") ? rhs : applyBinOp(bin, *lv, rhs);
-                return sink ? Value::any() : *lv;
+                return slotOut(lv, sink);
             }
         }
     }
@@ -14503,7 +14503,7 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
                     if (lv->t == VT::Hash && lv->hash()) { *lv->hash() = *h.hash(); }
                     else *lv = h;
                 }
-                return sink ? Value::any() : *lv;
+                return slotOut(lv, sink);
             }
         }
     }
@@ -16011,7 +16011,7 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
             }
             Value* lv = lvalue(a->target.get());
             raceW(lv) = b;
-            return sink ? Value::any() : *lv;
+            return slotOut(lv, sink);
         }
         // `my \x = $ = 5` / `my \x = my $y = 3`: the right side DECLARES the
         // container it leaves, and x binds to it — a writable anonymous Scalar,
@@ -16967,7 +16967,7 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
                 Value nv = coerceHash(rhs, /*store=*/true, box.objKeyed);
                 if (nv.hash() && box.hash()) *box.hash() = *nv.hash();
                 else if (nv.hash()) { auto kind = box.hashKind; box = nv; box.hashKind = kind; }
-                return sink ? Value::any() : *lv;
+                return slotOut(lv, sink);
             }
             // `%a := %b` BINDS: both names are the same hash from then on, so a
             // write through either is visible through the other. The coercion
@@ -16991,7 +16991,7 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
                                 "might happen to contain elements of the\ncorrect type.");
                     }
                 }
-                raceW(lv) = rhs; return sink ? Value::any() : *lv;
+                raceW(lv) = rhs; return slotOut(lv, sink);
             }
             // `my %h := $obj` where the object DOES Associative binds the object
             // itself — coercing it to a plain Hash threw away every method the
@@ -17000,7 +17000,7 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
             // next line calls `.convert-function` on it.
             if (opEq(a->op, ":=") && rhs.t == VT::Object && rhs.obj() && rhs.obj()->cls &&
                 typeOrSubsetMatches(rhs, "Associative"))
-                { *lv = rhs; return sink ? Value::any() : *lv; }
+                { *lv = rhs; return slotOut(lv, sink); }
             // A name BOUND to a Map names an immutable container, so assigning a
             // new list of pairs to it is refused outright (sheet HM-14) — it
             // used to replace the Map with a plain Hash and lose the type.
@@ -17352,7 +17352,7 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
                 rk != NK::Call && rk != NK::SymbolicRef)
                 lv->readonly = true;
         }
-        return sink ? Value::any() : *lv;
+        return slotOut(lv, sink);
     }
 
     // compound assignment
@@ -17364,7 +17364,7 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
         Value* lv = lvalue(a->target.get());
         Value r = eval(a->value.get());
         raceW(lv) = applyBinOp(base, *lv, r);
-        return sink ? Value::any() : *lv;
+        return slotOut(lv, sink);
     }
     // `A R= B` is plain assignment with the roles swapped: `B = A`.
     if (opEq(a->op, "R=")) {
@@ -17374,7 +17374,7 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
             throwNotWritable(*lv);
         v.readonly = v.immutableBind = false;
         raceW(lv) = std::move(v);
-        return sink ? Value::any() : *lv;
+        return slotOut(lv, sink);
     }
     if (a->op.size() > 2 && a->op[0] == 'R' && a->op.back() == '=' &&
         !ascii::isalnum((unsigned char)a->op[1])) {
@@ -17383,7 +17383,7 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
         Value l = eval(a->target.get());
         Value* rv = lvalue(a->value.get());
         *rv = uniOpAscii(base) ? applyBinOp(base, *rv, l) : applyArith(base, *rv, l);   // `R×=`
-        return sink ? Value::any() : *rv;
+        return slotOut(rv, sink);
     }
     {   // short-circuit family: the RHS is thunked, and the target only needs to
         // be assignable when the assignment happens (`1 or= $x++` neither dies
@@ -17464,14 +17464,14 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
                 ParStripe ws(*this, lv);
                 keptEndsRefill(lv->arr());
                 lv->arr()->swap(items); raceLen(lv->arr(), RaceAcc::Write);
-                return sink ? Value::any() : *lv;
+                return slotOut(lv, sink);
             }
             if (hashTarget) {
                 Value h = rhs.t == VT::Hash && !rhs.itemized ? rhs : methodCall(rhs, "Hash", ValueList{});
                 if (h.t == VT::Hash && h.hash()) {
                     ParStripe ws(*this, lv);
                     *lv->hash() = *h.hash(); raceKeys(lv->hash(), RaceAcc::Write);
-                    return sink ? Value::any() : *lv;
+                    return slotOut(lv, sink);
                 }
             }
             // a `$` variable or one element is a scalar container and holds a

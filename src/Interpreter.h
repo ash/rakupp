@@ -3429,6 +3429,10 @@ public:
         return rs.l.owns_lock() ? (copy = *p) : *p;
     }
     Value slotRead(const Value* p) const { SlotStripe rs(*this, p, RaceAcc::None); return *p; }
+    // What an assignment answers: the slot's value, copied under its stripe.
+    // Its store has let the stripe go by then, and another thread's store
+    // frees what an unlocked copy is still counting (private-eval under TSan).
+    Value slotOut(const Value* p, bool sink) const { return sink ? Value::any() : slotRead(p); }
     void slotStore(Value* p, const Value& v) const { SlotStripe ws(*this, p, RaceAcc::Write); *p = v; }
     void slotStore(Value* p, Value&& v) const { SlotStripe ws(*this, p, RaceAcc::Write); *p = std::move(v); }
     void opAssignArith(Value* lv, const char* op, const Value& r);          // `*lv = applyArith(op, *lv, r)`, so
