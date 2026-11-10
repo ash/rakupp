@@ -215,7 +215,8 @@ reaches the lexer the other way round: when the parser's scan of a `use`d
 module (Chapter 6) finds an exported operator or term whose spelling the
 built-in rules would split, it hands every spelling in scope to a fresh lexer
 through `noteUserOp` and re-lexes the rest of the file. That closed what used
-to be a real limitation — an imported `⨁⨁` lexed as two `⨁`s.
+to be a real limitation: an imported operator spelled with one symbol
+twice was lexed as two of the one-symbol operator.
 
 The vocabulary also covers Unicode aliases (`≤` for `<=`), hyper metaoperators
 (`»op«`), and the set operators (`(elem)`, `∈`). That part is static — but "the

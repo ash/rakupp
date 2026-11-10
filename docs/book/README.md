@@ -6,7 +6,7 @@ run modes, the two code generators and the optimizer, the two tier-up back
 ends, module loading, NativeCall, the extension ABI, and the concurrency
 runtime.
 
-**[Raku++-Internals.pdf](Raku++-Internals.pdf)** — 431 pages, 44 chapters in
+**[Raku++-Internals.pdf](Raku++-Internals.pdf)** — 511 pages, 44 chapters in
 ten parts, plus four appendices under a divider of their own.
 
 ## Building it
@@ -90,7 +90,7 @@ measures a different book. Measured against an earlier build, the recipe this
 file used to give reported **402**, and adding back the `--from …+smart` and
 `--highlight-style tango` that `build.raku` passes brought it to **400**,
 against a shipped **397** — three counts for one book. The number to trust is
-the one `pdfinfo` reads from the shipped file, which is now **423**, and past
+the one `pdfinfo` reads from the shipped file, which is now **511**, and past
 which `pdftotext` refuses a page. If you do run the LaTeX by hand anyway, use the merged `.book.md` the
 builder leaves behind under `--keep`, not `cat ch/*.md`: `cat` puts no blank
 line between files, so each chapter's `#` heading becomes a lazy continuation
