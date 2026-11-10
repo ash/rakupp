@@ -617,7 +617,7 @@ sub installer-p(*@args, :$cwd, :$home = $phome, :$index) {
     my $p = run 'env', "HOME={$home}",
                 |($index ?? ("RAKUPP_INSTALL_INDEX={$index}",) !! ()),
                 $EXE, 'install', |@args, :out, :err,
-                |($cwd ?? (:cwd($cwd),) !! ());
+                |($cwd ?? %(:cwd($cwd)) !! %());
     my $out = $p.out.slurp(:close);
     my $err = $p.err.slurp(:close);
     { exit => (try $p.exitcode) // 1, out => $out, err => $err }
