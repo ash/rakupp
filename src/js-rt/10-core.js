@@ -686,7 +686,8 @@ function numToStr(n) {
     if (n === -Infinity) return '-Inf';
     if (Number.isNaN(n)) return 'NaN';
     if (n === 0) return Object.is(n, -0) ? '-0' : '0';
-    if (Number.isInteger(n) && Math.abs(n) < 1e15) return String(n);
+    // (1e16 is Rakudo's integer-form boundary, and the C++ runtime's: `say 1e15` is 1000000000000000)
+    if (Number.isInteger(n) && Math.abs(n) < 1e16) return String(n);
     // a subnormal's shortest form can be under 15 digits (9e-320)
     for (let prec = Math.abs(n) < 2.2250738585072014e-308 ? 1 : 15; prec <= 17; prec++) {
         const s = fmtG(n, prec);
