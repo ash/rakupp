@@ -899,6 +899,7 @@ Value rtNqpOp(NqpOpc op, ValueList& v) {
         case O::DivI: {
             long long x = I(0), y = I(1);
             if (!y) throw RakuError{Value::typeObj("X::AdHoc"), "Division by zero"};
+            if (y == -1) return Value::integer((long long)(0ULL - (unsigned long long)x));   // (wraps, as MoarVM: LLONG_MIN / -1 traps on x86-64)
             long long q = x / y, r = x % y;
             if (r && ((r ^ y) < 0)) q--;          // C truncates; step down to the floor
             return Value::integer(q);
@@ -1561,7 +1562,7 @@ Value rtNqpOp(NqpOpc op, ValueList& v) {
             // "Division by zero", mod_i says this. Answering 0 here was the
             // earlier behaviour and no engine does it.
             if (!y) throw RakuError{Value::typeObj("X::AdHoc"), "Modulation by zero"};
-            return Value::integer(x % y);
+            return Value::integer(y == -1 ? 0 : x % y);   // (LLONG_MIN % -1 traps on x86-64)
         }
         // nqp::findcclass(class, str, start, count) — the FIRST position in the
         // window whose character IS of the class, or the window's end (the
