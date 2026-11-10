@@ -74,6 +74,11 @@
 \newunicodechar{⟧}{\fbs{⟧}}   % U+27E7 MATHEMATICAL RIGHT WHITE SQUARE BRACKET
 \newunicodechar{「}{\fbc{「}}   % U+300C LEFT CORNER BRACKET
 \newunicodechar{」}{\fbc{」}}   % U+300D RIGHT CORNER BRACKET
+% U+2A01 N-ARY CIRCLED PLUS OPERATOR is a maths operator to unicode-math,
+% which loads after this preamble and takes the character back: mapped here
+% like the rest, a ⨁ in text still stops the run with "Missing $ inserted".
+% Mapped once the document begins, the mapping is the one that holds.
+\AtBeginDocument{\newunicodechar{⨁}{\fbs{⨁}}}
 
 % ---------------------------------------------------------------- diagrams
 % The fallbacks above are declared at the surrounding text size, which is what
