@@ -4,6 +4,7 @@
 #include "Parser.h"      // rakuppFindModuleSource
 #include <algorithm>
 #include <cstdlib>
+#include <cstring>
 #include <iostream>
 #include <set>
 #include <string>
