@@ -2670,7 +2670,7 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
             return j;
         }
         if (m == "Supply") { Value s = Value::makeHash(); s.hashKind = "Supply"; Value v = Value::array(); *v.arr() = items; (*s.hash())["values"] = v; return s; }
-        if (m == "chrs") { std::string r; for (auto& x : items) { if (x.t == VT::Nil) warnUninit("Use of Nil in numeric context"); r += cpToUtf8((uint32_t)x.toInt()); } return Value::str(nfcNormalize(std::move(r))); } // list of codepoints -> Str (NFC)
+        if (m == "chrs") { std::string r; for (auto& x : items) { if (x.t == VT::Nil) warnUninit("Use of Nil in numeric context"); r += chrsCp(x); } return Value::str(nfcNormalize(std::move(r))); } // list of codepoints -> Str (NFC)
         if (m == "of") return Value::typeObj("Mu"); // element type of an untyped Array/List
         // the positional protocol, spelled out — a Range answers these as the
         // list it stands for, and an Array/List does too
