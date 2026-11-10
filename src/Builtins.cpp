@@ -5535,7 +5535,27 @@ static void jfOutside(const Value& v, const JfOpts& o, const char* why, std::str
     out += '"'; jfEscape(v.toStr(), out); out += '"';
 }
 
+// The containers the encoder is inside of, outermost first. One that is
+// already there contains itself — `my @a; @a[0] = @a; to-json(@a)` wrote
+// brackets until it was killed — and one past the depth from-json reads back
+// (BuiltinsJson.cpp) could not be read back.
+static thread_local std::vector<const void*> jfPath;
+struct JfInside {
+    bool on = false;
+    explicit JfInside(const Value& v) {
+        const void* p = v.t == VT::Array && v.arr() ? (const void*)&*v.arr()
+                      : v.t == VT::Hash && v.hash() ? (const void*)&*v.hash() : nullptr;
+        if (!p) return;
+        if (std::find(jfPath.begin(), jfPath.end(), p) != jfPath.end())
+            throw RakuError{Value::typeObj("X::AdHoc"), "to-json: cannot write a structure that contains itself"};
+        if (jfPath.size() >= 20000)
+            throw RakuError{Value::typeObj("X::AdHoc"), "to-json: the structure is nested deeper than 20000 levels"};
+        jfPath.push_back(p); on = true;
+    }
+    ~JfInside() { if (on) jfPath.pop_back(); }
+};
 static void jfEncode(const Value& v, const JfOpts& o, int level, std::string& out) {
+    JfInside inside(v);
     // jsonify is one big `with obj` — anything undefined lands in its else and
     // renders "null". rtIsDefined is the one rule for that, and it knows what
     // the switch below cannot see: an enum TYPE object materializes as a
