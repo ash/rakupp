@@ -289,4 +289,16 @@ ExprPtr Parser::builtinOpCall(const std::string& name, std::vector<ExprPtr>& arg
     return nullptr;
 }
 
+// What a `\x[…]`, `\o[…]` or `\c[…]` escape names has to be a codepoint:
+// `"\x[110000]"` made a Str of four bytes that are no UTF-8, where Rakudo
+// refuses the literal. (Here, not beside its two callers in Parser.cpp, which
+// is at its line ceiling.)
+void escapeCodepointCheck(long cp, int line) {
+    if (cp >= 0 && cp <= 0x10FFFF) return;
+    char hex[24]; std::snprintf(hex, sizeof hex, "%lX", (unsigned long)cp);
+    throw ParseError(cp < 0 ? "chr codepoint " + std::to_string(cp) + " cannot be negative"
+                            : "chr codepoint " + std::to_string(cp) + " (0x" + hex + ") is out of bounds",
+                     line, "X::Comp::AdHoc", {});
+}
+
 } // namespace rakupp
