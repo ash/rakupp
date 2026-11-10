@@ -61,7 +61,7 @@ constant @K =
 
 sub rotr($x, $n) { (($x +> $n) +| ($x +< (32 - $n))) +& 0xFFFFFFFF }
 
-sub sha256(Buf $msg --> Buf) {
+sub sha256(Blob $msg --> Buf) {
     my @h = 0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a,
             0x510e527f, 0x9b05688c, 0x1f83d9ab, 0x5be0cd19;
     my @m = $msg.list;
@@ -98,14 +98,14 @@ sub sha256(Buf $msg --> Buf) {
     Buf.new(@h.map({ ($_ +> 24) +& 0xFF, ($_ +> 16) +& 0xFF, ($_ +> 8) +& 0xFF, $_ +& 0xFF }).flat);
 }
 
-sub hmac-sha256(Buf $key, Buf $msg --> Buf) {
+sub hmac-sha256(Blob $key, Blob $msg --> Buf) {
     my @k = $key.elems > 64 ?? sha256($key).list !! $key.list;
     @k.push(0) while @k.elems < 64;
     my $inner = sha256(Buf.new(@k.map(* +^ 0x36), |$msg.list));
     sha256(Buf.new(@k.map(* +^ 0x5c), |$inner.list));
 }
 
-sub hex(Buf $b) { $b.list.map({ .fmt('%02x') }).join }
+sub hex(Blob $b) { $b.list.map({ .fmt('%02x') }).join }
 
 # RFC 4231, cases 1 and 2 — if these hold, an agreeing kernel is right too.
 check hex(sha256('abc'.encode('utf8'))) eq
