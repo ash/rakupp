@@ -21146,7 +21146,7 @@ Value Interpreter::regexMatch(const std::string& subject, std::string_view patte
         try { out = evalString(code); }
         catch (FeatureNotBuilt& e) { featThrow = true; fe = e; }
         catch (RakuError& e) { if (!regexBlockErrorStaysQuiet(e)) rakuErr = std::current_exception(); } // `<?{ die }>` leaves the parse (Rakudo) — re-raised after the restores
-        catch (...) {}
+        catch (ExitEx&) { throw; } catch (WorkerAbortEx&) { throw; } catch (...) {}   // (an `exit` in the block leaves, and a worker told to stop does: both were swallowed here, and the match went on)
         for (auto it = savedCaps.rbegin(); it != savedCaps.rend(); ++it)
             tctx().cur->define(it->first, it->second);
         if (Value* s2 = tctx().cur->find("$/")) { if (hadSlash) *s2 = savedSlash; }
@@ -21232,7 +21232,7 @@ Value Interpreter::regexMatch(const std::string& subject, std::string_view patte
             try { evalString(code); }
             catch (FeatureNotBuilt& e) { featThrow = true; fe = e; }
             catch (RakuError& e) { if (!regexBlockErrorStaysQuiet(e)) rakuErr = std::current_exception(); } // a `die` in a block LEAVES the parse (Rakudo) — re-raised after the restores
-            catch (...) {}
+            catch (ExitEx&) { throw; } catch (WorkerAbortEx&) { throw; } catch (...) {}   // (as the first of these)
             tctx().makeTargets.pop_back();
             if (tgt.pairVal()) inlineMade = tgt.pairValS();
             // All of these are scoped to the block: the caller sets `$/` and the
@@ -21312,7 +21312,7 @@ Value Interpreter::regexMatch(const std::string& subject, std::string_view patte
                 try { evalString(code); }
                 catch (FeatureNotBuilt&) { tctx().makeTargets.pop_back(); throw; }
                 catch (RakuError& e) { if (!regexBlockErrorStaysQuiet(e)) { tctx().makeTargets.pop_back(); throw; } } // a `die` leaves the parse (a quiet one falls to the pop below)
-                catch (...) {}
+                catch (ExitEx&) { throw; } catch (WorkerAbortEx&) { throw; } catch (...) {}   // (as the first of these)
                 tctx().makeTargets.pop_back();
                 if (tgt.pairVal()) inlineMade = tgt.pairValS();
             }
@@ -21320,7 +21320,7 @@ Value Interpreter::regexMatch(const std::string& subject, std::string_view patte
                 try { evalString(code); }
                 catch (FeatureNotBuilt&) { throw; }
                 catch (RakuError& e) { if (!regexBlockErrorStaysQuiet(e)) throw; } // a `die` leaves the parse
-                catch (...) {}
+                catch (ExitEx&) { throw; } catch (WorkerAbortEx&) { throw; } catch (...) {}   // (as the first of these)
             }
         };
         rmHooks.assertPassCaps = assertCaps; rmHooks.assertPassCursor = assertCursor;
@@ -21329,7 +21329,7 @@ Value Interpreter::regexMatch(const std::string& subject, std::string_view patte
             Value v;
             try { v = evalString(code); }
             catch (FeatureNotBuilt&) { throw; }
-            catch (...) {}
+            catch (ExitEx&) { throw; } catch (WorkerAbortEx&) { throw; } catch (...) {}   // (as the first of these)
             return dynQuantLimits(v, false);
         };
         wantHooks = true;
