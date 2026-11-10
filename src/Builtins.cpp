@@ -3656,7 +3656,11 @@ std::string doSprintf(const std::string& fmt, const ValueList& args, int langRev
         if (j >= fmt.size()) sprintfUnsupported(fmt.substr(i + 1), fmt); // a `%` with nothing to end it
         char conv = fmt[j];
         switch (conv) {
-            case '%': out += '%'; break;
+            case '%': {   // (a width pads it, as any directive's: `%5%` was a bare `%`)
+                const int pad = width - 1;
+                if (pad > 0 && flags.find('-') != std::string::npos) out += "%" + std::string(pad, ' ');
+                else out += (pad > 0 ? std::string(pad, flags.find('0') != std::string::npos ? '0' : ' ') : std::string()) + "%";
+                break; }
             case 'd': case 'i': {
                 // an arbitrary-precision Int (or a Rat/Num too big for long long)
                 // formats from its exact decimal digits, not a saturated toInt()

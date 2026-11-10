@@ -60,7 +60,7 @@ and from the review of src/ (docs/dev/findings/src-review-2026-11-09.md): d389b3
 9c5c4d82, 7e9c0387, 0c64680d, 60e9df1f, c6791c72, fbfa041a, 9d2cf3bf, 016f8d57,
 6d62482c, 96c81b9a, 31565ae4, a8ac64a6, 3d5ae806, ab615543, 44502bd4, 7e251a18,
 33adda5f, 91f64325, 03b3879f, 853fc96e, 6cb23670, cfa535d7, 1fae9cc8, 9454d20f,
-6f4bee22, 3178a8ca.*
+6f4bee22, 3178a8ca, a8f46ba4.*
 
 ---
 
@@ -200,6 +200,9 @@ and from the review of src/ (docs/dev/findings/src-review-2026-11-09.md): d389b3
 
 ### Fixed: silent wrong answers
 
+- **`%%` with a width pads its percent sign** (a8f46ba4): `sprintf("%5%|%-5%|")`
+  was "%|%|", where Rakudo has "    %|%    |"; `%05%` zero-pads. Finding E8 of
+  the review of src/. `t/regression/sprintf-percent-takes-width.raku`.
 - **An `exit` in a regex's code block ends the program** (1fae9cc8): `"abc" ~~
   / a { exit 3 } b /; say "still running"` said still running and ended with
   0 — in a `{ }` block, a `<?{ }>` assertion, a `<{ }>` pattern and a grammar
@@ -1135,3 +1138,17 @@ and from the review of src/ (docs/dev/findings/src-review-2026-11-09.md): d389b3
   ~~ / a { $n++; last } b / }; say $n` says 3, where Rakudo has 1. And the
   Supply taps of BuiltinsSupply.cpp still run inside 42 catches of everything,
   which take a `die` and an `exit` in a tap (finding K4.1, not run).
+- From the review of src/, probed against Rakudo 2026.09 and left as they
+  were:
+  - a Pair that holds an Array has its payload's ADDRESS for a WHICH, which the
+    next such Pair gets — `(^5).map({ (a => [$_]).WHICH }).unique.elems` is 1,
+    where Rakudo has 5 (finding I2). A serial per Pair is not the cure: tried,
+    it failed S32-list/pick.t, S32-list/roll.t and the `Pair.freeze` group of
+    6.c/APPENDICES/A03-older-specs/01-misc.t, because a Pair taken from a hash
+    entry is identified by the entry's value container, which two takes share.
+    The serial has to be that container's;
+  - `(k => $o) === (k => $o)` for an object $o is True, where Rakudo has False;
+  - a `die` in a Supplier's tap is dropped — `$s.Supply.tap({ die "boom" });
+    try { $s.emit(1) }` leaves $! empty, where Rakudo raises it at the emit —
+    and a `die` in a Supply's `.map` ends the program, where Rakudo hands it to
+    the tap's `quit` (finding K4.1; an `exit` in a tap does end the program).
