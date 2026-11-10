@@ -58,7 +58,8 @@ f11a9f04, 88f81c1f, 655d13dd;
 and three more: 63b92af7, f929935a, ae3321f2;
 and from the review of src/ (docs/dev/findings/src-review-2026-11-09.md): d389b329,
 9c5c4d82, 7e9c0387, 0c64680d, 60e9df1f, c6791c72, fbfa041a, 9d2cf3bf, 016f8d57,
-6d62482c, 96c81b9a, 31565ae4, a8ac64a6, 3d5ae806, ab615543, 44502bd4, 7e251a18.*
+6d62482c, 96c81b9a, 31565ae4, a8ac64a6, 3d5ae806, ab615543, 44502bd4, 7e251a18,
+33adda5f, 91f64325, 03b3879f, 853fc96e, 6cb23670, cfa535d7.*
 
 ---
 
@@ -198,6 +199,13 @@ and from the review of src/ (docs/dev/findings/src-review-2026-11-09.md): d389b3
 
 ### Fixed: silent wrong answers
 
+- **A string escape past the last codepoint is a compile error** (91f64325),
+  as on Rakudo: `"\x[110000]"` was a Str of four bytes that are no UTF-8.
+  Finding G8. `t/regression/string-escape-past-last-codepoint.raku`.
+- **A `**` count that no native integer holds is a compile error, and so is
+  `**^0`** (03b3879f): `/a ** 2..99999999999999999999999/` matched ｢aaaa｣,
+  `/a ** 99999999999999999999/` nothing, and `**^0` was read as `*`. Finding
+  F5. `t/regression/regex-quantifier-count-edges.raku`.
 - **An error a user `infix:<OP>` raises reaches the caller of `OP=`**
   (31565ae4): `sub infix:<+>(A $a, $b) { die "boom" }; my $x = A.new; $x += 1`
   dropped the boom, ran the built-in `+` and left $x a Num. Only a call the
@@ -614,6 +622,15 @@ and from the review of src/ (docs/dev/findings/src-review-2026-11-09.md): d389b3
 
 ### Fixed: crashes
 
+- **`.base`'s digit count and `.indent`'s amount are capped** (33adda5f) at
+  what a Str has graphemes, as Rakudo caps them and in its words:
+  `255.base(16, 99999999999)` and `"abc".indent(99999999999)` filled memory
+  until the process was killed. Finding D2 of the review of src/.
+  `t/regression/base-indent-count-is-capped.raku`.
+- **`to-json` of a structure that contains itself is refused** (853fc96e), and
+  one nested past the 20000 levels `from-json` reads back: `my @a; @a[0] = @a;
+  to-json(@a)` wrote brackets until it was killed (JSON::Fast under Rakudo
+  does the same). Finding E1. `t/regression/to-json-of-a-cycle-is-refused.raku`.
 - **Ref, PayRef and PRef read the source's pointer before releasing their own**
   (7e251a18) in a copy-assignment: the source may live in what the target alone
   owned, and was read after that was freed. Hidden by the slab pool's free
@@ -942,6 +959,12 @@ and from the review of src/ (docs/dev/findings/src-review-2026-11-09.md): d389b3
 
 ### Tools
 
+- **The LSP's JSON reader checks the word of a literal** (6cb23670): `t`, `f`
+  and `n` each skipped four or five characters whatever followed. Finding I6
+  of the review of src/; checked by hand, no test.
+- **A JIT kernel that failed to compile is seen as one** (cfa535d7): the
+  command's status was that of the `rm -f` it ended in, always 0. Finding H6;
+  no test (nothing here makes a compile fail).
 - **`rakupp install` cleans up without `rm`** (20f0691d; issue #228). Its
   three scratch directories were removed with `rm -rf`, so on Windows every
   distribution printed "'rm' is not recognized" and the last cleanup died
