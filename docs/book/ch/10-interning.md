@@ -1,6 +1,6 @@
 # Interning and Comparison: `IStr` and `MName`
 
-Two small headers, ninety lines each, both solving the same shape of problem:
+Two small headers, both solving the same shape of problem:
 **a string that is compared far more often than it is created**. They arrived
 from different directions and ended up with almost the same interface, which is
 itself the point.
@@ -8,9 +8,8 @@ itself the point.
 ## `MName`: the method name as the dispatcher sees it
 
 Method dispatch on a built-in value is a long ladder of name comparisons in
-`Builtins.cpp` and the five `MethodCallPart*.cpp` files that continue it — roughly
-1,640 of them. So the
-comparison itself is hot.
+`Builtins.cpp` and the `MethodCall*.cpp` files that continue it — roughly
+1,640 of them when this was measured. So the comparison itself is hot.
 
 The path to this fix is worth following, because two plausible diagnoses were
 ruled out by measurement before the real one was found.
@@ -116,34 +115,49 @@ The strings that ever reach these fields are a small closed set in practice:
 container kinds and type names. So intern them.
 
 ```cpp
-// src/IStr.h
+// src/IStr.h — abridged
 struct IStr {
-    struct Entry { std::string s; std::size_t n; std::uint64_t pre; };
-    const Entry* e = nullptr;      // null IS the empty string
+    struct Entry { std::string s; std::size_t n = 0; std::uint64_t pre = 0; };
+    std::uint32_t id = 0;          // zero IS the empty string
 
-    static const Entry* intern(const char* p, std::size_t k) {
-        if (!k) return nullptr;
-        static std::deque<Entry> storage;   // stable addresses
-        static std::unordered_map<std::string, const Entry*> index;
+    static constexpr unsigned kChunkBits = 10;
+    static constexpr std::uint32_t kChunk = 1u << kChunkBits;
+    static Entry** chunks();       // a fixed array of chunk pointers
+    static const Entry& entryOf(std::uint32_t i) {
+        return chunks()[i >> kChunkBits][i & (kChunk - 1)];
+    }
+
+    static std::uint32_t intern(const char* p, std::size_t k) {
+        if (!k) return 0;
+        static std::unordered_map<std::string, std::uint32_t> index;
+        static std::uint32_t next = 1;
         static std::shared_mutex mu;
         std::string key(p, k);
         { std::shared_lock<std::shared_mutex> rd(mu);
           auto it = index.find(key);
           if (it != index.end()) return it->second; }
         std::unique_lock<std::shared_mutex> wr(mu);
-        // … re-check, then append and index …
+        // … re-check, write the entry into its chunk, then index it …
     }
 
     // interned, so identity IS equality
-    bool operator==(const IStr& o) const { return e == o.e; }
+    bool operator==(const IStr& o) const { return id == o.id; }
 };
 ```
 
-Eight bytes, trivially copyable, trivially destructible. A default-constructed
-`IStr` costs a zeroed pointer where a `std::string` cost a constructor call.
-Comparing two `IStr`s is a pointer comparison, because interning makes identity
-equality. Comparing against a literal uses the same packed-prefix trick as
-`MName`.
+Four bytes, trivially copyable, trivially destructible. A default-constructed
+`IStr` costs a zeroed word where a `std::string` cost a constructor call.
+Comparing two `IStr`s is an integer comparison, because interning makes
+identity equality. Comparing against a literal uses the same packed-prefix
+trick as `MName`.
+
+The handle was an 8-byte pointer to its entry until 2026-10-01. It became a
+32-bit index into a table of fixed-size chunks, 1,024 entries each, that never
+move once made. An entry's address is therefore stable, and a lookup is two
+dependent loads with no lock. Nothing else about the type changed, and no site
+that uses one did. The index bought 12 bytes of a `Value` that then held three
+of these names. Today `hashKind` is the one name left inline; `enumName` and
+`enumType` are in the cold block (Chapter 8).
 
 **Interning takes a lock, but only on assignment from text.** Copies and
 comparisons — the operations `Value` does millions of times — never reach it.
@@ -156,14 +170,15 @@ unchanged.
 ### The intern table is never freed
 
 That is deliberate. Entries are type names and kind tags, bounded by the
-program's own vocabulary, and a stable address is what makes the handle
-comparable by pointer.
+program's own vocabulary, and an entry that never moves is what lets a handle
+be read without a lock. The table has room for about four million names and
+the process aborts past that.
 
 It also imposes a rule, and there is one field that breaks it. `ofType` is
 **not** interned, and must stay that way until one site moves:
 
 ```cpp
-// src/Value.h
+// src/Value.h — ValueContExt
 // `IO::Path`'s `:CWD` rides in `ofType` because a path value has no other
 // use for it, so this field can hold a runtime DIRECTORY NAME rather than
 // a type name. The intern table is append-only by design, so a program

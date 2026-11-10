@@ -150,7 +150,8 @@ short form of the convergences the index records:
 
 - The value head is small; the body is behind a pointer. Four independent
   data points bracket the endgame at 8–24 bytes; with containers and the
-  numeric tower, ours lands at 16–24.
+  numeric tower, ours was projected at 16–24. It landed at 32 on 2026-11-10,
+  with every reference count kept (Chapter 41).
 - Arguments belong in the callee's frame, not in an argument object — Lua
   register windows, PHP's SEND, MoarVM's callsite buffers.
 - Strings intern once and carry their hash — five engines.
@@ -198,10 +199,10 @@ intermediate in addressable storage rather than a non-escaping local cost
 executed nodes lowered. There is no incremental path through a number like
 that.
 
-That tax is now **−0.02 ns**. It was never really about registers; it was a
-property of a 376-byte `Value` carrying five `std::string`s and eleven
-`shared_ptr`s, and destroying and re-constructing one in memory the optimiser
-cannot reason about. At 128 bytes it has vanished. The break-even fraction went
+At the second measurement that tax was **−0.02 ns**. It was never really about
+registers; it was a property of a 376-byte `Value` carrying five `std::string`s
+and eleven `shared_ptr`s, and destroying and re-constructing one in memory the
+optimiser cannot reason about. At 128 bytes it had vanished. The break-even fraction went
 from 42% to zero.
 
 So the structural objection is gone and the motive never arrived. If an IR is
@@ -223,3 +224,10 @@ recollection.
 
 The next campaign is not speed at all — it is modules. The shelf will
 still be there when the profiles point back.
+
+Two things on that list have moved since this was written, and Chapter 41's
+closing section has both. The head/body endgame was reached without the container
+refactor: `Value` is 32 bytes. And hot integer loops and subs run as kernels
+on machine values, which is the "slot known to hold a `long long` for the
+extent of a loop" of the section above, built without a flat IR for the whole
+program.

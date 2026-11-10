@@ -25,10 +25,18 @@ struct Token {
     std::string text2;   // s/// replacement; regex adverb flags
     long long ival; double nval;
     int line, col;
+    size_t off = 0;      // byte offset just past the token, in the source
     bool spaceBefore = false;
     bool flag = false;   // S/// — the non-mutating substitution
+    int outerScopes = 0; // a heredoc whose marker line closed blocks
+    bool heredoc = false;
 };
 ```
+
+`off` is the newest field and the one the tooling leans on. It is what lets a
+`use` re-lex the rest of the file from the byte just past itself (Chapter 3),
+and what the formatter and the language server map a token back to its source
+with.
 
 Two absences are as informative as the contents.
 
@@ -75,17 +83,23 @@ The lexer decides by looking at the *previous* token:
 // src/Lexer.cpp — regexContext(), the Tok::Op case
 case Tok::Op:
     return pv.text != "++" && pv.text != "--" &&
-           pv.text != ">"  && pv.text != "<"  &&
+           pv.text != ">" && pv.text != "<" &&
            pv.text != ">>" && pv.text != "<<" &&
-           pv.text != ">=" && pv.text != "<=";
+           pv.text != ">=" && pv.text != "<=" &&
+           pv.text != "*" &&    // Whatever term: `* / 2` is a DIVISION
+           pv.text != "\xE2\x88\x9E" &&     // U+221E, infinity: a TERM
+           pv.text != "\xC2\xAB" && pv.text != "\xC2\xBB";  // guillemets
 ```
 
 After most operators a term is expected, so `/` opens a regex. After a value —
 a number, a variable, a closing bracket — or after a postfix `++`/`--`,
-division follows. After an identifier it is a regex only when the word is in a
+division follows. After an identifier it is a regex when the word is in a
 small set of keywords that take an expression (`if`, `while`, `say`, `grep`,
-`split`, and friends). `//` and `/=` are matched earlier so they lex as
-operators.
+`split`, and friends). It is also a regex after any other lower-case bare name
+followed by a space, read as a listop with the regex as its first argument —
+unless the name is a method name, a term such as `pi`, or a constant the file
+declares, and only if a closing `/` stands on the same line. `//` and `/=` are
+matched earlier so they lex as operators.
 
 This is a heuristic in the honest sense: it implements Raku's actual rule for
 the cases the rule covers, and a sufficiently perverse program can still be
@@ -104,9 +118,11 @@ Heredocs cannot be captured inline, because the body is on *later* lines. The
 lexer emits an empty-bodied token immediately and defers:
 
 ```cpp
-// src/Lexer.cpp — tryQuoteForm, on a :to adverb
+// src/Lexer.cpp — tryQuoteForm, on a :to adverb, abridged
 heredocMarker_ = raw;                // the terminator, e.g. END
+heredocPending_ = true;
 heredocInterp_ = (w == "qq");
+// … `qq:!c:to` takes a feature away, `q:s:to` adds one …
 out = make(heredocInterp_ ? Tok::StrInterp : Tok::StrLit, "");
 ```
 
@@ -133,7 +149,7 @@ lives in the header where everyone who needs it can see it:
 ```cpp
 // src/Lexer.h
 inline bool rakuIdentStart(char c) {
-    return std::isalpha((unsigned char)c) || c == '_';
+    return ascii::isalpha((unsigned char)c) || c == '_';
 }
 inline bool rakuIdentJoins(char sep, char next) {
     return (sep == '-' || sep == '\'') && rakuIdentStart(next);
@@ -157,19 +173,21 @@ operator and an `IntLit 3`, so it parses as `x ** 3`.
 ## Operators are a fixed, hand-ordered vocabulary
 
 ```cpp
-// src/Lexer.cpp — lexOperator
-for (const char* op : ops) {
-    std::string s(op);
-    bool ok = true;
-    for (size_t k = 0; k < s.size(); k++)
-        if (peek(k) != s[k]) { ok = false; break; }
-    if (ok) { /* consume s, return Tok::Op */ }
+// src/Lexer.cpp — lexOperator, abridged
+for (const auto& e : lexOpIndex().byFirst[(unsigned char)peek()]) {
+    const char* op = e.op;
+    size_t n = 0;
+    while (op[n] && pos_ + n < src_.size() && src_[pos_ + n] == op[n]) n++;
+    if (!op[n]) { /* consume it, return Tok::Op */ }
 }
-// unmatched: a single-character Op
+char c = advance();                  // unmatched: a single-character Op
+return make(Tok::Op, std::string(1, c));
 ```
 
-This is not a longest-match scanner. It is a manually ordered table where
-longer entries are placed before their prefixes, and the first full match wins.
+This is not a longest-match scanner. It is a manually ordered table, `kLexOps`,
+where longer entries are placed before their prefixes, and the first full match
+wins. The index only buckets the table by first byte, each bucket in the
+table's own order, so a token start that begins no operator costs one lookup.
 Adding a built-in operator means inserting it at the right position — a real
 maintenance hazard, and named as one.
 
@@ -181,17 +199,23 @@ For a while that was the whole answer, and it was not enough. A spelling like
 `sub infix:<%%%>` gets lexed a character at a time, and the built-in table
 swallows a prefix of it first — `%%%` came out as `%%` then `%`, so `5 %%% 2`
 divided by an empty hash. So the lexer's constructor now pre-scans the file for
-its own symbolic operator declarations and tries them, longest first, ahead of
+its own operator and term declarations and tries them, longest first, ahead of
 the table:
 
 ```cpp
-// src/Lexer.cpp — the constructor
-for (const char* cat : {"infix:<", "prefix:<", "postfix:<"}) { … }
+// src/Lexer.cpp — scanUserOps, called by the constructor
+for (const char* cat : {"infix:", "prefix:", "postfix:", "term:"}) { … }
 ```
 
-Only *this* file's declarations are visible that way; an imported symbolic
-operator still needs its module's own parse, which is a real limitation and one
-worth knowing before writing a module that exports one.
+A declared spelling loses only to a *longer* built-in one written at the same
+place: with `..` declared, `..^` is still `..^`.
+
+Only *this* file's declarations are visible to that scan. An imported operator
+reaches the lexer the other way round: when the parser's scan of a `use`d
+module (Chapter 6) finds an exported operator or term whose spelling the
+built-in rules would split, it hands every spelling in scope to a fresh lexer
+through `noteUserOp` and re-lexes the rest of the file. That closed what used
+to be a real limitation — an imported `⨁⨁` lexed as two `⨁`s.
 
 The vocabulary also covers Unicode aliases (`≤` for `<=`), hyper metaoperators
 (`»op«`), and the set operators (`(elem)`, `∈`). That part is static — but "the
@@ -257,6 +281,13 @@ Two spellings, because Rakudo has two: the bare quote forms name the
 *construct*, the bracketed `q`/`rx`/comment forms name the *terminator*. Both
 quote the line the construct *started* on, which is the only coordinate still
 meaningful once the scan has eaten the rest of the file.
+
+The lexer that reads a whole program is run *tolerant*: a lexical error does
+not throw out of `tokenize()`. It is stored, and the token stream ends there
+with an `End` token that carries its index; the parser rethrows it only if it
+arrives at that token. A `use` further up may activate a slang or import an
+operator that re-lexes the tail, and the text the first lex could not read may
+then be perfectly good.
 
 An `atEof` flag rides along on the resulting error. Only the REPL reads it, to
 tell "give me a continuation line" from "this is a syntax error" — which is how

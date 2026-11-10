@@ -27,10 +27,10 @@ the analysis that decides which gaps to open.
 ```cpp
 // src/ucd_seam.h
 namespace ucd {
-struct NameEnt { const char* name; uint32_t cp; };
-const NameEnt* namesTable(size_t*);
-const int64_t* numvTable(size_t*);
-// …collation, script/block/bidi ranges…
+struct NameEnt { const char* name; uint32_t cp; uint8_t alias; };
+const NameEnt* namesTable(size_t* n);
+const int64_t* numvTable(size_t* n);
+// …named sequences, collation, script/block/bidi ranges, property tables…
 }
 ```
 
@@ -46,10 +46,19 @@ therefore a compile error rather than a quiet hole in the seam. The seam is
 enforced by the language, not by a convention someone has to remember.
 
 **The never-cut tables keep their direct references on purpose** — general
-category, binary properties, normalization, case mapping, grapheme break. Those
-are reached by ordinary string operations, so no program can prove it does not
-need them, and a seam there would be indirection with no stub ever standing
-behind it.
+category, normalization, case mapping, grapheme break, the bidi mirror map.
+Those are reached by ordinary string operations or by the lexer, so no program
+can prove it does not need them, and a seam there would be indirection with no
+stub ever standing behind it. The binary properties are split: the range table
+that `uniprop`, `unimatch` and a regex `<:Prop>` read is behind the seam with
+the other property tables, and the two properties the never-cut code asks for
+by name, ID_Continue and Unified_Ideograph, have a copy of their own in the
+runtime.
+
+One accessor has a second spelling. The lexer asks whether a character is a
+numeral for every non-ASCII character it meets, comments included, so
+`numvTableOrNull` answers null from a cut table where `numvTable` throws. A
+`»` in a comment must not stop a slim binary at startup.
 
 There is a performance constraint on the seam, and it is stated where the code
 is:
@@ -100,6 +109,18 @@ const NameEnt* namesTable(size_t*) {
 One object per feature, in `librakupp_stubs.a`, linked **in place of** the real
 archive. The linker pulls exactly the stubs whose archive is absent.
 
+The `eval` stub stands in for more than the lexer and the parser. The
+`RakuAST::` class registry, `.AST`, `.DEPARSE`, `--fmt` and `--rakuast` live in
+the parse archive too, because each of them is the parser, so `stub_eval.cpp`
+defines a throwing double for every function the runtime calls in that archive.
+
+It also defines one variable. `Runtime.cpp` sets `g_docPhasers`, a flag that
+`Parser.cpp` owns, and a stub archive has to define every symbol the runtime
+references, data included. Apple's `ld` strips the unreachable reference before
+it resolves symbols, so a missing definition goes unnoticed on macOS; GNU `ld`
+and `lld` resolve first, and a binary with the parser cut did not link on Linux
+until the stub gained that definition.
+
 The stubs are deliberately not part of the runtime or of `librakupp`, and the
 comment says why: an interpreter carrying both the real table and a throwing
 double would be a one-definition-rule violation waiting for a link-order change.
@@ -134,7 +155,7 @@ Four, at most one per spec:
 | `max` | `auto`, ignoring the force-full triggers. Unsound by design. |
 
 `safe` being the default matters more than it sounds: it costs nothing
-analytically and takes `say "Hello"` from 21.1 MB to 17.2 MB, byte-identical in
+analytically and takes `say "Hello"` from 22.1 MB to 18.1 MB, byte-identical in
 behaviour. Its only real cost is that a C++-level crash reports addresses rather
 than names, which is why `+symbols` exists.
 
@@ -150,9 +171,11 @@ struct SlimScanResult {
     std::vector<std::string> triggers;   // why everything was kept
     struct Site { int feat; std::string what; std::string where; int line; };
     std::vector<Site> sites;             // every use, in walk order
+    std::set<std::string> builtinTags;   // builtin Raku the program names
 };
 SlimScanResult slimScan(const Program& prog,
-                        const std::vector<BundledModule>& mods);
+                        const std::vector<BundledModule>& mods,
+                        const std::set<std::string>& engineAnswered);
 ```
 
 It walks the parsed program **and every module embedded alongside it**, asking
@@ -171,7 +194,14 @@ engine resolves that name at match time.
 The `eval` feature has the widest surface, and most of it is not spelled `EVAL`:
 `require`, `use-ok`, `eval-dies-ok`, a regex code block, `:my` in a regex, an
 `s///` replacement that interpolates, `throws-like` with code in a string. Each
-of those reaches `evalString` at run time, so each keeps the parser.
+of those reaches `evalString` at run time, so each keeps the parser. So do
+`.AST` and any `RakuAST::` name, which reach the class registry in the parse
+archive.
+
+Some of the engine's own classes are written in Raku and parsed on first use,
+`IO::CatHandle` among them. A binary with the parser cut cannot do that, so the
+scan records which of them the program names in `builtinTags`, and a compile
+that cuts `eval` carries those pre-parsed.
 
 ## The triggers
 
@@ -207,7 +237,7 @@ $ rakupp --exe trig.raku --slim=list
   …
 dynamic constructs keeping everything (--slim=max cuts anyway):
   an indirect method call (."$name"()) (in the program, line 2)
-would cut 0 KB of 5.3 MB cuttable (the code and data in the archives)
+would cut 0 KB of 5.5 MB cuttable (the code and data in the archives)
 ```
 
 ## What it is worth
@@ -218,21 +248,21 @@ $ rakupp --exe hello.raku --slim=list
   unicode-names      cut     2.0 MB   proven unused
   unicode-collation  cut     755 KB   proven unused
   unicode-props      cut     628 KB   proven unused
-  eval               cut     2.0 MB   proven unused
-would cut 5.3 MB of 5.3 MB cuttable (the code and data in the archives)
+  eval               cut     2.2 MB   proven unused
+would cut 5.5 MB of 5.5 MB cuttable (the code and data in the archives)
 ```
 
-`say "Hello"`: 21.1 MB unstripped, 17.2 MB at `safe`, **12.1 MB** under bare
-`--slim` (arm64 macOS, October 2026; here, as in `--slim`'s own output, a MB is
-2^20 bytes).
+`say "Hello"`: 22.1 MB unstripped, 18.1 MB at `safe`, **12.9 MB** under bare
+`--slim` (arm64 macOS, 10 November 2026, a build 358 commits past v5.6.3; here,
+as in `--slim`'s own output, a MB is 2^20 bytes).
 
 The sizes `list` prints are the code and data in each feature's archive: what
 can reach a binary. The archive files themselves are bigger, because their
 symbol tables and relocation records never reach a binary; the unicode-names
-archive is a 3.5 MB file around 2.0 MB of tables. Measured against real links,
-the three Unicode figures land within 1%. eval's runs about 17% high, because
-dead-strip removes some parser code that nothing reaches even when eval is
-kept. So hello's 5.3 MB estimate is a 5.1 MB cut. If an archive holds a member
+archive is a 3.5 MB file around 2.0 MB of tables. Measured against real links
+on 18 October 2026, the three Unicode figures landed within 1%. eval's ran
+about 17% high, because dead-strip removes some parser code that nothing
+reaches even when eval is kept. So hello's 5.5 MB estimate is a 5.2 MB cut. If an archive holds a member
 `list` cannot read (LTO bitcode, say), it falls back to the file sizes and says
 they overestimate.
 
@@ -243,7 +273,7 @@ $ rakupp --exe uses-names.raku --slim=list
   unicode-names      keep    2.0 MB   used: uniname (line 1)
   unicode-collation  cut     755 KB   proven unused
   unicode-props      keep    628 KB   used: <:Script<…>> in a regex (line 2)
-  eval               cut     2.0 MB   proven unused
+  eval               cut     2.2 MB   proven unused
 ```
 
 ## The directives, and the one that proves it
@@ -285,7 +315,8 @@ interpreter never slims.
 ## The manifest
 
 Every compiled binary embeds a one-line build manifest — version, mode, slim
-level, cut list — which `rakupp --exe-info BIN` prints.
+level, whether symbols were stripped, whether the link was static, cut list —
+which `rakupp --exe-info BIN` prints.
 
 Keeping a string alive in a binary that was built to drop unreferenced data is
 its own small problem, and the solution is in `FeatureGate.cpp`:

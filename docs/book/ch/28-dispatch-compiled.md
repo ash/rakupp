@@ -17,8 +17,14 @@ contains all four:
 |---|---|---|
 | `square(5)` | `u_square(ValueList{…})` | direct C++ call; inlinable |
 | `say …` | `rtCallB(RT, __bfp0, "say", …)` | cached pointer |
-| `$n * $n` | `applyArith("*", …)`, or `rtMul` under `-O` | string-dispatch chain, or inline |
+| `$n * $n` | `applyArithValue("*", …)`, or `rtMul` under `-O` | string-dispatch chain, or inline |
 | `$x.method` | `RT.methodCall(inv, "m", …)` | name-keyed `if`-ladder |
+
+`applyArithValue` is `applyArith` behind a check that a `Whatever` arriving as
+a value is not curried (Chapter 26); the dispatch cost is the same. And
+`square` in particular no longer shows the first row's cost: an integer sub
+gets an `int64` twin that is tried before the `Value` body (Chapter 27). The
+four shapes are what every other call still is.
 
 ## What dispatch itself costs
 
@@ -139,7 +145,8 @@ in an `abs` loop.
 ```cpp
 // src/Interpreter.h
 inline Value rtBAbs(Interpreter& I, const Value& v) {
-    if (v.t == VT::Int && !v.big && I.builtinExt_.empty())
+    if (v.t == VT::Int && !v.big() && I.builtinExt_.empty() &&
+        v.i != std::numeric_limits<long long>::min())
         return Value::integer(v.i < 0 ? -v.i : v.i);
     return rtBAbsSlow(I, v);
 }
@@ -151,7 +158,9 @@ them, **so the interpreter and the generic compiled path get the win too**, and
 
 Note the `builtinExt_.empty()` guard: the inline fast path switches itself off
 the moment a program `augment`s a built-in type, so an augmented `.abs` still
-wins (Chapter 17).
+wins (Chapter 17). The last condition was added later: the absolute value of
+-2⁶³ does not fit an `int64`, so that one input takes the slow path, whose
+answer is a bignum.
 
 | Loop | cached pointer | named function | |
 |---|---:|---:|---|
@@ -159,9 +168,10 @@ wins (Chapter 17).
 | `abs`, plain `--exe` | 1120.5 ms | 363.9 ms | 3.1× |
 | `chr`+`ord`, `--exe -O` | 393.6 ms | 200.8 ms | 2.0× |
 
-The recipe then swept the rest of the viable set — **36 names**: the numeric
-family, the string family, the twelve trigonometric and hyperbolic functions,
-and the I/O quartet.
+The recipe then swept the rest of the viable set. The table the generator
+consults holds **37 names** today: these three, the numeric family, `is-prime`,
+the string family, the twelve trigonometric and hyperbolic functions, and the
+I/O quartet.
 
 The I/O quartet is worth its own sentence, because it disproved an assumption. A
 *buffered* one-argument `say` costs about 125 nanoseconds, so the call plumbing
@@ -192,8 +202,9 @@ Rakudo there is per-node tree-walk cost, which no operator fast path can remove.
 
 - **The `ValueList` per call** — the dominant cost of the calling convention,
   about 40 of the 46-nanosecond floor. `-O`'s direct-arity pass removes it for
-  fixed-arity user subs, and cut 3 removes it for the named builtins, but the
-  other ~165 builtins still take `ValueList&` by contract. A wholesale change —
+  fixed-arity user subs, and cut 3 removes it for the 37 named builtins, but
+  the rest — 258 names are registered by literal in the builtin table — still
+  take `ValueList&` by contract. A wholesale change —
   small-buffer or span arguments — is a runtime-wide refactor with interpreter
   implications.
 - **`methodCall`'s `if`-ladder.** After the `MName` fix (Chapter 10) name

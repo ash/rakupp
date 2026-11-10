@@ -20,12 +20,22 @@ and `--jit` is removed. Treat the two spellings as scaffolding rather than as
 interface; this chapter describes mechanisms, and `docs/guide/JIT.md` is the
 flag reference that moves with them.
 
+Since this chapter was first written the interpreter has gained a third thing
+of this kind, which is neither: the **loop kernels** of Chapter 13
+(`src/IntKernel.cpp`). They compile nothing. A loop whose body uses only plain
+scalar variables runs on a frame of machine values inside the interpreter, and
+they are on by default. A loop the loop kernels take is never counted by the
+harness below, so on a default run `--cnp` and `--jit` see only the loops the
+loop kernels turned down. `RAKUPP_NO_KERNELS=1` turns the loop kernels off,
+and the gates in this chapter run their tier-up lane that way.
+
 ## What tiering up is
 
 Five steps, of which only the last is unusual.
 
 1. **Counting.** Every `while`, `until`, C-style `loop` and `for` over a Range
-   of integers counts its iterations. Nothing else does.
+   of integers counts its iterations, and under `--cnp` so does a `for` over a
+   plain `@array`. Nothing else does.
 2. **Checking.** A loop that goes hot is checked against a whitelist. One that
    fails is marked and never examined again.
 3. **Emitting.** The loop becomes a kernel — a small compiled function with the
@@ -60,8 +70,10 @@ body may contain only:
 | operators | arithmetic, comparison, string and logical, `++` and `--`, the ternary, assignment and its compound forms |
 | statements | `if` with `elsif` and `else`, bare blocks, nested loops, unlabelled `last` and `next` |
 
-Anything else refuses the loop: a call of any kind, a method, an index, a
-regex, an inner `for`, `return`, `die`, a phaser, `state`, a closure.
+Under `--jit` anything else refuses the loop: a call of any kind, a method, an
+index, a regex, an inner `for`, `return`, `die`, a phaser, `state`, a closure.
+`--cnp` has since been widened past this list, and the section after the next
+says how.
 
 The list looks like a list of things not yet implemented. It is really **one
 invariant, spelled out**: *nothing in the loop may call anything.* Everything
@@ -78,10 +90,14 @@ containers it will touch, and it runs every time the kernel is entered.
 
 A slot the kernel would **write** is refused if its container has behaviour
 that a direct assignment would skip: a native width (`my int8` wraps at eight
-bits), a readonly binding, a coercion, a default, an `is rw` write-through,
-`is dynamic` (Chapter 12). A kernel assigns the container, so it would honour
-none of them. A slot the kernel only **reads** is exempt, which is what lets a
-loop inside a routine use its own parameters.
+bits), a readonly binding, a coercion, a default, a `where` clause, a type
+smiley, an `is rw` write-through, `is dynamic` (Chapter 12). A kernel assigns
+the container, so it would honour none of them. A slot the kernel only
+**reads** is exempt, which is what lets a loop inside a routine use its own
+parameters. Under `--cnp` a full-width `int` or `num` is not refused: it is a
+register of that kind, the lowering wraps and checks its stores as the
+interpreter does, and the write-back keeps the container's native tags. A
+sized native such as `int8` still refuses in both back ends.
 
 The wrapped answer is the proof the guard fired:
 
@@ -98,6 +114,32 @@ load-bearing rather than tidy. The interpreter rebinds the variable from the
 counter on every iteration, so a write to it is forgotten at the next one,
 while a kernel holds one slot for the whole loop and would carry the write into
 the counter and change the trip count.
+
+### What `--cnp` admits beyond the whitelist
+
+The whitelist above is still the whole of what `--jit` compiles. A `--cnp`
+kernel may also:
+
+- call routines and methods with positional arguments, and compile a small sub
+  in place instead of calling it;
+- index plain arrays and hashes, read and store elements, and take `@a.elems`;
+- interpolate strings and use chained comparisons;
+- declare `my @x`, `my int $i` and `my num $x`;
+- nest a `for` over a numeric range.
+
+A call breaks the invariant, so it is answered again at each call site. The
+kernel writes every variable it holds back to its container before the call,
+lets the interpreter evaluate the call with its own lookup and dispatch, and
+reloads every register after it. A callee that reads or writes a loop variable
+therefore sees the container, as it would have interpreted. Two entry checks
+come with it. A routine the kernel calls may not bind a parameter `is rw` or
+`is raw`, because the kernel passes each argument in a scratch variable. And
+every variable of a kernel that calls must be one no other thread can reach,
+even when no other thread is live, because the callee may start one.
+
+A method that changes its invocant, such as `push` on a Buf, changes the
+loop's variable and not a scratch copy of it. Until that was fixed, a Buf's
+`push`, `append`, `pop` and their siblings lost every write a kernel made.
 
 ## The first back end: hand the loop to the machine's compiler
 
@@ -151,7 +193,8 @@ patch kind and which hole it wants. Nobody has to know both halves. The
 extractor runs on the machine that *builds* rakupp, which is why there is no
 cross-object-format case to handle — it only ever reads the host's own.
 
-This build carries **53 stencils, 5,324 bytes of template code**, sitting in
+This build carries **65 stencils, 10,280 bytes of template code** (arm64, 10
+November 2026; it was 53 and 5,324 when the back end landed), sitting in
 read-only data and costing nothing in a run that never turns the flag on.
 
 ### A stencil, and the holes in it
@@ -171,9 +214,11 @@ _rk_st_jnlti:
    adrp x8, 0          ; hole: OP0, the register number
    ldr  x8, [x8]       ;   an ADRP/LDR pair through the GOT
    ldrb w9, [x2, x8]   ; the register's tag
+   cmp  w9, #0x4
+   b.eq <the Rat lane>
    cmp  w9, #0x1
    b.eq <the Num lane>
-   cbnz w9, <cold>     ; neither Int nor Num
+   cbnz w9, <cold>     ; not Int, Num or Rat
    ldr  x8, [x1, x8, lsl #3]
    adrp x9, 0          ; hole: OP1, the loop bound
    ldr  x9, [x9]
@@ -246,8 +291,11 @@ worth stating exactly what kind.
 
 A kernel does not run on `Value` objects. It runs on a flat register file:
 `r[k]` holds an int64, the bit pattern of a double, or 0/1 for a Bool, and
-`t[k]` says which. Anything else — a bignum, a `Str`, a `Rat`, an object, an
-enum value — lives in a parallel array of real `Value`s with the tag `RK_T_BOX`.
+`t[k]` says which. A `Rat` whose numerator and denominator both fit an int64
+is a register too, under the tag `RK_T_RAT`: `r[k]` is the numerator and a
+parallel `den[k]` the denominator. Anything else — a bignum, a `Str`, a larger
+`Rat`, an object, an enum value — lives in a parallel array of real `Value`s
+with the tag `RK_T_BOX`.
 Slots are unboxed into registers at kernel entry and written back at exit,
 which is what makes the arithmetic one instruction instead of a call.
 
@@ -263,8 +311,10 @@ while $i < 200000 { $s = $s + $i; $i = $i + 1 }
 becomes sixteen of them: seven on the hot path — the fused compare-and-branch,
 an add, a move, an add-immediate, a move, the back edge, the return — and nine
 more in cold blocks, one per guard that can fail, each ending where the fast op
-would have gone. Then the patcher copies 1,224 bytes of stencils into a page
-and fills in the holes.
+would have gone. Then the patcher copies the stencils into a page and fills in
+the holes: 1,224 bytes of them on the v4.0.1 build that
+`docs/internals/CNP.md` took the figure from. The stencils have grown since,
+and `--cnp=verbose` reports the size of the mapping, not of the code.
 
 That list is an intermediate representation by any honest definition. What it
 is not is a middle end: **nothing runs over it.** No folding, no scheduling, no
@@ -281,7 +331,8 @@ reported:
 - an **enum value** is an `Int` with a name, and the name is its identity —
   `Less` unboxed to its ordinal prints as `-1` the moment it is copied into
   another container;
-- everything else — `Str`, `Rat`, `Complex`, objects — stays a `Value`.
+- everything else — `Str`, `FatRat`, a `Rat` too large for the pair above,
+  `Complex`, objects — stays a `Value`.
 
 ## The four costs, and what each came to
 
@@ -289,14 +340,18 @@ The plan that proposed this back end named four things it would cost before any
 of it was written. Recording what they actually came to is more useful than the
 estimate was.
 
-**Two instruction sets.** Real, and half paid. The patcher implements arm64 and
-x86-64; arm64 is the one that has been run. The x86-64 encodings were written
-from the manual, and when CI ran them the result was worse than untested: a
-kernel *is* entered and returns the **wrong answer**, while the statistics line
-cheerfully reports success. That is the one outcome worse than not compiling at
-all, because nothing about it looks like a failure from outside. `--cnp` now
-refuses x86-64 at startup, names the plan in the reason, and runs the loop
-interpreted.
+**Two instruction sets.** Real, and mostly paid. The patcher implements arm64
+and x86-64. The x86-64 encodings were written from the manual, and when CI ran
+them the result was worse than untested: a kernel *was* entered and returned
+the **wrong answer**, while the statistics line cheerfully reported success.
+That is the one outcome worse than not compiling at all, because nothing about
+it looks like a failure from outside. The cause was one constant: every operand
+loaded through the GOT read four bytes short, because the −4 that belongs to
+the rip-relative displacement went into the slot as well. With that fixed the
+differential gate agrees on x86-64 macOS, run under Rosetta. On Linux `--cnp`
+still refuses x86-64 at startup, names the plan in the reason, and runs the
+loop interpreted, until a CI run of the gate there agrees;
+`RAKUPP_CNP_X86=1` lifts the refusal for whoever makes that run.
 
 **Two object formats.** Smaller than it looked, for the reason given earlier:
 the extractor runs on the build machine, so there is no cross-format case. Mach-O
@@ -315,9 +370,10 @@ machine frame**, so that return goes straight back to the trampoline — an
 ordinary C++ frame, with ordinary unwind tables — which rethrows.
 
 That is a constraint on the entire stencil-callable interface, and it is
-affordable only because the whitelist is small: six helpers cover everything 53
-stencils can reach. The cost is real and it is the thing to weigh before every
-widening, because the sixth helper was free and the sixtieth would not be.
+affordable only because the helpers are few: thirteen cover everything 65
+stencils can reach, where six covered the first 53. The cost is real and it is
+the thing to weigh before every widening, because the sixth helper was free
+and the sixtieth would not be.
 
 It has a visible consequence. The registers are hoisted, so a kernel that dies
 half way has to write them back before the throw propagates:
@@ -337,8 +393,9 @@ machine code with no unwind tables — and the `CATCH` must still read
 ## Hoisting, and the bug that priced it
 
 Holding the loop's variables in registers is where the speed comes from, and it
-is unobservable for exactly one reason: on this thread, the whitelist admits no
-calls. On *another* thread it is not unobservable at all, and no amount of
+is unobservable for exactly one reason: on this thread, nothing runs between
+two of the kernel's own operations except a call it wrote its registers back
+for. On *another* thread it is not unobservable at all, and no amount of
 reasoning about the whitelist would have found it, because the whitelist is
 about what is inside the loop. The corpus gate found it as a hang:
 
@@ -352,12 +409,20 @@ The kernel read `$stop` once, and the write it was waiting for landed in the
 container it had stopped looking at. Nothing about that program is exotic — a
 flag set by another thread is how you stop a worker.
 
-So a `--cnp` kernel is **not entered at all while another Raku thread is live**,
-which is what the concurrency runtime's live-worker and cued-load counters
-already say (Chapter 38). That loop stays interpreted and behaves as it always
-did. The test comes before the slot binding, because the interpreter asks again
-on every iteration and a refusal has to cost one relaxed load; the site is not
-retired, so a program that joins its workers gets its kernel back.
+So the first answer was that a `--cnp` kernel is **not entered at all while
+another Raku thread is live**, which is what the concurrency runtime's
+live-worker and cued-load counters already say (Chapter 38). That loop stays
+interpreted and behaves as it always did. The test comes before the slot
+binding, because the interpreter asks again on every iteration and a refusal
+has to cost one relaxed load; the site is not retired, so a program that joins
+its workers gets its kernel back.
+
+The rule is now per variable. While another thread is live a kernel is still
+entered if it indexes no array, makes no call, and every variable it holds is
+one no other thread can reach, which is the test the loop kernels already use
+(`cellPrivate`). A loop inside `start` over its own `my` variables therefore
+stays compiled. The loop above does not: `$stop` is mentioned by a block
+another thread runs, and `--cnp=verbose` says so by name.
 
 There is a third case that none of the harness's guards can see: two names
 bound to a **single container** would be two registers here and one cell there,
@@ -366,15 +431,17 @@ with a pairwise scan over the handful of slots.
 
 `--jit` has none of these questions, because it does not hoist: its kernel binds
 a reference and re-reads the container on every use. This is the one place
-where the faster back end is the more restricted one, and closing it — by
-reloading read-only slots per iteration, if the measured cost of one inline load
-is worth the generality — is the open item.
+where the faster back end is the more restricted one. What is still open is
+the shared variable itself — reloading read-only slots per iteration, if the
+measured cost of one inline load is worth the generality.
 
 ## Measured
 
-Minimum of seven, arm64 Release build, on a machine carrying a load average of
-5–8, so these are factors rather than percentages and none of them belongs in a
-benchmark table until it is re-taken under Chapter 40's quiet-machine protocol.
+Measured on 19 September 2026, on a build 70 commits past v4.0.1, before the
+loop kernels existed. Minimum of seven, arm64 Release build, on a machine
+carrying a load average of 5–8, so these are factors rather than percentages
+and none of them belongs in a benchmark table until it is re-taken under
+Chapter 40's quiet-machine protocol.
 `--jit` is shown with a warm cache, which is its second and every later run;
 `--cnp` has no such distinction.
 
@@ -397,10 +464,32 @@ times, and every entry binds slots, allocates a register file and boxes the
 results back. If entry were expensive the row would read *slower* than
 interpreting. It reads 5.6× faster. `--jit` is ahead of it here, and that gap
 *is* the entry cost: its kernel binds a reference and allocates nothing, which
-is the other side of the trade the register file makes.
+is the other side of the trade the register file makes. Entry has been made
+cheaper since the row was taken: the register file is leased from a small
+per-thread pool instead of allocated, and a slot is found in its pad by a
+remembered index instead of by hashing its name.
+
+The interpreter column is the one that has moved most. The first row's loop is
+exactly what a loop kernel takes, so on a default run today the interpreter
+never offers it to the tier-up at all. The same 5M-iteration `while`, minimum
+of seven on 10 November 2026 (arm64, a build 358 commits past v5.6.3, load
+average about 5, so factors again):
+
+| | |
+|---|---:|
+| interpreter, loop kernels on (the default) | 31–34 ms |
+| interpreter, `RAKUPP_NO_KERNELS=1` | 313–324 ms |
+| `--cnp`, `RAKUPP_NO_KERNELS=1` | 15 ms |
+| `--cnp`, loop kernels on | 32–34 ms, no kernel entered |
+
+Machine code is still about twice as fast as the loop kernel on this loop, and
+the default run does not get it, because the loop kernel answers first. What
+`--cnp` adds to a default run is the loops the loop kernels refuse.
 
 That is what a tiered loop is worth. How often a program *has* one is a
-different measurement, and a more sobering one. Over the 40 programs in
+different measurement, and a more sobering one, taken on 20 September 2026,
+before `--cnp` admitted calls, element access or `for` over an array. Over the
+40 programs in
 `examples/` and `tools/bench/` that run without an argument: 20 have no
 countable loop at all, 33 loop sites are examined, 7 pass the whitelist, and 6
 programs enter a kernel. Counting loop keywords across the 904 Raku files in
@@ -420,9 +509,12 @@ nothing.
 corpus and `examples/` is run twice by the same binary — once plainly, once at
 a threshold of zero, so every eligible loop lowers on its first iteration — and
 stdout, stderr and exit status are compared byte for byte. The interpreter is
-the oracle, as it is for the JavaScript back end (Chapter 31). Twenty-five
-cases are written for this specifically: the fifteen `--jit` brought and ten
-of `--cnp`'s own, each pinning one thing a register file could get plausibly
+the oracle, as it is for the JavaScript back end (Chapter 31). The second run
+also sets `RAKUPP_NO_KERNELS=1`, so that the loop kernels do not take the loops
+the gate exists to compare. Forty-five cases are written for this
+specifically: twenty-four shared with `--jit` in `t/jit/cases` and twenty-one
+of `--cnp`'s own in `t/cnp/cases`, each pinning one thing a register file
+could get plausibly
 wrong — a Bool that must print as `True` and not `1`, an enum that must keep
 its name, a `Rat` that must stay a `Rat`, NaN at the edge of a comparison, a
 string appended sixty times, a kernel that dies half way.
@@ -431,9 +523,12 @@ string appended sixty times, a kernel that dies half way.
 evidence. So every case that is not explicitly marked as testing a refusal must
 be shown to have entered a kernel.
 
-Together they read, on the build this chapter describes: **725 programs
-agreeing, 0 differing**, 6 skipped as non-deterministic, and 23 of the 23
-cases that are not marked as refusals shown to have entered one.
+Together they read, on the build of 20 September 2026 that this chapter was
+first written against: **725 programs agreeing, 0 differing**, 6 skipped as
+non-deterministic, and 23 of the 23 cases that are not marked as refusals
+shown to have entered one. On 10 November 2026 the cases alone read 45
+agreeing, 0 differing, and 41 of the 41 that are not marked as refusals
+entered a kernel; the whole corpus is now 1,571 programs.
 
 **Roast at a threshold of zero**, which turns the specification suite into this
 back end's differential test as well: every eligible loop in it lowers on entry.
@@ -482,20 +577,26 @@ produced the two-piece stencil described above.
 
 ## What it does not claim
 
-- **It is not more general than `--jit`.** The 53 stencils are the ceiling;
-  where `--jit` can in principle compile whatever `--exe -O` emits, this refuses
-  and leaves the loop interpreted, which costs nothing.
+- **Its stencils are its ceiling.** `--jit` can in principle compile whatever
+  `--exe -O` emits; this compiles what 65 stencils cover, refuses the rest and
+  leaves the loop interpreted, which costs nothing. In practice its
+  eligibility list is now the longer of the two.
 - **It is not a speculating JIT.** There is no type feedback and no deopt path.
   The register tags are checked per operation, which is what lets a guard miss
   fall back *within* the kernel instead of leaving it.
-- **It has run on one instruction set.**
-- **It does not tier up threaded code.**
+- **It has run on two platforms**: arm64, on macOS and Linux, and x86-64 on
+  macOS. Of the six release downloads only the Linux aarch64 one carried a
+  stencil table when the matrix was taken on 8 October 2026; the others run
+  `--cnp` interpreted.
+- **It does not tier up a loop over a variable another thread can reach.**
 - **A kernel costs a page.** Each mapping is at least one page, so forty
   kernels is about 640 KB of address space. Pooling them into an arena is
   obvious and not done.
-- **Neither back end helps anything that is not a hot arithmetic loop.** Method
-  dispatch, object construction, hash and array work, regexes, and anything that
-  calls a routine are untouched — and so is the loop around them.
+- **`--jit` helps nothing that is not a hot arithmetic loop.** Method
+  dispatch, object construction, hash and array work, regexes, and anything
+  that calls a routine are untouched — and so is the loop around them. A
+  `--cnp` kernel may contain a call or an element access, but the call itself
+  runs through the interpreter at the interpreter's speed.
 
 ## Where it goes
 
@@ -504,7 +605,8 @@ interpreter does. Three things stand between here and there. The x86-64 patcher
 has to be shown correct on Linux too — on macOS it now agrees with the
 interpreter, after a fix to how it fills the GOT — because making a back end
 the default on a platform it has not run on would be making it the default on
-trust. The threaded gap
+trust; and every release download has to carry a stencil table, which most do
+not yet. What is left of the threaded gap
 has to be closed or consciously accepted — as a flag it is a documented
 limitation, as a default it is a silent cliff in threaded programs. And then
 `--jit` can go, which deletes the C++-emission lane, the precompiled header,

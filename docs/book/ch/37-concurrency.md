@@ -26,25 +26,45 @@ Being per thread, each real worker thread owns its own set, so
 interpreter execution needs no per-handover register swap. The save and load
 functions remain because the design allows a parked thread's registers to be
 stashed and restored; today they merely shuffle within a thread's own copy.
+(The embedding API's `own_stack` option is the one place a set does change
+threads: it carries the host thread's registers to the big-stack thread with
+the same pair.)
 
 The same treatment was applied, thread by thread, to everything ThreadSanitizer
 reported:
 
 ```cpp
 // src/Interpreter.h
-static thread_local Value* topicWriteback_;
-static thread_local bool noAutothread_;
-static thread_local int loopPhaserCtl_;
-static thread_local std::vector<RedispatchCtx> redispatchStack_;
-static thread_local std::vector<std::shared_ptr<ReactCtx>> reactStack_;
-static thread_local bool t_isWorker;
-static thread_local Value t_threadSelf;
+struct ThreadHot {
+    LoopPoll poll;
+    ExecContext* ctx = nullptr;   // see Interpreter::tctx()
+    RaceThread* race = nullptr;   // the race detector's record of this thread
+};
+RAKUPP_CONSTINIT extern thread_local ThreadHot t_hot;
+extern thread_local Value t_threadSelf;
+
+RAKUPP_CONSTINIT static thread_local Value* builtinTopicWB_;
+RAKUPP_CONSTINIT static thread_local bool deferGather_;
+RAKUPP_CONSTINIT static thread_local
+    std::vector<RedispatchCtx>* redispatchPtr_;
+static thread_local ReactStack reactStack_;
+RAKUPP_CONSTINIT static thread_local int threadDepth_;
 ```
 
-(Two more live outside this header and are worth knowing about: the call-frame
-pool, and `RVec`'s free list of small `ValueList` blocks — both per-thread
-caches of released memory rather than per-thread state, so neither needs a
-lock and neither is visible to another thread.)
+The one-shot registers a call consumes — the topic write-back, the
+no-autothread flag, the loop-phaser control — began as thread-locals of their
+own and are now members of `ExecContext`. What every loop iteration asks of its
+thread sits in one struct, `LoopPoll`, beside the context pointer, because on
+macOS each thread-local a function names is a call of its own: four variables
+cost a loop body up to four calls where one struct costs one.
+
+(More live outside this header and are worth knowing about: the call-frame
+pool, `RVec`'s free list of small `ValueList` blocks, and the free lists of
+`SlabPool` and `BodyPool`, one per size class — all per-thread caches of
+released memory rather than per-thread state. A block allocated on one thread
+and released on another simply joins the releasing thread's list, so the hot
+path takes no lock; `BodyPool` takes one only when a list runs dry and refills
+from the shared spans, or grows past its bound and hands half back.)
 
 The comment on the call registers records the scale: as plain members they were
 written by every call on every thread, and were TSan's top report — **2,761
@@ -56,18 +76,33 @@ measuring rather than assuming:
 ```cpp
 // src/Interpreter.h — the current source line, for test diagnostics
 // Written on EVERY statement, so a thread_local costs a TLV lookup per
-// statement on macOS — measured +6% on loopsum. A relaxed atomic member is
-// a plain store, defined under concurrency, and TSan-clean; the value being
-// process-wide is the same arbitrariness diagnostics always had.
+// statement on macOS — measured +6% on loopsum. A relaxed atomic global is
+// a plain store, defined under concurrency, and TSan-clean. It stays that
+// one shared value until a worker thread is created, at which point the
+// sharing would put another thread's line in this one's frames and every
+// thread moves to its own (stmtLinesGoThreaded, above).
 struct RelaxedLine {
-    std::atomic<int> v{0};
-    void operator=(int x) { v.store(x, std::memory_order_relaxed); }
-    operator int() const { return v.load(std::memory_order_relaxed); }
+    void operator=(int x) {
+        if (g_stmtLineThreaded.load(std::memory_order_relaxed))
+            t_stmtLine = x;
+        else g_stmtLine.store(x, std::memory_order_relaxed);
+    }
+    operator int() const {
+        return g_stmtLineThreaded.load(std::memory_order_relaxed)
+                   ? t_stmtLine
+                   : g_stmtLine.load(std::memory_order_relaxed);
+    }
 } curLine_;
 ```
 
-Thread-local storage is not free on every platform, and a diagnostic field does
-not need to be exactly right.
+Thread-local storage is not free on every platform. The first version of this
+struct went further and kept the one shared value for good, on the argument
+that a diagnostic field does not need to be exactly right. It does:
+`callframe(1)` reads the line, and once a worker existed a frame taken on the
+mainline could carry the worker's. Log::Async stamps every message that way,
+and its `t/14-frame` failed 7 runs in 20. So creating a worker thread latches a
+flag for the rest of the run, and from then on every thread keeps its own
+line. The thread-local cost is paid only by programs that spawn threads.
 
 That lesson was learned again, expensively, on a field that *does* need to be
 right. Comparing this tree against the shipped v3.24.0 release found the plain
@@ -93,7 +128,26 @@ loop control from one nested inside an expression, so the field has to be
 exact. The fix is to pay for it less often — set it only for statements whose
 expression *can* contain a bare loop control, which is a parse-time property of
 the node — or to hoist the thread-local resolution to the top of `exec`, where
-the function needs it anyway. Neither is done at the time of writing.
+the function needs it anyway.
+
+The second is what was done. The arm now resolves the context once and stores
+through the reference:
+
+```cpp
+// src/InterpreterCore.cpp — exec, the ExprStmt arm
+ExecContext& tc = tctx();   // one thread_local read for the arm
+tc.curStmtExpr = e;
+```
+
+And `tctx()` itself got cheaper on 20 October 2026. The context had been a
+`thread_local` with a destructor, which on Darwin is reached through an
+initialization guard on every mention: two `_tlv_get_addr` calls, the guard
+and then the variable. It is now reached through `t_hot.ctx`, a
+constant-initialized pointer bound on a thread's first use, whose address
+Clang computes once per function. Measured then, as the median of 5
+interleaved runs: 4.3 per cent fewer instructions on the benchmark set with
+the integer kernels off, and `_tlv_get_addr`'s share of busy samples on
+`loopsum`, kernels off, down from 17.7 to 10.1 per cent.
 
 The counterweight is worth stating in the same breath, because it stops this
 reading as "thread-locals are bad". The `ValueList` free list of Chapter 12 is
@@ -164,13 +218,15 @@ interpreter weaves a cheap check into its hot loop:
 ```cpp
 // src/Interpreter.h
 inline void safePoint() {
-    if (!t_isWorker) return;                 // main-thread loops never park
+    if (!t_hot.poll.isWorker) return;        // main-thread loops never park
     if (workerAbort_.load(std::memory_order_relaxed)) throw WorkerAbortEx{};
-    if (++t_safePtCtr >= 4096) { t_safePtCtr = 0; workerYield(); }
+    if (++t_hot.poll.safePtCtr >= 4096) {
+        t_hot.poll.safePtCtr = 0; workerYield();
+    }
 }
 ```
 
-Two jobs in four lines. It periodically hands the GIL back, so a compute-bound
+Two jobs in a few lines. It periodically hands the GIL back, so a compute-bound
 worker cannot starve the main thread. And it unwinds a worker whose result is no
 longer wanted, at shutdown, by throwing an exception that is deliberately **not**
 a `RakuError` — so a user's `CATCH` cannot swallow a shutdown.
@@ -216,11 +272,14 @@ struct ParStripe {
     std::unique_lock<std::recursive_mutex> l;
     ParStripe(const Interpreter& I, const void* p) {
         if (I.parallelMode_ &&
-            I.liveWorkers_.load(std::memory_order_relaxed) > 0)
-            l = std::unique_lock<std::recursive_mutex>(atomicStripe(p));
+            I.liveWorkers_.load(std::memory_order_acquire) > 0)
+            l = lockStripe(p);
     }
 };
 ```
+
+The pool behind it is 256 recursive mutexes, picked by a hash of the
+container's address; `cas`, the atomic operators and `Channel` share it.
 
 Two conditions, not one. Parallel mode **and** live workers — because before the
 first spawn and after the last join, a single thread cannot race itself. A
@@ -232,6 +291,87 @@ stripe tax was pushing compute-heavy Roast files past the timeout, in files with
 zero threads in them. The rule it encodes — **the machinery must be free when one
 thread runs** — is the gate every stage of this work had to pass.
 
+The load of `liveWorkers_` was once relaxed. It is an acquire now, because a
+worker decrements the count before anyone joins it: reading zero is the only
+edge from the worker's last store to the unlocked access that follows, and
+under the relaxed load the owner could copy a value the worker had already
+released.
+
+### The torn-copy contract
+
+A stripe around growth keeps the *container* whole. It does not keep a
+*value* whole. A `Value` is several words and one of them is a counted
+reference; the count is atomic, but that protects the count, not the word that
+points at it. A thread copying a value out of a slot while another stores into
+the same slot can read the old reference after the store has released it, and
+then count a body that is already freed.
+
+So the rule, which the plan calls the torn-copy contract: **a `Value` copied
+out of a shared slot is copied under that slot's stripe, paired with the
+striped store.** It arrived in three deliveries — plain lexicals in August
+2026, then array elements, hash elements and attributes in September (`cas`
+on those had built a cyclic linked list about one run in three), then
+compound assignment in October, after a probe of 48 `OP=` shapes run by two
+workers on one container crashed on 33.
+
+```cpp
+// src/Interpreter.h
+struct SlotStripe {
+    std::unique_lock<std::recursive_mutex> l;
+    SlotStripe(const Interpreter& I, const void* p, RaceAcc acc) {
+        if (I.parallelMode_ &&
+            I.liveWorkers_.load(std::memory_order_acquire) > 0)
+            l = I.lockSlotStripe(p);
+        if (RAKUPP_RACE_ON()) I.raceSlot(p, acc);
+    }
+};
+const Value& slotView(const Value* p, Value& copy) const {
+    SlotStripe rs(*this, p, RaceAcc::None);
+    return rs.l.owns_lock() ? (copy = *p) : *p;
+}
+Value slotRead(const Value* p) const {
+    SlotStripe rs(*this, p, RaceAcc::None); return *p;
+}
+Value slotOut(const Value* p, bool sink) const {
+    return sink ? Value::any() : slotRead(p);
+}
+void slotStore(Value* p, const Value& v) const {
+    SlotStripe ws(*this, p, RaceAcc::Write); *p = v;
+}
+```
+
+`slotView` is what a read-modify-write computes from: the slot itself while no
+other thread can reach it, else a copy taken under the stripe. `slotStore`
+puts the result back under the stripe. No lock is held in between, because the
+operator in the middle may run user code. That does not make `$n += 1` from
+two threads add up — a lost update is still the user's race — but it can no
+longer free a string twice, which two threads' `$s ~= "a"` did on every run.
+
+`slotOut` is the newest of the four, from 10 November 2026, and it closed a
+gap in the oldest path. An assignment is an expression, and what it answers
+is the slot's value. Thirteen return sites in the assignment paths stored
+under the stripe and then copied `*lv` for the answer after the stripe was
+gone, so a second thread's store in that window freed what the copy was
+counting. ThreadSanitizer reported it on `private-eval`, one of the stress
+programs, about 1 run in 8, and one run died in the allocator. The fault was
+old; what made it show was the 32-byte `Value` of the same day. A `Str` of 8
+to 15 bytes, which the 64-byte `Value` kept inline, has a counted body now,
+so the stress program's `$v = "o-" ~ $n` began to allocate where it had not.
+
+### Private slots
+
+A `SlotStripe` differs from a `ParStripe` in one step, `lockSlotStripe`: a
+lexical slot that no other thread can reach takes no lock even while workers
+are live. A slot is private when three things hold: the static mask the pad
+resolver computed for its layout says nothing shares it, the frame's run-time
+mask says it has not escaped since, and it is not a shared cell. (A program
+that reaches frames through dynamic scope switches the proof off for the rest
+of the run.) On the four-way fan-out benchmark `RAKUPP_STRIPE_STATS=1` counted
+8 stripe acquisitions in the whole run, against 3,600,024 with
+`RAKUPP_PRIVATE_SLOTS=0`, which stripes every slot as before; each worker ran
+at 1.09 to 1.13 times its solo time, where it had been 1.21 to 1.45 (measured
+2026-10-08).
+
 ## Threads need big stacks
 
 The tree walker recurses deeply, and the default stack for a non-main thread on
@@ -241,26 +381,33 @@ die at exit.
 
 ```cpp
 // src/Interpreter.h — BigStackThread
-const size_t kStack = (size_t)256 << 20;   // 256 MiB, virtual
+const size_t kStack = stackBytes ? stackBytes
+                                 : (size_t)256 << 20; // 256 MiB (virtual)
 pthread_attr_setstacksize(&attr, kStack);
 if (pthread_create(&h_, &attr, entry, fn) == 0) joinable_ = true;
-else { std::unique_ptr<Fn> g(fn); g->f(); }   // creation failed: run inline
+else if (inlineOnFailure) runInline_(fn);   // creation failed: run inline
+else { std::unique_ptr<Fn> g(fn); }         // …or tell the caller
 ```
 
 The reservation is virtual and committed only as used. Windows gets the same
 through a small shim kept in `Runtime.cpp` so `<windows.h>` stays out of the
 widely-included header. If thread creation fails, the work runs **inline** rather
-than being lost.
+than being lost. A body that loops — a pool worker's — asks for the other
+branch, since running a worker loop on the caller would never return; its
+creator checks `joinable()` instead.
 
 ## Worker bookkeeping, and two real crashes
 
 ```cpp
 // src/Interpreter.h
 struct WorkerSlot {
-    BigStackThread th; std::shared_ptr<std::atomic<bool>> done;
+    BigStackThread th;
+    std::shared_ptr<std::atomic<bool>> done;
+    bool pooled = false;               // runPooled's: endPool joins it
 };
 std::vector<WorkerSlot> workers_;
-void addWorker(BigStackThread&& th, std::shared_ptr<std::atomic<bool>> fin);
+void addWorker(BigStackThread&& th,
+               std::shared_ptr<std::atomic<bool>> fin, bool pooled = false);
 ```
 
 `addWorker` is the **only** safe way to register a worker, and the header
@@ -300,6 +447,23 @@ and exhausted the address space. Above the cap a spawner reaps and waits.
 **Under the GIL this must stay off**, and the reason is a nice illustration of
 how the two modes differ: a spawner spinning while *holding* the lock would keep
 the very workers it waits for from ever finishing.
+
+Two counters stand behind `liveWorkers_`'s name, and the split is a fix.
+`liveWorkers_` falls when a worker *thread* exits; `runningBodies_` falls the
+moment its *body* returns. The stripes and the cycle collector read the first,
+since a thread that is tearing down is still freeing things. A check that asks
+whether another thread can be running Raku code reads the second: right after
+`await start {…}` the thread may not have exited yet, and reading the wrong
+counter there made a bind refuse its cell and a later `my $*X` invisible to a
+callee, now and then.
+
+A `start` block still gets a thread of its own; a pool for those was measured
+and deferred. Since 30 October 2026 a promise's *continuations* do run on a
+pool: a `.then`, or a `whenever $promise`, goes to an idle pooled worker if
+there is one, and otherwise to a new thread that joins the pool after its job.
+At most 8 wait idle, and an idle one is not counted in `liveWorkers_`, so the
+stripes and the collector go on as if it were not there. Parallel mode only;
+under the GIL each continuation keeps a thread.
 
 ## The user-visible layer
 
@@ -345,6 +509,25 @@ Concurrency bugs do not appear in unit tests. What found the ones in this
 chapter:
 
 - **ThreadSanitizer** over the stress suite, which drove the thread-local work;
+- **the stress matrix with a ratchet.** `t/stress/run.raku` runs 30 programs
+  in both modes. A case on its known-bad list that fails is tolerated; one
+  that passes is an error too, so the list shrinks in the commit that fixes
+  the case and can never go stale. The list is empty today. One case is
+  listed as flaky: four workers storing by index into one growing array still
+  crash about 1 run in 50, because an element pointer outlives the stripe
+  while a sibling's growth moves the buffer;
+- **the same matrix under TSan**, as the `linux-tsan` CI job. It is not clean
+  in parallel mode, and the harness says exactly how: 9 programs are skipped
+  (8 stage a deliberate race, so a report proves nothing), 2 run with a known
+  report tolerated, and 12 of the private-slot contract programs are
+  tolerated for reads of a slot's flags ahead of the stripe — with one thing
+  kept strict, which is that a report in which a *store* held no lock fails
+  the case;
+- **`rakupp --detect-races`**, since v5.6.0: the same question asked of the
+  user's program. A happens-before detector with vector clocks, dormant
+  unless asked for, that reports each pair of unordered accesses with both
+  lines when the program ends and exits 66. It watches what the interpreter
+  runs; compiled code has no hooks;
 - **AddressSanitizer** for the lifetime bugs;
 - **a stress suite designed to exhaust something** — a thousand tap-and-close
   activations across four spawners is not a realistic program, and that is the
@@ -358,13 +541,19 @@ chapter:
 ## Honest limitations
 
 - **A worker thread's own loop is slower than the main thread's.** Measured on
-  the reference machine, one `start` block with nothing to contend with runs at
-  0.85× — the gap grows with the work, and under `RAKUPP_GIL=1` the same single
-  `start` runs at serial speed, so it is a per-operation cost inside a worker
-  rather than thread setup. It caps every ratio below: a four-way CPU fan-out is
-  2.9×, eight-way 2.8×, and four threads updating one `atomicint` are 0.79× — a
-  net loss, because the cache line moves between cores faster than any of them
-  makes progress.
+  an Apple M3 (4 performance and 4 efficiency cores) on 2026-10-08, after the
+  private-slot work, one `start` block with nothing to contend with runs at
+  0.94× — and under `RAKUPP_GIL=1` the same single `start` runs at serial
+  speed, so it is a per-operation cost while a worker is live rather than
+  thread setup. It caps every ratio below: a four-way CPU fan-out is 3.65×
+  where C threads running the same loop reach 3.81×, eight-way is 5.32×
+  against 6.13×, and four threads updating one `atomicint` are 0.93× — a net
+  loss, because the cache line moves between cores faster than any of them
+  makes progress. Before that work the same sitting read 0.86×, 3.26×, 3.16×
+  and 0.82×.
+- **ThreadSanitizer is not clean in parallel mode**, as the list above says.
+  The reports left are reads of a slot's flags before the stripe is taken, and
+  one class in the promise and `await` handshake.
 - **User data races are the user's.** As in Rakudo, mutating shared data without
   a `Lock` is undefined; the striped locks protect the interpreter's own
   structural invariants, not the user's semantics.

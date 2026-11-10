@@ -9,7 +9,7 @@ the layout that makes a directory tree function as a protocol, and the
 installer that writes it.
 
 The order of construction matters here. Raku++ could **read** the store long
-before it could write it: Chapter 33 ends with `use` resolving zef-installed
+before it could write it: Chapter 33 has `use` resolving zef-installed
 modules straight out of Rakudo's install tree. Then the zef-compatibility work
 gave the engine a **writer** — enough of `CompUnit::Repository::Installation`
 that zef itself, running under rakupp, could install things. `rakupp install`
@@ -22,21 +22,28 @@ A store is one directory — a *prefix* — with this inside:
 
 ```
 ~/.raku/
-├── version              the layout version (2)
+├── version              the layout version (2), written by Rakudo
 ├── repo.lock            what writers flock before mutating anything
 ├── sources/<id>         one file per installed module source
 ├── dist/<dist-id>       one JSON file per distribution: its full META
 ├── short/<sha1(name)>/  the index: one entry per (module name, dist)
-├── resources/<id>       content of each declared resource file
-├── bin/<id>             content of each bin/ script
-└── precomp/             Rakudo's bytecode cache (rakupp ignores it)
+├── resources/<id>       content of each resource file and bin/ script
+├── bin/<name>           one named, executable wrapper per bin/ script
+├── precomp/             Rakudo's bytecode cache (rakupp ignores it)
+└── rakupp-install/      the installer's own: provenance, index cache, log
 ```
+
+The last line is not part of the layout. It is where `rakupp install` keeps
+what only it reads: the `owned` list, the cached indexes, a trace log of every
+run, and the per-script pins described below. A store only rakupp has written
+has no `version` file, and rakupp's reader does not ask for one.
 
 Every engine's default chain includes at least two prefixes. Rakudo's is
 `home` (`~/.raku`) then `site`/`vendor`/`core` under its own installation;
-rakupp searches `~/.raku` first and then every Homebrew Rakudo's `site` and
-`vendor` — so a module zef installed for Rakudo is found by rakupp with no
-configuration at all. The two installers default to *different ends* of the
+rakupp searches `~/.raku` first and then the `site` and `vendor` of every
+Rakudo that Homebrew or rakubrew installed — so a module zef installed for
+Rakudo is found by rakupp with no configuration at all. The two installers
+default to *different ends* of the
 shared chain: zef writes Rakudo's site store, `rakupp install` writes `~/.raku`
 (`--to` to aim elsewhere). Both engines read both.
 
@@ -56,8 +63,9 @@ DBE25863E06AEC6820058FA548E27780308E6C43   ← the sources/ file to load
 1375FC65817F5B56701E20EC2F4101028E8363F6   ← a checksum (see below)
 ```
 
-Resolution is: hash the name, open the directory, pick an entry whose first
-line satisfies the `use` version constraint, load `sources/<line 4>`. Three
+Resolution is: hash the name, open the directory, pick the entry with the
+newest first line that satisfies the `use` version constraint, load
+`sources/<line 4>`. Three
 lines of metadata, one pointer, done. The `dist/<dist-id>` JSON is *not* read
 to resolve a `use` — it exists for everything else: `%?RESOURCES` and
 `$?DISTRIBUTION` binding, listing, uninstalling.
@@ -85,10 +93,11 @@ store's entries and compare. Line 5 of a 2021-era entry in a long-lived home
 store matches *no* current formula — the checksum recipe has changed across
 Rakudo versions, which is itself evidence that nothing load-bearing reads it.)
 
-One Raku++ divergence from Chapter 33 needs an update in this light: `use
-Foo:ver<1.2+>` adverbs are discarded during lib-path search, but against the
-*installed* index the `:ver` constraint **is** honoured — it is checked against
-line 1 of each candidate entry. `:auth` and `:api` are still not consulted.
+One Raku++ divergence from Chapter 33 reads differently in this light: the
+`:ver` of a `use Foo:ver<1.2+>` is checked against line 1 of each candidate
+entry here, and against the `META6.json` version for a module found on the lib
+path. `:auth` and `:api` are still not consulted when choosing among installed
+distributions.
 
 ## The writer is the engine's
 
@@ -111,7 +120,9 @@ would rename every record and orphan every installed distribution. The source
 carries a comment saying exactly that, because it is the kind of line a reader
 tidies up. It then writes each
 provided module's source as a content-addressed blob, writes one short entry
-per provided name, copies `resources/` and `bin/` payloads, and writes the
+per provided name, copies `resources/` and `bin/` payloads into `resources/`
+(Rakudo's layout: `bin/` holds only the named wrappers, which carry a `rakupp`
+shebang), and writes the
 `dist/` record with a `files` map — relative path → blob id — which is what
 later makes uninstall able to know exactly which blobs are this
 distribution's. It returns the dist-id, and that return value is load-bearing:
@@ -126,7 +137,12 @@ same public spelling zef uses —
 ```raku
 # tools/install.raku
 my $repo = CompUnit::RepositoryRegistry.repository-for-spec("inst#$prefix");
-my $dist-id = $repo.install($dist, :force($force));
+my $dist = InstallableDist.new(meta => %meta, root => $root.Str);
+my $dist-id = with-repo-lock($prefix, {
+    my $id = $repo.install($dist, :force($force || $repair || ?%e<replace>));
+    record-owned($prefix, ~$id) if $id ~~ Str;
+    $id
+});
 ```
 
 **What went wrong.** The first version constructed the repository by hand:
@@ -135,39 +151,46 @@ my $dist-id = $repo.install($dist, :force($force));
 CompUnit::Repository::Installation.new(prefix => $to)
 ```
 
-which parses, runs, and installs nothing, silently. `.new` does not thread the
+which parsed, ran, and installed nothing, silently. `.new` did not thread the
 prefix through to the writer, so every file operation targeted `"/sources"` and
-failed into the void. The fix is twofold: `repository-for-spec` is the
-constructor that carries the prefix, and the writer now *refuses loudly* when
+failed into the void. The fix was twofold: `repository-for-spec` was the
+constructor that carried the prefix, and the writer now *refuses loudly* when
 its prefix is empty rather than failing file-by-file in silence. A writer aimed
-at a shared store does not get to guess.
+at a shared store does not get to guess. (`.new` has since learned to carry the
+prefix too; the installer keeps the spelling zef uses.)
 
 ## The installer is a Raku program the binary carries
 
 `rakupp install` and `rakupp uninstall` are not implemented in the binary — not
-in C++, anyway. `main.cpp` recognises the command words and rewrites its own
+in C++, anyway. `main.cpp` recognises the command words (`reinstall` and `test`
+are the same program under other flags) and rewrites its own
 argument vector so the command becomes `rakupp install.raku …`:
 
 ```cpp
 // src/main.cpp — the same trick `python -m pip` pulls, with a nicer spelling
-const char* tool = isDocCmd ? "doc.raku" : "install.raku";
+const char* tool = isDocCmd ? "doc.raku"
+                 : isUpgrade ? "upgrade.raku" : "install.raku";
 g_embeddedTool = tool;
-g_embeddedSrc  = isDocCmd ? rakupp::docToolSource() : rakupp::installerSource();
+g_embeddedSrc  = isDocCmd  ? rakupp::docToolSource()
+               : isUpgrade ? rakupp::upgradeToolSource()
+                           : rakupp::installerSource();
 ```
 
-Those two functions return the program's text, and the argument scan
+Those three functions return the program's text, and the argument scan
 recognises the name and takes the source from there instead of opening a file.
 The text is a byte array in a translation unit that does not exist in the
 repository: `cmake/EmbedTools.cmake` writes it into the **build** tree at build
-time, from `tools/install.raku`, `tools/doc.raku` and the two guides `doc`
-reads, listed as the custom command's `DEPENDS` so editing any of them rebuilds
-exactly that one file.
+time, from `tools/install.raku`, `tools/doc.raku`, `tools/upgrade.raku` and the
+two guides `doc` reads, listed as the custom command's `DEPENDS` so editing any
+of them rebuilds exactly that one file. (The third tool, `rakupp upgrade`,
+replaces the engine itself with a newer release and has nothing to do with the
+store. The same file also carries the `rakulib/` modules of Chapter 33.)
 
 Three decisions are packed into that sentence, and each one was arrived at the
 long way.
 
 **Bytes, not string literals.** MSVC caps a single string literal at 16 KB, and
-the installer is 85 KB, so a literal would have to be split into chunks — and a
+the installer is 149 KB, so a literal would have to be split into chunks — and a
 chunk boundary is a thing to get wrong. `file(READ … HEX)` has no cap, needs no
 escaping, and has no delimiter the content could accidentally contain. It is
 what `src/AstEmit.cpp` has always done with serialized ASTs, for exactly this
@@ -222,7 +245,8 @@ consequence of choosing Raku.
 The rewrite above once produced a **path**, looked up beside the executable:
 
 ```cpp
-for (const char* rel : {"/../libexec/rakupp/install.raku", "/../tools/install.raku"}) {
+for (const char* rel : {"/../libexec/rakupp/install.raku",
+                        "/../tools/install.raku"}) {
     std::string cand = exeDir + rel;
     if (std::ifstream(cand).good()) { script = cand; break; }
 }
@@ -240,12 +264,14 @@ the fix was always for the *user* to reassemble a pair the project had split.
 A cadence that never materialised is not worth a path the user has to get
 right. Nothing is looked up now, so there is no wrong path to have.
 
-The program is about 1,700 lines and its shape is a pipeline. It has roughly
-tripled since this chapter's first draft, and the additions are worth naming
-because none of them is in the pipeline below: `--list` and `--check` and
+The program is 3,129 lines and its shape is a pipeline. It was 840 lines when
+this chapter was first drafted (2026-08-19), and the additions are worth naming
+because most of them are not in the pipeline below: `--list` and `--check` and
 `--gc`, `reinstall` and `test`, installing from a local path, the REA archive
-fallback when a name is not in the fez index, build hooks, and the `rakulib`
-shadowing rule that skips a distribution whose name a bundled shim answers.
+fallback when a name is not in the fez index, the `rakulib`
+shadowing rule that skips a distribution whose name a bundled shim answers
+(the plan says `provided by rakupp, not fetched`), a trace log, and `--auto`,
+the mode the engine itself calls.
 
 **Index.** `https://360.zef.pm/index.json` — the fez ecosystem's index, one
 JSON array of every distribution's META plus an archive path. Cached in
@@ -279,8 +305,9 @@ entry carries no checksum in its path, the installer says so out loud rather
 than pretending the gate applied.
 
 **Three ways in, one path out.** Everything above is what a *name* goes
-through. A directory argument skips resolution entirely — it already is a
-distribution — and a URL is fetched and unpacked into a directory first. All
+through. A directory argument is not resolved — it already is a
+distribution, and only its dependencies go to the resolver — and a URL is
+fetched and unpacked into a directory first. All
 three then produce the same entry, so Test and Write below have no idea which
 one they are serving. That is the whole reason `url-dist-entry` ends by calling
 `local-dist-entry` on what it unpacked rather than building an entry itself: a
@@ -299,8 +326,9 @@ for a related reason: the store is keyed by name, and learning the name behind a
 URL would mean fetching it first, which is not a thing an uninstall should do.
 
 Two more kinds of argument arrived later, and both end in the same entry
-shape. **A directory of module files with no `META6.json`** is not a
-distribution, but it can stand for one. When it lies under the `lib/` of a
+shape. **A directory of module files with no `META6.json`**, or one module
+file, is not a distribution, but it can stand for one. The directory gives
+the module files directly in it; `-r` takes those below it too. When it lies under the `lib/` of a
 checkout — a `META6.json` in some directory above it — the entry is that
 checkout's, and every module file found in the directory (with `-r`, below it
 too) that the META's `provides` does not list is added to it. The META is the
@@ -308,10 +336,37 @@ only place a name, a version and a dependency list are written down. Giving the
 found files an identity of their own would put a partial second copy of the
 distribution in the store, and `use` would choose between the two by version.
 With no `META6.json` above, an identity is made: version 0, named for the
-namespace the modules share, its dependencies whatever the files `use`.
+namespace the modules share, its dependencies whatever the files `use`:
+
+```
+$ rakupp install -r loose
+loose: no META6.json above it — installing module Acme::Util
+  as Acme::Util:ver<0>                  (one line, wrapped here)
+```
+
+Loose modules have no version to tell one copy from the next, so the
+directory's always replaces the store's.
 **A program** contributes no entry at all, only wants: its `use` and `need`
 lines, read as text, because a program whose dependencies are missing is
-exactly the program that cannot be compiled to find them.
+exactly the program that cannot be compiled to find them. Nothing states a
+version for a want that a scan found, so one the store already answers is
+left alone:
+
+```
+$ rakupp install app.raku
+app.raku: a program — installing the 2 modules it uses, not the program
+2 of the modules found by reading the source are installed already
+nothing to install
+```
+
+**Build.** A distribution that ships a build step has it run before its
+tests, by either of zef's two protocols: a `builder` class named in the META,
+or a `Build.rakumod` at the root with a `build` method (or only a `MAIN`).
+The hook is a child rakupp that sees the target store as `-I inst#<prefix>`,
+so a builder the plan just installed resolves. The ecosystem's build recipes
+read their toolchain out of `$*VM.config` behind a `$*VM.name eq 'moar'` test,
+so for the duration of the hook, and only there, the child answers in that
+dialect with this machine's real compiler and flags.
 
 **Test.** Before a distribution is installed, its own `t/` suite runs under
 rakupp — dependencies were installed first, so the tests see them. This gate
@@ -320,7 +375,11 @@ failed one test under rakupp, the installer refused the whole chain, and the
 failure became an engine bug report (a real bug — named-argument
 unmarshalling — since fixed). `--no-test` is the documented override, and it
 is a statement about what "installed" means here: not "files copied" but
-"demonstrated to work under this engine, on this machine".
+"demonstrated to work under this engine, on this machine". The suite runs with
+`RAKUPP_DEPS=0`, so a test that uses a module its META never declared fails
+here as it does under Rakudo instead of having the module fetched for it.
+`rakupp test Foo` is the gate alone: it installs the dependencies, runs the
+suite, and leaves `Foo` out of the store.
 
 **Write.** The engine's `.install`, under a real `flock` on the store's
 `repo.lock` (two new builtins, `rakupp-repo-lock`/`-unlock`, because the
@@ -328,6 +387,53 @@ store is shared and a half-written short entry is another engine's crash).
 Then the returned dist-id is appended to `<prefix>/rakupp-install/owned` —
 one line per distribution *this tool* installed. That file is the whole
 provenance system, and uninstall is its consumer.
+
+## A `use` that fetches, on request
+
+`rakupp --auto app.raku` runs a program whose modules are not installed. The
+loader of Chapter 33 reaches the point where it would report a missing module
+and instead starts a child:
+
+```
+rakupp install --auto --for=app.raku No::Such
+```
+
+with `RAKUPP_DEPS=0` in its environment, so that nothing the child loads can
+ask again. When the child exits 0 the loader searches the stores once more.
+The engine still carries no network code: it has started the installer.
+
+It is opt-in. The first design fetched on any miss with no option to type, and
+was revised after it shipped (`DEPS-PLAN.md`, 2026-10-14): too dangerous a
+default for someone new to the language. Without `--auto`
+nothing is fetched and the error names the two commands that would. Three
+things never fetch even with it: a `require`, a `--sandbox` run, and a binary
+built with `--exe` — though `--auto --exe` fetches while *compiling*, so the
+binary can embed what it found.
+
+The `--auto` mode of the installer is its own short path, and differs from the
+pipeline above in four ways:
+
+- **It says nothing unless it installs.** One `installed …` line per
+  distribution goes to the program's stderr; stdout stays the program's.
+- **No test gate.** The distributions install with their suites unrun. The
+  person asked for the program to run, not for an audit.
+- **A typo guard.** A name one or two edits away from a far more depended-on
+  name is refused with `did you mean …?`, and installs only when the `use`
+  carries an `:auth<…>` or a `:ver<…>`. A mistyped `use` is otherwise a way to
+  run a stranger's code. On the zef index of 2026-10-14 the guard refused 4 of
+  9,698 module names (the count is the installer's own comment).
+- **The rest of the program comes along.** The child reads the program's other
+  `use` lines and installs what the store lacks in the same run, so the first
+  miss is the last.
+
+What a script's first run chose is written down, in
+`rakupp-install/scripts/<sha1 of the script's path>.json`: every module name a
+fetched distribution provides, with its version and auth. The loader reads
+that record and, for a pinned name, takes that version from the store rather
+than the newest — unless the `use` now asks for a version the pin does not
+satisfy. So a script keeps running against what it first ran against, after
+something newer is installed for another program. An edit keeps the pins; a
+move starts over.
 
 ## Update means add
 
@@ -412,8 +518,10 @@ presence only rather than letting `0 broken` imply more than was asked:
 ```
 $ rakupp install --check
 store: /Users/ash/.raku
-BROKEN: fez (43BE78BF…) lib/Fez/CLI.rakumod: sources/70C8E494… holds different bytes (SHA-1 DA39A3EE…)
-  4 distributions not installed by rakupp: blobs checked for presence, not content
+BROKEN: fez (43BE78BF…) lib/Fez/CLI.rakumod: sources/70C8E494… holds
+  different bytes (SHA-1 DA39A3EE…)           (one line, wrapped here)
+  4 distributions not installed by rakupp: blobs checked for presence,
+  not content                                 (one line, wrapped here)
 store check: 135 distributions, 1 broken, 0 unreferenced blobs
 ```
 
@@ -427,7 +535,11 @@ script is one `use Fez::CLI`, and an empty `Fez::CLI` left the program with no
 **Unreferenced blobs** are wasted disk, reported and exempt: in a shared
 store, a blob this engine cannot account for might be another writer's, and a
 checker that "cleans" what it does not understand is how shared state gets
-destroyed. There is deliberately no `--fix`.
+destroyed. There is deliberately no `--fix`. Removing them is a separate
+command, `rakupp install --gc`, which builds the same picture under the lock
+and leaves a store alone if any `dist/` record in it is unreadable: deleting
+against an incomplete live set is how a collector eats an installation.
+`--gc --dry-run` lists what it would remove.
 
 ## What went wrong: damage travels between engines
 
@@ -480,8 +592,12 @@ engine's cache is private state layered over shared truth — which the
 File::Temp story shows is exactly where the seams are: the store stayed
 consistent between engines, and it was a *cache* that made them disagree.
 
-The suite behind all of this is `t/install/run.raku` — 113 checks, fully
+The suite behind all of this is `t/install/run.raku` — 164 checks, fully
 offline (a fixture index, local archives, a scratch `HOME`), covering the
 plan, the checksum refusal, the test gate, additive updates, every uninstall
 refusal, the deletion ordering, shared-blob survival, and `--check` clean
-before and after every mutation. It runs in CI on every push.
+before and after every mutation. Two smaller gates stand beside it:
+`t/deps/run.raku`, 57 checks on `--auto` and on what stays fatal without it,
+and `t/installed/run.raku`, 13 checks on a binary copied into a bare prefix
+with no `rakulib/` near it and an empty `HOME`. All three run in CI on every
+push.

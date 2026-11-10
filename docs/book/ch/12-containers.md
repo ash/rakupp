@@ -9,21 +9,25 @@ at the end, how shared payloads that refer to each other are freed.
 ## Scopes are hash maps with a parent pointer
 
 ```cpp
-// src/Interpreter.h
+// src/Interpreter.h — abridged
 struct Env {
-    std::unordered_map<std::string, Value> vars;   // "$x", "@a", "%h", "&sub"
-    std::shared_ptr<Env> parent;
+    EnvVars vars;                // a map: "$x", "@a", "%h", "&sub"
+    EnvParent parent;
     bool routineFrame = false;   // $/ scopes here
     bool loopFrame = false;      // a loop's `state` frame
     std::unique_ptr<EnvExtras> ex;
+    const PadLayout* layout = nullptr;
+    ValueList pad;               // slots for the names the layout resolved
+    std::atomic<uint64_t> padLive{0};   // which slots' `my` has run
 
     Value* find(const std::string& name) {
-        auto it = vars.find(name);
-        if (it != vars.end()) return &it->second;
-        return parent ? parent->find(name) : nullptr;
-    }
-    Value& define(const std::string& name, Value v) {
-        return vars[name] = std::move(v);
+        for (Env* e = this; e; e = e->parent.get()) {
+            auto it = e->vars.find(name);
+            if (it != e->vars.end()) return it->second.deref();
+            if (e->layout)
+                if (Value* p = e->padFind(name)) return p->deref();
+        }
+        return nullptr;
     }
 };
 ```
@@ -33,21 +37,35 @@ The **full sigilled name is the key**. Subs live in the same map under a
 second table. Lexical scoping *is* the parent walk in `find`; there is no
 separate symbol table anywhere in the interpreter.
 
+That was the whole of it until the pads of Chapter 41. A routine's call frame
+and the mainline now also own a **pad**: a `ValueList` sized once at frame
+setup, with one slot for each name its `PadLayout` resolved ahead of time. A
+name with a slot never lives in the map. `define` puts its value in the slot
+and then sets the slot's bit in `padLive`, so a slot answers a lookup only
+after its declaration has run, and an outer variable of the same name stays
+visible until then. A pad never grows, because `lvalue` hands out pointers
+into it. `find` is the slow path for both stores; a variable node whose slot
+was resolved reaches it by index.
+
 Reading a variable returns a **copy** of the slot. Writing goes through
 `lvalue(Expr*)`, which hands back a `Value*` pointing straight into the owning
-`Env`'s map:
+`Env`'s map or pad:
 
 ```cpp
 // read  $x
 if (Value* p = tctx().cur->find(ve->name)) return *p;      // a COPY
 
 // my $x — make the slot here, hand back its address
-tctx().cur->define(ve->name, std::move(init));
-return &tctx().cur->vars[ve->name];
+return &tcx.cur->define(ve->name, defaultFor(sigil));
 
 // $x = 5
 *lv = rhs;
 ```
+
+The `deref()` in `find` is the one step between a storage slot and the
+container it stands for. A slot that a second name was bound to holds a
+**cell**, described under *Binding* below, and `find` answers the `Value`
+inside it.
 
 The three declarators differ only in *which* `Env` holds the slot:
 
@@ -61,15 +79,16 @@ The three declarators differ only in *which* `Env` holds the slot:
 `std::once_flag` on the `Callable` so the persistent environment is created
 exactly once even if two threads call the routine simultaneously.
 
-### `EnvExtras`: the eight rarely-used maps
+### `EnvExtras`: the rarely-used maps
 
 An `Env` is constructed for every routine call **and every block**. It also
 needs somewhere to keep `is rw` write-through links, `temp`/`let` restorations,
 `is default` values, and the set of names declared `is dynamic` — eight
-containers which are empty in the overwhelming majority of scopes.
+containers when this was written and about twenty now, all empty in the
+overwhelming majority of scopes.
 
-Constructing and destroying eight empty maps per block is pure overhead for the
-ordinary case, so they live behind one lazily-allocated pointer:
+Constructing and destroying that many empty maps per block is pure overhead for
+the ordinary case, so they live behind one lazily-allocated pointer:
 
 ```cpp
 // src/Interpreter.h
@@ -87,8 +106,8 @@ feature is actually used.**
 
 ## Where the sharing is broken
 
-Copying a `Value` bumps refcounts on the `shared_ptr` members, so a raw copy of
-an `Array` shares its backing `ValueList`. Raku wants:
+Copying a `Value` adds a count to its payload body, so a raw copy of an
+`Array` shares its backing `ValueList`. Raku wants:
 
 ```raku
 my @a = 1, 2, 3;
@@ -101,16 +120,18 @@ So the interpreter deliberately breaks the sharing at `=` assignment, and **only
 for the `@` and `%` sigils**:
 
 ```cpp
-// src/Interpreter.cpp — coerceArray
+// src/Interpreter.cpp — coerceArray, abridged
 if (v.t == VT::Array) {
     if (v.itemized) { … }             // an itemized array is ONE element
-    if (v.ext) return v;              // a lazy seq stays lazy
-    Value r = Value::array(*v.arr);   // *v.arr copies the element list
-    r.isList = false; return r;
+    if (v.ext()) { … }                // a lazy seq stays lazy
+    Value r = Value::array(*v.arr()); // *v.arr() copies the element list
+    r.isList = false;
+    …
+    return r;
 }
 ```
 
-`*v.arr` dereferences the pointer and copies the underlying `ValueList`, so
+`*v.arr()` dereferences the pointer and copies the underlying `ValueList`, so
 `@b` gets its own storage. That copy is the most visible O(n) event in the
 language, and it is the reason `ValueList` is a container this project owns
 rather than a `std::vector` — see *The list container* below. Hashes copy the
@@ -123,11 +144,17 @@ Two consequences to keep straight:
 - **The copy is one level deep**, matching Rakudo. `my @b = @a` copies the
   top-level buffer, but a nested itemized array inside is copied as a `Value`
   struct, so its `arr` pointer is still shared.
-- **A lazy sequence is not copied.** The `if (v.ext) return v` line is what keeps
-  `my @a = 1, 2, 4 ... *` from trying to drain an infinite list.
+- **A lazy sequence is not copied.** The `if (v.ext())` line is what keeps
+  `my @a = 1, 2, 4 ... *` from trying to drain an infinite list. A finite
+  `gather` is reified there; a still-lazy one is returned as it is.
 
 The compiled backend has its own mirror of this rule, `rtArrayVal`, with the
 same fresh-buffer semantics, so interpreted and compiled code agree.
+
+One case skips the copy. When the right side's buffer has no other owner — an
+operator's or a call's result, never a variable's — `coerceArrayTake` moves the
+buffer into the new `Array` instead of copying each element and destroying the
+original.
 
 ## Binding: `:=` and the `Proxy`
 
@@ -135,47 +162,74 @@ same fresh-buffer semantics, so interpreted and compiled code agree.
 itself: after `$y := $x`, the two names *are* the same container and a write to
 either is seen by both.
 
-But `Env` stores `Value`s by value in a map, so two map slots cannot literally
-be the same storage. The alias is faked with a `Proxy`:
+But `Env` stores `Value`s by value, so two slots cannot literally be the same
+storage. What they can do is hold the same counted body. A variable that a
+second name is bound to has its `Value` moved into a **cell**, a payload body
+of kind `PK::Cell`, and every name bound to it holds that cell:
 
 ```cpp
-// src/InterpreterCore.cpp — $y := $x, scalar case
-Value proxy = Value::makeHash(); proxy.hashKind = "Proxy";
-(*proxy.hash)["FETCH"] = fetch;    // a builtin Code closing over the owning Env
-(*proxy.hash)["STORE"] = store;
-*lvalue(target) = proxy;
+// src/Value.h
+PRef<Value> promoteToCell() {
+    if (pk_ == PK::Cell) return PRef<Value>::fromSlot(p_);
+    auto c = makePayload<Value>(std::move(*this));
+    *this = cellHolder(c);
+    return c;
+}
+Value* deref() {
+    return pk_ == PK::Cell ? (p_ ? pv<Value>() : nullptr) : this;
+}
 ```
 
-`$y`'s slot holds a `Hash` tagged `Proxy` whose two closures read and write
-`$x`'s slot in the environment that owns it. Reading a variable notices the tag
-and calls `FETCH` instead of returning the hash:
+The holder is inert. Only an `Env`'s storage holds one, and `find`, `local`
+and the pad readers all answer the `Value` inside, so a cell is never read as
+a value of its own. After `$y := $x` a read of either name is the ordinary
+read, and a write through either lands in the one container. The binders use
+`findRaw` and `localRaw`, which answer the storage slot itself, because they
+replace or share the container and do not write into it.
+
+Promotion rewrites the slot, and a `Value` is several words, so it is not
+done while another thread could be reading that slot. While worker threads
+are live, a slot that is not private to its thread stays as it is.
+
+Until 2026-09-27 every scalar alias was a `Proxy` instead: a `Hash` tagged
+`Proxy` holding a `FETCH` and a `STORE` closure over the owning scope, which
+cost a call on every read of a bound variable. The `Proxy` is still the form
+where a reader takes the slot's `Value` as it stands and cannot be handed a
+cell holder: an attribute target such as `$!x := $y`, the topic `$_`, an array
+or hash element bound to a container, and the alias of a typed variable,
+which has to carry the type so that a store through the alias is checked.
+Those are a `Proxy` *over the same cell*, and reading a variable recognizes
+one before it considers a call:
 
 ```cpp
 // src/InterpreterCore.cpp — reading a variable
 Value* p = tctx().cur->find(ve->name);
 if (p) {
-    if (p->t == VT::Hash && p->hashKind == "Proxy" && p->hash) {
-        auto it = p->hash->find("FETCH");
-        if (it != p->hash->end())
+    if (p->t == VT::Hash && p->hashKind == proxyKind() && p->hash()) {
+        // an element alias or a shared cell reads directly; FETCH is a call
+        if (Value r; engineProxyRead(*this, *p, r)) return r;
+        auto it = p->hash()->find("FETCH");
+        if (it != p->hash()->end())
             return callCallable(it->second, { *p });
     }
     return *p;
 }
 ```
 
-Binding chains dereference one extra level so `$z := $y := $x` works.
+A `Proxy` a program built itself reaches the `FETCH` call, and so do the few
+aliases the engine still makes the old way, such as one whose source is `$_`.
+The check still sits inside the *slow* half of the variable-read path, and the fast
+paths in Chapter 19 decline any value with a non-empty `hashKind`.
 
-This costs a call on every read of a bound variable, which is why the check is
-placed inside the *slow* half of the variable-read path and why the fast paths
-in Chapter 19 decline any value with a non-empty `hashKind`.
-
-**Array binding is much cheaper**, because sharing a buffer is exactly what a
-`shared_ptr` copy already does:
+**Array binding needs neither**, because sharing a buffer is exactly what a
+copy of the `Value` already does:
 
 ```cpp
-// src/InterpreterCore.cpp — @a := @b
-if (a->op == ":=" && rhs.t == VT::Array) {
-    Value b = rhs; b.itemized = false; *lv = b;
+// src/InterpreterCore.cpp — @a := @b, abridged
+if (opEq(a->op, ":=") && rhs.t == VT::Array) {
+    …                         // a Seq is refused: it is not Positional
+    raceW(lv) = rhs;
+    lv->itemized = false;
 }
 ```
 
@@ -187,8 +241,8 @@ rather than a detail. Clearing `isList` would make a bound `List` become an
 it to an `@` variable that then flattens it is how `DBDish::Pg` overflowed its
 stack.
 
-`Value b = rhs` copies the struct and shares `rhs.arr`. This is the deliberate
-opposite of `@a = @b` above. `constant` reuses the binding path — a constant is
+The assignment copies the struct and shares `rhs`'s buffer. This is the
+deliberate opposite of `@a = @b` above. `constant` reuses the binding path — a constant is
 `:=` in disguise.
 
 The user-visible `Proxy` type — `Proxy.new(:FETCH{…}, :STORE{…})` — is the same
@@ -211,11 +265,10 @@ reset default. Assigning `Nil` walks the chain to find it:
 ```cpp
 // src/InterpreterCore.cpp — $x = Nil restores the container's default
 for (Env* en = tctx().cur.get(); en; en = en->parent.get()) {
-    auto di = en->varDefault.find(nm);
-    if (di != en->varDefault.end()) { dv = di->second; break; }
-    if (en->vars.count(nm)) break;   // owner scope, no declared default
+    auto di = en->xr().varDefault.find(nm);
+    if (di != en->xr().varDefault.end()) { dv = di->second; break; }
+    if (en->local(nm)) break;   // owner scope reached, no declared default
 }
-*lv = dv;                             // else Any
 ```
 
 **Type constraints** on a scalar are enforced at assignment for the core nominal
@@ -249,8 +302,9 @@ one-argument-rule subtleties in the built-ins reduce to testing them.
 
 ## The list container
 
-`ValueList` is the type behind every Array — `Value::arr` is a
-`shared_ptr<ValueList>` — and it is also the argument list of every call. Until
+`ValueList` is the type behind every Array — `Value::arr()` answers the
+`ValueList` in the payload body — and it is also the argument list of every
+call. Until
 2026-09 it was a `typedef` for `std::vector<Value>`. It is now `RVec<Value>`,
 a container this project owns ([src/ValueVec.h](../../../src/ValueVec.h)),
 implementing the `std::vector` subset the tree uses with `std::vector`'s
@@ -270,17 +324,20 @@ the larger half of this change: `arrayops` retires 30% fewer instructions,
 is *trivially relocatable* — moving its bytes to a new address and not
 destroying the source is equivalent to move-constructing and then destroying,
 which is exactly what a reallocation does. Nothing in it points at itself:
-`i`/`n` are scalars, `IStr` is an interned pointer, the payload and cold-block
-slots are `shared_ptr` pairs.
+`i`/`n` are scalars, `IStr` is an index, the payload and cold-block slots are
+handles to counted blocks, and `CowStr` holds a short text or a body's handle.
 
-Nothing except one member. `CowStr`'s inline `std::string` is relocatable on
-libc++ and MSVC, which compute a short string's data address from `this`, and
-is **not** on libstdc++, which stores `_M_p` aimed at its own inline buffer —
-a bitwise copy there reads the original object's storage and dangles the moment
-it is reused. `bitwiseRelocOk()` asks the library at run time rather than
-trusting a macro, relocating a short string and checking where the copy's
-characters come from, and a library that fails the probe keeps correct
-behaviour and loses only the speedup.
+Until 2026-11-07 there was one exception. `CowStr` held a `std::string`, which
+is relocatable on libc++ and MSVC, which compute a short string's data address
+from `this`, and is **not** on libstdc++, which stores `_M_p` aimed at its own
+inline buffer — a bitwise copy there reads the original object's storage and
+dangles the moment it is reused. `bitwiseRelocOk()` asks the library at run
+time rather than trusting a macro, relocating a short string and checking where
+the copy's characters come from, and a library that fails the probe keeps
+correct behaviour and loses only the speedup. A `Value` holds no `std::string`
+now, so on libstdc++ the probe is more careful than it needs to be. It still
+decides the path there; dropping it is a change to measure on Linux, where it
+would apply.
 
 That probe is worth a warning to anyone editing `Value`. Its first version
 asked whether a short string's `data()` lay *inside* the string object — which
@@ -316,7 +373,7 @@ remove — see Chapter 41.
 ## Shaped arrays and typed containers
 
 ```cpp
-// src/Value.h
+// src/Value.h — ValueContExt, the cold block's container part
 std::shared_ptr<std::vector<long long>> shape;  // my @a[2;3]
 std::string ofType;                              // Array[Int], my Int @a
 ```
@@ -329,6 +386,62 @@ optionally filling it from a flat list.
 there is more than one parameter (`Hash[Int,Str]` becomes `"Int,Str"`). It also
 drives native-width masking for `my uint8 @a`, through the same
 `natWidthOfType` table as scalars.
+
+## Packed arrays
+
+A `my int @a` or `my num @a` does not keep a `Value` per element. Its payload
+is a `PackedArr`, of kind `PK::Packed`:
+
+```cpp
+// src/Value.h — abridged
+struct PackedArr {
+    bool isNum = false;
+    bool selfPacked = false;       // an untyped Array that packed itself
+    std::vector<int64_t> w;        // the words; a Num is bit-cast into one
+    PRef<ValueList> boxed;         // built once, when something asks
+    std::atomic<bool> unpacked{false};
+};
+```
+
+The seam is `Value::arr()`. It had 3,129 call sites when packing was planned
+and none of them changed: on a packed payload `arr()` **unpacks** — it builds the `ValueList`
+once, inside the shared body, and from then on the payload answers as a list
+for every holder. So a path that knows nothing about packing is correct by
+construction and costs one unpack. Only full-width `int` and `num` arrays
+pack; sized and unsigned natives stay boxed.
+
+What keeps an array packed is a short list of lanes that read and write the
+words directly: construction by list assignment, an element read or store
+with an in-range `Int` subscript, `.elems` and `.end`, `push` of plain machine
+words, `for @a`, the `+=` family and `++` on an element, `.sum`, `.min` and
+`.max`, and the loop kernels. A store of anything a word cannot hold unpacks
+and stores as before. A value may be a word only if it differs from
+`Value::integer(x)` or `Value::number(x)` in its number alone:
+`plainWordValue` checks every flag, tag and name for that.
+
+Measured as each batch landed, when a `Value` was 80 bytes: a million-element
+`my int @a = ^N` read back by index went from 83 to 9 bytes an element, and a
+million-element `@a[$i] += 1` loop from 0.16 to 0.04 s. A declaration makes an
+empty packed body, so an array grown by `push` packs too.
+
+**An untyped Array of Nums packs itself.** Since 2026-11-07 a `my @a = LIST` of
+8 or more plain `Num`s, on an Array with no type, default, shape or bound
+element, stores their bits in the same body with `selfPacked` set, and
+`my @v = @u` copies the words. JavaScriptCore keeps an array of doubles the
+same way. The interpreter's loop kernels and the unboxed loop lanes of
+`--exe -O` then run on the words, checking each array once on entry. On the
+three untyped kernels the change was measured against, the interpreter went
+from 100 to 4.9 ns per operation on a dot product, 216 to 9.3 on a matrix
+multiply and 272 to 7.1 on a stencil.
+
+The costs are stated with it. Peak memory is not lower, because the words are
+built beside the `Value`s they came from. Where no kernel takes the loop, the
+tree-walker alone ran the matrix multiply 16% slower. And an array that
+unpacks keeps both forms. `RAKUPP_NO_SELFPACK=1` turns self-packing off, and
+`RAKUPP_SELFPACK_MIN` sets the fewest elements packed.
+
+An untyped Array of plain `Int`s does not pack itself. That is the next
+question the measurements point at, and it is not started.
 
 ## `is rw`, and writing back to the caller
 
@@ -453,11 +566,12 @@ Hooking every release costs on the hottest path in the engine. A comment in
 size alone. The answer folds the decision into the count:
 
 ```cpp
-// src/Ref.h
+// src/Ref.h — PayRef
 void release() noexcept {
-    if (p_) {
-        std::uint32_t old = p_->refs_.fetch_sub(1, std::memory_order_acq_rel);
-        if ((std::int32_t)old <= 1) payloadReleaseSlow(p_, old);
+    if (s_) {
+        Payload* p = s_.raw();
+        std::uint32_t old = p->refs_.fetch_sub(1, std::memory_order_acq_rel);
+        if ((std::int32_t)old <= 1) payloadReleaseSlow(p, old);
     }
 }
 ```
@@ -576,8 +690,10 @@ freed.
   that runs through a promise, a channel, a lazy generator or a native
   callback, are not freed. A program that always has a worker thread running
   collects only at the moments it has none.
-- **`:=` on a scalar costs a call per read.** The `Proxy` is correct and
-  general, and it is not free.
+- **A bound scalar has two forms.** A lexical bound to a lexical shares a
+  cell and reads at full speed. An attribute, the topic and a typed variable's
+  alias still read through a `Proxy` over the cell, and a `Proxy` with a
+  `FETCH` of its own costs a call per read.
 - **`is rw` write-back is expression-based.** Where the argument expression is
   not available or not re-resolvable, the write-back does not happen.
 - **The one-level copy rule** matches Rakudo, but it surprises people

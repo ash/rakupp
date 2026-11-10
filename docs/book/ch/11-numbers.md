@@ -44,10 +44,16 @@ is one instruction on the compilers that matter.
 // src/BigInt.h
 struct BigInt {
     int sign = 0;                  // -1, 0, +1
-    std::vector<uint32_t> mag;     // little-endian limbs, base 1e9
+    LimbVec mag;                   // little-endian limbs, base 1e9
     static const uint32_t BASE = 1000000000u;
 };
 ```
+
+`LimbVec` is the part of `std::vector<uint32_t>` the arithmetic uses, with the
+first four limbs inline. It is the same 24 bytes as the vector, and storage
+moves to the heap only past four limbs. A `Rat` is two `BigInt`s, and nearly
+every `Rat` a program makes has parts under 10^36, so each one used to cost two
+heap blocks for a limb apiece.
 
 Base 10^9 rather than a power of two. That choice trades some arithmetic
 density for the thing a language runtime does constantly: **decimal conversion
@@ -56,9 +62,14 @@ is free**. `toString` walks the limbs and prints nine digits each;
 make printing a repeated division by 10, which for a language where every
 integer is eventually stringified is the wrong trade.
 
-Multiplication is schoolbook, O(n·m). There is no Karatsuba and no FFT: the
-sizes that appear in practice are small, and the workloads where they are not
-are dominated by other costs.
+Multiplication is schoolbook below 96 limbs and Karatsuba above, with the
+longer operand taken in slices when the two differ in length. Where the
+compiler has a 128-bit integer, two magnitudes that each fit 64 bits skip both
+and multiply in one hardware product.
+It was schoolbook alone for a long time, on the argument that the sizes that
+appear in practice are small. They are, until a program writes
+`2 ** 1_000_000`: that went from 1.46 s to 0.04 s, measured on an M3 when the
+Karatsuba path was added. There is no FFT.
 
 Division is base-10^9 long division — Knuth's algorithm D. The per-limb quotient
 digit is **estimated** from the leading limbs and then corrected, which is what
@@ -69,8 +80,8 @@ estimate wrong by a factor of `BASE`.
 It did not always work that way, and the reason it changed is a good example of
 a wart that was only theoretical until it was not. The quotient digit used to be
 found by **binary search** over `[0, BASE)`, at about thirty `BigInt`
-multiplications per limb. That made `gcd` — Euclid over `divmod`, which every
-`Rat` construction calls — take 865 ms on a 1,437-digit over 812-digit pair
+multiplications per limb. That made `gcd` — then Euclid over `divmod`, which
+every `Rat` construction calls — take 865 ms on a 1,437-digit over 812-digit pair
 where Rakudo takes 3. And it was not a corner case: `Math::NumberTheory`'s
 `FatRat` digit expansions reduce `Rat`s with ~600-digit parts on every step, so
 that file simply never finished.
@@ -88,17 +99,23 @@ literal and every `p/q` in a program cost roughly 10 microseconds to build.
 
 ```cpp
 // src/BigInt.cpp — divmod, the fast path
-// One hardware divide instead of the base-1e9 long division below, whose
-// per-limb BINARY SEARCH costs ~30 BigInt multiplications.
+// Fast path: one hardware divide instead of the base-1e9 long division
+// below.
 if (a.fitsU64() && b.fitsU64()) { /* two 64-bit divides, rebuild */ }
 ```
 
 ```cpp
 // src/BigInt.cpp — gcd
-// Euclid entirely in registers when both fit — the general loop below
-// builds two BigInts per step and calls divmod, and Value::rat() calls
-// this on EVERY Rat it constructs.
+// Euclid entirely in registers when both fit — Value::rat() calls this on
+// EVERY Rat it constructs.
 ```
+
+Both have grown a second band since. Where the compiler has a 128-bit integer,
+`divmod` of two magnitudes that fit 128 bits is two hardware divides as well:
+`($x * $x + $c) % $n` with a modulus near 10^17 has a dividend near 10^34 on
+every step of a Pollard rho. And past 64 bits `gcd` is no longer Euclid over
+`divmod`. It converts both magnitudes to binary words, takes out the factors
+of two, and runs Lehmer's algorithm on the rest.
 
 The guard is `fitsU64()`, which is a three-limb comparison against the base-10^9
 digits of 2^64 − 1:
@@ -146,11 +163,29 @@ static Value rat(BigInt n, BigInt d) {
     if (d.sign < 0) { n = -n; d = -d; }          // sign lives in the numerator
     BigInt g = BigInt::gcd(n, d);
     if (!g.isZero()) { /* divide both by g */ }
-    v.ratN = std::make_shared<BigInt>(n);
-    v.ratD = std::make_shared<BigInt>(d);
+    v.setRatParts(std::move(n), std::move(d));
     return v;
 }
 ```
+
+The pair is a payload body of its own, `PK::Rat`:
+
+```cpp
+// src/Value.h
+struct RatBody {
+    BigInt num, den;
+    RatBody(BigInt n, BigInt d) : num(std::move(n)), den(std::move(d)) {}
+    RatBody(const RatBody&) = default;
+};
+```
+
+Every copy of the `Value` shares the body, and only its sole holder changes it
+in place. Until 2026-11-05 the parts were two `shared_ptr<BigInt>` in the cold
+block: three allocations a `Rat`. They are one 80-byte block now, with the two
+`BigInt`s by value and the `FatRat` flag in the block's header. A million kept
+`Rat`s went from 437 to 163 bytes an element with that change, against
+Rakudo's 211. `v.ratN()` and `v.ratD()` still answer a pointer to each part,
+null on anything that is not a `Rat`.
 
 Normalisation is eager: the denominator is positive and the pair is reduced at
 construction. That is what makes `==` on `Rat`s a component-wise comparison
@@ -169,10 +204,14 @@ a larger one degrades to `Num`:
 
 ```cpp
 // src/InterpreterCore.cpp — applyArith, the Rat result
-bool fat = (l.t == VT::Rat && l.fatRat) || (r.t == VT::Rat && r.fatRat);
-Value v = Value::rat(std::move(n), std::move(d)); v.fatRat = fat;
-if (!fat && v.ratD && !v.ratD->fitsU64()) return Value::number(v.toNum());
-return v;
+bool fat = (l.t == VT::Rat && l.fatRat()) ||
+           (r.t == VT::Rat && r.fatRat());
+auto mkRat = [&](BigInt n, BigInt d) {
+    Value v = Value::rat(std::move(n), std::move(d)); v.setFatRat(fat);
+    if (!fat && v.ratD() && !v.ratD()->fitsU64())
+        return Value::number(v.toNum());
+    return v;
+};
 ```
 
 `FatRat` is the same storage with a flag, and the flag does two things: it
@@ -191,11 +230,16 @@ specifies and also the only way a chain of operations can stay exact.
 width:
 
 ```cpp
-// src/Value.h
-int natBits = 0;       // 0 = not native
-bool natSigned = false;
-bool natFloat = false; // num32: truncate to float32 on assignment
+// src/Value.h — abridged
+bool natSigned : 1;
+bool natFloat : 1;     // num32: truncates to float32 on assignment
+unsigned natBytes_ : 4;
+int natBits() const { return (int)natBytes_ * 8; }   // 0 = not native
+void setNatBits(int bits) { natBytes_ = (unsigned)bits >> 3; }
 ```
+
+The width is only ever 0, 8, 16, 32 or 64 bits, so it is kept in bytes and
+fits four bits of the tag block.
 
 Every assignment masks to the declared width, so `my uint8 $b = 300` stores 44.
 The width is derived from the declared type name once and cached, because
@@ -219,6 +263,7 @@ Typed arrays and hashes use the same table through `ofType`, so
 
 `VT::Complex` reuses `n` for the real part and `im` for the imaginary one — the
 only tag that uses `im` at all, apart from a fractional `Range`'s upper bound.
+`im` is a field of the cold block, read as `v.im()`, so a `Complex` carries one.
 Coercing a `Complex` back to a real checks the imaginary part against
 `$*TOLERANCE`, which defaults to 1e-15 and is looked up dynamically first, then
 lexically.
@@ -265,13 +310,14 @@ path, at roughly 7 microseconds per method call.
 of the input, and costs nothing:
 
 ```cpp
-// src/Value.cpp
-static double strToNumOr0(const std::string& s) {
-    if (s.empty()) return 0.0;
-    const char* p = s.c_str(); char* end = nullptr;
+// src/Value.cpp — abridged
+static double strToNumOr0(const char* p, size_t n) {
+    if (n == 0) return 0.0;
+    // … a leading U+2212 MINUS SIGN is turned into '-' first …
+    char* end = nullptr;
     errno = 0;
     double d = cnum::strtod(p, &end);
-    if (end == p) return 0.0;   // nothing numeric at the front — stod would throw
+    if (end == p) return 0.0;   // nothing numeric at the front
     return d;
 }
 ```

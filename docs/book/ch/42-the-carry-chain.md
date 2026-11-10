@@ -244,7 +244,10 @@ What remains open is the same list Chapter 41 ended on, one item longer.
 The eight-chain technique is applied in exactly one place — a magnitude
 times a single limb; addition and subtraction have the same strictly serial
 chain and would take the same treatment, and nothing measured has needed it
-yet. The general big-by-big product is untouched, and there the interesting
-prize is a better algorithm, not more chains. And `bigint` is now dominated
+yet. The general big-by-big product was untouched when this was written, and
+there the interesting prize was a better algorithm, not more chains. It has
+since been taken: from 2026-10-07 a product of two magnitudes of 96 limbs or
+more is Karatsuba, and `2 ** 1_000_000` went from 1.46 s to 0.04. And `bigint`
+is dominated
 by process startup — at ~3.9 ms of a 7.4 ms run it is the largest single
 line item left, and it has nothing to do with bignums at all.

@@ -98,8 +98,8 @@ and what it emits is C++ (Chapters 3 and 26).
 
 **Backtracking** — trying an alternative, and on failure rewinding to where you
 started and trying the next. The regex matcher does it constantly and by design
-(Chapter 21); the parser does it at exactly four places in seven and a half
-thousand lines, each a short speculative probe that restores its position on
+(Chapter 21); the parser does it at ten places in the 18,459 lines of
+`Parser.cpp`, each a short speculative probe that restores its position on
 failure (Chapter 5). Same word, unrelated machinery.
 
 **Binding** (`:=`) — making a name refer to the same *container* another name
@@ -107,8 +107,14 @@ refers to, instead of copying a value into a container of its own. Assignment
 writes through a container; binding replaces it (Chapter 12).
 
 **Binding power** — the number a Pratt parser attaches to an operator to decide
-whether it claims the expression on its left or yields it. Sixteen named ones
+whether it claims the expression on its left or yields it. Eighteen named ones
 cover Raku's two dozen precedence levels here (Chapter 5).
+
+**BodyPool** — the allocator every out-of-line block of a `Value` comes from:
+its payload, its cold block, the body of a string too long to store inline. It
+reserves one region of address space and hands out blocks inside it, so that a
+`Value` can refer to a block by a 32-bit *handle*, an offset into the region,
+and fit in 32 bytes (Chapter 41).
 
 **Bottom-up parsing** — building the tree from the leaves toward the root,
 recognising a construct only once its final token has been read. LR and its
@@ -128,8 +134,9 @@ answers "does this byte match?" without re-deriving the class (Chapter 20).
 \glossletter{C}
 
 **C3 linearisation** — the standard algorithm for ordering a class's ancestors
-when it has more than one parent, and the order Raku specifies. Raku++ walks
-parents depth-first instead, which differs in the diamond cases (Chapter 17).
+when it has more than one parent, and the order Raku specifies. `.^mro`
+answers it. Method dispatch still walks the parents depth-first, which
+differs in the diamond cases (Chapter 16).
 
 **Callable** — anything invokable: a sub, a method, a block, a closure. Here it
 is one value shape carrying a cached view of its own signature (Chapter 14).
@@ -142,6 +149,11 @@ compiled call (Chapter 28).
 **Capture** — two senses, kept apart by context. In a regex, a parenthesised
 group whose matched text is kept (Chapter 21). In Raku, the entire argument
 list of a call reified as an object (Chapter 14).
+
+**Cold block** — the lazily allocated side block of a `Value` that holds what
+few values need: a big integer, a Complex's imaginary part, a Range's ends, a
+shape, an enum's names. It is null on almost every value, and copies share it
+until one of them writes (Chapters 8 and 41).
 
 **Closure** — a function together with the environment it was written in, so it
 keeps working after that scope has been left. `my $n = 0; my &c = { $n++ }`
@@ -179,12 +191,23 @@ compiler or an instruction encoder. The `--cnp` back end (Chapter 44). See
 **Copy-on-write (COW)** — letting several values share one buffer and
 duplicating it only when one of them is written to. `CowStr` does this for
 strings; Chapter 9 also records why the C++ standard library gave the technique
-up for `std::string`.
+up for `std::string`. A short text has no buffer to share: up to 7 bytes are
+stored in the 8-byte `CowStr` itself, and up to 15 in the 16-byte one of a
+build without handles.
 
 **Coroutine** — a routine that can suspend in the middle, hand a value out, and
 later resume where it stopped. `gather`/`take` is the Raku construct that wants
-one; Chapter 18 shows how it is built without one, and where the substitute
-diverges from the real thing.
+one. It was first built without one, by re-running the block, and Chapter 18
+shows where that substitute diverges from the real thing. It now runs on a
+stackful coroutine with a hand-written context switch (`src/Coro.cpp`) on
+x86-64, arm64 and riscv64, and on Fibers on Windows; WebAssembly keeps the
+re-running form.
+
+**Cycle collector** — the backup pass that finds objects kept alive only by
+references to each other and frees them, which reference counting alone cannot
+do. Here it runs at a scope exit on the main thread, once enough candidates
+have gathered and no worker thread is live; `RAKUPP_CYCLE=0` turns it off
+(Chapter 12).
 
 \glossletter{D}
 
@@ -244,7 +267,9 @@ that the real matcher will enforce them later (Chapter 23).
 
 **Fat struct** — the `Value` design: a single struct carrying a type tag and a
 field for every kind of payload, several of which may be live at once, rather
-than a class hierarchy or a variant. Chapter 8 is the entire argument.
+than a class hierarchy or a variant. Chapter 8 is the entire argument. The
+struct is 32 bytes now: the payload fields became one kind-tagged slot and a
+cold block, behind accessors of the old names, and the model did not change.
 
 **FFI (foreign function interface)** — the machinery for calling a function
 written in another language, here C. Raku spells it `is native`; Raku++
@@ -267,9 +292,9 @@ recursive-descent parser with a Pratt expression core (Chapter 3).
 \glossletter{G}
 
 **Garbage collection** — reclaiming memory automatically by tracing what is
-still reachable from the roots. Raku++ has none: lifetime is `shared_ptr`
-reference counting, which is simpler, is deterministic, and leaks reference
-cycles (Chapter 1).
+still reachable from the roots. Raku++ has no tracing collector: lifetime is
+reference counting, which is simpler and deterministic. The cycles it cannot
+free are left to a backup *cycle collector* (Chapters 1 and 12).
 
 **Gate** — a check that a release must pass, run automatically rather than
 eyeballed. The book uses the word for the correctness gates (Roast, the example
@@ -278,8 +303,9 @@ which fails a build on a regression against a recorded baseline (Chapters 1
 and 40).
 
 **GIL (global interpreter lock)** — a single lock that only one thread may hold
-while touching interpreter state. Raku++'s is engaged lazily, on first
-concurrent use, and can be switched off (Chapter 38).
+while touching interpreter state. Raku++ ran under one until v3. Worker
+threads now run on all cores and shared containers are guarded by *stripes*;
+`RAKUPP_GIL=1` brings the lock back (Chapter 38).
 
 **GLR, Earley** — parsing algorithms that pursue every possible reading at once
 and produce a parse forest, leaving ambiguity to be resolved afterwards.
@@ -314,7 +340,8 @@ its own operator table in the middle of a parse and point an error at an exact
 token (Chapter 3).
 
 **Handle** — an opaque `RkValue` in the extension ABI: a token the extension
-passes back to the runtime, so that it never sees a `Value` (Chapter 37).
+passes back to the runtime, so that it never sees a `Value` (Chapter 37). Also
+the 32-bit offset by which a `Value` refers to a block in the *BodyPool*.
 
 **Heredoc** — a quoting form whose terminator is a word the programmer chooses
 and whose body runs to the line bearing it. It is a lexer problem, because the
@@ -365,6 +392,13 @@ has one. Raku++ has two, both opt-in: `--jit` hands a hot loop to the C++
 compiler on the machine, and `--cnp` stitches it from machine-code snippets
 carried in the binary. With neither flag nothing is compiled during the run,
 and `--exe` compiles ahead of time instead (Chapters 3 and 44).
+
+**Kernel** — two senses. In a benchmark, a small program that isolates one
+kind of work. In the engine, the form a hot loop or sub is run in when its
+variables are plain Ints, Nums and Strs: decided once, on a frame of machine
+values, with the variables written back at the end. A kernel that meets
+anything it cannot answer exactly abandons the attempt and the code runs the
+ordinary way from the start (Chapter 41).
 
 **Junction** — a Raku value holding several values at once, `1|2|3`, which
 operations distribute over. See *autothreading* and *eigenstate* (Chapter 18).
@@ -439,8 +473,8 @@ forces a fallback to the other ranker (Chapter 23).
 
 **Multiple dispatch** — choosing among several routines of the same name by the
 types of *all* the arguments, not merely the invocant. Raku spells it `multi`.
-Raku++ scores the candidates and breaks ties by declaration order, where Raku
-specifies an ambiguity error (Chapter 16).
+Raku++ scores the candidates, and two that tie are an `X::Multi::Ambiguous`,
+as Raku specifies (Chapter 16).
 
 \glossletter{N}
 
@@ -489,12 +523,21 @@ Legitimate for a ratcheting rule, because such a rule does not backtrack
 position this way; the main parser here memoises nothing, which is one of the
 reasons it is not a PEG parser.
 
+**Packed array** — an array whose elements are stored as machine words, not
+as one `Value` each. `my int @a` and `my num @a` are packed, and so is a fresh
+Array of plain Nums past a minimum length. A packed array unpacks itself into
+an ordinary list the first time something asks for one.
+
 **Pad** — the storage for one scope's variables, laid out once per scope rather
 than looked up by name on every access. The term is Perl 5's, and so is much of
 the design (Chapter 41).
 
 **Parse forest** — the set of all valid trees for an ambiguous input, which is
 what GLR and Earley parsers produce. Raku++ produces one tree (Chapter 3).
+
+**Payload slot** — the one field of a `Value` that refers to its out-of-line
+data: a list, a hash, a routine, an object, a Pair's value, a Rat's parts. A
+kind byte beside it says which (Appendix A, Chapter 8).
 
 **Parser** — the pass that turns a stream of tokens into a tree, deciding what
 groups with what (Chapter 5).
@@ -528,9 +571,11 @@ longest-token matching (Chapters 16 and 23).
 **Proxy** — a Raku container whose reads and writes run code you supply, so an
 ordinary-looking variable can compute its value on access (Chapters 8 and 12).
 
-**Publish** — the step at the end of module loading that copies a module's
-environment into the global one. Raku specifies exporting selected symbols;
-this publishes all of them, and Chapter 33 says so.
+**Publish** — the step at the end of module loading that hands a module's
+symbols to its importer. It once copied the module's whole environment; a
+`use` now brings in what the module exports, by tag, as Raku specifies. Class
+names are the exception: the registry is flat, so a class a module declares
+answers to its bare name (Chapter 33).
 
 \glossletter{R}
 
@@ -544,8 +589,10 @@ tree being built. The oldest and by far the most common way to write a parser
 by hand (Chapters 3 and 5).
 
 **Reference counting** — freeing an object when the number of references to it
-falls to zero. Raku++ uses `shared_ptr`: deterministic, cheap to reason about,
-and unable to collect reference cycles (Chapter 1).
+falls to zero. It is how every value here is managed: deterministic, cheap to
+reason about, and unable to free reference cycles by itself, which is the
+*cycle collector*'s job. The counts in a `Value`'s own blocks are intrusive,
+kept in the block and not in a `shared_ptr` control block (Chapters 1 and 41).
 
 **Register allocation** — deciding which values live in machine registers. A
 back-end pass Raku++ does not have, because it emits C++ and lets the host
@@ -619,16 +666,24 @@ LLVM's IR is in SSA form. Raku++ has no IR in the path from source to
 execution and no SSA anywhere; the one op list it does build, in the `--cnp`
 back end, is not in SSA form (Chapters 3 and 44).
 
-**Stash** — Raku's package symbol table, reachable through `.WHO`. There is no
-per-module stash object here (Chapters 17 and 33).
+**Stash** — Raku's package symbol table, reachable through `.WHO` and through
+`Package::`. A package's `our` symbols and its `EXPORT` are listed in one here
+(Chapters 17 and 33).
 
-**Static analysis** — inspecting a program without running it. `--lint` and the
-undeclared-variable gate are the two instances in this book (Chapter 39).
+**Static analysis** — inspecting a program without running it. `--lint`, the
+undeclared-variable gate and the will-never-work call gate are the instances
+in this book (Chapter 39).
 
 **Stencil** — a snippet of machine code with holes in it, compiled when the
 compiler itself was built and carried in the binary. The holes are relocations,
 filled in at run time with a register number, a constant or the address of the
 next snippet (Chapter 44).
+
+**Stripe** — one lock out of a fixed pool, picked by hashing the address of
+the thing to guard. With no global lock, a structural operation on a shared
+container takes the stripe its address hashes to: 256 of them, each on a cache
+line of its own. A variable slot proved private to one thread takes none
+(Chapter 38).
 
 **Superinstruction** — a fused node kind standing for a common pattern of
 several. The approach node specialisation deliberately did not take

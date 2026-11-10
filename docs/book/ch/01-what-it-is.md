@@ -28,22 +28,27 @@ good deal of what follows is the story of doing exactly that.
                                    (parses and walks at run time)
 ```
 
-A single front end feeds five back ends. The front end is a hand-written
+A single front end feeds five back ends, and since v5.6.0 a sixth, which
+writes an Arduino sketch. The front end is a hand-written
 character-level lexer and a recursive-descent parser with a precedence-climbing
 core for expressions; it produces a `Program`, which is a vector of statement
 nodes. Everything downstream consumes that one artifact.
 
-Everything except the command-line driver is compiled into a static library,
-**`librakupp_rt.a`** — "the runtime". The `rakupp` executable links against it,
-and so does every binary the compiling modes produce. That is why a feature
+Everything a running program needs is compiled into a static library,
+**`librakupp_rt.a`** — "the runtime" — and four small archives beside it that a
+compiled binary can leave out (Chapter 29). The `rakupp` executable links
+against them, and so does every binary the compiling modes produce. What stays
+out of the library is what only the command line can reach: the driver, the
+REPL, and the C++, JavaScript and Arduino code generators. That is why a feature
 implemented once behaves identically whether a program is interpreted or
 natively compiled: there is one implementation of `Value` semantics, one set of
 built-ins, one method dispatcher, one regex engine, one Unicode subsystem.
 
 ## The four modes, in one paragraph each
 
-**Interpret** (the default) lexes, parses, and tree-walks. Startup is about two
-milliseconds; throughput pays the per-node dispatch cost. This is the mode the
+**Interpret** (the default) lexes, parses, and tree-walks. `say "Hello, World!"`
+takes 4.4 ms, process startup included (v5.5.0, on an Apple M4); throughput
+pays the per-node dispatch cost. This is the mode the
 language is developed against, because it is the only one that can run every
 construct.
 
@@ -55,8 +60,10 @@ distribution, not speed.
 **`--aot`** parses at build time and emits C++ that *rebuilds the identical
 AST* at startup, then interprets it. Parse errors surface at build time rather
 than run time; execution speed is the same as bundling, because it is the same
-tree walk. It emits one builder function per AST node, so the generated code
-grows with the program.
+tree walk. The tree travels as bytes: the serialiser of Chapter 30 writes it,
+the generated program carries the blob as an array, and the same serialiser
+reads it back. It used to emit one builder function per node, listing each
+node type's fields by hand, and a field nobody listed did not survive.
 
 **`--exe`** parses at build time and transpiles the tree into C++ that
 implements the program directly: native control flow, native calls, with the
@@ -67,13 +74,21 @@ whole program instead — so `--exe` never refuses a program.
 
 Chapter 25 works one small program through all four.
 
+Two further targets produce something other than a program for this machine.
+`--target=js` transpiles to JavaScript over a runtime written in JavaScript
+(Chapter 31). `--target=arduino`, new in v5.6.0, writes a subset of Raku —
+native scalars, shaped native arrays, subs with native signatures — as one
+Arduino sketch. A board has no runtime to call, so there every construct either
+becomes plain C++ or is refused, with its line, before anything is built.
+
 ## What the design is optimised for
 
 Three decisions dominate everything else, and each gets a full chapter later.
 
 **One value type.** Every Raku value at runtime is the same C++ struct,
-`Value`, carrying a one-byte tag and a field for every kind of payload. Not a
-union, not a `std::variant`, not a class hierarchy — a *fat struct*. Chapter 8
+`Value`: a one-byte tag, a word for a number, a string, and one slot for
+whichever larger payload the tag calls for. Not a `std::variant`, not a class
+hierarchy — a *fat struct*, 32 bytes on 64-bit macOS and Linux. Chapter 8
 argues the case, which is stronger than it first looks, and prices the memory
 it costs.
 
@@ -93,12 +108,21 @@ run during the parse, so that the tokens it registers can be spliced into the
 lexer for the rest of the unit. Macros need a third thing neither provides — a
 user-built AST substituted for the call site — and are not supported.
 
+A compiled binary is a separate matter, and since v5.6.0 it does run code while
+it is built. `--exe`, `--aot` and `--bundle` run the program's compile-time
+part in an interpreter at build time — `BEGIN`, `CHECK`, `use`, the
+declarations, the constants, and no mainline — and write each plain-data value
+into the binary in place of the code that computed it, as a precompiled Rakudo
+module keeps its constants. That happens after the parse and does not feed it:
+the parser still learns nothing from a `BEGIN` block.
+
 ## What it deliberately is not
 
 It is not the reference implementation. Rakudo is, and Raku++ is measured
 against Rakudo and against the Roast suite continuously rather than
-aspirationally. The current position is roughly ninety per cent of declared
-Roast assertions.
+aspirationally. The current position is every test Roast expects an
+implementation to pass: 219,395 of 219,395 at v5.6.0, in all 1,425 files of its
+`spectest.data`.
 
 It has no tracing garbage collector, and no JIT unless one is asked for: the
 two tier-up back ends, `--jit` and `--cnp`, are off by default and are
@@ -131,7 +155,7 @@ for it, and appear where they are relevant:
 | **Raku.js** | the same runtime compiled to WebAssembly — the interpreter in a browser |
 | **the Roast harness** | `tools/run-roast.raku`, written in Raku, run by rakupp against the spec suite |
 | **`perf-guard`** | `tools/perf-guard.raku`, the release gate that fails a regression instead of eyeballing one |
-| **the showcase interpreters** | JavaScript, Perl 5, Python 3 and Lisp interpreters *written in Raku*, used as beyond-Roast tests |
+| **the showcase interpreters** | JavaScript, Perl 5, Python 3, Lisp and Forth interpreters *written in Raku*, used as beyond-Roast tests |
 | **the `::Native` modules** | extension modules in C — CSV::Native, TOML::Native, YAML::Native and others; the first, JSON::Native 0.0.x, was the proof the extension ABI works, and has shipped no C since 0.1.0 |
 
 The showcase programs deserve a note here because they recur. An interpreter
@@ -153,3 +177,4 @@ genuine bugs in Raku++; several fixes in later chapters were found that way.
 | VII | the five run modes, the two code generators, `-O`, what a binary keeps, serialization, the browser |
 | VIII | modules, `use nqp`, NativeCall, the extension ABI, concurrency |
 | IX | tooling built on the AST, and how any of this is proved |
+| X | the speed campaign: constant factors, other engines, and compiling while it runs |

@@ -14,15 +14,26 @@ must be indistinguishable from a freshly parsed one.
 
 ```cpp
 // src/AstSerial.h
-inline constexpr uint32_t kAstSerialVersion = 17;
+inline constexpr uint32_t kAstSerialVersion = 62;
 struct AstSerialError { std::string msg; };
-std::string serializeAst(const Program& prog);
+std::string serializeAst(const Program& prog, bool stripLines = false);
 void deserializeAst(const std::string& blob, Program& out);
 ```
 
-A self-describing byte string with a header. The version constant is bumped
-whenever the encoding or the AST changes shape, and an entry carrying a
-different version is **ignored, never reinterpreted**.
+A self-describing byte string with a header: the four bytes `RKAS`, the
+version, then the tree, with counts, kinds and line numbers as one-byte
+varints where they are small. The version constant is bumped whenever the
+encoding or the AST changes shape, and an entry carrying a different version
+is **ignored, never reinterpreted**. It was 17 when this chapter was first
+written and is 62 now. The steps the header comments on tell one story more
+than any other: a field the parser consumes and stores nowhere else — a
+trait, a smiley, a capture name — was added to a node, and a cached module
+came back without it until the visitor listed it.
+
+`stripLines` writes 0 wherever a node's line would go, so two programs that
+differ only in layout serialize to the same bytes. That is the formatter's
+semantic gate (Chapter 39): format, re-parse, compare blobs. The cache leaves
+it off, because backtraces read the lines.
 
 Two properties of the design are load-bearing.
 
@@ -34,8 +45,9 @@ forgetting the reader is not possible; the single visitor handles both.
 **The mutable per-node caches are deliberately not stored.**
 
 ```
-Binary::simpleOp, specialArm, fastShape, litVal
+Binary::simpleOp, specialArm, fastShape, litVal, typedTree
 Unary::evalPath
+Param::whereStatic, whereCode
 Index::fastShape, litIdx
 NumLit::cacheN, cacheD
 Block::hoistNeed
@@ -45,7 +57,7 @@ StrLit::nfcDone
 Each has an "undecided" sentinel and is rebuilt lazily on first evaluation
 (Chapter 19), so a loaded tree behaves identically to a freshly parsed one — it
 just has not warmed up yet. Storing them would be both larger and more fragile,
-since `litVal` is a pointer.
+since `litVal` and `whereCode` are pointers.
 
 Everything else round-trips, **including `line` and `label`**, because
 diagnostics depend on them.
@@ -159,6 +171,14 @@ Matching that would mean serialising live runtime state — class registries,
 closures, whatever a `BEGIN` block built — which is a different and much larger
 project.
 
+A compiled binary now does a narrow version of it, and the narrowness is the
+point. `--exe`, `--aot` and `--bundle` run the program's `BEGIN` blocks and
+constant initializers while building and embed each result that is plain
+data — one whose `.raku` evaluates back to an equal value of the same type —
+as that Raku text, substituted for the code that computed it (Chapter 25). No
+live state is serialised; anything that is not plain data still runs at
+startup. The cache does none of this.
+
 Compared with the neighbours:
 
 | | what it stores | where |
@@ -178,7 +198,10 @@ The same serialisation carries modules inside a compiled binary (Chapter 25):
 
 ```cpp
 // src/Interpreter.h
-struct BundledModule { std::string name, blob, finish, src; };
+struct BundledModule {
+    std::string name, blob, finish, src;
+    /* … the distribution's key, META6 and resource files … */
+};
 void rakuppRegisterModule(const std::string& name, const char* blob,
                           size_t blobLen, const std::string& finish);
 ```
@@ -186,6 +209,14 @@ void rakuppRegisterModule(const std::string& name, const char* blob,
 `collectModuleGraph` resolves the transitive `use` graph at build time and
 serialises each module, dependencies first. `loadModule` consults the embedded
 table before the disk.
+
+The format has two smaller consumers inside `--exe` as well. A statement a
+native module routine cannot compile is serialised on its own, embedded as
+bytes, and read back once at run time for the interpreter to execute
+(`rtAotStmt`, `rtAotNode`). And a bundled program's native routine bodies are
+attached only if the tree the binary parses at startup serializes to the same
+bytes they were compiled from — the blob's fingerprint is the check that the
+two parses agree.
 
 That the cache format and the embedding format are the *same* format is not a
 coincidence — it is why a bug in either is found twice as fast.

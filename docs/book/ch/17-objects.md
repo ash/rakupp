@@ -19,13 +19,15 @@ struct ClassInfo {
     std::string nativeParent;                             // `is Str`, `is Cool`
     std::vector<std::shared_ptr<ClassInfo>> extraParents;
     std::vector<ClassAttr> attrs;
-    std::map<std::string, Value> methods;                 // Code values
+    std::shared_ptr<const AttrLayout> attrLayout;
+    ValueMap methods;                                     // Code values
     std::map<std::string, std::string> rules;             // grammar rules
     std::vector<std::string> ruleOrder;
     bool isGrammar = false, isRole = false;
     std::string repr;                                     // is repr('CStruct')
     std::string ver, auth, api;
-    std::set<std::string> requiredMethods, doneRoles;
+    std::vector<std::string> requiredMethods;
+    std::set<std::string> doneRoles;
     Value howObj;                                         // persistent .HOW
     std::shared_ptr<Env> declEnv;                         // for attr defaults
     ClassDecl* decl = nullptr;                            // for role parameters
@@ -34,8 +36,9 @@ struct ClassInfo {
 
 struct ObjectData {
     std::shared_ptr<ClassInfo> cls;
-    std::map<std::string, Value> attrs;
-    Value boxed; bool hasBoxed = false;                   // for `5 but Role`
+    AttrTable attrs;
+    ColdSlot cold;                // boxed (for `5 but Role`), a monitor's lock
+    bool hasBoxed = false;
 };
 ```
 
@@ -43,14 +46,28 @@ Everything a class *is* lives in that first struct, including the grammar rules
 if it happens to be a grammar — which is how a grammar is just a class whose
 methods can be regexes (Chapter 22).
 
+An object's attributes are an `AttrTable` (`src/AttrTable.h`). Today that is
+the interface of a `ValueHash` over a `ValueHash`: every attribute is an entry
+keyed by its name, and an object made by `makePayload` carries the hash in its
+own block, right behind the body, so an object is one allocation. The type
+exists for what comes next. A class already builds an `AttrLayout`, the keys
+an instance stores its declared attributes under, in the order construction
+stores them, and a check run across Roast and the test suite found no object
+that stored its declared keys in another order. The step that puts the values
+in an array the layout indexes, with the names and hashes gone from every
+object, has not landed (`docs/dev/plans/OBJECT-SLOTS-PLAN.md`, batches 1 and 2
+done 2026-11-06). The rare parts of an object — the boxed value of a mixin
+over a non-object, a `monitor`'s lock — sit behind one pointer, allocated on
+first use.
+
 ## Registration and lookup
 
 `ClassInfo`s are registered in one flat map at declaration:
 
 ```cpp
 // src/Interpreter.h
-std::unordered_map<std::string, std::shared_ptr<ClassInfo>> classes_;
-std::unordered_map<std::string, std::string> classAliases_;
+StrMap<std::shared_ptr<ClassInfo>> classes_;
+StrMap<std::string> classAliases_;
 ```
 
 Flat, not per-compilation-unit. Two modules declaring the same unqualified class
@@ -61,16 +78,16 @@ aliases its tail, `Path`, unless a real class already claims that name. And a
 qualified name that is a *partial* path resolves by unique suffix match:
 
 ```cpp
-// src/Interpreter.h — resolveClassAlias
-if (n.find("::") != std::string::npos) {
-    const std::string suffix = "::" + n;
-    const std::string* hit = nullptr;
+// src/Interpreter.h — classAliasOf, behind resolveClassAlias
+if (n.find("::") != std::string::npos && !isSettingMetamodelName(n)) {
+    const std::string suffix = strCat("::", n);
+    const std::string_view* hit = nullptr;
     for (auto& kv : classes_) {
         if (…kv.first does not end with suffix…) continue;
-        if (hit) return n;          // ambiguous — leave it alone
+        if (hit) return nullptr;   // ambiguous — leave it alone
         hit = &kv.first;
     }
-    if (hit) return classAliases_.emplace(n, *hit).first->second;
+    if (hit) return &classAliases_.emplace(n, *hit).first->second;
 }
 ```
 
@@ -81,28 +98,37 @@ rather than guessed at. The successful answer is memoised into the alias map.
 
 ## Construction
 
-The default `new` and `bless` share one path. It walks the class chain
-**parent-first**, gives each attribute its default, folds named arguments into
-the attribute map, and then runs `BUILD` and `TWEAK`:
+The default `new` and `bless` share one path, `constructDefault`, and its
+core is `runAttrDefaults`. It walks the class chain **least derived first**,
+and for each attribute stores either the caller's named argument or the
+attribute's default, and then the `BUILD` and `TWEAK` submethods run:
 
 ```cpp
-// src/MethodCallPart2.cpp — default construction, abridged
-for (auto it = chain.rbegin(); it != chain.rend(); ++it)      // parent-first
-    for (auto& at : (*it)->attrs) {
+// src/MethodCallPart2.cpp — runAttrDefaults, abridged
+for (size_t lvlIx = nChain; lvlIx-- > 0;) {          // least derived first
+    ClassInfo* lvl = chainAt(lvlIx);
+    …
+        const std::string& slot = attrStoreKey(chain, lvlIx, at, slotBuf);
+        …
         Value dv = at.hasDefVal ? at.defVal
-                 : at.def       ? eval(at.def)
-                 : at.sigil == '@' ? Value::array()
-                 : at.sigil == '%' ? Value::makeHash() : Value::any();
-        od->attrs[at.name] = dv;
-    }
-for (auto& arg : args)
-    if (arg.t == VT::Pair) od->attrs[arg.s] = *arg.pairVal;
-if (Value* build = ci->findMethod("BUILD")) invokeMethod(*build, self, args);
-if (Value* tweak = ci->findMethod("TWEAK")) invokeMethod(*tweak, self, args);
+        …
+        od->attrs[slot] = dv;
+}
 ```
 
-Parent-first matters: a subclass's default for an inherited attribute must win,
-and it does because it is written last.
+Named arguments bind *during* the walk, not after it. Rakudo's `BUILDALL`
+takes the caller's value for an attribute when one was passed and only
+otherwise runs the default, so a later default that reads an earlier
+attribute sees the constructed value. A class that declares its own
+`submethod BUILD` initialises its attributes itself, and the arguments are
+not bound for that level.
+
+`attrStoreKey` is the one rule for the key an attribute is stored under: the
+bare name; a sigil-prefixed `@name` where one class declares `$.name` and
+`@.name` both; and a class-qualified key for an ancestor's attribute that a
+more derived class declares again. A subclass that redeclares a name
+therefore shadows the ancestor's attribute, it does not overwrite it, and
+the subclass keeps the bare name, which is where its accessor reads.
 
 Attribute defaults are *expressions*, evaluated at construction in the scope the
 class was declared in — which is what `ClassInfo::declEnv` is for. The compiled
@@ -115,21 +141,24 @@ makes a *private* attribute settable by name at construction anyway.
 
 ## Attributes and accessors
 
-`$!x` is a direct read or write of the attribute map. `$.x` is a public
+`$!x` is a direct read or write of the attribute table. `$.x` is a public
 accessor: method lookup runs first, and on a miss `findAttr` supplies the
-attribute. The compiled backend uses the same map through two helpers:
+attribute. The compiled backend uses the same table through two helpers:
 
 ```cpp
 // src/InterpreterBinding.cpp
 Value rtAttrGet(const Value& self, const std::string& name) {
-    if (self.t == VT::Object && self.obj) {
-        auto it = self.obj->attrs.find(name);
-        if (it != self.obj->attrs.end()) return it->second;
+    if (self.t == VT::Object && self.obj()) {
+        auto it = self.obj()->attrs.find(name);
+        if (it != self.obj()->attrs.end()) return it->second;
     }
     return Value::any();                     // absent attribute → (Any)
 }
 Value& rtAttrRef(Value& self, const std::string& name) {
-    return self.obj->attrs[name];            // autovivifies
+    …
+    Value& slot = self.obj()->attrs[name];   // autovivifies
+    …
+    return slot;
 }
 ```
 
@@ -168,18 +197,22 @@ requirement:
 
 ```cpp
 // src/InterpreterModules.cpp — for each name a role requires
-ok = hasImpl(ci, rq, nullptr)      // a non-stub implementation anywhere in the type
-  || classOwn.count(rq);           // …or the class's own stub: a deliberate promise
-if (!ok && attrCovers(ci, rq)) ok = true;   // …or a public attribute's accessor,
-                                            //    or an attribute `handles` delegation
-if (!ok)
+ok = hasImpl(ci.get(), rq, nullptr)   // a non-stub implementation anywhere
+  || classOwn.count(rq);              // …or an own stub: a deliberate promise
+if (!ok && attrCovers(ci.get(), rq)) ok = true;  // …or a public attribute's
+                                                 // accessor, or a `handles`
+…
+if (!ok) {
+    …
     throw RakuError{Value::typeObj("X::Comp::AdHoc"),
         "Method '" + rq + "' must be implemented by " + clsName +
-        " because it is required by roles: " + rl + "."};
+        " because it is required by roles: " + (rl.empty() ? "?" : rl) + "."};
+}
 ```
 
 A *stubbed multi* is checked per candidate signature rather than by name, so a
-class that implements one of two required signatures is still incomplete.
+class that implements one of two required signatures is still incomplete, and
+that failure has its own type, `X::Role::Unimplemented::Multi`.
 
 `.does` and `~~` consult `doesRole`, which is true for the role itself, for
 directly or transitively composed roles, and for roles done by parents:
@@ -215,8 +248,9 @@ class on the spot.
 
 Two roles defining the same method is a **conflict**, not a race: composition
 raises `X::Role::Unresolved::Method` — "Method 'r' must be resolved by class E
-because it exists in multiple roles (R1, R2)" — unless the class declares the
-name itself. Rakudo says the same sentence with the roles in the other order.
+because it exists in multiple roles (R2, R1)" — unless the class declares the
+name itself. That is Rakudo's sentence, roles in Rakudo's order (checked
+against Rakudo 2026.09).
 
 ## Mixins: `but` and `does`
 
@@ -228,8 +262,8 @@ extend, so the value is *boxed*:
 
 ```cpp
 // src/InterpreterOperators.cpp — mixinValue
-obj = std::make_shared<ObjectData>();
-obj->boxed = base;          // the original 5 is kept here
+obj = makePayload<ObjectData>();
+obj->boxed() = base;        // the original 5 is kept here
 obj->hasBoxed = true;
 // … build an anonymous subclass composing the role, wrap in a VT::Object …
 ```
@@ -238,13 +272,18 @@ Dispatch on the result checks the role's methods first; anything not found —
 and not an identity method — is delegated back to the box:
 
 ```cpp
-// src/Builtins.cpp — methodCall
-if (inv.t == VT::Object && inv.obj && inv.obj->hasBoxed && inv.obj->cls &&
-    !inv.obj->cls->findMethod(m) && !inv.obj->cls->findAttr(m)) {
-    static const std::set<std::string> keepOnObj =
-        {"does","HOW","WHAT","WHICH","defined","DEFINITE"};
-    if (!keepOnObj.count(m))
-        return methodCall(inv.obj->boxed, m, args, rwArgs);
+// src/Builtins.cpp — the method chain, abridged
+if (inv.t == VT::Object && inv.obj() && inv.obj()->hasBoxed &&
+    inv.obj()->cls &&
+    (m.skipOwn || (!inv.obj()->cls->findMethod(m) &&
+                   !inv.obj()->cls->findAttr(m.s)))) {
+    static const std::set<std::string> keepOnObj = {
+        "does", "HOW", "WHAT", "WHICH", "defined", "DEFINITE", "isa",
+        "WHERE", "can", "VAR"};
+    if (!keepOnObj.count(m)) {
+        Value r = methodCall(inv.obj()->boxed(), m, args, rwArgs);
+        …
+    }
 }
 ```
 
@@ -288,8 +327,7 @@ the whole of runtime method injection.
 
 ```cpp
 // src/Interpreter.h
-std::map<std::string,
-         std::shared_ptr<std::map<std::string, Value>>> pkgStashes_;
+std::map<std::string, PRef<ValueMap>> pkgStashes_;
 ```
 
 One shared map per package **name**, and the sharing is the point. `.WHO` used
@@ -305,7 +343,6 @@ for a package.
 ## Honest limitations
 
 - **Depth-first method resolution**, as in Chapter 16.
-- **Role conflicts are silent**, last writer wins.
 - **The class registry is flat**, so unqualified class names from different
   modules collide. The alias machinery reduces the pain but does not remove the
   cause.

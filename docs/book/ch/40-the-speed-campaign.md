@@ -84,7 +84,7 @@ Two harnesses supply the names this chapter keeps using. `perf-guard`
 (Chapter 40's regression gate) times interpreter-only one-liners; the
 `tools/bench` set times full programs in every mode, against Rakudo and — for
 `hashfill` — against `perl`. Four of the guard kernels are short enough to
-show whole:
+show whole, at the sizes the campaign timed them at:
 
 ```raku
 # fib
@@ -111,6 +111,11 @@ The rest, in a line each:
 | `sortnums` | sort 50,000 pseudo-random integers |
 | `arrayops` | a `grep`/`map`/`sum` pipeline over a range |
 | `bigint` | factorial(5000) as a running product — machine words overflow almost immediately |
+
+The guard has 27 kernels now, and `fib`, `asg`, `loopsum` and `hash` run
+larger counts than the ones shown: they were scaled up on 2026-10-02, when the
+integer and loop kernels of the closing section took the old sizes down to 5
+to 13 ms, most of it process startup.
 
 The guard kernels were chosen adversarially — each stresses the path a batch
 is most likely to slow down — and `strscan`/`strpass`/`subcall` exist
@@ -221,7 +226,7 @@ lesson moved here.
 | hashfill peak RSS | −39% then −32% |
 
 A plain Int copy, eleven pointer checks and a string construction in August's
-first week, is now two pointer checks and an inline `CowStr`.
+first week, had become two pointer checks and an inline `CowStr`.
 
 Who pays in the new layout, and how that was checked. A value that *uses* a
 cold field pays one small allocation when the block is first written and one
@@ -489,8 +494,9 @@ out a pad is a fixed per-process cost — and long-lived churning hashes
 carry tombstones. Both were prices worth paying; neither is hidden.
 
 And the leftover list is part of the result. The 128-byte `Value` still
-carries its `CowStr` inline; the head/body endgame is deliberately coupled to
-the container refactor, one piece of which batch five has now landed.
+carried its `CowStr` inline; the head/body endgame was deliberately coupled to
+the container refactor, one piece of which batch five had landed. The closing
+section says where that went.
 
 The loop floor and the per-node `eval` return protocol are also untouched, and
 they used to be described here as the opening argument for a threaded
@@ -506,6 +512,63 @@ Chapter 42 carries the numbers.
 
 The campaign stopped where the next step stopped being a constant factor and
 started being an architecture.
+
+## What came after
+
+Two later pieces of work belong on this chapter's ledger, because each is one
+of its batches continued. Only the states are recorded here; the steps and
+their measurements are in the plan documents named.
+
+**The loops and subs the batches priced no longer walk the tree.** Since
+2026-10-02 a closed sub over plain integers, and a `for`, `while` or `loop`
+whose body uses only plain Int, Num and Str variables, is compiled on first
+entry into a kernel that runs on a frame of machine values and writes the
+variables back when it ends (`src/IntKernel.cpp`, KERNEL-PLAN.md). The shape is
+decided once and the facts that can change are checked at every entry; a
+kernel that meets anything it cannot answer exactly abandons the attempt and
+the loop runs the ordinary way from the start. `fib(29)` went from 230 ms to
+13. `RAKUPP_NO_KERNELS=1` turns the kernels off, and the same build with that
+set is their oracle.
+
+The standing in BENCHMARKS.md was last re-measured on 2026-10-21, at v5.5.0,
+against Rakudo 2026.09 and on a different machine from the tables above, so
+only the ratios compare. The interpreter takes less time than Rakudo on all
+eighteen kernels, from 1.09× on `multiwhere` to 175× on `intcat`. `fib` and
+`streq`, the two thin margins above, are 23.3× and 10.7×. On `hashfill` the
+interpreter is 1.3× faster than `perl`.
+
+**`Value` is 32 bytes.** Batch two stopped at 128 and named the string as what
+was left. VALUE32-PLAN.md is the rest:
+
+| date | `sizeof(Value)` | what moved |
+|---|---:|---|
+| 2026-10-01 | 80 | `i` and `n` share a word; `IStr` is a 32-bit index; the flags are bit-fields; the counts are intrusive |
+| 2026-11-07 | 64 | `CowStr` is 16 bytes: a text of up to 15 bytes inline, or a pointer to a counted body |
+| 2026-11-10 | 56 | the native width is a 4-bit field, so the tag block is 4 bytes |
+| 2026-11-10 | 48 | the enum names live in the cold block |
+| 2026-11-10 | 40 | the payload and the cold block are 32-bit handles |
+| 2026-11-10 | 32 | `CowStr` is 8 bytes: up to 7 inline, or a handle |
+
+A handle is an offset, in 16-byte units, into one region of address space
+reserved once, so every block a `Value` refers to has to come from that
+region. That needed an allocator, `BodyPool` (`src/BodyPool.h`). Every count
+is kept: sharing and lifetime are what they were at 128 bytes.
+
+The steps down to 48 cost no instructions. The guard measured −2.6% mean at
+80 and a geometric mean of −0.04% in instructions retired at 64, and at 56 and
+48 nearly every kernel retired the same or fewer. The step to 40 was the first
+to cost time: decoding a handle is a load, a shift and an add,
+and the call kernels retired 2.9 to 3.0% more instructions than at 48. At 32
+the same kernels are 0.4 to 1.8% over 48, because a copy is 8 bytes of string
+shorter, and 18 of the guard's 27 kernels are within ±0.6%. The price bought
+memory. A million Ints built by `.map` peak at 73.8 MB where they took 134.6
+at 64 bytes, and `hashfill` at 33.2 MB where it took 44.6.
+
+Three kinds of build stay at 48 bytes, with pointers where the handles would
+be: Windows, a 32-bit target, and a build with the pools off, which is how
+AddressSanitizer runs. And 32 is the floor while values are counted. Each
+field is one word, and the 16-byte value the engine survey bracketed (Chapter
+42) is an architecture in which a value is not reference-counted.
 
 ## The three decisions
 

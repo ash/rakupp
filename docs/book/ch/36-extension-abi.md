@@ -38,7 +38,8 @@ typedef struct RkCtxOpaque*   RkCtx;
 
 This is not fastidiousness. `sizeof(Value)` moved from 392 to 376 to 344 bytes in a
 single afternoon of ordinary optimisation work, and the representation
-campaign later halved it twice more — 208, then 128 (Chapter 41). An ABI that
+campaigns since have taken it through 208, 128, 80 and 64 to 32 bytes
+(Chapters 8 and 41). An ABI that
 exposed the struct would have to freeze
 the interpreter's internals forever, or silently miscompile every extension
 built against an older header — the failure mode where a module reads a `Str`
@@ -147,8 +148,10 @@ RkValue rk_int  (RkCtx c, long long v);
 RkValue rk_int_s(RkCtx c, const char* decimal);       /* arbitrary precision */
 RkValue rk_num  (RkCtx c, double v);
 RkValue rk_rat_s(RkCtx c, const char* n, const char* d); /* a Rat, normalised */
-RkValue rk_str  (RkCtx c, const char* utf8, size_t len); /* copied, DECODED as UTF-8 */
-RkValue rk_blob (RkCtx c, const void* bytes, size_t len); /* raw bytes, ABI 3 */
+RkValue rk_str  (RkCtx c, const char* utf8, size_t len);
+                             /* copied, and DECODED as UTF-8 */
+RkValue rk_blob (RkCtx c, const void* bytes, size_t len);
+                             /* raw bytes; ABI 3 */
 RkValue rk_array(RkCtx c);   void rk_push(RkCtx c, RkValue a, RkValue v);
 RkValue rk_hash (RkCtx c);   void rk_set (RkCtx c, RkValue h,
                                           const char* k, size_t kl, RkValue v);
@@ -164,8 +167,12 @@ not `0.14285714285714285`.
 ```c
 /* inspecting */
 RkType      rk_type   (RkCtx c, RkValue v);
+int         rk_truthy (RkCtx c, RkValue v);
 long long   rk_int_get(RkCtx c, RkValue v);
+double      rk_num_get(RkCtx c, RkValue v);
 const char* rk_str_get(RkCtx c, RkValue v, size_t* len);   /* borrowed */
+const unsigned char* rk_blob_get(RkCtx c, RkValue v, size_t* len);
+int         rk_is_blob(RkCtx c, RkValue v);
 size_t      rk_elems  (RkCtx c, RkValue v);
 RkValue     rk_at_pos (RkCtx c, RkValue array, size_t i);
 const char* rk_key_at (RkCtx c, RkValue hash, size_t i, size_t* keylen);
@@ -516,9 +523,14 @@ loud which path it took.
   sequential walk costs O(1) per key. Jumping between two hashes, or writing to
   one while walking it, falls back to O(i) positioning — correct either way,
   just slower.
-- **No `--exe` bundling.** A program using a native extension cannot be compiled
-  into a standalone binary; the shared library is loaded at run time and is not
-  part of the module graph the bundler walks.
+- **`--exe` works, and the shared library stays external.** The extension is
+  loaded at run time and is not part of the module graph the bundler walks, so
+  it ships beside the binary. The compiler scans the program's text for the
+  name `rakupp-ext-load` and, when it is there, links the binary with the
+  `rk_*` symbols exported; a program that reaches the loader under a name the
+  scan cannot see gets a binary with no ABI, and the loader refuses with a
+  message saying so. Before v3.25.1 the export was missing and the first call
+  into an extension died.
 - **One context per call, single-threaded within it.** Handles are not safe to
   pass between threads.
 
@@ -561,6 +573,14 @@ void       rk_set_input (RkInterp rk, const char* text, size_t len);
 int        rk_register(RkInterp rk, const char* name, RkHostFn fn, void* ud);
 ```
 
+Those are eight of the twelve functions `rakupp.h` declares. The other four
+are `rk_version`, `rk_eval_file`, `rk_grammar_shim` — the Raku source of the
+grammar service the bindings evaluate once — and `rk_ctx`, which hands back
+the `RkCtx` that every one of the 36 functions of `rakupp_ext.h` takes: it is
+where the two directions meet. The embedding header carries a version of its
+own, `RAKUPP_ABI`, now 2, bumped independently of `RAKUPP_EXT_ABI` so that an
+addition for hosts never disturbs an extension.
+
 An interpreter is a **session**, not a one-shot: `rk_eval(rk, "my $x = 41")` then
 `rk_eval(rk, "$x + 1")` answers 42, because the mainline scope persists exactly
 as it does at the REPL prompt. `rk_run` is the other shape — a whole program,
@@ -578,6 +598,7 @@ typedef struct {
     int own_stack;         /* run Raku on a large-stack thread, as the CLI */
     int handle_sigpipe;    /* ignore SIGPIPE process-wide */
     int own_stdout;        /* flush std::cout/std::cerr after each evaluation */
+    int sandbox;           /* confine the Raku code, as `rakupp --sandbox` */
 } RkConfig;
 ```
 
@@ -588,14 +609,30 @@ host owns — all three are correct for a program that *is* the interpreter and
 presumptuous for one that merely contains it. `size` is how a host compiled
 against an older header keeps working when the struct grows.
 
+It has grown once. `sandbox` is a fourth field and a different kind of switch:
+it asks for something the CLI does only under `--sandbox`. The Raku code may
+then not read or write files, start processes, open sockets or call native
+code. It confines the Raku code and not the host's process, and it is
+process-wide and one-way: every interpreter created after it is sandboxed too.
+`rk_new` reads the field only when the `size` the host passed reaches it.
+
 The same restraint decides `declCheck` in Chapter 39's gate: an embedding host's
 interpreter may already hold globals it installed with `rk_register`, so no
 static pass over the source it hands in could be trusted to judge it.
 
-One interpreter per process is the standing limit, and `--mcp` (Chapter 39) is
-the largest host of this ABI in the tree: a thousand lines that include
-`rakupp.h` and never `Interpreter.h`, despite being compiled into the same
-binary as the interpreter it serves.
+One interpreter per process is the standing limit. Two hosts of this ABI are
+compiled into the binary itself: `--mcp` and the Jupyter kernel (Chapter 39),
+714 and 1,603 lines that include `rakupp.h` and never `Interpreter.h`, despite
+living in the same executable as the interpreter they serve.
+
+The hosts outside the binary are under `bindings/`: Python, JavaScript, Go,
+Rust, C++ and the Wolfram Language, each a thin layer over `librakupp` and
+this header — `ctypes` in Python, cgo in Go, a header-only wrapper in C++ —
+with nothing of the engine re-implemented per language. The Python one is
+published as the `rakulang` wheel, which carries the library inside it; the
+directory's own README still calls the set a preview whose surface may move.
+`tools/bindings-smoke.raku` runs the same examples through every binding
+whose toolchain is present and compares the output byte for byte.
 
 ## A footnote on guessing
 

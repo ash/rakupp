@@ -10,6 +10,12 @@ Stated once, applied everywhere:
 
 - **interleave the variants.** Run A, B, A, B — not all of A then all of B — so
   machine drift and thermal state hit both equally.
+- **alternate the order inside the rounds.** A, B, B, A. Timing two commands
+  back to back in rounds on the development machine on 2026-11-07 gave the
+  first command of each round an edge of about 0.6%, and more than 2% at a
+  load average of 6 to 9 on ten cores. `tools/run-bench.raku` always times its
+  interpreter lane before its `--cnp` lane, so a gap of a per cent or two
+  between those two columns is the order until it survives a swap.
 - **discard a warm-up**, then report the median or the minimum of several
   repetitions. Which one depends on the noise shape; the important thing is to
   say which.
@@ -30,6 +36,14 @@ Read the two counters together, because the pair says more than either:
 | instructions down | work was removed; the size of the drop is the size of the win |
 | instructions flat, cycles down | the same work done more efficiently — better locality, a bulk `memcpy` instead of a loop |
 | instructions up, wall clock down | suspect code layout, and say so rather than quoting the wall clock |
+| instructions level, wall clock moved | code placement: the same instructions at other addresses |
+
+The last row has a second test. Build both trees with `-falign-functions=64`
+and time them again; a placement effect goes away there and a real cost does
+not. When `Value` went from 64 bytes to 56 on 2026-11-10, `asg` and `loopsum`
+measured 5 to 11% faster with the same instructions retired, and with both
+trees built that way they were level, at −0.3% and +0.9%. Nothing had been
+made faster. The code had moved.
 
 One addition to the control rule, learned the hard way: the control should be a
 **control binary**, not only a control kernel. Build it from the same tree with
@@ -57,7 +71,9 @@ build/rakupp tools/perf-guard.raku --check
 ```
 
 `perf-guard` compares the current binary against a recorded baseline and
-**fails** on a regression. The release checklist gates on it.
+**fails** on a regression. The release checklist gates on it. It times the
+interpreter alone on 27 small kernels, most of them added after a regression
+the kernels before them could not see.
 
 That it exists at all is a lesson learned twice: a release has shipped with a
 performance regression because someone eyeballed the numbers and thought they
@@ -106,15 +122,41 @@ The next section is what happens when you do not.
 | **compiler agreement** | every deterministic example must produce identical output interpreted, `--exe`, and `--exe -O` |
 | **the libffi fallback** | `t/regression/nativecall-libffi.raku`, which re-runs the libffi-only cases in a child with `RAKUPP_FFI=0` and checks each throws |
 
+`t/run.raku` is the local suite, the regression tests and compiler agreement
+in one harness, run by the binary under test: 2,185 checks on 2026-11-10. The
+release workflow runs it on every POSIX build and then, each as a step of its
+own, the stress matrix (`t/stress`, and again in a job built with
+ThreadSanitizer), three oracle gates (zlib against libz, Int and Rat against
+Python, Unicode against its conformance files), the embedding and binding
+gates, the MCP and Jupyter gates of Chapter 39, and five gates on what a
+build produces:
+
+```
+t/slim/run.raku         a cut binary refuses what was cut, by name
+t/standalone/run.raku   a compiled binary runs with nothing beside it
+t/install/run.raku      the module installer, against a fixture index
+t/deps/run.raku         a missing module is reported, or fetched by --auto
+t/installed/run.raku    the binary as an install lays it out
+```
+
+Roast and `perf-guard` are not in that workflow. They are run by hand before a
+release, because one needs a checkout of the specification suite and the other
+a quiet machine. `t/jit/run.raku` is a third: it runs each of its cases twice,
+plainly and with the tier-up back end forced on, and compares the two runs
+byte for byte, with the interpreter as the oracle and no golden file.
+
 Compiler agreement is the one that catches the most. Three execution paths must
 produce **byte-identical** output for the same program; a divergence is a bug in
 one of them, and it is found automatically rather than by someone noticing.
 
 Roast is reported two ways, and the difference matters. **Files fully passing**
-is an all-or-nothing bar; **assertions passing** gives partial credit. Roughly
-ninety per cent of declared assertions pass. Both numbers are published, because
-either alone is misleading — a file can fail on one obscure assertion out of two
-hundred, and a file can "pass" by skipping everything.
+is an all-or-nothing bar; **assertions passing** gives partial credit. Both
+numbers are published, because either alone is misleading — a file can fail on
+one obscure assertion out of two hundred, and a file can "pass" by skipping
+everything. For most of this book's life the second number was about ninety
+per cent. On 2026-11-10 all 1,425 files in Roast's `spectest.data` passed
+completely, and the assertion count is published with the skipped and
+todo-marked tests left out of both sides: 219,395 of 219,395 at v5.6.0.
 
 ## Oracles
 
@@ -250,8 +292,8 @@ property and the second is a representation change that the extension ABI was
 specifically designed to survive (Chapter 37).
 
 Half of that came true and half did not, which is the interesting part.
-`Value` was shrunk twice, 344 to 208 to 128, and the ABI did survive it exactly
-as designed. The argument list was never passed by reference — the 178-call-site
+`Value` was shrunk, 344 to 208 to 128 and by 2026-11-10 to 32 (Chapter 41), and
+the ABI did survive it exactly as designed. The argument list was never passed by reference — the 178-call-site
 aliasing audit is still undone — and the cost was taken anyway, from a third
 direction nobody had written down: making the allocation itself nearly free
 (Chapter 12), which needed no audit at all.
@@ -267,12 +309,18 @@ sixty lines in one header. Naming a cost is worth more than naming its cure.
 Every chapter in this book has a "honest limitations" section, and that is a
 deliberate convention rather than a stylistic tic.
 
-The list for the project as a whole: about ninety per cent of Roast; depth-first
-method resolution rather than C3; no ambiguity error in multiple dispatch;
-role composition that is last-writer-wins; modules that publish their whole
-environment; a flat class registry; no macros, and slangs only at fixed seams; laziness
-capped at a million elements; a `gather` block that can run more than once; a
-reference cycle that leaks.
+The list for the project as a whole was once ten items long. Five have left
+it: Roast was about ninety per cent and every file passes; equally specific
+multi candidates resolved by declaration order and are an
+`X::Multi::Ambiguous`; a method two roles both
+supply was last-writer-wins and must now be resolved by the class; a module
+published its whole environment and now hands over what it exports; a
+reference cycle leaked and is freed by a backup collector. What is left:
+method dispatch that walks the parents depth-first, where `.^mro` already
+answers the C3 order; a flat class registry, so a class a module declares answers to its bare name;
+no macros, and slangs only at fixed seams; laziness capped at a million
+elements; and a `gather` block that runs ahead of its consumer on the one
+target with no coroutine, WebAssembly.
 
 Every one of those is a real difference from the reference implementation, and
 every one is written down where someone hitting it would look. That is the
