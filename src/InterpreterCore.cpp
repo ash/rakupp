@@ -1151,6 +1151,8 @@ Value Interpreter::execBlockFull(Block* b, std::shared_ptr<Env> scope, bool sink
     // across every call in between (see tctx() in Interpreter.h).
     ExecContext& tcx = tctx();
     auto saved = std::move(tcx.cur);   // moved, not copied: two refcount writes fewer per block
+    // (an exit that THROWS past the epilogues below — a LEAVE that dies while the block unwinds — still closes the scope: the enclosing block drained its `temp`s against this one's)
+    struct CurBack { ExecContext& t; std::shared_ptr<Env>& s; ~CurBack() { if (s && std::uncaught_exceptions()) t.cur = std::move(s); } } curBack{tcx, saved};
     tcx.cur = std::move(scope);
     if (b && tcx.cur.get() != saved.get()) {
         tcx.cur->declStmts = &b->stmts;   // (see Env::declStmts)
@@ -17492,6 +17494,7 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
             Value* bp = nullptr;
             try { bp = lvalue(ix->base.get(), /*asInvocant=*/true); } catch (RakuError&) {}
             if (bp && bp->t == VT::Str && (bp->hashKind == "Buf" || bp->hashKind == "Blob")) {
+                if (bp->hashKind == "Blob") throw RakuError{Value::typeObj("X::Assignment::RO"), "Cannot modify an immutable Blob"};   // (as `=` refuses it)
                 long long i = subscriptKey(ix->index.get()).toInt();
                 Value rhsB = eval(a->value.get());
                 std::string binop = a->written().substr(0, a->written().size() - 1);   // `×=` applies `×`

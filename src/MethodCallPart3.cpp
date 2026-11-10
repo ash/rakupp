@@ -1620,7 +1620,14 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
                                      std::log(std::complex<double>(args[0].n, args[0].im()));
             return Value::complex(r.real(), r.imag());
         }
-        if (!args.empty()) return rtLogReal(*this, inv.toNum(), numValueOf(*this, args[0]));
+        if (!args.empty()) {
+            // (rtLogReal reads a base of 0 as "the natural one": a base that IS
+            // 0, and one of 1, divide by its logarithm as Rakudo's does)
+            const double b = numValueOf(*this, args[0]), lx = std::log(inv.toNum());
+            if (b == 1.0) throw RakuError{Value::typeObj("X::Numeric::DivideByZero"),
+                                          "Attempt to divide " + Value::number(lx).toStr() + " by zero using /"};
+            return b == 0.0 ? Value::number(lx / std::log(b)) : rtLogReal(*this, inv.toNum(), b);
+        }
         return rtLogReal(*this, inv.toNum(), 0.0);
     }
     if (m == "log10") return rtLogReal(*this, inv.toNum(), 10.0);
@@ -5997,7 +6004,7 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
             return armedFailure("X::OutOfRange", "Number of characters argument to substr out of range. Is: " +
                 std::to_string(len) + ", should be in 0..^Inf; use *" + std::to_string(len) +
                 " if you want to index relative to the end");
-        if (start + len > n) len = n - start;
+        if (len > n - start) len = n - start;   // (not `start + len > n`: a length near the int64 maximum wrapped, and the slice came back empty)
         return slice(start, start + len);
     }
     if (m == "index" || m == "rindex") {
@@ -7217,7 +7224,7 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
         long long limit = -1;
         for (auto& a : args)
             if (a.t != VT::Pair && a.t != VT::Whatever &&
-                !(a.isNumeric() && std::isinf(a.toNum()))) { limit = a.toInt(); break; }
+                !(a.isNumeric() && std::isinf(a.toNum()))) { limit = std::max(0LL, a.toInt()); break; }   // (a negative limit is none of them, not all: -1 is "no limit" here)
         // A direct scan, not `std::istringstream >>`. The stream form allocated a
         // stream and a buffer per call and — the reason this is a fix, not just a
         // speed-up — split on the C locale's idea of whitespace, which is ASCII
@@ -7259,7 +7266,7 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
         long long limit = -1;
         for (auto& a : args)
             if (a.t != VT::Pair && a.t != VT::Whatever &&
-                !(a.isNumeric() && std::isinf(a.toNum()))) { limit = a.toInt(); break; }
+                !(a.isNumeric() && std::isinf(a.toNum()))) { limit = std::max(0LL, a.toInt()); break; }   // (a negative limit is none of them, not all: -1 is "no limit" here)
         // A Str breaks on the whole logical-newline set — LF, CR, CRLF, FF, VT,
         // NEL, LS, PS. Splitting on "\n" alone (with a trailing "\r" trimmed) left
         // a lone CR, an old Mac line ending, inside the line: `"a\rb".lines` was
