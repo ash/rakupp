@@ -855,9 +855,16 @@ static Value polymodOf(Interpreter& I, const Value& inv, const ValueList& args) 
                 out.arr()->push_back(v.fitsLL() ? Value::integer(v.toLL()) : Value::bigint(v));
             };
             for (auto& d : fin) {
-                long long dv = d.toInt(); if (dv == 0) break;
+                // (the rules of the int64 loop below, which this one had not:
+                // a zero divisor is refused, one of 1 or less ends it, and a
+                // divisor past an int64 divides as itself)
+                const BigInt db = d.big() ? *d.big() : BigInt(d.toInt());
+                if (db.isZero())
+                    throw RakuError{Value::typeObj("X::Numeric::DivideByZero"),
+                                    "Attempt to divide " + bn.toString() + " by zero using polymod"};
+                if (db.fitsLL() && db.toLL() <= 1) break;
                 BigInt q, r;
-                BigInt::divmod(bn, BigInt(dv), q, r);
+                BigInt::divmod(bn, db, q, r);
                 emit(r);
                 bn = q;
             }
@@ -907,7 +914,9 @@ static Value polymodOf(Interpreter& I, const Value& inv, const ValueList& args) 
                 out.arr()->push_back(bn.fitsLL() ? Value::integer(bn.toLL()) : Value::bigint(bn));
                 break;
             }
-            if (d == 0) break;
+            if (d == 0)
+                throw RakuError{Value::typeObj("X::Numeric::DivideByZero"),
+                                "Attempt to divide " + bn.toString() + " by zero using polymod"};
             BigInt q, r;
             BigInt::divmod(bn, BigInt(d), q, r);
             out.arr()->push_back(r.fitsLL() ? Value::integer(r.toLL()) : Value::bigint(r));
@@ -918,7 +927,9 @@ static Value polymodOf(Interpreter& I, const Value& inv, const ValueList& args) 
     while (n != 0) {
         long long d;
         if (!next(d) || d == 1) { out.arr()->push_back(Value::integer(n)); break; }
-        if (d == 0) break;
+        if (d == 0)   // (it ended the list and dropped what was left)
+            throw RakuError{Value::typeObj("X::Numeric::DivideByZero"),
+                            "Attempt to divide " + std::to_string(n) + " by zero using polymod"};
         out.arr()->push_back(Value::integer(n % d));
         n /= d;
     }
