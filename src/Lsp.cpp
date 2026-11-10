@@ -171,9 +171,12 @@ struct JsonParser {
             return r;
         }
         if (c == '"') { Json j; j.type = Json::Str; j.str = string(); return j; }
-        if (c == 't') { i += 4; return Json::B(true); }
-        if (c == 'f') { i += 5; return Json::B(false); }
-        if (c == 'n') { i += 4; return Json(); }
+        // (the WORD, not its first letter: `tru` at the end of a message stepped
+        // past the end, and `nope` was a null followed by an `e`)
+        if (s.compare(i, 4, "true") == 0)  { i += 4; return Json::B(true); }
+        if (s.compare(i, 5, "false") == 0) { i += 5; return Json::B(false); }
+        if (s.compare(i, 4, "null") == 0)  { i += 4; return Json(); }
+        if (c == 't' || c == 'f' || c == 'n') { i = s.size(); return Json(); }   // no JSON: nothing more is read
         return number();
     }
 

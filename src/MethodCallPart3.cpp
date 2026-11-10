@@ -1263,6 +1263,11 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
                 return armedFailure("X::OutOfRange",
                     "digits argument to base out of range. Is: " + std::to_string(want) +
                     ", should be in 0..*");
+            // (…and more digits than a Str has graphemes are refused, in Rakudo's
+            // words: `255.base(16, 99999999999)` appended zeros until it was killed)
+            if (want > 4294967295LL)
+                throw RakuError{Value::typeObj("X::AdHoc"), "Repeat count (" + std::to_string(want) +
+                                ") cannot be greater than max allowed number of graphemes 4294967295"};
         }
 
         // The value as an exact fraction. A double is a dyadic rational, so it
@@ -5623,6 +5628,9 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
                 throw RakuError{Value::typeObj("X::AdHoc"),
                     "Cannot indent by " + n.gist() + ": the count does not fit an Int"};
             amt = (long long)d;   // `Int()` truncates toward zero
+            if (amt > 4294967295LL)   // (as `.base`'s digits: `"abc".indent(99999999999)` filled memory)
+                throw RakuError{Value::typeObj("X::AdHoc"), "Repeat count (" + std::to_string(amt) +
+                                ") cannot be greater than max allowed number of graphemes 4294967295"};
         }
         const int kTabStop = 8;
         // A line ends at \n (with \r\n as one), \r, U+85 or U+2028 -- the same

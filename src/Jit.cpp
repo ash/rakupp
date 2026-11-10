@@ -800,7 +800,10 @@ KernelFn buildAndLoad(const std::string& src, const std::string& fnName) {
         // That left one orphaned .cpp in the cache for every such run — which is
         // most of them, since a compile takes longer than a short program does.
         // Kept under --jit=verbose, where reading the emitted kernel is the point.
-        if (!g_opt.verbose) cmd += " ; rm -f " + shq(cpp);
+        // (…and it leaves the compile's status as the command's, not its own:
+        // with `; rm -f` the status was always 0, a failed compile was counted
+        // as compiled, and the first anyone heard of it was "dlopen failed")
+        if (!g_opt.verbose) cmd += " ; rc=$? ; rm -f " + shq(cpp) + " ; exit $rc";
         int rc = run(cmd);
         if (!g_opt.verbose) ::remove(cpp.c_str());   // belt and braces if we outlive it
         if (rc != 0) { ::remove(tmp.c_str()); note("compile failed for " + fnName); return nullptr; }

@@ -10914,7 +10914,7 @@ ExprPtr Parser::parseInterpString(const std::string& rawIn) {
             if (e == 'x' || e == 'o' || (e == 'c' && i + 2 < n && ascii::isdigit((unsigned char)raw[i + 2]))) {
                 int base = e == 'x' ? 16 : e == 'o' ? 8 : 10;
                 size_t j = i + 2;
-                auto emitCp = [&](long cp) {
+                auto emitCp = [&](long cp) { escapeCodepointCheck(cp, cur().line);
                     if (cp < 0x80) lit += (char)cp;
                     else if (cp < 0x800) { lit += (char)(0xC0 | (cp >> 6)); lit += (char)(0x80 | (cp & 0x3F)); }
                     else if (cp < 0x10000) { lit += (char)(0xE0 | (cp >> 12)); lit += (char)(0x80 | ((cp >> 6) & 0x3F)); lit += (char)(0x80 | (cp & 0x3F)); }
@@ -10968,7 +10968,7 @@ ExprPtr Parser::parseInterpString(const std::string& rawIn) {
                     throw ParseError("Unable to parse expression in character name; couldn't find final ']'",
                                      cur().line, "X::Comp::AdHoc", {});
                 if (j < n) j++; // ]
-                auto emitCp = [&](long cp) {
+                auto emitCp = [&](long cp) { escapeCodepointCheck(cp, cur().line);
                     if (cp < 0x80) lit += (char)cp;
                     else if (cp < 0x800) { lit += (char)(0xC0 | (cp >> 6)); lit += (char)(0x80 | (cp & 0x3F)); }
                     else if (cp < 0x10000) { lit += (char)(0xE0 | (cp >> 12)); lit += (char)(0x80 | ((cp >> 6) & 0x3F)); lit += (char)(0x80 | (cp & 0x3F)); }

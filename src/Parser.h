@@ -40,6 +40,7 @@ struct ParseError : std::runtime_error {
 // declares — otherwise a program using an imported operator does not parse once
 // the module tree is gone. Registered at startup by generated code; read-only
 // afterwards. (`--exe`/`--aot` parse at BUILD time and never need this.)
+void escapeCodepointCheck(long cp, int line);   // a string escape's codepoint, or a ParseError (ParserWordPairs.cpp)
 void rakuppRegisterModuleSource(const std::string& name, const char* src, size_t len);
 const std::string* rakuppEmbeddedModuleSource(const std::string& name);
 // The engine's SHADOW modules (rakulib/: NativeHelpers::Blob, ::CStruct,

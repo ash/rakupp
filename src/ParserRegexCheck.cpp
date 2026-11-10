@@ -572,6 +572,24 @@ void Parser::checkNullRegex(const std::string& pat, int line, bool branches) {
             while (j < pat.size() && (pat[j] == ' ' || pat[j] == '\t')) j++;
             size_t d0 = j;
             while (j < pat.size() && ascii::isdigit((unsigned char)pat[j])) j++;
+            // a count no native int holds (`a ** 99999999999999999999` wrapped,
+            // and matched or did not as the wrapped number fell), here and at
+            // a range's end
+            const auto tooBig = [&](size_t from, size_t to) {
+                if (to - from >= 19)
+                    throw ParseError("Quantifier count " + pat.substr(from, to - from) + " does not fit a native integer",
+                                     line, "X::Syntax::Regex::QuantifierValue", {});
+            };
+            tooBig(d0, j);
+            // `x **^0` — nothing below zero: an empty range (it was read as `*`)
+            if (j == d0 && j < pat.size() && pat[j] == '^') {
+                size_t e = j + 1;
+                while (e < pat.size() && ascii::isdigit((unsigned char)pat[e])) e++;
+                tooBig(j + 1, e);
+                if (e > j + 1 && std::stoll(pat.substr(j + 1, e - j - 1)) == 0)
+                    throw ParseError("Range of quantifier cannot be empty", line,
+                                     "X::Syntax::Regex::QuantifierValue", {{"empty-range", "True"}});
+            }
             if (j == d0) { i++; continue; }
             size_t sp = j;
             while (j < pat.size() && (pat[j] == ' ' || pat[j] == '\t')) j++;
@@ -600,6 +618,7 @@ void Parser::checkNullRegex(const std::string& pat, int line, bool branches) {
             if (k == sp2s && k < pat.size() && ascii::isdigit((unsigned char)pat[k])) {
                 size_t e = k;
                 while (e < pat.size() && ascii::isdigit((unsigned char)pat[e])) e++;
+                tooBig(k, e);
                 if (sp - d0 < 18 && e - k < 18) {
                     long long lo = std::stoll(pat.substr(d0, sp - d0)), hi = std::stoll(pat.substr(k, e - k));
                     if (pat[j + 2] == '^') hi--;
