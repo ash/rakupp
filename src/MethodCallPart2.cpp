@@ -9217,6 +9217,7 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
                        (args[0].isNumeric() && std::isinf(args[0].toNum()));
             // pick(*) shuffles the whole range when that is sane; a 2**64 request is degenerate
             long long n = all ? (span && span <= (1ULL << 22) ? (long long)span : 0) : args[0].toInt();
+            if (n < 0) n = 0;   // (a negative count is none: `(1..5000).pick(-1)` was the cast below's 2**64 - 1, clamped to all 5000)
             if (m == "pick" && span && (unsigned long long)n > span) n = (long long)span;
             Value out = Value::array(); out.isList = true; out.s = "Seq";
             if (m == "pick") {
