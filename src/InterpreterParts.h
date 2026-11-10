@@ -202,6 +202,15 @@ static bool boxedIteration(const Value& v);
 void spDeclaredInRaw(const std::vector<StmtPtr>& body, std::vector<const VarExpr*>& out);
 bool pureSubscriptBase(const Expr* b);
 
+// What a user `infix:<OP>` threw when `OP=` tried it: true when it only
+// DECLINED these operands (no candidate, or its signature did not bind), which
+// is what lets `OP=` fall back to the built-in operator. Anything else is the
+// operator's own error — a `die` in its body was swallowed with the rest, and
+// `$x += 1` then quietly did the built-in's arithmetic.
+inline bool infixDeclined(const RakuError& e) {
+    return isMultiNoMatch(e) || (e.payload.t == VT::Object && e.payload.typeName().rfind("X::TypeCheck::Binding", 0) == 0);
+}
+
 // An array element lvalue() answered, kept FINDABLE while code that can grow
 // the array runs: a push moves the storage, and a Value* taken before it then
 // points into the freed block — `@a[0] += do { @a.push(…); 5 }` wrote there.

@@ -13532,7 +13532,7 @@ Value Interpreter::evalAssign(Assign* a, bool sink) {
                         Value nv;
                         if (Value* f = tctx().cur->find("&infix:<" + laneName() + ">"))
                             try { nv = callCallable(*f, ValueList{*slot, rhs}); overloaded = true; }
-                            catch (RakuError&) {}
+                            catch (RakuError& e) { if (!infixDeclined(e)) throw; }
                         if (!overloaded) {
                             if (slot->t == VT::Any || slot->t == VT::Nil || slot->t == VT::Type) {
                                 if (sv == 4) *slot = Value::integer(1);
@@ -17584,7 +17584,7 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
             if ((cur.t == VT::Object || rhs.t == VT::Object) && bop != "^^" && bop != "xor")
                 if (Value* f = tctx().cur->find("&infix:<" + bop + ">"))
                     try { nv = callCallable(*f, ValueList{cur, rhs}); overloaded = true; }
-                    catch (RakuError&) {}
+                    catch (RakuError& e) { if (!infixDeclined(e)) throw; }
             if (!overloaded)
                 nv = (bop == "^^" || bop == "xor")
                     ? (cur.truthy() ? (rhs.truthy() ? Value::nil() : cur) : rhs)
@@ -17685,7 +17685,7 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
     if (lv->t == VT::Object || rhs.t == VT::Object) {
         if (Value* f = tctx().cur->find("&infix:<" + look + ">"))
             try { slotStore(lv, callCallable(*f, ValueList{slotRead(lv), rhs})); overloaded = true; }
-            catch (RakuError&) {}
+            catch (RakuError& e) { if (!infixDeclined(e)) throw; }
     }
     // …and over CORE operands it meets the built-in exactly as `$t + x` does:
     // `multi infix:<+>(Int, Int $b where * > 100)` takes `$t += 200` too
