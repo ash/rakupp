@@ -47,7 +47,16 @@
 #                          copy-and-patch JIT on; loop kernels still go first);
 #                          a binary without `--cnp` skips it on its own
 #     --no-mutsu           skip the mutsu lane even when mutsu is installed
-#                          (some kernels take it minutes a run: intcat ~160 s)
+#     --slow=SECONDS       a lane whose first run of a kernel (the correctness
+#                          one) takes longer than this is not timed 7 more
+#                          times: that one run is its figure, printed in
+#                          seconds with a `*`. Default 5; 0 times every lane in
+#                          full. Without it one row could take an hour: intcat
+#                          is ~5 min a run on mutsu 0.25 and 28 s on Rakudo.
+#     --timeout=SECONDS    kill a lane's first run of a kernel after this long;
+#                          the cell reads `>Ns` and the lane sits the row out.
+#                          Default 600; 0 never kills. Needs `perl` (its
+#                          `alarm`); without one nothing is killed.
 #
 # Override the binaries via environment:
 #     RAKUPP=/path/to/rakupp RAKUDO=rakudo ./build/rakupp tools/run-bench.raku
@@ -76,6 +85,8 @@ my $suite  = '';
 my $want-native = True;
 my $want-mutsu  = True;
 my $want-cnp    = True;
+my $SLOW    = 5;     # seconds; see --slow
+my $TIMEOUT = 600;   # seconds; see --timeout
 for @*ARGS -> $a {
     if $a.starts-with('--tsv=') { $tsv-path = $a.substr(6) }
     elsif $a.starts-with('--only=') { @only = $a.substr(7).split(',')>>.trim }
@@ -84,6 +95,8 @@ for @*ARGS -> $a {
     elsif $a eq '--no-native' { $want-native = False }
     elsif $a eq '--no-mutsu'  { $want-mutsu = False }
     elsif $a eq '--no-cnp'    { $want-cnp = False }
+    elsif $a ~~ /^ '--slow=' (\d+ ['.' \d+]?) $/    { $SLOW = +$0 }
+    elsif $a ~~ /^ '--timeout=' (\d+) $/            { $TIMEOUT = +$0 }
     else { note "run-bench: unknown argument $a"; exit 2 }
 }
 if $suite && $suite ne 'mutsu' {
@@ -221,6 +234,34 @@ sub section-of(Str $out) {
     $m ?? +$m<s> * 1000 !! Nil
 }
 
+# The correctness run of one lane, which is also where a lane that will not
+# finish is caught. Returns <out wall timeout cpu rss>: stdout as capture gives
+# it (undefined when the run failed or was killed), the wall time in ms, whether
+# the --timeout alarm killed it, and under --rusage the CPU and peak RSS of this
+# very run — so a lane too slow to repeat still has a row in both tables
+# without being run a second time.
+#
+# The limit is perl's `alarm`, which survives the exec: the kernel delivers
+# SIGALRM to the engine itself, so nothing is left running behind a killed
+# wrapper. /usr/bin/time goes OUTSIDE it for the same reason.
+my $ALARM-OK = $TIMEOUT > 0 && capture([$PERL, '-e', 'alarm 60; print 1']).defined;
+sub gate-run(@cmd --> Hash) {
+    my @full = @cmd;
+    @full = $PERL, '-e', 'alarm shift; exec { $ARGV[0] } @ARGV; exit 127', ~$TIMEOUT, |@full if $ALARM-OK;
+    @full = '/usr/bin/time', rusage-flag(), |@full if $rusage;
+    my $t0 = now;
+    my $p = run(|@full, :out, :err);
+    my $out = $p.out.slurp(:close);
+    my $err = $p.err.slurp(:close);
+    my $wall = (now - $t0) * 1000;
+    my $timeout = $ALARM-OK && $wall >= $TIMEOUT * 1000;
+    # A signalled child reads exitcode 0 under both engines; .signal says so.
+    my $ok = $p.exitcode == 0 && !$p.signal && !$timeout;
+    my %r = out => ($ok ?? strip-section($out) !! Str), wall => $wall, timeout => $timeout;
+    if $rusage && $ok { %r{.key} = .value for parse-rusage($err, 1) }
+    %r
+}
+
 # First stdout line of a command, or '' — for the metadata header.
 sub first-line(@cmd --> Str) {
     my $p = run(|@cmd, :out, :err);
@@ -275,9 +316,9 @@ my $MUTSU = $want-mutsu ?? resolve-mutsu() !! Str;
 # quantum: measured one at a time, `native`/`hash` reads a flat 0ms however many
 # times it is sampled. Peak RSS needs no such help — it is the max over the
 # wrapped children, which is the same figure a single run would give.
+sub rusage-flag(--> Str) { $*DISTRO.name.lc.contains('macos' | 'darwin') ?? '-l' !! '-v' }
 sub rusage-run(@cmd, Int $reps = 1 --> Hash) {
-    my $gnu = !$*DISTRO.name.lc.contains('macos' | 'darwin');
-    my $flag = $gnu ?? '-v' !! '-l';
+    my $flag = rusage-flag();
     my $p = do if $reps > 1 {
         my $one = @cmd.map({ q{'} ~ .subst(q{'}, q{'\''}, :g) ~ q{'} }).join(' ');
         run('/usr/bin/time', $flag, '/bin/sh', '-c', "$one; " x $reps, :out, :err);
@@ -288,7 +329,9 @@ sub rusage-run(@cmd, Int $reps = 1 --> Hash) {
     $p.out.slurp(:close);
     my $err = $p.err.slurp(:close);
     return {} unless $p.exitcode == 0;
-
+    parse-rusage($err, $reps)
+}
+sub parse-rusage(Str $err, Int $reps --> Hash) {
     my ($cpu, $rss);
     # BSD: bare numbers labelled by trailing words, RSS in bytes.
     if $err ~~ / $<u>=[\d+ ['.' \d+]?] \s+ 'user' \s+ $<s>=[\d+ ['.' \d+]?] \s+ 'sys' / {
@@ -366,6 +409,8 @@ if $tfh {
 my $mismatch = False;
 my $W = $suite ?? max(12, |@benches.map({ .<name>.chars + 8 })) !! 12;   # room for a name@section row
 my @rusage-rows;   # one per kernel, filled only under --rusage
+my $any-slow = False;      # some cell is one run's time (`*`)
+my $any-timeout = False;   # some cell is a killed run (`>Ns`)
 printf "%-{$W}s %10s %10s %10s %10s %10s %10s   %s\n", 'benchmark', 'interp', 'native', 'cnp', 'mutsu', 'rakudo', 'perl', 'note';
 for @benches -> %b {
     # A kernel that needs a distribution is a row only where it loads; a
@@ -382,31 +427,37 @@ for @benches -> %b {
     # timings aren't a like-for-like comparison. Rakudo is the oracle; if it
     # isn't available, Raku++'s interpreter is the reference instead.
     my $built = $want-native && compile-native($path, $nbin);
-    my $oi = capture([$RAKUPP, $path]);
-    my $on = $built ?? capture([$nbin]) !! Str;
-    my $oc = $want-cnp ?? capture([$RAKUPP, '--cnp=on', $path]) !! Str;
-    my $or = $RAKUDO-OK ?? capture([$RAKUDO, $path]) !! Str;
-    my $om = $MUTSU.defined ?? capture([$MUTSU, $path]) !! Str;
-    my $op = $ppath.defined ?? capture([$PERL, $ppath]) !! Str;
+    my %g;   # lane => its gate-run
+    my sub gate(Str $k, Bool $want, @cmd) { $want ?? (%g{$k} = gate-run(@cmd))<out> !! Str }
+    my sub why(Str $k) { %g{$k}<timeout> ?? "timed out after {$TIMEOUT}s" !! 'did not run' }
+    my $oi = gate('interp', True,            [$RAKUPP, $path]);
+    my $on = gate('native', $built,          [$nbin]);
+    my $oc = gate('cnp',    $want-cnp,       [$RAKUPP, '--cnp=on', $path]);
+    my $or = gate('rakudo', $RAKUDO-OK,      [$RAKUDO, $path]);
+    my $om = gate('mutsu',  $MUTSU.defined,  [$MUTSU, $path]);
+    my $op = gate('perl',   $ppath.defined,  [$PERL, $ppath]);
     my $oracle = $or.defined ?? 'rakudo' !! 'interp';
     my $ref    = $or // $oi;
     my @bad;
-    @bad.push('interp did not run')        unless $oi.defined;
-    @bad.push('native did not run')        if $built && !$on.defined;
-    @bad.push('perl did not run')          if $ppath.defined && !$op.defined;
+    @bad.push("interp {why('interp')}")    unless $oi.defined;
+    @bad.push("native {why('native')}")    if $built && !$on.defined;
+    @bad.push("perl {why('perl')}")        if $ppath.defined && !$op.defined;
+    # Rakudo is the oracle, not a lane under test: one that ran out of time
+    # leaves the row compared against the interpreter, and says so.
+    my @othereng;
+    @othereng.push("rakudo {why('rakudo')}") if $RAKUDO-OK && !$or.defined;
     @bad.push("interp ≠ $oracle")          if $oi.defined && $or.defined && $oi ne $or;
     @bad.push("native ≠ $oracle")          if $on.defined && $ref.defined && $on ne $ref;
-    @bad.push('cnp did not run')           if $want-cnp && !$oc.defined;
+    @bad.push("cnp {why('cnp')}")          if $want-cnp && !$oc.defined;
     @bad.push("cnp ≠ $oracle")             if $oc.defined && $ref.defined && $oc ne $ref;
     @bad.push("perl ≠ $oracle")            if $op.defined && $ref.defined && $op ne $ref;
     # A third-party engine's disagreement is recorded next to the row and stays
     # out of @bad: it must not turn our own correctness gate red.
-    my @othereng;
-    @othereng.push('mutsu did not run')     if $MUTSU.defined && !$om.defined;
+    @othereng.push("mutsu {why('mutsu')}")  if $MUTSU.defined && !$om.defined;
     @othereng.push("mutsu ≠ $oracle")       if $om.defined && $ref.defined && $om ne $ref;
     my $flag = '';
     if @bad { $mismatch = True; $flag = "   ⚠ {@bad.join('; ')}"; }
-    $flag ~= "   (mutsu: {@othereng.join('; ')})" if @othereng;
+    $flag ~= "   ({@othereng.join('; ')})" if @othereng;
 
     # One lane per engine that produced output; each measured round times every
     # lane once, back to back, warm-up round discarded.
@@ -419,8 +470,20 @@ for @benches -> %b {
     @lanes.push: 'perl'   => [$PERL, $ppath]               if $ppath.defined && $op.defined;
     my %times;
     my %sections;
-    for ^$RUNS -> $i {
+    # A lane whose gate run was already slow is not run $RUNS more times: seven
+    # rounds of a five-minute kernel is the best part of an hour in which the
+    # table prints nothing. Its one run is the figure, and is marked as one.
+    my %slow;
+    if $SLOW > 0 {
         for @lanes -> $lane {
+            next unless %g{$lane.key}<wall> > $SLOW * 1000;
+            %slow{$lane.key} = True;
+            %times{$lane.key}.push(%g{$lane.key}<wall>);
+        }
+    }
+    my @timed = @lanes.grep({ !%slow{.key} });
+    for ^$RUNS -> $i {
+        for @timed -> $lane {
             my @cmd = |$lane.value;
             my $t0 = now;
             my $out = run(|@cmd, :out).out.slurp(:close);   # drain stdout => waits for exit
@@ -434,7 +497,10 @@ for @benches -> %b {
     # inside the wall-clock figures the rest of this file publishes.
     if $rusage {
         my %ru;
-        for @lanes -> $lane {
+        for %slow.keys -> $k {
+            %ru{$k} = { cpu => %g{$k}<cpu>, rss => %g{$k}<rss>, one => True } if %g{$k}<cpu>.defined;
+        }
+        for @timed -> $lane {
             # Enough repetitions to clear ~80ms of CPU, from the wall time this
             # lane just recorded: a 300ms kernel needs one, a 7ms kernel twelve.
             # Capped so a pathologically fast lane cannot spawn hundreds.
@@ -450,7 +516,11 @@ for @benches -> %b {
         @rusage-rows.push: { name => %b<name>, ru => %ru };
     }
 
-    my sub cell(Str $k) { %times{$k} ?? sprintf('%.1fms', %times{$k}.min) !! 'n/a' }
+    my sub cell(Str $k) {
+        if %g{$k} && %g{$k}<timeout> { $any-timeout = True; return ">{$TIMEOUT}s" }
+        if %slow{$k} { $any-slow = True; return sprintf('%.1fs*', %times{$k}.min / 1000) }
+        %times{$k} ?? sprintf('%.1fms', %times{$k}.min) !! 'n/a'
+    }
     my $interp = cell('interp');
     my $native = cell('native');
     my $cnp    = $want-cnp ?? cell('cnp') !! '—';
@@ -472,7 +542,7 @@ for @benches -> %b {
             %times{$k} ?? (sprintf('%.1f', %times{$k}.min), sprintf('%.1f', median(%times{$k})))
                        !! ('', '')
         }
-        my @all = |@bad, |@othereng;
+        my @all = |@bad, |@othereng, |%slow.keys.sort.map({ "$_ single run" });
         $tfh.say: (%b<name>,
                    |pair('interp'), |pair('native'), |pair('mutsu'),
                    |pair('rakudo'), |pair('perl'),
@@ -487,6 +557,11 @@ for @benches -> %b {
     }
 }
 $tfh andthen .close;
+if $any-slow || $any-timeout {
+    say '';
+    say "# * one run, not the best of {$RUNS - 1}: it took over {$SLOW}s, so the lane was not timed again (--slow=SECONDS; 0 times it in full)" if $any-slow;
+    say "# >{$TIMEOUT}s: killed at the time limit, no figure (--timeout=SECONDS; 0 never kills)" if $any-timeout;
+}
 
 if @rusage-rows {
     # Two figures per lane: CPU is user+sys, so a lane that uses more than one
@@ -495,14 +570,15 @@ if @rusage-rows {
     # mark of the process, which for the native lane includes no interpreter.
     my @lanes = <interp native cnp mutsu rakudo perl>;
     say '';
-    say '# CPU time (user+sys) and peak RSS — min of 3 runs, measured separately';
+    say '# CPU time (user+sys) and peak RSS — min of 3 runs, measured separately'
+        ~ ($any-slow ?? '; * is the one run of a slow lane' !! '');
     printf "%-{$W}s %s\n", 'benchmark',
            @lanes.map({ sprintf '%18s', $_ }).join;
     for @rusage-rows -> %row {
         printf "%-{$W}s %s\n", %row<name>,
                @lanes.map(-> $l {
                    my %r = %row<ru>{$l} // {};
-                   sprintf '%18s', %r ?? sprintf('%.0fms/%.1fMB', %r<cpu>, %r<rss> / 1024)
+                   sprintf '%18s', %r ?? sprintf('%.0fms/%.1fMB%s', %r<cpu>, %r<rss> / 1024, %r<one> ?? '*' !! '')
                                       !! '—'
                }).join;
     }
