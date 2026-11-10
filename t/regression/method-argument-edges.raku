@@ -40,7 +40,7 @@ ck "a\nb".lines(0).elems, 0, '.lines(0)';
 # D1 is checked only where rakupp and Rakudo agree, and by rakupp's own answer
 ck "abc".substr(1, 1), 'b', '.substr(1, 1)';
 ck "abc".substr(3, 5), '', '.substr at the end';
-if $*RAKU.compiler.name eq 'rakupp' {
+if $*RAKU.compiler.name eq 'Raku++' {
     ck "abc".substr(1, 9223372036854775807), 'bc', '.substr with a length near the int64 maximum';
 }
 
