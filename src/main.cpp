@@ -2025,6 +2025,14 @@ static int compileNative(const std::string& src, const std::string& srcName, std
                                        &skips, &natives, nullptr, &engineAnswered);
         if (!reportModuleEmbedding("--exe", mods, skips, natives)) return 4;
         aotMods = mods;
+        // A module that supplies a metaclass (EXPORTHOW) builds the program's
+        // classes itself, and a slang's EXPORT runs under the parse's $*LANG:
+        // neither happens to a natively registered class or a run-time `use`.
+        for (auto& m : mods)
+            for (const char* w : {"EXPORTHOW", "$*LANG"})
+                if (m.src.find(w) != std::string::npos)
+                    throw CodegenError{"a module (" + m.name + ") that " +
+                                       (w[0] == 'E' ? "supplies a metaclass (EXPORTHOW)" : "is a slang ($*LANG)")};
         cpp = transpileToCpp(prog, optimize, absPath(srcName), moduleExports, src);
         if (!mods.empty()) {
             std::ostringstream decls, calls;

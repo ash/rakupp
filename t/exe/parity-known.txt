@@ -19,12 +19,9 @@ empty-block-is-nil.raku
 endless-range-reduce.raku
 exe-callframe.raku
 exe-readonly-parameter-write.raku
-exporthow-declare-monitor-locks.raku
 failure-mess-and-backtrace.raku
 for-over-listing-value.raku
 generic-role-bodies.raku
-how-declaration-hooks.raku
-how-legacy-exporthow.raku
 hyper-in-whatevercode.raku
 ident-continuation-and-native-return-boundary.raku
 issue-138-qq-block-in-regex-atom.raku
@@ -34,7 +31,6 @@ junction-regex-match-var.raku
 kernel-closure-callees.raku
 method-leave-dies-unwinding.raku
 missing-routines-batch.raku
-module-supplied-package-declarator.raku
 multi-nomatch-dispatcher-capture.raku
 my-in-short-circuit-and-do-init.raku
 my-list-slot-coercion-type.raku
