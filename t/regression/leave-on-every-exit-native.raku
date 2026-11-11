@@ -2,9 +2,9 @@
 # a block's LEAVE phasers after its last statement, so a `next`, `last`,
 # `return` or exception that left the block early skipped them:
 # `for ^3 -> $i { LEAVE { … }; next if $i == 1; … }` ran two of the three. A
-# LEAVE is a C++ scope guard now, armed at the block's start unless it reads
-# a variable the block declares (then where it is written), and a death in
-# it propagates on an ordinary exit. Interpreted it was right all along; this
+# LEAVE is a C++ scope guard now, armed at the block's start, and a death in
+# it propagates on an ordinary exit. (One that reads a variable its block
+# declares keeps its routine interpreted: leave-reads-block-locals.raku.) Interpreted it was right all along; this
 # file compiles natively (t/run.raku checks that it does), so t/exe/run.raku
 # compares the binary with the interpreter, with `-O` and without. Found
 # while fixing #195. Every answer below is Rakudo 2026.09's.
@@ -25,11 +25,6 @@ check 'die', @o, [<B0 L0 L1>];
 check 'a bare block left by last', @o, [<i0 o0 i1>];
 @o = (); for ^3 -> $i { next if $i == 1; LEAVE { @o.push: "L$i" }; @o.push: "B$i" }
 check 'a LEAVE written after the next', @o, [<B0 L0 L1 B2 L2>];
-@o = (); for ^3 -> $i { my $v = $i * 10; LEAVE { @o.push: "L$v" }; next if $i == 1; @o.push: "B$v" }
-check 'a LEAVE that reads a local', @o, [<B0 L0 L10 B20 L20>];
-@o = ();
-for ^3 -> $i { my $a = "a$i"; LEAVE { @o.push: "1$a" }; my $b = "b$i"; LEAVE { @o.push: "2$b" }; next if $i == 1; @o.push: "body$i" }
-check 'two that read locals', @o, [<body0 2b0 1a0 2b1 1a1 body2 2b2 1a2>];
 @o = (); for ^2 -> $i { LEAVE { @o.push: "first$i" }; LEAVE { @o.push: "second$i" }; next }
 check 'reverse order', @o, [<second0 first0 second1 first1>];
 @o = (); my $j = 0; while $j < 3 { $j++; LEAVE { @o.push: "W$j" }; next if $j == 2; @o.push: "b$j" }
@@ -42,9 +37,6 @@ check 'repeat', @o, [<R1 R2>];
 @o = (); my $tries = 0;
 for ^2 -> $i { LEAVE { @o.push: "L$i" }; $tries++; $tries == 1 and redo; @o.push: "B$i" }
 check 'redo', @o, [<L0 B0 L0 B1 L1>];
-@o = (); $tries = 0;
-for ^2 -> $i { my $v = "v$i"; LEAVE { @o.push: "L$v" }; $tries++; $tries == 1 and redo; @o.push: "B$i" }
-check 'redo, a LEAVE that reads a local', @o, [<Lv0 B0 Lv0 B1 Lv1>];
 @o = ();
 sub g2 { for ^3 -> $i { LEAVE { @o.push: "L$i" }; return "r$i" if $i == 1 } }
 check 'return from a loop', (g2(), |@o), ('r1', 'L0', 'L1');

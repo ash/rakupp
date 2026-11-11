@@ -2,13 +2,6 @@
 # interpreter does, one file name per line. The gate passes them and says when
 # one starts to agree; take it off then. This list only shrinks.
 battery-regressions-v5.raku
-class-begin-and-run-sink.raku
 dynamic-var-memo.raku
-gobbled-block-refused-at-compile-time.raku
 grand-review-c4b-modules-seq.raku
-issue-198-titlecase-sub-block-arg.raku
-rakudo-t-language-gaps-2.raku
 smartmatch-topic-pad.raku
-undeclared-routine-reference.raku
-undeclared-variable-hint.raku
-usage-lists-every-alias.raku

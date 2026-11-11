@@ -7,6 +7,7 @@
 // that statement to the interpreter, which runs it in a frame of its own.
 #include "../Ast.h"
 #include "../Codegen.h"
+#include <cstring>
 #include <functional>
 #include <set>
 #include <string>
@@ -65,6 +66,56 @@ bool fatalCallSite(const Expr* e) {
 bool isLeaveBlock(const Stmt* s) {
     return s->kind == NK::Block && static_cast<const Block*>(s)->phaser == "LEAVE" &&
            !static_cast<const Block*>(s)->isCatch;
+}
+
+// Does a sub declared inside a routine read a variable of the routine around
+// it? Its Code object is one slot by name, so a closure handed out reaches the
+// latest call's instance — which matters only when instances differ, that is,
+// when the sub closes over the enclosing routine's lexicals. One that reads
+// only its own parameters and locals, the program's globals and specials is
+// the same sub in every call.
+bool subReadsOuterLexicals(const SubDecl* d, const std::set<std::string>& globals) {
+    std::set<std::string> own;
+    for (auto& p : d->params) own.insert(p.name);
+    bool outer = false;
+    std::function<void(Node*)> walk = [&](Node* n) {
+        if (!n || outer) return;
+        if (n->kind == NK::SubDecl && n != d) { outer = true; return; }   // (a sub in it: be unsure)
+        if (n->kind == NK::VarExpr) {
+            auto* v = static_cast<VarExpr*>(n);
+            const std::string& nm = v->name;
+            if (v->declare) own.insert(nm);
+            else if (nm.size() > 1 && std::strchr("$@%&", nm[0]) && !std::strchr("*?!.^:=~", nm[1]) &&
+                     nm != "$_" && nm != "$/" && nm != "$!" && !own.count(nm) && !globals.count(nm))
+                outer = true;
+        }
+        forEachAstChild(n, walk);
+    };
+    for (auto& st : d->body) walk(st.get());
+    return outer;
+}
+
+// …and is such a sub's instance one a caller could tell from another's? It
+// escapes when it is named as a value (`&f`) or called from a closure in its
+// scope (which may run after this call has returned), and the routine around
+// it is re-entered when it calls itself; otherwise every call of it runs in
+// the one activation whose lexicals it reads (showcase/ledger's `walk`).
+bool nestedSubUnsafe(const std::vector<StmtPtr>& scope, const SubDecl* d, const std::set<std::string>& globals,
+                     const SubDecl* outer) {
+    if (!subReadsOuterLexicals(d, globals)) return false;
+    if (!outer) return true;
+    bool unsafe = false;
+    std::function<void(Node*, bool)> walk = [&](Node* n, bool inClosure) {
+        if (!n || unsafe) return;
+        if (n->kind == NK::VarExpr && static_cast<VarExpr*>(n)->name == "&" + d->name) unsafe = true;
+        if (n->kind == NK::Call && static_cast<Call*>(n)->name == d->name && inClosure) unsafe = true;
+        if (n->kind == NK::Call && static_cast<Call*>(n)->name == outer->name) unsafe = true;
+        if (n->kind == NK::MethodCall && outer->isMethod && static_cast<MethodCall*>(n)->method == outer->name) unsafe = true;
+        const bool closure = inClosure || n->kind == NK::BlockExpr || (n->kind == NK::SubDecl && n != d);
+        forEachAstChild(n, [&](Node* c) { walk(c, closure); });
+    };
+    for (auto& st : scope) walk(st.get(), false);
+    return unsafe;
 }
 
 // Does the LEAVE at body[j] read a name a statement before it declares? One

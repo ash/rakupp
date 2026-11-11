@@ -36,6 +36,7 @@ bool exprMayUseTopic(const Expr* e);   // Interpreter.cpp: may `e` read or write
 const char* builtinRefusal(const std::string& name, bool inTopic);   // codegen/Refusals.cpp, as are:
 const char* methodRefusal(const MethodCall* m, bool& routineWide); bool fatalCallSite(const Expr* e); bool isLeaveBlock(const Stmt* s);
 bool leaveReadsEarlier(const std::vector<StmtPtr>& body, size_t j);
+bool nestedSubUnsafe(const std::vector<StmtPtr>&, const SubDecl*, const std::set<std::string>&, const SubDecl*);
 std::string autothreadMask(const std::vector<Param>& ps, bool block);   // codegen/Autothread.cpp
 
 namespace {
@@ -829,6 +830,7 @@ struct Codegen {
     // multi candidate, a lexical or anonymous sub). A plain block pushes
     // nothing: inside it, `&?ROUTINE` is still the routine around it.
     std::vector<std::string> routineRef_;
+    const SubDecl* outerRoutine_ = nullptr;   // the routine whose body is being emitted (nestedSubUnsafe)
     struct RoutineScope {
         Codegen* g;
         RoutineScope(Codegen* c, const std::string& ref) : g(c) { g->routineRef_.push_back(ref); }
@@ -1744,7 +1746,8 @@ struct Codegen {
             if (SubDecl* d = lexical(st.get())) {
                 if (d->isMulti) unsupported("a nested multi sub");
                 // (its Code object is ONE env slot by name: a closure handed out reached the latest instance's)
-                if (moduleMode_ || !routineRef_.empty()) unsupported("a sub declared inside a routine");
+                if (moduleMode_ || (!routineRef_.empty() && nestedSubUnsafe(stmts, d, topVars_, outerRoutine_)))
+                    unsupported("a sub declared inside a routine, closing over its variables");
                 envSubs.insert(d->name);
                 anyLexical = true;
             }
@@ -2281,6 +2284,7 @@ struct Codegen {
             bindParams(sigOf(d), 0, false);
             topics.push_back(routineTopic(&sigOf(d), 0));   // (a sub's own `$_`, not its block's:)
             struct PopTopic { Codegen* g; ~PopTopic() { g->topics.pop_back(); } } __pt{this};
+            struct OuterR { const SubDecl*& r; const SubDecl* s; ~OuterR() { r = s; } } __or{outerRoutine_, std::exchange(outerRoutine_, d)};
             hoistLexicalSubs(d->body, 0);
             for (size_t i = 0; i < d->body.size(); i++) {
                 Stmt* st = d->body[i].get();
@@ -2502,6 +2506,7 @@ struct Codegen {
             hoistLexicalSubs(be->body, 0);
             for (size_t i = 0; i < be->body.size(); i++) {
                 Stmt* s = be->body[i].get();
+                if (bodyLeave(be->body, i)) continue;   // (a block's LEAVE as a routine's: armed first)
                 if (i + 1 == be->body.size() && s->kind == NK::ExprStmt)
                     line(0, "return " + tailValue(static_cast<ExprStmt*>(s)->e.get()) + ";");
                 else if (i + 1 == be->body.size() && (s->kind == NK::IfStmt || s->kind == NK::GivenStmt)) {
@@ -2936,9 +2941,18 @@ struct Codegen {
                 }
                 if (u->op == "do" || u->op == "try") { // do { } / try { }  (value = last statement)
                     std::string body;
-                    // (a `try` BLOCK is under use fatal; a blockless `try EXPR`'s call sites are not)
+                    // a Failure the block returns is consumed (rtTryFailure),
+                    // unless the block says `no fatal`: then it is the value
+                    bool noFatal = false;
+                    if (u->operand->kind == NK::BlockExpr)
+                        for (auto& s : static_cast<BlockExpr*>(u->operand.get())->body)
+                            if (s->kind == NK::UseStmt && static_cast<UseStmt*>(s.get())->isNo &&
+                                static_cast<UseStmt*>(s.get())->module == "fatal")
+                                noFatal = true;
+                    // (a `try` BLOCK is under use fatal — not one that says `no fatal`; a
+                    // blockless `try EXPR`'s call sites are not)
                     struct TryHere { int& n; bool on; TryHere(int& x, bool o) : n(x), on(o) { n += on; } ~TryHere() { n -= on; } }
-                        __th{tryHere_, u->op == "try" && u->operand->kind == NK::BlockExpr};
+                        __th{tryHere_, u->op == "try" && u->operand->kind == NK::BlockExpr && !noFatal};
                     struct Iife { int& n; explicit Iife(int& x) : n(x) { n++; } ~Iife() { n--; } } __iife{iife_};
                     LoopJumpBarrier __bar{this};   // the body is a lambda: no break/continue/goto out of it
                     if (u->operand->kind == NK::BlockExpr) { CellScope __cs{this}; DeclScope __ds{this};   // …and a block, whose `my`s are its own
@@ -2946,6 +2960,7 @@ struct Codegen {
                         body = capture([&]() {
                             for (size_t i = 0; i < be->body.size(); i++) {
                                 Stmt* s = be->body[i].get();
+                                if (bodyLeave(be->body, i)) continue;
                                 if (i + 1 == be->body.size() && s->kind == NK::ExprStmt)
                                     line(0, "return " + tailValue(static_cast<ExprStmt*>(s)->e.get()) + ";");
                                 // A block-final if/given IS the block's value, the
@@ -2975,14 +2990,6 @@ struct Codegen {
                         });
                     } else body = "return " + exArg(u->operand.get()) + ";\n";
                     if (u->op == "do") return "([&]()->Value{\n" + body + "}())";
-                    // a Failure the block returns is consumed (rtTryFailure),
-                    // unless the block says `no fatal`: then it is the value
-                    bool noFatal = false;
-                    if (u->operand->kind == NK::BlockExpr)
-                        for (auto& s : static_cast<BlockExpr*>(u->operand.get())->body)
-                            if (s->kind == NK::UseStmt && static_cast<UseStmt*>(s.get())->isNo &&
-                                static_cast<UseStmt*>(s.get())->module == "fatal")
-                                noFatal = true;
                     return "([&]()->Value{ RtTryScope __ts(Interpreter::tctx()); try { Value __r = ([&]()->Value{\n" + body + "}()); " +
                            std::string(noFatal ? "" : "if (rtTryFailure(RT, __r)) return Value::nil(); ") +
                            "RT.dynVarRef(\"$!\") = Value::nil(); return __r; } "
@@ -4792,7 +4799,8 @@ struct Codegen {
             if ((v->name == "$!" || v->name == "$/") && boundSpecials.count(v->name))
                 return mangleVar(v->name);
             if ((v->name.size() > 1 && v->name[1] == '*' && v->name != "@*ARGS") || v->name == "$!" || v->name == "$/")
-                return std::string(v->declare ? "RT.dynVarRef(" : "RT.dynVarWrite(") + cesc(v->name) + ")";
+                // (`PROCESS::<$X> = …` installs it: dynVarRef, as declaring does)
+                return std::string(v->declare || v->processScoped ? "RT.dynVarRef(" : "RT.dynVarWrite(") + cesc(v->name) + ")";
             if (v->name == "$_")
                 return topics.empty() ? "RT.dynVarRef(\"$_\")" : topics.back();
             if (v->name == "@*ARGS" || (v->name.size() && v->name[0] == '&') ||
@@ -9538,6 +9546,7 @@ struct Codegen {
                 bindParams(md->params, 1, true);
                 topics.push_back(routineTopic(&md->params, 1));   // (a method's own `$_`)
                 struct PopTopic { Codegen* g; ~PopTopic() { g->topics.pop_back(); } } __pt{this};
+                struct OuterR { const SubDecl*& r; const SubDecl* s; ~OuterR() { r = s; } } __or{outerRoutine_, std::exchange(outerRoutine_, md)};
                 hoistLexicalSubs(md->body, 1);
                 for (size_t i = 0; i < md->body.size(); i++) {
                     Stmt* s = md->body[i].get();
@@ -9862,6 +9871,7 @@ struct Codegen {
                                           mangleSub(d->name) + "(__a); })", d->name)};
         nrWrapFor_ = d->name;   // a native routine's Value function calls its native function
         rwDirect_ = !moduleMode_ && srcText_.find("&" + d->name) == std::string::npos;
+        struct OuterR { const SubDecl*& r; const SubDecl* s; ~OuterR() { r = s; } } __or{outerRoutine_, std::exchange(outerRoutine_, d)};
         bodyDef(mangleSub(d->name), sigOf(d), d->body, fastSubs.count(d->name) > 0,
                 kernelSubs_.count(d->name) ? d->name : std::string(), d->retType);
     }

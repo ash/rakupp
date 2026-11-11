@@ -49,10 +49,22 @@ std::string introspectionRefusal(const Program& prog) {
     static const std::set<std::string> nativeMeta = {"name", "shortname", "mro", "can", "isa"};
     std::string why;
     std::set<std::string> dyns, globals;   // `$*X` read or written as `$X`; GLOBAL's `$X`
+    // (a parameter's `#=` doc matters only to a program that asks for it:
+    // MAIN's usage text is built from the same signature either way)
+    bool paramDoc = false, asksWhy = false;
+    // the packages the program itself declares, which compile into the native
+    // class table and have no stash; a `use`d module's live in the interpreter
+    // and answer `M::` and `.WHO` as they do interpreted (issue #202)
+    std::set<std::string> ownPkgs;
+    std::function<void(Node*)> pkgs = [&](Node* n) {
+        if (!n) return;
+        if (n->kind == NK::ClassDecl) ownPkgs.insert(static_cast<ClassDecl*>(n)->name);
+        forEachAstChild(n, pkgs);
+    };
+    for (auto& st : prog.stmts) pkgs(st.get());
     auto params = [&](const std::vector<Param>& ps) {
         for (auto& p : ps)
-            if (!p.pod.empty() || !p.podTrail.empty() || !p.podLead.empty())
-                why = "a parameter's declarator doc (its .WHY)";
+            if (!p.pod.empty() || !p.podTrail.empty() || !p.podLead.empty()) paramDoc = true;
     };
     std::function<void(Node*)> walk = [&](Node* n) {
         if (!n || !why.empty()) return;
@@ -67,11 +79,12 @@ std::string introspectionRefusal(const Program& prog) {
             }
             case NK::MethodCall: {
                 auto* m = static_cast<MethodCall*>(n);
+                if (m->method == "WHY") asksWhy = true;
                 if (m->method == "EVAL" || m->method == "EVALFILE")
                     why = "`." + m->method + "` — the evaluated code cannot see the program's native routines and variables";
                 else if (m->meta && !nativeMeta.count(m->method))
                     why = "`.^" + m->method + "` — the native class table is no metaobject";
-                else if (!m->meta && (m->method == "HOW" || m->method == "WHO"))
+                else if (!m->meta && (m->method == "HOW" || (m->method == "WHO" && !ownPkgs.empty())))
                     why = "`." + m->method + "` — the native class table is no metaobject";
                 else if (!m->meta && m->method == "dynamic")
                     why = "`.dynamic` — a native variable carries no traits";
@@ -83,7 +96,7 @@ std::string introspectionRefusal(const Program& prog) {
             }
             case NK::NameTerm: {
                 const std::string& nm = static_cast<NameTerm*>(n)->name;
-                if (nm.size() > 2 && nm.compare(nm.size() - 2, 2, "::") == 0)
+                if (nm.size() > 2 && nm.compare(nm.size() - 2, 2, "::") == 0 && ownPkgs.count(nm.substr(0, nm.size() - 2)))
                     why = "a package's stash (`" + nm + "`)";
                 break;
             }
@@ -102,6 +115,7 @@ std::string introspectionRefusal(const Program& prog) {
         forEachAstChild(n, walk);
     };
     for (auto& st : prog.stmts) walk(st.get());
+    if (why.empty() && paramDoc && asksWhy) why = "a parameter's declarator doc (its .WHY)";
     // `$*X` that nothing declares is GLOBAL's `$X` — which, written as a
     // top-level `our $X` or `$GLOBAL::X`, the native program keeps in a C++
     // variable the run-time dynamic lookup does not see
@@ -123,7 +137,9 @@ const char* routineIntrospectionRefusal(const Program& body) {
         if (n->kind == NK::VarExpr && static_cast<VarExpr*>(n)->declare &&
             static_cast<VarExpr*>(n)->d().declScope == "our")
             why = "an `our` variable (its package's, not the routine's)";
-        else if (n->kind == NK::UseStmt) why = "a `use` inside the routine";
+        // (`no fatal`, which a compiled `try` block reads itself, imports nothing)
+        else if (n->kind == NK::UseStmt && !(static_cast<UseStmt*>(n)->isNo && static_cast<UseStmt*>(n)->module == "fatal"))
+            why = "a `use` inside the routine";
         else if (n->kind == NK::MethodCall && containerName(static_cast<MethodCall*>(n)))
             why = "a container's name (`.VAR.name`)";
         else if (n->kind == NK::MethodCall && madeOnMatch(static_cast<MethodCall*>(n)))
