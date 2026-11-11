@@ -5832,9 +5832,22 @@ inline Value rtMul(const Value& l, const Value& r) { long long z; double a, b; i
 // answered +0 for `-$x` on 0e0, where the interpreter and Rakudo answer -0.
 Value rtNegSlow(Interpreter& I, const Value& v);
 Value rtFailureFor(Interpreter& I, ValueList& a);             // the Failure `fail` returns (BuiltinsRegister.cpp)
-[[noreturn]] Value rtFailRoutine(Interpreter& I, ValueList a); // `fail` in a compiled routine
-[[noreturn]] Value rtFailFrom(Interpreter& I, ValueList a, uint64_t id, const std::shared_ptr<bool>& live); // …in a block of one
-[[noreturn]] Value rtFailAt(Interpreter& I, ValueList a, uint64_t id, const Env* env); // …in a block of a module routine
+// (`fatal`: the `fail` is written inside a compiled `try`, whose scope is under `use fatal`)
+[[noreturn]] Value rtFailRoutine(Interpreter& I, ValueList a, bool fatal = false); // `fail` in a compiled routine
+[[noreturn]] Value rtFailFrom(Interpreter& I, ValueList a, uint64_t id, const std::shared_ptr<bool>& live,
+                              bool fatal = false);   // …in a block of one
+[[noreturn]] Value rtFailAt(Interpreter& I, ValueList a, uint64_t id, const Env* env,
+                            bool fatal = false);     // …in a block of a module routine
+[[noreturn]] void rtReturnAt(Interpreter& I, Value v, uint64_t id, const Env* env);   // …and its `return`
+// A call written inside a compiled `try` that hands back a Failure throws it,
+// as the interpreter's `use fatal` call site does (not in a boolean or
+// definedness context: the parser's fatalExempt, which the codegen reads)
+void rtFatalFailure(Interpreter& I, const Value& v);
+template <class T> inline T&& rtFatalCall(Interpreter&, T&& v) { return std::forward<T>(v); }
+inline Value rtFatalCall(Interpreter& I, Value v) {
+    if (RAKUPP_UNLIKELY(v.t == VT::Hash && v.hashKind == "Failure")) rtFatalFailure(I, v);
+    return v;
+}
 inline Value rtNeg(Interpreter& I, const Value& v) {
     if (v.hashKind.empty()) {
         if (v.t == VT::Num) return Value::number(-v.n);
@@ -6226,6 +6239,24 @@ inline Value rtForList(const Value& v) {
 template <class T> inline void rtSinkStmt(Interpreter&, const T&) {}
 inline void rtSinkStmt(Interpreter& I, const Value& v) {
     if (RAKUPP_UNLIKELY((v.t == VT::Hash && !v.hashKind.empty()) || (v.t == VT::Array && v.ext()))) I.sinkValue(v);
+}
+// …and a METHOD call's discarded result that is an object of a class with a
+// `sink` method has it run first, as the interpreter's exec does (HTTP::Status
+// registers each `HTTP::Status.new: …` statement that way)
+void rtSinkUserMethod(Interpreter& I, const Value& v);
+// A CALL's value is sunk only when it did not come out still in a container:
+// a block whose last statement reads or assigns a variable hands its Scalar on
+// (valContained, which the interpreted callee's statements set), and Rakudo
+// does not sink through one — `sub sinker(&b) { b(); … }` with `b` ending in
+// `$q = failing-proc()`. The call site clears the flag first (rtUncontained),
+// so a native callee, which sets none, is sunk as before.
+inline bool rtUncontained() { Interpreter::tctx().valContained = false; return true; }
+template <class T> inline void rtSinkCallStmt(Interpreter&, const T&, bool = false) {}
+inline void rtSinkCallStmt(Interpreter& I, const Value& v, bool method = false) {
+    if (RAKUPP_UNLIKELY(method && v.t == VT::Object)) rtSinkUserMethod(I, v);
+    if (RAKUPP_UNLIKELY((v.t == VT::Hash && !v.hashKind.empty()) || (v.t == VT::Array && v.ext())) &&
+        !Interpreter::tctx().valContained)
+        I.sinkValue(v);
 }
 bool rtForPull(const Value& lst, size_t i);   // the cold half: grow a lazy source
 inline bool rtForHas(const Value& lst, size_t i) {

@@ -32,6 +32,9 @@ std::string multiOrderRefusal(const std::vector<SubDecl*>&, const std::vector<co
                               int (*)(const SubDecl*));   // codegen/MultiOrder.cpp
 std::string introspectionRefusal(const Program&); bool introspectiveCallName(const std::string&); // codegen/Introspection.cpp
 const char* routineIntrospectionRefusal(const Program&);
+bool exprMayUseTopic(const Expr* e);   // Interpreter.cpp: may `e` read or write `$_`?
+const char* builtinRefusal(const std::string& name, bool inTopic);   // codegen/Refusals.cpp, as are:
+const char* methodRefusal(const MethodCall* m, bool& routineWide); bool fatalCallSite(const Expr* e); bool isLeaveBlock(const Stmt* s);
 
 namespace {
 
@@ -834,10 +837,13 @@ struct Codegen {
     // C++ lambda called in place, so a `return` in one leaves the routine the
     // same way as one in a block closure
     int iife_ = 0;
+    // compiled `try` blocks around here in this routine: use fatal (fatalCallSite, failCall)
+    int tryHere_ = 0;
+    const Expr* fatalSkip_ = nullptr;   // the call being wrapped (ex)
     struct FrameScope {
-        Codegen* g; int savedIife;
-        explicit FrameScope(Codegen* c) : g(c), savedIife(c->iife_) { g->frameUse_.push_back(0); g->iife_ = 0; }
-        ~FrameScope() { g->frameUse_.pop_back(); g->iife_ = savedIife; }
+        Codegen* g; int savedIife, savedTry;
+        explicit FrameScope(Codegen* c) : g(c), savedIife(c->iife_), savedTry(c->tryHere_) { g->frameUse_.push_back(0); g->iife_ = g->tryHere_ = 0; }
+        ~FrameScope() { g->frameUse_.pop_back(); g->iife_ = savedIife; g->tryHere_ = savedTry; }
         bool used() const { return g->frameUse_.back() != 0; }
     };
     // `fail` in a ROUTINE returns its Failure from that routine (rtFailRoutine;
@@ -848,12 +854,13 @@ struct Codegen {
     std::string failCall(const std::string& vl) {
         // a module routine's own `fail` is the builtin's, which sees its frame;
         // one in a BLOCK of it is aimed at that frame, as a `return` there is
+        const std::string fatal = tryHere_ ? ", true)" : ")";
         if (moduleMode_)
-            return !nestKinds_.empty() && nestKinds_.back() == 'b' ? "rtFailAt(RT, " + vl + ", __fid, __env)" : "";
+            return !nestKinds_.empty() && nestKinds_.back() == 'b' ? "rtFailAt(RT, " + vl + ", __fid, __env" + fatal : "";
         if (routineRef_.empty() || frameUse_.empty()) return "";
-        if (nestKinds_.empty() || nestKinds_.back() != 'b') return "rtFailRoutine(RT, " + vl + ")";
+        if (nestKinds_.empty() || nestKinds_.back() != 'b') return "rtFailRoutine(RT, " + vl + fatal;
         frameUse_.back() = 1;
-        return "rtFailFrom(RT, " + vl + ", __fid, __flive)";
+        return "rtFailFrom(RT, " + vl + ", __fid, __flive" + fatal;
     }
     static std::string framePrologue() {
         return "RtRoutineFrame __rf(RT); const uint64_t __fid = __rf.id; "
@@ -1312,9 +1319,8 @@ struct Codegen {
     std::set<std::string> hiddenRoutines_;
 
     std::string builtinCall(const std::string& name, const std::string& vl) {
-        // `callframe` reads the INTERPRETER's frames, and native code runs in
-        // none of them: `callframe(0).line` was 0, the caller's frame the wrong one
-        if (name == "callframe") unsupported("callframe");
+        // `callframe`, `samewith`, `react`, an EVAL under a native topic (Refusals.cpp)
+        if (const char* why = builtinRefusal(name, !topics.empty())) throw CodegenError{why, /*routineWide=*/true};
         // (no built-in: "Undefined routine"; nor delegable, its undo is the routine's exit)
         if (name == "temp" || name == "let") throw CodegenError{"`" + name + "`", /*routineWide=*/true};
         if (!moduleMode_ && hiddenRoutines_.count(name) && !moduleExports_.count(name))
@@ -1473,10 +1479,11 @@ struct Codegen {
     // A statement's expression, whose value nobody reads. Sink context reaches
     // a ternary's branches, so a regex branch matches `$_`, as in Rakudo:
     // `$_ = 'abc'; False ?? /q/ !! /c/;` sets `$/`.
-    std::string exSunk(Expr* e) {
-        if (!rxTernary(e)) return ex(e);
+    std::string exSunk(Expr* e, bool branch = false) {   // (a parenthesized branch is a value, not sunk)
+        if (branch && e && e->inParens) return exVal(e);
+        if (!rxTernary(e) || e->inParens) return ex(e);
         auto* t = static_cast<Ternary*>(e);
-        return "(" + exBool(t->cond.get()) + " ? (" + exSunk(t->then.get()) + ") : (" + exSunk(t->els.get()) + "))";
+        return "(" + exBool(t->cond.get()) + " ? (" + exSunk(t->then.get(), true) + ") : (" + exSunk(t->els.get(), true) + "))";
     }
     // Whether a Regex VALUE holds is a match against the topic, and the
     // runtime's boolify reads the interpreter's `$_`, which is not the topic
@@ -1727,6 +1734,8 @@ struct Codegen {
         for (auto& st : stmts)
             if (SubDecl* d = lexical(st.get())) {
                 if (d->isMulti) unsupported("a nested multi sub");
+                // (its Code object is ONE env slot by name: a closure handed out reached the latest instance's)
+                if (moduleMode_ || !routineRef_.empty()) unsupported("a sub declared inside a routine");
                 envSubs.insert(d->name);
                 anyLexical = true;
             }
@@ -2261,9 +2270,12 @@ struct Codegen {
         std::string body = capture([&]() {
             emitCellAliases(0, params);
             bindParams(sigOf(d), 0, false);
+            topics.push_back(routineTopic(&sigOf(d), 0));   // (a sub's own `$_`, not its block's:)
+            struct PopTopic { Codegen* g; ~PopTopic() { g->topics.pop_back(); } } __pt{this};
             hoistLexicalSubs(d->body, 0);
             for (size_t i = 0; i < d->body.size(); i++) {
                 Stmt* st = d->body[i].get();
+                if (bodyLeave(d->body, i)) continue;
                 if (i + 1 == d->body.size() && st->kind == NK::ExprStmt)
                     line(0, "return " + retBoxed(static_cast<ExprStmt*>(st)->e.get(),
                                                  tailValue(static_cast<ExprStmt*>(st)->e.get())) + ";");
@@ -2562,6 +2574,9 @@ struct Codegen {
     // ---- expressions: return a C++ expression string of type Value ----
     std::string ex(Expr* e) {
         if (e == preEvalNode_) return preEvalCode_;   // already evaluated (emitCtlPath)
+        if (tryHere_ && e != fatalSkip_ && fatalCallSite(e)) {   // (under a `try`: see tryHere_)
+            const Expr* saved = std::exchange(fatalSkip_, e); std::string r = "rtFatalCall(RT, " + ex(e) + ")";
+            fatalSkip_ = saved; return r; }
         switch (e->kind) {
             case NK::IntLit: {
                 auto* n = static_cast<IntLit*>(e);
@@ -2798,6 +2813,7 @@ struct Codegen {
                 if (int dc = static_cast<NameTerm*>(e)->defConstraint)
                     return "([&]()->Value{ Value _t = Value::typeObj(" + cesc(n) + "); _t.i = " +
                            std::to_string(dc) + "; return _t; }())";
+                if (n == "callframe") builtinCall(n, "");   // `callframe.line`: refused as the call is
                 if (n == "True")  return "Value::boolean(true)";
                 if (n == "False") return "Value::boolean(false)";
                 if (n == "Nil")   return "Value::nil()";
@@ -2901,6 +2917,9 @@ struct Codegen {
                 }
                 if (u->op == "do" || u->op == "try") { // do { } / try { }  (value = last statement)
                     std::string body;
+                    // (a `try` BLOCK is under use fatal; a blockless `try EXPR`'s call sites are not)
+                    struct TryHere { int& n; bool on; TryHere(int& x, bool o) : n(x), on(o) { n += on; } ~TryHere() { n -= on; } }
+                        __th{tryHere_, u->op == "try" && u->operand->kind == NK::BlockExpr};
                     struct Iife { int& n; explicit Iife(int& x) : n(x) { n++; } ~Iife() { n--; } } __iife{iife_};
                     LoopJumpBarrier __bar{this};   // the body is a lambda: no break/continue/goto out of it
                     if (u->operand->kind == NK::BlockExpr) { CellScope __cs{this}; DeclScope __ds{this};   // …and a block, whose `my`s are its own
@@ -3449,6 +3468,7 @@ struct Codegen {
                 // `.+`/`.*` collect every candidate's result.
                 if (!m->methodQual.empty()) unsupported("a qualified method call (.Class::method)");
                 if (m->allMode) unsupported("a .+/.* method call");
+                { bool wide = false; if (const char* why = methodRefusal(m, wide)) throw CodegenError{why, wide}; }   // (Refusals.cpp)
                 refuseRwCall(rwMethodNames_, m->method, m->args);
                 // The dispatch-key prefix of the call form: the class method
                 // tables key a private method `!name` and the metamodel `^name`
@@ -3756,6 +3776,15 @@ struct Codegen {
                "if (std::uncaught_exceptions() > n) { try { f(); } catch (...) {} } else f(); } } " +
                g + "{[&]{\n" + inner + pad + "}, std::uncaught_exceptions()};\n";
     }
+    // A routine body's LEAVE (true when body[i] is one) runs however it is left, also by an error
+    // BEFORE it, which a guard armed after other statements would miss: then it stays interpreted
+    bool bodyLeave(const std::vector<StmtPtr>& body, size_t i) {
+        if (!isLeaveBlock(body[i].get())) return false;
+        for (size_t k = 0; k < i; k++)
+            if (!isLeaveBlock(body[k].get())) throw CodegenError{"a LEAVE after the statements of its routine", true};
+        out << leaveGuard(leaveInner(static_cast<Block*>(body[i].get()), 1), 1);
+        return true;
+    }
     // …and its body: a lambda the guard calls in place, so, as in a `do {…}`,
     // a loop control in it takes the exception form (no `continue` reaches
     // out of a lambda) and a `return` is one from a block (emitReturn)
@@ -3764,7 +3793,6 @@ struct Codegen {
         LoopJumpBarrier __bar{this};
         return capture([&] { block(b, ind + 1); });
     }
-    void emitLeaveGuard(Block* b, int ind) { out << leaveGuard(leaveInner(b, ind), ind); }
     // Does C++ `text` name the identifier `id` (not merely contain it)?
     static bool mentionsIdent(const std::string& text, const std::string& id) {
         auto word = [](char c) { return std::isalnum((unsigned char)c) || c == '_'; };
@@ -3778,10 +3806,8 @@ struct Codegen {
     // reads a variable the block declares: then every exit runs them, as in
     // Rakudo — one taken before the LEAVE is reached, and after a CATCH has
     // handled the exception, since the guards sit outside its `try`.
-    // Otherwise each is armed where it is written, after what it reads. In a
-    // block with a CATCH that is inside the `try`, which would run it ahead of
-    // the handler, and after the `try` its locals are gone (that C++ did not
-    // compile): such a block is refused, and the program bundles.
+    // Otherwise it would have to be armed after what it reads, and miss an
+    // error before that: such a block is refused, its routine interpreted.
     // The statements and phaser bodies are emitted first and placed after,
     // which is what lets the names declVar declared decide.
     void emitLeaveGuards(const std::vector<Stmt*>& regular, const std::vector<Block*>& leaves,
@@ -3807,14 +3833,8 @@ struct Codegen {
         if (early) {
             for (auto& t : inner) out << leaveGuard(t, ind);
             emitBody();
-        } else if (catchBlk) {
-            unsupported("a LEAVE reading its block's variables beside a CATCH");
         } else {
-            size_t gi = 0;
-            for (size_t k = 0; k <= body.size(); k++) {
-                while (gi < leaves.size() && leaveAt[gi] == k) out << leaveGuard(inner[gi++], ind);
-                if (k < body.size()) out << body[k];
-            }
+            throw CodegenError{"a LEAVE reading its block's variables", true};   // (as bodyLeave)
         }
     }
 
@@ -3896,7 +3916,9 @@ struct Codegen {
                 // a nested END is refused, and let --exe bundle and stay CORRECT.
                 if (ph == "INIT" && !topLevel) unsupported("a nested INIT phaser");
                 if (ph == "BEGIN" || ph == "CHECK" || ph == "INIT" || ph == "ENTER" || ph == "FIRST") { pre.push_back(b); continue; }
-                if (ph == "LEAVE" || ph == "KEEP" || ph == "UNDO") { post.push_back(b); postAt.push_back(regular.size()); continue; }
+                // (KEEP / UNDO choose by how the block is left — a `return`, an error: no native form)
+                if (ph == "KEEP" || ph == "UNDO") throw CodegenError{"a " + ph + " phaser", /*routineWide=*/true};
+                if (ph == "LEAVE") { post.push_back(b); postAt.push_back(regular.size()); continue; }
                 if (ph == "END") { if (!topLevel) unsupported("a nested END phaser"); topLevelEnds.push_back(b); continue; }
                 if (!ph.empty()) unsupported("a " + ph + " phaser");
             }
@@ -4053,7 +4075,7 @@ struct Codegen {
         collectExprDecls(e, names, /*root=*/!includeRoot);
         for (auto& n : names)
             if (hoisted.insert(n).second)
-                line(ind, declVar(n, "Value::any()") + "; // hoisted `my` from expression position");
+                line(ind, declVar(n, declInit("", n.empty() ? '$' : n[0])) + "; // hoisted `my` from expression position");
     }
 
     // A statement of a module routine that the emitter cannot compile is handed
@@ -4223,7 +4245,7 @@ struct Codegen {
         // so it is thrown at the routine's own frame, as the interpreter's is.
         const bool inBlock = (!nestKinds_.empty() && nestKinds_.back() == 'b') || iife_ > 0;
         if (moduleMode_ && inBlock)
-            line(ind, "throw ReturnEx{" + v + ", __fid};");
+            line(ind, "rtReturnAt(RT, " + v + ", __fid, __env);");
         // …and so in a program's: a C++ `return` would leave only the
         // block, and `(1, 2).map({ return 5 if $_ == 2; $_ })` went on
         // with the routine. Outside any routine there is nothing to
@@ -4595,7 +4617,9 @@ struct Codegen {
                 }
                 if (e->kind == NK::MethodCall || e->kind == NK::Call ||
                     (e->kind == NK::Unary && static_cast<Unary*>(e)->op == "gather")) {
-                    line(ind, "rtSinkStmt(RT, " + ex(e) + ");");
+                    const bool m = e->kind == NK::MethodCall && !static_cast<MethodCall*>(e)->mutate;   // (rtSinkCallStmt)
+                    line(ind, e->kind == NK::Unary ? "rtSinkStmt(RT, " + ex(e) + ");"
+                                                   : "rtSinkCallStmt(RT, (rtUncontained(), " + ex(e) + ")" + (m ? ", true);" : ");"));
                     return;
                 }
                 line(ind, exSunk(e) + ";");
@@ -4650,7 +4674,7 @@ struct Codegen {
                 auto* b = static_cast<Block*>(s);
                 // LEAVE {…} maps exactly to a C++ scope guard (runs on any exit,
                 // exceptions included)
-                if (b->phaser == "LEAVE") { emitLeaveGuard(b, ind); return; }
+                if (b->phaser == "LEAVE") throw CodegenError{"a LEAVE among statements", true};   // (bodyLeave)
                 if (b->isCatch || !b->phaser.empty()) unsupported("phaser / CATCH block");
                 line(ind, "{"); block(b, ind + 1); line(ind, "}");
                 return;
@@ -5899,7 +5923,7 @@ struct Codegen {
         stmt(s, ind); // no value to capture; dst keeps its prior content
     }
     void blockValue(Block* b, int ind, const std::string& dst) {
-        if (b->stmts.empty()) return;
+        if (b->stmts.empty()) { line(ind, dst + " = Value::nil();"); return; }   // taken and empty: Nil, not the seed
         CellScope __cs{this};
         // (its lexical subs' C++ handles end with the braces around it)
         struct LexDirectScope { Codegen* g; std::map<std::string, LexDirect> saved;
@@ -9330,6 +9354,8 @@ struct Codegen {
         for (const Param& p : ps) {   // (…and a sub-signature, whose names were never declared)
             if (p.whereExpr)      unsupported("a `where` constraint on a routine parameter");
             if (p.defConstraint)  unsupported("a `:D`/`:U` constraint on a routine parameter");
+            if (p.defaultVal && exprMayUseTopic(p.defaultVal.get()))   // (before the routine's own `$_` exists)
+                unsupported("a parameter default that reads `$_`");
             if (p.subSig)         unsupported("a sub-signature on a routine parameter");
             if (p.typeCapture || p.typeFromCapture || !p.captureName.empty()) unsupported("a type capture (::T) on a routine parameter");
             if (!p.shapeDims.empty() || (p.named && (p.isRw || p.isRaw))) unsupported("a shaped, or a named `is rw`/`is raw`, routine parameter");
@@ -9479,6 +9505,7 @@ struct Codegen {
                 hoistLexicalSubs(md->body, 1);
                 for (size_t i = 0; i < md->body.size(); i++) {
                     Stmt* s = md->body[i].get();
+                    if (bodyLeave(md->body, i)) continue;
                     if (i + 1 == md->body.size() && s->kind == NK::ExprStmt)
                         line(1, "return " + retBoxed(static_cast<ExprStmt*>(s)->e.get(),
                                                      tailValue(static_cast<ExprStmt*>(s)->e.get())) + ";");
@@ -9676,6 +9703,7 @@ struct Codegen {
         hoistLexicalSubs(body, 1);
         for (size_t i = 0; i < body.size(); i++) {
             Stmt* s = body[i].get();
+            if (bodyLeave(body, i)) continue;
             if (i + 1 == body.size() && s->kind == NK::ExprStmt)
                 line(1, "return " + retBoxed(static_cast<ExprStmt*>(s)->e.get(), tailExpr(static_cast<ExprStmt*>(s))) + ";");
             else if (i + 1 == body.size() && (s->kind == NK::IfStmt || s->kind == NK::GivenStmt || valueBlock(s))) {

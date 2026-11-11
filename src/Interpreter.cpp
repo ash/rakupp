@@ -1965,6 +1965,7 @@ static bool mayUseTopicStmt(const Stmt* s) {
         default: return true;   // a `when` among them
     }
 }
+bool exprMayUseTopic(const Expr* e) { return mayUseTopic(e); }   // (for the --exe codegen)
 bool Interpreter::bodyMayUseTopic(const Callable& c) {
     const CodeInfo& ci = c.ci();
     signed char t = ci.topicScan;
@@ -3677,6 +3678,10 @@ static bool lazyListArray(const Value& v, Value& out) {
     if (v.t != VT::Array || !v.ext() || v.itemized || !(endlessLazy(v) || declLazyLive(v))) return false;
     out = v; out.isList = false; out.s.clear();
     return true;
+}
+void rtSinkUserMethod(Interpreter& I, const Value& v) {
+    if (v.t == VT::Object && v.obj() && v.obj()->cls && v.obj()->cls->findMethod("sink"))
+        I.methodCall(v, "sink", ValueList{});
 }
 extern void (*g_pullLazy)(const Value&, size_t);   // Value.cpp
 bool rtForPull(const Value& lst, size_t i) {
