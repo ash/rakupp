@@ -518,7 +518,9 @@ Value rtAotAttrAssign(Interpreter& I, const Value& self, Expr* node, bool inClos
 // written back. Any other invocant takes the ordinary call.
 Value rtMutMethod(Interpreter& I, Value& inv, const char* name, ValueList args) {
     Value* tgt = inv.deref();
-    if (!(tgt->t == VT::Str && (tgt->hashKind == "Buf" || tgt->hashKind == "Blob")))
+    // (…and an undefined one goes through the interpreter's own method call
+    // too, which vivifies it — `my $x; $x.push(1)` is `$[1]`, the itemized Array)
+    if (!(tgt->t == VT::Str && (tgt->hashKind == "Buf" || tgt->hashKind == "Blob")) && tgt->t != VT::Any)
         return I.methodCall(*tgt, name, std::move(args));
     static std::mutex mu;
     static std::map<std::string, std::unique_ptr<MethodCall>> nodes;

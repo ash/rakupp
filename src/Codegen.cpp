@@ -764,7 +764,7 @@ struct Codegen {
         if (u->op == "ctx%{}") return "rtObjHash(" + x + ")";  // :{ ... } object hash
         if (u->op == "decont") // `$x<>` — the value, out of its item container
             return "([&]()->Value{ Value _v = " + x +
-                   "; if (_v.t==VT::Array||_v.t==VT::Hash) _v.itemized=false; return _v; }())";
+                   "; if (_v.t==VT::Array||_v.t==VT::Hash||_v.t==VT::Range) _v.itemized=false; return _v; }())";
         if (u->op == "ctx$") // $(...) — an array or a hash becomes one non-flattening item
             return "itemizedScalar(" + x + ")";
         if (u->op == "ctx@") // @(...) — one-level list context, of an item too (`@($x)`); a Match's positionals (`@<x>`)

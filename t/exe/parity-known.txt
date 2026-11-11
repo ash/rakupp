@@ -2,8 +2,6 @@
 # interpreter does, one file name per line. The gate passes them and says when
 # one starts to agree; take it off then. This list only shrinks.
 append-shapes-linear.raku
-array-composer-one-arg-range.raku
-assoc-index-on-scalar-dies.raku
 backtrace-caught.raku
 binding-failure-priors-and-hint.raku
 cat-assign-shapes.raku
@@ -87,7 +85,6 @@ undeclared-variable-routine-suggestions.raku
 undefined-array-head-lvalue-empty-match.raku
 unit-stash-exists-under-import-list.raku
 user-multi-on-builtin-prefix.raku
-vivified-scalar-is-itemized.raku
 watch-ignores-writes-before-it.raku
 whatever-value-pair-key.raku
 word-list-escapes-comma-op-forward-type.raku

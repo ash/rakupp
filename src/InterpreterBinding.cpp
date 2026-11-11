@@ -5378,6 +5378,20 @@ Value rtIndexGet(const Value& base, const Value& key, bool isHash) {
             auto it = base.hash()->find(hashSubKey(key, &base));
             if (it != base.hash()->end()) return it->second;
         }
+        // an array-backed base: a Capture (or an argument list that kept its
+        // named parts) answers its named part, anything else dies, as the
+        // interpreter's evalIndex (native code read Nil from `@a.item<k>`)
+        if (base.t == VT::Array) {
+            const std::string k = key.toStr();
+            bool capturish = base.hashKind == "Capture";
+            if (base.arr() && !capturish)
+                for (auto& el : *base.arr()) if (el.t == VT::Pair && el.namedArg) { capturish = true; break; }
+            if (base.arr() && capturish)
+                for (auto& el : *base.arr())
+                    if (el.t == VT::Pair && el.s == k) return el.pairVal() ? *el.pairVal() : Value::any();
+            if (capturish) return Value::any();
+            throw RakuError{Value::typeObj("X::AdHoc"), "Type Array does not support associative indexing."};
+        }
         // a Pair is associative on its ONE key; any other key is Nil, as the
         // interpreter's lookup answers (native code read Nil for the key too)
         if (base.t == VT::Pair)
