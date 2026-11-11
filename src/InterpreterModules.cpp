@@ -3109,6 +3109,11 @@ Value Interpreter::evalString(const std::string& srcIn, bool mainlinePH, bool* i
     // registered like a block's, so an error from deeper down that runs the
     // handlers ahead of its unwinding finds this one before any outside the EVAL
     CatchReg unitCatchReg{tctx(), unitCatch, &prog->stmts, tctx().cur};
+    // …and the `my`s a branch buries — a ternary's, a skipped `||` side's, a
+    // statement modifier's — are declared up front, as a file's mainline and a
+    // block's are: in the REPL, `my $x := True || (my $s := 5)` left no $s for
+    // the next line (#248)
+    if (mainlinePH && tctx().cur) hoistExprDecls(prog->stmts, tctx().cur.get(), nullptr);
     for (auto& s : prog->stmts) {
         tctx().endCurTopStmt = s.get();   // for a `use` in it
         if (prog->mayHaveRoutineUse) preloadRoutineUses(s.get());
