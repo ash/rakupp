@@ -9588,7 +9588,11 @@ struct Codegen {
                     }
                     d += " if (" + guard + ") return " + methodCandFn(cd->name, kv.first, (int)k) + "(__a);";
                 }
-                d += " throw RakuError{Value::typeObj(\"X::Multi::NoMatch\"), \"No matching multi-method candidate for " + kv.first + "\"}; });";
+                std::string cl;   // (no candidate: the interpreter's exception, from the candidates' signatures)
+                for (size_t k = 0; k < kv.second.size(); k++)
+                    cl += (k ? ", " : "") + sigWrap("Value::closure(" + methodCandFn(cd->name, kv.first, (int)k) + ")",
+                                                    kv.second[k]->params, kv.first, kv.second[k]->retType, 0u);
+                d += " RT.rtMultiNoMatch(" + cesc(kv.first) + ", ValueList{" + cl + "}, __a, " + cesc(cd->name) + "); });";
                 line(1, d);
             }
         }
@@ -9835,7 +9839,13 @@ struct Codegen {
             }
             line(1, "if (" + guard + ") return " + mangleSub(name) + "__" + std::to_string(idx[c]) + "(__a);");
         }
-        line(1, "throw RakuError{Value::typeObj(\"X::Multi::NoMatch\"), \"No matching multi candidate for " + name + "\"};");
+        std::vector<std::string> cs(cands.size());   // (declaration order, each carrying its signature)
+        for (SubDecl* c : cands)
+            cs[idx[c]] = sigWrap("Value::closure([](ValueList& __c)->Value{ return " + mangleSub(name) + "__" +
+                                 std::to_string(idx[c]) + "(__c); })", c->params, name, c->retType, c->hadSig ? RSC_HADSIG : 0u);
+        std::string cl;
+        for (auto& c : cs) cl += (cl.empty() ? "" : ", ") + c;
+        line(1, "RT.rtMultiNoMatch(" + cesc(name) + ", ValueList{" + cl + "}, __a);");
         line(0, "}");
     }
 };

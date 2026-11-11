@@ -31,7 +31,6 @@ junction-regex-match-var.raku
 kernel-closure-callees.raku
 method-leave-dies-unwinding.raku
 missing-routines-batch.raku
-multi-nomatch-dispatcher-capture.raku
 my-in-short-circuit-and-do-init.raku
 my-list-slot-coercion-type.raku
 named-rw-param-writes-back.raku

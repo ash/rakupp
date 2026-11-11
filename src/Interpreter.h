@@ -3610,6 +3610,10 @@ public:
     [[noreturn]] void throwInvalidParamType(const std::string& type);
     bool paramTypeUndeclared(const std::string& t);
     std::string noMatchProfile(const Value& self, const ValueList& as, bool withInvocant);
+    [[noreturn]] void throwMultiNoMatch(const Value& codeVal, const ValueList& as);   // a multi sub no candidate took
+    [[noreturn]] void throwMethodNoMatch(const Value& codeVal, const Value& self, const ValueList& as); // …a method
+    [[noreturn]] void rtMultiNoMatch(const std::string& name, ValueList cands, const ValueList& as,
+                                     const std::string& cls = ""); // …compiled code's (cls: a method's class)
     std::string subsetNominal(const std::string& type);   // `subset CN of Str …` → Str
     void refuseUnpassedSubset(const Param& p);            // …whose `where` an unpassed default must pass
     [[noreturn]] void throwNeedleNoMatch(const Value& inv, const std::string& m, const ValueList& args);

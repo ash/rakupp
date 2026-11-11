@@ -8802,22 +8802,7 @@ Value Interpreter::callCallableRaw(const Value& codeVal, ValueList args, const s
                              {"arguments", argTypes}, {"protoguilt", Value::boolean(true)}},
                             "Calling " + c.ci().name + "(" + argProf + ") will never work with proto signature (" + sigt + ")");
                     }
-                // …and then the candidates' signatures, as Rakudo lists them
-                std::string sigs;
-                for (auto& cand : c.cold().candidates) {
-                    if (!cand.code() || cand.code()->ci().isProto || cand.code()->ci().isProtoBody) continue;
-                    try {
-                        Value sg = methodCall(cand, "signature", {});
-                        sigs += "\n    " + methodCall(sg, "gist", {}).toStr();
-                    } catch (...) {}
-                }
-                std::string defProf = noMatchProfile(Value(), as, /*withInvocant=*/false);
-                // …and the exception carries what was called and with what
-                Value cap = Value::array(); cap.hashKind = "Capture"; cap.itemized = true;
-                *cap.arr() = as;
-                throwTypedV("X::Multi::NoMatch", {{"dispatcher", codeVal}, {"capture", cap}},
-                            "Cannot resolve caller " + c.ci().name + "(" + defProf +
-                            "); none of these signatures matches:" + sigs);
+                throwMultiNoMatch(codeVal, as);
             }
             visited.push_back(best);
             RedispatchCtx rc;
@@ -10822,27 +10807,7 @@ Value Interpreter::invokeMethod(const Value& codeVal, const Value& self, ValueLi
                         if (it != selfCopy.obj()->attrs.end()) return deproxy(it->second);
                     }
                 }
-                // Rakudo's wording: the capture as types, invocant first, named
-                // arguments as `:name(Type)`
-                std::string prof = noMatchProfile(selfCopy, as, /*withInvocant=*/true);
-                Value cap = Value::array(); cap.hashKind = "Capture"; cap.itemized = true;
-                cap.arr()->push_back(selfCopy);
-                cap.arr()->insert(cap.arr()->end(), as.begin(), as.end());
-                // …and the candidates' signatures, as Rakudo lists them (`(A $:: Int $a, *%_)`), as a sub's are;
-                // a role's, which names no invocant, takes the class that composed the role
-                std::string sigs;
-                for (auto& cand : c.cold().candidates)
-                    if (cand.code() && !cand.code()->ci().isProto && !cand.code()->ci().isProtoBody)
-                        try {
-                            std::string g = methodCall(methodCall(cand, "signature", {}), "gist", {}).toStr();
-                            if (g.find("$::") == std::string::npos && g.size() > 1 && selfCopy.t == VT::Object && selfCopy.obj())
-                                for (ClassInfo* k = selfCopy.obj()->cls.get(); k; k = k->parent.get())
-                                    if (k->doneRoles.count(cand.code()->ci().pkg)) { g.insert(1, k->name + (g.size() > 2 ? " $:: " : " $::")); break; }
-                            sigs += "\n    " + g;
-                        } catch (...) {}
-                throwTypedV("X::Multi::NoMatch", {{"dispatcher", codeVal}, {"capture", cap}},
-                            "Cannot resolve caller " + c.ci().name + "(" + prof +
-                            "); none of these signatures matches" + (sigs.empty() ? "" : ":" + sigs));
+                throwMethodNoMatch(codeVal, selfCopy, as);
             }
             visited.push_back(best);
             RedispatchCtx rc;
@@ -30853,6 +30818,78 @@ const Value& builtinTraitIsGroup() {
         return p;
     }();
     return proto;
+}
+
+// A multi sub no candidate took: X::Multi::NoMatch with what was called and
+// with what, its message listing the candidates' signatures as Rakudo does.
+// Compiled code's multi dispatcher throws through here too (rtMultiNoMatch).
+void Interpreter::throwMultiNoMatch(const Value& codeVal, const ValueList& as) {
+    const Callable& c = *codeVal.code();
+    // …the candidates' signatures, as Rakudo lists them
+    std::string sigs;
+    for (auto& cand : c.cold().candidates) {
+        if (!cand.code() || cand.code()->ci().isProto || cand.code()->ci().isProtoBody) continue;
+        try {
+            Value sg = methodCall(cand, "signature", {});
+            sigs += "\n    " + methodCall(sg, "gist", {}).toStr();
+        } catch (...) {}
+    }
+    std::string defProf = noMatchProfile(Value(), as, /*withInvocant=*/false);
+    // …and the exception carries what was called and with what
+    Value cap = Value::array(); cap.hashKind = "Capture"; cap.itemized = true;
+    *cap.arr() = as;
+    throwTypedV("X::Multi::NoMatch", {{"dispatcher", codeVal}, {"capture", cap}},
+                "Cannot resolve caller " + c.ci().name + "(" + defProf +
+                "); none of these signatures matches:" + sigs);
+}
+
+// A multi method no candidate took: the exception, as a sub's (throwMultiNoMatch)
+// but with the invocant leading the capture. Compiled code's too (rtMultiNoMatch).
+void Interpreter::throwMethodNoMatch(const Value& codeVal, const Value& self, const ValueList& as) {
+    const Callable& c = *codeVal.code();
+    // Rakudo's wording: the capture as types, invocant first, named
+    // arguments as `:name(Type)`
+    std::string prof = noMatchProfile(self, as, /*withInvocant=*/true);
+    Value cap = Value::array(); cap.hashKind = "Capture"; cap.itemized = true;
+    cap.arr()->push_back(self);
+    cap.arr()->insert(cap.arr()->end(), as.begin(), as.end());
+    // …and the candidates' signatures, as Rakudo lists them (`(A $:: Int $a, *%_)`), as a sub's are;
+    // a role's, which names no invocant, takes the class that composed the role
+    std::string sigs;
+    for (auto& cand : c.cold().candidates)
+        if (cand.code() && !cand.code()->ci().isProto && !cand.code()->ci().isProtoBody)
+            try {
+                std::string g = methodCall(methodCall(cand, "signature", {}), "gist", {}).toStr();
+                if (g.find("$::") == std::string::npos && g.size() > 1 && self.t == VT::Object && self.obj())
+                    for (ClassInfo* k = self.obj()->cls.get(); k; k = k->parent.get())
+                        if (k->doneRoles.count(cand.code()->ci().pkg)) { g.insert(1, k->name + (g.size() > 2 ? " $:: " : " $::")); break; }
+                sigs += "\n    " + g;
+            } catch (...) {}
+    throwTypedV("X::Multi::NoMatch", {{"dispatcher", codeVal}, {"capture", cap}},
+                "Cannot resolve caller " + c.ci().name + "(" + prof +
+                "); none of these signatures matches" + (sigs.empty() ? "" : ":" + sigs));
+}
+
+// Compiled code's multi sub that no candidate took: its candidates (each a
+// Callable carrying its signature) become a dispatch group of `name`, so the
+// exception and its message are the interpreter's.
+// A METHOD's (`cls` names its class) has the invocant first in `as`.
+void Interpreter::rtMultiNoMatch(const std::string& name, ValueList cands, const ValueList& as,
+                                 const std::string& cls) {
+    Value p; p.t = VT::Code; p.setCode(makePayload<Callable>());
+    p.code()->ciM().name = name;
+    p.code()->ciM().isMultiDispatcher = true;
+    p.code()->ciM().isMethod = !cls.empty();
+    for (Value& c : cands) {
+        if (!c.code()) continue;
+        c.setCode(makePayload<Callable>(*c.code()));
+        c.code()->ciM().isMultiCandidate = true;
+        if (!cls.empty()) { c.code()->ciM().isMethod = true; c.code()->ciM().pkg = cls; }
+        c.code()->dispatcherC = p.codeS();
+        p.code()->coldM().candidates.push_back(std::move(c));
+    }
+    if (cls.empty()) throwMultiNoMatch(p, as);
+    throwMethodNoMatch(p, as.empty() ? Value::any() : as[0], ValueList(as.begin() + (as.empty() ? 0 : 1), as.end()));
 }
 
 // eval's VarExpr arm, whole, in a frame of its own: the common read stays in
