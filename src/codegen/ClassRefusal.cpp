@@ -37,6 +37,9 @@ std::string classRefusal(const ClassDecl* cd, const std::set<std::string>& progr
         if (a.objKeyed || a.inlined || a.deprecated || a.readonly || a.built || a.notBuilt)
             return "a trait on " + what;
     }
+    // (a native `is rw` method hands back a copy of the container it returns)
+    for (auto& md : cd->methods)
+        if (md->retRw) return "an `is rw` method, whose result is a container";
     return "";
 }
 

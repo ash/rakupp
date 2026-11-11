@@ -19,7 +19,6 @@ eval-undeclared-variable-before-routine.raku
 exe-callframe.raku
 exporthow-declare-monitor-locks.raku
 failure-mess-and-backtrace.raku
-for-over-listing-value.raku
 generic-role-bodies.raku
 grammar-ancestry.raku
 how-declaration-hooks.raku
@@ -63,18 +62,15 @@ routine-is-lexical.raku
 samewith-only-routine.raku
 seq-generator-shapes.raku
 sigilled-compile-time-class.raku
-sigilless-traits-and-container-assign.raku
 sink-context-method.raku
 sink-does-not-descend-a-container.raku
 slang-seams.raku
-slurpy-of-values-is-immutable.raku
 stash-term-before-pointy-block.raku
 sunk-ternary-regex-matches.raku
 tagged-code-constant-export.raku
 top100-chunk-d-grammar-made-2026-09-03.raku
 top100-refresh-2026-09-03.raku
 try-block-sink-and-trailing-catch.raku
-typed-param-var-is-value.raku
 undeclared-type-in-declaration.raku
 undeclared-variable-routine-suggestions.raku
 unit-stash-exists-under-import-list.raku

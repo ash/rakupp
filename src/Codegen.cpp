@@ -600,7 +600,7 @@ struct Codegen {
         if (n[0] == '@' && curParams_)
             for (const Param& p : *curParams_)
                 if (p.name == n) {
-                    if (p.slurpy) unsupported("a write into an element of a slurpy parameter");
+                    if (p.slurpy) throw CodegenError{"a write into an element of a slurpy parameter", /*routineWide=*/true};
                     via();
                     return;
                 }
@@ -786,11 +786,16 @@ struct Codegen {
     // overwrite where Rakudo and the interpreter die. A write to one is
     // refused (checkWritable) at every site that stores into a variable.
     std::set<std::string> readonlyVars_;
+    std::set<std::string> bareParams_;   // typed read-only `$` parameters: a `for` over one walks its .list
     bool rwDirect_ = false;   // the next bindParams is a top-level sub's, whose rw slots its calls copy back
     void markParams(const std::vector<Param>& ps) {
         for (const Param& p : ps) {
             if (p.name.size() < 2) continue;
             const std::string bare = placeholderBare(p.name);   // `$x` writes `$^x` too
+            // (a typed one is bound with no Scalar around it, as the binder binds it)
+            if (p.name[0] == '$' && !p.type.empty() && p.type != "Any" && p.type != "Mu" && !p.isRw && !p.isCopy && !p.isRaw)
+                bareParams_.insert(p.name);
+            else bareParams_.erase(p.name);
             if (p.name[0] == '$' && !p.isRw && !p.isCopy && !p.isRaw && !p.slurpy && !p.invocant &&
                 p.name[1] != '!' && p.name[1] != '.') {
                 readonlyVars_.insert(p.name);
@@ -3433,7 +3438,7 @@ struct Codegen {
             case NK::MethodCall: {
                 auto* m = static_cast<MethodCall*>(e);
                 if (m->maybe) unsupported("method-call form (.?)");
-                if (m->method == "dynamic") unsupported("`.dynamic`, which asks the variable, not its value");
+                if (m->method == "dynamic" || (m->method == "VAR" && !m->meta)) throw CodegenError{"`." + m->method + "`, which asks the variable, not its value", /*routineWide=*/true};
                 // Two call forms the dispatch below would silently get wrong:
                 // `self.Parent::meth` dispatches to Parent's method past any
                 // override (emitted plainly it re-entered the override — a
@@ -5065,6 +5070,7 @@ struct Codegen {
     std::string assign(Assign* a) { return viewSyncWrap(a->target.get(), assignImpl(a)); }
     std::string assignImpl(Assign* a) {
         Expr* tgt = a->target.get();
+        if (a->containerSigil) throw CodegenError{"a container-typed assignment (`=$=`, `=@=`, `=%=`)", /*routineWide=*/true};
         noteKeptList(a);
         // `$!x = v` in a module routine: stored as the interpreter stores it
         // (rtAotAttrAssign) — Nil resets the attribute to its default, a `$`
@@ -5635,6 +5641,8 @@ struct Codegen {
     }
 
     void forStmt(ForStmt* f, int ind) {
+        if (f->list && f->list->kind == NK::VarExpr && bareParams_.count(static_cast<VarExpr*>(f->list.get())->name))
+            throw CodegenError{"a `for` over a typed parameter, which walks the value's .list", /*routineWide=*/true};
         // `$_ /= 255 for $r, $g, $b`, `clip-to 0, $_, 255 for @$rgb`: the topic
         // ALIASES each element, so a write to it is a write to the element — and
         // every branch below iterates copies. Such a loop keeps its interpreted
@@ -9318,8 +9326,7 @@ struct Codegen {
             if (p.defConstraint)  unsupported("a `:D`/`:U` constraint on a routine parameter");
             if (p.subSig)         unsupported("a sub-signature on a routine parameter");
             if (p.typeCapture || p.typeFromCapture || !p.captureName.empty()) unsupported("a type capture (::T) on a routine parameter");
-            if (!p.shapeDims.empty()) unsupported("a shaped routine parameter");
-            if (p.named && (p.isRw || p.isRaw)) unsupported("a named `is rw`/`is raw` parameter");
+            if (!p.shapeDims.empty() || (p.named && (p.isRw || p.isRaw))) unsupported("a shaped, or a named `is rw`/`is raw`, routine parameter");
         }
         // (only a top-level sub's direct call copies an `is rw` slot back: subDef)
         const bool rwBack = std::exchange(rwDirect_, false);
@@ -9444,10 +9451,8 @@ struct Codegen {
         // an indirect ::() name exists only when the declaration RUNS — the
         // AOT path evaluates it; native emission cannot
         if (cd->nameExpr) unsupported("a type with an indirect ::() name");
-        for (auto& mp : cd->methods) {
+        for (auto& mp : cd->methods)
             if (mp->nameExpr) unsupported("a method with an indirect ::() name");
-            if (mp->retRw) unsupported("an `is rw` method, whose result is a container");   // (a native one hands back a copy)
-        }
         std::map<std::string, int> multiSeq; // per-name candidate counter
         for (auto& mp : cd->methods) {
             SubDecl* md = mp.get();
@@ -10399,6 +10404,7 @@ std::string emitAotPass(SubDecl* d, const std::string& fn, const AotNames& names
     g.aotFree_ = freeNames;
     g.aotLocals_ = locals;
     g.aotTag_ = fn;
+    g.curParams_ = &d->params;   // (a write into a slurpy's element keeps the routine interpreted: noteIndexWrite)
     std::vector<std::string> copied;   // read out of the frame: parameters, then @_/%_
     for (auto& p : d->params) {
         if (p.name.size() < 2) continue;
