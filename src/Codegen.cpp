@@ -4372,6 +4372,8 @@ struct Codegen {
                 // Which names `no strict` auto-vivifies was answered statically;
                 // if that answer is partial, no local emitted from here can be
                 // trusted, so hand the whole unit to the interpreter instead.
+                if (u->isNeed || u->emptyImport || u->ifCond || u->fileExpr)   // (rtUse loads and imports)
+                    unsupported("`need`, `use M ()`, `:if` or `:file` (rtUse always imports)");
                 if (u->isNo && u->module == "strict" && !laxKnown_)
                     unsupported("`no strict` in a unit the declaration check could not finish");
                 // …and the `:tag` arguments, for the pragmas whose meaning is in

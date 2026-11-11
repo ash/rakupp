@@ -85,4 +85,3 @@ whatever-value-pair-key.raku
 word-list-escapes-comma-op-forward-type.raku
 wrap-builtin.raku
 xml-triad-backref-indirect-coerce.raku
-unit-stash-exists-under-import-list.raku
