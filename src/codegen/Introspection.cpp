@@ -142,6 +142,16 @@ const char* routineIntrospectionRefusal(const Program& body) {
             why = "a `use` inside the routine";
         else if (n->kind == NK::MethodCall && containerName(static_cast<MethodCall*>(n)))
             why = "a container's name (`.VAR.name`)";
+        // (CALLER::, MY:: … and EVAL see the interpreter's frames, where a native
+        // body's locals are not: `CALLER::<$y>` read the callee's own `$y`)
+        else if (n->kind == NK::SymbolicRef) why = "a symbolic or pseudo-package reference in the routine";
+        // (…and the other side of it: a `my $y is dynamic` is looked up BY NAME
+        // from a callee — CALLER::<$y> — where a native local has none)
+        else if (n->kind == NK::VarExpr && static_cast<VarExpr*>(n)->declare && static_cast<VarExpr*>(n)->d().declDynamic)
+            why = "an `is dynamic` variable in the routine";
+        else if (n->kind == NK::Call && (introspectiveCallName(static_cast<Call*>(n)->name) ||
+                                         static_cast<Call*>(n)->name == "EVAL"))
+            why = "a pseudo-package lookup or EVAL in the routine";
         else if (n->kind == NK::MethodCall && madeOnMatch(static_cast<MethodCall*>(n)))
             why = "a Match's `.make`";
         forEachAstChild(n, walk);

@@ -1,7 +1,3 @@
 # t/exe/parity.raku: programs whose --exe binary does not yet behave as the
 # interpreter does, one file name per line. The gate passes them and says when
 # one starts to agree; take it off then. This list only shrinks.
-battery-regressions-v5.raku
-dynamic-var-memo.raku
-grand-review-c4b-modules-seq.raku
-smartmatch-topic-pad.raku

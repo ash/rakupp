@@ -47,6 +47,8 @@ my %skip =
     'lex-shadow-filter-exact.raku' => 'prints a timing ratio',
     'lookbehind-lexical-token-window.raku' => 'prints timings',
     'closed-write-handle-registry.raku' => 'prints a measured memory growth',
+    # re-runs `$*EXECUTABLE $*PROGRAM-NAME`: compiled, that hands rakupp the binary as source
+    'dynamic-var-memo.raku' => 'runs itself again through $*PROGRAM-NAME',
     ;
 
 my %known = $*PROGRAM.parent.add('parity-known.txt').lines.map(*.trim).grep({ $_ && !.starts-with('#') }).map(* => True);

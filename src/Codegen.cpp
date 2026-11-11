@@ -1063,6 +1063,7 @@ struct Codegen {
         // say $n++ }` printed 0 0 — and `(state $n)++` / `@a[$++]` named a
         // local nothing declared, failing the whole C++ build
         if (v->d().declScope == "state") unsupported("a `state` variable");
+        if (n == "$_") unsupported("a declared `$_` (the topic reads ignored it)");
         // (a full-width native array compiles: rtNativeArrayNew, its words kept)
         if (!n.empty() && (n[0] == '@' || n[0] == '%') && !v->d().declType.empty() &&
             !(n[0] == '@' && nativeArrayType(v->d().declType)))
@@ -4785,6 +4786,8 @@ struct Codegen {
         // only the outermost place a step resolves is the one it writes
         const std::string stepOp = std::exchange(stepOp_, std::string());
         noteVarWrite(e);
+        // (`self = …` in a container's method stores INTO the invocant; native, it wrote a copy)
+        if (e->kind == NK::SelfTerm) throw CodegenError{"a store into `self`", /*routineWide=*/true};
         if (e->kind == NK::VarExpr) {
             auto* v = static_cast<VarExpr*>(e);
             if (v->declare) refuseDeclTraits(v);
