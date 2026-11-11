@@ -2657,6 +2657,7 @@ public:
     Value dynVar(const std::string& name);
     Value rakuIntrospection(bool compiler); // $*RAKU / $*RAKU.compiler // $* / $? magical variables (used by codegen)
     Value& dynVarRef(const std::string& name); // assignable dynamic-var slot (used by codegen)
+    Value& dynVarWrite(const std::string& name); // …a write: what nothing declares is GLOBAL's, else NotFound
     Value& laxVarRef(const std::string& name); // `no strict` auto-vivified slot (used by codegen)
     // $*var resolution in PROPER dynamic order: the current frame's own
     // declaration first (its env chain up to the enclosing routine activation,
@@ -3610,6 +3611,10 @@ public:
     [[noreturn]] void throwInvalidParamType(const std::string& type);
     bool paramTypeUndeclared(const std::string& t);
     std::string noMatchProfile(const Value& self, const ValueList& as, bool withInvocant);
+    [[noreturn]] void throwMultiNoMatch(const Value& codeVal, const ValueList& as);   // a multi sub no candidate took
+    [[noreturn]] void throwMethodNoMatch(const Value& codeVal, const Value& self, const ValueList& as); // …a method
+    [[noreturn]] void rtMultiNoMatch(const std::string& name, ValueList cands, const ValueList& as,
+                                     const std::string& cls = ""); // …compiled code's (cls: a method's class)
     std::string subsetNominal(const std::string& type);   // `subset CN of Str …` → Str
     void refuseUnpassedSubset(const Param& p);            // …whose `where` an unpassed default must pass
     [[noreturn]] void throwNeedleNoMatch(const Value& inv, const std::string& m, const ValueList& args);
@@ -6190,10 +6195,6 @@ Value rtStarKey(const Value& base, const Value& key);
 // `$buf.push(…)` (native codegen): a mutator on a Buf/Blob writes its result
 // back into the invocant's variable, as the interpreter's does (AotModules.cpp).
 Value rtMutMethod(Interpreter& I, Value& inv, const char* name, ValueList args);
-// a native multi's dispatcher found no candidate: X::Multi::NoMatch in the
-// interpreter's wording, `Cannot resolve caller m(A:D: Str:D)` for a method (the
-// invocant first in `a`), `f(Rat:D, :i)` for a sub (InterpreterBinding.cpp)
-[[noreturn]] void rtMultiNoMatch(Interpreter& I, const char* name, const ValueList& a, bool method);
 // `$obj.name = v` (native codegen): through the interpreter's own assignment (AotModules.cpp)
 Value rtAccessorAssign(Interpreter& I, Value& inv, const std::string& name, Value v);
 // What a `for` iterates (native codegen): an ITEMIZED list — `for $x` with an

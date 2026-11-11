@@ -30,6 +30,8 @@ bool operatorRoutineName(const std::string& n, std::string& cat, std::string& op
 std::string classRefusal(const ClassDecl*, const std::set<std::string>&);   // src/codegen/ClassRefusal.cpp
 std::string multiOrderRefusal(const std::vector<SubDecl*>&, const std::vector<const Program*>&,
                               int (*)(const SubDecl*));   // codegen/MultiOrder.cpp
+std::string introspectionRefusal(const Program&); bool introspectiveCallName(const std::string&); // codegen/Introspection.cpp
+const char* routineIntrospectionRefusal(const Program&);
 
 namespace {
 
@@ -2809,6 +2811,7 @@ struct Codegen {
                 if (topVars_.count(n))  return mangleVar(n); // sigilless top-level var/constant (a global)
                 // user-declared code wins over type names, matching the interpreter's
                 // env-first NameTerm resolution (a `sub Date {…}` calls the sub).
+                if (codeVars.count(n)) return "RT.callCallable(" + mangleVar("&" + n) + ", ValueList{})"; // `my &rs`
                 if (userSubs.count(n))
                     return rwSubs.count(n) ? "([&]()->Value{ ValueList __rw{}; return " + mangleSub(n) + "(__rw); }())"
                                            : mangleSub(n) + "(ValueList{})";        // zero-arg sub call
@@ -3581,7 +3584,7 @@ struct Codegen {
                     const std::string a = "_c" + std::to_string(k), b = "_c" + std::to_string(k + 1);
                     auto bf = kB.find(ch->ops[k]);
                     cond += bf != kB.end() ? bf->second + "(" + a + ", " + b + ")"
-                                           : "applyArith(" + cesc(ch->ops[k]) + ", " + a + ", " + b + ").truthy()";
+                                           : "applyArith(" + cesc(knownOp(ch->ops[k])) + ", " + a + ", " + b + ").truthy()";
                 }
                 return "([&]()->Value{ " + binds + "return Value::boolean(" + cond + "); }())";
             }
@@ -4159,7 +4162,8 @@ struct Codegen {
                 std::string nm = detail.substr(0, detail.find(' '));
                 if (detail.find("[decl") != std::string::npos) return "";
                 names.push_back(nm);
-            }
+            }   // (a bare `rs` / `rs()` calls a local `my &rs`, which is copied in too)
+            if (node == "NameTerm" || node == "Call") names.push_back("&" + detail.substr(0, detail.find(' ')));
         }
         if (when && !given) return "";
         // a local's `:D`/`:U` or `where` is the compiled code's: the interpreter's
@@ -4382,6 +4386,8 @@ struct Codegen {
                 // Which names `no strict` auto-vivifies was answered statically;
                 // if that answer is partial, no local emitted from here can be
                 // trusted, so hand the whole unit to the interpreter instead.
+                if (u->isNeed || u->emptyImport || u->ifCond || u->fileExpr)   // (rtUse loads and imports)
+                    unsupported("`need`, `use M ()`, `:if` or `:file` (rtUse always imports)");
                 if (u->isNo && u->module == "strict" && !laxKnown_)
                     unsupported("`no strict` in a unit the declaration check could not finish");
                 // …and the `:tag` arguments, for the pragmas whose meaning is in
@@ -4731,7 +4737,7 @@ struct Codegen {
             if ((v->name == "$!" || v->name == "$/") && boundSpecials.count(v->name))
                 return mangleVar(v->name);
             if ((v->name.size() > 1 && v->name[1] == '*' && v->name != "@*ARGS") || v->name == "$!" || v->name == "$/")
-                return "RT.dynVarRef(" + cesc(v->name) + ")";
+                return std::string(v->declare ? "RT.dynVarRef(" : "RT.dynVarWrite(") + cesc(v->name) + ")";
             if (v->name == "$_")
                 return topics.empty() ? "RT.dynVarRef(\"$_\")" : topics.back();
             if (v->name == "@*ARGS" || (v->name.size() && v->name[0] == '&') ||
@@ -9612,7 +9618,11 @@ struct Codegen {
                     }
                     d += " if (" + guard + ") return " + methodCandFn(cd->name, kv.first, (int)k) + "(__a);";
                 }
-                d += " rtMultiNoMatch(RT, " + cesc(kv.first) + ", __a, true); });";
+                std::string cl;   // (no candidate: the interpreter's exception, from the candidates' signatures)
+                for (size_t k = 0; k < kv.second.size(); k++)
+                    cl += (k ? ", " : "") + sigWrap("Value::closure(" + methodCandFn(cd->name, kv.first, (int)k) + ")",
+                                                    kv.second[k]->params, kv.first, kv.second[k]->retType, 0u);
+                d += " RT.rtMultiNoMatch(" + cesc(kv.first) + ", ValueList{" + cl + "}, __a, " + cesc(cd->name) + "); });";
                 line(1, d);
             }
         }
@@ -9860,7 +9870,13 @@ struct Codegen {
             }
             line(1, "if (" + guard + ") return " + mangleSub(name) + "__" + std::to_string(idx[c]) + "(__a);");
         }
-        line(1, "rtMultiNoMatch(RT, " + cesc(name) + ", __a, false);");
+        std::vector<std::string> cs(cands.size());   // (declaration order, each carrying its signature)
+        for (SubDecl* c : cands)
+            cs[idx[c]] = sigWrap("Value::closure([](ValueList& __c)->Value{ return " + mangleSub(name) + "__" +
+                                 std::to_string(idx[c]) + "(__c); })", c->params, name, c->retType, c->hadSig ? RSC_HADSIG : 0u);
+        std::string cl;
+        for (auto& c : cs) cl += (cl.empty() ? "" : ", ") + c;
+        line(1, "RT.rtMultiNoMatch(" + cesc(name) + ", ValueList{" + cl + "}, __a);");
         line(0, "}");
     }
 };
@@ -9930,6 +9946,7 @@ std::string transpileToCpp(Program& prog, bool optimize, const std::string& srcP
                            const std::set<std::string>& moduleExports,
                            const std::string& srcText) {
     const std::string mainSig = mainSigBlob(prog);
+    if (std::string why = introspectionRefusal(prog); !why.empty()) throw CodegenError{why};
     Codegen g;
     g.optimize_ = optimize;
     g.labelNames = prog.labelNames;
@@ -10091,6 +10108,15 @@ std::string transpileToCpp(Program& prog, bool optimize, const std::string& srcP
         if (g.topVars_.count(kv.first))
             throw CodegenError{"a class-body `my " + kv.first + "` shadowing a top-level variable"};
         asTopVar(kv.first, kv.second.second);
+    }
+    // a parent the program does not declare (`is Str`, `is Exception`, a module's
+    // class) is no ClassInfo the registration can link: `F ~~ Cool` was False
+    for (ClassDecl* cd : classes) {
+        std::vector<std::string> ps(cd->extraParents.begin(), cd->extraParents.end());
+        if (!cd->parent.empty()) ps.push_back(cd->parent);
+        for (auto& pn : ps)
+            if (!g.classDecls_.count(pn) && !ascii::islower((unsigned char)pn[0]))
+                throw CodegenError{"a class whose parent " + pn + " this program does not declare"};
     }
     g.scanUserOps(prog, multiCands);
     g.collectNativeArrays(prog.stmts);
@@ -10343,7 +10369,9 @@ const char* aotIneligible(SubDecl* d) {
         for (auto& st : d->body) p.stmts.emplace_back(st.get());
         std::ostringstream dump;
         try { dumpAst(p, dump); } catch (...) {}
+        const char* intro = routineIntrospectionRefusal(p);   // (codegen/Introspection.cpp)
         for (auto& st : p.stmts) st.release();   // the routine's AST still owns them
+        if (intro) return intro;
         std::istringstream in(dump.str());
         for (std::string ln; std::getline(in, ln);) {
             const size_t a = ln.find_first_not_of(' ');
@@ -10357,7 +10385,7 @@ const char* aotIneligible(SubDecl* d) {
             std::string detail = row.substr(bar + 4);
             detail.erase(0, detail.find_first_not_of(' '));
             const std::string first = detail.substr(0, detail.find(' '));
-            if ((node == "Call" && (first == "EVAL" || first == "EVALFILE" || first == "__sym-lookup")) ||
+            if ((node == "Call" && (first == "EVAL" || first == "EVALFILE" || introspectiveCallName(first))) ||
                 (node == "MethodCall" && (first == ".EVAL" || first == ".EVALFILE")))
                 return "an EVAL or a name looked up at run time";
         }

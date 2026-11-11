@@ -3378,6 +3378,10 @@ Value Interpreter::callEnvFirst(const std::string& name, ValueList args) {
 Value Interpreter::envAmpOr(const std::string& ampName, const Value& fallback) {
     Value* p = tctx().cur ? tctx().cur->find(ampName) : nullptr;
     if (!p && global_) { auto g = global_->vars.find(ampName); if (g != global_->vars.end()) p = &g->second; }
+    // a built-in is its one stable Callable, as the interpreter's `&say` is —
+    // its .name, .candidates and identity — not an anonymous forwarding closure
+    if (!p && ampName == "&trait_mod:<is>") return builtinTraitIsGroup();
+    if (!p && ampName.size() > 1) p = const_cast<Value*>(builtinRef(ampName.substr(1)));
     return p ? *p : fallback;
 }
 
@@ -4036,8 +4040,12 @@ Value Interpreter::dynVar(const std::string& name) {
     // is found through the CALLERS first, as the interpreter's own read finds
     // it: a routine's `my $*X` is what its callees see, not whatever `$*X`
     // their lexical scope holds.
-    if (name.size() > 1 && name[1] == '*')
+    // Nothing declares it: GLOBAL's, twigil dropped, else the armed Failure —
+    // as the interpreter's read (evalVarExpr) answers; `%*X` read `%GLOBAL::X`
+    if (name.size() > 1 && name[1] == '*') {
         if (Value* p = findDynamicLenient(name)) return *p;
+        if (!isBuiltinDynamic(name)) return dynMiss(name);
+    }
     if (tctx().cur) if (Value* p = tctx().cur->find(name)) return *p;
     if (global_) { auto it = global_->vars.find(name); if (it != global_->vars.end()) return it->second; }
     return Value::any();
@@ -4956,6 +4964,16 @@ bool Interpreter::attrWhereOk(const void* whereExpr, const Value& v) {
 Value& Interpreter::dynVarRef(const std::string& name) {
     if (Value* p = findDynamicLenient(name)) return *p;
     return global_->define(name, Value::any());
+}
+// A compiled write to `$*X` (not its declaration): as the interpreter's
+// lvalue has it, a name nothing declares is GLOBAL's (`our $COUNT` at the top,
+// `$GLOBAL::COUNT`), else X::Dynamic::NotFound — never a slot minted for it.
+Value& Interpreter::dynVarWrite(const std::string& name) {
+    if (name.size() > 1 && name[1] == '*') {
+        if (Value* p = findDynamicLenient(name)) return *p;
+        if (!isBuiltinDynamic(name)) return *dynMissSlot(name);
+    }
+    return dynVarRef(name);
 }
 Value& Interpreter::laxVarRef(const std::string& name) {
     if (Value* p = findDynamicLenient(name)) return *p;
@@ -6874,16 +6892,6 @@ Value rtSlurpyPos(Interpreter& I, const ValueList& a, size_t from, bool boxed, c
     if (boxed && o.arr())
         for (auto& e : *o.arr()) if (e.natBits()) dropNativeTags(e);
     return o;
-}
-void rtMultiNoMatch(Interpreter& I, const char* name, const ValueList& a, bool method) {
-    const Value self = method && !a.empty() ? a[0] : Value();
-    const ValueList as(a.begin() + (method && !a.empty() ? 1 : 0), a.end());
-    Value cap = Value::array(); cap.hashKind = "Capture"; cap.itemized = true;
-    cap.arr()->assign(a.begin(), a.end());
-    // (the candidates' signatures the interpreter lists after the colon are not known here)
-    I.throwTypedV("X::Multi::NoMatch", {{"capture", cap}},
-                  std::string("Cannot resolve caller ") + name + "(" + I.noMatchProfile(self, as, method) +
-                  "); none of these signatures matches:");
 }
 Value rtSlurpyNamed(const ValueList& a) {
     Value o = Value::makeHash();

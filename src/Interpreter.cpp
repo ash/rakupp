@@ -3542,7 +3542,9 @@ void Interpreter::rtUse(const std::string& module, const std::string& arg, bool 
         if (!arg.empty()) useLibPath(arg);
         return;
     }
-    if (!module.empty()) loadModule(module);
+    // (the import list is the `sub EXPORT`'s arguments and the tags, as the
+    // UseStmt arm hands them: `use M <a>` ran EXPORT with none)
+    if (!module.empty()) loadModule(module, isNo ? std::vector<std::string>{} : importArgs);
 }
 
 // |@a in VALUE position (a return value, an assignment RHS) for native codegen:

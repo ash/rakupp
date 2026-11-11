@@ -22,6 +22,11 @@ void noteAttrInit(const ObjectData* od, const Value* slot);   // …the attribut
 static void walkAot(std::vector<StmtPtr>& stmts, const std::function<void(SubDecl*)>& fn);
 
 static void walkAotClass(ClassDecl* cd, const std::function<void(SubDecl*)>& fn) {
+    // A role's routines are generic: `$?CLASS` is whichever class composes it
+    // and a type parameter `T` is the parameterization's, which one native body
+    // compiled for the role cannot be (`$?CLASS.^name` answered "::?CLASS",
+    // `T()` "Undefined routine 'T'"). They stay interpreted.
+    if (cd->isRole) return;
     for (auto& m : cd->methods) fn(m.get());
     walkAot(cd->body, fn);
 }
