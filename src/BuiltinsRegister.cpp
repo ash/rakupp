@@ -233,6 +233,14 @@ void rtFatalFailure(Interpreter&, const Value& v) { failureDetonate(v); }
     if (fatal || I.fatalHere() || !id || !env || !I.routineEnvRunning(env)) failAsDie(f);
     throw ReturnEx{f, id};
 }
+// …and a `return` there: once the routine has returned there is nothing to
+// return from, and it is X::ControlFlow::Return, as the interpreter's (a bare
+// ReturnEx went past every `try` and ended the program)
+[[noreturn]] void rtReturnAt(Interpreter& I, Value v, uint64_t id, const Env* env) {
+    if (!id || !env || !I.routineEnvRunning(env))
+        throw RakuError{Value::typeObj("X::ControlFlow::Return"), "Attempt to return outside of any Routine"};
+    throw ReturnEx{std::move(v), id};
+}
 
 void Interpreter::registerBuiltins() {
     auto& B = builtins_;

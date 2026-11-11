@@ -5833,6 +5833,7 @@ Value rtFailureFor(Interpreter& I, ValueList& a);             // the Failure `fa
                               bool fatal = false);   // …in a block of one
 [[noreturn]] Value rtFailAt(Interpreter& I, ValueList a, uint64_t id, const Env* env,
                             bool fatal = false);     // …in a block of a module routine
+[[noreturn]] void rtReturnAt(Interpreter& I, Value v, uint64_t id, const Env* env);   // …and its `return`
 // A call written inside a compiled `try` that hands back a Failure throws it,
 // as the interpreter's `use fatal` call site does (not in a boolean or
 // definedness context: the parser's fatalExempt, which the codegen reads)

@@ -4230,7 +4230,7 @@ struct Codegen {
         // so it is thrown at the routine's own frame, as the interpreter's is.
         const bool inBlock = (!nestKinds_.empty() && nestKinds_.back() == 'b') || iife_ > 0;
         if (moduleMode_ && inBlock)
-            line(ind, "throw ReturnEx{" + v + ", __fid};");
+            line(ind, "rtReturnAt(RT, " + v + ", __fid, __env);");
         // …and so in a program's: a C++ `return` would leave only the
         // block, and `(1, 2).map({ return 5 if $_ == 2; $_ })` went on
         // with the routine. Outside any routine there is nothing to
