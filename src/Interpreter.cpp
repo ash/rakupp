@@ -2725,9 +2725,10 @@ Value Interpreter::seqOp(Value l, Value r, bool exclusive) {
         // than being fed made-up zeros
         long long needArity = arity;
         if (hasGen && gen.code() && arity > 0 && gen.code()->ci().whateverArity <= 0 &&
-            gen.code()->ci().placeholders.empty() && gen.code()->ci().params) {
+            gen.code()->ci().placeholders.empty() && (gen.code()->ci().params || gen.code()->ci().isBlock)) {
+            // (a bare block's topic is optional: --exe builds one with no params)
             needArity = 0;
-            for (auto& p : *gen.code()->ci().params)
+            if (gen.code()->ci().params) for (auto& p : *gen.code()->ci().params)
                 if (!p.named && !p.slurpy && !p.optional && !p.defaultVal) needArity++;
         }
         auto tooFew = [needArity](size_t n) {
