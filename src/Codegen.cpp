@@ -29,6 +29,7 @@ bool arithOpKnown(const std::string& op);    // InterpreterOperators.cpp: applyA
 bool operatorRoutineName(const std::string& n, std::string& cat, std::string& op);   // codegen/Operators.cpp
 std::string multiOrderRefusal(const std::vector<SubDecl*>&, const std::vector<const Program*>&,
                               int (*)(const SubDecl*));   // codegen/MultiOrder.cpp
+std::string introspectionRefusal(const Program&); bool introspectiveCallName(const std::string&); // codegen/Introspection.cpp
 
 namespace {
 
@@ -9902,6 +9903,7 @@ std::string transpileToCpp(Program& prog, bool optimize, const std::string& srcP
                            const std::set<std::string>& moduleExports,
                            const std::string& srcText) {
     const std::string mainSig = mainSigBlob(prog);
+    if (std::string why = introspectionRefusal(prog); !why.empty()) throw CodegenError{why};
     Codegen g;
     g.optimize_ = optimize;
     g.labelNames = prog.labelNames;
@@ -10063,6 +10065,15 @@ std::string transpileToCpp(Program& prog, bool optimize, const std::string& srcP
         if (g.topVars_.count(kv.first))
             throw CodegenError{"a class-body `my " + kv.first + "` shadowing a top-level variable"};
         asTopVar(kv.first, kv.second.second);
+    }
+    // a parent the program does not declare (`is Str`, `is Exception`, a module's
+    // class) is no ClassInfo the registration can link: `F ~~ Cool` was False
+    for (ClassDecl* cd : classes) {
+        std::vector<std::string> ps(cd->extraParents.begin(), cd->extraParents.end());
+        if (!cd->parent.empty()) ps.push_back(cd->parent);
+        for (auto& pn : ps)
+            if (!g.classDecls_.count(pn) && !ascii::islower((unsigned char)pn[0]))
+                throw CodegenError{"a class whose parent " + pn + " this program does not declare"};
     }
     g.scanUserOps(prog, multiCands);
     g.collectNativeArrays(prog.stmts);
@@ -10329,7 +10340,7 @@ const char* aotIneligible(SubDecl* d) {
             std::string detail = row.substr(bar + 4);
             detail.erase(0, detail.find_first_not_of(' '));
             const std::string first = detail.substr(0, detail.find(' '));
-            if ((node == "Call" && (first == "EVAL" || first == "EVALFILE" || first == "__sym-lookup")) ||
+            if ((node == "Call" && (first == "EVAL" || first == "EVALFILE" || introspectiveCallName(first))) ||
                 (node == "MethodCall" && (first == ".EVAL" || first == ".EVALFILE")))
                 return "an EVAL or a name looked up at run time";
         }
