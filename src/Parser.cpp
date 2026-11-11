@@ -10169,7 +10169,7 @@ ExprPtr Parser::parsePrimary() {
             // …and so, before a block or a pointy, are `rand`, `i`, `Empty` and a TYPE: the
             // block is the statement's (`if rand { … }`, `for buf8 -> \bt { }`), as in Rakudo
             if (listopOk && (isKind(Tok::LBrace) || isOp("->") || isOp("<->")) && (name == "rand" || name == "i" ||
-                (name == "Empty" && !declaredSubNames_.count(name)) ||
+                (name == "Empty" && !declaredSubNames_.count(name)) || (name.size() > 2 && !name.compare(name.size() - 2, 2, "::")) ||   // a stash, `for A:: -> $p` (#238)
                 isKnownTypeName(name) || declTypeNames_.count(name) || declClassDecls_.count(name) || usedTypeNames_.count(name) ||
                 (isNativeTypeName(name) && !declaredSubNames_.count(name)))) listopOk = false;   // `for uint64 -> \T`
             // callsame/nextsame are nullary redispatchers — they reuse the current
@@ -18434,7 +18434,7 @@ bool Parser::slangSigillessHere() {
 // package-qualified, a smiley allowed) with the statement's block right after
 // it. Whether anything declares the name is known only where the code runs.
 void Parser::noteGobbleSite(const Expr* cond) {
-    if (!cond || cond->kind != NK::NameTerm || !isKind(Tok::LBrace) || !cur().spaceBefore) return;
+    if (!cond || cond->kind != NK::NameTerm || !(isKind(Tok::LBrace) || isOp("->") || isOp("<->")) || !cur().spaceBefore) return;
     auto* nt = static_cast<const NameTerm*>(cond);
     const std::string& n = nt->name;
     if (n.empty() || !nt->ofType.empty() || nt->pkgSelf || nt->symbolicStrict) return;

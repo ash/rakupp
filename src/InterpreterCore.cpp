@@ -3301,7 +3301,7 @@ Value Interpreter::execForStmt(Stmt* s, bool sink) {
                      (lv.hashKind.empty() || lv.hashKind == "Map" ||
                       lv.hashKind == "Set" || lv.hashKind == "SetHash" ||
                       lv.hashKind == "Bag" || lv.hashKind == "BagHash" ||
-                      lv.hashKind == "Mix" || lv.hashKind == "MixHash")) {
+                      lv.hashKind == "Mix" || lv.hashKind == "MixHash" || lv.hashKind == "Stash")) {
                 for (auto& kv : *lv.hash()) items.push_back(iterEntryPair(lv, kv.first, kv.second));
             }
             else items.push_back(lv);
@@ -4105,7 +4105,7 @@ Value Interpreter::execForStmt(Stmt* s, bool sink) {
              (listv.hashKind.empty() || listv.hashKind == "Map" ||
               listv.hashKind == "Set" || listv.hashKind == "SetHash" ||
               listv.hashKind == "Bag" || listv.hashKind == "BagHash" ||
-              listv.hashKind == "Mix" || listv.hashKind == "MixHash")) {
+              listv.hashKind == "Mix" || listv.hashKind == "MixHash" || listv.hashKind == "Stash")) {
         // a bare hash/set/bag iterates its Pairs (elem => True / count)
         for (auto& kv : *listv.hash()) items.push_back(iterEntryPair(listv, kv.first, kv.second));
     }

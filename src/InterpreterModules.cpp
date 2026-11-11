@@ -2571,6 +2571,8 @@ void Interpreter::refuseGobbledBlocks(const std::vector<GobbleSiteInfo>& sites, 
 }
 
 bool Interpreter::bareNameResolves(const std::string& n, const Program& unit, bool needOuter) {
+    // `A::` is A's stash: it resolves when A does (`for A::, B:: -> $p`, #238)
+    if (n.size() > 2 && n.compare(n.size() - 2, 2, "::") == 0) return bareNameResolves(n.substr(0, n.size() - 2), unit, needOuter);
     auto declaredIn = [&](const Program& p) {
         if (p.typeNamesOpaque || p.declaredTypeNames.count(n) || p.declaredTermNames.count(n)) return true;
         for (size_t c = n.find("::"); c != std::string::npos; c = n.find("::", c + 2))
