@@ -24820,14 +24820,7 @@ Value Interpreter::evalUnary(Unary* u) {
         // list-infix reduces ([Z]/[X] and their metaop forms) keep each operand
         // list whole: [Z] @a, @b zips the two arrays, [Z] @matrix zips the rows
         const std::string bop = scanForm ? op.substr(1) : op;
-        bool listInfix = !bop.empty() && (bop[0] == 'Z' || bop[0] == 'X') &&
-                         !isSetOpStr(bop) && bop != "X"; // "X" alone is still the cross op
-        if (bop == "Z" || bop == "X" || bop == "minmax") listInfix = true;
-        // SET-op reduces treat each comma item as ONE operand too:
-        // `[(^)] @s1.words, @s2.words` is the symmetric difference of two word
-        // LISTS (flattening merged them and answered per-word parity), while a
-        // lone list operand still spreads one level (`[(^)] @case.words`).
-        if (isSetOpStr(op)) listInfix = true;
+        bool listInfix = reduceKeepsOperands(op);
         // The reduce takes its operands by the single-argument rule (`+@list`):
         // SEVERAL comma items are that many operands, each as it is (`[+] (1,2),
         // (3,4)` is 2 + 2, `[+] @a, @b` adds the two counts), a Slip spreading
@@ -30794,6 +30787,46 @@ const Value& builtinTraitIsGroup() {
 // eval (see there); every other form of variable — pseudo-packages, special
 // names, attributes, placeholders, a miss — is here, where its locals no
 // longer size the frame every expression is evaluated in.
+// `&infix:<op>` for a built-in operator: a Callable that applies it, n-ary
+// as the reduce metaop folds. evalVarExpr and --exe's `&[op]` both make it
+// here, so `.reduce(&[+])` and sort see the same named operator.
+Value Interpreter::infixCallable(const std::string& bare) {
+    if (!operatorNameDeclared(*this, bare)) undeclaredRoutine(bare);   // `&infix:<nosuch>`
+    std::string op = bare.substr(7, bare.size() - 8);
+    if (op.size() > 2 && op.front() == '<' && op.back() == '>' && !angleShapedOp(op))
+        op = op.substr(1, op.size() - 2); // &infix:<<∈>> — double-angle form
+    op = normHyperMarkers(op, true); // &infix:<»+«> — hyper spelling
+    Value code; code.t = VT::Code; code.setCode(makePayload<Callable>()); code.code()->ciM().name = bare;
+    code.code()->ciM().whateverArity = 2; // an infix takes two operands (so sort treats it as a comparator)
+    code.code()->ciM().builtin = [op](Interpreter& I, ValueList& a) -> Value {
+        if (isSetOpStr(op) && a.size() < 2 && !isSetPredicateStr(op)) {
+            if (a.empty()) return setWrap({}, setOpMinTier(op));
+            return setCoerceOne(op, a[0]); // one arg coerces
+        }
+        if (a.size() >= 2) { // n-ary: left-fold like the reduce metaop
+            if (opEq(op, "(^)") || opEq(op, "\xE2\x8A\x96")) return setSymDiffN(a); // ⊖ is variadic
+            if (isSetOpStr(op) && !isSetPredicateStr(op))
+                if (auto j = setOpFoldN(op, a)) return *j; // one joint tier
+            Value acc = a[0];
+            for (size_t k = 1; k < a.size(); k++) acc = I.applyBinOp(op, acc, a[k]);
+            return acc;
+        }
+        if (a.size() == 1) { // single arg combines with the op's identity
+            const std::string bop = uniOpFold(op);
+            if (opEq(bop, "+") || opEq(bop, "-")) return I.applyBinOp(op, Value::integer(0), a[0]);
+            if (opEq(bop, "*") || opEq(bop, "/")) return I.applyBinOp(op, Value::integer(1), a[0]);
+            if (opEq(op, "~")) return I.applyBinOp(op, Value::str(""), a[0]);
+            return a[0];
+        }
+        // No operands at all: the operator's identity, which is the
+        // same table the reduce metaop uses — `&infix:<==>()` is
+        // True, as `[==] ()` is. Answering Any made every
+        // zero-argument comparison falsy.
+        { ValueList none; return I.applyReducePublic(op, none); }
+    };
+    return code;
+}
+
 Value Interpreter::evalVarExpr(Expr* e) {
     auto* ve = static_cast<VarExpr*>(e);
     const VarDeclInfo& vd = ve->d();   // (its declaration fields, read many times below)
@@ -31526,42 +31559,7 @@ Value Interpreter::evalVarExpr(Expr* e) {
             return ctl[bare] = p;
         }
         if (bare == "trait_mod:<is>") return builtinTraitIsGroup();
-        if (bare.rfind("infix:<", 0) == 0 && bare.back() == '>') {
-            if (!operatorNameDeclared(*this, bare)) undeclaredRoutine(bare);   // `&infix:<nosuch>`
-            std::string op = bare.substr(7, bare.size() - 8);
-            if (op.size() > 2 && op.front() == '<' && op.back() == '>' && !angleShapedOp(op))
-                op = op.substr(1, op.size() - 2); // &infix:<<∈>> — double-angle form
-            op = normHyperMarkers(op, true); // &infix:<»+«> — hyper spelling
-            Value code; code.t = VT::Code; code.setCode(makePayload<Callable>()); code.code()->ciM().name = bare;
-            code.code()->ciM().whateverArity = 2; // an infix takes two operands (so sort treats it as a comparator)
-            code.code()->ciM().builtin = [op](Interpreter& I, ValueList& a) -> Value {
-                if (isSetOpStr(op) && a.size() < 2 && !isSetPredicateStr(op)) {
-                    if (a.empty()) return setWrap({}, setOpMinTier(op));
-                    return setCoerceOne(op, a[0]); // one arg coerces
-                }
-                if (a.size() >= 2) { // n-ary: left-fold like the reduce metaop
-                    if (opEq(op, "(^)") || opEq(op, "\xE2\x8A\x96")) return setSymDiffN(a); // ⊖ is variadic
-                    if (isSetOpStr(op) && !isSetPredicateStr(op))
-                        if (auto j = setOpFoldN(op, a)) return *j; // one joint tier
-                    Value acc = a[0];
-                    for (size_t k = 1; k < a.size(); k++) acc = I.applyBinOp(op, acc, a[k]);
-                    return acc;
-                }
-                if (a.size() == 1) { // single arg combines with the op's identity
-                    const std::string bop = uniOpFold(op);
-                    if (opEq(bop, "+") || opEq(bop, "-")) return I.applyBinOp(op, Value::integer(0), a[0]);
-                    if (opEq(bop, "*") || opEq(bop, "/")) return I.applyBinOp(op, Value::integer(1), a[0]);
-                    if (opEq(op, "~")) return I.applyBinOp(op, Value::str(""), a[0]);
-                    return a[0];
-                }
-                // No operands at all: the operator's identity, which is the
-                // same table the reduce metaop uses — `&infix:<==>()` is
-                // True, as `[==] ()` is. Answering Any made every
-                // zero-argument comparison falsy.
-                { ValueList none; return I.applyReducePublic(op, none); }
-            };
-            return code;
-        }
+        if (bare.rfind("infix:<", 0) == 0 && bare.back() == '>') return infixCallable(bare);
         // &prefix:<-«> / &postfix:<»i> — hyper op spellings as Callables
         if (bare.rfind("prefix:<", 0) == 0 && bare.back() == '>') {
             std::string op = normHyperMarkers(bare.substr(8, bare.size() - 9));

@@ -15,7 +15,6 @@ dynamic-method-lvalue.raku
 ecosweep-2026-09.raku
 ecosweep-condition-binders-and-hyper.raku
 empty-block-is-nil.raku
-endless-range-reduce.raku
 eval-undeclared-variable-before-routine.raku
 exe-callframe.raku
 exe-readonly-parameter-write.raku
@@ -60,7 +59,6 @@ pseudo-package-adverbs.raku
 pseudo-package-stash-value.raku
 quanthash-exact-sethash-zen-dynamic.raku
 range-endpoints-and-adverbs.raku
-range-reduce-excludes-int-minimum.raku
 react-died-names-the-react.raku
 regex-value-variable-atom.raku
 return-through-block-undo.raku

@@ -2629,8 +2629,9 @@ struct Codegen {
                         if (!op.empty() && op.back() == '>') op.pop_back();
                         // (a prefix or postfix is no two-argument applyArith)
                         if (nm.rfind("infix:", 0) != 0) unsupported("`&" + nm + "` as a value");
-                        return "Value::closure([=](ValueList& __a)->Value{ return applyArith(" + cesc(knownOp(op)) +
-                               ", (__a.size()>0?__a[0]:Value::any()), (__a.size()>1?__a[1]:Value::any())); })";
+                        // …the interpreter's own, named `infix:<op>` (`.reduce(&[+])` reads the name)
+                        knownOp(op);
+                        return "RT.infixCallable(" + cesc(nm) + ")";
                     }
                     // a builtin (say, is_even, …) — dispatch by name at runtime
                     std::string fwd = "Value::closure([=](ValueList& __a)->Value{ return " + builtinCall(nm, "__a") + "; })";

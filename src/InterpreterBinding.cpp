@@ -6446,16 +6446,32 @@ Value Interpreter::hyperCompoundAssign(const std::string& inner, const Value& l,
     return l;
 }
 
+// A list-infix reduce ([Z]/[X] and their metaop forms, minmax, a set op)
+// keeps each operand list whole: [Z] @a, @b zips the two arrays, [Z] @matrix
+// zips the rows, and `[(^)] @s1.words, @s2.words` is the symmetric difference
+// of two word LISTS, while a lone list operand still spreads one level.
+bool reduceKeepsOperands(const std::string& op) {
+    const std::string bop = !op.empty() && op[0] == '\\' ? op.substr(1) : op;
+    bool listInfix = !bop.empty() && (bop[0] == 'Z' || bop[0] == 'X') &&
+                     !isSetOpStr(bop) && bop != "X"; // "X" alone is still the cross op
+    return listInfix || bop == "Z" || bop == "X" || bop == "minmax" || isSetOpStr(op);
+}
+
 Value rtReduce(Interpreter& I, const std::string& op, const Value& list, bool operands) {
     // The fold itself is applyReduce — the same implementation the interpreter
     // uses, so a compiled binary chains comparisons, runs scan forms and honors
     // the R-metaop exactly as the interpreted program does. This used to be a
     // plain left fold: `[<] 3,1,2` was False interpreted and True compiled,
     // and `[\+]` folded with the literal op string (REVIEW-3.7 finding 1).
-    if (!op.empty() && op[0] != '\\') { // an endless operand is answered whole
+    // An endless operand is answered whole, and an Int Range's `+`/min/max
+    // from its endpoints — for ONE operand, as the interpreter's reduce does:
+    // with several (`[+] 1..Inf, 5`) each is an operand as it is, and a
+    // list-infix op (`[Z]`, `[X]`, minmax, a set op) keeps its operands whole.
+    if (!op.empty() && op[0] != '\\' && !operands && !reduceKeepsOperands(op)) {
         Value r;
         if (endlessReduce(op, list, r)) return r;
-        if (list.t == VT::Array && list.arr())
+        if ((op == "+" || op == "min" || op == "max") && I.intRangeReduce(op, list, r)) return r;
+        if (list.t == VT::Array && list.arr() && !list.itemized)
             for (auto& v : *list.arr()) if (endlessReduce(op, v, r)) return r;
     }
     // SEVERAL comma items are that many operands, each as it is — `[Z] $l, $m`

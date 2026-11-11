@@ -2615,6 +2615,7 @@ public:
     Value callEnvFirst(const std::string& name, ValueList args);
     Value callEnvFirstAmp(const std::string& ampName, ValueList args);   // …given `&name`, as compiled call sites keep it
     Value envAmpOr(const std::string& ampName, const Value& fallback);   // the env's `&name` itself, else fallback
+    Value infixCallable(const std::string& bare);   // `&infix:<op>` of a built-in op (evalVarExpr's)
     // …each through the slot a native module routine bound at entry, when it has one (rtAotOuterOpt)
     Value envAmpOrAt(Value* slot, const std::string& ampName, const Value& fallback);
     Value callAmpAt(Value* slot, const std::string& ampName, ValueList args);
