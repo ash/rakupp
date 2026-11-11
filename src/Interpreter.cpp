@@ -3116,7 +3116,24 @@ void Interpreter::runBigRangeFor(ForStmt* fs, const Value& r, const std::string&
     }
 }
 
-Value rtRangeVal(const Value& from, const Value& to, bool exFrom, bool exTo) {
+Value rtRangeVal(const Value& from, const Value& toIn, bool exFrom, bool exTo) {
+    // a Date..Date range enumerates days eagerly (numeric Range can't hold
+    // Date endpoints; a century is only ~36k elements). The endpoints'
+    // formatter rides along: such a range joins as formatted dates.
+    if (from.t == VT::Hash && from.hashKind == "Date" && from.hash() &&
+        toIn.t == VT::Hash && toIn.hashKind == "Date" && toIn.hash()) {
+        auto fld = [](const Value& v, const char* k) -> long long {
+            auto it = v.hash()->find(k); return it != v.hash()->end() ? it->second.toInt() : 1;
+        };
+        long long lo = civilToDays(fld(from, "year"), fld(from, "month"), fld(from, "day")) + (exFrom ? 1 : 0);
+        long long hi = civilToDays(fld(toIn, "year"), fld(toIn, "month"), fld(toIn, "day")) - (exTo ? 1 : 0);
+        Value arr = Value::array(); arr.isList = true;
+        for (long long d = lo; d <= hi; d++) arr.arr()->push_back(makeDate(d, &from));
+        return arr;
+    }
+    // `'A'..∞` is `'A'..*`: a string range with no top
+    Value to = toIn;
+    if (from.t == VT::Str && to.t == VT::Num && std::isinf(to.n) && to.n > 0) to.t = VT::Whatever;
     if (from.t == VT::Str && to.t == VT::Str) {
         if (u8CpLen(from.s) == 1 && u8CpLen(to.s) == 1) {
             Value rr = Value::range(u8FirstCp(from.s), u8FirstCp(to.s), exFrom, exTo);
