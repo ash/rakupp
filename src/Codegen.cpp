@@ -5209,15 +5209,16 @@ struct Codegen {
             };
             const bool back = self(b->lhs) && plainX(b->rhs);
             const bool front = !back && self(b->rhs) && plainX(b->lhs);
+            const std::string co = (back || front) ? coerceFor(tgt, rhs, a->value.get()) : std::string();
             if (b->op == "~" && (back || front) &&
                 tv->name.size() > 1 && tv->name[0] == '$' &&
                 (nameLetterAt(tv->name, 1) || tv->name[1] == '_') &&
-                !opDeclared("infix:<~>") && coerceFor(tgt, rhs, a->value.get()) == rhs) {
+                !opDeclared("infix:<~>") && (co == rhs || co == "rtNilToAny(" + rhs + ")")) {   // (`~` is never Nil)
                 return "([&]()->Value&{ Value& __l = " + lvalueExpr(tgt) + ";"
                        " if (__l.t == VT::Str && __l.hashKind.empty() && __l.enumName().empty()) " +
                        (back ? "rtCatAssign(__l, " + exArg(b->rhs.get()) + ");"
                              : "rtCatPrepend(__l, " + exArg(b->lhs.get()) + ");") +
-                       " else __l = " + rhs + "; return __l; }())";
+                       " else __l = " + co + "; return __l; }())";
             }
         }
         // `$!x = Nil` resets the attribute to its default (rtAttrNil), as
