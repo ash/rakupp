@@ -6874,6 +6874,16 @@ Value rtSlurpyPos(Interpreter& I, const ValueList& a, size_t from, bool boxed, c
         for (auto& e : *o.arr()) if (e.natBits()) dropNativeTags(e);
     return o;
 }
+void rtMultiNoMatch(Interpreter& I, const char* name, const ValueList& a, bool method) {
+    const Value self = method && !a.empty() ? a[0] : Value();
+    const ValueList as(a.begin() + (method && !a.empty() ? 1 : 0), a.end());
+    Value cap = Value::array(); cap.hashKind = "Capture"; cap.itemized = true;
+    cap.arr()->assign(a.begin(), a.end());
+    // (the candidates' signatures the interpreter lists after the colon are not known here)
+    I.throwTypedV("X::Multi::NoMatch", {{"capture", cap}},
+                  std::string("Cannot resolve caller ") + name + "(" + I.noMatchProfile(self, as, method) +
+                  "); none of these signatures matches:");
+}
 Value rtSlurpyNamed(const ValueList& a) {
     Value o = Value::makeHash();
     for (auto& v : a) if (isNamedArg(v)) (*o.hash())[v.s] = v.pairVal() ? *v.pairVal() : Value::any();

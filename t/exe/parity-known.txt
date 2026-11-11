@@ -40,7 +40,6 @@ mop-metamodel.raku
 multi-nomatch-dispatcher-capture.raku
 my-in-short-circuit-and-do-init.raku
 my-stash-sees-test-imports.raku
-needle-type-object-no-match.raku
 nested-sub-keeps-its-closure.raku
 nqp-unipropcode-int.raku
 operator-strictness.raku
