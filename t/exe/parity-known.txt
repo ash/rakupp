@@ -11,7 +11,6 @@ cro-live-server.raku
 date-formatter-everywhere.raku
 datetime-number-is-instant.raku
 dynamic-falls-back-to-global.raku
-dynamic-method-lvalue.raku
 ecosweep-2026-09.raku
 ecosweep-condition-binders-and-hyper.raku
 empty-block-is-nil.raku
@@ -80,7 +79,6 @@ try-block-sink-and-trailing-catch.raku
 typed-param-var-is-value.raku
 undeclared-type-in-declaration.raku
 undeclared-variable-routine-suggestions.raku
-undefined-array-head-lvalue-empty-match.raku
 unit-stash-exists-under-import-list.raku
 user-multi-on-builtin-prefix.raku
 watch-ignores-writes-before-it.raku

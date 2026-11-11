@@ -5245,6 +5245,12 @@ struct Codegen {
             return "([&]()->Value{ Value __v = " + coerceFor(tgt, rhs, a->value.get()) + "; return rtElemStoreN(RT, " +
                    base + ", " + ex(nix->index.get()) + ", std::move(__v), '='); }())";
         }
+        if (a->op == "=" && tgt->kind == NK::MethodCall && !moduleMode_) {   // (the interpreter's own store: rtAccessorAssign)
+            auto* mc = static_cast<MethodCall*>(tgt);
+            if (!mc->mutate && !mc->hyper && !mc->meta && mc->args.empty())
+                return "rtAccessorAssign(RT, " + lvalueExpr(mc->inv.get()) + ", " + (mc->methodExpr ? "(" + ex(mc->methodExpr.get()) +
+                       ").toStr()" : cesc(mc->method)) + ", " + rhs + ")";
+        }
         if (a->op == "=") return lvalueExpr(tgt) + " = " + coerceFor(tgt, rhs, a->value.get());
         std::string binop = a->op.substr(0, a->op.size() - 1);  // strip '='
         const std::string ubinop = a->written().substr(0, a->written().size() - 1);   // `×=`: `infix:<×>`
@@ -9436,8 +9442,10 @@ struct Codegen {
         // an indirect ::() name exists only when the declaration RUNS — the
         // AOT path evaluates it; native emission cannot
         if (cd->nameExpr) unsupported("a type with an indirect ::() name");
-        for (auto& mp : cd->methods)
+        for (auto& mp : cd->methods) {
             if (mp->nameExpr) unsupported("a method with an indirect ::() name");
+            if (mp->retRw) unsupported("an `is rw` method, whose result is a container");   // (a native one hands back a copy)
+        }
         std::map<std::string, int> multiSeq; // per-name candidate counter
         for (auto& mp : cd->methods) {
             SubDecl* md = mp.get();

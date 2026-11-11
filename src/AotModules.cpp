@@ -510,6 +510,39 @@ Value rtAotAttrAssign(Interpreter& I, const Value& self, Expr* node, bool inClos
     return I.eval(as);
 }
 
+// `$obj.name = v` and `$obj."$name"() = v` (native codegen): the assignment
+// through the interpreter's own lvalue of a method call, which knows what
+// RT.accessorRef does not — a `%` or `@` attribute takes a container
+// assignment, a typed one checks the value, an `is rw` method (`.calc`, an
+// Array's `.tail`) hands out the container it returns.
+Value rtAccessorAssign(Interpreter& I, Value& inv, const std::string& name, Value v) {
+    static std::mutex mu;
+    static std::map<std::string, std::unique_ptr<Assign>> nodes;   // one per method name, kept for good
+    Assign* as;
+    {
+        std::lock_guard<std::mutex> g(mu);
+        auto& slot = nodes[name];
+        if (!slot) {
+            slot = std::make_unique<Assign>();
+            slot->op = "=";
+            auto mc = std::make_unique<MethodCall>();
+            mc->inv = std::make_unique<VarExpr>("$\x01aot-inv");
+            mc->method = name;
+            slot->target = std::move(mc);
+            slot->value = std::make_unique<VarExpr>("$\x01aot-value");
+        }
+        as = slot.get();
+    }
+    ExecContext& tcx = I.tctx();
+    auto scope = makeSlabShared<Env>();
+    scope->parent = tcx.cur;
+    scope->define("$\x01aot-inv", *inv.deref());
+    scope->define("$\x01aot-value", std::move(v));
+    struct Restore { ExecContext& t; std::shared_ptr<Env> s; ~Restore() { t.cur = std::move(s); } } rs{tcx, tcx.cur};
+    tcx.cur = scope;
+    return I.eval(as);   // (an object, an Array, a Pair share what the store writes)
+}
+
 // A mutating method (push, append, write-…, splice …) on a value whose bytes
 // live in the value itself — a Buf/Blob — changes the INVOCANT'S VARIABLE,
 // which the interpreter reaches through the call's invocant expression. A

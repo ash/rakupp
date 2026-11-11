@@ -6190,6 +6190,8 @@ Value rtStarKey(const Value& base, const Value& key);
 // `$buf.push(…)` (native codegen): a mutator on a Buf/Blob writes its result
 // back into the invocant's variable, as the interpreter's does (AotModules.cpp).
 Value rtMutMethod(Interpreter& I, Value& inv, const char* name, ValueList args);
+// `$obj.name = v` (native codegen): through the interpreter's own assignment (AotModules.cpp)
+Value rtAccessorAssign(Interpreter& I, Value& inv, const std::string& name, Value v);
 // What a `for` iterates (native codegen): an ITEMIZED list — `for $x` with an
 // array in $x — is ONE item, as the interpreter's `for` has it.
 Value rtArrayVal(const Value& v);
