@@ -4053,7 +4053,7 @@ struct Codegen {
         collectExprDecls(e, names, /*root=*/!includeRoot);
         for (auto& n : names)
             if (hoisted.insert(n).second)
-                line(ind, declVar(n, "Value::any()") + "; // hoisted `my` from expression position");
+                line(ind, declVar(n, declInit("", n.empty() ? '$' : n[0])) + "; // hoisted `my` from expression position");
     }
 
     // A statement of a module routine that the emitter cannot compile is handed
