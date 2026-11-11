@@ -12,8 +12,8 @@ two ever disagree.
 
 **Headline: 100.00% of Roast's tests pass** — 219,395 of 219,395 with the tests Roast marks skip or todo left out, and all declared tests (221,034 / 221,034) with those counted as passes, as TAP counts them. **Every one of the 1,425 files passes.**
 
-Measured 2026-11-11 for v5.7.0, on `7ad1c88e` (the tag less the release's own
-commits, which change the version and the documents), on an Apple M4, against
+Measured 2026-11-11 for v5.7.0, on `3ea02ec5` (the tag less the release's own
+documents), on an Apple M4, against
 Roast `cf28a323c` (2026-10-13) and the 1,425 files its `spectest.data` lists:
 one run, with the same file list as v5.6.0's. Roast is three commits past
 v5.6.0's `da425eb92` and declares one test more, in

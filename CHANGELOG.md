@@ -16,16 +16,18 @@ TODO-FOLLOW-UPS.md.
 
 Roast: **all 1,425 files** of `spectest.data` and **all 219,395** of its tests
 with skip and todo left out (221,034 of 221,034 counting them as passes), in
-one run on 7ad1c88e, the tag less the release's own commits, which change
-the version and the documents. The file list is v5.6.0's, archived as
+one run on 3ea02ec5, the tag less the release's own documents. The file list is v5.6.0's, archived as
 v5.7.0.list. Roast is `cf28a323c`, three commits past v5.6.0's `da425eb92`:
 it declares one test more, in `S13-overloading/operators.t` behind a
 `#?rakudo skip`, and loosens five type checks in `S32-list/sort.t`. One run,
 not three, so no union list is archived.
 
-The local suite passes all 2,209 checks on 7ad1c88e, with the
+The local suite passes all 2,209 checks on 3ea02ec5, with the
 `--target=js` checks skipped for want of node on this machine; CI's legs run
-them. 7ad1c88e passed every t/race gate and perf-guard as it landed. Measured
+them. 7ad1c88e, two commits before it, passed every t/race gate and
+perf-guard as it landed. CI was red on `main` now and then through the
+cycle, on one check of a Linux leg each time; 3ea02ec5 fixes its cause
+(under Fixed: silent wrong answers). Measured
 on the Apple M4 that measured v5.5.0 and v5.6.0.
 
 **Not run** for this release: the benchmarks, so BENCHMARKS.md's tables are
@@ -717,6 +719,19 @@ README and `docs/status/` are the older ones they name.
   `.nude`, `.numerator` and `.denominator` belong to a Rat only; `$*USAGE`
   lists every alias, in Rakudo's order; and `--lint` reads a class past its
   forward declaration.
+
+- **The statements after `await start {…}` no longer run as if a thread
+  were live** (3ea02ec5), now and then. A `start` block's worker settled its
+  Promise and only then gave back its count of running bodies, so `await`
+  could return with the count still 1: `my Int $d is default(7) = 1; my $db
+  := $d` then shared no cell and `$db.VAR.default` died "No such method
+  'default' for invocant of type 'Int'". The same symptom as 578572c6's, for
+  the body's return rather than the thread's teardown, and what failed
+  t/regression/scalar-alias-keeps-type.raku or
+  worker-teardown-is-not-a-running-body.raku on one Linux leg of CI in some
+  runs. The count goes back before the Promise reads as settled.
+  `RAKUPP_WORKER_EXIT_DELAY` holds a worker in that window too: with it and
+  without the fix both files fail every run.
 
 - **A compiled loop binds a sub-signature's named parameters** (2a6d5752;
   issue #162): `for (b => 2,) -> (:$key, :$value) { … }` said `Nil Nil`
