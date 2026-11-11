@@ -342,9 +342,13 @@ RAKUPP=/path/to/release/bin/rakupp RAKUDO=/usr/bin/false \
 ```
 
 and add the tag's rows to raku.online's `sites/spec/src/data/optbench-m4.tsv`
-(`exe`/`opt`/`rakudo` ms) and `memory-m4.tsv` (each lane's `*_rss_kib`, for
-`kernels` and `optbench`) before re-running `gen-dashboard.raku`. Both files'
-headers say how their rows were taken. `RAKUDO=/usr/bin/false` leaves the
+(`exe`/`opt`/`rakudo` ms), `memory-m4.tsv` (each lane's `*_rss_kib`, for
+`kernels` and `optbench`) and `bench-backfill.tsv` (each kernel's
+`interp_min_ms`/`native_min_ms`, fifth column `m4`; run the kernels twice and
+keep the minimum) before re-running `gen-dashboard.raku`. The files' headers
+say how their rows were taken. Skip `bench-backfill.tsv` and the kernel charts
+stop at the last release someone remembered: they ended at v5.5.0 while
+v5.6.0 to v5.7.0 shipped. `RAKUDO=/usr/bin/false` leaves the
 Rakudo lane out of the kernel run: its RSS is one reading per Rakudo bottle,
 filed under the label `rakudo`, not one per tag.
 
