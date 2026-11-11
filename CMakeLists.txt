@@ -155,7 +155,8 @@ set(RAKUPP_CODEGEN "${CMAKE_CURRENT_SOURCE_DIR}/src/Codegen.cpp"
                    "${CMAKE_CURRENT_SOURCE_DIR}/src/codegen/MultiOrder.cpp"
                    "${CMAKE_CURRENT_SOURCE_DIR}/src/codegen/ClassRefusal.cpp"
                    "${CMAKE_CURRENT_SOURCE_DIR}/src/codegen/Introspection.cpp"
-                   "${CMAKE_CURRENT_SOURCE_DIR}/src/codegen/Refusals.cpp")
+                   "${CMAKE_CURRENT_SOURCE_DIR}/src/codegen/Refusals.cpp"
+                   "${CMAKE_CURRENT_SOURCE_DIR}/src/codegen/Autothread.cpp")
 list(REMOVE_ITEM RAKUPP_SOURCES ${RAKUPP_CODEGEN})
 # `--doc-links` and the docs.raku.org index it resolves against (~300 KB of
 # rows) belong to the CLI as well: no `--exe` binary links a program to its

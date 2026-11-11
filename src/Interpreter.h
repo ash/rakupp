@@ -2615,6 +2615,7 @@ public:
     Value callEnvFirst(const std::string& name, ValueList args);
     Value callEnvFirstAmp(const std::string& ampName, ValueList args);   // …given `&name`, as compiled call sites keep it
     Value envAmpOr(const std::string& ampName, const Value& fallback);   // the env's `&name` itself, else fallback
+    Value infixCallable(const std::string& bare);   // `&infix:<op>` of a built-in op (evalVarExpr's)
     // …each through the slot a native module routine bound at entry, when it has one (rtAotOuterOpt)
     Value envAmpOrAt(Value* slot, const std::string& ampName, const Value& fallback);
     Value callAmpAt(Value* slot, const std::string& ampName, ValueList args);
@@ -2966,6 +2967,8 @@ public:
     // a DateTime against a number, and a class DERIVING DateTime: operators and
     // the DateTimes its methods answer go by Rakudo's definitions (InterpreterCalls.cpp)
     std::optional<Value> dateTimeArith(const std::string& op, const Value& l, const Value& r);
+    // evalBinary's DateTime/Date arm; applyArith asks it too (--exe calls applyArith)
+    std::optional<Value> temporalArith(const std::string& op, const Value& l, const Value& r);
     Value rewrapDerivedDateTime(const Value& inv, const std::string& m, Value r);
     // Could a method call by this NAME hand back a CONTAINER? Only if some type
     // declares an `is rw` public attribute of that name, or a routine of that
@@ -3973,6 +3976,11 @@ public:
     std::string interpP5Pattern(const std::string& in); // :P5 — $vars splice as raw regex source
     // Bake regex-valued variables into an `rx//` source at construction time.
     std::string spliceRegexVars(const std::string& pat);
+    Value substMutate(Value* lv, ValueList sargs);   // `$s.subst-mutate(…)` on its slot (both engines)
+    // `topic ~~ any(…)`: each eigenstate matched, collapsed (evalBinary's; rtSmartmatch's)
+    Value junctionMatcher(const std::string& op, const Value& lTopic, const Value& r);
+    // `l ~~ /pat/` / `l !~~ /pat/` on a value (evalBinary's arm; --exe calls it too)
+    Value regexLitMatch(const std::string& op, const Value& l, const std::string& pat, bool isM);
     Value regexMatch(const std::string& subject, std::string_view pattern,
                      const Value* rxVal = nullptr,
                      const std::string& declKind = std::string());
@@ -6361,6 +6369,7 @@ Value  rtSlipVal(const Value& v);   // |x as a list element (a List that splices
 Value  rtSlipShallow(const Value& v); // |x in value position (one-level splice marker)
 void   rtXxAppend(ValueList& out, Value one); // one `xx` replication: a Slip contributes its elements
 void   rtXxCountCheck(const Value& count);   // `xx NaN` / `xx -Inf` name no count: X::Numeric::CannotConvert
+long long rtXxCount(const Value& count);     // …and as xxRepeat reads it: `xx "b"` is X::Str::Numeric
 Value  rtSpliceIfList(const Value& v); // [..] item: a List value splices one level
 Value  rtOneArgItem(const Value& v);   // [..] one-arg rule: single list-valued item spreads
 Value  rtOneArgArray(const Value& v);
@@ -6375,6 +6384,14 @@ Value  rtThrowRedo(const std::string& label = ""); // expression-position / labe
 Value  rtIndexAdverb(Value& base, const Value& keyIn, bool isHash, const std::string& adverb); // :exists/:delete/…
 Value  rtSliceFrom(const Value& base, long long from, bool exFrom); // @a[$i .. *] tail slice
 Value  rtRangeVal(const Value& from, const Value& to, bool exFrom, bool exTo); // from..to (string ranges too)
+// A Junction argument autothreads a compiled routine's call, as callCallable
+// does an interpreted one's: `mask` marks the positional parameters that take
+// a junction apart (codegen/Autothread.cpp). An all/none junction threads first.
+bool   rtJunctionArg(const ValueList& a, uint64_t mask);
+Value  rtAutothread(ValueList& a, uint64_t mask, const std::function<Value(ValueList&)>& f);
+std::function<Value(ValueList&)> rtThreaded(uint64_t mask, std::function<Value(ValueList&)> f);
+Value  rtPrefixBitNot(const Value& v);   // prefix `+^` (evalUnary's; a non-numeric Str throws)
+Value  rtPrefixUpto(const Value& v);     // prefix `^`  (evalUnary's: `^5.5`, a big bound, a Str throws)
 int    rtBigRangeStep(const Value& r, Value& cur, bool first); // a BigInt-ended range's next element (Interpreter.cpp)
 // argv -> MAIN args (--opt named, rest positional). `scope`, when given, is the
 // interpreter whose symbols decide whether a word NAMES an enum value; without

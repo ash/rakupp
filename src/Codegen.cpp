@@ -36,6 +36,7 @@ bool exprMayUseTopic(const Expr* e);   // Interpreter.cpp: may `e` read or write
 const char* builtinRefusal(const std::string& name, bool inTopic);   // codegen/Refusals.cpp, as are:
 const char* methodRefusal(const MethodCall* m, bool& routineWide); bool fatalCallSite(const Expr* e); bool isLeaveBlock(const Stmt* s);
 bool leaveReadsEarlier(const std::vector<StmtPtr>& body, size_t j);
+std::string autothreadMask(const std::vector<Param>& ps, bool block);   // codegen/Autothread.cpp
 
 namespace {
 
@@ -60,6 +61,10 @@ namespace {
 // anchors, `$0` backrefs and `$<name>` capture refs are match-state, not
 // program variables, and stay allowed.
 void requireEngineOnlyRegex(const std::string& pat, const char* what) {
+    // (routine-wide: a statement handed to the interpreter on its own does not
+    // carry the routine's locals the pattern names, so `sub mk { my $v = 'b';
+    // regex { a $v } }` matched nothing; the whole routine stays interpreted)
+    auto unsupported = [](const std::string& m) { throw CodegenError{m, /*routineWide=*/true}; };
     int cls = 0; bool esc = false;
     auto identStart = [](char c) { return ascii::isalpha((unsigned char)c) || c == '_'; };
     for (size_t i = 0; i < pat.size(); i++) {
@@ -761,9 +766,9 @@ struct Codegen {
                                                          : "rtNeg(RT, " + x + ")";
         if (u->op == "+")  return "rtPlus(RT, " + x + ")";
         if (u->op == "~")  return "Value::str(rtInterpStr(" + x + "))";   // `~$obj` asks its .Str
-        if (u->op == "+^") return "Value::integer(~(" + x + ").toInt())";          // bitwise NOT
+        if (u->op == "+^") return "rtPrefixBitNot(" + x + ")";                     // bitwise NOT
         if (u->op == "?^") return "Value::boolean(!RT.boolify(" + x + "))";        // boolean NOT (xor form)
-        if (u->op == "^")  return "Value::range(0, (" + x + ").toInt(), false, true)"; // ^N = 0..^N
+        if (u->op == "^")  return "rtPrefixUpto(" + x + ")";                       // ^N = 0..^N
         // %(...) hash composer; a Match is its named captures (`%<x>`), as the
         // interpreter's ctx% arm has it — a hash built from it died "Odd number"
         if (u->op == "ctx%")
@@ -1318,12 +1323,15 @@ struct Codegen {
     // call to its class's `sub helper` died "Undefined routine" at run time.
     // Such a call refuses instead, and the program bundles.
     std::set<std::string> hiddenRoutines_;
+    bool litBound_ = false;   // emitting a multi candidate: its dispatcher checks a literal parameter (and threads no junction)
 
     std::string builtinCall(const std::string& name, const std::string& vl) {
         // `callframe`, `samewith`, `react`, an EVAL under a native topic (Refusals.cpp)
         if (const char* why = builtinRefusal(name, !topics.empty())) throw CodegenError{why, /*routineWide=*/true};
         // (no built-in: "Undefined routine"; nor delegable, its undo is the routine's exit)
         if (name == "temp" || name == "let") throw CodegenError{"`" + name + "`", /*routineWide=*/true};
+        // `@a >>[&op]<< @b`: evalCall's own arm (shape rules, writes through the operands)
+        if (name.rfind("hyper-with:", 0) == 0) unsupported("a hyper over a bracketed operator");
         if (!moduleMode_ && hiddenRoutines_.count(name) && !moduleExports_.count(name))
             unsupported("a call to `" + name + "`, declared where this site cannot reach it");
         // (the `&name` key is built once per call site, not on every call)
@@ -2294,9 +2302,11 @@ struct Codegen {
         // catch, a `return`/`fail` in a lexical sub unwound into the CALLER's
         // frame — or clean out of main() as an uncaught-exception abort
         const bool framed = __fs.used();
-        return "[=](ValueList& __a)->Value{\n" +
+        const std::string lam = "[=](ValueList& __a)->Value{\n" +
                retWrap(d->retType, (framed ? framePrologue() : std::string()) +
                                    "try {\n" + body + "} " + routineCatch(framed) + "\n") + "}";
+        const std::string m = autothreadMask(sigOf(d), false);   // (a Junction argument threads the call)
+        return m.empty() ? lam : "rtThreaded(" + m + ", " + lam + ")";
     }
     // May calls of this lexical sub go straight to its body (lexDirect_)? As a
     // top-level sub's do: a plain signature the call site can match by count
@@ -2478,8 +2488,10 @@ struct Codegen {
                 }
             }
             else if (be->params.empty()) {
+                // (a bare block called with nothing has the OUTER `$_`: `$lock.protect: { .path }`)
+                const std::string outer = be->isSub ? "Value::any()" : curTopicExpr();
                 topic = gensym("v__t");
-                line(0, "Value " + topic + " = (__a.size() > 0 ? __a[0] : Value::any());");
+                line(0, "Value " + topic + " = (__a.size() > 0 ? __a[0] : " + outer + ");");
                 topics.push_back(topic); pushed = true;
             } else {
                 bindParams(be->params, 0, false); // full signature forms, same as sub bodies
@@ -2513,6 +2525,8 @@ struct Codegen {
               retWrap(be->retType, (framed ? framePrologue() : std::string()) +
                                    "try {\n" + body + "} " + routineCatch(framed) + "\n") + "})"
             : "Value::closure([=](ValueList& __a)->Value{\n" + retWrap(be->retType, body) + "})";   // (`-> $x --> Int`)
+        if (const std::string m = autothreadMask(be->params, !be->isSub); !m.empty())   // (a Junction argument threads)
+            mk = "Value::closure(rtThreaded(" + m + ", " + mk.substr(15, mk.size() - 16) + "))";
         // A written signature (pointy params, `sub (…)`) rides in as the Code's
         // params — which is also what tells sort/map/for how many elements to
         // feed it per call. A placeholder block ($^a/$^b) lists its placeholders
@@ -2654,11 +2668,15 @@ struct Codegen {
                         if (!op.empty() && op.back() == '>') op.pop_back();
                         // (a prefix or postfix is no two-argument applyArith)
                         if (nm.rfind("infix:", 0) != 0) unsupported("`&" + nm + "` as a value");
-                        return "Value::closure([=](ValueList& __a)->Value{ return applyArith(" + cesc(knownOp(op)) +
-                               ", (__a.size()>0?__a[0]:Value::any()), (__a.size()>1?__a[1]:Value::any())); })";
+                        // …the interpreter's own, named `infix:<op>` (`.reduce(&[+])` reads the name)
+                        knownOp(op);
+                        return "RT.infixCallable(" + cesc(nm) + ")";
                     }
                     // a builtin (say, is_even, …) — dispatch by name at runtime
-                    std::string fwd = "Value::closure([=](ValueList& __a)->Value{ return " + builtinCall(nm, "__a") + "; })";
+                    // …through the interpreter's one Callable for it when it has one
+                    // (its name: `&say.gist` is "&say", not "sub { ... }")
+                    std::string fwd = "([&]()->Value{ if (const Value* __b = RT.builtinRef(" + cesc(nm) + ")) return *__b; "
+                                      "return Value::closure([=](ValueList& __a)->Value{ return " + builtinCall(nm, "__a") + "; }); }())";
                     // …but the environment first, as the interpreter's `&name`
                     // looks: a routine a `use`d module put there is that
                     // Callable itself — its .WHY, .name and identity — not a
@@ -3083,9 +3101,10 @@ struct Codegen {
                 // smartmatch against a regex literal: `$x ~~ /.../`
                 if ((b->op == "~~" || b->op == "!~~") && b->rhs->kind == NK::RegexLit) {
                     requireEngineOnlyRegex(static_cast<RegexLit*>(b->rhs.get())->pattern, "a regex");
-                    std::string m = "RT.regexMatch((" + ex(b->lhs.get()) + ").toStr(), "
-                                  + cesc(static_cast<RegexLit*>(b->rhs.get())->pattern) + ")";
-                    return b->op == "~~" ? m : "Value::boolean(!(" + m + ").truthy())";
+                    // (the interpreter's own: a junction autothreads, a list matches by element)
+                    auto* rl = static_cast<RegexLit*>(b->rhs.get());
+                    return "RT.regexLitMatch(" + cesc(b->op) + ", " + ex(b->lhs.get()) + ", " +
+                           cesc(rl->pattern) + ", " + (rl->isM ? "true" : "false") + ")";
                 }
                 // substitution: `$x ~~ s/pat/repl/` (and tr///, S///) — one runtime call
                 // that mutates the target through its lvalue like the interpreter does
@@ -3114,7 +3133,7 @@ struct Codegen {
                     // …and a count that names no count at all (`NaN`, `-Inf`) is
                     // the same refusal the interpreter gives, so the two engines
                     // agree on S03-operators/repeat.t's throws-like block.
-                    return "([&]()->Value{ Value _c=(" + R + "); rtXxCountCheck(_c); long long _n=_c.toInt(); "
+                    return "([&]()->Value{ Value _c=(" + R + "); rtXxCountCheck(_c); long long _n=rtXxCount(_c); "
                            "Value _o=Value::array(); _o.isList=true; _o.s=\"Seq\"; "
                            "for(long long _i=0;_i<_n;_i++) rtXxAppend(*_o.arr(), " + L + "); return _o; }())";
                 }
@@ -3537,6 +3556,8 @@ struct Codegen {
                     return !v->declare && v->name.size() > 1 && v->name[0] == '$' && v->name != "$_" &&
                            v->name[1] != '*' && v->name[1] != '?' && v->name != "$/" && v->name != "$!";
                 };
+                if (name == "subst-mutate" && !m->meta && !m->bang && !m->args.empty() && bufHolder(m->inv.get()))
+                    return "RT.substMutate(&(" + lvalueExpr(m->inv.get()) + "), " + argsVL(m->args) + ")";
                 if (!m->meta && !m->bang && !m->maybe && !hasWhatever(e) && bufHolder(m->inv.get()) &&
                     (name == "push" || name == "append" || name == "prepend" || name == "unshift" ||
                      name == "pop" || name == "shift" || name == "splice" || name == "reallocate" ||
@@ -5247,15 +5268,16 @@ struct Codegen {
             };
             const bool back = self(b->lhs) && plainX(b->rhs);
             const bool front = !back && self(b->rhs) && plainX(b->lhs);
+            const std::string co = (back || front) ? coerceFor(tgt, rhs, a->value.get()) : std::string();
             if (b->op == "~" && (back || front) &&
                 tv->name.size() > 1 && tv->name[0] == '$' &&
                 (nameLetterAt(tv->name, 1) || tv->name[1] == '_') &&
-                !opDeclared("infix:<~>") && coerceFor(tgt, rhs, a->value.get()) == rhs) {
+                !opDeclared("infix:<~>") && (co == rhs || co == "rtNilToAny(" + rhs + ")")) {   // (`~` is never Nil)
                 return "([&]()->Value&{ Value& __l = " + lvalueExpr(tgt) + ";"
                        " if (__l.t == VT::Str && __l.hashKind.empty() && __l.enumName().empty()) " +
                        (back ? "rtCatAssign(__l, " + exArg(b->rhs.get()) + ");"
                              : "rtCatPrepend(__l, " + exArg(b->lhs.get()) + ");") +
-                       " else __l = " + rhs + "; return __l; }())";
+                       " else __l = " + co + "; return __l; }())";
             }
         }
         // `$!x = Nil` resets the attribute to its default (rtAttrNil), as
@@ -5428,7 +5450,7 @@ struct Codegen {
             if (bodyImplicitArgs(br.second->stmts) & 1) unsupported("`@_` in an `if` block");
         if (f->elseBlock && (bodyImplicitArgs(f->elseBlock->stmts) & 1)) unsupported("`@_` in an `else` block");
     }
-    void ifStmt(IfStmt* f, int ind) {
+    void ifStmt(IfStmt* f, int ind, const std::string* dst = nullptr) {
         refuseIfAtArgs(f);
         for (auto& bp : f->branchParams)
             if (!bp.empty()) unsupported("if EXPR -> ($a, $b) destructuring binder");
@@ -5436,13 +5458,14 @@ struct Codegen {
         if (!f->thenVar.empty()) { // if EXPR -> $x { … } — bind the condition value; only a single branch
             if (f->branches.size() != 1) unsupported("if EXPR -> $x with elsif");
             std::string v = mangleVar(f->thenVar);
-            line(ind, "{");
-            line(ind + 1, "Value " + v + " = " + ex(f->branches[0].first.get()) + ";");
+            line(ind, "{");   // (declVar: a sigilless `-> \x` is refused, its term would not find it)
+            line(ind + 1, declVar(f->thenVar, ex(f->branches[0].first.get())) + ";");
             std::string c = "RT.boolify(" + v + ")";
             line(ind + 1, (f->isUnless ? "if (!" : "if (") + c + ") {");
-            block(f->branches[0].second.get(), ind + 2);
+            auto body = [&](Block* b) { if (dst) blockValue(b, ind + 2, *dst); else block(b, ind + 2); };
+            body(f->branches[0].second.get());
             line(ind + 1, "}");
-            if (f->elseBlock) { line(ind + 1, "else {"); block(f->elseBlock.get(), ind + 2); line(ind + 1, "}"); }
+            if (f->elseBlock) { line(ind + 1, "else {"); body(f->elseBlock.get()); line(ind + 1, "}"); }
             line(ind, "}");
             return;
         }
@@ -5944,7 +5967,7 @@ struct Codegen {
     }
     void ifValue(IfStmt* f, int ind, const std::string& dst) {
         refuseIfAtArgs(f);
-        if (!f->thenVar.empty()) { ifStmt(f, ind); return; } // `if EXPR -> $x` in value position: not captured
+        if (!f->thenVar.empty()) { ifStmt(f, ind, &dst); return; } // `if EXPR -> $x` in value position
         for (size_t i = 0; i < f->branches.size(); i++) {
             std::string c = exBool(f->branches[i].first.get());
             if (f->isUnless) c = "!" + c;
@@ -9369,6 +9392,9 @@ struct Codegen {
             if (p.subSig)         unsupported("a sub-signature on a routine parameter");
             if (p.typeCapture || p.typeFromCapture || !p.captureName.empty()) unsupported("a type capture (::T) on a routine parameter");
             if (!p.shapeDims.empty() || (p.named && (p.isRw || p.isRaw))) unsupported("a shaped, or a named `is rw`/`is raw`, routine parameter");
+            // (a literal one is checked by a multi's dispatcher alone; elsewhere neither
+            // the binder nor the signature (`-> 'greet', $name`, Cro's routes) knew it)
+            if (p.litVal && !litBound_) unsupported("a literal parameter outside a multi candidate");
         }
         // (only a top-level sub's direct call copies an `is rw` slot back: subDef)
         const bool rwBack = std::exchange(rwDirect_, false);
@@ -9811,6 +9837,8 @@ struct Codegen {
         bool hasRw = false;
         for (auto& p : ps) if (p.isRw && !p.named && !p.slurpy && !p.invocant) hasRw = true;
         line(0, "static Value " + fnName + "(ValueList" + (hasRw ? "&" : "") + " __a) {");
+        if (const std::string m = litBound_ ? std::string() : autothreadMask(ps, false); !m.empty())   // (a Junction argument threads)
+            line(1, "if (rtJunctionArg(__a, " + m + ")) return rtAutothread(__a, " + m + ", [&](ValueList& __t) { return " + fnName + "(__t); });");
         if (!kernelName.empty() && nrw.empty()) out << kernelEntry(kernelName, {});
         // A ROUTINE BODY IS A ReturnEx BOUNDARY. `return` itself compiles to a C++
         // return, so this catches the ones thrown from elsewhere — a builtin such
@@ -9853,6 +9881,7 @@ struct Codegen {
         RoutineScope __rs{this, ""};   // a candidate's &?ROUTINE is the candidate, not the dispatcher
         for (size_t i = 0; i < cands.size(); i++) {
             idx[cands[i]] = (int)i;
+            struct LitOk { bool& b; ~LitOk() { b = false; } } __lo{litBound_ = true};
             bodyDef(mangleSub(name) + "__" + std::to_string(i), cands[i]->params, cands[i]->body, false, "",
                     cands[i]->retType);
         }

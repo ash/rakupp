@@ -198,6 +198,7 @@ static inline bool isAnyTypeObject(const Value& v) {
 int ncScalarWidth(const std::string& t, bool& sign, bool& isFloat);
 bool valueEqv(const Value& a, const Value& b);
 bool isSetOpStr(const std::string& o);
+bool reduceKeepsOperands(const std::string& op);   // [Z]/[X]/minmax/set-op reduce: operands stay whole
 static bool boxedIteration(const Value& v);
 void spDeclaredInRaw(const std::vector<StmtPtr>& body, std::vector<const VarExpr*>& out);
 bool pureSubscriptBase(const Expr* b);

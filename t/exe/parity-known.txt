@@ -1,35 +1,14 @@
 # t/exe/parity.raku: programs whose --exe binary does not yet behave as the
 # interpreter does, one file name per line. The gate passes them and says when
 # one starts to agree; take it off then. This list only shrinks.
-append-shapes-linear.raku
 battery-regressions-v5.raku
-cat-assign-shapes.raku
 class-begin-and-run-sink.raku
-cro-live-server.raku
-date-formatter-everywhere.raku
-datetime-number-is-instant.raku
 dynamic-var-memo.raku
-ecosweep-condition-binders-and-hyper.raku
-endless-range-reduce.raku
 gobbled-block-refused-at-compile-time.raku
 grand-review-c4b-modules-seq.raku
-hyper-in-whatevercode.raku
-issue-138-qq-block-in-regex-atom.raku
 issue-198-titlecase-sub-block-arg.raku
-issue34-hyper-hash-subscript.raku
-junction-hyper-method-call.raku
-junction-regex-match-var.raku
-missing-routines-batch.raku
-nqp-unipropcode-int.raku
-operator-strictness.raku
 rakudo-t-language-gaps-2.raku
-range-endpoints-and-adverbs.raku
-range-reduce-excludes-int-minimum.raku
-regex-value-variable-atom.raku
-seq-generator-shapes.raku
 smartmatch-topic-pad.raku
 undeclared-routine-reference.raku
 undeclared-variable-hint.raku
 usage-lists-every-alias.raku
-watch-ignores-writes-before-it.raku
-word-list-escapes-comma-op-forward-type.raku
