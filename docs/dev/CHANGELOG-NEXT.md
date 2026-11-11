@@ -9,7 +9,8 @@ from this page. Move each item into CHANGELOG.md at the tag and delete it
 here.*
 
 *Covered so far: 59e9d3aa, e5b2b6c8, dec6d962, 15997e10, 71451a61, c68ec738,
-19078698, 9338d1b1, 58e2fdd4, abfea750, 8a11fb4d.*
+19078698, 9338d1b1, 58e2fdd4, abfea750, 8a11fb4d, 1d8f1495,
+fd3fda0f.*
 
 ---
 
@@ -95,6 +96,18 @@ here.*
   `()` while a plain `UNIT::{'&name'}` found the sub; `UNIT::{'&EXPORT'}:exists`
   was False either way. `t/regression/unit-stash-exists-under-import-list.raku`.
   Reported by Zer0-Tolerance.
+
+- **`Uni.encode` is a `Buf`** (1d8f1495) (#251): `$s.NFD.encode("utf8")`,
+  the other normal forms' and a bare `Uni.new(…)`'s answered `utf8` (or
+  `Blob[uint8]` for latin-1), as `Str.encode` does, so `~~ Buf` was False and
+  a `--> Buf` return check died. The codepoints encode as they are, so an NFD
+  stays decomposed. `t/regression/uni-encode-is-a-buf.raku`. Reported by
+  Offizin.
+- **`Unicode.version` and `Unicode.NFG`** (fd3fda0f) (#252), on the class and
+  on `Unicode.new`, were X::Method::NotFound: a program could not ask which
+  Unicode the engine knows. They answer `v18.0` (Rakudo 2026.09: `v17.0`)
+  and `True`. `t/regression/unicode-version-and-nfg.raku`. Reported by
+  Offizin.
 
 ### Platforms and packaging
 
