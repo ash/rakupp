@@ -64,6 +64,7 @@ Every figure here is measured, not projected; the methodology is in
 | 2026-11-04 | **v5.6.1** | v5.6.2's source under a tag cut before the version bump, so its binaries, wheels and Raku.js engine call themselves 5.6.0 — superseded by v5.6.2 |
 | 2026-11-05 | **v5.6.2** | v5.6.1, correctly named: an `is copy` parameter takes a constant (#218), `--cnp` keeps a method's writes to its invocant (#219), and the Raku.js archives v5.6.0 lacked — a patch release; Roast not re-run |
 | 2026-11-06 | **v5.6.3** | `--target=arduino` sketches the Arduino IDE compiles, carrying only the helpers they call; objects, hashes and Rats take less memory; a metaop and `~` meet the program's own operator — a technical release from `main`; Roast and perf not re-run |
+| 2026-11-11 | **v5.7.0** | A `Value` of 32 bytes where it was 80; an untyped array of Ints or Nums kept as machine words; `--doc-links` links a program to its documentation; `use Arduino::WiFi` on the Uno R4 WiFi; natives ranked in multi dispatch as Rakudo ranks them — Roast 1,425 / 1,425 on a Roast three commits on; benchmarks not re-run |
 
 **By the numbers:** v0.1.0 → v2.0.0 in 36 days (2026-07-02 to 2026-08-07).
 
@@ -330,6 +331,17 @@ zef populates (see [MODULES.md](../guide/MODULES.md)); the goal is breadth and d
   `main` too — leaner objects, hashes and Rats, a native array grown by a
   loop kept packed, a metaop and `~` that meet the program's own operator.
   Neither Roast nor any performance gate was re-run.
+- **Nov 11 — v5.7.0.** A value takes 32 bytes: 80 at v5.6.3, 64 on the way,
+  every reference count kept. An untyped array of plain Ints or Nums keeps
+  them as 8-byte words and unpacks when anything else is stored.
+  `rakupp --doc-links` links every construct of a program to its page on
+  docs.raku.org, and the playground has a Docs tab on the same code. An Uno
+  R4 WiFi joins a network and reads the time from it. Natives in multi
+  dispatch are ranked as Rakudo ranks them, compiled dispatch included. A
+  review of src/ and an audit of every closed issue account for most of the
+  fixes; three of them are crashes between threads. Roast is unchanged at
+  1,425 / 1,425, one run on a Roast three commits on. The benchmarks were not
+  re-run.
 
 Beyond the interpreter, the same source feeds a small constellation —
 [raku.online](https://raku.online/) (playground),

@@ -155,7 +155,7 @@ The same progress measured at three granularities:
 
 - **Tests, skip and todo left out: 100.00%** (219,395 / 219,395) — the headline:
   the tests Roast expects an implementation to pass.
-- **All declared tests: 100.00%** (221,033 / 221,033) — the same with skip and
+- **All declared tests: 100.00%** (221,034 / 221,034) — the same with skip and
   todo counted as passes, and with the tests of a file that aborts read from its
   source, so a parse error cannot hide them.
 - **Files fully passing: 100.00%** (1,425 / 1,425) — the stricter bar; a file

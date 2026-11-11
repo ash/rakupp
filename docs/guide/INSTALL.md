@@ -391,7 +391,7 @@ docker run --rm -v "$PWD:/work" ghcr.io/ash/rakupp script.raku
 echo 'say 1 + 2' | docker run --rm -i ghcr.io/ash/rakupp
 ```
 
-The tags are `latest`, the version (`5.6.3`) and the minor (`5.6`). The image
+The tags are `latest`, the version (`5.7.0`) and the minor (`5.7`). The image
 is the release archive for its architecture, checked against the published
 SHA-256 and unpacked into `/opt/rakupp` on `debian:bookworm-slim`, with the
 names `raku++` and `raku` beside `rakupp`. Nothing in it is built separately,

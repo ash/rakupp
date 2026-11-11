@@ -10,13 +10,17 @@ two ever disagree.
 
 ## Current standing
 
-**Headline: 100.00% of Roast's tests pass** — 219,395 of 219,395 with the tests Roast marks skip or todo left out, and all declared tests (221,033 / 221,033) with those counted as passes, as TAP counts them. **Every one of the 1,425 files passes.**
+**Headline: 100.00% of Roast's tests pass** — 219,395 of 219,395 with the tests Roast marks skip or todo left out, and all declared tests (221,034 / 221,034) with those counted as passes, as TAP counts them. **Every one of the 1,425 files passes.**
 
-Measured 2026-11-04 on the v5.6.0 tag (`50a0d8a3`), on an Apple M4, against
-Roast `da425eb92` (2026-10-07) and the 1,425 files its `spectest.data` lists:
-three runs, 1,425 / 1,424 / 1,425, with the same file list as v5.5.0's and the
-union of the three the same 1,425. The run that lost a file lost
-`S17-promise/nonblocking-await.t`, which still crashes now and then (see [the
+Measured 2026-11-11 for v5.7.0, on `7ad1c88e` (the tag less the release's own
+commits, which change the version and the documents), on an Apple M4, against
+Roast `cf28a323c` (2026-10-13) and the 1,425 files its `spectest.data` lists:
+one run, with the same file list as v5.6.0's. Roast is three commits past
+v5.6.0's `da425eb92` and declares one test more, in
+`S13-overloading/operators.t` behind a `#?rakudo skip`, so the count with skip
+and todo left out did not move (1,639 tests are left out, was 1,638). v5.6.0
+was measured in three runs, 1,425 / 1,424 / 1,425; the run that lost a file lost
+`S17-promise/nonblocking-await.t`, which crashes now and then (see [the
 note below](#the-one-file-that-flaps)). On a loaded
 machine, `S17-channel/stress.t` — marked `stress slow` in `spectest.data`, 7–12
 s alone against the 10-second ceiling — can also time out with its tests
@@ -105,7 +109,7 @@ and todo left out, from the by-synopsis table the harness prints.
 | S10 | Packages | 8 / 8 | 191 / 191 | 190 / 190 |
 | S11 | Modules | 21 / 21 | 320 / 320 | 306 / 306 |
 | S12 | Objects & classes | 97 / 97 | 1,989 / 1,989 | 1,843 / 1,843 |
-| S13 | Overloading | 5 / 5 | 81 / 81 | 76 / 76 |
+| S13 | Overloading | 5 / 5 | 82 / 82 | 76 / 76 |
 | S14 | Roles | 24 / 24 | 413 / 413 | 407 / 407 |
 | S15 | Unicode / strings / NFG | 82 / 82 | 92,521 / 92,521 | 92,452 / 92,452 |
 | S16 | I/O | 37 / 37 | 766 / 766 | 747 / 747 |
@@ -122,9 +126,9 @@ and todo left out, from the by-synopsis table the harness prints.
 | 6.d | v6.d language snapshot | 18 / 18 | 20,310 / 20,310 | 20,310 / 20,310 |
 | APPENDICES | — | 6 / 6 | 57 / 57 | 53 / 53 |
 | MISC / t | — | 3 / 3 | 9 / 9 | 9 / 9 |
-| Total | — | 1,425 / 1,425 | 221,033 / 221,033 | 219,395 / 219,395 |
+| Total | — | 1,425 / 1,425 | 221,034 / 221,034 | 219,395 / 219,395 |
 
-S15 (Unicode, grapheme and normalization tables) holds 92,521 of the 221,033
+S15 (Unicode, grapheme and normalization tables) holds 92,521 of the 221,034
 declared tests, and the `sprintf` conversion files hold most of 6.d's 20,310,
 so the whole-suite percentage is dominated by those two; every other row is
 now at 100% as well.
