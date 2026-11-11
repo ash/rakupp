@@ -53,6 +53,10 @@ namespace {
 // anchors, `$0` backrefs and `$<name>` capture refs are match-state, not
 // program variables, and stay allowed.
 void requireEngineOnlyRegex(const std::string& pat, const char* what) {
+    // (routine-wide: a statement handed to the interpreter on its own does not
+    // carry the routine's locals the pattern names, so `sub mk { my $v = 'b';
+    // regex { a $v } }` matched nothing; the whole routine stays interpreted)
+    auto unsupported = [](const std::string& m) { throw CodegenError{m, /*routineWide=*/true}; };
     int cls = 0; bool esc = false;
     auto identStart = [](char c) { return ascii::isalpha((unsigned char)c) || c == '_'; };
     for (size_t i = 0; i < pat.size(); i++) {

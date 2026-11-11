@@ -27,7 +27,6 @@ how-legacy-exporthow.raku
 ident-continuation-and-native-return-boundary.raku
 imported-operator-traits.raku
 is-dynamic-and-sum.raku
-issue-138-qq-block-in-regex-atom.raku
 junction-regex-match-var.raku
 kernel-closure-callees.raku
 method-leave-dies-unwinding.raku
@@ -55,7 +54,6 @@ pseudo-package-adverbs.raku
 pseudo-package-stash-value.raku
 quanthash-exact-sethash-zen-dynamic.raku
 react-died-names-the-react.raku
-regex-value-variable-atom.raku
 return-through-block-undo.raku
 returned-map-is-lazy.raku
 role-multi-siblings-differing-by-named.raku
