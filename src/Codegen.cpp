@@ -5372,7 +5372,7 @@ struct Codegen {
             if (bodyImplicitArgs(br.second->stmts) & 1) unsupported("`@_` in an `if` block");
         if (f->elseBlock && (bodyImplicitArgs(f->elseBlock->stmts) & 1)) unsupported("`@_` in an `else` block");
     }
-    void ifStmt(IfStmt* f, int ind) {
+    void ifStmt(IfStmt* f, int ind, const std::string* dst = nullptr) {
         refuseIfAtArgs(f);
         for (auto& bp : f->branchParams)
             if (!bp.empty()) unsupported("if EXPR -> ($a, $b) destructuring binder");
@@ -5380,13 +5380,14 @@ struct Codegen {
         if (!f->thenVar.empty()) { // if EXPR -> $x { … } — bind the condition value; only a single branch
             if (f->branches.size() != 1) unsupported("if EXPR -> $x with elsif");
             std::string v = mangleVar(f->thenVar);
-            line(ind, "{");
-            line(ind + 1, "Value " + v + " = " + ex(f->branches[0].first.get()) + ";");
+            line(ind, "{");   // (declVar: a sigilless `-> \x` is refused, its term would not find it)
+            line(ind + 1, declVar(f->thenVar, ex(f->branches[0].first.get())) + ";");
             std::string c = "RT.boolify(" + v + ")";
             line(ind + 1, (f->isUnless ? "if (!" : "if (") + c + ") {");
-            block(f->branches[0].second.get(), ind + 2);
+            auto body = [&](Block* b) { if (dst) blockValue(b, ind + 2, *dst); else block(b, ind + 2); };
+            body(f->branches[0].second.get());
             line(ind + 1, "}");
-            if (f->elseBlock) { line(ind + 1, "else {"); block(f->elseBlock.get(), ind + 2); line(ind + 1, "}"); }
+            if (f->elseBlock) { line(ind + 1, "else {"); body(f->elseBlock.get()); line(ind + 1, "}"); }
             line(ind, "}");
             return;
         }
@@ -5886,7 +5887,7 @@ struct Codegen {
     }
     void ifValue(IfStmt* f, int ind, const std::string& dst) {
         refuseIfAtArgs(f);
-        if (!f->thenVar.empty()) { ifStmt(f, ind); return; } // `if EXPR -> $x` in value position: not captured
+        if (!f->thenVar.empty()) { ifStmt(f, ind, &dst); return; } // `if EXPR -> $x` in value position
         for (size_t i = 0; i < f->branches.size(); i++) {
             std::string c = exBool(f->branches[i].first.get());
             if (f->isUnless) c = "!" + c;

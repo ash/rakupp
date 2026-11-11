@@ -13,7 +13,6 @@ cro-live-server.raku
 dynamic-falls-back-to-global.raku
 dynamic-method-lvalue.raku
 ecosweep-2026-09.raku
-ecosweep-condition-binders-and-hyper.raku
 empty-block-is-nil.raku
 eval-undeclared-variable-before-routine.raku
 exe-callframe.raku
