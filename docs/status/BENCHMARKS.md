@@ -234,8 +234,13 @@ native-int lanes for int assignments and conditions
 ([OPTIMIZATION.md](../internals/OPTIMIZATION.md)). Measured by
 [`tools/run-optbench.raku`](../../tools/run-optbench.raku), which first checks
 each program's output four ways (interp, `--exe`, `--exe -O`, Rakudo); one pass,
-best of 5. Measured 2026-10-08 at `v5.3.0` on the M3, and not re-run for
-v5.4.0 or v5.5.0.
+best of 5. Measured 2026-10-08 at `v5.3.0` on the M3. The table stays the
+M3's, because raku.online's dashboard mines it as the M3 series; every release
+since, v5.3.0 to v5.7.0, was re-run on the M4 on 2026-11-11 with peak RSS
+alongside, and those rows live in raku.online's
+`sites/spec/src/data/optbench-m4.tsv` and `memory-m4.tsv`. On the M4 the
+release archives read sieve `-O` 19.0 ms at v5.3.0 and 24.5 ms at v5.7.0, and
+arrayidx `--exe` 79.8 → 94.6 ms over the same span.
 
 | Benchmark | `--exe` | `--exe -O` | `-O` vs `--exe` | Rakudo | showcases |
 |---|---:|---:|---:|---:|---|
