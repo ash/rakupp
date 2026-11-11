@@ -76,7 +76,9 @@ Value bufNewOrAllocate(const Value& inv, bool allocate, const ValueList& args) {
     if (words) for (auto& a : args) bytes += (char)(unsigned char)(a.i & 0xFF);
     else {
         std::function<void(const Value&)> add = [&](const Value& v) {
-            if (v.t == VT::Array && v.arr()) { for (auto& e : *v.arr()) add(e); }
+            // (an unpulled Seq — a sub's `.map`, a gather — is read first: its
+            // elements were not there yet, and the buffer came out empty, #241)
+            if (v.t == VT::Array && v.arr()) { forceLazy(v); for (auto& e : *v.arr()) add(e); }
             else if (v.t == VT::Range) { for (auto& e : v.flatten()) add(e); } // Buf.new(^10)
             // Buf.new($blob) — the copy candidate — takes the bytes; numifying the
             // Blob here would silently store its element COUNT as the one byte.
