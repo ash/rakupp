@@ -3575,8 +3575,11 @@ Value rtPairKeyed(const Value& kv, Value value) {
     if (kv.t == VT::Int || kv.t == VT::Num || kv.t == VT::Rat || kv.t == VT::Bool ||
         kv.t == VT::Array || kv.t == VT::Hash || kv.t == VT::Object || kv.t == VT::Pair ||
         kv.t == VT::Match || kv.t == VT::Code || kv.t == VT::Regex ||
-        kv.t == VT::Type || kv.t == VT::Complex || kv.t == VT::Nil || kv.t == VT::Range)
-        pr.setPairKey(kv);
+        kv.t == VT::Type || kv.t == VT::Complex || kv.t == VT::Nil || kv.t == VT::Range ||
+        kv.t == VT::Whatever) {   // (`$w => 1` keys the star, as the interpreter's Pair arm)
+        Value k = kv; k.itemized = false;   // (decontainerized, as there)
+        pr.setPairKey(std::move(k));
+    }
     return pr;
 }
 

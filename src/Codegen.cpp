@@ -27,6 +27,7 @@ std::shared_ptr<Param> signatureParamCopy(const Param& p); // Builtins.cpp
 const std::set<std::string>& testExports(); // CallCheck.cpp: the names `use Test` puts in scope
 bool arithOpKnown(const std::string& op);    // InterpreterOperators.cpp: applyArith knows `op`
 bool operatorRoutineName(const std::string& n, std::string& cat, std::string& op);   // codegen/Operators.cpp
+std::string classRefusal(const ClassDecl*, const std::set<std::string>&);   // src/codegen/ClassRefusal.cpp
 std::string multiOrderRefusal(const std::vector<SubDecl*>&, const std::vector<const Program*>&,
                               int (*)(const SubDecl*));   // codegen/MultiOrder.cpp
 
@@ -599,7 +600,7 @@ struct Codegen {
         if (n[0] == '@' && curParams_)
             for (const Param& p : *curParams_)
                 if (p.name == n) {
-                    if (p.slurpy) unsupported("a write into an element of a slurpy parameter");
+                    if (p.slurpy) throw CodegenError{"a write into an element of a slurpy parameter", /*routineWide=*/true};
                     via();
                     return;
                 }
@@ -764,7 +765,7 @@ struct Codegen {
         if (u->op == "ctx%{}") return "rtObjHash(" + x + ")";  // :{ ... } object hash
         if (u->op == "decont") // `$x<>` — the value, out of its item container
             return "([&]()->Value{ Value _v = " + x +
-                   "; if (_v.t==VT::Array||_v.t==VT::Hash) _v.itemized=false; return _v; }())";
+                   "; if (_v.t==VT::Array||_v.t==VT::Hash||_v.t==VT::Range) _v.itemized=false; return _v; }())";
         if (u->op == "ctx$") // $(...) — an array or a hash becomes one non-flattening item
             return "itemizedScalar(" + x + ")";
         if (u->op == "ctx@") // @(...) — one-level list context, of an item too (`@($x)`); a Match's positionals (`@<x>`)
@@ -785,10 +786,16 @@ struct Codegen {
     // overwrite where Rakudo and the interpreter die. A write to one is
     // refused (checkWritable) at every site that stores into a variable.
     std::set<std::string> readonlyVars_;
+    std::set<std::string> bareParams_;   // typed read-only `$` parameters: a `for` over one walks its .list
+    bool rwDirect_ = false;   // the next bindParams is a top-level sub's, whose rw slots its calls copy back
     void markParams(const std::vector<Param>& ps) {
         for (const Param& p : ps) {
             if (p.name.size() < 2) continue;
             const std::string bare = placeholderBare(p.name);   // `$x` writes `$^x` too
+            // (a typed one is bound with no Scalar around it, as the binder binds it)
+            if (p.name[0] == '$' && !p.type.empty() && p.type != "Any" && p.type != "Mu" && !p.isRw && !p.isCopy && !p.isRaw)
+                bareParams_.insert(p.name);
+            else bareParams_.erase(p.name);
             if (p.name[0] == '$' && !p.isRw && !p.isCopy && !p.isRaw && !p.slurpy && !p.invocant &&
                 p.name[1] != '!' && p.name[1] != '.') {
                 readonlyVars_.insert(p.name);
@@ -1244,7 +1251,7 @@ struct Codegen {
     }
     void refuseRwCall(const std::set<std::string>& names, const std::string& name, const std::vector<ExprPtr>& args) {
         if (!moduleMode_ || !names.count(name)) return;
-        for (auto& a : args) if (writableArg(a.get())) unsupported("a call that may write back through an `is rw` parameter");
+        for (auto& a : args) if (writableArg(a.get())) { checkWritable(a.get()); unsupported("a call that may write back through an `is rw` parameter"); }
     }
     std::set<std::string> aotLocals_; // the C++ locals the routine declares (pass two; see delegateStmt)
     std::string aotPreamble_;         // file-scope data the routine's code refers to
@@ -2737,6 +2744,7 @@ struct Codegen {
                 auto* ix = static_cast<Index*>(e);
                 if (!ix->adverb.empty()) {
                     if (ix->adverb.find('$') != std::string::npos) unsupported("a conditional ($var) index adverb");
+                    if (!ix->index || isSliceSubscript(ix->index.get()) || ix->multiDim) unsupported("an adverb on a slice subscript");
                     std::string keyE = exArg(ix->index.get());
                     if (ix->adverb.find("delete") != std::string::npos) // mutates: needs an lvalue base
                         return "rtIndexAdverb(" + lvalueExpr(ix->base.get()) + ", " + keyE + ", "
@@ -3368,6 +3376,8 @@ struct Codegen {
                                     Expr* a = c->args[i].get();
                                     bool lv = (a->kind == NK::VarExpr && !static_cast<VarExpr*>(a)->declare)
                                            || a->kind == NK::Index;
+                                    // (an assignment's target is the container the callee writes: refused)
+                                    if (a->kind == NK::Assign || (a->kind == NK::Unary && (static_cast<Unary*>(a)->op == "++" || static_cast<Unary*>(a)->op == "--"))) unsupported("an assignment or `++` as an `is rw` argument");
                                     if (!lv) continue;
                                     checkWritable(a);   // Rakudo: "expected a writable container"
                                     refuseConstrainedWrite(a, "an `is rw` argument's write-back");
@@ -3428,6 +3438,7 @@ struct Codegen {
             case NK::MethodCall: {
                 auto* m = static_cast<MethodCall*>(e);
                 if (m->maybe) unsupported("method-call form (.?)");
+                if (m->method == "dynamic" || (m->method == "VAR" && !m->meta)) throw CodegenError{"`." + m->method + "`, which asks the variable, not its value", /*routineWide=*/true};
                 // Two call forms the dispatch below would silently get wrong:
                 // `self.Parent::meth` dispatches to Parent's method past any
                 // override (emitted plainly it re-entered the override — a
@@ -4428,6 +4439,7 @@ struct Codegen {
                         if (it->kind != NK::VarExpr) { allDecl = false; break; }
                         auto* v = static_cast<VarExpr*>(it.get());
                         if (!v->declare || v->name.empty() || v->name[0] != '$') { allDecl = false; break; }
+                        refuseDeclTraits(v);   // (`my ($a, Int() $b)`: the slot's coercion, its default, …)
                     }
                     if (allDecl) {
                         // ONE item on the right is iterated, itemized or not —
@@ -5058,6 +5070,7 @@ struct Codegen {
     std::string assign(Assign* a) { return viewSyncWrap(a->target.get(), assignImpl(a)); }
     std::string assignImpl(Assign* a) {
         Expr* tgt = a->target.get();
+        if (a->containerSigil) throw CodegenError{"a container-typed assignment (`=$=`, `=@=`, `=%=`)", /*routineWide=*/true};
         noteKeptList(a);
         // `$!x = v` in a module routine: stored as the interpreter stores it
         // (rtAotAttrAssign) — Nil resets the attribute to its default, a `$`
@@ -5239,6 +5252,12 @@ struct Codegen {
                        "__k, std::move(__v), '='); return rtIndexRef(__b, __k, false, nullptr) = std::move(__v); }())";
             return "([&]()->Value{ Value __v = " + coerceFor(tgt, rhs, a->value.get()) + "; return rtElemStoreN(RT, " +
                    base + ", " + ex(nix->index.get()) + ", std::move(__v), '='); }())";
+        }
+        if (a->op == "=" && tgt->kind == NK::MethodCall && !moduleMode_) {   // (the interpreter's own store: rtAccessorAssign)
+            auto* mc = static_cast<MethodCall*>(tgt);
+            if (!mc->mutate && !mc->hyper && !mc->meta && mc->args.empty())
+                return "rtAccessorAssign(RT, " + lvalueExpr(mc->inv.get()) + ", " + (mc->methodExpr ? "(" + ex(mc->methodExpr.get()) +
+                       ").toStr()" : cesc(mc->method)) + ", " + rhs + ")";
         }
         if (a->op == "=") return lvalueExpr(tgt) + " = " + coerceFor(tgt, rhs, a->value.get());
         std::string binop = a->op.substr(0, a->op.size() - 1);  // strip '='
@@ -5622,6 +5641,8 @@ struct Codegen {
     }
 
     void forStmt(ForStmt* f, int ind) {
+        if (f->list && f->list->kind == NK::VarExpr && bareParams_.count(static_cast<VarExpr*>(f->list.get())->name))
+            throw CodegenError{"a `for` over a typed parameter, which walks the value's .list", /*routineWide=*/true};
         // `$_ /= 255 for $r, $g, $b`, `clip-to 0, $_, 255 for @$rgb`: the topic
         // ALIASES each element, so a write to it is a write to the element — and
         // every branch below iterates copies. Such a loop keeps its interpreted
@@ -9304,7 +9325,11 @@ struct Codegen {
             if (p.whereExpr)      unsupported("a `where` constraint on a routine parameter");
             if (p.defConstraint)  unsupported("a `:D`/`:U` constraint on a routine parameter");
             if (p.subSig)         unsupported("a sub-signature on a routine parameter");
+            if (p.typeCapture || p.typeFromCapture || !p.captureName.empty()) unsupported("a type capture (::T) on a routine parameter");
+            if (!p.shapeDims.empty() || (p.named && (p.isRw || p.isRaw))) unsupported("a shaped, or a named `is rw`/`is raw`, routine parameter");
         }
+        // (only a top-level sub's direct call copies an `is rw` slot back: subDef)
+        const bool rwBack = std::exchange(rwDirect_, false);
         size_t pi = hasSelf ? 1 : 0;
         int anon = 0;
         for (const Param& p : ps) {
@@ -9340,6 +9365,7 @@ struct Codegen {
                 // `is rw`: bind a reference into the caller-visible ValueList slot;
                 // the call site copies it back into the argument's lvalue.
                 if (cellVars_.count(p.name)) unsupported("an `is rw` parameter mutated by a closure");
+                if (!rwBack) throw CodegenError{"an `is rw` parameter of a routine called through a Code value", /*routineWide=*/true};
                 line(ind, "Value& " + mangleVar(p.name) + " = rtPosRef(__a, " + pos + ");");
                 pi++;
                 continue;
@@ -9518,6 +9544,7 @@ struct Codegen {
     }
 
     void classRegister(ClassDecl* cd) {
+        if (std::string why = classRefusal(cd, classNames); !why.empty()) unsupported(why);
         std::string ci = gensym("ci");
         line(1, "{ auto " + ci + " = std::make_shared<ClassInfo>(); " + ci + "->name = " + cesc(cd->name) + ";");
         if (!cd->pod.empty())    // `#| …` on the class: `C.WHY`
@@ -9585,7 +9612,7 @@ struct Codegen {
                     }
                     d += " if (" + guard + ") return " + methodCandFn(cd->name, kv.first, (int)k) + "(__a);";
                 }
-                d += " throw RakuError{Value::typeObj(\"X::Multi::NoMatch\"), \"No matching multi-method candidate for " + kv.first + "\"}; });";
+                d += " rtMultiNoMatch(RT, " + cesc(kv.first) + ", __a, true); });";
                 line(1, d);
             }
         }
@@ -9758,6 +9785,7 @@ struct Codegen {
         RoutineScope __rs{this, subRefSig("Value::closure([](ValueList& __a)->Value{ return " +
                                           mangleSub(d->name) + "(__a); })", d->name)};
         nrWrapFor_ = d->name;   // a native routine's Value function calls its native function
+        rwDirect_ = !moduleMode_ && srcText_.find("&" + d->name) == std::string::npos;
         bodyDef(mangleSub(d->name), sigOf(d), d->body, fastSubs.count(d->name) > 0,
                 kernelSubs_.count(d->name) ? d->name : std::string(), d->retType);
     }
@@ -9832,7 +9860,7 @@ struct Codegen {
             }
             line(1, "if (" + guard + ") return " + mangleSub(name) + "__" + std::to_string(idx[c]) + "(__a);");
         }
-        line(1, "throw RakuError{Value::typeObj(\"X::Multi::NoMatch\"), \"No matching multi candidate for " + name + "\"};");
+        line(1, "rtMultiNoMatch(RT, " + cesc(name) + ", __a, false);");
         line(0, "}");
     }
 };
@@ -10376,6 +10404,7 @@ std::string emitAotPass(SubDecl* d, const std::string& fn, const AotNames& names
     g.aotFree_ = freeNames;
     g.aotLocals_ = locals;
     g.aotTag_ = fn;
+    g.curParams_ = &d->params;   // (a write into a slurpy's element keeps the routine interpreted: noteIndexWrite)
     std::vector<std::string> copied;   // read out of the frame: parameters, then @_/%_
     for (auto& p : d->params) {
         if (p.name.size() < 2) continue;

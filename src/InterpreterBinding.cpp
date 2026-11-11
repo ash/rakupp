@@ -4226,6 +4226,8 @@ Value rtIndexAdverb(Value& base, const Value& keyIn, bool isHash, const std::str
             auto it = base.hash()->find(key);
             if (it != base.hash()->end()) { exists = true; val = it->second; }
         }
+        // a Pair is associative on its one key (the interpreter's lookup1)
+        if (base.t == VT::Pair && key == base.s && base.pairVal()) { exists = true; val = *base.pairVal(); }
     } else {
         ai = keyIn.toInt();
         // a LAZY array reifies up to the index first (see the evaluator's
@@ -5378,6 +5380,20 @@ Value rtIndexGet(const Value& base, const Value& key, bool isHash) {
             // type-object keys follow the object-keyed rule (hashSubKey)
             auto it = base.hash()->find(hashSubKey(key, &base));
             if (it != base.hash()->end()) return it->second;
+        }
+        // an array-backed base: a Capture (or an argument list that kept its
+        // named parts) answers its named part, anything else dies, as the
+        // interpreter's evalIndex (native code read Nil from `@a.item<k>`)
+        if (base.t == VT::Array) {
+            const std::string k = key.toStr();
+            bool capturish = base.hashKind == "Capture";
+            if (base.arr() && !capturish)
+                for (auto& el : *base.arr()) if (el.t == VT::Pair && el.namedArg) { capturish = true; break; }
+            if (base.arr() && capturish)
+                for (auto& el : *base.arr())
+                    if (el.t == VT::Pair && el.s == k) return el.pairVal() ? *el.pairVal() : Value::any();
+            if (capturish) return Value::any();
+            throw RakuError{Value::typeObj("X::AdHoc"), "Type Array does not support associative indexing."};
         }
         // a Pair is associative on its ONE key; any other key is Nil, as the
         // interpreter's lookup answers (native code read Nil for the key too)
@@ -6846,7 +6862,9 @@ Value rtSlurpyPos(Interpreter& I, const ValueList& a, size_t from, bool boxed, c
         return pos[0];
     if (kind == 'f')
         for (size_t i = 0; i < pos.size() && !slurpyLazyTail(I, pos, i, o); i++) slurpySpread(pos[i], *o.arr());
-    else if (pos.size() == 1 && slurpyLoneIterable(pos[0])) {
+    // (`**@a` keeps every argument as it came, a lone Array too: only `+@a`
+    // has the single-argument rule, as the binder's slurpyKind 'n' arm)
+    else if (kind != 'n' && pos.size() == 1 && slurpyLoneIterable(pos[0])) {
         if (!slurpyLazyTail(I, pos, 0, o)) slurpyLoneElements(pos[0], *o.arr());
     }
     else for (auto& v : pos) {
@@ -6856,6 +6874,16 @@ Value rtSlurpyPos(Interpreter& I, const ValueList& a, size_t from, bool boxed, c
     if (boxed && o.arr())
         for (auto& e : *o.arr()) if (e.natBits()) dropNativeTags(e);
     return o;
+}
+void rtMultiNoMatch(Interpreter& I, const char* name, const ValueList& a, bool method) {
+    const Value self = method && !a.empty() ? a[0] : Value();
+    const ValueList as(a.begin() + (method && !a.empty() ? 1 : 0), a.end());
+    Value cap = Value::array(); cap.hashKind = "Capture"; cap.itemized = true;
+    cap.arr()->assign(a.begin(), a.end());
+    // (the candidates' signatures the interpreter lists after the colon are not known here)
+    I.throwTypedV("X::Multi::NoMatch", {{"capture", cap}},
+                  std::string("Cannot resolve caller ") + name + "(" + I.noMatchProfile(self, as, method) +
+                  "); none of these signatures matches:");
 }
 Value rtSlurpyNamed(const ValueList& a) {
     Value o = Value::makeHash();
