@@ -2803,6 +2803,7 @@ struct Codegen {
                 if (topVars_.count(n))  return mangleVar(n); // sigilless top-level var/constant (a global)
                 // user-declared code wins over type names, matching the interpreter's
                 // env-first NameTerm resolution (a `sub Date {…}` calls the sub).
+                if (codeVars.count(n)) return "RT.callCallable(" + mangleVar("&" + n) + ", ValueList{})"; // `my &rs`
                 if (userSubs.count(n))
                     return rwSubs.count(n) ? "([&]()->Value{ ValueList __rw{}; return " + mangleSub(n) + "(__rw); }())"
                                            : mangleSub(n) + "(ValueList{})";        // zero-arg sub call
@@ -4150,7 +4151,8 @@ struct Codegen {
                 std::string nm = detail.substr(0, detail.find(' '));
                 if (detail.find("[decl") != std::string::npos) return "";
                 names.push_back(nm);
-            }
+            }   // (a bare `rs` / `rs()` calls a local `my &rs`, which is copied in too)
+            if (node == "NameTerm" || node == "Call") names.push_back("&" + detail.substr(0, detail.find(' ')));
         }
         if (when && !given) return "";
         // a local's `:D`/`:U` or `where` is the compiled code's: the interpreter's

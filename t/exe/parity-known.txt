@@ -7,7 +7,6 @@ assoc-index-on-scalar-dies.raku
 backtrace-caught.raku
 binding-failure-priors-and-hint.raku
 cat-assign-shapes.raku
-coerce-boxed-builtin-subclass.raku
 cro-live-server.raku
 date-formatter-everywhere.raku
 datetime-number-is-instant.raku
