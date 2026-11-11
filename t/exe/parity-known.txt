@@ -4,7 +4,6 @@
 append-shapes-linear.raku
 array-composer-one-arg-range.raku
 assoc-index-on-scalar-dies.raku
-backtrace-caught.raku
 binding-failure-priors-and-hint.raku
 cat-assign-shapes.raku
 coerce-boxed-builtin-subclass.raku
@@ -19,10 +18,8 @@ ecosweep-condition-binders-and-hyper.raku
 empty-block-is-nil.raku
 endless-range-reduce.raku
 eval-undeclared-variable-before-routine.raku
-exe-callframe.raku
 exe-readonly-parameter-write.raku
 exporthow-declare-monitor-locks.raku
-failure-mess-and-backtrace.raku
 for-over-listing-value.raku
 generic-role-bodies.raku
 grammar-ancestry.raku
@@ -83,7 +80,6 @@ slurpy-of-values-is-immutable.raku
 stash-term-before-pointy-block.raku
 tagged-code-constant-export.raku
 top100-chunk-d-grammar-made-2026-09-03.raku
-top100-refresh-2026-09-03.raku
 try-block-sink-and-trailing-catch.raku
 type-capture-after-constraint.raku
 type-capture-constrains.raku

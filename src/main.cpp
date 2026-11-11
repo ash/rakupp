@@ -1545,6 +1545,12 @@ static int compileToExe(const std::string& src, const std::string& srcName, std:
                         BundledModule mm;
                         mm.name = kMainAotKey;
                         mm.blob = serializeAst(mp);
+                        // A program that reads call frames (`callframe`, an
+                        // exception's or Failure's `.backtrace` / `.mess`) reads the
+                        // interpreter's, which a native routine neither pushes nor
+                        // gives a line: its routines all stay interpreted
+                        for (const char* w : {"callframe", ".backtrace", ".mess"})
+                            if (src.find(w) != std::string::npos) mm.interpretOnly = true;
                         fp = aotFingerprint(mm.blob);
                         aotMods.push_back(std::move(mm));
                     }

@@ -1305,7 +1305,8 @@ struct Codegen {
     std::string builtinCall(const std::string& name, const std::string& vl) {
         // `callframe` reads the INTERPRETER's frames, and native code runs in
         // none of them: `callframe(0).line` was 0, the caller's frame the wrong one
-        if (name == "callframe") unsupported("callframe");
+        // (a routine's own frame: delegated on its own, the statement ran in another)
+        if (name == "callframe") throw CodegenError{"callframe", /*routineWide=*/true};
         // (no built-in: "Undefined routine"; nor delegable, its undo is the routine's exit)
         if (name == "temp" || name == "let") throw CodegenError{"`" + name + "`", /*routineWide=*/true};
         if (!moduleMode_ && hiddenRoutines_.count(name) && !moduleExports_.count(name))
@@ -2790,6 +2791,7 @@ struct Codegen {
                 if (int dc = static_cast<NameTerm*>(e)->defConstraint)
                     return "([&]()->Value{ Value _t = Value::typeObj(" + cesc(n) + "); _t.i = " +
                            std::to_string(dc) + "; return _t; }())";
+                if (n == "callframe") builtinCall(n, "");   // `callframe.line`: refused as the call is
                 if (n == "True")  return "Value::boolean(true)";
                 if (n == "False") return "Value::boolean(false)";
                 if (n == "Nil")   return "Value::nil()";
@@ -3437,6 +3439,9 @@ struct Codegen {
                 // `.+`/`.*` collect every candidate's result.
                 if (!m->methodQual.empty()) unsupported("a qualified method call (.Class::method)");
                 if (m->allMode) unsupported("a .+/.* method call");
+                // the frames an exception or Failure carries are the interpreter's,
+                // and native code keeps none (frameIntrospection keeps them all interpreted)
+                if (m->method == "backtrace" || m->method == "mess") throw CodegenError{"." + m->method, true};
                 refuseRwCall(rwMethodNames_, m->method, m->args);
                 // The dispatch-key prefix of the call form: the class method
                 // tables key a private method `!name` and the metamodel `^name`
