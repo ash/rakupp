@@ -1954,7 +1954,14 @@ std::string Interpreter::substSelect(const std::string& subj, const std::string&
             size_t idx = std::lower_bound(foldStart.begin(), foldStart.end(), fb) - foldStart.begin();
             return origStart[std::min(idx, origStart.size() - 1)];
         };
+        // :c/:p start where asked: a position in the ORIGINAL text, mapped to
+        // the folded one (issue #246: this searched from 0 every time, so a
+        // `.match(:c)` walk over a `:m` regex found its last match forever)
         long pos = 0; RxMatch mm;
+        if (haveStart) {
+            size_t idx = std::lower_bound(origStart.begin(), origStart.end(), startPos) - origStart.begin();
+            pos = idx < foldStart.size() ? foldStart[idx] : (long)folded.size() + 1;
+        }
         while (pos >= 0 && pos <= (long)folded.size() && re.search(folded, pos, mm, nullptr, nullptr, useHooks)) {
             RxMatch om; om.matched = true; om.from = toOrig(mm.from); om.to = toOrig(mm.to);
             matches.push_back(om);
