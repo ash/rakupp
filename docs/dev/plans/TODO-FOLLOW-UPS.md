@@ -393,6 +393,26 @@ moves to [TODO.md](TODO.md).
 
 ## Control flow and containers
 
+- [ ] **A self-packed Array shared between threads dies when they refill it**
+  (found 2026-11-11 by t/race/array-refill-shared.raku, red since 6501ade2:
+  about 125 runs in 200 died, SIGSEGV, SIGTRAP or SIGABRT). It is not new
+  with the Int kind: the same program over Nums (`my @shared =
+  (^20).map(* + 0e0)`, refilled from eight `start` workers) died 94 runs in
+  100 on 62474b1f, 0 under RAKUPP_NO_SELFPACK=1; the gate refilled with Ints
+  only. arrayStore no longer packs a refill while workers are live, as
+  packedElemStore already did, which leaves 3 to 7 deaths in 200 (Ints) and
+  5 in 100 (Nums): an Array that packed BEFORE the workers started still
+  changes form under them, since each refill's `raceW(lv) = nv` swaps the
+  variable's payload from the PackedArr to the list outside the stripe the
+  refill takes, while another thread reads `lv` to find that stripe. Done
+  when the gate and the Num form are 0 in 1,000, and the gate refills a Num
+  array too.
+- [ ] **t/race/varcell.raku answers `bad: 1` about one run in 300 to 500**
+  (found 2026-11-11; on d03d7a19 and on 62474b1f, so older than self-packed
+  Ints; no death, a worker's result was not True). Not yet reduced: a
+  variant that prints which of the three reads went wrong ran 400 times
+  clean.
+
 - [ ] **A top-level `use` and `constant` run in the mainline, after BEGIN,
   CHECK and INIT** (found 2026-10-30 checking what a #190 build runs; on
   main at 8aec0a66). Rakudo runs a unit's compile-time parts while it
@@ -748,6 +768,35 @@ moves to [TODO.md](TODO.md).
   out not to be rakupp's.
 
 ## Backends
+
+- [ ] **`--exe`: a block's `my $x` is the program's `$x` when the program
+  declares one too** (found 2026-11-10 writing t/race/match-var-threads.raku;
+  interpreted it is right):
+
+  ```raku
+  my &f = { my $n = 5; $n };
+  my $n = 1;
+  f();
+  say $n;      # 1; a compiled binary says 5
+  ```
+
+  Codegen declares the program's `$n` as the static `v_sn` and the block's
+  `my $n` assigns that static rather than a local of the closure, wherever
+  the two declarations stand. A sub's `my` is its own. A `start` block's
+  counter named like the main thread's makes the two threads share one
+  Value, so t/regression/threads-own-match-var-native.raku names them apart.
+  Done when a block's `my` is a C++ local of its closure (or its own static
+  when it is a `state`), as a sub's is.
+
+- [ ] **A worker's failed match still walks into the program's scope for
+  `$0`, `$1`…** (found 2026-11-10 with the `$/` fix, workerOwnScope): after
+  a match, regexMatch clears each `$N` the match does not have by
+  `tctx().cur->find`, which walks past the worker's own frame into the
+  spawner's scope, read while the main thread may insert its first `$0`
+  there. A worker's own `$/` and the `$N` it defines are its own now; the
+  lookup is the one shared read left, the same in interpreted code. Done
+  when that walk stops at the routine frame without leaving an outer `$0`
+  visible after a failed match.
 
 - [ ] **`--exe` bundles the interpreter for a sub-signature in a pointy
   block or a sub** (found 2026-11-09 fixing #235; until 9102ff01 clang refused

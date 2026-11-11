@@ -307,6 +307,7 @@ work 'str-encode-decode', Q｢my $s = 'aé' x @N@; my $b = $s.encode; my $t = $b
 work 'buf-concat',       Q｢my $c = Buf.new; $c ~= Buf.new(1, 2) for ^@N@;｣;
 work 'buf-push',         Q｢my $b = Buf.new; $b.push(1) for ^@N@;｣, :n(20_000);
 work 'buf-append',       Q｢my $c = Buf.new; $c.append(1, 2) for ^@N@;｣, :n(5000);
+work 'buf-append-blob',  Q｢my $p = Blob.new(0 xx 64); my $c = Buf.new; $c.append($p) for ^@N@;｣, :n(5000);   # #165
 
 # -- run: objects, calls, control
 work 'object-new',       Q｢class P { has $.x }; my @o = (^@N@).map({ P.new(x => $_) });｣;

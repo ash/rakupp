@@ -5253,46 +5253,13 @@ void Interpreter::bindParams(const std::vector<Param>& params, ValueList& args,
         }
         // destructure a value against p's sub-signature: positionals from the
         // elements, named inner params (`:key($k)`) from the value's accessors
+        // (the arguments the value makes, subSigCapture, InterpreterBinding.cpp)
         auto destructure = [&](const Param& sp, const Value& v0) {
-            // An object whose class writes its own `.Capture` binds as THAT
-            // (Cro's form bodies: `request-body -> (:$tags, :$description)`
-            // takes the fields from WWWFormUrlEncoded.Capture's named part).
-            Value v = v0;
-            if (v0.t == VT::Object && v0.obj() && v0.obj()->cls && v0.obj()->cls->findMethod("Capture"))
-                v = methodCall(v0, "Capture", {});
-            // a hash sub-signature `%h (:$left, :$right, *%)` binds each `:$k` from the
-            // hash's KEY (not a `.k` accessor), and `*%` slurps the remaining keys.
-            if (v.t == VT::Hash && v.hash()) {
-                ValueList inner;
-                for (auto& kv : *v.hash()) { Value na = Value::pair(kv.first, kv.second); na.namedArg = true; inner.push_back(na); }
-                { struct SSB { int& d; SSB(int& x) : d(x) { d++; } ~SSB() { d--; } } ssb{tctx().subSigBind}; bindParams(*sp.subSig, inner, env); }
-                return;
-            }
-            ValueList inner = (v.t == VT::Array && v.arr()) ? *v.arr()
-                            : (v.t == VT::Range) ? v.flatten() : ValueList{v};
-            // The value binds as its `.Capture`, and a LIST's Capture makes every
-            // Str-keyed Pair in it a NAMED (Rakudo's List.Capture): Red's
-            // `is referencing(*.id, :model<Person>)` hands the trait a List,
-            // and `:$referencing! (&code, Str :$model!, *%rest)` takes it apart.
-            if (v.t == VT::Array && v.hashKind != "Capture")
-                for (auto& e : inner)
-                    if (e.t == VT::Pair && !e.hasPairKey()) e.namedArg = true;
-            // a Capture already says which nameds it carries; the accessor
-            // fallback is for plain objects only
-            if (v.hashKind != "Capture")
-            for (auto& ip : *sp.subSig)
-                if (ip.named) {
-                    std::string key = ip.namedKey.empty()
-                        ? (ip.name.size() > 1 ? ip.name.substr(1) : ip.name) : ip.namedKey;
-                    try {
-                        Value got = methodCall(v, key, {});
-                        Value na = Value::pair(key, got); na.namedArg = true;
-                        inner.push_back(na);
-                    } catch (RakuError&) {} // absent accessor → param falls to its default
-                }
+            bool list = false;
+            ValueList inner = subSigCapture(v0, subSigNamedKeys(*sp.subSig), &list);
             { struct SSB { int& d; SSB(int& x) : d(x) { d++; } ~SSB() { d--; } } ssb{tctx().subSigBind}; bindParams(*sp.subSig, inner, env); }
             // `sub bar([$x, $y, $z])` — after binding (a type error names itself first), the unpacked list must fit the sub-signature
-            if (v.t == VT::Array && v.arr()) {
+            if (list) {
                 size_t got = 0;
                 for (auto& e : inner) if (!isNamedArg(e)) got++;
                 refuseSubSigArity(*sp.subSig, got, sp.name, tctx().subSigBind);
@@ -17495,8 +17462,8 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
             try { bp = lvalue(ix->base.get(), /*asInvocant=*/true); } catch (RakuError&) {}
             if (bp && bp->t == VT::Str && (bp->hashKind == "Buf" || bp->hashKind == "Blob")) {
                 if (bp->hashKind == "Blob") throw RakuError{Value::typeObj("X::Assignment::RO"), "Cannot modify an immutable Blob"};   // (as `=` refuses it)
-                long long i = subscriptKey(ix->index.get()).toInt();
-                Value rhsB = eval(a->value.get());
+                Value kv = subscriptKey(ix->index.get()), rhsB = eval(a->value.get());   // (`$b[*-1] op= v`: from the end)
+                long long i = (kv.t == VT::Code && kv.code() && kv.code()->ci().isWhateverCode ? whateverPos(kv, bp->blobElems()) : kv).toInt();
                 std::string binop = a->written().substr(0, a->written().size() - 1);   // `×=` applies `×`
                 int esz = bp->blobElemSize();
                 if (i >= 0) {

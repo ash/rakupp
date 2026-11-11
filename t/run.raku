@@ -821,10 +821,15 @@ section('--target=js (JavaScript backend)');
 # `:@a` or `:%h` is an empty container (#191), `+$0` is an Int (#189), `+` of
 # what is no number a Failure, and `@!xs = …` and `@*d = …` store through the
 # attribute's and the dynamic's own place, not a C++ local, and a `constant @L`
-# is the List it was given (it was assigned as an Array).
+# is the List it was given (it was assigned as an Array). A loop's
+# `-> (:$key, :$value)` binds a Pair's .key and .value (#162), and `$b[*-1]`
+# reads and stores a Buf's last byte (#163). Each thread's matches set a `$/`
+# of its own: a `start` block's compiled closure wrote the program's, beside
+# the main thread, and both binaries died with SIGSEGV in every run.
 for <next-return-in-expression-native leave-on-every-exit-native named-container-param-absent-native
      match-numifies-exact-native prefix-plus-failure-native attribute-array-assign-native
-     list-constant-native> -> $name {
+     list-constant-native exe-pair-subsignature-loop-native exe-buf-whatever-index-native
+     threads-own-match-var-native issue-209-threads-share-a-dir-walking-sub> -> $name {
     my $bin = $*TMPDIR.add("rakupp-suite-native-$name-$*PID").Str;
     my $p = run($*EXECUTABLE, '--exe', $ROOT.add("t/regression/$name.raku").Str, '-o', $bin, :out, :err);
     $p.out.slurp(:close);
@@ -1091,14 +1096,17 @@ section('an exported module sub shadows a built-in (every compile mode)');
 # must report native module routines, and must answer as the interpreter does —
 # with the native bodies and, through RAKUPP_NO_AOT=1, without them.
 section('native bodies for embedded module routines (--exe)');
-{
+# exe-module-buf-and-bind-issues-160-161-200 holds the module routines of
+# #160 (a native function's bytes written into a Buf argument), #161 (`$b[0] =`
+# on an untyped Buf) and #200 (`my @a := f()[0]`).
+for <exe-module-native-bodies exe-module-buf-and-bind-issues-160-161-200> -> $name {
     my $lib  = $ROOT.add('t/regression/lib');
-    my $prog = $ROOT.add('t/regression/exe-module-native-bodies.raku');
+    my $prog = $ROOT.add("t/regression/$name.raku");
     my $want = run($*EXECUTABLE, '-I', $lib.Str, $prog.Str, :out).out.slurp(:close);
-    is($want.lines.tail, 'PASS', 'interpreter: the native-bodies program passes');
+    is($want.lines.tail, 'PASS', "interpreter: $name passes");
     for (), ('-O',) -> @opt {
-        my $desc = ('--exe', |@opt).join(' ');
-        my $bin  = $*TMPDIR.add("rakupp-suite-aot{@opt.join}-$*PID").Str;
+        my $desc = ('--exe', |@opt).join(' ') ~ " $name";
+        my $bin  = $*TMPDIR.add("rakupp-suite-aot{@opt.join}-$name-$*PID").Str;
         my $c = run($*EXECUTABLE, '--exe', |@opt, '-I', $lib.Str, $prog.Str, '-o', $bin, :out, :err);
         $c.out.slurp(:close); my $err = $c.err.slurp(:close);
         unless $c.exitcode == 0 { ok(False, "$desc builds the native-bodies program"); diag($err); next }

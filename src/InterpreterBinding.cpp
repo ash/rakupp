@@ -3788,7 +3788,8 @@ Value Interpreter::idxW(const Value& base, Value key, bool isHash) {
         && (key.t == VT::Whatever || (key.t == VT::Code && key.code() && key.code()->ci().isWhateverCode)))
         throw RakuError{Value::typeObj("X::Cannot::Lazy"), "Cannot use a Whatever index on an infinite list"};
     long long n = (base.t == VT::Array && base.arr()) ? (long long)base.arr()->size()
-                : base.t == VT::Range ? (long long)base.flatten().size() : 0;
+                : base.t == VT::Range ? (long long)base.flatten().size()
+                : rtIsBuf(base) ? base.blobElems() : 0;   // (`$b[*-1]`: a Buf's or a Blob's elements)
     if (key.t == VT::Code && key.code() && key.code()->ci().isWhateverCode)
         key = callCallable(key, ValueList{Value::integer(n)});
     if (key.t == VT::Whatever) { // @a[*] — the whole list / %h{*} — all values
@@ -3799,6 +3800,55 @@ Value Interpreter::idxW(const Value& base, Value key, bool isHash) {
         return o;
     }
     return rtIndexGet(base, key, isHash);
+}
+
+// A value destructured against a sub-signature, `-> (:$key, :$value)`: the
+// arguments it binds as, positionals from its elements and the named inner
+// parameters (`keys`, subSigNamedKeys) from its accessors. The interpreter's
+// binder and a compiled loop's (Codegen's destructure) both bind these.
+// `list` says whether they were a list's, whose count must fit the signature.
+std::vector<std::string> Interpreter::subSigNamedKeys(const std::vector<Param>& sig) {
+    std::vector<std::string> keys;
+    for (auto& ip : sig)
+        if (ip.named) keys.push_back(ip.namedKey.empty() ? (ip.name.size() > 1 ? ip.name.substr(1) : ip.name) : ip.namedKey);
+    return keys;
+}
+ValueList Interpreter::subSigCapture(const Value& v0, const std::vector<std::string>& keys, bool* list) {
+    if (list) *list = false;
+    // An object whose class writes its own `.Capture` binds as THAT
+    // (Cro's form bodies: `request-body -> (:$tags, :$description)`
+    // takes the fields from WWWFormUrlEncoded.Capture's named part).
+    Value v = v0;
+    if (v0.t == VT::Object && v0.obj() && v0.obj()->cls && v0.obj()->cls->findMethod("Capture"))
+        v = methodCall(v0, "Capture", {});
+    // a hash sub-signature `%h (:$left, :$right, *%)` binds each `:$k` from the
+    // hash's KEY (not a `.k` accessor), and `*%` slurps the remaining keys.
+    if (v.t == VT::Hash && v.hash()) {
+        ValueList inner;
+        for (auto& kv : *v.hash()) { Value na = Value::pair(kv.first, kv.second); na.namedArg = true; inner.push_back(na); }
+        return inner;
+    }
+    ValueList inner = (v.t == VT::Array && v.arr()) ? *v.arr()
+                    : (v.t == VT::Range) ? v.flatten() : ValueList{v};
+    // The value binds as its `.Capture`, and a LIST's Capture makes every
+    // Str-keyed Pair in it a NAMED (Rakudo's List.Capture): Red's
+    // `is referencing(*.id, :model<Person>)` hands the trait a List,
+    // and `:$referencing! (&code, Str :$model!, *%rest)` takes it apart.
+    if (v.t == VT::Array && v.hashKind != "Capture")
+        for (auto& e : inner)
+            if (e.t == VT::Pair && !e.hasPairKey()) e.namedArg = true;
+    // a Capture already says which nameds it carries; the accessor
+    // fallback is for plain objects only
+    if (v.hashKind != "Capture")
+        for (auto& key : keys) {
+            try {
+                Value got = methodCall(v, key, {});
+                Value na = Value::pair(key, got); na.namedArg = true;
+                inner.push_back(na);
+            } catch (RakuError&) {} // absent accessor → param falls to its default
+        }
+    if (list) *list = v.t == VT::Array && v.arr();
+    return inner;
 }
 
 // $* / $? magical variables, for native codegen (mirrors the VarExpr evaluator).
