@@ -59,7 +59,10 @@ say "café".flip;             # éfac     (the accent stays on its e)
 canonical reordering, and composition (with exclusions) pipeline. `Uni`,
 `NFC`, `NFD`, `NFKC`, `NFKD` are real types; `Uni.new(...).Str` normalizes to
 NFC, matching Raku's NFG rule that canonically-equivalent codepoint sequences
-yield the same `Str`.
+yield the same `Str`. A `Uni` (and so each normal form) encodes its
+codepoints as they are, into a `Buf` whatever the encoding, as Rakudo's does:
+`"café".NFD.encode` is a 6-byte `Buf`, where `"café".encode` is a 5-byte
+`utf8`.
 
 The tables (CCC, canonical/compat decompositions, composition pairs) are
 generated **directly from `UnicodeData.txt` 18.0** by

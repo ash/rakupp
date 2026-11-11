@@ -2377,6 +2377,8 @@ public:
     // …and `.isa(Int)` on such a value, from methodCall's first arms (Builtins.cpp)
     std::optional<Value> methodCallEntry(const Value& inv, const std::string& m, ValueList& args,
                                          const std::vector<ExprPtr>* rwArgs);   // (MethodCallEntry.cpp)
+    // `Uni.encode` (#251), from methodCallPart2 (MethodCallEntry.cpp)
+    std::optional<Value> unicodeMethod(const Value& inv, const std::string& m, const ValueList& args);
     bool isaMemo(const Value& inv, const std::string& m, const ValueList& args,
                  const std::vector<ExprPtr>* rwArgs, Value& out);
     std::atomic<uint64_t> isaMemo_[64][22] = {};

@@ -4423,6 +4423,7 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
         }
     }
     // a Uni / NFC / NFD / NFKC / NFKD value is an array of codepoints tagged in `s`
+    if (auto r = unicodeMethod(inv, m, args)) return *r;   // Uni.encode (MethodCallEntry.cpp)
     if (inv.t == VT::Array && (inv.s == "Uni" || inv.s == "NFC" || inv.s == "NFD" || inv.s == "NFKC" || inv.s == "NFKD")) {
         if (m == "NFC" || m == "NFD" || m == "NFKC" || m == "NFKD") {
             std::vector<uint32_t> in; if (inv.arr()) for (auto& x : *inv.arr()) in.push_back((uint32_t)x.toInt());

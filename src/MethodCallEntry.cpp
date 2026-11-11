@@ -297,4 +297,23 @@ std::string Interpreter::podRaku(const Value& v) {
     return o + ")";
 }
 
+// `Uni.encode` is a Buf whatever the encoding (#251): Rakudo's Uni answers
+// `Buf` where Str.encode answers utf8, Blob[uint8] or utf16, so
+// `$s.NFD.encode ~~ Buf` and a `--> Buf` return check hold. The codepoints
+// are encoded as they are: an NFD stays decomposed.
+std::optional<Value> Interpreter::unicodeMethod(const Value& inv, const std::string& m, const ValueList& args) {
+    if (inv.t == VT::Array && m == "encode" &&
+        (inv.s == "Uni" || inv.s == "NFC" || inv.s == "NFD" || inv.s == "NFKC" || inv.s == "NFKD")) {
+        std::string s;
+        if (inv.arr()) for (auto& x : *inv.arr()) s += cpToUtf8((uint32_t)x.toInt());
+        Value b = methodCall(Value::str(s), "encode", ValueList(args), nullptr);
+        if (b.t == VT::Str && b.hashKind == "Blob") {
+            b.hashKind = "Buf"; b.setEnumName(""); identify(b);
+            if (b.ofType() == "uint8") b.ofTypeM() = "";   // utf16le is a plain Buf, not Buf[uint8]
+        }
+        return b;
+    }
+    return std::nullopt;
+}
+
 } // namespace rakupp
