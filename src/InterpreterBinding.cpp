@@ -6845,7 +6845,9 @@ Value rtSlurpyPos(Interpreter& I, const ValueList& a, size_t from, bool boxed, c
         return pos[0];
     if (kind == 'f')
         for (size_t i = 0; i < pos.size() && !slurpyLazyTail(I, pos, i, o); i++) slurpySpread(pos[i], *o.arr());
-    else if (pos.size() == 1 && slurpyLoneIterable(pos[0])) {
+    // (`**@a` keeps every argument as it came, a lone Array too: only `+@a`
+    // has the single-argument rule, as the binder's slurpyKind 'n' arm)
+    else if (kind != 'n' && pos.size() == 1 && slurpyLoneIterable(pos[0])) {
         if (!slurpyLazyTail(I, pos, 0, o)) slurpyLoneElements(pos[0], *o.arr());
     }
     else for (auto& v : pos) {

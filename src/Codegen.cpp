@@ -785,6 +785,7 @@ struct Codegen {
     // overwrite where Rakudo and the interpreter die. A write to one is
     // refused (checkWritable) at every site that stores into a variable.
     std::set<std::string> readonlyVars_;
+    bool rwDirect_ = false;   // the next bindParams is a top-level sub's, whose rw slots its calls copy back
     void markParams(const std::vector<Param>& ps) {
         for (const Param& p : ps) {
             if (p.name.size() < 2) continue;
@@ -1244,7 +1245,7 @@ struct Codegen {
     }
     void refuseRwCall(const std::set<std::string>& names, const std::string& name, const std::vector<ExprPtr>& args) {
         if (!moduleMode_ || !names.count(name)) return;
-        for (auto& a : args) if (writableArg(a.get())) unsupported("a call that may write back through an `is rw` parameter");
+        for (auto& a : args) if (writableArg(a.get())) { checkWritable(a.get()); unsupported("a call that may write back through an `is rw` parameter"); }
     }
     std::set<std::string> aotLocals_; // the C++ locals the routine declares (pass two; see delegateStmt)
     std::string aotPreamble_;         // file-scope data the routine's code refers to
@@ -3368,6 +3369,8 @@ struct Codegen {
                                     Expr* a = c->args[i].get();
                                     bool lv = (a->kind == NK::VarExpr && !static_cast<VarExpr*>(a)->declare)
                                            || a->kind == NK::Index;
+                                    // (an assignment's target is the container the callee writes: refused)
+                                    if (a->kind == NK::Assign || (a->kind == NK::Unary && (static_cast<Unary*>(a)->op == "++" || static_cast<Unary*>(a)->op == "--"))) unsupported("an assignment or `++` as an `is rw` argument");
                                     if (!lv) continue;
                                     checkWritable(a);   // Rakudo: "expected a writable container"
                                     refuseConstrainedWrite(a, "an `is rw` argument's write-back");
@@ -9304,7 +9307,12 @@ struct Codegen {
             if (p.whereExpr)      unsupported("a `where` constraint on a routine parameter");
             if (p.defConstraint)  unsupported("a `:D`/`:U` constraint on a routine parameter");
             if (p.subSig)         unsupported("a sub-signature on a routine parameter");
+            if (p.typeCapture || p.typeFromCapture || !p.captureName.empty()) unsupported("a type capture (::T) on a routine parameter");
+            if (!p.shapeDims.empty()) unsupported("a shaped routine parameter");
+            if (p.named && (p.isRw || p.isRaw)) unsupported("a named `is rw`/`is raw` parameter");
         }
+        // (only a top-level sub's direct call copies an `is rw` slot back: subDef)
+        const bool rwBack = std::exchange(rwDirect_, false);
         size_t pi = hasSelf ? 1 : 0;
         int anon = 0;
         for (const Param& p : ps) {
@@ -9340,6 +9348,7 @@ struct Codegen {
                 // `is rw`: bind a reference into the caller-visible ValueList slot;
                 // the call site copies it back into the argument's lvalue.
                 if (cellVars_.count(p.name)) unsupported("an `is rw` parameter mutated by a closure");
+                if (!rwBack) throw CodegenError{"an `is rw` parameter of a routine called through a Code value", /*routineWide=*/true};
                 line(ind, "Value& " + mangleVar(p.name) + " = rtPosRef(__a, " + pos + ");");
                 pi++;
                 continue;
@@ -9758,6 +9767,7 @@ struct Codegen {
         RoutineScope __rs{this, subRefSig("Value::closure([](ValueList& __a)->Value{ return " +
                                           mangleSub(d->name) + "(__a); })", d->name)};
         nrWrapFor_ = d->name;   // a native routine's Value function calls its native function
+        rwDirect_ = !moduleMode_ && srcText_.find("&" + d->name) == std::string::npos;
         bodyDef(mangleSub(d->name), sigOf(d), d->body, fastSubs.count(d->name) > 0,
                 kernelSubs_.count(d->name) ? d->name : std::string(), d->retType);
     }
