@@ -6220,6 +6220,15 @@ template <class T> inline void rtSinkStmt(Interpreter&, const T&) {}
 inline void rtSinkStmt(Interpreter& I, const Value& v) {
     if (RAKUPP_UNLIKELY((v.t == VT::Hash && !v.hashKind.empty()) || (v.t == VT::Array && v.ext()))) I.sinkValue(v);
 }
+// …and a METHOD call's discarded result that is an object of a class with a
+// `sink` method has it run first, as the interpreter's exec does (HTTP::Status
+// registers each `HTTP::Status.new: …` statement that way)
+void rtSinkUserMethod(Interpreter& I, const Value& v);
+template <class T> inline void rtSinkMethodStmt(Interpreter&, const T&) {}
+inline void rtSinkMethodStmt(Interpreter& I, const Value& v) {
+    if (RAKUPP_UNLIKELY(v.t == VT::Object)) rtSinkUserMethod(I, v);
+    rtSinkStmt(I, v);
+}
 bool rtForPull(const Value& lst, size_t i);   // the cold half: grow a lazy source
 inline bool rtForHas(const Value& lst, size_t i) {
     return (lst.arr() && i < lst.arr()->size()) || (lst.ext() && rtForPull(lst, i));

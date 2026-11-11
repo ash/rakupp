@@ -4577,7 +4577,8 @@ struct Codegen {
                 }
                 if (e->kind == NK::MethodCall || e->kind == NK::Call ||
                     (e->kind == NK::Unary && static_cast<Unary*>(e)->op == "gather")) {
-                    line(ind, "rtSinkStmt(RT, " + ex(e) + ");");
+                    const bool m = e->kind == NK::MethodCall && !static_cast<MethodCall*>(e)->mutate;
+                    line(ind, (m ? "rtSinkMethodStmt(RT, " : "rtSinkStmt(RT, ") + ex(e) + ");");
                     return;
                 }
                 line(ind, exSunk(e) + ";");

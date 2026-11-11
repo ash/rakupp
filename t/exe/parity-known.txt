@@ -76,7 +76,6 @@ seq-generator-shapes.raku
 shaped-param-dimension-is-its-value.raku
 sigilled-compile-time-class.raku
 sigilless-traits-and-container-assign.raku
-sink-context-method.raku
 sink-does-not-descend-a-container.raku
 slang-seams.raku
 slip-flattens-into-every-slurpy.raku

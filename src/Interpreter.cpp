@@ -3673,6 +3673,10 @@ static bool lazyListArray(const Value& v, Value& out) {
     out = v; out.isList = false; out.s.clear();
     return true;
 }
+void rtSinkUserMethod(Interpreter& I, const Value& v) {
+    if (v.t == VT::Object && v.obj() && v.obj()->cls && v.obj()->cls->findMethod("sink"))
+        I.methodCall(v, "sink", ValueList{});
+}
 extern void (*g_pullLazy)(const Value&, size_t);   // Value.cpp
 bool rtForPull(const Value& lst, size_t i) {
     if (!lst.arr() || !g_pullLazy) return false;
