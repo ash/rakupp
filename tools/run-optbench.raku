@@ -15,6 +15,23 @@
 #     ./build/rakupp tools/run-optbench.raku
 #
 # Override binaries via env: RAKUPP=/path/to/rakupp RAKUDO=rakudo
+#
+# Options (also fine under Rakudo):
+#     --tsv=PATH   write a machine-readable TSV: `# key=value` header lines,
+#                  then one row per program with the minimum ms of each lane
+#                  (exe, opt, rakudo) and, under --rusage, each lane's peak
+#                  RSS in KiB. The dashboard's `-O` charts are fed from it.
+#     --rusage     also measure each lane's peak RSS (min of 3 runs), in a
+#                  pass of its own after the timing, so the timings are what
+#                  they would be without it
+
+my $tsv-path = '';
+my $rusage   = False;
+for @*ARGS -> $a {
+    if    $a.starts-with('--tsv=') { $tsv-path = $a.substr(6) }
+    elsif $a eq '--rusage'        { $rusage = True }
+    else  { note "run-optbench: unknown option $a (--tsv=PATH, --rusage)"; exit 2 }
+}
 
 my $tools  = $*PROGRAM.absolute.IO.parent;
 use lib $?FILE.IO.parent.add('lib').Str;
@@ -158,16 +175,62 @@ for @benches -> %b {
     my $tB = measure([$base]);
     my $tO = measure([$opt]);
     my $tR = $oR.defined ?? measure([$RAKUDO, $path]) !! Numeric;
+    # Peak RSS after the timing, never during it: /usr/bin/time's own fork
+    # and exec would otherwise land in the milliseconds. One program per run,
+    # so each figure is that lane's own high-water mark.
+    my %rss;
+    if $rusage {
+        my sub peak(@cmd) {
+            my @r = (^3).map({ rusage-run(@cmd)<rss> }).grep(*.defined);
+            @r ?? @r.min !! Numeric
+        }
+        %rss<exe> = peak([$base]);
+        %rss<opt> = peak([$opt]);
+        %rss<rakudo> = peak([$RAKUDO, $path]) if $oR.defined;
+    }
     my $sp = $tO > 0 ?? $tB / $tO !! 0;
 
     my $rak = $tR.defined ?? sprintf('%8.1fms', $tR) !! sprintf('%10s', 'n/a');
     printf "%-12s %8.1fms %8.1fms %7.1f× %s   %s\n",
            %b<name>, $tB, $tO, $sp, $rak, %b<note>;
-    @rows.push: %( :name(%b<name>), :$sp );
+    @rows.push: %( :name(%b<name>), :$sp, :$tB, :$tO, :$tR, :%rss );
 }
 
 if $mismatch {
     note '';
     note '⚠ OUTPUT MISMATCH — a flagged engine disagreed with the reference; those rows were skipped.';
     exit 1;
+}
+
+if $rusage && @rows {
+    say '';
+    say '# peak RSS, min of 3 runs, measured after the timing';
+    printf "%-12s %10s %10s %10s\n", 'benchmark', '--exe', '--exe -O', 'rakudo';
+    my sub mb($kib) { $kib.defined ?? sprintf('%8.1fMB', $kib / 1024) !! sprintf('%10s', 'n/a') }
+    printf "%-12s %s %s %s\n", .<name>, mb(.<rss><exe>), mb(.<rss><opt>), mb(.<rss><rakudo>) for @rows;
+}
+
+# The dashboard's `-O` series is fed from this file, one label's rows at a
+# time (raku.online sites/spec/src/data/optbench-m4.tsv). A mismatch run has
+# already exited above, so nothing written here disagreed with the oracle.
+if $tsv-path {
+    my $fh = $tsv-path.IO.open(:w);
+    my sub first-line(@cmd) {
+        my $p = run(|@cmd, :out, :err);
+        my $o = $p.out.slurp(:close); $p.err.slurp(:close);
+        $p.exitcode == 0 ?? ($o.lines[0] // '') !! ''
+    }
+    $fh.say: "# date={Date.today}";
+    $fh.say: "# rakupp_version={first-line([$RAKUPP, '--version'])}";
+    $fh.say: "# rakudo_version={$RAKUDO-OK ?? first-line([$RAKUDO, '--version']) !! ''}";
+    $fh.say: "# cpu={first-line(['sysctl', '-n', 'machdep.cpu.brand_string'])}";
+    $fh.say: "# runs=best of {$RUNS - 1} after a warm-up";
+    $fh.say: <program exe_ms opt_ms rakudo_ms exe_rss_kib opt_rss_kib rakudo_rss_kib>.join("\t");
+    my sub ms($v)  { $v.defined ?? sprintf('%.1f', $v) !! '' }
+    my sub kib($v) { $v.defined ?? sprintf('%.0f', $v) !! '' }
+    for @rows -> %r {
+        $fh.say: (%r<name>, ms(%r<tB>), ms(%r<tO>), ms(%r<tR>),
+                  kib(%r<rss><exe>), kib(%r<rss><opt>), kib(%r<rss><rakudo>)).join("\t");
+    }
+    $fh.close;
 }

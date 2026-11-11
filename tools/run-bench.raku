@@ -28,9 +28,11 @@
 #                          (`# key=value`), then one row per kernel with min
 #                          and median per lane
 #     --rusage             also measure CPU time (user+sys) and peak RSS per
-#                          lane, printed as a second table. Measured in its own
-#                          pass AFTER the timing rounds, so the wall-clock
-#                          numbers stay exactly what they were without it.
+#                          lane, printed as a second table; with --tsv each
+#                          row also ends in every lane's peak RSS in KiB.
+#                          Measured in its own pass AFTER the timing rounds,
+#                          so the wall-clock numbers stay exactly what they
+#                          were without it.
 #     --suite=mutsu        time ANOTHER project's benchmarks instead of ours:
 #                          every benchmarks/*.raku of a mutsu checkout
 #                          ($MUTSU_ROOT, default $HOME/mutsu). Opt-in only —
@@ -291,73 +293,14 @@ sub resolve-mutsu(--> Str) {
 }
 my $MUTSU = $want-mutsu ?? resolve-mutsu() !! Str;
 
-# CPU time (ms, user+sys) and peak RSS (KiB) for ONE run of @cmd, read out of
-# `/usr/bin/time`. Two incompatible formats are in play and both are parsed:
-#
-#   BSD/macOS  `-l`:  "0.05 real  0.02 user  0.01 sys" then "1359872  maximum
-#                     resident set size" — RSS in BYTES.
-#   GNU/Linux  `-v`:  "User time (seconds): 0.02" / "Maximum resident set size
-#                     (kbytes): 1327" — RSS in KILOBYTES.
-#
-# Getting the unit wrong is a 1024x error that still looks like a plausible
-# memory figure, so the two are parsed by their own distinct wording rather than
-# by grabbing the first number on a "maximum resident set size" line.
-#
-# Why not getrusage(RUSAGE_CHILDREN) from inside this harness: its ru_maxrss is
-# the maximum over ALL children reaped so far and never falls, so after one
-# heavy lane every later lane would report that same peak. Spawning under
-# /usr/bin/time gives each run its own isolated accounting.
-#
-# Returns a Hash with <cpu rss>, or an empty Hash when neither format parses —
-# every caller renders that as n/a rather than as a zero.
-#
-# $reps runs are wrapped in ONE `sh -c` and the CPU total divided by it, because
-# both formats report CPU to 10ms and the fast kernels finish inside a single
-# quantum: measured one at a time, `native`/`hash` reads a flat 0ms however many
-# times it is sampled. Peak RSS needs no such help — it is the max over the
-# wrapped children, which is the same figure a single run would give.
-sub rusage-flag(--> Str) { $*DISTRO.name.lc.contains('macos' | 'darwin') ?? '-l' !! '-v' }
-sub rusage-run(@cmd, Int $reps = 1 --> Hash) {
-    my $flag = rusage-flag();
-    my $p = do if $reps > 1 {
-        my $one = @cmd.map({ q{'} ~ .subst(q{'}, q{'\''}, :g) ~ q{'} }).join(' ');
-        run('/usr/bin/time', $flag, '/bin/sh', '-c', "$one; " x $reps, :out, :err);
-    }
-    else {
-        run('/usr/bin/time', $flag, |@cmd, :out, :err);
-    }
-    $p.out.slurp(:close);
-    my $err = $p.err.slurp(:close);
-    return {} unless $p.exitcode == 0;
-    parse-rusage($err, $reps)
-}
-sub parse-rusage(Str $err, Int $reps --> Hash) {
-    my ($cpu, $rss);
-    # BSD: bare numbers labelled by trailing words, RSS in bytes.
-    if $err ~~ / $<u>=[\d+ ['.' \d+]?] \s+ 'user' \s+ $<s>=[\d+ ['.' \d+]?] \s+ 'sys' / {
-        $cpu = (+$<u> + +$<s>) * 1000;
-    }
-    if $err ~~ / $<b>=[\d+] \s+ 'maximum resident set size' / {
-        $rss = (+$<b>) / 1024;
-    }
-    # GNU: "Key: value", RSS already in kilobytes.
-    if $err ~~ / 'User time (seconds):' \s* $<u>=[\d+ ['.' \d+]?] / {
-        my $u = +$<u>;
-        my $s = $err ~~ / 'System time (seconds):' \s* $<s>=[\d+ ['.' \d+]?] / ?? +$<s> !! 0;
-        $cpu = ($u + $s) * 1000;
-    }
-    if $err ~~ / 'Maximum resident set size (kbytes):' \s* $<k>=[\d+] / {
-        $rss = +$<k>;
-    }
-    ($cpu.defined && $rss.defined) ?? { cpu => $cpu / $reps, rss => $rss } !! {}
-}
-
 sub median(@ms --> Numeric) {
     my @s = @ms.sort;
     my $n = +@s;
     $n %% 2 ?? (@s[$n div 2 - 1] + @s[$n div 2]) / 2 !! @s[$n div 2]
 }
 
+# The lanes whose peak RSS a --rusage TSV row carries, in column order.
+my @RSS-LANES = <interp native mutsu rakudo perl cnp>;
 my $tfh = $tsv-path ?? $tsv-path.IO.open(:w) !! Nil;
 if $tfh {
     # The metadata every ledger row needs: what ran, on what, compiled by what.
@@ -403,7 +346,10 @@ if $tfh {
                'interp_min_ms', 'interp_med_ms', 'native_min_ms', 'native_med_ms',
                'mutsu_min_ms', 'mutsu_med_ms',
                'rakudo_min_ms', 'rakudo_med_ms', 'perl_min_ms', 'perl_med_ms',
-               'flags', 'cnp_min_ms', 'cnp_med_ms').join("\t");
+               'flags', 'cnp_min_ms', 'cnp_med_ms',
+               # under --rusage, each lane's peak RSS in KiB (min of 3 runs), appended
+               # so a reader of the columns before them is unaffected
+               |($rusage ?? @RSS-LANES.map({ "{$_}_rss_kib" }) !! ())).join("\t");
 }
 
 my $mismatch = False;
@@ -495,8 +441,8 @@ for @benches -> %b {
     # A SEPARATE pass, after the timing rounds: every run here is wrapped in
     # /usr/bin/time, and that wrapper's own fork/exec would otherwise land
     # inside the wall-clock figures the rest of this file publishes.
+    my %ru;
     if $rusage {
-        my %ru;
         for %slow.keys -> $k {
             %ru{$k} = { cpu => %g{$k}<cpu>, rss => %g{$k}<rss>, one => True } if %g{$k}<cpu>.defined;
         }
@@ -546,13 +492,15 @@ for @benches -> %b {
         $tfh.say: (%b<name>,
                    |pair('interp'), |pair('native'), |pair('mutsu'),
                    |pair('rakudo'), |pair('perl'),
-                   (@all ?? @all.join('; ') !! 'ok'), |pair('cnp')).join("\t");
+                   (@all ?? @all.join('; ') !! 'ok'), |pair('cnp'),
+                   |($rusage ?? @RSS-LANES.map({ %ru{$_} ?? sprintf('%.0f', %ru{$_}<rss>) !! '' }) !! ())).join("\t");
         if %sec {
             my sub spair(Str $k) {
                 %sec{$k} ?? (sprintf('%.1f', %sec{$k}.min), sprintf('%.1f', median(%sec{$k}))) !! ('', '')
             }
             $tfh.say: (%b<name> ~ '@section', |spair('interp'), |spair('native'), |spair('mutsu'),
-                       |spair('rakudo'), '', '', 'ok', |spair('cnp')).join("\t");
+                       |spair('rakudo'), '', '', 'ok', |spair('cnp'),
+                       |($rusage ?? @RSS-LANES.map({ '' }) !! ())).join("\t");
         }
     }
 }

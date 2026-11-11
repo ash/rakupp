@@ -149,3 +149,69 @@ sub provenance-line(Str $tool, %pick --> Str) is export {
       ~ (%pick<picked-by-arch> ?? "  (chosen over an earlier candidate: it is the {%pick<host>} build)" !! '')
       ~ (%pick<picked-by-age>  ?? "  (chosen over an earlier candidate: it is the newest build)" !! '')
 }
+
+# ---------------------------------------------------------------------------
+# Peak RSS and CPU time of a child, read out of /usr/bin/time (run-bench and
+# run-optbench --rusage)
+# ---------------------------------------------------------------------------
+
+# CPU time (ms, user+sys) and peak RSS (KiB) for ONE run of @cmd, read out of
+# `/usr/bin/time`. Two incompatible formats are in play and both are parsed:
+#
+#   BSD/macOS  `-l`:  "0.05 real  0.02 user  0.01 sys" then "1359872  maximum
+#                     resident set size" — RSS in BYTES.
+#   GNU/Linux  `-v`:  "User time (seconds): 0.02" / "Maximum resident set size
+#                     (kbytes): 1327" — RSS in KILOBYTES.
+#
+# Getting the unit wrong is a 1024x error that still looks like a plausible
+# memory figure, so the two are parsed by their own distinct wording rather than
+# by grabbing the first number on a "maximum resident set size" line.
+#
+# Why not getrusage(RUSAGE_CHILDREN) from inside this harness: its ru_maxrss is
+# the maximum over ALL children reaped so far and never falls, so after one
+# heavy lane every later lane would report that same peak. Spawning under
+# /usr/bin/time gives each run its own isolated accounting.
+#
+# Returns a Hash with <cpu rss>, or an empty Hash when neither format parses —
+# every caller renders that as n/a rather than as a zero.
+#
+# $reps runs are wrapped in ONE `sh -c` and the CPU total divided by it, because
+# both formats report CPU to 10ms and the fast kernels finish inside a single
+# quantum: measured one at a time, `native`/`hash` reads a flat 0ms however many
+# times it is sampled. Peak RSS needs no such help — it is the max over the
+# wrapped children, which is the same figure a single run would give.
+sub rusage-flag(--> Str) is export { $*DISTRO.name.lc.contains('macos' | 'darwin') ?? '-l' !! '-v' }
+sub rusage-run(@cmd, Int $reps = 1 --> Hash) is export {
+    my $flag = rusage-flag();
+    my $p = do if $reps > 1 {
+        my $one = @cmd.map({ q{'} ~ .subst(q{'}, q{'\''}, :g) ~ q{'} }).join(' ');
+        run('/usr/bin/time', $flag, '/bin/sh', '-c', "$one; " x $reps, :out, :err);
+    }
+    else {
+        run('/usr/bin/time', $flag, |@cmd, :out, :err);
+    }
+    $p.out.slurp(:close);
+    my $err = $p.err.slurp(:close);
+    return {} unless $p.exitcode == 0;
+    parse-rusage($err, $reps)
+}
+sub parse-rusage(Str $err, Int $reps --> Hash) is export {
+    my ($cpu, $rss);
+    # BSD: bare numbers labelled by trailing words, RSS in bytes.
+    if $err ~~ / $<u>=[\d+ ['.' \d+]?] \s+ 'user' \s+ $<s>=[\d+ ['.' \d+]?] \s+ 'sys' / {
+        $cpu = (+$<u> + +$<s>) * 1000;
+    }
+    if $err ~~ / $<b>=[\d+] \s+ 'maximum resident set size' / {
+        $rss = (+$<b>) / 1024;
+    }
+    # GNU: "Key: value", RSS already in kilobytes.
+    if $err ~~ / 'User time (seconds):' \s* $<u>=[\d+ ['.' \d+]?] / {
+        my $u = +$<u>;
+        my $s = $err ~~ / 'System time (seconds):' \s* $<s>=[\d+ ['.' \d+]?] / ?? +$<s> !! 0;
+        $cpu = ($u + $s) * 1000;
+    }
+    if $err ~~ / 'Maximum resident set size (kbytes):' \s* $<k>=[\d+] / {
+        $rss = +$<k>;
+    }
+    ($cpu.defined && $rss.defined) ?? { cpu => $cpu / $reps, rss => $rss } !! {}
+}

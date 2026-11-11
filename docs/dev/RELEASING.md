@@ -329,6 +329,25 @@ there and nowhere else: [#8](https://github.com/ash/rakupp/issues/8) and the
 declared-type loss found while fixing
 [#9](https://github.com/ash/rakupp/issues/9) were both compiler-only.
 
+**Record its numbers too, not only its verdict.** The gate prints timings and
+nothing kept them, so the dashboard's `-O` charts stopped at v5.5.0 while
+v5.6.0 to v5.7.0 all passed this step. Once the tag's
+`rakupp-macos-universal.tar.gz` is published, run the gate and the kernels on
+that archive (sha256 checked, arm64 slice) with peak RSS on:
+
+```bash
+RAKUPP=/path/to/release/bin/rakupp rakupp tools/run-optbench.raku --rusage --tsv=opt.tsv
+RAKUPP=/path/to/release/bin/rakupp RAKUDO=/usr/bin/false \
+  rakupp tools/run-bench.raku --rusage --no-cnp --no-mutsu --tsv=bench.tsv
+```
+
+and add the tag's rows to raku.online's `sites/spec/src/data/optbench-m4.tsv`
+(`exe`/`opt`/`rakudo` ms) and `memory-m4.tsv` (each lane's `*_rss_kib`, for
+`kernels` and `optbench`) before re-running `gen-dashboard.raku`. Both files'
+headers say how their rows were taken. `RAKUDO=/usr/bin/false` leaves the
+Rakudo lane out of the kernel run: its RSS is one reading per Rakudo bottle,
+filed under the label `rakudo`, not one per tag.
+
 ### 4a. What `--cpp` accepts also compiles
 
 ```bash
