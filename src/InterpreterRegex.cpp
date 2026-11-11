@@ -2148,6 +2148,36 @@ std::string Interpreter::substSelect(const std::string& subj, const std::string&
                 // the replacement side is qq-ish: decode the standard escapes
                 // (s/$/\n/ appends a NEWLINE, not the letter n)
                 char c = s[i + 1]; i++;
+                // \x41 \x[41,42] hex, \o101 \o[…] octal, \c65 \c[NAME, 65]: one
+                // character or a bracketed list, as in "…" (issue #236: the
+                // backslash was dropped and `x41` came out as text)
+                if (c == 'x' || c == 'o' || (c == 'c' && i + 1 < s.size() &&
+                                             (s[i + 1] == '[' || ascii::isdigit((unsigned char)s[i + 1])))) {
+                    int base = c == 'x' ? 16 : c == 'o' ? 8 : 10;
+                    auto isd = [&](char ch) { return base == 16 ? ascii::isxdigit((unsigned char)ch)
+                                                  : base == 8 ? (ch >= '0' && ch <= '7') : ascii::isdigit((unsigned char)ch); };
+                    auto one = [&](std::string tok) {
+                        size_t a = tok.find_first_not_of(" \t\r\n_"), b = tok.find_last_not_of(" \t\r\n");
+                        if (a == std::string::npos) return;
+                        tok = tok.substr(a, b - a + 1);
+                        if (c != 'c' || ascii::isdigit((unsigned char)tok[0])) { r += cpToUtf8((uint32_t)strtol(tok.c_str(), nullptr, base)); return; }
+                        int32_t cp = uniCharByName(tok);
+                        if (cp < 0) { std::string up = tok; for (auto& ch : up) ch = (char)ascii::toupper((unsigned char)ch); cp = uniCharByName(up); }
+                        if (cp >= 0) r += cpToUtf8((uint32_t)cp); else r += uniSeqByName(tok);
+                    };
+                    size_t j = i + 1;
+                    if (j < s.size() && s[j] == '[') {
+                        size_t close = s.find(']', j);
+                        if (close != std::string::npos) {
+                            std::string body = s.substr(j + 1, close - j - 1);
+                            for (size_t p = 0;;) { size_t comma = body.find(',', p); one(body.substr(p, comma == std::string::npos ? std::string::npos : comma - p)); if (comma == std::string::npos) break; p = comma + 1; }
+                            i = close; continue;
+                        }
+                    } else if (j < s.size() && isd(s[j])) {
+                        size_t e = j; while (e < s.size() && isd(s[e])) e++;
+                        one(s.substr(j, e - j)); i = e - 1; continue;
+                    }
+                }
                 switch (c) {
                     case 'n': r += '\n'; break;
                     case 't': r += '\t'; break;

@@ -3279,7 +3279,9 @@ bool Lexer::tryQuoteForm(Token& out) {
             if (assignOp.empty()) {
                 // plain `= "str"` keeps its raw content (which may be a `{…}` code
                 // replacement or an interpolated string); `= EXPR` becomes code.
-                repl = wasStr ? rhs : ("{" + rhs + "}");
+                // A single-quoted one is no template: `s[X] = '\x41'` puts in
+                // the four characters, so it goes in as code too.
+                repl = wasStr && rq != '\'' ? rhs : wasStr ? ("{'" + rhs + "'}") : ("{" + rhs + "}");
             } else {
                 // `OP= X` → `$/ OP (X)` per match; re-quote a string operand.
                 std::string operand = wasStr ? ("\"" + rhs + "\"") : rhs;
