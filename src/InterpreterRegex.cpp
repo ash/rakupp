@@ -4544,7 +4544,7 @@ static bool topicWriteFree(const Expr* e) {
 // against 1.70 s before. Split like this it is 1.78 s; the rest is the
 // topicWriteFree walk.
 [[gnu::noinline]] static Value topicCopyRhs(Interpreter& I, Expr* rhs, const Value& l) {
-    auto scope = makeSlabShared<Env>(); scope->parent = Interpreter::tctx().cur;
+    auto scope = makeSlabShared<Env>(); scope->parent = Interpreter::tctx().cur; scope->loopFrame = true; // a `my` in the RHS is the enclosing scope's
     scope->define("$_", l);
     auto saved = Interpreter::tctx().cur; Interpreter::tctx().cur = scope;
     Value r; try { r = I.eval(rhs); } catch (...) { Interpreter::tctx().cur = saved; throw; }
@@ -4552,7 +4552,7 @@ static bool topicWriteFree(const Expr* e) {
     return r;
 }
 [[gnu::noinline]] static Value topicAliasedRhs(Interpreter& I, Expr* lhs, Expr* rhs, const Value& l) {
-    auto scope = makeSlabShared<Env>(); scope->parent = Interpreter::tctx().cur;
+    auto scope = makeSlabShared<Env>(); scope->parent = Interpreter::tctx().cur; scope->loopFrame = true; // a `my` in the RHS is the enclosing scope's
     Expr* head = topicContainerExpr(lhs);
     if (head && lhs->kind == NK::Binary && l.t == VT::Array && l.s == "Slip" && l.arr() && l.arr()->empty())
         head = nullptr;

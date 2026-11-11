@@ -680,9 +680,16 @@ void Interpreter::hoistExprDecls(const std::vector<StmtPtr>& stmts, Env* env, De
             }
             case NK::Ternary: { auto* t = static_cast<const Ternary*>(e); self(self, t->cond.get(), cond); self(self, t->then.get(), true); self(self, t->els.get(), true); break; }
             case NK::NqpOp:   { for (auto& x : static_cast<const NqpOp*>(e)->args) self(self, x.get(), true); break; }
-            case NK::Binary:  { auto* b = static_cast<const Binary*>(e); self(self, b->lhs.get(), cond); self(self, b->rhs.get(), cond); break; }
+            // a short-circuit operator's right side is a branch, as a ternary's
+            // (`True || (my $b := 5)` declares $b, issue #248)
+            case NK::Binary:  { auto* b = static_cast<const Binary*>(e); static const std::set<std::string> sc{"||", "&&", "//", "or", "and", "orelse", "andthen", "notandthen", "^^", "xor"};
+                self(self, b->lhs.get(), cond); self(self, b->rhs.get(), cond || sc.count(b->op)); break; }
             case NK::Unary:   self(self, static_cast<const Unary*>(e)->operand.get(), cond); break;
-            case NK::Assign:  { auto* a = static_cast<const Assign*>(e); self(self, a->target.get(), cond); self(self, a->value.get(), cond); break; }
+            // …and a `do` block that initializes the declaration may name it
+            // (`my $c := do { $c := 2 }` in a sub body, issue #249)
+            case NK::Assign:  { auto* a = static_cast<const Assign*>(e); const bool doInit = a->value && a->value->kind == NK::Unary && static_cast<const Unary*>(a->value.get())->op == "do" &&
+                a->target && a->target->kind == NK::VarExpr && static_cast<const VarExpr*>(a->target.get())->name[0] != '&';   // (one variable: `my (&plan, …) = do {…}` hoisted a Callable too early)
+                self(self, a->target.get(), cond || doInit); self(self, a->value.get(), cond); break; }
             case NK::Call:    { auto* c = static_cast<const Call*>(e); if (c->callee) self(self, c->callee.get(), cond); for (auto& x : c->args) self(self, x.get(), cond); break; }
             case NK::MethodCall: { auto* m = static_cast<const MethodCall*>(e); self(self, m->inv.get(), cond); for (auto& x : m->args) self(self, x.get(), cond); break; }
             case NK::Index:   { auto* i = static_cast<const Index*>(e); self(self, i->base.get(), cond); self(self, i->index.get(), cond); break; }
