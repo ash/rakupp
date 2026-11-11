@@ -2462,8 +2462,10 @@ struct Codegen {
                 }
             }
             else if (be->params.empty()) {
+                // (a bare block called with nothing has the OUTER `$_`: `$lock.protect: { .path }`)
+                const std::string outer = be->isSub ? "Value::any()" : curTopicExpr();
                 topic = gensym("v__t");
-                line(0, "Value " + topic + " = (__a.size() > 0 ? __a[0] : Value::any());");
+                line(0, "Value " + topic + " = (__a.size() > 0 ? __a[0] : " + outer + ");");
                 topics.push_back(topic); pushed = true;
             } else {
                 bindParams(be->params, 0, false); // full signature forms, same as sub bodies

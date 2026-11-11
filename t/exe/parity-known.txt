@@ -81,7 +81,6 @@ undefined-array-head-lvalue-empty-match.raku
 unit-stash-exists-under-import-list.raku
 user-multi-on-builtin-prefix.raku
 vivified-scalar-is-itemized.raku
-watch-ignores-writes-before-it.raku
 whatever-value-pair-key.raku
 word-list-escapes-comma-op-forward-type.raku
 wrap-builtin.raku
