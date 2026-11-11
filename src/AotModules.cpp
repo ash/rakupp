@@ -446,6 +446,20 @@ Value rtAotAttr(Interpreter& I, const Value& self, Expr* node, bool inClosure) {
 // shadowed or native-memory attributes — is assigned BY the interpreter: an
 // `ATTR = $v` node built once around the attribute, run with `self` and `$v`
 // bound in a scope of its own.
+// …the inline store is for an attribute that takes ANY value: one with a type,
+// a `where` or a container trait checks what it is given (`has Int:U $!u`
+// took a 5 when a native method stored it inline), and that check is the
+// interpreter's assignment
+static bool attrTakesAnything(ClassInfo* cls, const std::string& bare) {
+    for (int depth = 0; cls && depth < 64; depth++) {
+        for (auto& a : cls->attrs)
+            if (a.name == bare) return (a.type.empty() || a.type == "Mu") && !a.where && a.containerIs.empty();
+        if (!cls->extraParents.empty()) return false;
+        cls = cls->parent.get();
+    }
+    return false;
+}
+
 Value rtAotAttrAssign(Interpreter& I, const Value& self, Expr* node, bool inClosure, Value v) {
     auto* ve = static_cast<VarExpr*>(node);
     const bool definedValue = v.t != VT::Any && v.t != VT::Nil && v.t != VT::Type &&
@@ -457,7 +471,7 @@ Value rtAotAttrAssign(Interpreter& I, const Value& self, Expr* node, bool inClos
         if (cls && cls->shadowsAttrs == 0 && cls->repr.empty()) {
             auto it = od->attrs.find(ve->attrBare);
             if (it != od->attrs.end() && it->second.hashKind != "Proxy" && !it->second.isCell() &&
-                !it->second.readonly) {
+                !it->second.readonly && attrTakesAnything(cls, ve->attrBare)) {
                 if (ve->name[0] == '$') v = rtItemized(std::move(v));
                 v.readonly = false;
                 Interpreter::ParStripe ws(I, &it->second);

@@ -5391,8 +5391,23 @@ Value rtIndexGet(const Value& base, const Value& key, bool isHash) {
             // template) but can be tested for (Nil-Any sheet NA-37).
             return refusedSubscript("X::AdHoc",
                 "Type " + base.typeName() + " does not support associative indexing.");
+        // an undefined base — `my $u; $u<k>`, `Str<k>` — reads (Any), as the
+        // interpreter's does; Nil was native code's answer alone
+        if (base.t == VT::Any || (base.t == VT::Type && base.s != "Mu" && base.enumName().empty()))
+            return Value::any();
+        // a key a container does not hold: a Hash's is its default, (Any) when
+        // untyped, a QuantHash's its zero weight; a Map, like a List, has no
+        // containers and answers Nil — as the interpreter's missLeaf
+        if (base.t == VT::Hash) {
+            const std::string& hk = base.hashKind;
+            if (hk.empty()) { Value dv = arrayMissingDefault(base); return dv.t == VT::Nil ? Value::any() : dv; }
+            if (hk == "Set" || hk == "SetHash") return Value::boolean(false);
+            if (hk == "Bag" || hk == "BagHash" || hk == "Mix" || hk == "MixHash") return Value::integer(0);
+        }
         return typedElemDefault(base);
     }
+    // …and an undefined value read positionally is an empty container: (Any)
+    if (base.t == VT::Any) return Value::any();
     if (base.t == VT::Range) {
         if (base.rTo() >= 9000000000000000000LL) { // infinite range: index directly, don't materialise
             long long i = key.toInt(); if (i < 0) return Value::nil();
@@ -5436,6 +5451,8 @@ Value rtIndexGet(const Value& base, const Value& key, bool isHash) {
             // an Array's element lives in a Scalar container, so an Array or a
             // Hash read out of one is an item, as the interpreter's itemizeElem
             // has it (a List's elements are bare)
+            // (an untyped Array's hole is an empty container: (Any))
+            if (base.t == VT::Array && !base.isList && v.t == VT::Nil) return Value::any();
             Value r = v;
             if (base.t == VT::Array && !base.isList && !v.ext()) itemizeScalar(r);
             return r;
@@ -5470,6 +5487,12 @@ Value rtIndexGet(const Value& base, const Value& key, bool isHash) {
         if (Interpreter::ncIsPointerElem(of) && el.t == VT::Int && g_cbInterp)
             return g_cbInterp->ncMakeLiveCArray(of, (void*)(intptr_t)el.toInt());
         return el;
+    }
+    // past an Array's end is its default — (Any) untyped — as the interpreter's
+    // read has it; a List's (no containers) is Nil
+    if (base.t == VT::Array && !base.isList && base.hashKind.empty()) {
+        Value dv = arrayMissingDefault(base);
+        return dv.t == VT::Nil ? Value::any() : dv;
     }
     return arrayMissingDefault(base);
 }

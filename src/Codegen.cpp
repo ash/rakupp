@@ -757,15 +757,18 @@ struct Codegen {
         if (u->op == "+^") return "Value::integer(~(" + x + ").toInt())";          // bitwise NOT
         if (u->op == "?^") return "Value::boolean(!RT.boolify(" + x + "))";        // boolean NOT (xor form)
         if (u->op == "^")  return "Value::range(0, (" + x + ").toInt(), false, true)"; // ^N = 0..^N
-        if (u->op == "ctx%") return "rtCoerceHash(" + x + ")"; // %(...) hash composer
+        // %(...) hash composer; a Match is its named captures (`%<x>`), as the
+        // interpreter's ctx% arm has it — a hash built from it died "Odd number"
+        if (u->op == "ctx%")
+            return "([&]()->Value{ Value _v = " + x + "; return _v.t == VT::Match ? RT.methodCall(_v, \"hash\", ValueList{}) : rtCoerceHash(_v); }())";
         if (u->op == "ctx%{}") return "rtObjHash(" + x + ")";  // :{ ... } object hash
         if (u->op == "decont") // `$x<>` — the value, out of its item container
             return "([&]()->Value{ Value _v = " + x +
                    "; if (_v.t==VT::Array||_v.t==VT::Hash) _v.itemized=false; return _v; }())";
         if (u->op == "ctx$") // $(...) — an array or a hash becomes one non-flattening item
             return "itemizedScalar(" + x + ")";
-        if (u->op == "ctx@") // @(...) — one-level list context, of an item too (`@($x)`)
-            return "rtArrayVal(unitemized(" + x + "))";
+        if (u->op == "ctx@") // @(...) — one-level list context, of an item too (`@($x)`); a Match's positionals (`@<x>`)
+            return "([&]()->Value{ Value _v = " + x + "; return _v.t == VT::Match ? RT.methodCall(_v, \"list\", ValueList{}) : rtArrayVal(unitemized(_v)); }())";
         if (u->op == "|") return "rtSlipShallow(" + x + ")"; // |x in value position: one-level marker
         unsupported("prefix operator '" + u->op + "'");
     }
@@ -2493,11 +2496,15 @@ struct Codegen {
         // feed it per call. A placeholder block ($^a/$^b) lists its placeholders
         // under their real names, in the sorted order they bind.
         // (and an anonymous `sub { @_ }` says `(*@_)`, from its implicitArgs)
-        const std::string implicitSet = implicit ? " _c.code()->ciM().implicitArgs = " + std::to_string(implicit) + ";" : "";
+        // (a bare `{ … }` is a Block, as a pointy one says through rtSig: it
+        // answered Sub, and `&{ 42 }.^name`, a hash-or-block test, said so)
+        const std::string implicitSet = (implicit ? " _c.code()->ciM().implicitArgs = " + std::to_string(implicit) + ";" : "") +
+                                        std::string(be->isSub ? "" : " _c.code()->ciM().isBlock = true;");
         if (!phs.empty() || implicit)
             return "([&]()->Value{ Value _c = " + mk + "; _c.code()->ciM().placeholders = {" + placeholderList(phs) +
                    "};" + implicitSet + cmpShapeSet(cmpShapeOf(be, phs)) + " return _c; }())";
-        if (be->params.empty() && !be->isPointy && !(be->isSub && be->sigParens)) return mk;
+        if (be->params.empty() && !be->isPointy && !(be->isSub && be->sigParens))
+            return be->isSub ? mk : "([&]()->Value{ Value _c = " + mk + ";" + implicitSet + " return _c; }())";
         std::string sc = sigWrap(mk, be->params, "", be->retType,
                                  (be->isSub ? 0u : (unsigned)RSC_BLOCK) |
                                  (be->isPointy || !be->params.empty() ? (unsigned)RSC_HADSIG : 0u));
@@ -3594,8 +3601,8 @@ struct Codegen {
                 // is where an endless Range becomes a lazy Array (`[1..*]`)
                 if (l->items.size() == 1 && !l->fromCommaList && !l->isList) {
                     Expr* it = l->items[0].get();
-                    const bool spreadOp = it->kind == NK::Unary &&
-                        (static_cast<Unary*>(it)->op == "ctx@" || static_cast<Unary*>(it)->op == "decont");
+                    const bool spreadOp = it->kind == NK::Unary && (static_cast<Unary*>(it)->op == "ctx@" ||
+                        static_cast<Unary*>(it)->op == "ctx%" || static_cast<Unary*>(it)->op == "decont");
                     const bool plain = !isSlip(it) && it->kind != NK::VarExpr && !spreadOp &&
                                        !(it->kind == NK::MethodCall && static_cast<MethodCall*>(it)->hyper);
                     // a nested `[…]` spreads as a bare @-variable does: `[[1]]` is `[1]`
@@ -3619,9 +3626,9 @@ struct Codegen {
                         s += "rtSlipShallow(" + ex(static_cast<Unary*>(it)->operand.get()) + ")";
                     else if (atVar && one) // a lone bare @-variable flattens into the literal
                         s += "rtSlipShallow(" + exArg(it) + ")";
-                    else if (one && it->kind == NK::Unary &&
-                             (static_cast<Unary*>(it)->op == "ctx@" || static_cast<Unary*>(it)->op == "decont"))
-                        // `[ @$v ]` / `[ $v<> ]`: an array (or a hash's pairs) out of its item spreads
+                    else if (one && it->kind == NK::Unary && (static_cast<Unary*>(it)->op == "ctx@" ||
+                             static_cast<Unary*>(it)->op == "ctx%" || static_cast<Unary*>(it)->op == "decont"))
+                        // `[ @$v ]` / `[ $v<> ]` / `[ %$h ]`: an array (or a hash's pairs) out of its item spreads
                         s += "([&]()->Value{ Value _v = " + exArg(it) + "; return _v.t == VT::Array ||"
                              " (_v.t == VT::Hash && _v.hashKind.empty()) ? rtSlipShallow(_v) : rtOneArgItem(_v); }())";
                     else if (one && it->kind == NK::VarExpr && static_cast<VarExpr*>(it)->name.rfind('$', 0) == 0)
@@ -4995,8 +5002,19 @@ struct Codegen {
             }
         }
         // …and so does an element: `@a[0] = $n`, `%h<k> = $n + 1` (a native
-        // array's own store, rtElemStoreN, makes its native again)
-        return tgt->kind == NK::Index ? retBoxed(value, rhs) : rhs;
+        // array's own store, rtElemStoreN, makes its native again). One element
+        // is a Scalar container, which holds a list as ONE item: `%h<k> = @x;
+        // my @i = %h<k>` is one element, not three. (Not a slice's: `@a[0, 1] = …`
+        // spreads its list over them.)
+        if (tgt->kind == NK::Index) {
+            auto* ix = static_cast<Index*>(tgt);
+            const Expr* k = ix->index.get();
+            const bool one = !ix->multiDim && !ix->zen && !ix->semicolonSub && ix->adverb.empty() && k &&
+                (k->kind == NK::IntLit || k->kind == NK::StrLit || k->kind == NK::InterpStr ||
+                 (k->kind == NK::VarExpr && static_cast<const VarExpr*>(k)->name.rfind('$', 0) == 0));
+            return one && !scalarOnly(value) ? "rtItemized(" + retBoxed(value, rhs) + ")" : retBoxed(value, rhs);
+        }
+        return rhs;
     }
     // an expression that can only produce a scalar: a literal, an arithmetic or
     // string operator
@@ -9248,10 +9266,9 @@ struct Codegen {
     static bool checkedParam(const Param& p) {
         if (p.type.empty() || p.slurpy || p.invocant || p.isRw || p.typeCapture || p.typeFromCapture ||
             !p.captureName.empty() || (p.sigil != '$' && p.sigil != '\\')) return false;
-        if (p.type == "Any" || p.type == "Mu") return false;
-        // a lowercase name is a native's (`int`, `num32`, `str`) or nothing the
-        // binding knows
-        return !(p.type[0] >= 'a' && p.type[0] <= 'z') || isNativeTypeName(p.type);
+        // (a lowercase name too — `buf8`, `blob8`, `utf8` or a lowercase class
+        // is checked by the interpreter's binder; left out, `sub f(buf8 $b)` took a blob8)
+        return p.type != "Any" && p.type != "Mu";
     }
     // the parameter's descriptor, built once (a function-local static)
     std::string typedParamDesc(const Param& p, int ind) {
