@@ -823,10 +823,13 @@ section('--target=js (JavaScript backend)');
 # attribute's and the dynamic's own place, not a C++ local, and a `constant @L`
 # is the List it was given (it was assigned as an Array). A loop's
 # `-> (:$key, :$value)` binds a Pair's .key and .value (#162), and `$b[*-1]`
-# reads and stores a Buf's last byte (#163).
+# reads and stores a Buf's last byte (#163). Each thread's matches set a `$/`
+# of its own: a `start` block's compiled closure wrote the program's, beside
+# the main thread, and both binaries died with SIGSEGV in every run.
 for <next-return-in-expression-native leave-on-every-exit-native named-container-param-absent-native
      match-numifies-exact-native prefix-plus-failure-native attribute-array-assign-native
-     list-constant-native exe-pair-subsignature-loop-native exe-buf-whatever-index-native> -> $name {
+     list-constant-native exe-pair-subsignature-loop-native exe-buf-whatever-index-native
+     threads-own-match-var-native issue-209-threads-share-a-dir-walking-sub> -> $name {
     my $bin = $*TMPDIR.add("rakupp-suite-native-$name-$*PID").Str;
     my $p = run($*EXECUTABLE, '--exe', $ROOT.add("t/regression/$name.raku").Str, '-o', $bin, :out, :err);
     $p.out.slurp(:close);
