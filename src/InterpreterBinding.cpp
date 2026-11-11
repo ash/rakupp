@@ -4039,8 +4039,12 @@ Value Interpreter::dynVar(const std::string& name) {
     // is found through the CALLERS first, as the interpreter's own read finds
     // it: a routine's `my $*X` is what its callees see, not whatever `$*X`
     // their lexical scope holds.
-    if (name.size() > 1 && name[1] == '*')
+    // Nothing declares it: GLOBAL's, twigil dropped, else the armed Failure —
+    // as the interpreter's read (evalVarExpr) answers; `%*X` read `%GLOBAL::X`
+    if (name.size() > 1 && name[1] == '*') {
         if (Value* p = findDynamicLenient(name)) return *p;
+        if (!isBuiltinDynamic(name)) return dynMiss(name);
+    }
     if (tctx().cur) if (Value* p = tctx().cur->find(name)) return *p;
     if (global_) { auto it = global_->vars.find(name); if (it != global_->vars.end()) return it->second; }
     return Value::any();
@@ -4957,6 +4961,16 @@ bool Interpreter::attrWhereOk(const void* whereExpr, const Value& v) {
 Value& Interpreter::dynVarRef(const std::string& name) {
     if (Value* p = findDynamicLenient(name)) return *p;
     return global_->define(name, Value::any());
+}
+// A compiled write to `$*X` (not its declaration): as the interpreter's
+// lvalue has it, a name nothing declares is GLOBAL's (`our $COUNT` at the top,
+// `$GLOBAL::COUNT`), else X::Dynamic::NotFound — never a slot minted for it.
+Value& Interpreter::dynVarWrite(const std::string& name) {
+    if (name.size() > 1 && name[1] == '*') {
+        if (Value* p = findDynamicLenient(name)) return *p;
+        if (!isBuiltinDynamic(name)) return *dynMissSlot(name);
+    }
+    return dynVarRef(name);
 }
 Value& Interpreter::laxVarRef(const std::string& name) {
     if (Value* p = findDynamicLenient(name)) return *p;

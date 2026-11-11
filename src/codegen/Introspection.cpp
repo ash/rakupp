@@ -43,6 +43,7 @@ std::string introspectionRefusal(const Program& prog) {
     // interpreter's does; every other metamodel call asks the interpreter
     static const std::set<std::string> nativeMeta = {"name", "shortname", "mro", "can", "isa"};
     std::string why;
+    std::set<std::string> dyns, globals;   // `$*X` read or written as `$X`; GLOBAL's `$X`
     auto params = [&](const std::vector<Param>& ps) {
         for (auto& p : ps)
             if (!p.pod.empty() || !p.podTrail.empty() || !p.podLead.empty())
@@ -81,11 +82,25 @@ std::string introspectionRefusal(const Program& prog) {
             }
             case NK::SubDecl: params(static_cast<SubDecl*>(n)->params); break;
             case NK::BlockExpr: params(static_cast<BlockExpr*>(n)->params); break;
+            case NK::VarExpr: {   // (the GLOBAL fallback below)
+                auto* v = static_cast<VarExpr*>(n);
+                const std::string& nm = v->name;
+                if (nm.size() > 2 && nm[1] == '*') dyns.insert(nm.substr(0, 1) + nm.substr(2));
+                else if (nm.size() > 9 && nm.compare(1, 8, "GLOBAL::") == 0) globals.insert(nm.substr(0, 1) + nm.substr(9));
+                else if (v->declare && v->d().declScope == "our") globals.insert(nm);
+                break;
+            }
             default: break;
         }
         forEachAstChild(n, walk);
     };
     for (auto& st : prog.stmts) walk(st.get());
+    // `$*X` that nothing declares is GLOBAL's `$X` — which, written as a
+    // top-level `our $X` or `$GLOBAL::X`, the native program keeps in a C++
+    // variable the run-time dynamic lookup does not see
+    if (why.empty())
+        for (auto& g : globals)
+            if (dyns.count(g)) return "a dynamic variable read from GLOBAL's " + g + " — a native variable";
     return why;
 }
 

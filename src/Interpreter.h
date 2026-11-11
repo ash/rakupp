@@ -2657,6 +2657,7 @@ public:
     Value dynVar(const std::string& name);
     Value rakuIntrospection(bool compiler); // $*RAKU / $*RAKU.compiler // $* / $? magical variables (used by codegen)
     Value& dynVarRef(const std::string& name); // assignable dynamic-var slot (used by codegen)
+    Value& dynVarWrite(const std::string& name); // …a write: what nothing declares is GLOBAL's, else NotFound
     Value& laxVarRef(const std::string& name); // `no strict` auto-vivified slot (used by codegen)
     // $*var resolution in PROPER dynamic order: the current frame's own
     // declaration first (its env chain up to the enclosing routine activation,

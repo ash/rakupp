@@ -10,7 +10,6 @@ cat-assign-shapes.raku
 cro-live-server.raku
 date-formatter-everywhere.raku
 datetime-number-is-instant.raku
-dynamic-falls-back-to-global.raku
 dynamic-method-lvalue.raku
 ecosweep-condition-binders-and-hyper.raku
 empty-block-is-nil.raku

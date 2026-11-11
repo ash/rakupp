@@ -4725,7 +4725,7 @@ struct Codegen {
             if ((v->name == "$!" || v->name == "$/") && boundSpecials.count(v->name))
                 return mangleVar(v->name);
             if ((v->name.size() > 1 && v->name[1] == '*' && v->name != "@*ARGS") || v->name == "$!" || v->name == "$/")
-                return "RT.dynVarRef(" + cesc(v->name) + ")";
+                return std::string(v->declare ? "RT.dynVarRef(" : "RT.dynVarWrite(") + cesc(v->name) + ")";
             if (v->name == "$_")
                 return topics.empty() ? "RT.dynVarRef(\"$_\")" : topics.back();
             if (v->name == "@*ARGS" || (v->name.size() && v->name[0] == '&') ||
