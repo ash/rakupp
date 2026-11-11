@@ -5890,10 +5890,14 @@ void Interpreter::arrayStore(Value& lvRef, Value& rhs, bool isAssign, bool dolla
         // straight from the Range, never building the Values a finite
         // Int Range would flatten to (coerceArray's plain Array of plain
         // Ints, which is what they unpack to). An untyped `my @a = LO .. HI`
-        // that would pack itself (selfPack) is filled the same way.
+        // that would pack itself (selfPack) is filled the same way. Not
+        // while worker threads run: the packed words replace the storage
+        // outside the stripe a refill takes, and eight threads doing
+        // `@shared = ^20` freed one payload twice (t/race/array-refill-shared).
         bool packedNow = false;
         Value nv;
-        const bool selfRange = keepType.empty() && lv->hashKind.empty();
+        const bool noWorkers = !(parallelMode_ && liveWorkers_.load(std::memory_order_relaxed) > 0);
+        const bool selfRange = keepType.empty() && lv->hashKind.empty() && noWorkers;
         if (isAssign && rhs.t == VT::Range && !rhs.rNum() && rhs.ofType().empty() &&
             !rhs.ext() && (keepType == "int" || keepType == "int64" || selfRange) && !keepDefault &&
             lv->t == VT::Array && lv->payloadUnique() && !lv->elemDefault() && !lv->shape()) {
@@ -6027,7 +6031,7 @@ void Interpreter::arrayStore(Value& lvRef, Value& rhs, bool isAssign, bool dolla
         }
         // …and an UNTYPED one packs itself, on the same terms, when every
         // element is a plain Num (selfPack, JSC-VALUES-2026-11-07)
-        if (!packedNow && isAssign && rhs.t != VT::Nil && keepType.empty() && !keepDefault && nv.arr() &&
+        if (!packedNow && noWorkers && isAssign && rhs.t != VT::Nil && keepType.empty() && !keepDefault && nv.arr() &&
             lv->t == VT::Array && lv->payloadUnique() && !lv->elemDefault() && !lv->shape() && lv->hashKind.empty())
             packedNow = selfPack(nv);
         // `=` REFILLS the same container (Raku identity): anything bound
