@@ -3571,7 +3571,7 @@ struct Codegen {
                     const std::string a = "_c" + std::to_string(k), b = "_c" + std::to_string(k + 1);
                     auto bf = kB.find(ch->ops[k]);
                     cond += bf != kB.end() ? bf->second + "(" + a + ", " + b + ")"
-                                           : "applyArith(" + cesc(ch->ops[k]) + ", " + a + ", " + b + ").truthy()";
+                                           : "applyArith(" + cesc(knownOp(ch->ops[k])) + ", " + a + ", " + b + ").truthy()";
                 }
                 return "([&]()->Value{ " + binds + "return Value::boolean(" + cond + "); }())";
             }

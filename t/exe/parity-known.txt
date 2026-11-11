@@ -27,7 +27,6 @@ how-declaration-hooks.raku
 how-legacy-exporthow.raku
 hyper-in-whatevercode.raku
 ident-continuation-and-native-return-boundary.raku
-imported-operator-traits.raku
 issue-138-qq-block-in-regex-atom.raku
 issue34-hyper-hash-subscript.raku
 junction-hyper-method-call.raku
