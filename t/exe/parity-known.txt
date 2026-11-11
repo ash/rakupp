@@ -58,7 +58,6 @@ primed-code-arity-count.raku
 pseudo-package-adverbs.raku
 pseudo-package-stash-value.raku
 quanthash-exact-sethash-zen-dynamic.raku
-range-endpoints-and-adverbs.raku
 react-died-names-the-react.raku
 regex-value-variable-atom.raku
 return-through-block-undo.raku

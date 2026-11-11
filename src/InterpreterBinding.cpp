@@ -5410,8 +5410,20 @@ Value rtIndexGet(const Value& base, const Value& key, bool isHash) {
     if (base.t == VT::Any) return Value::any();
     if (base.t == VT::Range) {
         if (base.rTo() >= 9000000000000000000LL) { // infinite range: index directly, don't materialise
+            // …as the interpreter's subscript does: an arithmetic one by adding,
+            // anything else through its lazy `.list` — `(Inf..Inf)[0]` is Nil,
+            // `(1.5..Inf)[2]` 3.5, `("a"..*)[3]` "d", `(-Inf..0)[1]` -Inf
+            const RangeEnds* re = rangeEnds(base);
+            const bool arith = !base.rNum() && base.ofType() != "Str" && degenRange(base) == DegenRange::No &&
+                               (!re || re->from.t == VT::Int);
+            const long long lo = base.rFrom() + (base.rExFrom() ? 1 : 0);
+            if (arith && key.isNumeric() && !key.big()) {
+                long long i = key.toInt();
+                if (i >= 0 && lo <= 9223372036854775807LL - i) return Value::integer(lo + i);
+            }
+            if (g_cbInterp) return rtIndexGet(g_cbInterp->methodCall(base, "list", {}), key, false);
             long long i = key.toInt(); if (i < 0) return Value::nil();
-            return Value::integer(base.rFrom() + (base.rExFrom() ? 1 : 0) + i);
+            return Value::integer(lo + i);
         }
         ValueList f = base.flatten();
         long long i = key.toInt(); if (i < 0) return negIndexFailure(i);
