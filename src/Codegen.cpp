@@ -29,6 +29,7 @@ bool arithOpKnown(const std::string& op);    // InterpreterOperators.cpp: applyA
 bool operatorRoutineName(const std::string& n, std::string& cat, std::string& op);   // codegen/Operators.cpp
 std::string multiOrderRefusal(const std::vector<SubDecl*>&, const std::vector<const Program*>&,
                               int (*)(const SubDecl*));   // codegen/MultiOrder.cpp
+bool exprMayUseTopic(const Expr* e);   // Interpreter.cpp: may `e` read or write `$_`?
 
 namespace {
 
@@ -1328,6 +1329,10 @@ struct Codegen {
         // …and a `react` records the frames it stands in, for the X::React::Died
         // of an error that leaves it: the routine around it has to have one
         if (name == "react") throw CodegenError{"react", /*routineWide=*/true};
+        // an EVAL'd string sees the interpreter's lexicals, so in a routine its
+        // `$_` was the mainline's, not the routine's own native one
+        if ((name == "EVAL" || name == "EVALFILE") && !topics.empty())
+            throw CodegenError{"an EVAL in a routine", /*routineWide=*/true};
         // (no built-in: "Undefined routine"; nor delegable, its undo is the routine's exit)
         if (name == "temp" || name == "let") throw CodegenError{"`" + name + "`", /*routineWide=*/true};
         if (!moduleMode_ && hiddenRoutines_.count(name) && !moduleExports_.count(name))
@@ -2276,9 +2281,12 @@ struct Codegen {
         std::string body = capture([&]() {
             emitCellAliases(0, params);
             bindParams(sigOf(d), 0, false);
+            topics.push_back(routineTopic(&sigOf(d), 0));   // (a sub's own `$_`, not its block's)
+            struct PopTopic { Codegen* g; ~PopTopic() { g->topics.pop_back(); } } __pt{this};
             hoistLexicalSubs(d->body, 0);
             for (size_t i = 0; i < d->body.size(); i++) {
                 Stmt* st = d->body[i].get();
+                if (bodyLeave(d->body, i)) continue;
                 if (i + 1 == d->body.size() && st->kind == NK::ExprStmt)
                     line(0, "return " + retBoxed(static_cast<ExprStmt*>(st)->e.get(),
                                                  tailValue(static_cast<ExprStmt*>(st)->e.get())) + ";");
@@ -9358,6 +9366,8 @@ struct Codegen {
         for (const Param& p : ps) {   // (…and a sub-signature, whose names were never declared)
             if (p.whereExpr)      unsupported("a `where` constraint on a routine parameter");
             if (p.defConstraint)  unsupported("a `:D`/`:U` constraint on a routine parameter");
+            // (a default is evaluated before the routine's own `$_` exists natively)
+            if (p.defaultVal && exprMayUseTopic(p.defaultVal.get())) unsupported("a parameter default that reads `$_`");
             if (p.subSig)         unsupported("a sub-signature on a routine parameter");
         }
         size_t pi = hasSelf ? 1 : 0;

@@ -1965,6 +1965,7 @@ static bool mayUseTopicStmt(const Stmt* s) {
         default: return true;   // a `when` among them
     }
 }
+bool exprMayUseTopic(const Expr* e) { return mayUseTopic(e); }   // (for the --exe codegen)
 bool Interpreter::bodyMayUseTopic(const Callable& c) {
     const CodeInfo& ci = c.ci();
     signed char t = ci.topicScan;
