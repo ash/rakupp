@@ -25,13 +25,11 @@ generic-role-bodies.raku
 grammar-ancestry.raku
 how-declaration-hooks.raku
 how-legacy-exporthow.raku
-hyper-in-whatevercode.raku
 ident-continuation-and-native-return-boundary.raku
 imported-operator-traits.raku
 is-dynamic-and-sum.raku
 issue-138-qq-block-in-regex-atom.raku
 issue34-hyper-hash-subscript.raku
-junction-hyper-method-call.raku
 junction-regex-match-var.raku
 kernel-closure-callees.raku
 method-leave-dies-unwinding.raku

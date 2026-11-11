@@ -3241,14 +3241,16 @@ Value rtSliceFrom(const Value& base, long long from, bool exFrom) {
 // preserving, no deep flatten) — mirrors the interpreter's hyper method call.
 Value rtHyperMethod(Interpreter& I, const Value& inv, const std::string& m, ValueList args) {
     // `».(args)` keeps the interpreter's shape and descent rules
-    if (opEq(m, kHyperInvoke)) return I.hyperMethodEach(inv, m, args, false);
-    Value out = Value::array();
-    if (inv.t == VT::Array && inv.arr())
-        for (auto& el : *inv.arr()) out.arr()->push_back(I.methodCall(el, m, args));
-    else
-        for (auto& el : inv.flatten()) out.arr()->push_back(I.methodCall(el, m, args));
-    out.isList = true;
-    return out;
+    // …and so does `».method`, as the interpreter's MethodCall eval does it: a
+    // hash keeps its keys (`%h».succ`), a non-nodal method reaches the leaves,
+    // and a junction autothreads, each eigenstate hyper'd on its own
+    // (`all(1, 2)».succ` is all((2), (3)), not the List (2 3))
+    if (isJunction(inv)) {
+        Value j = Value::array(); j.setEnumName(inv.enumName());
+        for (auto& e : *inv.arr()) j.arr()->push_back(I.hyperMethodEach(e, m, args, false));
+        return j;
+    }
+    return I.hyperMethodEach(inv, m, args, false);
 }
 
 // An INDIRECT method call for native codegen — `$obj."$name"()`, `$obj.$code`,
