@@ -301,6 +301,10 @@ std::string Interpreter::podRaku(const Value& v) {
 // `Buf` where Str.encode answers utf8, Blob[uint8] or utf16, so
 // `$s.NFD.encode ~~ Buf` and a `--> Buf` return check hold. The codepoints
 // are encoded as they are: an NFD stays decomposed.
+//
+// `Unicode` (#252) says which Unicode version the engine's tables come from —
+// 18.0, the UCD the generators in tools/ read — and whether strings are NFG,
+// which they are. Both are class methods and instance accessors, as in Rakudo.
 std::optional<Value> Interpreter::unicodeMethod(const Value& inv, const std::string& m, const ValueList& args) {
     if (inv.t == VT::Array && m == "encode" &&
         (inv.s == "Uni" || inv.s == "NFC" || inv.s == "NFD" || inv.s == "NFKC" || inv.s == "NFKD")) {
@@ -313,6 +317,22 @@ std::optional<Value> Interpreter::unicodeMethod(const Value& inv, const std::str
         }
         return b;
     }
+    const bool type = inv.t == VT::Type && inv.s == "Unicode" && inv.hashKind.empty() && !classes_.count("Unicode");
+    if (!type && !(inv.t == VT::Hash && inv.hashKind == "Unicode" && inv.hash())) return std::nullopt;
+    auto field = [&](const char* k) -> Value {
+        if (!type) { auto it = inv.hash()->find(k); if (it != inv.hash()->end()) return it->second; }
+        if (k[0] == 'N') return Value::boolean(true);
+        Value v = Value::str("18.0"); v.hashKind = "Version"; return v;
+    };
+    if (m == "version" || m == "NFG") return field(m == "NFG" ? "NFG" : "version");
+    if (type && m == "new") {
+        Value u = Value::makeHash(); u.hashKind = "Unicode";
+        (*u.hash())["version"] = field("version"); (*u.hash())["NFG"] = field("NFG");
+        for (auto& a : args)
+            if (a.t == VT::Pair && (a.s == "version" || a.s == "NFG") && a.pairVal()) (*u.hash())[a.s.str()] = *a.pairVal();
+        return u;
+    }
+    if (!type && (m == "raku" || m == "gist")) return Value::str(inv.gist());
     return std::nullopt;
 }
 

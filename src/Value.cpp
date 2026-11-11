@@ -1270,6 +1270,10 @@ std::string Value::toStr() const {
 std::string Value::gist() const {
     // a Tap is an opaque handle: Rakudo shows `Tap.new`, not its record
     if (t == VT::Hash && hashKind == "Tap") return "Tap.new";
+    // `Unicode.new` (#252) shows its constructor, as Mu.gist does in Rakudo
+    if (t == VT::Hash && hashKind == "Unicode" && hash() && hash()->count("version") && hash()->count("NFG"))
+        return "Unicode.new(version => " + hash()->at("version").gist() + ", NFG => Bool::" +
+               (hash()->at("NFG").truthy() ? "True)" : "False)");
     // …and a Pointer is its package and address: `NativeCall::Types::Pointer<0x10>`
     if (t == VT::Hash && hashKind == "Pointer" && hash() && hash()->count("addr"))
         return "NativeCall::Types::" + ncPointerText("Pointer", "", hash()->at("addr").toInt());
@@ -2369,7 +2373,7 @@ bool opaqueHashKind(const IStr& k) {
         "VM", "Kernel", "Distro", "Compiler", "Encoding", "Encoder", "Decoder", "Collation", "CompUnit",
         "CompUnit::Handle", "DependencySpec", "WrapHandle", "Format", "StrDistance", "Parameter", "Signature",
         "Attribute", "Label", "CallFrame", "BacktraceFrame", "ObjAt", "Variable", "Archetypes", "REPL",
-        "HyperConfiguration", "Pointer"};
+        "HyperConfiguration", "Pointer", "Unicode"};
     return kOpaque.count(k.str()) != 0;
 }
 

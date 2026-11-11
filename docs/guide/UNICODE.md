@@ -200,7 +200,9 @@ live in `tools/ucd/` so regeneration is reproducible and offline:
 | **`tools/gen_unicode_props2.raku`** (Raku) | `src/unicode_props2_gen.cpp`, `src/unicode_mirror_gen.cpp` | DerivedAge, LineBreak, WordBreak/SentenceBreak/GraphemeBreak, EastAsianWidth, HangulSyllableType, ArabicShaping, DerivedJoiningGroup, DerivedDecompositionType, DerivedNumericType, PropertyValueAliases (for `<:Prop<Value>>`), BidiMirroring (the second file, which `--slim` never cuts) | **18.0** |
 
 Every table is pinned at **Unicode 18.0**, the version Roast's generated test
-files (GraphemeBreakTest, emoji-test, CollationTest) assert against. The
+files (GraphemeBreakTest, emoji-test, CollationTest) assert against. A
+program asks with `Unicode.version` (`v18.0`; Rakudo 2026.09 answers `v17.0`),
+and `Unicode.NFG` is `True`. The
 names/categories generator is written in Raku and executed by rakupp itself
 (dogfooding): parsing `UnicodeData.txt` directly ended the dependency on the
 host Python's `unicodedata`, whose UCD version lags by years. Ideographic
