@@ -27,7 +27,6 @@ how-legacy-exporthow.raku
 ident-continuation-and-native-return-boundary.raku
 imported-operator-traits.raku
 is-dynamic-and-sum.raku
-junction-regex-match-var.raku
 kernel-closure-callees.raku
 method-leave-dies-unwinding.raku
 missing-routines-batch.raku

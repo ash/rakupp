@@ -3971,6 +3971,10 @@ public:
     std::string interpP5Pattern(const std::string& in); // :P5 — $vars splice as raw regex source
     // Bake regex-valued variables into an `rx//` source at construction time.
     std::string spliceRegexVars(const std::string& pat);
+    // `topic ~~ any(…)`: each eigenstate matched, collapsed (evalBinary's; rtSmartmatch's)
+    Value junctionMatcher(const std::string& op, const Value& lTopic, const Value& r);
+    // `l ~~ /pat/` / `l !~~ /pat/` on a value (evalBinary's arm; --exe calls it too)
+    Value regexLitMatch(const std::string& op, const Value& l, const std::string& pat, bool isM);
     Value regexMatch(const std::string& subject, std::string_view pattern,
                      const Value* rxVal = nullptr,
                      const std::string& declKind = std::string());

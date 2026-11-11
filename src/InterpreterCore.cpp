@@ -21477,6 +21477,9 @@ Value rtSmartmatch(Interpreter& I, const char* op, const Value& l, const Value& 
         if (!neg && m.t == VT::Match) return m;
         return Value::boolean(I.boolify(m) != neg);
     }
+    // a junction MATCHER against a plain topic threads as evalBinary threads it:
+    // a block eigenstate is CALLED (`'abc' ~~ any({ … }, { … })` never ran them)
+    if (isJunction(r) && !isJunction(l)) return I.junctionMatcher(op, l, r);
     return I.smartmatchValue(op, l, r);
 }
 bool rtWhenMatch(Interpreter& I, const Value& topic, const Value& cond) {
@@ -21597,6 +21600,115 @@ std::optional<Value> Interpreter::temporalArith(const std::string& op, const Val
         }
     }
     return std::nullopt;
+}
+
+// `l ~~ /pat/` and `l !~~ /pat/` once the left side is a value: a junction
+// autothreads, a list or hash is matched element by element, the pattern
+// sees the subject as `$_`. evalBinary and --exe's compiled `~~` both call it.
+Value Interpreter::regexLitMatch(const std::string& op, const Value& l, const std::string& pat, bool isM) {
+    // a junction LHS autothreads: (any("4","5") ~~ /4/) is a junction of
+    // per-eigenstate results — 'any(｢4｣, Nil)' (S03-junctions/misc.t)
+    if (l.t == VT::Array && l.arr() &&
+        (l.enumName() == "any" || l.enumName() == "all" ||
+         l.enumName() == "one" || l.enumName() == "none")) {
+        Value out = Value::array(); out.setEnumName(l.enumName());
+        // the Matches go into the RESULT, not into `$/`: Rakudo answers
+        // `any(｢4｣, Nil)` here with `$/` still undefined
+        MatchVarGuard noSlash;
+        for (auto& e : *l.arr()) {
+            Value m = regexMatch(rxSubject(e), pat);
+            if (opEq(op, "~~")) out.arr()->push_back(m.truthy() ? m : Value::nil());
+            else out.arr()->push_back(Value::boolean(!m.truthy()));
+        }
+        return out;
+    }
+    // `~~` topicalizes: code inside the pattern — `/$( $_ )/`,
+    // `/<{ $_ }>/`, `/{ say $_ }/` — sees the SUBJECT as `$_`
+    const bool wantsTopic = pat.find("$_") != std::string::npos && tctx().cur;
+    Value* topicSlot = wantsTopic ? tctx().cur->find("$_") : nullptr;
+    Value savedTopic;
+    if (topicSlot) { savedTopic = *topicSlot; *topicSlot = l; }
+    // no `$_` in scope at all: a scope of its own holds the topic for
+    // the match (`$/` is still found — and set — outside it)
+    std::shared_ptr<Env> topicEnv, savedCur;
+    if (wantsTopic && !topicSlot) {
+        topicEnv = makeSlabShared<Env>();
+        topicEnv->parent = tctx().cur;
+        topicEnv->define("$_", l);
+        savedCur = tctx().cur;
+        tctx().cur = topicEnv;
+    }
+    Value m;
+    try {
+        // A LIST is matched element by element and a HASH key by key —
+        // the first that matches answers (Regex.ACCEPTS), so
+        // `@a ~~ /^ 'a' $/` is about each string, not their join.
+        // A lazy list keeps the single-string reading: it may not end.
+        if (l.t == VT::Array && l.arr() && !l.ext() && l.enumName().empty() && !l.arr()->empty()) {
+            for (auto& e : *l.arr()) { m = regexMatch(rxSubject(e), pat); if (m.truthy()) break; }
+        }
+        else if (l.t == VT::Hash && l.hash() && !l.hash()->empty()) {
+            for (auto& kv : *l.hash()) { m = regexMatch(kv.first, pat); if (m.truthy()) break; }
+        }
+        else {
+            m = regexMatch(rxSubject(l), pat);
+            keepMatchOrig(m, l);
+        }
+    }
+    catch (...) { if (topicSlot) *topicSlot = savedTopic; if (savedCur) tctx().cur = savedCur; throw; }
+    if (topicSlot) *topicSlot = savedTopic;
+    if (savedCur) tctx().cur = savedCur;
+    // `~~` yields the Match on success (Nil on failure); `!~~` yields a Bool.
+    // A MULTI-match form (:g, :ex, an :nth list) answers with a List, and an
+    // empty List is the right answer for "nothing matched" — collapsing it
+    // to Nil made `("abc" ~~ m:g/z/).elems` 1 instead of 0. Both are falsy,
+    // so only code that counts or iterates the result could see it.
+    // …and a failed `m//` answers False where a failed bare `/…/` answers
+    // Nil. Both are falsy, so only `===`/`.WHAT` can tell them apart —
+    // which is exactly what S03-smartmatch/00-sanity.t asks.
+    // (a JUNCTION of matches — `m:nth(1|2)//` — answers as the Bool it collapses to)
+    if (opEq(op, "~~") && m.t == VT::Array && !m.enumName().empty() &&
+        (m.enumName() == "any" || m.enumName() == "all" || m.enumName() == "one" || m.enumName() == "none"))
+        return Value::boolean(m.truthy());
+    if (opEq(op, "~~"))
+        return m.t == VT::Array ? m
+             : m.truthy()       ? m
+             : isM ? Value::boolean(false)
+                                                         : Value::nil();
+    return Value::boolean(!m.truthy());
+}
+
+// `topic ~~ any(…)` with a junction MATCHER: each eigenstate matched with full
+// `~~` semantics (a Regex with `$/` kept the caller's, a block called, a
+// filetest adverb asked of the path) and collapsed to a Bool. evalBinary and
+// --exe's rtSmartmatch both call it.
+Value Interpreter::junctionMatcher(const std::string& op, const Value& lTopic, const Value& r) {
+    auto fileTest = [&](const Value& pair) {   // (as evalBinary's: a missing file is False)
+        bool actual = false;
+        try { actual = boolify(methodCall(lTopic, pair.s.copyText(), {})); } catch (RakuError&) { actual = false; }
+        bool want = pair.pairVal() ? boolify(*pair.pairVal()) : true;
+        return actual == want;
+    };
+    // autothread the smartmatch over the junction's eigenstates (each matched
+    // with full ~~ semantics, so a junction of regexes / blocks works too)
+    JunctionCollapse jc(r.enumName());        // short-circuits; see Value.h
+    for (auto& e : *r.arr()) {
+        bool m;
+        // the guard is scoped to the REGEX arm alone: a Code eigenstate
+        // is the caller's own block and keeps its own `$/`
+        if (e.t == VT::Regex) { MatchVarGuard noSlash;
+            m = regexMatch(rxSubject(lTopic), e.s, &e).truthy(); } // &e: an interpolating eigenstate resolves vars from ITS captured env
+        else if (e.t == VT::Code) m = boolify(callCallable(e, ValueList{lTopic}));
+        // a filetest adverb eigenstate — `$p.IO ~~ :d & :x`. The generic
+        // smartmatch below knows nothing about IO or Pairs and answered
+        // False for every one of them, so the whole junction was False.
+        else if (e.t == VT::Pair && lTopic.hashKind == "IO" && !e.s.empty()) m = fileTest(e);
+        else m = applyArith("~~", lTopic, e).truthy();
+        jc.feed(m);
+        if (jc.done()) break;
+    }
+    bool res = jc.verdict();
+    return Value::boolean(opEq(op, "~~") ? res : !res);
 }
 
 Value Interpreter::applyBinOp(const std::string& op, const Value& l, const Value& r) {
@@ -23996,76 +24108,7 @@ Value Interpreter::evalBinary(Binary* b) {
                 };
                 return code;
             }
-            // a junction LHS autothreads: (any("4","5") ~~ /4/) is a junction of
-            // per-eigenstate results — 'any(｢4｣, Nil)' (S03-junctions/misc.t)
-            if (l.t == VT::Array && l.arr() &&
-                (l.enumName() == "any" || l.enumName() == "all" ||
-                 l.enumName() == "one" || l.enumName() == "none")) {
-                Value out = Value::array(); out.setEnumName(l.enumName());
-                // the Matches go into the RESULT, not into `$/`: Rakudo answers
-                // `any(｢4｣, Nil)` here with `$/` still undefined
-                MatchVarGuard noSlash;
-                for (auto& e : *l.arr()) {
-                    Value m = regexMatch(rxSubject(e), pat);
-                    if (opEq(op, "~~")) out.arr()->push_back(m.truthy() ? m : Value::nil());
-                    else out.arr()->push_back(Value::boolean(!m.truthy()));
-                }
-                return out;
-            }
-            // `~~` topicalizes: code inside the pattern — `/$( $_ )/`,
-            // `/<{ $_ }>/`, `/{ say $_ }/` — sees the SUBJECT as `$_`
-            const bool wantsTopic = pat.find("$_") != std::string::npos && tctx().cur;
-            Value* topicSlot = wantsTopic ? tctx().cur->find("$_") : nullptr;
-            Value savedTopic;
-            if (topicSlot) { savedTopic = *topicSlot; *topicSlot = l; }
-            // no `$_` in scope at all: a scope of its own holds the topic for
-            // the match (`$/` is still found — and set — outside it)
-            std::shared_ptr<Env> topicEnv, savedCur;
-            if (wantsTopic && !topicSlot) {
-                topicEnv = makeSlabShared<Env>();
-                topicEnv->parent = tctx().cur;
-                topicEnv->define("$_", l);
-                savedCur = tctx().cur;
-                tctx().cur = topicEnv;
-            }
-            Value m;
-            try {
-                // A LIST is matched element by element and a HASH key by key —
-                // the first that matches answers (Regex.ACCEPTS), so
-                // `@a ~~ /^ 'a' $/` is about each string, not their join.
-                // A lazy list keeps the single-string reading: it may not end.
-                if (l.t == VT::Array && l.arr() && !l.ext() && l.enumName().empty() && !l.arr()->empty()) {
-                    for (auto& e : *l.arr()) { m = regexMatch(rxSubject(e), pat); if (m.truthy()) break; }
-                }
-                else if (l.t == VT::Hash && l.hash() && !l.hash()->empty()) {
-                    for (auto& kv : *l.hash()) { m = regexMatch(kv.first, pat); if (m.truthy()) break; }
-                }
-                else {
-                    m = regexMatch(rxSubject(l), pat);
-                    keepMatchOrig(m, l);
-                }
-            }
-            catch (...) { if (topicSlot) *topicSlot = savedTopic; if (savedCur) tctx().cur = savedCur; throw; }
-            if (topicSlot) *topicSlot = savedTopic;
-            if (savedCur) tctx().cur = savedCur;
-            // `~~` yields the Match on success (Nil on failure); `!~~` yields a Bool.
-            // A MULTI-match form (:g, :ex, an :nth list) answers with a List, and an
-            // empty List is the right answer for "nothing matched" — collapsing it
-            // to Nil made `("abc" ~~ m:g/z/).elems` 1 instead of 0. Both are falsy,
-            // so only code that counts or iterates the result could see it.
-            // …and a failed `m//` answers False where a failed bare `/…/` answers
-            // Nil. Both are falsy, so only `===`/`.WHAT` can tell them apart —
-            // which is exactly what S03-smartmatch/00-sanity.t asks.
-            // (a JUNCTION of matches — `m:nth(1|2)//` — answers as the Bool it collapses to)
-            if (opEq(op, "~~") && m.t == VT::Array && !m.enumName().empty() &&
-                (m.enumName() == "any" || m.enumName() == "all" || m.enumName() == "one" || m.enumName() == "none"))
-                return Value::boolean(m.truthy());
-            if (opEq(op, "~~"))
-                return m.t == VT::Array ? m
-                     : m.truthy()       ? m
-                     : static_cast<RegexLit*>(b->rhs.get())->isM ? Value::boolean(false)
-                                                                 : Value::nil();
-            return Value::boolean(!m.truthy());
+            return regexLitMatch(op, l, pat, static_cast<RegexLit*>(b->rhs.get())->isM);
         }
         if (b->rhs->kind == NK::SubstLit) {
             auto* sub = static_cast<SubstLit*>(b->rhs.get());
@@ -24223,26 +24266,7 @@ Value Interpreter::evalBinary(Binary* b) {
                 };
                 return code;
             }
-            // autothread the smartmatch over the junction's eigenstates (each matched
-            // with full ~~ semantics, so a junction of regexes / blocks works too)
-            JunctionCollapse jc(r.enumName());        // short-circuits; see Value.h
-            for (auto& e : *r.arr()) {
-                bool m;
-                // the guard is scoped to the REGEX arm alone: a Code eigenstate
-                // is the caller's own block and keeps its own `$/`
-                if (e.t == VT::Regex) { MatchVarGuard noSlash;
-                    m = regexMatch(rxSubject(lTopic), e.s, &e).truthy(); } // &e: an interpolating eigenstate resolves vars from ITS captured env
-                else if (e.t == VT::Code) m = boolify(callCallable(e, ValueList{lTopic}));
-                // a filetest adverb eigenstate — `$p.IO ~~ :d & :x`. The generic
-                // smartmatch below knows nothing about IO or Pairs and answered
-                // False for every one of them, so the whole junction was False.
-                else if (e.t == VT::Pair && lTopic.hashKind == "IO" && !e.s.empty()) m = fileTest(e);
-                else m = applyArith("~~", lTopic, e).truthy();
-                jc.feed(m);
-                if (jc.done()) break;
-            }
-            bool res = jc.verdict();
-            return Value::boolean(opEq(op, "~~") ? res : !res);
+            return junctionMatcher(op, lTopic, r);
         }
         if (r.t == VT::Regex) {
             Value m = regexMatch(rxSubject(lTopic), r.s, &r);

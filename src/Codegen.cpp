@@ -3059,9 +3059,10 @@ struct Codegen {
                 // smartmatch against a regex literal: `$x ~~ /.../`
                 if ((b->op == "~~" || b->op == "!~~") && b->rhs->kind == NK::RegexLit) {
                     requireEngineOnlyRegex(static_cast<RegexLit*>(b->rhs.get())->pattern, "a regex");
-                    std::string m = "RT.regexMatch((" + ex(b->lhs.get()) + ").toStr(), "
-                                  + cesc(static_cast<RegexLit*>(b->rhs.get())->pattern) + ")";
-                    return b->op == "~~" ? m : "Value::boolean(!(" + m + ").truthy())";
+                    // (the interpreter's own: a junction autothreads, a list matches by element)
+                    auto* rl = static_cast<RegexLit*>(b->rhs.get());
+                    return "RT.regexLitMatch(" + cesc(b->op) + ", " + ex(b->lhs.get()) + ", " +
+                           cesc(rl->pattern) + ", " + (rl->isM ? "true" : "false") + ")";
                 }
                 // substitution: `$x ~~ s/pat/repl/` (and tr///, S///) — one runtime call
                 // that mutates the target through its lvalue like the interpreter does
