@@ -3652,9 +3652,11 @@ static bool crlfInClass(signed char crlfIn, const std::string& classFlags) {
 
 bool Regex::matchNode(const Node* n, MState& st, long pos, const FnRef& k) const {
     // Step budget: bounds catastrophic backtracking and unbounded CPS recursion.
-    // ~8M steps is far beyond any real match yet trips in well under a second on
-    // patterns like /[a*]* b/ against a long non-matching string.
-    if (++st.steps > 8000000) throw StepLimitExceeded{};
+    // ~8M steps is far beyond any real match on a short subject yet trips in well
+    // under a second on patterns like /[a*]* b/ against a long non-matching
+    // string. It grows with the subject, 16 steps a byte: a fixed 8M made a
+    // match over 400,000 records of 20 bytes fail as no match at all (#250).
+    if (++st.steps > 8000000 + 16 * (long)st.s.size()) throw StepLimitExceeded{};
     long len = (long)st.s.size();
     switch (n->k) {
         case K::Nop: return k(pos);
@@ -4540,6 +4542,41 @@ bool Regex::matchNode(const Node* n, MState& st, long pos, const FnRef& k) const
                     }
                     return k(q);
                 };
+                // Whether the repetition can capture, and an exact undo of what
+                // its iterations captured: the possessive grab below and the deep
+                // run after it both commit iterations before trying what follows.
+                signed char capt = n->repCaptures.load(std::memory_order_relaxed);
+                if (capt < 0) {
+                    capt = (subtreeCaptures(child) || subtreeCaptures(sep)) ? 1 : 0;
+                    n->repCaptures.store(capt, std::memory_order_relaxed);
+                }
+                struct CapMark {
+                    std::vector<std::pair<long, long>> caps;
+                    GrammarHooks::NamedMap named;
+                    std::vector<std::pair<std::string, size_t>> kids;
+                    std::map<int, std::vector<std::pair<long, long>>> reps;
+                };
+                auto takeMark = [&](CapMark& m) {
+                    m.caps = st.caps; m.named = st.named; m.reps = st.capReps;
+                    m.kids.clear(); m.kids.reserve(st.children.size());
+                    for (auto& ce : st.children) m.kids.emplace_back(ce.first, ce.second.size());
+                };
+                auto restoreMark = [&](CapMark& m) {
+                    st.caps = std::move(m.caps); st.named = std::move(m.named);
+                    st.capReps = std::move(m.reps);
+                    // occurrences only ever go on at the END of a name's list,
+                    // so cutting each list back to its marked length (and
+                    // dropping names that were not there) is an exact undo
+                    size_t j = 0;
+                    for (auto it = st.children.begin(); it != st.children.end(); ) {
+                        while (j < m.kids.size() && m.kids[j].first < it->first) j++;
+                        if (j < m.kids.size() && m.kids[j].first == it->first) {
+                            it->second.resize(m.kids[j].second);
+                            ++it;
+                        }
+                        else it = st.children.erase(it);
+                    }
+                };
                 if (greedy && !n->forceBack && (ratchet_ || n->possessive)) {
                     // possessive: grab as many children as possible (each at its greedy
                     // longest), then commit — never give any back. This is `:ratchet`
@@ -4553,38 +4590,6 @@ bool Regex::matchNode(const Node* n, MState& st, long pos, const FnRef& k) const
                     // `<m>?` handed its `$<m>` to the branch that won, as an extra
                     // list element (issue #98). Mark the capture state first and
                     // put it back on failure.
-                    signed char capt = n->repCaptures.load(std::memory_order_relaxed);
-                    if (capt < 0) {
-                        capt = (subtreeCaptures(child) || subtreeCaptures(sep)) ? 1 : 0;
-                        n->repCaptures.store(capt, std::memory_order_relaxed);
-                    }
-                    struct CapMark {
-                        std::vector<std::pair<long, long>> caps;
-                        GrammarHooks::NamedMap named;
-                        std::vector<std::pair<std::string, size_t>> kids;
-                        std::map<int, std::vector<std::pair<long, long>>> reps;
-                    };
-                    auto takeMark = [&](CapMark& m) {
-                        m.caps = st.caps; m.named = st.named; m.reps = st.capReps;
-                        m.kids.clear(); m.kids.reserve(st.children.size());
-                        for (auto& ce : st.children) m.kids.emplace_back(ce.first, ce.second.size());
-                    };
-                    auto restoreMark = [&](CapMark& m) {
-                        st.caps = std::move(m.caps); st.named = std::move(m.named);
-                        st.capReps = std::move(m.reps);
-                        // occurrences only ever go on at the END of a name's list,
-                        // so cutting each list back to its marked length (and
-                        // dropping names that were not there) is an exact undo
-                        size_t j = 0;
-                        for (auto it = st.children.begin(); it != st.children.end(); ) {
-                            while (j < m.kids.size() && m.kids[j].first < it->first) j++;
-                            if (j < m.kids.size() && m.kids[j].first == it->first) {
-                                it->second.resize(m.kids[j].second);
-                                ++it;
-                            }
-                            else it = st.children.erase(it);
-                        }
-                    };
                     CapMark mark;
                     if (capt) takeMark(mark);
                     auto unwind = [&]() { if (capt) restoreMark(mark); };
@@ -4674,6 +4679,37 @@ bool Regex::matchNode(const Node* n, MState& st, long pos, const FnRef& k) const
                         if (cnt >= mn && finish(posAt, cnt)) return true;
                     }
                     return false;
+                }
+                // A LONG run of a group the paths above do not take — `[.*? 'k'
+                // \s* (\d+)]*` over a million records — costs a C++ stack frame
+                // (several) per iteration below, and overflowed even the main
+                // thread's 1 GiB (issue #250). The recursion's FIRST attempt is to
+                // follow each iteration's first match as deep as it goes and then
+                // try what follows; at depth kDeepRep that attempt is made here in
+                // a loop instead. If what follows fails, the captures go back and
+                // the recursion explores the alternatives as before — once per
+                // repetition, at this depth only, so a failing run costs one extra
+                // walk, not one per level.
+                constexpr long kDeepRep = 256;
+                if (greedy && count == kDeepRep) {
+                    CapMark mark;
+                    if (capt) takeMark(mark);
+                    long c = count, q = p;
+                    bool zeroWidth = false;
+                    while (mx < 0 || c < mx) {
+                        long np = -1;
+                        auto grab = [&](long r) { np = r; return true; };
+                        if (sep && c > 0) {
+                            auto viaSep = [&](long sp) { return matchNode(child, st, sp, grab); };
+                            matchNode(sep, st, q, viaSep);
+                        } else
+                            matchNode(child, st, q, grab);
+                        if (np < 0) break;
+                        if (np == q) { zeroWidth = true; break; }   // (the recursion's own rule decides)
+                        q = np; c++;
+                    }
+                    if (!zeroWidth && c >= mn && finish(q, c)) return true;
+                    if (capt) restoreMark(mark);
                 }
                 if (greedy) {
                     if (mx < 0 || count < mx) {
