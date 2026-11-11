@@ -7,7 +7,6 @@ backtrace-caught.raku
 binding-failure-priors-and-hint.raku
 coerce-boxed-builtin-subclass.raku
 core-trait-candidates-test-assertion.raku
-cro-live-server.raku
 dynamic-falls-back-to-global.raku
 dynamic-method-lvalue.raku
 ecosweep-2026-09.raku

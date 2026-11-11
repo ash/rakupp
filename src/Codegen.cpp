@@ -29,6 +29,7 @@ bool arithOpKnown(const std::string& op);    // InterpreterOperators.cpp: applyA
 bool operatorRoutineName(const std::string& n, std::string& cat, std::string& op);   // codegen/Operators.cpp
 std::string multiOrderRefusal(const std::vector<SubDecl*>&, const std::vector<const Program*>&,
                               int (*)(const SubDecl*));   // codegen/MultiOrder.cpp
+std::string autothreadMask(const std::vector<Param>& ps, bool block);   // codegen/Autothread.cpp
 
 namespace {
 
@@ -1305,6 +1306,7 @@ struct Codegen {
     // call to its class's `sub helper` died "Undefined routine" at run time.
     // Such a call refuses instead, and the program bundles.
     std::set<std::string> hiddenRoutines_;
+    bool litBound_ = false;   // emitting a multi candidate: its dispatcher checks a literal parameter (and threads no junction)
 
     std::string builtinCall(const std::string& name, const std::string& vl) {
         // `callframe` reads the INTERPRETER's frames, and native code runs in
@@ -2278,9 +2280,11 @@ struct Codegen {
         // catch, a `return`/`fail` in a lexical sub unwound into the CALLER's
         // frame — or clean out of main() as an uncaught-exception abort
         const bool framed = __fs.used();
-        return "[=](ValueList& __a)->Value{\n" +
+        const std::string lam = "[=](ValueList& __a)->Value{\n" +
                retWrap(d->retType, (framed ? framePrologue() : std::string()) +
                                    "try {\n" + body + "} " + routineCatch(framed) + "\n") + "}";
+        const std::string m = autothreadMask(sigOf(d), false);   // (a Junction argument threads the call)
+        return m.empty() ? lam : "rtThreaded(" + m + ", " + lam + ")";
     }
     // May calls of this lexical sub go straight to its body (lexDirect_)? As a
     // top-level sub's do: a plain signature the call site can match by count
@@ -2499,6 +2503,8 @@ struct Codegen {
               retWrap(be->retType, (framed ? framePrologue() : std::string()) +
                                    "try {\n" + body + "} " + routineCatch(framed) + "\n") + "})"
             : "Value::closure([=](ValueList& __a)->Value{\n" + retWrap(be->retType, body) + "})";   // (`-> $x --> Int`)
+        if (const std::string m = autothreadMask(be->params, !be->isSub); !m.empty())   // (a Junction argument threads)
+            mk = "Value::closure(rtThreaded(" + m + ", " + mk.substr(15, mk.size() - 16) + "))";
         // A written signature (pointy params, `sub (…)`) rides in as the Code's
         // params — which is also what tells sort/map/for how many elements to
         // feed it per call. A placeholder block ($^a/$^b) lists its placeholders
@@ -9321,6 +9327,9 @@ struct Codegen {
             if (p.whereExpr)      unsupported("a `where` constraint on a routine parameter");
             if (p.defConstraint)  unsupported("a `:D`/`:U` constraint on a routine parameter");
             if (p.subSig)         unsupported("a sub-signature on a routine parameter");
+            // (a literal one is checked by a multi's dispatcher alone; elsewhere neither
+            // the binder nor the signature (`-> 'greet', $name`, Cro's routes) knew it)
+            if (p.litVal && !litBound_) unsupported("a literal parameter outside a multi candidate");
         }
         size_t pi = hasSelf ? 1 : 0;
         int anon = 0;
@@ -9753,6 +9762,8 @@ struct Codegen {
         bool hasRw = false;
         for (auto& p : ps) if (p.isRw && !p.named && !p.slurpy && !p.invocant) hasRw = true;
         line(0, "static Value " + fnName + "(ValueList" + (hasRw ? "&" : "") + " __a) {");
+        if (const std::string m = litBound_ ? std::string() : autothreadMask(ps, false); !m.empty())   // (a Junction argument threads)
+            line(1, "if (rtJunctionArg(__a, " + m + ")) return rtAutothread(__a, " + m + ", [&](ValueList& __t) { return " + fnName + "(__t); });");
         if (!kernelName.empty() && nrw.empty()) out << kernelEntry(kernelName, {});
         // A ROUTINE BODY IS A ReturnEx BOUNDARY. `return` itself compiles to a C++
         // return, so this catches the ones thrown from elsewhere — a builtin such
@@ -9794,6 +9805,7 @@ struct Codegen {
         RoutineScope __rs{this, ""};   // a candidate's &?ROUTINE is the candidate, not the dispatcher
         for (size_t i = 0; i < cands.size(); i++) {
             idx[cands[i]] = (int)i;
+            struct LitOk { bool& b; ~LitOk() { b = false; } } __lo{litBound_ = true};
             bodyDef(mangleSub(name) + "__" + std::to_string(i), cands[i]->params, cands[i]->body, false, "",
                     cands[i]->retType);
         }

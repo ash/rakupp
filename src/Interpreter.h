@@ -6346,6 +6346,12 @@ Value  rtThrowRedo(const std::string& label = ""); // expression-position / labe
 Value  rtIndexAdverb(Value& base, const Value& keyIn, bool isHash, const std::string& adverb); // :exists/:delete/…
 Value  rtSliceFrom(const Value& base, long long from, bool exFrom); // @a[$i .. *] tail slice
 Value  rtRangeVal(const Value& from, const Value& to, bool exFrom, bool exTo); // from..to (string ranges too)
+// A Junction argument autothreads a compiled routine's call, as callCallable
+// does an interpreted one's: `mask` marks the positional parameters that take
+// a junction apart (codegen/Autothread.cpp). An all/none junction threads first.
+bool   rtJunctionArg(const ValueList& a, uint64_t mask);
+Value  rtAutothread(ValueList& a, uint64_t mask, const std::function<Value(ValueList&)>& f);
+std::function<Value(ValueList&)> rtThreaded(uint64_t mask, std::function<Value(ValueList&)> f);
 Value  rtPrefixBitNot(const Value& v);   // prefix `+^` (evalUnary's; a non-numeric Str throws)
 Value  rtPrefixUpto(const Value& v);     // prefix `^`  (evalUnary's: `^5.5`, a big bound, a Str throws)
 int    rtBigRangeStep(const Value& r, Value& cur, bool first); // a BigInt-ended range's next element (Interpreter.cpp)

@@ -6825,6 +6825,37 @@ void rtViewSyncSlow(const Value& base) {
         if (si < vw->src->size()) (*vw->src)[si] = (*base.arr())[i];
     }
 }
+// The positional argument a junction of which the call threads over: the
+// first all/none one, else the first any/one one (callCallable's order). -1: none.
+static int junctionArgAt(const ValueList& a, uint64_t mask) {
+    int first = -1;
+    unsigned pos = 0;
+    for (size_t i = 0; i < a.size() && pos < 64; i++) {
+        if (isNamedArg(a[i])) continue;
+        if ((mask >> pos++ & 1) && isJunction(a[i])) {
+            const std::string& k = a[i].enumName();
+            if (k == "all" || k == "none") return (int)i;
+            if (first < 0) first = (int)i;
+        }
+    }
+    return first;
+}
+bool rtJunctionArg(const ValueList& a, uint64_t mask) { return junctionArgAt(a, mask) >= 0; }
+Value rtAutothread(ValueList& a, uint64_t mask, const std::function<Value(ValueList&)>& f) {
+    const int at = junctionArgAt(a, mask);
+    if (at < 0) return f(a);
+    const Value j = a[(size_t)at];
+    Value out = Value::array(); out.setEnumName(j.enumName());
+    for (auto& e : *j.arr()) {
+        ValueList a2 = a; a2[(size_t)at] = e;
+        out.arr()->push_back(rtAutothread(a2, mask, f));   // nested junctions thread to their leaves
+    }
+    return out;
+}
+std::function<Value(ValueList&)> rtThreaded(uint64_t mask, std::function<Value(ValueList&)> f) {
+    return [mask, f](ValueList& a) -> Value { return junctionArgAt(a, mask) < 0 ? f(a) : rtAutothread(a, mask, f); };
+}
+
 Value rtSig(Value c, const RtSigParam* ps, size_t n, const char* name, const char* retType, unsigned cflags) {
     if (c.t != VT::Code || !c.code()) return c;
     // one Param list per descriptor table: every evaluation of the closure
