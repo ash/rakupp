@@ -4907,6 +4907,7 @@ void rtXxCountCheck(const Value& v) {
         throw RakuError{Value::typeObj("X::Numeric::CannotConvert"),
                         "Cannot convert " + v.toStr() + " to Int"};
 }
+long long rtXxCount(const Value& v) { return strictInt(v); }
 // Is `op` the reverse metaop over a WORD base — `Rcmp`, `Rdiv`, `Rmin`? The
 // symbolic forms are recognised by the non-alphanumeric character after the R,
 // but a word base is alphanumeric and would make every identifier starting with

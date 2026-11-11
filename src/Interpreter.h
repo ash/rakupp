@@ -6331,6 +6331,7 @@ Value  rtSlipVal(const Value& v);   // |x as a list element (a List that splices
 Value  rtSlipShallow(const Value& v); // |x in value position (one-level splice marker)
 void   rtXxAppend(ValueList& out, Value one); // one `xx` replication: a Slip contributes its elements
 void   rtXxCountCheck(const Value& count);   // `xx NaN` / `xx -Inf` name no count: X::Numeric::CannotConvert
+long long rtXxCount(const Value& count);     // …and as xxRepeat reads it: `xx "b"` is X::Str::Numeric
 Value  rtSpliceIfList(const Value& v); // [..] item: a List value splices one level
 Value  rtOneArgItem(const Value& v);   // [..] one-arg rule: single list-valued item spreads
 Value  rtOneArgArray(const Value& v);
@@ -6345,6 +6346,8 @@ Value  rtThrowRedo(const std::string& label = ""); // expression-position / labe
 Value  rtIndexAdverb(Value& base, const Value& keyIn, bool isHash, const std::string& adverb); // :exists/:delete/…
 Value  rtSliceFrom(const Value& base, long long from, bool exFrom); // @a[$i .. *] tail slice
 Value  rtRangeVal(const Value& from, const Value& to, bool exFrom, bool exTo); // from..to (string ranges too)
+Value  rtPrefixBitNot(const Value& v);   // prefix `+^` (evalUnary's; a non-numeric Str throws)
+Value  rtPrefixUpto(const Value& v);     // prefix `^`  (evalUnary's: `^5.5`, a big bound, a Str throws)
 int    rtBigRangeStep(const Value& r, Value& cur, bool first); // a BigInt-ended range's next element (Interpreter.cpp)
 // argv -> MAIN args (--opt named, rest positional). `scope`, when given, is the
 // interpreter whose symbols decide whether a word NAMES an enum value; without

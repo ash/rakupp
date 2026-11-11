@@ -758,9 +758,9 @@ struct Codegen {
                                                          : "rtNeg(RT, " + x + ")";
         if (u->op == "+")  return "rtPlus(RT, " + x + ")";
         if (u->op == "~")  return "Value::str(rtInterpStr(" + x + "))";   // `~$obj` asks its .Str
-        if (u->op == "+^") return "Value::integer(~(" + x + ").toInt())";          // bitwise NOT
+        if (u->op == "+^") return "rtPrefixBitNot(" + x + ")";                     // bitwise NOT
         if (u->op == "?^") return "Value::boolean(!RT.boolify(" + x + "))";        // boolean NOT (xor form)
-        if (u->op == "^")  return "Value::range(0, (" + x + ").toInt(), false, true)"; // ^N = 0..^N
+        if (u->op == "^")  return "rtPrefixUpto(" + x + ")";                       // ^N = 0..^N
         // %(...) hash composer; a Match is its named captures (`%<x>`), as the
         // interpreter's ctx% arm has it — a hash built from it died "Odd number"
         if (u->op == "ctx%")
@@ -3096,7 +3096,7 @@ struct Codegen {
                     // …and a count that names no count at all (`NaN`, `-Inf`) is
                     // the same refusal the interpreter gives, so the two engines
                     // agree on S03-operators/repeat.t's throws-like block.
-                    return "([&]()->Value{ Value _c=(" + R + "); rtXxCountCheck(_c); long long _n=_c.toInt(); "
+                    return "([&]()->Value{ Value _c=(" + R + "); rtXxCountCheck(_c); long long _n=rtXxCount(_c); "
                            "Value _o=Value::array(); _o.isList=true; _o.s=\"Seq\"; "
                            "for(long long _i=0;_i<_n;_i++) rtXxAppend(*_o.arr(), " + L + "); return _o; }())";
                 }

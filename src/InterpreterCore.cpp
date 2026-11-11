@@ -24615,6 +24615,50 @@ static signed char unaryPath(const std::string& op) {
     return 2;
 }
 
+// prefix `+^` and `^` on a value: evalUnary's arms, which --exe's compiled
+// prefixes call too (a non-numeric string is X::Str::Numeric, not 0).
+Value rtPrefixBitNot(const Value& v) {
+    // bitwise NOT: -(x+1), exact at any width (SHA-512's Ch reads +^ of a
+    // top-bit-set 64-bit word — ~strictInt saturated it to LLONG_MIN and the
+    // digest was garbage)
+    if (v.big()) {
+        BigInt res = BigInt(0) - (*v.big() + BigInt(1));
+        return res.fitsLL() ? Value::integer(res.toLL()) : Value::bigint(res);
+    }
+    return Value::integer(~strictInt(v));
+}
+Value rtPrefixUpto(const Value& v) {
+    // `^5.5` is `0 ..^ 5.5`, NOT `0 ..^ 5` — the upper bound keeps its own
+    // type, so the range holds six integers and reports 5.5 as its max.
+    if (v.t == VT::Num || v.t == VT::Rat) {
+        double top = v.toNum();
+        // The range STAYS exclusive-at-the-top — `(^5.5).excludes-max` is True
+        // — so the integer field is the first integer past the bound: `^5.5`
+        // walks 0..5 as `0..^6` does, and `.max`/`.raku` read the real 5.5
+        // off the carried endpoints.
+        //
+        // A NON-FINITE bound has no integer to floor, and casting one to
+        // long long is undefined — the architectures disagree about it.
+        // arm64 saturates (+Inf gives the int64 maximum, which IS the
+        // "endless" sentinel the range walk reads); x86_64 gives the int64
+        // MINIMUM. So `^Inf` built 0..^int64-min there — an enormous range
+        // running the wrong way — and `(^Inf).head(3)` never came back,
+        // while arm64 answered (0 1 2). NaN takes the same top sentinel
+        // `1..NaN` does: no comparison against NaN is ever true, so nothing
+        // stops the walk, and Rakudo's `(^NaN).head(3)` is (0 1 2) too.
+        long long ti;
+        if (std::isnan(top) || top >= 9223372036854775807.0) ti = 9223372036854775807LL;
+        else if (top <= -9223372036854775808.0) ti = -9223372036854775807LL - 1;
+        else { bool whole = top == std::floor(top); ti = (long long)std::floor(top) + (whole ? 0 : 1); }
+        Value r = Value::range(0, ti, false, true);
+        attachRangeEnds(r, Value::integer(0), v);
+        return r;
+    }
+    Value r = Value::range(0, strictInt(v), false, true);
+    if (v.t == VT::Int && v.big()) r.bigM() = v.big(); // keep the big bound (pick/roll sample it)
+    return r;
+}
+
 Value Interpreter::evalUnary(Unary* u) {
     signed char path = u->evalPath;
     if (path < 0) u->evalPath = path = unaryPath(u->op);
@@ -26019,15 +26063,7 @@ Value Interpreter::evalUnary(Unary* u) {
     }
     if (opEq(u->op, "!")) return Value::boolean(!boolify(v));
     if (opEq(u->op, "?")) return Value::boolean(boolify(v));
-    if (opEq(u->op, "+^")) { // bitwise NOT: -(x+1), exact at any width (SHA-512's Ch
-                          // reads +^ of a top-bit-set 64-bit word — ~strictInt
-                          // saturated it to LLONG_MIN and the digest was garbage)
-        if (v.big()) {
-            BigInt res = BigInt(0) - (*v.big() + BigInt(1));
-            return res.fitsLL() ? Value::integer(res.toLL()) : Value::bigint(res);
-        }
-        return Value::integer(~strictInt(v));
-    }
+    if (opEq(u->op, "+^")) return rtPrefixBitNot(v);
     if (opEq(u->op, "?^")) return Value::boolean(!boolify(v));
     if (opEq(u->op, "~^")) {
         // On a Blob/Buf this is the byte-wise complement, and Rakudo implements
@@ -26058,37 +26094,7 @@ Value Interpreter::evalUnary(Unary* u) {
             return f;
         }
     }
-    if (opEq(u->op, "^")) {
-        // `^5.5` is `0 ..^ 5.5`, NOT `0 ..^ 5` — the upper bound keeps its own
-        // type, so the range holds six integers and reports 5.5 as its max.
-        if (v.t == VT::Num || v.t == VT::Rat) {
-            double top = v.toNum();
-            // The range STAYS exclusive-at-the-top — `(^5.5).excludes-max` is True
-            // — so the integer field is the first integer past the bound: `^5.5`
-            // walks 0..5 as `0..^6` does, and `.max`/`.raku` read the real 5.5
-            // off the carried endpoints.
-            //
-            // A NON-FINITE bound has no integer to floor, and casting one to
-            // long long is undefined — the architectures disagree about it.
-            // arm64 saturates (+Inf gives the int64 maximum, which IS the
-            // "endless" sentinel the range walk reads); x86_64 gives the int64
-            // MINIMUM. So `^Inf` built 0..^int64-min there — an enormous range
-            // running the wrong way — and `(^Inf).head(3)` never came back,
-            // while arm64 answered (0 1 2). NaN takes the same top sentinel
-            // `1..NaN` does: no comparison against NaN is ever true, so nothing
-            // stops the walk, and Rakudo's `(^NaN).head(3)` is (0 1 2) too.
-            long long ti;
-            if (std::isnan(top) || top >= 9223372036854775807.0) ti = 9223372036854775807LL;
-            else if (top <= -9223372036854775808.0) ti = -9223372036854775807LL - 1;
-            else { bool whole = top == std::floor(top); ti = (long long)std::floor(top) + (whole ? 0 : 1); }
-            Value r = Value::range(0, ti, false, true);
-            attachRangeEnds(r, Value::integer(0), v);
-            return r;
-        }
-        Value r = Value::range(0, strictInt(v), false, true);
-        if (v.t == VT::Int && v.big()) r.bigM() = v.big(); // keep the big bound (pick/roll sample it)
-        return r;
-    }
+    if (opEq(u->op, "^")) return rtPrefixUpto(v);
     if (opEq(u->op, "|")) { // slip: spread handled in evalArgs; anywhere else the
         // value IS a Slip — mark it so list consumers (map, list literals) splice it.
         return slipOf(v);

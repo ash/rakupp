@@ -39,7 +39,6 @@ my-stash-sees-test-imports.raku
 named-rw-param-writes-back.raku
 needle-type-object-no-match.raku
 nested-sub-keeps-its-closure.raku
-operator-strictness.raku
 our-belongs-to-its-package.raku
 our-is-one-container.raku
 pair-as-key-value-and-pattern.raku
