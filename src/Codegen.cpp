@@ -825,10 +825,24 @@ struct Codegen {
     // C++ lambda called in place, so a `return` in one leaves the routine the
     // same way as one in a block closure
     int iife_ = 0;
+    // compiled `try` bodies around the emission point in this routine: a call
+    // there that hands back a Failure throws it, and a `fail` there dies (use fatal)
+    int tryHere_ = 0;
+    const Expr* fatalSkip_ = nullptr;   // the call being wrapped (ex)
+    static bool fatalCallSite(const Expr* e) {
+        if (e->kind == NK::MethodCall) return !static_cast<const MethodCall*>(e)->fatalExempt;
+        if (e->kind != NK::Call) return false;
+        auto* c = static_cast<const Call*>(e);
+        static const std::set<std::string> ctl = {"return", "return-rw", "fail", "die", "take", "take-rw", "emit",
+            "done", "leave", "succeed", "proceed", "next", "last", "redo", "goto", "callsame", "nextsame",
+            "callwith", "nextwith", "exit"};
+        return !c->fatalExempt && !ctl.count(c->name);
+    }
     struct FrameScope {
-        Codegen* g; int savedIife;
-        explicit FrameScope(Codegen* c) : g(c), savedIife(c->iife_) { g->frameUse_.push_back(0); g->iife_ = 0; }
-        ~FrameScope() { g->frameUse_.pop_back(); g->iife_ = savedIife; }
+        Codegen* g; int savedIife, savedTry;
+        explicit FrameScope(Codegen* c) : g(c), savedIife(c->iife_), savedTry(c->tryHere_) {
+            g->frameUse_.push_back(0); g->iife_ = 0; g->tryHere_ = 0; }
+        ~FrameScope() { g->frameUse_.pop_back(); g->iife_ = savedIife; g->tryHere_ = savedTry; }
         bool used() const { return g->frameUse_.back() != 0; }
     };
     // `fail` in a ROUTINE returns its Failure from that routine (rtFailRoutine;
@@ -839,12 +853,13 @@ struct Codegen {
     std::string failCall(const std::string& vl) {
         // a module routine's own `fail` is the builtin's, which sees its frame;
         // one in a BLOCK of it is aimed at that frame, as a `return` there is
+        const std::string fatal = tryHere_ ? ", true)" : ")";
         if (moduleMode_)
-            return !nestKinds_.empty() && nestKinds_.back() == 'b' ? "rtFailAt(RT, " + vl + ", __fid, __env)" : "";
+            return !nestKinds_.empty() && nestKinds_.back() == 'b' ? "rtFailAt(RT, " + vl + ", __fid, __env" + fatal : "";
         if (routineRef_.empty() || frameUse_.empty()) return "";
-        if (nestKinds_.empty() || nestKinds_.back() != 'b') return "rtFailRoutine(RT, " + vl + ")";
+        if (nestKinds_.empty() || nestKinds_.back() != 'b') return "rtFailRoutine(RT, " + vl + fatal;
         frameUse_.back() = 1;
-        return "rtFailFrom(RT, " + vl + ", __fid, __flive)";
+        return "rtFailFrom(RT, " + vl + ", __fid, __flive" + fatal;
     }
     static std::string framePrologue() {
         return "RtRoutineFrame __rf(RT); const uint64_t __fid = __rf.id; "
@@ -2562,6 +2577,12 @@ struct Codegen {
     // ---- expressions: return a C++ expression string of type Value ----
     std::string ex(Expr* e) {
         if (e == preEvalNode_) return preEvalCode_;   // already evaluated (emitCtlPath)
+        if (tryHere_ && e != fatalSkip_ && fatalCallSite(e)) {   // (under a `try`: see tryHere_)
+            const Expr* saved = std::exchange(fatalSkip_, e);
+            std::string r = "rtFatalCall(RT, " + ex(e) + ")";
+            fatalSkip_ = saved;
+            return r;
+        }
         switch (e->kind) {
             case NK::IntLit: {
                 auto* n = static_cast<IntLit*>(e);
@@ -2900,6 +2921,9 @@ struct Codegen {
                 }
                 if (u->op == "do" || u->op == "try") { // do { } / try { }  (value = last statement)
                     std::string body;
+                    // (a `try` BLOCK is under use fatal; a blockless `try EXPR`'s call sites are not)
+                    struct TryHere { int& n; bool on; ~TryHere() { n -= on; } } __th{tryHere_, u->op == "try" && u->operand->kind == NK::BlockExpr};
+                    tryHere_ += __th.on;
                     struct Iife { int& n; explicit Iife(int& x) : n(x) { n++; } ~Iife() { n--; } } __iife{iife_};
                     LoopJumpBarrier __bar{this};   // the body is a lambda: no break/continue/goto out of it
                     if (u->operand->kind == NK::BlockExpr) { CellScope __cs{this}; DeclScope __ds{this};   // …and a block, whose `my`s are its own

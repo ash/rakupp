@@ -5827,9 +5827,21 @@ inline Value rtMul(const Value& l, const Value& r) { long long z; double a, b; i
 // answered +0 for `-$x` on 0e0, where the interpreter and Rakudo answer -0.
 Value rtNegSlow(Interpreter& I, const Value& v);
 Value rtFailureFor(Interpreter& I, ValueList& a);             // the Failure `fail` returns (BuiltinsRegister.cpp)
-[[noreturn]] Value rtFailRoutine(Interpreter& I, ValueList a); // `fail` in a compiled routine
-[[noreturn]] Value rtFailFrom(Interpreter& I, ValueList a, uint64_t id, const std::shared_ptr<bool>& live); // …in a block of one
-[[noreturn]] Value rtFailAt(Interpreter& I, ValueList a, uint64_t id, const Env* env); // …in a block of a module routine
+// (`fatal`: the `fail` is written inside a compiled `try`, whose scope is under `use fatal`)
+[[noreturn]] Value rtFailRoutine(Interpreter& I, ValueList a, bool fatal = false); // `fail` in a compiled routine
+[[noreturn]] Value rtFailFrom(Interpreter& I, ValueList a, uint64_t id, const std::shared_ptr<bool>& live,
+                              bool fatal = false);   // …in a block of one
+[[noreturn]] Value rtFailAt(Interpreter& I, ValueList a, uint64_t id, const Env* env,
+                            bool fatal = false);     // …in a block of a module routine
+// A call written inside a compiled `try` that hands back a Failure throws it,
+// as the interpreter's `use fatal` call site does (not in a boolean or
+// definedness context: the parser's fatalExempt, which the codegen reads)
+void rtFatalFailure(Interpreter& I, const Value& v);
+template <class T> inline T&& rtFatalCall(Interpreter&, T&& v) { return std::forward<T>(v); }
+inline Value rtFatalCall(Interpreter& I, Value v) {
+    if (RAKUPP_UNLIKELY(v.t == VT::Hash && v.hashKind == "Failure")) rtFatalFailure(I, v);
+    return v;
+}
 inline Value rtNeg(Interpreter& I, const Value& v) {
     if (v.hashKind.empty()) {
         if (v.t == VT::Num) return Value::number(-v.n);
