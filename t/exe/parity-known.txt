@@ -13,7 +13,6 @@ date-formatter-everywhere.raku
 datetime-number-is-instant.raku
 dynamic-falls-back-to-global.raku
 dynamic-method-lvalue.raku
-ecosweep-2026-09.raku
 ecosweep-condition-binders-and-hyper.raku
 empty-block-is-nil.raku
 endless-range-reduce.raku
@@ -21,7 +20,6 @@ exe-callframe.raku
 exe-readonly-parameter-write.raku
 failure-mess-and-backtrace.raku
 for-over-listing-value.raku
-generic-role-bodies.raku
 hyper-in-whatevercode.raku
 ident-continuation-and-native-return-boundary.raku
 issue-138-qq-block-in-regex-atom.raku
@@ -38,10 +36,7 @@ needle-type-object-no-match.raku
 nested-sub-keeps-its-closure.raku
 nqp-unipropcode-int.raku
 operator-strictness.raku
-our-belongs-to-its-package.raku
-our-is-one-container.raku
 pair-as-key-value-and-pattern.raku
-param-container-name.raku
 prefix-minus-object-keeps-numeric-kind.raku
 primed-code-arity-count.raku
 quanthash-exact-sethash-zen-dynamic.raku
@@ -51,14 +46,12 @@ react-died-names-the-react.raku
 regex-value-variable-atom.raku
 return-through-block-undo.raku
 returned-map-is-lazy.raku
-role-multi-siblings-differing-by-named.raku
 routine-has-its-own-topic.raku
 routine-is-lexical.raku
 rw-arg-assignment-not-rerun.raku
 samewith-only-routine.raku
 seq-generator-shapes.raku
 shaped-param-dimension-is-its-value.raku
-sigilled-compile-time-class.raku
 sigilless-traits-and-container-assign.raku
 sink-context-method.raku
 sink-does-not-descend-a-container.raku

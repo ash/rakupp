@@ -30,6 +30,7 @@ bool operatorRoutineName(const std::string& n, std::string& cat, std::string& op
 std::string multiOrderRefusal(const std::vector<SubDecl*>&, const std::vector<const Program*>&,
                               int (*)(const SubDecl*));   // codegen/MultiOrder.cpp
 std::string introspectionRefusal(const Program&); bool introspectiveCallName(const std::string&); // codegen/Introspection.cpp
+const char* routineIntrospectionRefusal(const Program&);
 
 namespace {
 
@@ -10338,7 +10339,9 @@ const char* aotIneligible(SubDecl* d) {
         for (auto& st : d->body) p.stmts.emplace_back(st.get());
         std::ostringstream dump;
         try { dumpAst(p, dump); } catch (...) {}
+        const char* intro = routineIntrospectionRefusal(p);   // (codegen/Introspection.cpp)
         for (auto& st : p.stmts) st.release();   // the routine's AST still owns them
+        if (intro) return intro;
         std::istringstream in(dump.str());
         for (std::string ln; std::getline(in, ln);) {
             const size_t a = ln.find_first_not_of(' ');

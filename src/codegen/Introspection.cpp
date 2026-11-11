@@ -26,6 +26,17 @@ bool introspectiveCallName(const std::string& n) {
     return n.rfind("__sym-", 0) == 0 || n.rfind("__pseudo-", 0) == 0 || n == "__client-lookup";
 }
 
+// `@p.VAR.name` / `@p.name`: the name of the container a variable is bound
+// to — the caller's `my @x` for a parameter — which a native variable has not
+static bool containerName(const MethodCall* m) {
+    if (m->meta || m->method != "name" || !m->inv) return false;
+    const Expr* i = m->inv.get();
+    if (i->kind == NK::MethodCall && static_cast<const MethodCall*>(i)->method == "VAR") return true;
+    if (i->kind != NK::VarExpr) return false;
+    const std::string& v = static_cast<const VarExpr*>(i)->name;
+    return !v.empty() && (v[0] == '@' || v[0] == '%');
+}
+
 // The first construct in `prog` a native program cannot answer, or "".
 std::string introspectionRefusal(const Program& prog) {
     // `.^name` and the ones the native class table answers as the
@@ -58,6 +69,8 @@ std::string introspectionRefusal(const Program& prog) {
                     why = "`." + m->method + "` — the native class table is no metaobject";
                 else if (!m->meta && m->method == "dynamic")
                     why = "`.dynamic` — a native variable carries no traits";
+                else if (containerName(m))
+                    why = "a container's name (`.VAR.name`) — a native variable is bound to none";
                 break;
             }
             case NK::NameTerm: {
@@ -73,6 +86,27 @@ std::string introspectionRefusal(const Program& prog) {
         forEachAstChild(n, walk);
     };
     for (auto& st : prog.stmts) walk(st.get());
+    return why;
+}
+
+// …and in one routine compiled on its own (module mode, aotIneligible), what
+// ties its meaning to the scope around it rather than to its statements: an
+// `our` (its package's variable — a module sub's `our $v; $v++` counted from
+// Any every call), a `use` (its imports are the routine's scope: a sub it
+// imports did not shadow an outer one), a container's name.
+const char* routineIntrospectionRefusal(const Program& body) {
+    const char* why = nullptr;
+    std::function<void(Node*)> walk = [&](Node* n) {
+        if (!n || why) return;
+        if (n->kind == NK::VarExpr && static_cast<VarExpr*>(n)->declare &&
+            static_cast<VarExpr*>(n)->d().declScope == "our")
+            why = "an `our` variable (its package's, not the routine's)";
+        else if (n->kind == NK::UseStmt) why = "a `use` inside the routine";
+        else if (n->kind == NK::MethodCall && containerName(static_cast<MethodCall*>(n)))
+            why = "a container's name (`.VAR.name`)";
+        forEachAstChild(n, walk);
+    };
+    for (auto& st : body.stmts) walk(st.get());
     return why;
 }
 
