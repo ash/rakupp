@@ -12,10 +12,14 @@
 #   rakupp t/exe/parity.raku FILE|DIR …    # just those
 #   rakupp t/exe/parity.raku -j=4          # parallel workers (default 8)
 #
+# A compiled binary is its own `$*EXECUTABLE`, and `$*PROGRAM` is the binary.
+# So that a program which spawns "the interpreter" or finds its fixtures beside
+# `$*PROGRAM` can be compared too, the binary is built next to the source and
+# run with RAKUPP_EXE_INTERPRETER naming rakupp, which a compiled binary's
+# `$*EXECUTABLE` then answers (src/Runtime.cpp). A program that prints its own
+# `$*PROGRAM` still differs, and is listed below.
+#
 # What is not compared:
-#   - a program that asks how it is running — it names `$*EXECUTABLE` or
-#     `$*PROGRAM` (spawns "the interpreter", reads its own path): compiled, the
-#     binary IS $*EXECUTABLE, and the answer differs legitimately;
 #   - the nondeterministic ones in %skip;
 #   - a run the interpreter itself does not finish inside the bound.
 # A program whose binary cannot be BUILT is a failure: `--exe` must either
@@ -42,6 +46,7 @@ my %skip =
     # print measured timings (ratios), which differ run to run
     'lex-shadow-filter-exact.raku' => 'prints a timing ratio',
     'lookbehind-lexical-token-window.raku' => 'prints timings',
+    'closed-write-handle-registry.raku' => 'prints a measured memory growth',
     ;
 
 my %known = $*PROGRAM.parent.add('parity-known.txt').lines.map(*.trim).grep({ $_ && !.starts-with('#') }).map(* => True);
@@ -54,9 +59,8 @@ for @dirs -> $d {
     else       { note "no such file or directory: $d"; exit 2 }
 }
 
-my $tmp = $*TMPDIR.add("rakupp-exe-parity-$*PID");
-$tmp.mkdir;
-END { if $tmp.e { for $tmp.dir { .unlink }; $tmp.rmdir } }
+my %env = %*ENV;
+%env<RAKUPP_EXE_INTERPRETER> = $rakupp;
 
 # Every run is bounded and gets a closed stdin (see t/exe/run.raku: a program
 # that reads stdin blocks forever on a terminal). A run cut off answers Nil.
@@ -65,30 +69,27 @@ sub bounded($limit, *@cmd, :$cwd) {
     my ($o, $e) = '', '';
     $p.stdout.tap({ $o ~= $_ });
     $p.stderr.tap({ $e ~= $_ });
-    my $done = $p.start(:cwd($cwd // $*CWD));
+    my $done = $p.start(:cwd($cwd // $*CWD), :ENV(%env));
     $p.close-stdin;
     await Promise.anyof($done, Promise.in($limit));
     unless $done { $p.kill: SIGKILL; my $ = try await $done; return (Nil, $o, $e) }
     ((try await $done).exitcode, $o, $e)
 }
 
-sub asks-about-itself($f) { so $f.slurp ~~ / '$*EXECUTABLE' | '$*PROGRAM' / }
-
 sub check($given) {
     my $f = $given.absolute.IO;
     my $name = $f.basename;
     return ('skip', $name, %skip{$name}) if %skip{$name};
-    return ('self', $name, '') if asks-about-itself($f);
     my $cwd = $f.parent;
-    my ($irc, $iout) = bounded(30, $rakupp, $f.Str, :$cwd);
+    my ($irc, $iout) = bounded(30, $rakupp, $f.basename, :$cwd);
     return ('skip', $name, 'the interpreter did not finish') without $irc;
-    my $bin = $tmp.add($name.subst(/'.raku'$/, '') ~ '.bin');
-    my ($brc, $, $berr) = bounded(180, $rakupp, '--exe', '-q', $f.Str, '-o', $bin.Str, :$cwd);
+    my $bin = $cwd.add('.' ~ $name.subst(/'.raku'$/, '') ~ ".parity-$*PID");
+    LEAVE { try $bin.unlink if $bin.defined && $bin.e }
+    my ($brc, $, $berr) = bounded(180, $rakupp, '--exe', '-q', $f.basename, '-o', $bin.Str, :$cwd);
     unless ($brc // -1) == 0 && $bin.e {
         return ('buildfail', $name, $berr.lines.grep(/error|fatal/).head // $berr.lines.head // 'no binary');
     }
     my ($crc, $cout, $cerr) = bounded(60, $bin.Str, :$cwd);
-    $bin.unlink;
     return ('differ', $name, 'the binary did not finish') without $crc;
     return ('agree', $name, '') if $crc == $irc && $cout eq $iout;
     my $first = ($iout.lines Z $cout.lines).first({ .[0] ne .[1] });
@@ -107,7 +108,7 @@ await (^$jobs).map: {
         loop {
             my $f = $lock.protect({ @queue ?? @queue.shift !! Nil });
             last without $f;
-            my $r = check($f);
+            my $r = (try check($f)) // ('differ', $f.basename, "the gate could not run it: {$!.message.lines.head}");
             $lock.protect({ @results.push: $r });
         }
     }
@@ -131,6 +132,5 @@ say "now agrees, take it off t/exe/parity-known.txt: $_" for @fixed;
 say "";
 say "agree        {%n<agree> // 0}";
 say "differ       {(%n<differ> // 0) + (%n<buildfail> // 0)}   ({%n<known> // 0} listed in parity-known.txt, {+@new} new)";
-say "self         {%n<self> // 0}   (name \$*EXECUTABLE / \$*PROGRAM: not compared)";
 say "skipped      {%n<skip> // 0}";
 exit @new ?? 1 !! 0;

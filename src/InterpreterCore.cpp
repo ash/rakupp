@@ -11,6 +11,7 @@
 #endif
 
 namespace rakupp {
+extern std::string g_exeInterpreterOverride;   // Runtime.cpp: a harness's $*EXECUTABLE for a compiled binary
 
 extern std::atomic<uint64_t> g_symbolGen;   // Interpreter.cpp: moves on every structural symbol change
 extern std::atomic<bool> g_lexTypeAlias;    // InterpreterOperators.cpp: a type was bound under another name
@@ -31250,7 +31251,7 @@ Value Interpreter::evalVarExpr(Expr* e) {
     if (ve->name == "$*COLLATION")
         return global_->define(ve->name, makeCollation());
     if (ve->name == "$*USAGE") { std::string u = mainUsage(); if (!u.empty() && u.back() == '\n') u.pop_back(); return Value::str(u); }
-    if (ve->name == "$*EXECUTABLE" || ve->name == "$*EXECUTABLE-NAME") { Value p = Value::str(execPath_); p.hashKind = "IO"; return p; }
+    if (ve->name == "$*EXECUTABLE" || ve->name == "$*EXECUTABLE-NAME") { Value p = Value::str(g_exeInterpreterOverride.empty() ? execPath_ : g_exeInterpreterOverride); p.hashKind = "IO"; return p; }
     if (ve->name == "$*OUT" || ve->name == "$*ERR" || ve->name == "$*IN") {
         Value h = Value::makeHash(); h.hashKind = "FileHandle";
         (*h.hash())["std"] = Value::str(ve->name == "$*ERR" ? "err" : ve->name == "$*IN" ? "in" : "out");

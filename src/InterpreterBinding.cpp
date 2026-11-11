@@ -6,6 +6,7 @@
 #include <cstddef>   // offsetof: a CStruct member's alignment, as C lays it out
 
 namespace rakupp {
+extern std::string g_exeInterpreterOverride;   // Runtime.cpp: a harness's $*EXECUTABLE for a compiled binary
 
 extern std::atomic<int> g_attrInitWatchers;   // InterpreterOperators.cpp: construction is noting
 void noteAttrInit(const ObjectData* od, const Value* slot);   // …the attribute slots it writes
@@ -3917,7 +3918,7 @@ Value Interpreter::dynVar(const std::string& name) {
     if (name == "$*PROGRAM") { Value p = Value::str(progName()); p.hashKind = "IO"; return p; }
     if (name == "$*PROGRAM-NAME") return Value::str(progName());
     if (name == "$*USAGE") { std::string u = mainUsage(); if (!u.empty() && u.back() == '\n') u.pop_back(); return Value::str(u); }
-    if (name == "$*EXECUTABLE" || name == "$*EXECUTABLE-NAME") { Value p = Value::str(execPath_); p.hashKind = "IO"; return p; }
+    if (name == "$*EXECUTABLE" || name == "$*EXECUTABLE-NAME") { Value p = Value::str(g_exeInterpreterOverride.empty() ? execPath_ : g_exeInterpreterOverride); p.hashKind = "IO"; return p; }
     if (name == "$*OUT" || name == "$*ERR" || name == "$*IN") { Value h = Value::makeHash(); h.hashKind = "FileHandle"; (*h.hash())["std"] = Value::str(name == "$*ERR" ? "err" : name == "$*IN" ? "in" : "out"); return h; }
     // $*ARGFILES — the files named in @*ARGS as ONE handle (awk/perl style),
     // or standard input when there are none. Built on ACCESS, not at startup:

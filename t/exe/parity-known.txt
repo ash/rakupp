@@ -5,8 +5,10 @@ append-shapes-linear.raku
 array-composer-one-arg-range.raku
 assoc-index-on-scalar-dies.raku
 backtrace-caught.raku
+battery-regressions-v5.raku
 binding-failure-priors-and-hint.raku
 cat-assign-shapes.raku
+class-begin-and-run-sink.raku
 coerce-boxed-builtin-subclass.raku
 core-trait-candidates-test-assertion.raku
 cro-live-server.raku
@@ -14,6 +16,7 @@ date-formatter-everywhere.raku
 datetime-number-is-instant.raku
 dynamic-falls-back-to-global.raku
 dynamic-method-lvalue.raku
+dynamic-var-memo.raku
 ecosweep-2026-09.raku
 ecosweep-condition-binders-and-hyper.raku
 empty-block-is-nil.raku
@@ -25,7 +28,10 @@ exporthow-declare-monitor-locks.raku
 failure-mess-and-backtrace.raku
 for-over-listing-value.raku
 generic-role-bodies.raku
+gobbled-block-refused-at-compile-time.raku
 grammar-ancestry.raku
+grand-review-c1-interp.raku
+grand-review-c4b-modules-seq.raku
 how-declaration-hooks.raku
 how-legacy-exporthow.raku
 hyper-in-whatevercode.raku
@@ -33,6 +39,7 @@ ident-continuation-and-native-return-boundary.raku
 imported-operator-traits.raku
 is-dynamic-and-sum.raku
 issue-138-qq-block-in-regex-atom.raku
+issue-198-titlecase-sub-block-arg.raku
 issue34-hyper-hash-subscript.raku
 junction-hyper-method-call.raku
 junction-regex-match-var.raku
@@ -61,6 +68,7 @@ primed-code-arity-count.raku
 pseudo-package-adverbs.raku
 pseudo-package-stash-value.raku
 quanthash-exact-sethash-zen-dynamic.raku
+rakudo-t-language-gaps-2.raku
 range-endpoints-and-adverbs.raku
 range-reduce-excludes-int-minimum.raku
 react-died-names-the-react.raku
@@ -81,6 +89,7 @@ sink-does-not-descend-a-container.raku
 slang-seams.raku
 slip-flattens-into-every-slurpy.raku
 slurpy-of-values-is-immutable.raku
+smartmatch-topic-pad.raku
 stash-term-before-pointy-block.raku
 sunk-ternary-regex-matches.raku
 tagged-code-constant-export.raku
@@ -90,10 +99,13 @@ try-block-sink-and-trailing-catch.raku
 type-capture-after-constraint.raku
 type-capture-constrains.raku
 typed-param-var-is-value.raku
+undeclared-routine-reference.raku
 undeclared-type-in-declaration.raku
+undeclared-variable-hint.raku
 undeclared-variable-routine-suggestions.raku
 undefined-array-head-lvalue-empty-match.raku
 unit-stash-exists-under-import-list.raku
+usage-lists-every-alias.raku
 user-multi-on-builtin-prefix.raku
 vivified-scalar-is-itemized.raku
 watch-ignores-writes-before-it.raku
