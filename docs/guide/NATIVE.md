@@ -76,15 +76,23 @@ to a parse that matches the one they were compiled from; a program that a
 slang or a localization rewrites as it is read runs fully interpreted.
 A `--exe` build that fell back says `"mode":"bundle"` under `rakupp --exe-info`.
 
-**And it can fail to build.** A program that reads a `use`d module's `our`
-variable (`$Mod::thing`) does not survive the C++ compile step: the generated
-code names an identifier it never declared, and you get exit 5 and no binary.
-Interpreted, the same program is fine.
+**When the C++ does not compile, it bundles too.** If the backend takes a
+program and writes C++ the compiler rejects, that is the backend's bug, not
+the program's: `--exe` says so in a note and builds the bundle instead of
+leaving you without a binary.
 
-The `examples/` claim above still holds byte for byte. Outside it, the two modes
-are not twins in every corner — a compiled `>>op<<` can answer where both the
-interpreter and Rakudo throw — so a program that must behave identically in both
-should be tested in both.
+Many constructs refuse on purpose, because compiled they would mean something
+else: anything that asks the program about itself through names a native
+local does not have (`EVAL`, `MY::`/`CALLER::` and the other pseudo-packages,
+most `.^` metamodel calls, `callframe`, `.backtrace`), `temp` and `let`,
+KEEP/UNDO, `.wrap`, a `multi` whose candidate order the native dispatcher
+cannot prove right, and a handful more. They cost speed, never meaning.
+
+The two modes are held to that. `t/exe/parity.raku` compiles every program in
+`examples/` and `t/regression/` (about 1,570) and compares each binary's
+output and exit status with the interpreted run; a difference fails the gate.
+`t/exe/parity-known.txt` lists the differences not fixed yet: none, at
+2026-11-12.
 
 ## Modules
 
