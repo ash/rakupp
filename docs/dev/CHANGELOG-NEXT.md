@@ -9,7 +9,7 @@ from this page. Move each item into CHANGELOG.md at the tag and delete it
 here.*
 
 *Covered so far: 59e9d3aa, e5b2b6c8, dec6d962, 15997e10, 71451a61, c68ec738,
-19078698, 9338d1b1, 58e2fdd4, abfea750.*
+19078698, 9338d1b1, 58e2fdd4, abfea750, 8a11fb4d.*
 
 ---
 
@@ -77,8 +77,11 @@ here.*
   picks its context option with `my $c := (my $a := …) || (my $b := …)` —
   and in a sub body `my $c := do { $c := 2 }` died the same way, which took
   out App::Rak's --sourcery. A `my` in an `andthen`/`orelse` right side
-  lands in the scope around it, not the topic's.
-  `t/regression/my-in-short-circuit-and-do-init.raku`. Reported by
+  lands in the scope around it, not the topic's; and in the REPL (8a11fb4d) such
+  a declaration is still there on the next line, as a skipped modifier's and
+  an untaken ternary side's now are too.
+  `t/regression/my-in-short-circuit-and-do-init.raku`,
+  `t/regression/repl-hoists-branch-declarations.raku`. Reported by
   Zer0-Tolerance.
 - **A stash term before a block or pointy block is a term** (19078698)
   (#238): `for A::, B:: -> $pkg { … }` and
