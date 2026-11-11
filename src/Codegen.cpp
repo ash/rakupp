@@ -30,6 +30,8 @@ bool operatorRoutineName(const std::string& n, std::string& cat, std::string& op
 std::string multiOrderRefusal(const std::vector<SubDecl*>&, const std::vector<const Program*>&,
                               int (*)(const SubDecl*));   // codegen/MultiOrder.cpp
 bool exprMayUseTopic(const Expr* e);   // Interpreter.cpp: may `e` read or write `$_`?
+const char* builtinRefusal(const std::string& name, bool inTopic);   // codegen/Refusals.cpp, as are:
+const char* methodRefusal(const MethodCall* m, bool& routineWide); bool fatalCallSite(const Expr* e); bool isLeaveBlock(const Stmt* s);
 
 namespace {
 
@@ -826,23 +828,12 @@ struct Codegen {
     // C++ lambda called in place, so a `return` in one leaves the routine the
     // same way as one in a block closure
     int iife_ = 0;
-    // compiled `try` bodies around the emission point in this routine: a call
-    // there that hands back a Failure throws it, and a `fail` there dies (use fatal)
+    // compiled `try` blocks around here in this routine: use fatal (fatalCallSite, failCall)
     int tryHere_ = 0;
     const Expr* fatalSkip_ = nullptr;   // the call being wrapped (ex)
-    static bool fatalCallSite(const Expr* e) {
-        if (e->kind == NK::MethodCall) return !static_cast<const MethodCall*>(e)->fatalExempt;
-        if (e->kind != NK::Call) return false;
-        auto* c = static_cast<const Call*>(e);
-        static const std::set<std::string> ctl = {"return", "return-rw", "fail", "die", "take", "take-rw", "emit",
-            "done", "leave", "succeed", "proceed", "next", "last", "redo", "goto", "callsame", "nextsame",
-            "callwith", "nextwith", "exit"};
-        return !c->fatalExempt && !ctl.count(c->name);
-    }
     struct FrameScope {
         Codegen* g; int savedIife, savedTry;
-        explicit FrameScope(Codegen* c) : g(c), savedIife(c->iife_), savedTry(c->tryHere_) {
-            g->frameUse_.push_back(0); g->iife_ = 0; g->tryHere_ = 0; }
+        explicit FrameScope(Codegen* c) : g(c), savedIife(c->iife_), savedTry(c->tryHere_) { g->frameUse_.push_back(0); g->iife_ = g->tryHere_ = 0; }
         ~FrameScope() { g->frameUse_.pop_back(); g->iife_ = savedIife; g->tryHere_ = savedTry; }
         bool used() const { return g->frameUse_.back() != 0; }
     };
@@ -1319,20 +1310,8 @@ struct Codegen {
     std::set<std::string> hiddenRoutines_;
 
     std::string builtinCall(const std::string& name, const std::string& vl) {
-        // `callframe` reads the INTERPRETER's frames, and native code runs in
-        // none of them: `callframe(0).line` was 0, the caller's frame the wrong one
-        // (a routine's own frame: delegated on its own, the statement ran in another)
-        if (name == "callframe") throw CodegenError{"callframe", /*routineWide=*/true};
-        // `samewith` calls the routine it is WRITTEN in again, found on the
-        // interpreter's frames, which a native routine does not push
-        if (name == "samewith") throw CodegenError{"samewith", /*routineWide=*/true};
-        // …and a `react` records the frames it stands in, for the X::React::Died
-        // of an error that leaves it: the routine around it has to have one
-        if (name == "react") throw CodegenError{"react", /*routineWide=*/true};
-        // an EVAL'd string sees the interpreter's lexicals, so in a routine its
-        // `$_` was the mainline's, not the routine's own native one
-        if ((name == "EVAL" || name == "EVALFILE") && !topics.empty())
-            throw CodegenError{"an EVAL in a routine", /*routineWide=*/true};
+        // `callframe`, `samewith`, `react`, an EVAL under a native topic (Refusals.cpp)
+        if (const char* why = builtinRefusal(name, !topics.empty())) throw CodegenError{why, /*routineWide=*/true};
         // (no built-in: "Undefined routine"; nor delegable, its undo is the routine's exit)
         if (name == "temp" || name == "let") throw CodegenError{"`" + name + "`", /*routineWide=*/true};
         if (!moduleMode_ && hiddenRoutines_.count(name) && !moduleExports_.count(name))
@@ -1491,8 +1470,7 @@ struct Codegen {
     // A statement's expression, whose value nobody reads. Sink context reaches
     // a ternary's branches, so a regex branch matches `$_`, as in Rakudo:
     // `$_ = 'abc'; False ?? /q/ !! /c/;` sets `$/`.
-    // (a parenthesized branch is a value, not sunk: `1 ?? (0 ?? /x/ !! /c/) !! /z/;`)
-    std::string exSunk(Expr* e, bool branch = false) {
+    std::string exSunk(Expr* e, bool branch = false) {   // (a parenthesized branch is a value, not sunk)
         if (branch && e && e->inParens) return exVal(e);
         if (!rxTernary(e) || e->inParens) return ex(e);
         auto* t = static_cast<Ternary*>(e);
@@ -1747,9 +1725,7 @@ struct Codegen {
         for (auto& st : stmts)
             if (SubDecl* d = lexical(st.get())) {
                 if (d->isMulti) unsupported("a nested multi sub");
-                // its Code object lives in ONE env slot by name, which every call
-                // reads: a closure the routine hands out, or the routine re-entered,
-                // reached the latest instance's sub (and its lexicals), not its own
+                // (its Code object is ONE env slot by name: a closure handed out reached the latest instance's)
                 if (moduleMode_ || !routineRef_.empty()) unsupported("a sub declared inside a routine");
                 envSubs.insert(d->name);
                 anyLexical = true;
@@ -2285,7 +2261,7 @@ struct Codegen {
         std::string body = capture([&]() {
             emitCellAliases(0, params);
             bindParams(sigOf(d), 0, false);
-            topics.push_back(routineTopic(&sigOf(d), 0));   // (a sub's own `$_`, not its block's)
+            topics.push_back(routineTopic(&sigOf(d), 0));   // (a sub's own `$_`, not its block's:)
             struct PopTopic { Codegen* g; ~PopTopic() { g->topics.pop_back(); } } __pt{this};
             hoistLexicalSubs(d->body, 0);
             for (size_t i = 0; i < d->body.size(); i++) {
@@ -2590,11 +2566,8 @@ struct Codegen {
     std::string ex(Expr* e) {
         if (e == preEvalNode_) return preEvalCode_;   // already evaluated (emitCtlPath)
         if (tryHere_ && e != fatalSkip_ && fatalCallSite(e)) {   // (under a `try`: see tryHere_)
-            const Expr* saved = std::exchange(fatalSkip_, e);
-            std::string r = "rtFatalCall(RT, " + ex(e) + ")";
-            fatalSkip_ = saved;
-            return r;
-        }
+            const Expr* saved = std::exchange(fatalSkip_, e); std::string r = "rtFatalCall(RT, " + ex(e) + ")";
+            fatalSkip_ = saved; return r; }
         switch (e->kind) {
             case NK::IntLit: {
                 auto* n = static_cast<IntLit*>(e);
@@ -2934,8 +2907,8 @@ struct Codegen {
                 if (u->op == "do" || u->op == "try") { // do { } / try { }  (value = last statement)
                     std::string body;
                     // (a `try` BLOCK is under use fatal; a blockless `try EXPR`'s call sites are not)
-                    struct TryHere { int& n; bool on; ~TryHere() { n -= on; } } __th{tryHere_, u->op == "try" && u->operand->kind == NK::BlockExpr};
-                    tryHere_ += __th.on;
+                    struct TryHere { int& n; bool on; TryHere(int& x, bool o) : n(x), on(o) { n += on; } ~TryHere() { n -= on; } }
+                        __th{tryHere_, u->op == "try" && u->operand->kind == NK::BlockExpr};
                     struct Iife { int& n; explicit Iife(int& x) : n(x) { n++; } ~Iife() { n--; } } __iife{iife_};
                     LoopJumpBarrier __bar{this};   // the body is a lambda: no break/continue/goto out of it
                     if (u->operand->kind == NK::BlockExpr) { CellScope __cs{this}; DeclScope __ds{this};   // …and a block, whose `my`s are its own
@@ -3481,14 +3454,7 @@ struct Codegen {
                 // `.+`/`.*` collect every candidate's result.
                 if (!m->methodQual.empty()) unsupported("a qualified method call (.Class::method)");
                 if (m->allMode) unsupported("a .+/.* method call");
-                // the frames an exception or Failure carries are the interpreter's,
-                // and native code keeps none (frameIntrospection keeps them all interpreted)
-                if (m->method == "backtrace" || m->method == "mess") throw CodegenError{"." + m->method, true};
-                // a map/grep a routine hands back is a lazy Seq its caller reads
-                // (the parser's markLazyTail); the native call runs every block
-                if (m->lazyTail) unsupported("a map or grep returned lazily");
-                // a wrapper must see every call, and a native call reaches the body directly
-                if (m->method == "wrap" || m->method == "unwrap") unsupported("." + m->method);
+                { bool wide = false; if (const char* why = methodRefusal(m, wide)) throw CodegenError{why, wide}; }   // (Refusals.cpp)
                 refuseRwCall(rwMethodNames_, m->method, m->args);
                 // The dispatch-key prefix of the call form: the class method
                 // tables key a private method `!name` and the metamodel `^name`
@@ -3788,8 +3754,7 @@ struct Codegen {
     // when the scope is left, however it is left. On an ordinary exit a
     // death in it propagates, as Rakudo's does (`LEAVE { die "x" }` dies);
     // while an exception is already on its way out it is dropped, because a
-    // second one would end the process. (The interpreter's CATCH sees the
-    // error, then the LEAVE's own: C++ unwinds before any handler runs.)
+    // second one would end the process.
     std::string leaveGuard(const std::string& inner, int ind) {
         const std::string g = "__leave" + std::to_string(leaveCtr_++), pad(ind * 4, ' ');
         return pad + "struct " + g + "_t { std::function<void()> f; int n; ~" + g +
@@ -3797,16 +3762,12 @@ struct Codegen {
                "if (std::uncaught_exceptions() > n) { try { f(); } catch (...) {} } else f(); } } " +
                g + "{[&]{\n" + inner + pad + "}, std::uncaught_exceptions()};\n";
     }
-    // A routine body's LEAVE (true when body[i] is one). It runs however the
-    // routine is left, also by an error in a statement written BEFORE it; a guard
-    // armed where it is written would miss that, so one after other statements
-    // keeps the routine interpreted
+    // A routine body's LEAVE (true when body[i] is one) runs however it is left, also by an error
+    // BEFORE it, which a guard armed after other statements would miss: then it stays interpreted
     bool bodyLeave(const std::vector<StmtPtr>& body, size_t i) {
-        auto leave = [](Stmt* x) { return x->kind == NK::Block && static_cast<Block*>(x)->phaser == "LEAVE" &&
-                                          !static_cast<Block*>(x)->isCatch; };
-        if (!leave(body[i].get())) return false;
+        if (!isLeaveBlock(body[i].get())) return false;
         for (size_t k = 0; k < i; k++)
-            if (!leave(body[k].get())) throw CodegenError{"a LEAVE after the statements of its routine", true};
+            if (!isLeaveBlock(body[k].get())) throw CodegenError{"a LEAVE after the statements of its routine", true};
         out << leaveGuard(leaveInner(static_cast<Block*>(body[i].get()), 1), 1);
         return true;
     }
@@ -3859,9 +3820,7 @@ struct Codegen {
             for (auto& t : inner) out << leaveGuard(t, ind);
             emitBody();
         } else {
-            // armed where it is written, after what it reads, it would miss an
-            // error in a statement before it (as bodyLeave)
-            throw CodegenError{"a LEAVE reading its block's variables", true};
+            throw CodegenError{"a LEAVE reading its block's variables", true};   // (as bodyLeave)
         }
     }
 
@@ -3943,9 +3902,7 @@ struct Codegen {
                 // a nested END is refused, and let --exe bundle and stay CORRECT.
                 if (ph == "INIT" && !topLevel) unsupported("a nested INIT phaser");
                 if (ph == "BEGIN" || ph == "CHECK" || ph == "INIT" || ph == "ENTER" || ph == "FIRST") { pre.push_back(b); continue; }
-                // KEEP / UNDO choose by how the block is left (a `return` passing
-                // through, an exception, the value): no native form, and the choice
-                // is the enclosing routine's, so it stays interpreted whole
+                // (KEEP / UNDO choose by how the block is left — a `return`, an error: no native form)
                 if (ph == "KEEP" || ph == "UNDO") throw CodegenError{"a " + ph + " phaser", /*routineWide=*/true};
                 if (ph == "LEAVE") { post.push_back(b); postAt.push_back(regular.size()); continue; }
                 if (ph == "END") { if (!topLevel) unsupported("a nested END phaser"); topLevelEnds.push_back(b); continue; }
@@ -4642,9 +4599,9 @@ struct Codegen {
                 }
                 if (e->kind == NK::MethodCall || e->kind == NK::Call ||
                     (e->kind == NK::Unary && static_cast<Unary*>(e)->op == "gather")) {
-                    const bool m = e->kind == NK::MethodCall && !static_cast<MethodCall*>(e)->mutate;
-                    if (e->kind == NK::Unary) line(ind, "rtSinkStmt(RT, " + ex(e) + ");");
-                    else line(ind, "rtSinkCallStmt(RT, (rtUncontained(), " + ex(e) + ")" + (m ? ", true);" : ");"));
+                    const bool m = e->kind == NK::MethodCall && !static_cast<MethodCall*>(e)->mutate;   // (rtSinkCallStmt)
+                    line(ind, e->kind == NK::Unary ? "rtSinkStmt(RT, " + ex(e) + ");"
+                                                   : "rtSinkCallStmt(RT, (rtUncontained(), " + ex(e) + ")" + (m ? ", true);" : ");"));
                     return;
                 }
                 line(ind, exSunk(e) + ";");
@@ -9370,8 +9327,8 @@ struct Codegen {
         for (const Param& p : ps) {   // (…and a sub-signature, whose names were never declared)
             if (p.whereExpr)      unsupported("a `where` constraint on a routine parameter");
             if (p.defConstraint)  unsupported("a `:D`/`:U` constraint on a routine parameter");
-            // (a default is evaluated before the routine's own `$_` exists natively)
-            if (p.defaultVal && exprMayUseTopic(p.defaultVal.get())) unsupported("a parameter default that reads `$_`");
+            if (p.defaultVal && exprMayUseTopic(p.defaultVal.get()))   // (before the routine's own `$_` exists)
+                unsupported("a parameter default that reads `$_`");
             if (p.subSig)         unsupported("a sub-signature on a routine parameter");
         }
         size_t pi = hasSelf ? 1 : 0;
