@@ -21669,7 +21669,9 @@ Value Interpreter::junctionMatcher(const std::string& op, const Value& lTopic, c
         // smartmatch below knows nothing about IO or Pairs and answered
         // False for every one of them, so the whole junction was False.
         else if (e.t == VT::Pair && lTopic.hashKind == "IO" && !e.s.empty()) m = fileTest(e);
-        else m = applyArith("~~", lTopic, e).truthy();
+        // (the value smartmatch: a Whatever the topic HOLDS is a value, which
+        // applyArith's `~~` would curry into a truthy WhateverCode)
+        else m = smartmatchValue("~~", lTopic, e).truthy();
         jc.feed(m);
         if (jc.done()) break;
     }
