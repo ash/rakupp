@@ -1747,6 +1747,10 @@ struct Codegen {
         for (auto& st : stmts)
             if (SubDecl* d = lexical(st.get())) {
                 if (d->isMulti) unsupported("a nested multi sub");
+                // its Code object lives in ONE env slot by name, which every call
+                // reads: a closure the routine hands out, or the routine re-entered,
+                // reached the latest instance's sub (and its lexicals), not its own
+                if (moduleMode_ || !routineRef_.empty()) unsupported("a sub declared inside a routine");
                 envSubs.insert(d->name);
                 anyLexical = true;
             }

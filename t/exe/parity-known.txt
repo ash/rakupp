@@ -39,7 +39,6 @@ my-list-slot-coercion-type.raku
 my-stash-sees-test-imports.raku
 named-rw-param-writes-back.raku
 needle-type-object-no-match.raku
-nested-sub-keeps-its-closure.raku
 nqp-unipropcode-int.raku
 operator-strictness.raku
 our-belongs-to-its-package.raku
