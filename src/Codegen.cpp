@@ -3889,7 +3889,11 @@ struct Codegen {
                 // a nested END is refused, and let --exe bundle and stay CORRECT.
                 if (ph == "INIT" && !topLevel) unsupported("a nested INIT phaser");
                 if (ph == "BEGIN" || ph == "CHECK" || ph == "INIT" || ph == "ENTER" || ph == "FIRST") { pre.push_back(b); continue; }
-                if (ph == "LEAVE" || ph == "KEEP" || ph == "UNDO") { post.push_back(b); postAt.push_back(regular.size()); continue; }
+                // KEEP / UNDO choose by how the block is left (a `return` passing
+                // through, an exception, the value): no native form, and the choice
+                // is the enclosing routine's, so it stays interpreted whole
+                if (ph == "KEEP" || ph == "UNDO") throw CodegenError{"a " + ph + " phaser", /*routineWide=*/true};
+                if (ph == "LEAVE") { post.push_back(b); postAt.push_back(regular.size()); continue; }
                 if (ph == "END") { if (!topLevel) unsupported("a nested END phaser"); topLevelEnds.push_back(b); continue; }
                 if (!ph.empty()) unsupported("a " + ph + " phaser");
             }

@@ -62,7 +62,6 @@ range-endpoints-and-adverbs.raku
 range-reduce-excludes-int-minimum.raku
 react-died-names-the-react.raku
 regex-value-variable-atom.raku
-return-through-block-undo.raku
 returned-map-is-lazy.raku
 role-multi-siblings-differing-by-named.raku
 routine-has-its-own-topic.raku
