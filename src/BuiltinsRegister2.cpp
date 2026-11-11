@@ -642,8 +642,11 @@ void Interpreter::registerBuiltinsPart3() {
             // (String::Utils' `after`/`before`) is never published, so
             // `UNIT::.grep: { .key.starts-with('&') }` could not export it.
             // The mainline's own unit is that global frame, and stays so.
+            // A module's file scope says so (unitFrame): the walk stops there,
+            // wherever that scope hangs — under an import list it is not
+            // straight off the global frame, and the walk ran on past it (#245)
             Env* g = I.global_.get();
-            while (e && e->parent && e->parent.get() != g) e = e->parent.get();
+            while (e && !e->unitFrame && e->parent && e->parent.get() != g) e = e->parent.get();
             return e;
         }
         for (long long hops = a.size() > hopIdx ? a[hopIdx].toInt() : 0; hops > 0 && e; hops--)
