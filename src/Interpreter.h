@@ -2965,6 +2965,8 @@ public:
     // a DateTime against a number, and a class DERIVING DateTime: operators and
     // the DateTimes its methods answer go by Rakudo's definitions (InterpreterCalls.cpp)
     std::optional<Value> dateTimeArith(const std::string& op, const Value& l, const Value& r);
+    // evalBinary's DateTime/Date arm; applyArith asks it too (--exe calls applyArith)
+    std::optional<Value> temporalArith(const std::string& op, const Value& l, const Value& r);
     Value rewrapDerivedDateTime(const Value& inv, const std::string& m, Value r);
     // Could a method call by this NAME hand back a CONTAINER? Only if some type
     // declares an `is rw` public attribute of that name, or a routine of that

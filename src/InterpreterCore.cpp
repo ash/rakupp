@@ -18758,7 +18758,17 @@ static Value applyArithGeneral(const std::string& op, const Value& l, const Valu
     if (!skipCurry && !valueMatch && (isWhateverish(l) || isWhateverish(r))) return whateverInfixCurry(op, op, l, r);
 
     // ---- Date arithmetic ----
-    if (isDateVal(l) && isDateVal(r) && opEq(op, "-")) return Value::integer(dateDays(l) - dateDays(r));
+    // (evalBinary's DateTime/Date arm first: an operator --exe compiled comes here
+    // directly, and `DateTime.new(0) + 60` numified to 60, not Instant:70)
+    {
+        auto temporal = [](const Value& v) {
+            return v.hashKind == "DateTime" || v.hashKind == "Date" ||
+                   (v.t == VT::Object && v.obj() && v.obj()->hasBoxed && v.obj()->boxed().hashKind == "DateTime");
+        };
+        if (g_cbInterp && (temporal(l) || temporal(r)))
+            if (auto v = g_cbInterp->temporalArith(op, l, r)) return *v;
+    }
+    if (isDateVal(l) && isDateVal(r) && opEq(op, "-"))return Value::integer(dateDays(l) - dateDays(r));
     if (isDateVal(l) && (r.t == VT::Int || r.t == VT::Bool) && (opEq(op, "+") || opEq(op, "-")))
         return makeDate(dateDays(l) + (opEq(op, "+") ? r.toInt() : -r.toInt()), &l);
     if (isDateVal(r) && l.t == VT::Int && opEq(op, "+")) return makeDate(dateDays(r) + l.toInt(), &r);
@@ -21473,6 +21483,122 @@ bool rtWhenMatch(Interpreter& I, const Value& topic, const Value& cond) {
     return rtSmartmatch(I, "~~", topic, cond).truthy();
 }
 
+// DateTime and Date operators as evalBinary gives them: a DateTime against a
+// number is its Instant (dateTimeArith), and a DateTime or Date against
+// another, or moved, works on the absolute instant. applyArith asks it too,
+// so --exe's compiled operators, which call applyArith directly, agree.
+// nullopt when none of these applies.
+std::optional<Value> Interpreter::temporalArith(const std::string& op, const Value& l, const Value& r) {
+    // a DateTime against a number, or one of a class DERIVING DateTime (dateTimeArith)
+    if (l.t == VT::Object || r.t == VT::Object || l.hashKind == "DateTime" || r.hashKind == "DateTime")
+        if (auto v = dateTimeArith(op, l, r)) return *v;
+    // DateTime/Date arithmetic & comparison work on the absolute instant (posix),
+    // not the hash's numeric coercion (which would be 0).
+    {
+        bool ldt = l.hashKind == "DateTime" || l.hashKind == "Date";
+        bool rdt = r.hashKind == "DateTime" || r.hashKind == "Date";
+        if (ldt || rdt) {
+            // leap-second boundaries in POSIX seconds (end of each historical leap day)
+            static const long long* leapPx = [] {
+                static long long v[27]; static const long long ymd[] = {
+                    19720630, 19721231, 19731231, 19741231, 19751231, 19761231, 19771231,
+                    19781231, 19791231, 19810630, 19820630, 19830630, 19850630, 19871231,
+                    19891231, 19901231, 19920630, 19930630, 19940630, 19951231, 19970630,
+                    19981231, 20051231, 20081231, 20120630, 20150630, 20161231};
+                for (int i = 0; i < 27; i++)
+                    v[i] = (civilToDays(ymd[i] / 10000, ymd[i] / 100 % 100, ymd[i] % 100) + 1) * 86400;
+                return v;
+            }();
+            // Rakudo does DateTime algebra in Instant/TAI, which counts leap seconds.
+            // dtSec = TAI seconds (posix + fractional + leap seconds elapsed).
+            auto dtSec = [](const Value& v) -> double {
+                if (v.hashKind != "DateTime" && v.hashKind != "Date") return v.toNum();
+                // A Date compares by DAYCOUNT (Rakudo's Dateish Numeric), not by
+                // an instant: it names a civil day and carries no clock fields.
+                if (v.hashKind == "Date") return dateNumeric(v);
+                double p = v.hash() && v.hash()->count("posix") ? (*v.hash())["posix"].toNum() : 0.0;
+                if (v.hash() && v.hash()->count("second")) {
+                    double s = (*v.hash())["second"].toNum(); p += s - std::floor(s);
+                    if (s >= 60) p += 1.0;   // :60 stores the posix of :59; it is one TAI second on
+                }
+                long long ip = (long long)std::floor(p);
+                for (int i = 0; i < 27; i++) if (leapPx[i] <= ip) p += 1.0;
+                return p;
+            };
+            // TAI back to POSIX (the i-th leap's TAI boundary is leapPx[i] + i)
+            auto taiToPosix = [](double tai) -> double {
+                long long it = (long long)std::floor(tai); double off = 0;
+                for (int i = 0; i < 27; i++) if (leapPx[i] + i <= it) off += 1.0;
+                return tai - off;
+            };
+            auto mkDT = [&](double taiVal, const Value& tzFrom) -> Value {
+                long long tz = tzFrom.hash() && tzFrom.hash()->count("timezone") ? (*tzFrom.hash())["timezone"].toInt() : 0;
+                Value res = methodCall(Value::typeObj("DateTime"), "new", ValueList{Value::number(taiToPosix(taiVal))});
+                if (tz) res = methodCall(res, "in-timezone", ValueList{Value::integer(tz)});
+                return res;
+            };
+            // DateTime against DateTime, and DateTime ± a duration, go through
+            // the EXACT Instant (a Rat, leap seconds counted): the double here
+            // made `$dt1 - $dt2` 59826610.48000002 and read 23:59:60 and the
+            // midnight after it as the same moment
+            auto exactInst = [&](const Value& v) {
+                Value i = methodCall(v, "Instant", ValueList{}); i.hashKind = ""; return i;
+            };
+            if (l.hashKind == "DateTime" && r.hashKind == "DateTime" &&
+                (opEq(op, "<") || opEq(op, ">") || opEq(op, "<=") || opEq(op, ">=") || opEq(op, "==") || opEq(op, "!=") ||
+                 opEq(op, "<=>") || opEq(op, "-"))) {
+                Value diff = applyArith("-", exactInst(l), exactInst(r));
+                if (opEq(op, "-")) {
+                    if (diff.t == VT::Num && std::isfinite(diff.n)) diff = methodCall(diff, "Rat", ValueList{});
+                    diff.hashKind = "Duration"; return identify(diff);
+                }
+                int c = diff.toNum() < 0 ? -1 : diff.toNum() > 0 ? 1 : 0;
+                if (opEq(op, "<=>")) return Value::orderVal(c);
+                bool res = opEq(op, "<") ? c < 0 : opEq(op, ">") ? c > 0 : opEq(op, "<=") ? c <= 0
+                         : opEq(op, ">=") ? c >= 0 : opEq(op, "==") ? c == 0 : c != 0;
+                return Value::boolean(res);
+            }
+            auto moveDT = [&](const Value& dt, const Value& by, bool minus) {
+                Value b = by; b.hashKind = "";
+                Value inst = applyArith(minus ? "-" : "+", exactInst(dt), b);
+                inst.hashKind = "Instant";
+                long long tz = dt.hash() && dt.hash()->count("timezone") ? (*dt.hash())["timezone"].toInt() : 0;
+                Value res = methodCall(Value::typeObj("DateTime"), "new",
+                    ValueList{inst, Value::pair("timezone", Value::integer(tz))});
+                if (dt.hash() && dt.hash()->count("formatter") && res.t == VT::Hash && res.hash())
+                    (*res.hash())["formatter"] = (*dt.hash())["formatter"];
+                return res;
+            };
+            if ((opEq(op, "+") || opEq(op, "-")) && l.hashKind == "DateTime" &&
+                (r.t == VT::Int || r.t == VT::Num || r.t == VT::Rat) && r.hashKind != "Instant")
+                return moveDT(l, r, opEq(op, "-"));
+            if (opEq(op, "+") && r.hashKind == "DateTime" &&
+                (l.t == VT::Int || l.t == VT::Num || l.t == VT::Rat) && l.hashKind != "Instant")
+                return moveDT(r, l, false);
+            if (ldt && rdt && (opEq(op, "<") || opEq(op, ">") || opEq(op, "<=") || opEq(op, ">=") ||
+                               opEq(op, "==") || opEq(op, "!=") || opEq(op, "<=>"))) {
+                double a = dtSec(l), c = dtSec(r);
+                // `<=>` yields an Order, like every other numeric comparison —
+                // this arm handed back a bare Int (-1/0/1) instead
+                if (opEq(op, "<=>")) return Value::orderVal(a < c ? -1 : a > c ? 1 : 0);
+                bool res = opEq(op, "<") ? a < c : opEq(op, ">") ? a > c : opEq(op, "<=") ? a <= c
+                         : opEq(op, ">=") ? a >= c : opEq(op, "==") ? a == c : a != c;
+                return Value::boolean(res);
+            }
+            if (opEq(op, "-") && l.hashKind == "DateTime" && r.hashKind == "DateTime") {
+                Value d = Value::number(dtSec(l) - dtSec(r)); d.hashKind = "Duration"; return identify(d);
+            }
+            if ((opEq(op, "+") || opEq(op, "-")) && l.hashKind == "DateTime" &&
+                (r.t == VT::Int || r.t == VT::Num || r.t == VT::Rat || r.hashKind == "Duration"))
+                return mkDT(dtSec(l) + (opEq(op, "-") ? -r.toNum() : r.toNum()), l);
+            if (opEq(op, "+") && r.hashKind == "DateTime" &&
+                (l.t == VT::Int || l.t == VT::Num || l.t == VT::Rat || l.hashKind == "Duration"))
+                return mkDT(dtSec(r) + l.toNum(), r);
+        }
+    }
+    return std::nullopt;
+}
+
 Value Interpreter::applyBinOp(const std::string& op, const Value& l, const Value& r) {
     // `×` names an operator of its own over the built-in `*` (uniOpWritten)
     if (const char* asc = uniOpAscii(op)) return applyUniOp(op, asc, l, r);
@@ -23020,113 +23146,10 @@ Value Interpreter::evalBinary(Binary* b) {
             if (l.t == VT::Whatever || r.t == VT::Whatever) refuseWhateverNumeric(op);
             Interpreter::valueSmartmatch_ = true; return applyBinOp(op, l, r); }
         if (RAKUPP_UNLIKELY(uninitOperand(l) || uninitOperand(r))) uninitBinaryOperands(b, op, l, r);
-        // a DateTime against a number, or one of a class DERIVING DateTime (dateTimeArith)
-        if (l.t == VT::Object || r.t == VT::Object || l.hashKind == "DateTime" || r.hashKind == "DateTime")
-            if (auto v = dateTimeArith(op, l, r)) return *v;
-        // DateTime/Date arithmetic & comparison work on the absolute instant (posix),
-        // not the hash's numeric coercion (which would be 0).
-        {
-            bool ldt = l.hashKind == "DateTime" || l.hashKind == "Date";
-            bool rdt = r.hashKind == "DateTime" || r.hashKind == "Date";
-            if (ldt || rdt) {
-                // leap-second boundaries in POSIX seconds (end of each historical leap day)
-                static const long long* leapPx = [] {
-                    static long long v[27]; static const long long ymd[] = {
-                        19720630, 19721231, 19731231, 19741231, 19751231, 19761231, 19771231,
-                        19781231, 19791231, 19810630, 19820630, 19830630, 19850630, 19871231,
-                        19891231, 19901231, 19920630, 19930630, 19940630, 19951231, 19970630,
-                        19981231, 20051231, 20081231, 20120630, 20150630, 20161231};
-                    for (int i = 0; i < 27; i++)
-                        v[i] = (civilToDays(ymd[i] / 10000, ymd[i] / 100 % 100, ymd[i] % 100) + 1) * 86400;
-                    return v;
-                }();
-                // Rakudo does DateTime algebra in Instant/TAI, which counts leap seconds.
-                // dtSec = TAI seconds (posix + fractional + leap seconds elapsed).
-                auto dtSec = [](const Value& v) -> double {
-                    if (v.hashKind != "DateTime" && v.hashKind != "Date") return v.toNum();
-                    // A Date compares by DAYCOUNT (Rakudo's Dateish Numeric), not by
-                    // an instant: it names a civil day and carries no clock fields.
-                    if (v.hashKind == "Date") return dateNumeric(v);
-                    double p = v.hash() && v.hash()->count("posix") ? (*v.hash())["posix"].toNum() : 0.0;
-                    if (v.hash() && v.hash()->count("second")) {
-                        double s = (*v.hash())["second"].toNum(); p += s - std::floor(s);
-                        if (s >= 60) p += 1.0;   // :60 stores the posix of :59; it is one TAI second on
-                    }
-                    long long ip = (long long)std::floor(p);
-                    for (int i = 0; i < 27; i++) if (leapPx[i] <= ip) p += 1.0;
-                    return p;
-                };
-                // TAI back to POSIX (the i-th leap's TAI boundary is leapPx[i] + i)
-                auto taiToPosix = [](double tai) -> double {
-                    long long it = (long long)std::floor(tai); double off = 0;
-                    for (int i = 0; i < 27; i++) if (leapPx[i] + i <= it) off += 1.0;
-                    return tai - off;
-                };
-                auto mkDT = [&](double taiVal, const Value& tzFrom) -> Value {
-                    long long tz = tzFrom.hash() && tzFrom.hash()->count("timezone") ? (*tzFrom.hash())["timezone"].toInt() : 0;
-                    Value res = methodCall(Value::typeObj("DateTime"), "new", ValueList{Value::number(taiToPosix(taiVal))});
-                    if (tz) res = methodCall(res, "in-timezone", ValueList{Value::integer(tz)});
-                    return res;
-                };
-                // DateTime against DateTime, and DateTime ± a duration, go through
-                // the EXACT Instant (a Rat, leap seconds counted): the double here
-                // made `$dt1 - $dt2` 59826610.48000002 and read 23:59:60 and the
-                // midnight after it as the same moment
-                auto exactInst = [&](const Value& v) {
-                    Value i = methodCall(v, "Instant", ValueList{}); i.hashKind = ""; return i;
-                };
-                if (l.hashKind == "DateTime" && r.hashKind == "DateTime" &&
-                    (opEq(op, "<") || opEq(op, ">") || opEq(op, "<=") || opEq(op, ">=") || opEq(op, "==") || opEq(op, "!=") ||
-                     opEq(op, "<=>") || opEq(op, "-"))) {
-                    Value diff = applyArith("-", exactInst(l), exactInst(r));
-                    if (opEq(op, "-")) {
-                        if (diff.t == VT::Num && std::isfinite(diff.n)) diff = methodCall(diff, "Rat", ValueList{});
-                        diff.hashKind = "Duration"; return identify(diff);
-                    }
-                    int c = diff.toNum() < 0 ? -1 : diff.toNum() > 0 ? 1 : 0;
-                    if (opEq(op, "<=>")) return Value::orderVal(c);
-                    bool res = opEq(op, "<") ? c < 0 : opEq(op, ">") ? c > 0 : opEq(op, "<=") ? c <= 0
-                             : opEq(op, ">=") ? c >= 0 : opEq(op, "==") ? c == 0 : c != 0;
-                    return Value::boolean(res);
-                }
-                auto moveDT = [&](const Value& dt, const Value& by, bool minus) {
-                    Value b = by; b.hashKind = "";
-                    Value inst = applyArith(minus ? "-" : "+", exactInst(dt), b);
-                    inst.hashKind = "Instant";
-                    long long tz = dt.hash() && dt.hash()->count("timezone") ? (*dt.hash())["timezone"].toInt() : 0;
-                    Value res = methodCall(Value::typeObj("DateTime"), "new",
-                        ValueList{inst, Value::pair("timezone", Value::integer(tz))});
-                    if (dt.hash() && dt.hash()->count("formatter") && res.t == VT::Hash && res.hash())
-                        (*res.hash())["formatter"] = (*dt.hash())["formatter"];
-                    return res;
-                };
-                if ((opEq(op, "+") || opEq(op, "-")) && l.hashKind == "DateTime" &&
-                    (r.t == VT::Int || r.t == VT::Num || r.t == VT::Rat) && r.hashKind != "Instant")
-                    return moveDT(l, r, opEq(op, "-"));
-                if (opEq(op, "+") && r.hashKind == "DateTime" &&
-                    (l.t == VT::Int || l.t == VT::Num || l.t == VT::Rat) && l.hashKind != "Instant")
-                    return moveDT(r, l, false);
-                if (ldt && rdt && (opEq(op, "<") || opEq(op, ">") || opEq(op, "<=") || opEq(op, ">=") ||
-                                   opEq(op, "==") || opEq(op, "!=") || opEq(op, "<=>"))) {
-                    double a = dtSec(l), c = dtSec(r);
-                    // `<=>` yields an Order, like every other numeric comparison —
-                    // this arm handed back a bare Int (-1/0/1) instead
-                    if (opEq(op, "<=>")) return Value::orderVal(a < c ? -1 : a > c ? 1 : 0);
-                    bool res = opEq(op, "<") ? a < c : opEq(op, ">") ? a > c : opEq(op, "<=") ? a <= c
-                             : opEq(op, ">=") ? a >= c : opEq(op, "==") ? a == c : a != c;
-                    return Value::boolean(res);
-                }
-                if (opEq(op, "-") && l.hashKind == "DateTime" && r.hashKind == "DateTime") {
-                    Value d = Value::number(dtSec(l) - dtSec(r)); d.hashKind = "Duration"; return identify(d);
-                }
-                if ((opEq(op, "+") || opEq(op, "-")) && l.hashKind == "DateTime" &&
-                    (r.t == VT::Int || r.t == VT::Num || r.t == VT::Rat || r.hashKind == "Duration"))
-                    return mkDT(dtSec(l) + (opEq(op, "-") ? -r.toNum() : r.toNum()), l);
-                if (opEq(op, "+") && r.hashKind == "DateTime" &&
-                    (l.t == VT::Int || l.t == VT::Num || l.t == VT::Rat || l.hashKind == "Duration"))
-                    return mkDT(dtSec(r) + l.toNum(), r);
-            }
-        }
+        // a DateTime or Date against a number or another (temporalArith)
+        if (l.t == VT::Object || r.t == VT::Object || l.hashKind == "DateTime" || r.hashKind == "DateTime" ||
+            l.hashKind == "Date" || r.hashKind == "Date")
+            if (auto v = temporalArith(op, l, r)) return *v;
         // A user `infix:<+>`/`<->` over a NATIVE handle (Pointer / CArray) wins over
         // the Instant/Duration arm below: those are tagged Hashes here, not objects,
         // so `multi infix:<+>(Pointer:D \p, Int $o)` — NativeHelpers::Pointer's
