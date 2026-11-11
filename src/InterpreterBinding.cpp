@@ -3377,6 +3377,10 @@ Value Interpreter::callEnvFirst(const std::string& name, ValueList args) {
 Value Interpreter::envAmpOr(const std::string& ampName, const Value& fallback) {
     Value* p = tctx().cur ? tctx().cur->find(ampName) : nullptr;
     if (!p && global_) { auto g = global_->vars.find(ampName); if (g != global_->vars.end()) p = &g->second; }
+    // a built-in is its one stable Callable, as the interpreter's `&say` is —
+    // its .name, .candidates and identity — not an anonymous forwarding closure
+    if (!p && ampName == "&trait_mod:<is>") return builtinTraitIsGroup();
+    if (!p && ampName.size() > 1) p = const_cast<Value*>(builtinRef(ampName.substr(1)));
     return p ? *p : fallback;
 }
 

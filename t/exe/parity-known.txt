@@ -8,7 +8,6 @@ backtrace-caught.raku
 binding-failure-priors-and-hint.raku
 cat-assign-shapes.raku
 coerce-boxed-builtin-subclass.raku
-core-trait-candidates-test-assertion.raku
 cro-live-server.raku
 date-formatter-everywhere.raku
 datetime-number-is-instant.raku
