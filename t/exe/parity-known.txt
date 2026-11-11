@@ -72,14 +72,12 @@ seq-generator-shapes.raku
 shaped-param-dimension-is-its-value.raku
 sigilled-compile-time-class.raku
 sigilless-traits-and-container-assign.raku
-sink-does-not-descend-a-container.raku
 slang-seams.raku
 slip-flattens-into-every-slurpy.raku
 slurpy-of-values-is-immutable.raku
 stash-term-before-pointy-block.raku
 tagged-code-constant-export.raku
 top100-chunk-d-grammar-made-2026-09-03.raku
-try-block-sink-and-trailing-catch.raku
 type-capture-after-constraint.raku
 type-capture-constrains.raku
 typed-param-var-is-value.raku

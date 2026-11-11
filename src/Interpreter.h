@@ -6224,10 +6224,19 @@ inline void rtSinkStmt(Interpreter& I, const Value& v) {
 // `sink` method has it run first, as the interpreter's exec does (HTTP::Status
 // registers each `HTTP::Status.new: …` statement that way)
 void rtSinkUserMethod(Interpreter& I, const Value& v);
-template <class T> inline void rtSinkMethodStmt(Interpreter&, const T&) {}
-inline void rtSinkMethodStmt(Interpreter& I, const Value& v) {
-    if (RAKUPP_UNLIKELY(v.t == VT::Object)) rtSinkUserMethod(I, v);
-    rtSinkStmt(I, v);
+// A CALL's value is sunk only when it did not come out still in a container:
+// a block whose last statement reads or assigns a variable hands its Scalar on
+// (valContained, which the interpreted callee's statements set), and Rakudo
+// does not sink through one — `sub sinker(&b) { b(); … }` with `b` ending in
+// `$q = failing-proc()`. The call site clears the flag first (rtUncontained),
+// so a native callee, which sets none, is sunk as before.
+inline bool rtUncontained() { Interpreter::tctx().valContained = false; return true; }
+template <class T> inline void rtSinkCallStmt(Interpreter&, const T&, bool = false) {}
+inline void rtSinkCallStmt(Interpreter& I, const Value& v, bool method = false) {
+    if (RAKUPP_UNLIKELY(method && v.t == VT::Object)) rtSinkUserMethod(I, v);
+    if (RAKUPP_UNLIKELY((v.t == VT::Hash && !v.hashKind.empty()) || (v.t == VT::Array && v.ext())) &&
+        !Interpreter::tctx().valContained)
+        I.sinkValue(v);
 }
 bool rtForPull(const Value& lst, size_t i);   // the cold half: grow a lazy source
 inline bool rtForHas(const Value& lst, size_t i) {
