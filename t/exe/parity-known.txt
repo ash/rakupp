@@ -29,7 +29,6 @@ imported-operator-traits.raku
 is-dynamic-and-sum.raku
 kernel-closure-callees.raku
 method-leave-dies-unwinding.raku
-missing-routines-batch.raku
 module-sees-not-the-programs-operators.raku
 module-supplied-package-declarator.raku
 mop-metamodel.raku

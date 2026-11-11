@@ -2640,7 +2640,10 @@ struct Codegen {
                         return "RT.infixCallable(" + cesc(nm) + ")";
                     }
                     // a builtin (say, is_even, …) — dispatch by name at runtime
-                    std::string fwd = "Value::closure([=](ValueList& __a)->Value{ return " + builtinCall(nm, "__a") + "; })";
+                    // …through the interpreter's one Callable for it when it has one
+                    // (its name: `&say.gist` is "&say", not "sub { ... }")
+                    std::string fwd = "([&]()->Value{ if (const Value* __b = RT.builtinRef(" + cesc(nm) + ")) return *__b; "
+                                      "return Value::closure([=](ValueList& __a)->Value{ return " + builtinCall(nm, "__a") + "; }); }())";
                     // …but the environment first, as the interpreter's `&name`
                     // looks: a routine a `use`d module put there is that
                     // Callable itself — its .WHY, .name and identity — not a
@@ -3510,6 +3513,8 @@ struct Codegen {
                     return !v->declare && v->name.size() > 1 && v->name[0] == '$' && v->name != "$_" &&
                            v->name[1] != '*' && v->name[1] != '?' && v->name != "$/" && v->name != "$!";
                 };
+                if (name == "subst-mutate" && !m->meta && !m->bang && !m->args.empty() && bufHolder(m->inv.get()))
+                    return "RT.substMutate(&(" + lvalueExpr(m->inv.get()) + "), " + argsVL(m->args) + ")";
                 if (!m->meta && !m->bang && !m->maybe && !hasWhatever(e) && bufHolder(m->inv.get()) &&
                     (name == "push" || name == "append" || name == "prepend" || name == "unshift" ||
                      name == "pop" || name == "shift" || name == "splice" || name == "reallocate" ||

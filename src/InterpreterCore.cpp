@@ -21711,6 +21711,33 @@ Value Interpreter::junctionMatcher(const std::string& op, const Value& lTopic, c
     return Value::boolean(opEq(op, "~~") ? res : !res);
 }
 
+// `$s.subst-mutate(…)` on the invocant's slot: substitutes IN PLACE and
+// answers the Match. The MethodCall eval and --exe's compiled call share it.
+Value Interpreter::substMutate(Value* lv, ValueList sargs) {
+    // the adverbs are NAMED, wherever they are written: `:g` or a
+    // slipped `|(nth => 1..3)` may come before the pattern
+    ValueList posArgs, adv;
+    for (auto& a : sargs) ((a.t == VT::Pair && a.namedArg) ? adv : posArgs).push_back(a);
+    std::string pat; bool literal = false;
+    // interpRegexPattern FIRST: a regex argument arrives as its raw
+    // SOURCE, so `$q` and `@alpha` atoms in it are still text. The
+    // `.subst` path has always run both passes; this one ran only
+    // the array pass, so `$t.subst-mutate(/( $q | $e )/, …)`
+    // matched the literal characters "$q" and changed nothing —
+    // Text::CSV escapes its quotes exactly that way.
+    // (and a regex value reads its own variables where it was written first)
+    if (!posArgs.empty() && posArgs[0].t == VT::Regex)
+        pat = rxInterpArrays(interpRegexPattern(closedRegexSource(posArgs[0])));
+    else if (!posArgs.empty()) { pat = posArgs[0].toStr(); literal = true; }
+    Value replArg = posArgs.size() > 1 ? posArgs[1] : Value::str("");
+    long nsub = 0; Value mres;
+    std::string out = substSelect(lv->toStr(), pat, &replArg, adv, nsub, literal, nullptr, &mres);
+    // nothing matched, nothing changed: the container keeps what
+    // it held (an Int stays an Int, as in Rakudo)
+    if (nsub) raceW(lv) = Value::str(out);
+    return mres;
+}
+
 Value Interpreter::applyBinOp(const std::string& op, const Value& l, const Value& r) {
     // `×` names an operator of its own over the built-in `*` (uniOpWritten)
     if (const char* asc = uniOpAscii(op)) return applyUniOp(op, asc, l, r);
@@ -32542,29 +32569,7 @@ Value Interpreter::evalMethodCallExpr(Expr* e, Value* handedInv) {
         Value* lv = nullptr;
         try { lv = lvalue(mc->inv.get()); } catch (RakuError&) {}
         if (lv) {
-            ValueList sargs = evalArgs(mc->args);
-            // the adverbs are NAMED, wherever they are written: `:g` or a
-            // slipped `|(nth => 1..3)` may come before the pattern
-            ValueList posArgs, adv;
-            for (auto& a : sargs) ((a.t == VT::Pair && a.namedArg) ? adv : posArgs).push_back(a);
-            std::string pat; bool literal = false;
-            // interpRegexPattern FIRST: a regex argument arrives as its raw
-            // SOURCE, so `$q` and `@alpha` atoms in it are still text. The
-            // `.subst` path has always run both passes; this one ran only
-            // the array pass, so `$t.subst-mutate(/( $q | $e )/, …)`
-            // matched the literal characters "$q" and changed nothing —
-            // Text::CSV escapes its quotes exactly that way.
-            // (and a regex value reads its own variables where it was written first)
-            if (!posArgs.empty() && posArgs[0].t == VT::Regex)
-                pat = rxInterpArrays(interpRegexPattern(closedRegexSource(posArgs[0])));
-            else if (!posArgs.empty()) { pat = posArgs[0].toStr(); literal = true; }
-            Value replArg = posArgs.size() > 1 ? posArgs[1] : Value::str("");
-            long nsub = 0; Value mres;
-            std::string out = substSelect(lv->toStr(), pat, &replArg, adv, nsub, literal, nullptr, &mres);
-            // nothing matched, nothing changed: the container keeps what
-            // it held (an Int stays an Int, as in Rakudo)
-            if (nsub) raceW(lv) = Value::str(out);
-            return mres;
+            return substMutate(lv, evalArgs(mc->args));
         }
     }
     // `.DEFINITE` as a literal identifier is a metamodel macro: it always
