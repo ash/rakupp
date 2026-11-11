@@ -14,6 +14,12 @@
 # dynamic-var-memo.raku. Those checks read Interpreter::runningBodies_ now,
 # given back when a body returns. RAKUPP_WORKER_EXIT_DELAY holds every worker
 # thread at its exit, so the window is wide and the run is deterministic.
+#
+# A second window, in the body's own return: a `start` worker settled its
+# Promise and only then gave runningBodies_ back, so `await` could return with
+# the count still 1 (linux-aarch64 on d03d7a19, scalar-alias-keeps-type.raku
+# again). The count goes back before the Promise reads as settled now, and
+# RAKUPP_WORKER_EXIT_DELAY also holds the worker between the two.
 
 sub check($got, $want, $what) {
     die "worker-teardown-is-not-a-running-body: $what: got {$got.raku}, expected {$want.raku}" unless $got eqv $want;

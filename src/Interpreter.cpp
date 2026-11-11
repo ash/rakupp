@@ -6984,14 +6984,24 @@ Value Interpreter::spawnPromise(Value code, Value threadVal) {
             }
             catch (...) { broke = true; }
             std::vector<std::function<void()>> fire;
+            bool bodyGone = false;
             {
                 std::lock_guard<std::mutex> lk(ps->m);
-                ps->result = r; ps->cause = cause; ps->broken = broke; ps->done = true;
                 fire.swap(ps->thens);      // `.then`s registered before the worker settled
+                // The body's count goes back BEFORE the awaiting thread can see
+                // the Promise settled: given back after, `await start {…}` had
+                // returned while runningBodies_ still said 1, and the statements
+                // after it ran as if a thread were live (`my $db := $d` shared no
+                // cell; CI's scalar-alias-keeps-type.raku, now and then). With a
+                // `.then` to run here, Raku code is still to come: kept until it has.
+                if (fire.empty()) { self->runningBodies_.fetch_sub(1, std::memory_order_release); bodyGone = true; }
+                ps->result = r; ps->cause = cause; ps->broken = broke; ps->done = true;
             }
             ps->cv.notify_all();
+            // (the test's window: the awaiting thread runs on while this one is held)
+            if (g_workerExitDelayMs > 0) std::this_thread::sleep_for(std::chrono::milliseconds(g_workerExitDelayMs));
             for (auto& f : fire) f();
-            self->workerFinished();
+            self->workerFinished(!bodyGone);
             fin->store(true, std::memory_order_release);
         }), fin);
         return p;
