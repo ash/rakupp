@@ -533,6 +533,9 @@ void Parser::checkNullRegex(const std::string& pat, int line, bool branches) {
             }
             if (cls) continue;
         }
+        // `<<` is a word boundary: its second `<` opens no word list, which
+        // ran to a later `>>` and took `(<< a) (b) >>`'s `)` (issue #239)
+        if (c == '<' && i + 1 < pat.size() && pat[i + 1] == '<') { i++; continue; }
         // `< # ^ / >` — a quote-word list: its words are literals, a `#` among
         // them no comment and a `)` no group
         if (c == '<' && i + 1 < pat.size() && (pat[i + 1] == ' ' || pat[i + 1] == '\t')) {
