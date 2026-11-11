@@ -58,7 +58,6 @@ pseudo-package-stash-value.raku
 quanthash-exact-sethash-zen-dynamic.raku
 range-endpoints-and-adverbs.raku
 range-reduce-excludes-int-minimum.raku
-react-died-names-the-react.raku
 regex-value-variable-atom.raku
 role-multi-siblings-differing-by-named.raku
 routine-has-its-own-topic.raku

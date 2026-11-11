@@ -1310,6 +1310,9 @@ struct Codegen {
         // `samewith` calls the routine it is WRITTEN in again, found on the
         // interpreter's frames, which a native routine does not push
         if (name == "samewith") throw CodegenError{"samewith", /*routineWide=*/true};
+        // …and a `react` records the frames it stands in, for the X::React::Died
+        // of an error that leaves it: the routine around it has to have one
+        if (name == "react") throw CodegenError{"react", /*routineWide=*/true};
         // (no built-in: "Undefined routine"; nor delegable, its undo is the routine's exit)
         if (name == "temp" || name == "let") throw CodegenError{"`" + name + "`", /*routineWide=*/true};
         if (!moduleMode_ && hiddenRoutines_.count(name) && !moduleExports_.count(name))
