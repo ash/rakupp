@@ -1307,6 +1307,9 @@ struct Codegen {
         // none of them: `callframe(0).line` was 0, the caller's frame the wrong one
         // (a routine's own frame: delegated on its own, the statement ran in another)
         if (name == "callframe") throw CodegenError{"callframe", /*routineWide=*/true};
+        // `samewith` calls the routine it is WRITTEN in again, found on the
+        // interpreter's frames, which a native routine does not push
+        if (name == "samewith") throw CodegenError{"samewith", /*routineWide=*/true};
         // (no built-in: "Undefined routine"; nor delegable, its undo is the routine's exit)
         if (name == "temp" || name == "let") throw CodegenError{"`" + name + "`", /*routineWide=*/true};
         if (!moduleMode_ && hiddenRoutines_.count(name) && !moduleExports_.count(name))

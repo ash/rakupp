@@ -64,9 +64,7 @@ regex-value-variable-atom.raku
 returned-map-is-lazy.raku
 role-multi-siblings-differing-by-named.raku
 routine-has-its-own-topic.raku
-routine-is-lexical.raku
 rw-arg-assignment-not-rerun.raku
-samewith-only-routine.raku
 seq-generator-shapes.raku
 shaped-param-dimension-is-its-value.raku
 sigilled-compile-time-class.raku
