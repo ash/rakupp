@@ -5609,17 +5609,23 @@ struct Codegen {
         }
         if (f->destructure) { // for LIST -> ($a, $b) { … } : unpack each element
             // names live in f->vars, or — when the parser produced a real signature
-            // (ForStmt.params, one param with a sub-signature) — in that sub-signature
+            // (ForStmt.params, one param with a sub-signature) — in that sub-signature,
+            // whose named ones (`-> (:$key, :$value)`) bind from the element's accessors,
+            // a Pair's .key, as the interpreter's do (subSigCapture): by position, Nil (#162)
             std::vector<std::string> names = f->vars;
-            if (names.empty() && !f->params.empty() && f->params[0].subSig)
-                for (auto& sp : *f->params[0].subSig)
-                    if (!sp.name.empty()) names.push_back(sp.name);
-            std::string lst = gensym("__lst"), el = gensym("__e");
+            const std::vector<Param>* sig = names.empty() && !f->params.empty() ? f->params[0].subSig.get() : nullptr;
+            std::string keys;   // (the keys Interpreter::subSigNamedKeys names)
+            if (sig) for (auto& sp : *sig) {
+                if (!sp.name.empty()) names.push_back(sp.name);
+                if (sp.named) keys += (keys.empty() ? "" : ", ") + cesc(sp.namedKey.empty() ? (sp.name.size() > 1 ? sp.name.substr(1) : sp.name) : sp.namedKey);
+            }
+            std::string lst = gensym("__lst"), el = gensym("__e"), fi = gensym("__fi");
             line(ind, "{");
-            std::string fi = gensym("__fi");
             line(ind + 1, "Value " + lst + " = rtForList(" + ex(f->list.get()) + ");");
             line(ind + 1, "for (size_t " + fi + " = 0; rtForHas(" + lst + ", " + fi + "); ++" + fi + ") {");
             line(ind + 2, "auto& " + el + " = (*" + lst + ".arr())[" + fi + "];");
+            if (!keys.empty())
+                line(ind + 2, "ValueList __a = RT.subSigCapture(" + el + ", std::vector<std::string>{" + keys + "});"), bindParams(*sig, ind + 2, false), names.clear();
             for (size_t k = 0; k < names.size(); k++)
                 line(ind + 2, declVar(names[k], bindAs(names[k][0], "rtIndexGet(" + el +
                               ", Value::integer(" + std::to_string(k) + "LL), false)")) + ";");

@@ -2756,6 +2756,10 @@ public:
         namedRegex_[name] = pattern; namedRegexKind_[name] = kind; // (used by codegen)
     }
     Value idxW(const Value& base, Value key, bool isHash); // index with a Whatever/WhateverCode key (@a[*-1], @a[*])
+    // `-> (:$key, :$value)`: the arguments a value binds as against a sub-signature
+    // with these named keys (a compiled loop's too), and the keys a signature names
+    ValueList subSigCapture(const Value& v, const std::vector<std::string>& keys, bool* list = nullptr);
+    static std::vector<std::string> subSigNamedKeys(const std::vector<Param>& sig);
     void materializeLazy(const Value& v, size_t n); // grow a lazy list's prefix to >= n elements (capped)
     void drainIfFiniteLazy(const Value& v);         // …all of it, when the list is lazy but finite
     // `@h.map({…}).grep(*.so).first` runs the block only until `first` has its
