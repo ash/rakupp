@@ -81,7 +81,6 @@ slang-seams.raku
 slip-flattens-into-every-slurpy.raku
 slurpy-of-values-is-immutable.raku
 stash-term-before-pointy-block.raku
-sunk-ternary-regex-matches.raku
 tagged-code-constant-export.raku
 top100-chunk-d-grammar-made-2026-09-03.raku
 top100-refresh-2026-09-03.raku

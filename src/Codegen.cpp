@@ -1464,10 +1464,12 @@ struct Codegen {
     // A statement's expression, whose value nobody reads. Sink context reaches
     // a ternary's branches, so a regex branch matches `$_`, as in Rakudo:
     // `$_ = 'abc'; False ?? /q/ !! /c/;` sets `$/`.
-    std::string exSunk(Expr* e) {
-        if (!rxTernary(e)) return ex(e);
+    // (a parenthesized branch is a value, not sunk: `1 ?? (0 ?? /x/ !! /c/) !! /z/;`)
+    std::string exSunk(Expr* e, bool branch = false) {
+        if (branch && e && e->inParens) return exVal(e);
+        if (!rxTernary(e) || e->inParens) return ex(e);
         auto* t = static_cast<Ternary*>(e);
-        return "(" + exBool(t->cond.get()) + " ? (" + exSunk(t->then.get()) + ") : (" + exSunk(t->els.get()) + "))";
+        return "(" + exBool(t->cond.get()) + " ? (" + exSunk(t->then.get(), true) + ") : (" + exSunk(t->els.get(), true) + "))";
     }
     // Whether a Regex VALUE holds is a match against the topic, and the
     // runtime's boolify reads the interpreter's `$_`, which is not the topic
