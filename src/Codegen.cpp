@@ -3445,6 +3445,9 @@ struct Codegen {
                 // the frames an exception or Failure carries are the interpreter's,
                 // and native code keeps none (frameIntrospection keeps them all interpreted)
                 if (m->method == "backtrace" || m->method == "mess") throw CodegenError{"." + m->method, true};
+                // a map/grep a routine hands back is a lazy Seq its caller reads
+                // (the parser's markLazyTail); the native call runs every block
+                if (m->lazyTail) unsupported("a map or grep returned lazily");
                 refuseRwCall(rwMethodNames_, m->method, m->args);
                 // The dispatch-key prefix of the call form: the class method
                 // tables key a private method `!name` and the metamodel `^name`
