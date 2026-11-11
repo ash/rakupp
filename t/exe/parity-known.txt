@@ -47,12 +47,10 @@ nqp-unipropcode-int.raku
 operator-strictness.raku
 our-belongs-to-its-package.raku
 our-is-one-container.raku
-pair-as-key-value-and-pattern.raku
 param-container-name.raku
 parameter-why.raku
 pseudo-package-adverbs.raku
 pseudo-package-stash-value.raku
-quanthash-exact-sethash-zen-dynamic.raku
 range-endpoints-and-adverbs.raku
 range-reduce-excludes-int-minimum.raku
 react-died-names-the-react.raku
@@ -82,6 +80,5 @@ undeclared-variable-routine-suggestions.raku
 unit-stash-exists-under-import-list.raku
 user-multi-on-builtin-prefix.raku
 watch-ignores-writes-before-it.raku
-whatever-value-pair-key.raku
 word-list-escapes-comma-op-forward-type.raku
 wrap-builtin.raku

@@ -4225,6 +4225,8 @@ Value rtIndexAdverb(Value& base, const Value& keyIn, bool isHash, const std::str
             auto it = base.hash()->find(key);
             if (it != base.hash()->end()) { exists = true; val = it->second; }
         }
+        // a Pair is associative on its one key (the interpreter's lookup1)
+        if (base.t == VT::Pair && key == base.s && base.pairVal()) { exists = true; val = *base.pairVal(); }
     } else {
         ai = keyIn.toInt();
         // a LAZY array reifies up to the index first (see the evaluator's

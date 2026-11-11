@@ -2739,6 +2739,7 @@ struct Codegen {
                 auto* ix = static_cast<Index*>(e);
                 if (!ix->adverb.empty()) {
                     if (ix->adverb.find('$') != std::string::npos) unsupported("a conditional ($var) index adverb");
+                    if (!ix->index || isSliceSubscript(ix->index.get()) || ix->multiDim) unsupported("an adverb on a slice subscript");
                     std::string keyE = exArg(ix->index.get());
                     if (ix->adverb.find("delete") != std::string::npos) // mutates: needs an lvalue base
                         return "rtIndexAdverb(" + lvalueExpr(ix->base.get()) + ", " + keyE + ", "
@@ -3432,6 +3433,7 @@ struct Codegen {
             case NK::MethodCall: {
                 auto* m = static_cast<MethodCall*>(e);
                 if (m->maybe) unsupported("method-call form (.?)");
+                if (m->method == "dynamic") unsupported("`.dynamic`, which asks the variable, not its value");
                 // Two call forms the dispatch below would silently get wrong:
                 // `self.Parent::meth` dispatches to Parent's method past any
                 // override (emitted plainly it re-entered the override — a
