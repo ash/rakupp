@@ -25,7 +25,10 @@ bool isKnownTypeName(std::string_view n); // InterpreterModules.cpp
 bool isNativeTypeName(const std::string& n); // the native type names (int, num32, str, …)
 std::shared_ptr<Param> signatureParamCopy(const Param& p); // Builtins.cpp
 const std::set<std::string>& testExports(); // CallCheck.cpp: the names `use Test` puts in scope
+bool arithOpKnown(const std::string& op);    // InterpreterOperators.cpp: applyArith knows `op`
 bool operatorRoutineName(const std::string& n, std::string& cat, std::string& op);   // codegen/Operators.cpp
+std::string multiOrderRefusal(const std::vector<SubDecl*>&, const std::vector<const Program*>&,
+                              int (*)(const SubDecl*));   // codegen/MultiOrder.cpp
 
 namespace {
 
@@ -1288,11 +1291,22 @@ struct Codegen {
     // Calls to these names go through callEnvFirst instead (and skip -O's direct
     // named-builtin calls, which bypass even the pointer).
     std::set<std::string> moduleExports_;
+    // Every routine name the program declares anywhere — a sub in a block or a
+    // class body, a `my rule`, a `&f` parameter. A call this backend resolves
+    // to none of its own (userSubs, envSubs, codeVars…) goes to the built-in
+    // table, which does not have it: `do { sub f {…}; f() }` or a method's
+    // call to its class's `sub helper` died "Undefined routine" at run time.
+    // Such a call refuses instead, and the program bundles.
+    std::set<std::string> hiddenRoutines_;
 
     std::string builtinCall(const std::string& name, const std::string& vl) {
         // `callframe` reads the INTERPRETER's frames, and native code runs in
         // none of them: `callframe(0).line` was 0, the caller's frame the wrong one
         if (name == "callframe") unsupported("callframe");
+        // (no built-in: "Undefined routine"; nor delegable, its undo is the routine's exit)
+        if (name == "temp" || name == "let") throw CodegenError{"`" + name + "`", /*routineWide=*/true};
+        if (!moduleMode_ && hiddenRoutines_.count(name) && !moduleExports_.count(name))
+            unsupported("a call to `" + name + "`, declared where this site cannot reach it");
         // (the `&name` key is built once per call site, not on every call)
         if (moduleExports_.count(name) || callEnvNames_.count(name))
             return (moduleMode_ ? "RT.callAmpAt(" + aotSlot("&" + name) + ", " : std::string("RT.callEnvFirstAmp(")) +
@@ -1409,6 +1423,14 @@ struct Codegen {
     // Which dispatch a written binary operator gets: the plain one where a `*` is
     // present to compose, the value-site one where none is and a whateverish
     // operand can only have arrived as a value.
+    // An operator emitted as applyArith(op, …), which the run-time dispatch
+    // must know: `[R//]=`, `==>` or `^fff^` reached it and the binary died
+    // "Unsupported operator" where the interpreter, lowering it itself, did not.
+    static const std::string& knownOp(const std::string& op) {
+        if (op != "||" && op != "&&" && op != "//" && op != "," && !arithOpKnown(op))
+            unsupported("the operator `" + op + "` here");
+        return op;
+    }
     static const char* starFn(Binary* b) {
         return (hasStarLit(b->lhs.get()) || hasStarLit(b->rhs.get())) ? "applyArith" : "applyArithValue";
     }
@@ -2598,7 +2620,9 @@ struct Codegen {
                         // &infix:<op> — an operator as a callable
                         std::string op = nm.substr(nm.find('<') + 1);
                         if (!op.empty() && op.back() == '>') op.pop_back();
-                        return "Value::closure([=](ValueList& __a)->Value{ return applyArith(" + cesc(op) +
+                        // (a prefix or postfix is no two-argument applyArith)
+                        if (nm.rfind("infix:", 0) != 0) unsupported("`&" + nm + "` as a value");
+                        return "Value::closure([=](ValueList& __a)->Value{ return applyArith(" + cesc(knownOp(op)) +
                                ", (__a.size()>0?__a[0]:Value::any()), (__a.size()>1?__a[1]:Value::any())); })";
                     }
                     // a builtin (say, is_even, …) — dispatch by name at runtime
@@ -2661,6 +2685,8 @@ struct Codegen {
                 if (self_.empty()) unsupported("`self` outside a method");
                 return self_;
             case NK::Whatever:
+                // `**` is a HyperWhatever, which curries and slices as no `*` does
+                if (static_cast<WhateverExpr*>(e)->hyper) unsupported("a HyperWhatever (`**`)");
                 if (wcDepth) {
                     int k = wcArity.back()++;
                     std::string an = "__w" + std::to_string(wcDepth);
@@ -3181,7 +3207,7 @@ struct Codegen {
                 // and its value carries the native tags, as the interpreter's does
                 if (nativeNumericStatic(b)) return nativeArithCall(b->op, L, R);
                 if (std::string f = fastBin(b->op); !f.empty()) return f + "(" + L + ", " + R + ")"; // -O
-                return std::string(starFn(b)) + "(" + cesc(b->op) + ", " + L + ", " + R + ")";
+                return std::string(starFn(b)) + "(" + cesc(knownOp(b->op)) + ", " + L + ", " + R + ")";
             }
             case NK::InterpStr: {
                 auto* s = static_cast<InterpStr*>(e);
@@ -5204,6 +5230,7 @@ struct Codegen {
         if (metaOverDeclared(binop))
             unsupported("the metaoperator assignment `" + a->op + "` over the program's own infix");
         if (std::string ua = userOpAssign(tgt, ubinop, binop, rhs); !ua.empty()) return ua;
+        knownOp(binop);
         // `@a[$y; $x] += 1` — a multi-dim slot is not a reference into a buffer, so
         // the read and the write are AT-POS and ASSIGN-POS around the operator.
         // The indices are evaluated ONCE, into a list both calls use.
@@ -9744,6 +9771,7 @@ struct Codegen {
             if (natParamCount(a) != natParamCount(b)) return natParamCount(a) > natParamCount(b);
             return spec(a) > spec(b);
         });
+        if (std::string why = multiOrderRefusal(cands, {prog_}, natParamCount); !why.empty()) unsupported(why);
         line(0, "static Value " + mangleSub(name) + "(ValueList __a) {");
         line(1, "size_t __n = rtPosCount(__a);");
         for (SubDecl* c : cands) {
@@ -9863,6 +9891,23 @@ std::string transpileToCpp(Program& prog, bool optimize, const std::string& srcP
     g.moduleExports_ = moduleExports;
     g.prog_ = &prog;
     g.srcText_ = srcText;
+    { // every routine name the program declares, at any depth: see hiddenRoutines_
+        auto params = [&](const std::vector<Param>& ps) {
+            for (auto& p : ps) if (p.name.size() > 1 && p.name[0] == '&') g.hiddenRoutines_.insert(p.name.substr(1));
+        };
+        std::function<void(Node*)> walk = [&](Node* n) {
+            if (!n) return;
+            if (n->kind == NK::SubDecl) {
+                auto* d = static_cast<SubDecl*>(n);
+                if (!d->isMethod && !d->name.empty()) g.hiddenRoutines_.insert(d->name);
+                params(d->params);
+            }
+            if (n->kind == NK::NamedRegexDecl) g.hiddenRoutines_.insert(static_cast<NamedRegexDecl*>(n)->name);
+            if (n->kind == NK::BlockExpr) params(static_cast<BlockExpr*>(n)->params);
+            forEachAstChild(n, walk);
+        };
+        for (auto& st : prog.stmts) walk(st.get());
+    }
     { // what `no strict` makes legal here — see Codegen::laxVars_
         LaxVars lv = findLaxVars(prog, srcText);
         g.laxVars_ = std::move(lv.names);

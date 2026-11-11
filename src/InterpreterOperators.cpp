@@ -3803,6 +3803,15 @@ static const std::set<std::string>* coreOpsOf(const std::string& cat) {
          : cat == "postfix" ? &kCorePostfixOps : cat == "circumfix" ? &kCoreCircumfixOps
          : cat == "postcircumfix" ? &kCorePostcircumfixOps : nullptr;
 }
+// For the C++ backend (Codegen::knownOp): does the run-time dispatch apply
+// `op`? An operator the backend hands it unlowered and it does not know died
+// "Unsupported operator" in the binary, so the program bundles instead.
+bool arithOpKnown(const std::string& op) {
+    try { applyArith(op, Value::integer(1), Value::integer(1)); }
+    catch (RakuError& e) { return e.message.rfind("Unsupported operator", 0) != 0; }
+    catch (...) {}
+    return true;
+}
 static bool infixDeclared(Interpreter& I, const std::string& op, int depth) {
     if (op.empty() || depth > 8) return false;
     if (kCoreInfixOps.count(op) || opDeclaredHere(I, "infix:<" + op + ">")) return true;
