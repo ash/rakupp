@@ -35,6 +35,7 @@ const char* routineIntrospectionRefusal(const Program&);
 bool exprMayUseTopic(const Expr* e);   // Interpreter.cpp: may `e` read or write `$_`?
 const char* builtinRefusal(const std::string& name, bool inTopic);   // codegen/Refusals.cpp, as are:
 const char* methodRefusal(const MethodCall* m, bool& routineWide); bool fatalCallSite(const Expr* e); bool isLeaveBlock(const Stmt* s);
+bool leaveReadsEarlier(const std::vector<StmtPtr>& body, size_t j);
 
 namespace {
 
@@ -3778,8 +3779,17 @@ struct Codegen {
     }
     // A routine body's LEAVE (true when body[i] is one) runs however it is left, also by an error
     // BEFORE it, which a guard armed after other statements would miss: then it stays interpreted
+    std::set<const Stmt*> armedLeaves_;   // LEAVEs armed at their routine's start (leaveReadsEarlier)
     bool bodyLeave(const std::vector<StmtPtr>& body, size_t i) {
+        if (i == 0)   // (in order, so they run in reverse as written; up to the first that cannot move)
+            for (size_t j = 0; j < body.size(); j++)
+                if (isLeaveBlock(body[j].get())) {
+                    if (leaveReadsEarlier(body, j)) break;
+                    armedLeaves_.insert(body[j].get());
+                    out << leaveGuard(leaveInner(static_cast<Block*>(body[j].get()), 1), 1);
+                }
         if (!isLeaveBlock(body[i].get())) return false;
+        if (armedLeaves_.count(body[i].get())) return true;
         for (size_t k = 0; k < i; k++)
             if (!isLeaveBlock(body[k].get())) throw CodegenError{"a LEAVE after the statements of its routine", true};
         out << leaveGuard(leaveInner(static_cast<Block*>(body[i].get()), 1), 1);

@@ -6,6 +6,8 @@
 // written in: a module routine (compiled on its own) would otherwise hand just
 // that statement to the interpreter, which runs it in a frame of its own.
 #include "../Ast.h"
+#include "../Codegen.h"
+#include <functional>
 #include <set>
 #include <string>
 
@@ -63,6 +65,28 @@ bool fatalCallSite(const Expr* e) {
 bool isLeaveBlock(const Stmt* s) {
     return s->kind == NK::Block && static_cast<const Block*>(s)->phaser == "LEAVE" &&
            !static_cast<const Block*>(s)->isCatch;
+}
+
+// Does the LEAVE at body[j] read a name a statement before it declares? One
+// that does not can be armed at the routine's start — where an error in an
+// earlier statement cannot leave it unarmed — rather than keep the routine
+// interpreted (examples/life.raku's `print …; LEAVE print …`).
+bool leaveReadsEarlier(const std::vector<StmtPtr>& body, size_t j) {
+    std::set<std::string> declared, read;
+    std::function<void(Node*, std::set<std::string>&, bool)> walk = [&](Node* n, std::set<std::string>& out, bool decl) {
+        if (!n) return;
+        if (n->kind == NK::VarExpr && static_cast<VarExpr*>(n)->declare == decl) out.insert(static_cast<VarExpr*>(n)->name);
+        // (a declaration the walk cannot see — a sub, a class, a VarDecl — counts as reading anything)
+        if (decl && (n->kind == NK::SubDecl || n->kind == NK::ClassDecl || n->kind == NK::VarDecl ||
+                     n->kind == NK::EnumDecl || n->kind == NK::SubsetDecl || n->kind == NK::NamedRegexDecl))
+            out.insert("\x01");
+        forEachAstChild(n, [&](Node* c) { walk(c, out, decl); });
+    };
+    for (size_t k = 0; k < j; k++) walk(body[k].get(), declared, true);
+    if (declared.count("\x01")) return true;
+    walk(body[j].get(), read, false);
+    for (auto& n : read) if (declared.count(n)) return true;
+    return false;
 }
 
 }  // namespace rakupp
