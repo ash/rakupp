@@ -1548,8 +1548,10 @@ static int compileToExe(const std::string& src, const std::string& srcName, std:
                         // A program that reads call frames (`callframe`, an
                         // exception's or Failure's `.backtrace` / `.mess`) reads the
                         // interpreter's, which a native routine neither pushes nor
-                        // gives a line: its routines all stay interpreted
-                        for (const char* w : {"callframe", ".backtrace", ".mess"})
+                        // gives a line — and one that wraps a routine needs every call
+                        // to see the wrapper, where a native call goes straight to the
+                        // body: its routines all stay interpreted
+                        for (const char* w : {"callframe", ".backtrace", ".mess", ".wrap"})
                             if (src.find(w) != std::string::npos) mm.interpretOnly = true;
                         fp = aotFingerprint(mm.blob);
                         aotMods.push_back(std::move(mm));

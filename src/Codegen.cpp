@@ -3451,6 +3451,8 @@ struct Codegen {
                 // a map/grep a routine hands back is a lazy Seq its caller reads
                 // (the parser's markLazyTail); the native call runs every block
                 if (m->lazyTail) unsupported("a map or grep returned lazily");
+                // a wrapper must see every call, and a native call reaches the body directly
+                if (m->method == "wrap" || m->method == "unwrap") unsupported("." + m->method);
                 refuseRwCall(rwMethodNames_, m->method, m->args);
                 // The dispatch-key prefix of the call form: the class method
                 // tables key a private method `!name` and the metamodel `^name`

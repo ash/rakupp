@@ -32,7 +32,6 @@ issue-138-qq-block-in-regex-atom.raku
 issue34-hyper-hash-subscript.raku
 junction-hyper-method-call.raku
 junction-regex-match-var.raku
-kernel-closure-callees.raku
 method-leave-dies-unwinding.raku
 missing-routines-batch.raku
 module-sees-not-the-programs-operators.raku
@@ -84,5 +83,4 @@ vivified-scalar-is-itemized.raku
 watch-ignores-writes-before-it.raku
 whatever-value-pair-key.raku
 word-list-escapes-comma-op-forward-type.raku
-wrap-builtin.raku
 xml-triad-backref-indirect-coerce.raku
