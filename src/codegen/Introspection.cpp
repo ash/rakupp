@@ -37,6 +37,11 @@ static bool containerName(const MethodCall* m) {
     return !v.empty() && (v[0] == '@' || v[0] == '%');
 }
 
+// `$/.make(…)` / `.make: …`: the interpreter's method-call arm attaches the
+// value to the match itself (and to the node an action is building); the
+// native method call finds no `make` method on a grammar's match at all
+static bool madeOnMatch(const MethodCall* m) { return !m->meta && m->method == "make"; }
+
 // The first construct in `prog` a native program cannot answer, or "".
 std::string introspectionRefusal(const Program& prog) {
     // `.^name` and the ones the native class table answers as the
@@ -72,6 +77,8 @@ std::string introspectionRefusal(const Program& prog) {
                     why = "`.dynamic` — a native variable carries no traits";
                 else if (containerName(m))
                     why = "a container's name (`.VAR.name`) — a native variable is bound to none";
+                else if (madeOnMatch(m))
+                    why = "a Match's `.make` (the interpreter sets the match itself)";
                 break;
             }
             case NK::NameTerm: {
@@ -119,6 +126,8 @@ const char* routineIntrospectionRefusal(const Program& body) {
         else if (n->kind == NK::UseStmt) why = "a `use` inside the routine";
         else if (n->kind == NK::MethodCall && containerName(static_cast<MethodCall*>(n)))
             why = "a container's name (`.VAR.name`)";
+        else if (n->kind == NK::MethodCall && madeOnMatch(static_cast<MethodCall*>(n)))
+            why = "a Match's `.make`";
         forEachAstChild(n, walk);
     };
     for (auto& st : body.stmts) walk(st.get());
