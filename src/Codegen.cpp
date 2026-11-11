@@ -1308,6 +1308,8 @@ struct Codegen {
         if (name == "callframe") unsupported("callframe");
         // (no built-in: "Undefined routine"; nor delegable, its undo is the routine's exit)
         if (name == "temp" || name == "let") throw CodegenError{"`" + name + "`", /*routineWide=*/true};
+        // `@a >>[&op]<< @b`: evalCall's own arm (shape rules, writes through the operands)
+        if (name.rfind("hyper-with:", 0) == 0) unsupported("a hyper over a bracketed operator");
         if (!moduleMode_ && hiddenRoutines_.count(name) && !moduleExports_.count(name))
             unsupported("a call to `" + name + "`, declared where this site cannot reach it");
         // (the `&name` key is built once per call site, not on every call)

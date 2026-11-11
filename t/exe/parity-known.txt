@@ -29,7 +29,6 @@ ident-continuation-and-native-return-boundary.raku
 imported-operator-traits.raku
 is-dynamic-and-sum.raku
 issue-138-qq-block-in-regex-atom.raku
-issue34-hyper-hash-subscript.raku
 junction-regex-match-var.raku
 kernel-closure-callees.raku
 method-leave-dies-unwinding.raku
