@@ -1168,6 +1168,14 @@ struct Codegen {
     bool moduleMode_ = false;
     std::set<std::string> aotRefs_;   // every name varRef was asked for (pass one)
     std::set<std::string> aotFree_;   // the outer names (pass two)
+    // A bareword, `&name` or sub call the routine resolves BY NAME: the slot
+    // its lexical scope holds, bound at entry (rtAotOuterOpt). A closure the
+    // routine hands to another module's routine runs under THAT routine's
+    // frame, where a by-name lookup found that module's names or none — a
+    // `my constant` read wrongly, a private sub undefined (#240 #242). A null
+    // slot (frame-local, or not in scope) keeps the by-name lookup.
+    std::set<std::string> aotOpt_;
+    std::string aotSlot(const std::string& n) { aotOpt_.insert(n); return "__o" + mangleVar(n); }
     std::set<std::string> whereScalars_;   // AotNames::whereScalars
     std::map<std::string, const SubsetDecl*> inlineSubsets_;   // AotNames::subsets (inlineSubsets)
     std::set<std::string> callEnvNames_;   // sub names a call resolves through the env
@@ -1286,7 +1294,8 @@ struct Codegen {
         if (name == "callframe") unsupported("callframe");
         // (the `&name` key is built once per call site, not on every call)
         if (moduleExports_.count(name) || callEnvNames_.count(name))
-            return "RT.callEnvFirstAmp(([]() -> const std::string& { static const std::string __k = " +
+            return (moduleMode_ ? "RT.callAmpAt(" + aotSlot("&" + name) + ", " : std::string("RT.callEnvFirstAmp(")) +
+                   "([]() -> const std::string& { static const std::string __k = " +
                    cesc("&" + name) + "; return __k; }()), " + vl + ")";
         // A Test call reports its line ("# Failed test at FILE line N") from the
         // interpreter's current line, which native code never writes otherwise:
@@ -1554,8 +1563,12 @@ struct Codegen {
     // Full ValueList expression for call arguments; |slips spread positionally
     // (arrays/ranges) or as named args (hashes), like the interpreter's evalArgs.
     std::string argsVL(const std::vector<ExprPtr>& args) {
+        // `|*.list` is not a slip of an argument: the `*` curries the whole
+        // `|…`, so the argument is the WhateverCode `{ |.list }` (exArg makes
+        // it). Spread, it handed `.map` the Whatever itself (#243).
+        auto isSlipArg = [](Expr* a) { return isSlip(a) && !hasWhatever(static_cast<Unary*>(a)->operand.get()); };
         bool anySlip = false;
-        for (auto& a : args) if (isSlip(a.get())) anySlip = true;
+        for (auto& a : args) if (isSlipArg(a.get())) anySlip = true;
         if (!anySlip) {
             std::string s;
             for (size_t i = 0; i < args.size(); i++) { if (i) s += ", "; s += emitArg(args[i].get()); }
@@ -1563,7 +1576,7 @@ struct Codegen {
         }
         std::string o = "([&]()->ValueList{ ValueList __as;";
         for (auto& a : args) {
-            if (isSlip(a.get())) o += " rtSpreadArg(__as, " + ex(static_cast<Unary*>(a.get())->operand.get()) + ", true);";
+            if (isSlipArg(a.get())) o += " rtSpreadArg(__as, " + ex(static_cast<Unary*>(a.get())->operand.get()) + ", true);";
             else o += " __as.push_back(" + emitArg(a.get()) + ");";
         }
         return o + " return __as; }())";
@@ -2594,6 +2607,7 @@ struct Codegen {
                     // Callable itself — its .WHY, .name and identity — not a
                     // closure forwarding to it by name. (Even a module this
                     // compile could not read, whose exports it never learned.)
+                    if (moduleMode_) return "RT.envAmpOrAt(" + aotSlot(v->name) + ", " + cesc(v->name) + ", " + fwd + ")";
                     return "RT.envAmpOr(" + cesc(v->name) + ", " + fwd + ")";
                 }
                 if (v->name == "$?LINE") return "Value::integer(" + std::to_string(v->line) + ")";
@@ -2773,6 +2787,8 @@ struct Codegen {
                            cesc(n) + ", __v); return __ok ? __v : RT.rtNameTerm(" + cesc(n) + "); }())";
                 // anything else resolves at runtime like the interpreter's NameTerm:
                 // env value, zero-arg &routine/builtin call, else a type object
+                if (moduleMode_ && n != "Empty" && n.find("::") == std::string::npos)
+                    return "RT.rtNameTermAt(" + aotSlot(n) + ", " + aotSlot("&" + n) + ", " + cesc(n) + ")";
                 return "RT.rtNameTerm(" + cesc(n) + ")";
             }
             case NK::Ternary: {
@@ -10497,7 +10513,9 @@ std::string emitAotPass(SubDecl* d, const std::string& fn, const AotNames& names
     for (auto& n : freeNames)
         o << "    Value* __f" << mangleVar(n) << " = rtAotOuter(__env, " << cesc(n) << "); if (!__f"
           << mangleVar(n) << ") return false;\n";
-    o << "    __out = [&]() -> Value {\n" << inner << "    }();\n    return true;\n}\n";
+    for (auto& n : g.aotOpt_)
+        o << "    Value* __o" << mangleVar(n) << " = rtAotOuterOpt(__env, " << cesc(n) << "); (void)__o" << mangleVar(n) << ";\n";
+    o << "    __out =[&]() -> Value {\n" << inner << "    }();\n    return true;\n}\n";
     return o.str();
 }
 

@@ -2615,6 +2615,10 @@ public:
     Value callEnvFirst(const std::string& name, ValueList args);
     Value callEnvFirstAmp(const std::string& ampName, ValueList args);   // …given `&name`, as compiled call sites keep it
     Value envAmpOr(const std::string& ampName, const Value& fallback);   // the env's `&name` itself, else fallback
+    // …each through the slot a native module routine bound at entry, when it has one (rtAotOuterOpt)
+    Value envAmpOrAt(Value* slot, const std::string& ampName, const Value& fallback);
+    Value callAmpAt(Value* slot, const std::string& ampName, ValueList args);
+    Value rtNameTermAt(Value* slot, Value* amp, const std::string& n);
     // Resolve a builtin's function once (at compiled-program startup) so call
     // sites can go through the pointer directly, skipping callBuiltin's
     // per-call name hash + map lookup. Null when the name is not a registered

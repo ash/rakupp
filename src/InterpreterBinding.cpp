@@ -3380,6 +3380,24 @@ Value Interpreter::envAmpOr(const std::string& ampName, const Value& fallback) {
     return p ? *p : fallback;
 }
 
+// A native module routine's by-name lookups, through the slot its lexical
+// scope gave the name at entry (rtAotOuterOpt): a closure it handed another
+// module's routine runs under that routine's frame, where `tctx().cur` holds
+// the other module's names (#240 #242). No slot: the by-name lookup.
+Value Interpreter::envAmpOrAt(Value* slot, const std::string& ampName, const Value& fallback) {
+    if (Value* p = slot ? slot->deref() : nullptr) return *p;
+    return envAmpOr(ampName, fallback);
+}
+Value Interpreter::callAmpAt(Value* slot, const std::string& ampName, ValueList args) {
+    if (Value* p = slot ? slot->deref() : nullptr) return callCallable(*p, std::move(args));
+    return callEnvFirstAmp(ampName, std::move(args));
+}
+Value Interpreter::rtNameTermAt(Value* slot, Value* amp, const std::string& n) {
+    if (Value* p = slot ? slot->deref() : nullptr)
+        return (p->t == VT::Hash && p->hashKind == "Proxy" && p->hash()) ? deproxy(*p) : *p;
+    if (Value* f = amp ? amp->deref() : nullptr) return callCallable(*f, {});
+    return rtNameTerm(n);
+}
 Value Interpreter::callEnvFirstAmp(const std::string& ampName, ValueList args) {
     Value* p = tctx().cur ? tctx().cur->find(ampName) : nullptr;
     if (!p && global_) { auto g = global_->vars.find(ampName); if (g != global_->vars.end()) p = &g->second; }

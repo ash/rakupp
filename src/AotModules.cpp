@@ -267,6 +267,17 @@ Value* rtAotOuter(Env* frame, const char* name) {
     return p;
 }
 
+// …the same for a name the body resolves BY NAME (a bareword, `&name`, a call
+// to a sub of the module graph; Codegen::aotSlot), which may be a builtin or a
+// type and need not be in scope at all: null does not decline the body, the
+// use then looks the name up as it always did. Bound here, from the routine's
+// LEXICAL scope, so a closure the body hands out keeps seeing it (#240 #242).
+Value* rtAotOuterOpt(Env* frame, const char* name) {
+    if (!frame || frame->localRaw(name)) return nullptr;
+    Env* up = frame->parent.get();
+    return up ? up->findRaw(name) : nullptr;
+}
+
 // …and the way back, as a native body leaves. A Buf the caller passed is bound
 // for copy-back (setupRwLinks puts the parameter in rwSynced, and copyOutRw
 // writes it to the caller's variable when it changed), but the body worked on

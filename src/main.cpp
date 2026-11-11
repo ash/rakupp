@@ -1307,6 +1307,7 @@ static void assembleModuleAot(const std::vector<BundledModule>& mods, const Modu
          "#include \"AotModules.h\"\n"
          "namespace rakupp {\n"
          "Value* rtAotOuter(Env*, const char*);\n"
+         "Value* rtAotOuterOpt(Env*, const char*);\n"
          "Value rtAotParam(Env*, const char*);\n"
          "Value rtAotParamAt(Env*, const std::string&, std::atomic<uint64_t>&);\n"
          "void rtAotParamBack(Env*, const std::string&, const Value&);\n"
