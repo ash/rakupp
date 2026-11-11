@@ -3494,6 +3494,10 @@ Value Interpreter::rtNameTerm(const std::string& n) {
     // builtin enum members (the SAME list the NameTerm eval reads): without the
     // numeric payload a native `sort { $a < $b ?? Less !! More }` compares 0 vs 0
     { Value c; if (coreEnumValue(n, c)) return c; }
+    // a class declared further down the file, used here as a VALUE
+    // (`G.parse($s, :actions(A))` in a native routine): built now, as the
+    // NameTerm eval builds it — the stub type object had no methods
+    if (!classes_.count(n)) materializePendingType(n);
     return Value::typeObj(n);
 }
 // A site of a core type name the program binds nowhere (Codegen::stableNameTerm)
