@@ -3552,7 +3552,7 @@ void Interpreter::rtUse(const std::string& module, const std::string& arg, bool 
 Value rtStarKey(const Value& base, const Value& key) {
     Value idx = key;
     const Value* b = base.deref();
-    const long long n = b->t == VT::Array && b->arr() ? (long long)b->arr()->size() : 0;
+    const long long n = b->t == VT::Array && b->arr() ? (long long)b->arr()->size() : rtIsBuf(*b) ? b->blobElems() : 0;
     if (key.t == VT::Whatever) idx = Value::integer(n);
     else if (key.t == VT::Code && key.code() && key.code()->ci().isWhateverCode)
         if (Interpreter* I = Interpreter::liveTarget()) idx = I->callCallable(key, ValueList{Value::integer(n)});

@@ -981,7 +981,7 @@ struct Codegen {
         if (!e || e->kind != NK::Index) return nullptr;
         auto* ix = static_cast<Index*>(e);
         if (ix->isHash || ix->multiDim || ix->zen || ix->semicolonSub || !ix->adverb.empty() || !ix->index ||
-            (!step && hasStarLit(ix->index.get())) || isSliceSubscript(ix->index.get()))
+            isSliceSubscript(ix->index.get()))   // (a `*-1` one is resolved where it is used, starKey)
             return nullptr;
         if (step && ix->base && ix->base->kind == NK::Index) return ask = true, ix;
         auto* bv = ix->base && ix->base->kind == NK::VarExpr ? static_cast<VarExpr*>(ix->base.get()) : nullptr;
@@ -989,12 +989,13 @@ struct Codegen {
         const std::string& n = bv->name;
         if (n[0] == '$') return ask = true, ix;
         if (n[0] != '@') return nullptr;
-        if (!moduleMode_ && nativeArrayBase(bv)) return ix;
+        if (!moduleMode_ && nativeArrayBase(bv)) return ask = hasStarLit(ix->index.get()), ix;   // (a `*-1` one: its own place)
         bool param = false;
         if (curParams_) for (const Param& p : *curParams_) param = param || p.name == n;
         if (moduleMode_ || param || n[1] == '!' || n[1] == '.' || !plainArrays_.count(n)) return ask = true, ix;
         return nullptr;
     }
+    std::string starKey(Index* ix, const std::string& k = "__k") { return hasStarLit(ix->index.get()) ? k + " = rtStarKey(__b, " + k + "); " : ""; }   // (`$b[*-1] = 3`)
     // …and whether a `for` over `e` may hand out a native array's elements,
     // by the same knowledge: an array declared plain here never does, nor does
     // a literal list or Range (the loop then pays no per-element tag check)
@@ -1014,7 +1015,7 @@ struct Codegen {
         noteIndexWrite(ix->base.get());
         const std::string base = lvalueExpr(ix->base.get());
         const std::string step = std::string("rtStep(_o, ") + (up ? "true" : "false") + ", [&]() -> Interpreter& { return RT; })";
-        const std::string star = hasStarLit(ix->index.get()) ? "__k = rtStarKey(__b, __k); " : "";   // (a Buf's resolves its own)
+        const std::string star = starKey(ix);   // (a Buf's resolves its own)
         const std::string native = "if (rtIsBuf(__b)) return bufElemStep(RT, __b, __k, " + cesc(up ? "++" : "--") + ", " +
             (postfix ? "true" : "false") + "); " + star + "Value _o = rtIndexGetP(__b, __k); Value _n = rtElemStoreN(RT, __b, __k, " +   // (a Buf's
             step + ", '+'); " + (postfix ? "return rtStepOld(std::move(_o));" : "return _n;");   //  byte steps as the interpreter's)
@@ -5161,7 +5162,7 @@ struct Codegen {
             noteIndexWrite(nix->base.get());
             const std::string base = lvalueExpr(nix->base.get());
             return "([&]() -> Value { Value __kv = " + coerceFor(tgt, rhs, a->value.get()) + "; Value& __b = " + base +
-                   "; Value __k = " + ex(nix->index.get()) + "; if (rtNatArr(RT, __b)) return rtElemStoreN(RT, __b, __k, "
+                   "; Value __k = " + ex(nix->index.get()) + "; " + starKey(nix) + "if (rtNatArr(RT, __b)) return rtElemStoreN(RT, __b, __k, "
                    "std::move(__kv), '='); t_keptItem = {}; return rtKeptAssign(RT, rtIndexRef(__b, __k, false, nullptr), "
                    "std::move(__kv)); }())";
         }
@@ -5173,7 +5174,7 @@ struct Codegen {
             const std::string base = lvalueExpr(nix->base.get());
             if (ask)
                 return "([&]()->Value{ Value __v = " + coerceFor(tgt, rhs, a->value.get()) + "; Value& __b = " + base +
-                       "; Value __k = " + ex(nix->index.get()) + "; if (rtNatArr(RT, __b)) return rtElemStoreN(RT, __b, "
+                       "; Value __k = " + ex(nix->index.get()) + "; " + starKey(nix) + "if (rtNatArr(RT, __b)) return rtElemStoreN(RT, __b, "
                        "__k, std::move(__v), '='); return rtIndexRef(__b, __k, false, nullptr) = std::move(__v); }())";
             return "([&]()->Value{ Value __v = " + coerceFor(tgt, rhs, a->value.get()) + "; return rtElemStoreN(RT, " +
                    base + ", " + ex(nix->index.get()) + ", std::move(__v), '='); }())";
@@ -5233,7 +5234,7 @@ struct Codegen {
                     ? "t_keptItem = {}; Value& __r = rtIndexRef(__b, __ek, false, nullptr); RtKept __k(__r); " + op +
                       " __k.check(RT, __r); return __r;"
                     : "Value& __r = rtIndexRef(__b, __ek, false, nullptr); " + op + " return __r;";
-                return "([&]()->Value{ Value& __b = " + base + "; Value __ek = " + ex(nix->index.get()) + "; " +
+                return "([&]()->Value{ Value& __b = " + base + "; Value __ek = " + ex(nix->index.get()) + "; " + starKey(nix, "__ek") +
                        (ask ? "if (rtNatArr(RT, __b)) { " + native + " } " + other : native) + " }())";
             }
             std::string ref = lvalueExpr(tgt);

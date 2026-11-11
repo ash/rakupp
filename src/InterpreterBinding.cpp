@@ -3788,7 +3788,8 @@ Value Interpreter::idxW(const Value& base, Value key, bool isHash) {
         && (key.t == VT::Whatever || (key.t == VT::Code && key.code() && key.code()->ci().isWhateverCode)))
         throw RakuError{Value::typeObj("X::Cannot::Lazy"), "Cannot use a Whatever index on an infinite list"};
     long long n = (base.t == VT::Array && base.arr()) ? (long long)base.arr()->size()
-                : base.t == VT::Range ? (long long)base.flatten().size() : 0;
+                : base.t == VT::Range ? (long long)base.flatten().size()
+                : rtIsBuf(base) ? base.blobElems() : 0;   // (`$b[*-1]`: a Buf's or a Blob's elements)
     if (key.t == VT::Code && key.code() && key.code()->ci().isWhateverCode)
         key = callCallable(key, ValueList{Value::integer(n)});
     if (key.t == VT::Whatever) { // @a[*] — the whole list / %h{*} — all values

@@ -821,10 +821,11 @@ section('--target=js (JavaScript backend)');
 # `:@a` or `:%h` is an empty container (#191), `+$0` is an Int (#189), `+` of
 # what is no number a Failure, and `@!xs = …` and `@*d = …` store through the
 # attribute's and the dynamic's own place, not a C++ local, and a `constant @L`
-# is the List it was given (it was assigned as an Array).
+# is the List it was given (it was assigned as an Array). `$b[*-1]` reads
+# and stores a Buf's last byte (#163).
 for <next-return-in-expression-native leave-on-every-exit-native named-container-param-absent-native
      match-numifies-exact-native prefix-plus-failure-native attribute-array-assign-native
-     list-constant-native> -> $name {
+     list-constant-native exe-buf-whatever-index-native> -> $name {
     my $bin = $*TMPDIR.add("rakupp-suite-native-$name-$*PID").Str;
     my $p = run($*EXECUTABLE, '--exe', $ROOT.add("t/regression/$name.raku").Str, '-o', $bin, :out, :err);
     $p.out.slurp(:close);
