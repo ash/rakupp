@@ -1857,17 +1857,10 @@ std::string Interpreter::substSelect(const std::string& subj, const std::string&
                         // P5 pattern: Perl interpolates a variable as regex SOURCE,
                         // not as quoted literal text — splice it raw
                         if (p5) { ip += v->toStr(); i = j - 1; continue; }
-                        // whitespace must be escaped too (it is insignificant in a
-                        // regex): a variable holding ' ' spliced bare, so
-                        // `s/ $W ** 2 /-/` matched EMPTY — same rule as quoteMetaRx
-                        for (char c : v->toStr()) {
-                            if (c == '\n') { ip += "\\n"; continue; }
-                            if (c == '\t') { ip += "\\t"; continue; }
-                            if (c == '\r') { ip += "\\r"; continue; }
-                            if (c == ' ')  { ip += "\\ "; continue; }
-                            if (std::strchr(".\\+*?[^]$(){}=!<>|:-#", c)) ip += '\\';
-                            ip += c;
-                        }
+                        // quoted as `~~` quotes it: whitespace (`s/ $W ** 2 /-/`
+                        // matched EMPTY) and every ASCII punct — a `"` or `'`
+                        // spliced bare opened a quote span (issue #237)
+                        ip += quoteMetaRx(v->toStr());
                         i = j - 1; continue;
                     }
                 }
