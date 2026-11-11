@@ -5890,15 +5890,16 @@ void Interpreter::arrayStore(Value& lvRef, Value& rhs, bool isAssign, bool dolla
         // straight from the Range, never building the Values a finite
         // Int Range would flatten to (coerceArray's plain Array of plain
         // Ints, which is what they unpack to). An untyped `my @a = LO .. HI`
-        // that would pack itself (selfPack) is filled the same way. Not
-        // while worker threads run: the packed words replace the storage
-        // outside the stripe a refill takes, and eight threads doing
-        // `@shared = ^20` freed one payload twice (t/race/array-refill-shared).
+        // that would pack itself (selfPack) is filled the same way. No
+        // refill packs while worker threads run, typed or not: the packed
+        // words replace the storage outside the stripe a refill takes, and
+        // eight threads doing `@shared = ^20` freed one payload twice
+        // (t/race/array-refill-shared; a `my int @shared` died every run).
         bool packedNow = false;
         Value nv;
         const bool noWorkers = !(parallelMode_ && liveWorkers_.load(std::memory_order_relaxed) > 0);
         const bool selfRange = keepType.empty() && lv->hashKind.empty() && noWorkers;
-        if (isAssign && rhs.t == VT::Range && !rhs.rNum() && rhs.ofType().empty() &&
+        if (noWorkers && isAssign && rhs.t == VT::Range && !rhs.rNum() && rhs.ofType().empty() &&
             !rhs.ext() && (keepType == "int" || keepType == "int64" || selfRange) && !keepDefault &&
             lv->t == VT::Array && lv->payloadUnique() && !lv->elemDefault() && !lv->shape()) {
             long long lo = rhs.rFrom() + (rhs.rExFrom() ? 1 : 0);
@@ -5918,7 +5919,7 @@ void Interpreter::arrayStore(Value& lvRef, Value& rhs, bool isAssign, bool dolla
             }
         }
         // …and `my num @c = @b` copies @b's words (packedCopy), not its Values
-        else if (isAssign && !keepDefault && lv->t == VT::Array && lv->payloadUnique() &&
+        else if (noWorkers && isAssign && !keepDefault && lv->t == VT::Array && lv->payloadUnique() &&
                  !lv->elemDefault() && !lv->shape()) packedNow = packedCopy(rhs, keepType, nv);
         // (a fresh list hands its buffer over; only rhs.t is read below)
         if (!packedNow) nv = coerceArrayTake(rhs);
@@ -6013,7 +6014,7 @@ void Interpreter::arrayStore(Value& lvRef, Value& rhs, bool isAssign, bool dolla
         // storage (so the refill's identity has no other observer). It
         // unpacks to exactly those Values the first time anything asks
         // for them as Values.
-        if (!packedNow && isAssign && rhs.t != VT::Nil && nv.arr() && lv->t == VT::Array &&
+        if (!packedNow && noWorkers && isAssign && rhs.t != VT::Nil && nv.arr() && lv->t == VT::Array &&
             lv->payloadUnique() && !lv->elemDefault() && !lv->shape() &&
             (keepType == "int" || keepType == "int64" || keepType == "num" || keepType == "num64")) {
             const bool asNum = keepType[0] == 'n';
@@ -6058,6 +6059,15 @@ void Interpreter::arrayStore(Value& lvRef, Value& rhs, bool isAssign, bool dolla
                 else                         *lv->arr() = *nv.arr();
             }
             nv.setArr(lv->arrS());
+            // …and an Array that was packed when the workers started keeps
+            // its body, which answers with the list just refilled: `raceW(lv)
+            // = nv` below writing the list in its place freed the body while
+            // another thread's refill was reading lv to find it.
+            if (!noWorkers && lv->pk_ == PK::Packed) { nv.p_ = lv->p_; nv.pk_ = PK::Packed; }
+            // So does its cold block (a `my int @a`'s `of`): writing nv's null
+            // there freed it, and the `ofTypeM()` below built another, while
+            // the other threads read lv's (every run of eight died).
+            if (!noWorkers && lv->x_ && !nv.x_) nv.x_ = lv->x_;
         }
         // A FRESH slot (an attribute a custom BUILD writes first, before
         // any seed) must still own its OWN buffer: storing the coerced

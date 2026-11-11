@@ -22,10 +22,25 @@
 #
 # The last line is PASS or FAIL, and the exit code is 0 or 1, as in t/stress.
 
+# Each array is filled before the workers start, so it is a packed one (an
+# untyped Array of plain Ints or Nums packs itself; a `my int @`/`my num @`
+# is packed words) when they begin refilling it. Its first refill turned it
+# into a list, and the second thread's refill read the variable while the
+# first swapped its packed body (and a typed one's `of` block) for the list's:
+# on 3e2ab945 the Num form died about 5 runs in 100 and the `my int @` form
+# every run.
+
 my constant REPRO = Q:to/END/;
     my @shared = ^20;
     await (^8).map: -> $w { start { for ^1500 { @shared = $w %% 2 ?? ^20 !! (^20).list } } };
-    say "bad: ", @shared eqv [^20] ?? 0 !! 1;
+    my @nums = (^20).map(* + 0e0);
+    await (^8).map: -> $w { start { for ^1500 { @nums = $w %% 2 ?? (^20).map(* + 0e0) !! (^20).map(* + 0e0).list } } };
+    my int @ints = ^20;
+    await (^8).map: -> $w { start { for ^1500 { @ints = $w %% 2 ?? ^20 !! (^20).list } } };
+    my num @natnums = (^20).map(* + 0e0);
+    await (^8).map: -> $w { start { for ^1500 { @natnums = (^20).map(* + 0e0) } } };
+    say "bad: ", (@shared eqv [^20]) && (@nums eqv [(^20).map(* + 0e0)]) &&
+                 @ints.join(',') eq (^20).join(',') && @natnums.join(',') eq (^20).join(',') ?? 0 !! 1;
     END
 
 my $runs = 200;

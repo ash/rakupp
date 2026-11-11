@@ -393,20 +393,18 @@ moves to [TODO.md](TODO.md).
 
 ## Control flow and containers
 
-- [ ] **A self-packed Array shared between threads dies when they refill it**
-  (found 2026-11-11 by t/race/array-refill-shared.raku, red since 6501ade2:
-  about 125 runs in 200 died, SIGSEGV, SIGTRAP or SIGABRT). It is not new
-  with the Int kind: the same program over Nums (`my @shared =
-  (^20).map(* + 0e0)`, refilled from eight `start` workers) died 94 runs in
-  100 on 62474b1f, 0 under RAKUPP_NO_SELFPACK=1; the gate refilled with Ints
-  only. arrayStore no longer packs a refill while workers are live, as
-  packedElemStore already did, which leaves 3 to 7 deaths in 200 (Ints) and
-  5 in 100 (Nums): an Array that packed BEFORE the workers started still
-  changes form under them, since each refill's `raceW(lv) = nv` swaps the
-  variable's payload from the PackedArr to the list outside the stripe the
-  refill takes, while another thread reads `lv` to find that stripe. Done
-  when the gate and the Num form are 0 in 1,000, and the gate refills a Num
-  array too.
+- [ ] **`.list` on a native array is the array itself, so it is not `eqv` a
+  List** (found 2026-11-11 fixing the shared-refill race; single-threaded):
+
+  ```raku
+  my int @b = ^3;
+  say @b.list.^name;              # rakupp: array[int]   Rakudo: List
+  say @b.list eqv (^3).list;      # rakupp: False        Rakudo: True
+  ```
+
+  The same with `RAKUPP_NO_KERNELS=1`, and for a `my int @` filled from a
+  list or pushed to. Rakudo's `array.list` makes a List of the elements.
+
 - [ ] **t/race/varcell.raku answers `bad: 1` about one run in 300 to 500**
   (found 2026-11-11; on d03d7a19 and on 62474b1f, so older than self-packed
   Ints; no death, a worker's result was not True). Not yet reduced: a
