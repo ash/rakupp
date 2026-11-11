@@ -6910,6 +6910,23 @@ void Interpreter::workerYield() {
     loadCtx(parked);
 }
 
+// The scope a worker's job starts in: a routine frame of the thread's own,
+// under the spawn point's. An interpreted block makes its own frame when it is
+// called (forceRoutineFrame) and never sees this one; a compiled closure
+// (--exe) makes none, so without it the job ran with the spawner's scope
+// current — global_ for a `start` at the top of a program — and its matches
+// wrote `$/`, `$0`… into that Env while the main thread and every other worker
+// wrote the same slots. Two threads assigning one Value at once freed its
+// block twice, and the program died with SIGSEGV in an unrelated allocation
+// (`start { for ^10000 { 'a1' ~~ /\d/ } }` beside the same loop on the main
+// thread crashed every run, compiled).
+static std::shared_ptr<Env> workerOwnScope(const std::shared_ptr<Env>& spawnScope) {
+    auto own = makeSlabShared<Env>();
+    own->parent = spawnScope;
+    own->routineFrame = true;
+    return own;
+}
+
 // Spawn a real worker thread that runs `code` and keeps/breaks a Promise backed
 // by a PromiseState. The worker blocks on the GIL until the main thread yields
 // (inside awaitPromise) or the program drains, so nothing runs truly in parallel.
@@ -6936,7 +6953,7 @@ Value Interpreter::spawnPromise(Value code, Value threadVal) {
         addWorker(BigStackThread([self, code, ps, fin, spawnScope, threadVal]() mutable {
             t_hot.poll.isWorker = true;
             if (threadVal.t == VT::Hash) t_threadSelf = threadVal;
-            tctx().cur = spawnScope;        // anchor: dynamics visible at the spawn point
+            tctx().cur = workerOwnScope(spawnScope);   // anchor: dynamics visible at the spawn point
             tctx().dynStack.push_back(spawnScope.get());
             Value r; bool broke = false; Value cause;
             try {
@@ -6989,7 +7006,7 @@ Value Interpreter::spawnPromise(Value code, Value threadVal) {
         self->gil_.lock();                 // acquire the GIL (main must have yielded)
         ExecContext wctx;                  // fresh, empty registers for this worker
         self->loadCtx(wctx);
-        tctx().cur = spawnScope;            // anchor: `start {…}` sees the spawner's dynamics
+        tctx().cur = workerOwnScope(spawnScope);   // anchor: `start {…}` sees the spawner's dynamics
         tctx().dynStack.push_back(spawnScope.get());
         Value r; bool broke = false; Value cause;
         try {
@@ -7025,7 +7042,7 @@ void Interpreter::spawnContinuation(Value code) {
     auto spawnScope = tctx().cur ? tctx().cur : global_;   // as spawnPromise's worker
     Interpreter* self = this;
     runPooled([self, code, spawnScope]() mutable {
-        tctx().cur = spawnScope;
+        tctx().cur = workerOwnScope(spawnScope);
         tctx().dynStack.push_back(spawnScope.get());
         tctx().forceRoutineFrame = true;
         try { ValueList noargs; self->callCallable(code, noargs); } catch (...) {}

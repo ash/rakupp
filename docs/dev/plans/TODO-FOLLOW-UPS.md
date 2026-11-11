@@ -749,6 +749,35 @@ moves to [TODO.md](TODO.md).
 
 ## Backends
 
+- [ ] **`--exe`: a block's `my $x` is the program's `$x` when the program
+  declares one too** (found 2026-11-10 writing t/race/match-var-threads.raku;
+  interpreted it is right):
+
+  ```raku
+  my &f = { my $n = 5; $n };
+  my $n = 1;
+  f();
+  say $n;      # 1; a compiled binary says 5
+  ```
+
+  Codegen declares the program's `$n` as the static `v_sn` and the block's
+  `my $n` assigns that static rather than a local of the closure, wherever
+  the two declarations stand. A sub's `my` is its own. A `start` block's
+  counter named like the main thread's makes the two threads share one
+  Value, so t/regression/threads-own-match-var-native.raku names them apart.
+  Done when a block's `my` is a C++ local of its closure (or its own static
+  when it is a `state`), as a sub's is.
+
+- [ ] **A worker's failed match still walks into the program's scope for
+  `$0`, `$1`…** (found 2026-11-10 with the `$/` fix, workerOwnScope): after
+  a match, regexMatch clears each `$N` the match does not have by
+  `tctx().cur->find`, which walks past the worker's own frame into the
+  spawner's scope, read while the main thread may insert its first `$0`
+  there. A worker's own `$/` and the `$N` it defines are its own now; the
+  lookup is the one shared read left, the same in interpreted code. Done
+  when that walk stops at the routine frame without leaving an outer `$0`
+  visible after a failed match.
+
 - [ ] **`--exe` bundles the interpreter for a sub-signature in a pointy
   block or a sub** (found 2026-11-09 fixing #235; until 9102ff01 clang refused
   the program, "use of undeclared identifier 'v_sa'"):
