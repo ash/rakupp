@@ -30,7 +30,6 @@ issue-138-qq-block-in-regex-atom.raku
 issue34-hyper-hash-subscript.raku
 junction-hyper-method-call.raku
 junction-regex-match-var.raku
-method-leave-dies-unwinding.raku
 missing-routines-batch.raku
 module-sees-not-the-programs-operators.raku
 module-supplied-package-declarator.raku

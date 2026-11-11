@@ -3776,13 +3776,27 @@ struct Codegen {
     // when the scope is left, however it is left. On an ordinary exit a
     // death in it propagates, as Rakudo's does (`LEAVE { die "x" }` dies);
     // while an exception is already on its way out it is dropped, because a
-    // second one would end the process.
+    // second one would end the process. (The interpreter's CATCH sees the
+    // error, then the LEAVE's own: C++ unwinds before any handler runs.)
     std::string leaveGuard(const std::string& inner, int ind) {
         const std::string g = "__leave" + std::to_string(leaveCtr_++), pad(ind * 4, ' ');
         return pad + "struct " + g + "_t { std::function<void()> f; int n; ~" + g +
                "_t() noexcept(false) { if (rtExitUnwinding()) return; "   // (`exit` runs no LEAVE, as Rakudo's)
                "if (std::uncaught_exceptions() > n) { try { f(); } catch (...) {} } else f(); } } " +
                g + "{[&]{\n" + inner + pad + "}, std::uncaught_exceptions()};\n";
+    }
+    // A routine body's LEAVE (true when body[i] is one). It runs however the
+    // routine is left, also by an error in a statement written BEFORE it; a guard
+    // armed where it is written would miss that, so one after other statements
+    // keeps the routine interpreted
+    bool bodyLeave(const std::vector<StmtPtr>& body, size_t i) {
+        auto leave = [](Stmt* x) { return x->kind == NK::Block && static_cast<Block*>(x)->phaser == "LEAVE" &&
+                                          !static_cast<Block*>(x)->isCatch; };
+        if (!leave(body[i].get())) return false;
+        for (size_t k = 0; k < i; k++)
+            if (!leave(body[k].get())) throw CodegenError{"a LEAVE after the statements of its routine", true};
+        out << leaveGuard(leaveInner(static_cast<Block*>(body[i].get()), 1), 1);
+        return true;
     }
     // …and its body: a lambda the guard calls in place, so, as in a `do {…}`,
     // a loop control in it takes the exception form (no `continue` reaches
@@ -3792,7 +3806,6 @@ struct Codegen {
         LoopJumpBarrier __bar{this};
         return capture([&] { block(b, ind + 1); });
     }
-    void emitLeaveGuard(Block* b, int ind) { out << leaveGuard(leaveInner(b, ind), ind); }
     // Does C++ `text` name the identifier `id` (not merely contain it)?
     static bool mentionsIdent(const std::string& text, const std::string& id) {
         auto word = [](char c) { return std::isalnum((unsigned char)c) || c == '_'; };
@@ -3806,10 +3819,8 @@ struct Codegen {
     // reads a variable the block declares: then every exit runs them, as in
     // Rakudo — one taken before the LEAVE is reached, and after a CATCH has
     // handled the exception, since the guards sit outside its `try`.
-    // Otherwise each is armed where it is written, after what it reads. In a
-    // block with a CATCH that is inside the `try`, which would run it ahead of
-    // the handler, and after the `try` its locals are gone (that C++ did not
-    // compile): such a block is refused, and the program bundles.
+    // Otherwise it would have to be armed after what it reads, and miss an
+    // error before that: such a block is refused, its routine interpreted.
     // The statements and phaser bodies are emitted first and placed after,
     // which is what lets the names declVar declared decide.
     void emitLeaveGuards(const std::vector<Stmt*>& regular, const std::vector<Block*>& leaves,
@@ -3835,14 +3846,10 @@ struct Codegen {
         if (early) {
             for (auto& t : inner) out << leaveGuard(t, ind);
             emitBody();
-        } else if (catchBlk) {
-            unsupported("a LEAVE reading its block's variables beside a CATCH");
         } else {
-            size_t gi = 0;
-            for (size_t k = 0; k <= body.size(); k++) {
-                while (gi < leaves.size() && leaveAt[gi] == k) out << leaveGuard(inner[gi++], ind);
-                if (k < body.size()) out << body[k];
-            }
+            // armed where it is written, after what it reads, it would miss an
+            // error in a statement before it (as bodyLeave)
+            throw CodegenError{"a LEAVE reading its block's variables", true};
         }
     }
 
@@ -4680,7 +4687,7 @@ struct Codegen {
                 auto* b = static_cast<Block*>(s);
                 // LEAVE {…} maps exactly to a C++ scope guard (runs on any exit,
                 // exceptions included)
-                if (b->phaser == "LEAVE") { emitLeaveGuard(b, ind); return; }
+                if (b->phaser == "LEAVE") throw CodegenError{"a LEAVE among statements", true};   // (bodyLeave)
                 if (b->isCatch || !b->phaser.empty()) unsupported("phaser / CATCH block");
                 line(ind, "{"); block(b, ind + 1); line(ind, "}");
                 return;
@@ -9495,6 +9502,7 @@ struct Codegen {
                 hoistLexicalSubs(md->body, 1);
                 for (size_t i = 0; i < md->body.size(); i++) {
                     Stmt* s = md->body[i].get();
+                    if (bodyLeave(md->body, i)) continue;
                     if (i + 1 == md->body.size() && s->kind == NK::ExprStmt)
                         line(1, "return " + retBoxed(static_cast<ExprStmt*>(s)->e.get(),
                                                      tailValue(static_cast<ExprStmt*>(s)->e.get())) + ";");
@@ -9687,6 +9695,7 @@ struct Codegen {
         hoistLexicalSubs(body, 1);
         for (size_t i = 0; i < body.size(); i++) {
             Stmt* s = body[i].get();
+            if (bodyLeave(body, i)) continue;
             if (i + 1 == body.size() && s->kind == NK::ExprStmt)
                 line(1, "return " + retBoxed(static_cast<ExprStmt*>(s)->e.get(), tailExpr(static_cast<ExprStmt*>(s))) + ";");
             else if (i + 1 == body.size() && (s->kind == NK::IfStmt || s->kind == NK::GivenStmt || valueBlock(s))) {
