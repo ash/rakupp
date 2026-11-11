@@ -183,6 +183,18 @@ struct Deparser {
     // answers every question with the question; the gate is
     // t/regression/rakuast-deparse-l10n.raku.
     const DeparseXsyn* xsyn = nullptr;
+    // For `.EVAL` the text is compiled again, so it has to say what the TREE
+    // says: an operand that is itself an infix or prefix application goes in
+    // parentheses, or `(not 0) && (not 1)` comes back as `not 0 && not 1`,
+    // which is `not (0 && not 1)` (issue #247). `.DEPARSE` keeps Rakudo's
+    // text, which writes none.
+    bool groupOperands = false;
+    std::string operand(const Value* v, int indent) {
+        std::string t = opt(v, indent);
+        if (!groupOperands || !v || !isNode(*v)) return t;
+        const std::string c = shortName(*v);
+        return c == "ApplyInfix" || c == "ApplyPrefix" || c == "ApplyListInfix" || c == "Ternary" ? "(" + t + ")" : t;
+    }
     explicit Deparser(Interpreter& i) : I(i) {}
 
     std::string xs(const char* prefix, const std::string& key) {
@@ -522,11 +534,11 @@ struct Deparser {
             if (args) {
                 const Value* inner = args->t == VT::Object ? attr(*args, "args") : args;
                 if (inner && inner->t == VT::Array && inner->arr() && inner->arr()->size() >= 2)
-                    return render((*inner->arr())[0], indent) + " " + op + " " +
-                           render((*inner->arr())[1], indent);
+                    return operand(&(*inner->arr())[0], indent) + " " + op + " " +
+                           operand(&(*inner->arr())[1], indent);
             }
-            return opt(attr(node, "left"), indent) + " " + op + " " +
-                   opt(attr(node, "right"), indent);
+            return operand(attr(node, "left"), indent) + " " + op + " " +
+                   operand(attr(node, "right"), indent);
         }
         if (c == "ApplyListInfix") {
             // A list's comma is written as a comma, whatever a localization
@@ -541,7 +553,7 @@ struct Deparser {
             return joinList(attr(node, "operands"), sep.c_str(), indent);
         }
         if (c == "ApplyPrefix")
-            return opt(attr(node, "prefix"), indent) + opt(attr(node, "operand"), indent);
+            return opt(attr(node, "prefix"), indent) + operand(attr(node, "operand"), indent);
         if (c == "ApplyPostfix") {
             const Value* opnd = attr(node, "operand");
             std::string post = opt(attr(node, "postfix"), indent);
@@ -1100,6 +1112,7 @@ Value rakuAstEval(Interpreter& I, const Value& node) {
     Deparser d{I};
     ValueList side;
     d.side = &side;
+    d.groupOperands = true;
     std::string src = d.render(node, 0);
     // The caller's scope has to be visible, and it already is: EVAL of TEXT
     // compiles in the current lexical scope here exactly as it does in Rakudo —
