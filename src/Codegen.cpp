@@ -27,6 +27,7 @@ std::shared_ptr<Param> signatureParamCopy(const Param& p); // Builtins.cpp
 const std::set<std::string>& testExports(); // CallCheck.cpp: the names `use Test` puts in scope
 bool arithOpKnown(const std::string& op);    // InterpreterOperators.cpp: applyArith knows `op`
 bool operatorRoutineName(const std::string& n, std::string& cat, std::string& op);   // codegen/Operators.cpp
+std::string classRefusal(const ClassDecl*, const std::set<std::string>&);   // src/codegen/ClassRefusal.cpp
 std::string multiOrderRefusal(const std::vector<SubDecl*>&, const std::vector<const Program*>&,
                               int (*)(const SubDecl*));   // codegen/MultiOrder.cpp
 
@@ -4431,6 +4432,7 @@ struct Codegen {
                         if (it->kind != NK::VarExpr) { allDecl = false; break; }
                         auto* v = static_cast<VarExpr*>(it.get());
                         if (!v->declare || v->name.empty() || v->name[0] != '$') { allDecl = false; break; }
+                        refuseDeclTraits(v);   // (`my ($a, Int() $b)`: the slot's coercion, its default, …)
                     }
                     if (allDecl) {
                         // ONE item on the right is iterated, itemized or not —
@@ -9527,6 +9529,7 @@ struct Codegen {
     }
 
     void classRegister(ClassDecl* cd) {
+        if (std::string why = classRefusal(cd, classNames); !why.empty()) unsupported(why);
         std::string ci = gensym("ci");
         line(1, "{ auto " + ci + " = std::make_shared<ClassInfo>(); " + ci + "->name = " + cesc(cd->name) + ";");
         if (!cd->pod.empty())    // `#| …` on the class: `C.WHY`

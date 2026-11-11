@@ -41,7 +41,6 @@ module-supplied-package-declarator.raku
 mop-metamodel.raku
 multi-nomatch-dispatcher-capture.raku
 my-in-short-circuit-and-do-init.raku
-my-list-slot-coercion-type.raku
 my-stash-sees-test-imports.raku
 needle-type-object-no-match.raku
 nested-sub-keeps-its-closure.raku
@@ -52,7 +51,6 @@ our-is-one-container.raku
 pair-as-key-value-and-pattern.raku
 param-container-name.raku
 parameter-why.raku
-prefix-minus-object-keeps-numeric-kind.raku
 pseudo-package-adverbs.raku
 pseudo-package-stash-value.raku
 quanthash-exact-sethash-zen-dynamic.raku
@@ -89,4 +87,3 @@ watch-ignores-writes-before-it.raku
 whatever-value-pair-key.raku
 word-list-escapes-comma-op-forward-type.raku
 wrap-builtin.raku
-xml-triad-backref-indirect-coerce.raku
