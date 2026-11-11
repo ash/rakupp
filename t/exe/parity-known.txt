@@ -62,7 +62,6 @@ type-capture-after-constraint.raku
 type-capture-constrains.raku
 typed-param-var-is-value.raku
 undefined-array-head-lvalue-empty-match.raku
-user-multi-on-builtin-prefix.raku
 vivified-scalar-is-itemized.raku
 watch-ignores-writes-before-it.raku
 whatever-value-pair-key.raku
