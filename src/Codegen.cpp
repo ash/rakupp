@@ -5885,7 +5885,7 @@ struct Codegen {
         stmt(s, ind); // no value to capture; dst keeps its prior content
     }
     void blockValue(Block* b, int ind, const std::string& dst) {
-        if (b->stmts.empty()) return;
+        if (b->stmts.empty()) { line(ind, dst + " = Value::nil();"); return; }   // taken and empty: Nil, not the seed
         CellScope __cs{this};
         // (its lexical subs' C++ handles end with the braces around it)
         struct LexDirectScope { Codegen* g; std::map<std::string, LexDirect> saved;
