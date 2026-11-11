@@ -17,6 +17,13 @@ built. The deck lives in [presentation/](presentation/): the interactive
   [proposal 8059](https://act.yapc.eu/lpw2026/talk/8059) — accepted. Attendance is free, with optional
   supporter tickets.
 
+### FOSDEM 2027
+
+- **When:** 30–31 January 2027 (a weekend).
+- **Where:** ULB Solbosch campus, Brussels, Belgium.
+- **Site:** <https://fosdem.org/2027/>
+- **Status:** talk proposed — the proposal is submitted.
+
 ### 29. Deutscher Perl/Raku-Workshop 2027
 
 - **When:** 14–16 April 2027 (three days).
@@ -27,16 +34,6 @@ built. The deck lives in [presentation/](presentation/): the interactive
 - **Status:** talk proposed —
   [proposal 8053](https://act.yapc.eu/gpw2027/talk/8053) (the page stays
   private until the talk is accepted).
-
-## Wanted, not yet open
-
-### FOSDEM 2027
-
-Brussels, Belgium, at the ULB Solbosch campus — traditionally a weekend at the
-turn of January and February; [FOSDEM 2026](https://fosdem.org/2026/) was
-31 January – 1 February. The 2027 edition has no page, no dates, and no call
-for participation yet, so there is nothing to submit to. Watch
-<https://fosdem.org/>.
 
 ## What the talks cover
 
