@@ -84,7 +84,7 @@ sub MAIN($rea, Int :$min = 2) {
     for %latest.values -> %e {
         # the index is a JSON array printed one object per line, so every
         # line but the last drags the array's comma along
-        my %m = try json-decode(%e<line>.trim.subst(/ ',' $ /, ''));
+        my %m = (try json-decode(%e<line>.trim.subst(/ ',' $ /, ''))) // {};
         next unless %m;
         count-deps(%m{$_}, %count) for <depends build-depends test-depends>;
     }

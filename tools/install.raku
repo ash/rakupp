@@ -686,7 +686,7 @@ sub installed-entries(Str $prefix) {
     my $d = $prefix.IO.add('dist');
     return @e unless $d.d;
     for $d.dir.grep(*.f) -> $f {
-        my %m = try json-decode($f.slurp);
+        my %m = (try json-decode($f.slurp)) // {};   # (a hash store of Nil dies, as on Rakudo)
         next unless %m && %m<name>;
         @e.push: { name     => %m<name>,
                    version  => (%m<version> // %m<ver> // ''),
@@ -1978,7 +1978,7 @@ sub store-check(Str $prefix) {
     my %owned = owned-set($p.absolute);   # the records this tool wrote
 
     for $p.add('dist').dir.grep(*.f) -> $f {
-        my %m = try json-decode($f.slurp);
+        my %m = (try json-decode($f.slurp)) // {};   # (a hash store of Nil dies, as on Rakudo)
         if !%m {
             say "BROKEN: dist/{$f.basename} is unreadable";
             $broken++;
@@ -2081,7 +2081,7 @@ sub store-gc(Str $prefix, Bool :$dry) {
     }
     my %dists; my %referenced; my $unreadable = 0;
     for $p.add('dist').dir.grep(*.f) -> $f {
-        my %m = try json-decode($f.slurp);
+        my %m = (try json-decode($f.slurp)) // {};   # (a hash store of Nil dies, as on Rakudo)
         unless %m { $unreadable++; next }
         %dists{$f.basename} = %m;
         %referenced{$_} = True for (%m<files> // {}).values.grep(* ne '');
@@ -2266,7 +2266,7 @@ sub do-uninstall(@names, Str $prefix, Bool :$force, Bool :$for-reinstall, Bool :
     }
     my %dists;
     for $p.add('dist').dir.grep(*.f) -> $f {
-        my %m = try json-decode($f.slurp);
+        my %m = (try json-decode($f.slurp)) // {};   # (a hash store of Nil dies, as on Rakudo)
         %dists{$f.basename} = %m if %m;
     }
 
@@ -2354,7 +2354,7 @@ sub list-installed(Str $prefix) {
     }
     my %owned = owned-set($prefix);
     for $dist-dir.dir.grep(*.f).sort -> $f {
-        my %m = try json-decode($f.slurp);
+        my %m = (try json-decode($f.slurp)) // {};   # (a hash store of Nil dies, as on Rakudo)
         next unless %m;
         my @mods = (%m<provides> // {}).keys.sort;
         say "{%m<name>}:ver<{%m<version> // '?'}>:auth<{%m<auth> // ''}>  ({@mods.join(', ')})";
@@ -2417,7 +2417,7 @@ sub store-state(Str $prefix, %verify = {}) {
     return { have => %have, broken => %broken, mods => %mods } unless $dist-dir.d;
     my %owned = owned-set($prefix);
     for $dist-dir.dir.grep(*.f) -> $f {
-        my %m = try json-decode($f.slurp);
+        my %m = (try json-decode($f.slurp)) // {};   # (a hash store of Nil dies, as on Rakudo)
         next unless %m;
         my $key = identity-key(%m<name>, %m<version> // %m<ver>, %m<auth>, %m<api>);
         my $verify = ?%verify{$key} && ?%owned{$f.basename};

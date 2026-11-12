@@ -14670,7 +14670,8 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
                 }
                 Value* lv = lvalue(it.get());
                 if (ve->name[0] == '@') raceW(lv) = coerceArray(v, isNativeScalarName(lv->ofType()));
-                else if (ve->name[0] == '%') raceW(lv) = coerceHash(v, /*store=*/true, lv->objKeyed);
+                else if (ve->name[0] == '%')   // (a named the right side lacks is an empty hash)
+                    raceW(lv) = coerceHash(v.t == VT::Any ? Value::array() : v, /*store=*/true, lv->objKeyed);
                 else *lv = v;
             }
             return sink ? Value::any() : rhs;
@@ -25029,7 +25030,8 @@ Value Interpreter::evalUnary(Unary* u) {
         // not a dropped tail (sheet HM-01)
         // (the `%` context DEcontainerizes: `my @a = %$h` is the hash's pairs)
         if (opEq(u->op, "ctx%")) { if (v.t == VT::Hash) { Value h = v; h.itemized = false; return h; }
-                               return coerceHash(v, /*store=*/true); }
+                               // (an undefined one is `.hash`'s empty Hash, not a store's item)
+                               return coerceHash(v.t == VT::Nil || v.t == VT::Any || v.t == VT::Type ? Value::array() : v, true); }
         if (opEq(u->op, "ctx%{}")) {                        // :{ ... } object-hash composer
             Value h = v.t == VT::Hash && v.hashKind.empty() ? v
                                                            : coerceHash(v, /*store=*/false, /*objKeyed=*/true);
