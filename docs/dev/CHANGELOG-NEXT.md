@@ -77,6 +77,11 @@ fd3fda0f.*
   False. `.DEPARSE` still writes Rakudo's text byte for byte.
   `t/regression/rakuast-eval-keeps-tree-grouping.raku`. Reported by
   Zer0-Tolerance.
+- **`.delayed` delays done and quit as well, as Rakudo's does**: a quit cut
+  off the value still waiting (`$s.emit(1); $s.quit(…)` on a `.delayed(0.3)`
+  delivered nothing, Rakudo's 1 and then the quit), and an empty source was
+  done at once, not after the delay.
+  `t/regression/supply-delayed-delays-done-and-quit.raku`.
 
 ### Fixed: crashes
 

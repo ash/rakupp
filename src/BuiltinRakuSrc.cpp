@@ -10,14 +10,18 @@ namespace rakupp {
 // Channel.Supply: through the channel's queue on the scheduler, as Rakudo's
 // (MethodCallPart1c.cpp binds $__rakupp_chan before evaluating it).
 const char* const kChannelSupplySrc = "supply { whenever $__rakupp_chan -> \\v { emit v } }";
-// .stable / .delayed: Rakudo's own shape, a supply block with a Promise.in per
-// value (MethodCallPart2.cpp). Cro's `cro run` debounces its watcher with .stable(1).
+// .stable / .delayed: a supply block with a Promise.in per value
+// (MethodCallPart2.cpp). Cro's `cro run` debounces its watcher with .stable(1).
+// .delayed ends as Rakudo's Delayed tappable does (Supply-factories.rakumod):
+// the source's done and quit are delayed by the window too, so a value emitted
+// before a quit still arrives, and an empty source is done after the window.
 const char* const kSupplyStableSrc =
     "(-> $s, $time { supply { my $gen = 0; whenever $s -> \\v { my $mine = ++$gen; "
     "whenever Promise.in($time) { emit v if $gen == $mine } } } })";
 const char* const kSupplyDelayedSrc =
     "(-> $s, $time { supply { whenever $s -> \\v { "
-    "whenever Promise.in($time) { emit v } } } })";
+    "whenever Promise.in($time) { emit v }; LAST { whenever Promise.in($time) { done } }; "
+    "QUIT { default { my \\e = $_; whenever Promise.in($time) { e.rethrow } } } } } })";
 // .map / .grep / .do on a supply block: on demand, tapping the source when
 // the result is tapped (MethodCallPart2.cpp)
 const char* const kSupplyMapSrc  = "(-> $s, &f { supply { whenever $s -> \\v { emit f(v) } } })";
