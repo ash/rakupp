@@ -226,12 +226,12 @@ The same items grouped by theme, with a complexity estimate for each:
   ([RAKUDO-ISSUES-PLAN.md](RAKUDO-ISSUES-PLAN.md), from
   findings/RAKUDO-ISSUES-2026-11.md, 2026-11-12): 8 crashes or hangs, 160
   issues with a wrong answer, 82 strictness gaps and 25 missing features, in
-  twelve batches. R1 is five-sixths done (041789fd … b4f6e472, 2026-11-12):
-  a regex naming itself, a huge index, a class named `Rat`, and two `react`
-  hangs. Its sixth, rakudo#5868 (a `.race` over `but role` mixins), waits on
-  the plan's decision 4: one role per declaration as in Rakudo, or a lock
-  on `classes_`. That is the same unlocked write as the
-  `nonblocking-await.t` item below. Next step: R2, value phasers.
+  twelve batches. R1 is done (041789fd … b4f6e472, 2026-11-12): a regex
+  naming itself, a huge index, a class named `Rat`, and two `react` hangs.
+  Its sixth crash, rakudo#5868 (a `.race` over `but role` mixins), is
+  deferred to PARALLEL-PLAN by the plan's decision 4: it is the unlocked
+  `classes_` write of the `nonblocking-await.t` item below. Next step: R2,
+  value phasers.
 
   R9's `use Telemetry` can run beside any batch. The plan's other questions
   are answered when their batch (R3, R10) starts.
@@ -353,6 +353,13 @@ The same items grouped by theme, with a complexity estimate for each:
   once, each mixing into its exception and writing `classes_[nc->name] = nc`
   (InterpreterOperators.cpp) with no lock, so one replaces and frees the
   class another is using. 6 of 60 at 49c98013. Found 2026-10-15; not started.
+  A faster reproducer, found 2026-11-12, is rakudo#5868 (raku-corpus-snippets
+  `rakudo-issues/open/5868/0.raku`): `(^100_000).race.map` over
+  `Foo.new but role :: { … }` crashes in parallel mode on nearly every run.
+  Each call declares a new anonymous role and mixin class, and ThreadSanitizer
+  shows `lastDecl_` (execDeclStmt) and `classes_` written while other
+  workers read them. Kept as it is, per-call roles and all, by
+  RAKUDO-ISSUES-PLAN decision 4: the fix is this lock.
 - [ ] **`t/race/varcell.raku` fails again**: 4–17 wrong answers in 200 runs at
   `e4ee17cd`, where the 2026-10-03 fix measured 0 in 200. Something since then
   reopened the first-wave promotion race (`g(:v($named))`, `a => $paired`,

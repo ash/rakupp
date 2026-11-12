@@ -75,10 +75,12 @@ time, beside any batch.
 
 ### R1 — crashes and hangs
 
-*Five of six done 2026-11-12 (041789fd, 147d0b95, 7fc5b00b, b4f6e472). The
-sixth, rakudo#5868, waits on a decision.*
+*Done 2026-11-12 (041789fd, 147d0b95, 7fc5b00b, b4f6e472). rakudo#5868 is
+deferred to PARALLEL-PLAN, by decision 4.*
 
-- **rakudo#5868 (SIGBUS) — open, decision needed.**
+- **rakudo#5868 (SIGBUS) — deferred to
+  [PARALLEL-PLAN](PARALLEL-PLAN.md)'s lock on the type tables.** Raku++
+  keeps one role per call, and with it its `[1 2 3]`.
   - **Symptom.** `(^100_000).race.map` calls a sub that returns
     `Foo.new but role :: { … }`. It crashes in parallel mode with or without
     the closed-over lexical, and is clean under the GIL.
@@ -91,7 +93,11 @@ sixth, rakudo#5868, waits on a decision.*
     last call's lexicals: `[3 3 3]` where Raku++ prints `[1 2 3]`.
   - **The two ways to fix it:**
     - adopt Rakudo's model and lock the one creation;
-    - lock the type tables themselves, PARALLEL-PLAN's open item.
+    - lock the type tables themselves, PARALLEL-PLAN's open item. This is
+      the one chosen.
+  - **Reproducer.** raku-corpus-snippets `rakudo-issues/open/5868/0.raku`
+    crashes in parallel mode on nearly every run, where
+    `nonblocking-await.t` crashes in about 1 run in 10.
 - **rakudo#5537 — fixed (7fc5b00b).** A user `class Rat` was taken for the
   core Rat by name, and its `.new` boxed a `Rat.new` that was itself. Found
   beside it and moved to R3 (type identity by name).
@@ -359,12 +365,16 @@ Each is answered when its batch starts, not before.
    answers, but it is PARALLEL-PLAN's open project: every reader of those
    tables races a writer.
 
+   *Answered 2026-11-12: defer to PARALLEL-PLAN.* Keep the per-call roles
+   and their answers. The crash is fixed when `classes_` and `lastDecl_` are
+   locked, and rakudo#5868's snippet is that work's reproducer.
+
 ## Progress
 
 | batch | state | commits | snippets MATCH (of 1,777) | Roast files | t/run.raku |
 |---|---|---|---:|---|---|
 | baseline, 2026-11-12 | — | 6ee8f413 | 1,264 | 1,425/1,425 | 2259/2259 |
-| R1, 2026-11-12 | 5 of 6; rakudo#5868 waits on decision 4 | 041789fd, 147d0b95, 7fc5b00b, b4f6e472 | 1,267 | 1,425/1,425 | 2263/2263 |
+| R1, 2026-11-12 | done; rakudo#5868 deferred to PARALLEL-PLAN (decision 4) | 041789fd, 147d0b95, 7fc5b00b, b4f6e472 | 1,267 | 1,425/1,425 | 2263/2263 |
 
 R1's per-file changes against the baseline:
 - **3686 and 5835:** TIMEOUT to MATCH.
