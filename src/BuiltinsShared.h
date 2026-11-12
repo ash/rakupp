@@ -27,6 +27,20 @@
 
 namespace rakupp {
 class Interpreter;
+// A promise's `.then` continuations, taken from its state under that state's
+// lock and run when this goes out of scope. Declared BEFORE any lock the
+// settler takes, they run once every lock is let go. A `react`'s
+// `whenever $p` is one of them: a Channel's `.closed` that only set `done`
+// and woke the condition variable reached `await`, never `whenever`
+// (rakudo#4853).
+struct ThensAfter {
+    std::vector<std::function<void()>> v;
+    void take(std::vector<std::function<void()>>& thens) {
+        for (auto& f : thens) v.push_back(std::move(f));
+        thens.clear();
+    }
+    ~ThensAfter() { for (auto& f : v) { try { f(); } catch (...) {} } }
+};
 // A `:w`/`:a` file handle's descriptor: `.close` closes it, and so does the
 // last Value holding it, for a handle that is dropped unclosed
 struct WriteFd {

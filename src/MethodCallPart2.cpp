@@ -2092,7 +2092,7 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
                 (*c.hash())["closedPromise"] = cp;
                 auto ch = c.hashS();
                 auto settle = [ch, ps](bool failed, Value cause) {
-                    std::lock_guard<std::recursive_mutex> lk(Interpreter::atomicStripe(ch.get()));
+                    ThensAfter after; std::lock_guard<std::recursive_mutex> lk(Interpreter::atomicStripe(ch.get()));   // (.closed's continuations run once this is let go)
                     raceChanClose(ch.get());
                     (*ch)["closed"] = Value::boolean(true);
                     chanWake();
@@ -2104,7 +2104,7 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
                             else ps->result = Value::boolean(true);
                             ps->done = true;
                         }
-                        ps->cv.notify_all();
+                        after.take(ps->thens); ps->cv.notify_all();
                         (*(*ch)["closedPromise"].hash())["status"] = Value::str(failed ? "Broken" : "Kept");
                     }
                 };
@@ -2539,7 +2539,7 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
             (*c.hash())["closedPromise"] = cp;
             auto ch = c.hashS();
             auto settle = [ch, ps](bool failed, Value cause) {
-                std::lock_guard<std::recursive_mutex> lk(Interpreter::atomicStripe(ch.get()));
+                ThensAfter after; std::lock_guard<std::recursive_mutex> lk(Interpreter::atomicStripe(ch.get()));   // (.closed's continuations run once this is let go)
                 raceChanClose(ch.get());
                 (*ch)["closed"] = Value::boolean(true);
                 chanWake();
@@ -2551,7 +2551,7 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
                         else ps->result = Value::boolean(true);
                         ps->done = true;
                     }
-                    ps->cv.notify_all();
+                    after.take(ps->thens); ps->cv.notify_all();
                     (*(*ch)["closedPromise"].hash())["status"] = Value::str(failed ? "Broken" : "Kept");
                 }
             };

@@ -793,6 +793,29 @@ void Interpreter::runLastPhasers(const ValueList& lastP, std::shared_ptr<ReactCt
     if (pushed && !reactStack_.empty()) reactStack_.pop_back();
 }
 
+// A Channel found closed and empty keeps its `.closed` (breaks it, if the
+// channel failed), whoever finds it so. `.poll`, `.receive` and `.close` did;
+// the readers a `whenever $ch` runs took the last value and did not, so once
+// one had, `await $ch.closed` and `whenever $ch.closed` waited forever
+// (rakudo#4853). Called under the channel's stripe; the promise's
+// continuations go to `after`, to run once that is let go.
+static void keepDrainedChannelClosed(const Value& chan, ThensAfter& after) {
+    if (!chan.ext() || !chan.hash()) return;
+    auto ps = std::static_pointer_cast<PromiseState>(chan.ext());
+    auto fi = chan.hash()->find("failCause");
+    const bool failed = fi != chan.hash()->end();
+    std::lock_guard<std::mutex> lk(ps->m);
+    if (!ps->done.v) {
+        if (failed) { ps->broken = true; ps->cause = fi->second; ps->causeMsg = fi->second.toStr(); }
+        else ps->result = Value::boolean(true);
+        ps->done = true;
+    }
+    after.take(ps->thens);
+    ps->cv.notify_all();
+    auto ci = chan.hash()->find("closedPromise");
+    if (ci != chan.hash()->end() && ci->second.hash())
+        (*ci->second.hash())["status"] = Value::str(failed ? "Broken" : "Kept");
+}
 Value Interpreter::spawnSupplyChannel(Value chan, Value blk, std::shared_ptr<SupplyTapCtx> ctx) {
     engageGil();
     // counted on the channel, so `.close` can let this reader drain first
@@ -849,6 +872,7 @@ Value Interpreter::spawnSupplyChannel(Value chan, Value blk, std::shared_ptr<Sup
             if (stop()) break;
             const uint64_t wakeSeen = chanWakeGen();   // (before the look: see chanWake)
             Value v; bool got = false, drained = false;
+            ThensAfter closedThens;   // (declared before the stripe: they run once it is let go)
             {   std::lock_guard<std::recursive_mutex> lk(Interpreter::atomicStripe(chan.hash()));
                 auto qi = chan.hash() ? chan.hash()->find("queue") : ValueMap::iterator{};
                 ValueList* q = chan.hash() && qi != chan.hash()->end() && qi->second.arr()
@@ -858,7 +882,7 @@ Value Interpreter::spawnSupplyChannel(Value chan, Value blk, std::shared_ptr<Sup
                 else {
                     auto ci = chan.hash()->find("closed");
                     drained = ci != chan.hash()->end() && ci->second.truthy();
-                    if (drained) raceChanSawClose(chan.hash());
+                    if (drained) { raceChanSawClose(chan.hash()); keepDrainedChannelClosed(chan, closedThens); }
                 }
             }
             if (drained) break;
@@ -1257,7 +1281,13 @@ Value Interpreter::spawnChannelWhenever(Value chan, Value blk, std::shared_ptr<R
         ExecContext wctx; self->loadCtx(wctx);
         tctx().cur = spawnScope;
         tctx().dynStack.push_back(spawnScope.get());
-        if (ctx) self->reactStack_.push_back(ctx);
+        // The react is held only while a body of this whenever runs, and taken
+        // in turn with its other bodies. Held for the whole loop, an empty
+        // channel kept the react busy forever, and a `whenever $promise` body
+        // waiting its turn never ran (rakudo#3686).
+        struct Held { Interpreter* s; bool on = false;
+            void take(const std::shared_ptr<ReactCtx>& c) { if (c) { s->reactPushInTurn(c); on = true; } }
+            ~Held() { if (on) s->reactStack_.pop_back(); } };
         for (;;) {
             if (ctx && ctx->closed) break;
             const uint64_t wakeSeen = chanWakeGen();   // (before the look: see chanWake)
@@ -1269,6 +1299,7 @@ Value Interpreter::spawnChannelWhenever(Value chan, Value blk, std::shared_ptr<R
             // downstream of the whenever (S17-supply/syntax.t's two-channel
             // react — the last isolation livelock of the P5 wall).
             Value v, failCause; bool got = false, fin = false, failed = false;
+            ThensAfter closedThens;   // (declared before the stripe: they run once it is let go)
             {   std::lock_guard<std::recursive_mutex> lk(Interpreter::atomicStripe(chan.hash()));
                 auto qi = chan.hash() ? chan.hash()->find("queue") : ValueMap::iterator{};
                 ValueList* q = chan.hash() && qi != chan.hash()->end() && qi->second.arr() ? qi->second.arr() : nullptr;
@@ -1281,6 +1312,7 @@ Value Interpreter::spawnChannelWhenever(Value chan, Value blk, std::shared_ptr<R
                     // cause reaches the whenever's QUIT phasers, or the react.
                     if (fin) {
                         raceChanSawClose(chan.hash());
+                        keepDrainedChannelClosed(chan, closedThens);
                         auto fi = chan.hash()->find("failCause");
                         if (fi != chan.hash()->end()) { failCause = fi->second; failed = true; }
                     }
@@ -1290,8 +1322,10 @@ Value Interpreter::spawnChannelWhenever(Value chan, Value blk, std::shared_ptr<R
                 Value ex = causeException(*self, failCause, failCause.toStr());
                 ValueList quitP;
                 scanSupplyPhasers(blk, nullptr, &quitP, nullptr);
-                if (!quitP.empty())
+                if (!quitP.empty()) {
+                    Held held{self}; held.take(ctx);
                     for (auto& q : quitP) { ValueList one{ex}; try { self->callCallable(q, one); } catch (...) {} }
+                }
                 else if (ctx) {
                     std::lock_guard<std::mutex> lk(ctx->m);
                     if (!ctx->quitFlag) { ctx->quitFlag = true; ctx->quitErr = ex; }
@@ -1308,6 +1342,7 @@ Value Interpreter::spawnChannelWhenever(Value chan, Value blk, std::shared_ptr<R
                 continue;
             }
             ValueList one{v};
+            Held held{self}; held.take(ctx);
             try { self->sinkDiscarded(self->callCallable(blk, one)); }
             catch (NextEx&) {} catch (LastEx&) { break; } catch (DoneEx&) { break; }
             catch (RakuError& e) {
@@ -1325,7 +1360,6 @@ Value Interpreter::spawnChannelWhenever(Value chan, Value blk, std::shared_ptr<R
             catch (...) {}
             if (ctx) { std::lock_guard<std::mutex> lk(ctx->m); if (ctx->closed) break; }
         }
-        if (ctx) self->reactStack_.pop_back();
         if (ctx) { std::lock_guard<std::mutex> lk(ctx->m); if (ctx->liveSources > 0) ctx->liveSources--; ctx->cv.notify_all(); }
         if (!self->parallelMode_) self->gilYieldNotify(); // unlocks the GIL — parallel never took it
         self->workerFinished();
