@@ -442,8 +442,8 @@ The same program runs without a board two ways: under the interpreter, where
 `use Arduino` is a simulated board, and with `--sim`, which compiles the
 sketch itself for this computer against a host core embedded in `rakupp`. The
 gate, `t/arduino/run.raku`, holds the second to the first byte for byte, so
-the interpreter is the oracle for the generated C++. What has not been tried,
-by the guide's own account, is a program running on real hardware.
+the interpreter is the oracle for the generated C++. The sketches have also
+run on a real board, an Uno R4 WiFi.
 
 ## Mode 1 in a browser
 

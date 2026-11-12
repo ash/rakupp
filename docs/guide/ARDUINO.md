@@ -21,9 +21,11 @@ instead of hashes, and the `millis()` wrap.
 > own `.ino` step, and the gate builds those three whole for an Uno R4 WiFi
 > (Renesas core 1.6.0), with no warning from the sketch. The others also build
 > with arduino-cli 1.5.1 for an Uno (AVR core 1.8.8) and an Uno R4 WiFi, tried
-> by hand rather than by the gate. Not yet tried: a program running on real
-> hardware. Building and flashing the firmware is still done with the Arduino
-> IDE or arduino-cli.
+> by hand rather than by the gate. Sketches have also run on a real board: an
+> Uno R4 WiFi, its LED matrix included
+> ([Raku on Arduino](https://andrewshitov.com/2026/11/05/raku-on-arduino/)).
+> Building and flashing the firmware is still done with the Arduino IDE or
+> arduino-cli.
 
 ```raku
 use Arduino;
