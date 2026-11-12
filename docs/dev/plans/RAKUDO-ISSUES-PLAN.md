@@ -75,29 +75,47 @@ time, beside any batch.
 
 ### R1 — crashes and hangs
 
-- **rakudo#5868 ✓ (SIGBUS):** `(^100_000).race.map` calls a sub that returns
-  `Foo.new but role :: { method get-value { $value } }`, a role closing over a
-  lexical. A reduction without the closed-over lexical survives 2,000
-  iterations. The suspect is a race between mixin creation and a captured
-  frame. Reproduce under ASan/TSan before reading code.
-- **rakudo#5537 ✓ (SIGBUS):** a user `class Rat is Quadruped` dies partway
-  through the issue's script, right after the core `Rat` prints. Reduce it
-  first; a bare `class Rat is Mu {}; Rat.new` survives.
-- **rakudo#3775 ✓ (SIGBUS):** `$regex = /… <$regex> …/` recurses through
-  `<$var>` until the stack is gone. It needs two fixes:
-  - a depth guard that throws;
-  - refusing the bare `…`, as Rakudo does ("Unrecognized regex
-    metacharacter").
-- **rakudo#5835 ✓ (hang):** `my $b; $b[1e18] = "meow"` hangs. Throw instead;
-  the issue asks for a catchable exception, and Rakudo panics.
-- **rakudo#4853 ✓, rakudo#3686 ✓ (react never ends):** in #4853, two
-  `start react` blocks share a Channel, one closes it, and both end on
-  `whenever $ch.closed { done }`; the `Supply.interval`s tick on forever. In
-  #3686, a repeated `react` over two Channels hangs.
+*Five of six done 2026-11-12 (041789fd, 147d0b95, 7fc5b00b, b4f6e472). The
+sixth, rakudo#5868, waits on a decision.*
 
-Done when none of the six reproduces. Each gets a regression test that runs
-the case in a child process, so a regression fails the test rather than
-killing the suite.
+- **rakudo#5868 (SIGBUS) — open, decision needed.**
+  - **Symptom.** `(^100_000).race.map` calls a sub that returns
+    `Foo.new but role :: { … }`. It crashes in parallel mode with or without
+    the closed-over lexical, and is clean under the GIL.
+  - **Cause, from ThreadSanitizer.** Every call declares a new anonymous
+    role and a new mixin class, written into `lastDecl_` and `classes_`
+    with no lock while other workers read them. This is TODO §2's
+    `S17-promise/nonblocking-await.t` flake at a much higher rate.
+  - **How Rakudo differs.** It makes one role per declaration and one mixin
+    type for every call (`mk(1).WHAT === mk(2).WHAT`). Its methods see the
+    last call's lexicals: `[3 3 3]` where Raku++ prints `[1 2 3]`.
+  - **The two ways to fix it:**
+    - adopt Rakudo's model and lock the one creation;
+    - lock the type tables themselves, PARALLEL-PLAN's open item.
+- **rakudo#5537 — fixed (7fc5b00b).** A user `class Rat` was taken for the
+  core Rat by name, and its `.new` boxed a `Rat.new` that was itself. Found
+  beside it and moved to R3 (type identity by name).
+- **rakudo#3775 — fixed (041789fd).**
+  - A regex value that names itself is called when the match reaches it,
+    not pasted into itself; `/ a <$r>? /` matches as in Rakudo.
+  - Left recursion throws X::Recursion where it took SIGBUS, and where
+    Rakudo hangs.
+  - Refusing the bare `…` turned out to be one case of a wider gap, unquoted
+    symbols in a regex, and moved to R10.
+- **rakudo#5835 — fixed (147d0b95).** An index no machine could reach is
+  refused with Rakudo's "Unable to allocate an array of N elements", at all
+  fourteen places that grow an array to an index.
+- **rakudo#4853, rakudo#3686 — fixed (b4f6e472).** Two causes:
+  - a channel's `.closed` never ran its continuations, so a react never
+    heard of it;
+  - the channel reader held the react for its whole polling loop, so a
+    `whenever $promise` body never got its turn.
+
+  #3686's own program now reads every value, which is what the open issue
+  asks of Rakudo.
+
+Each fix has a regression test, and each hang case runs under a guard, so a
+regression fails the test rather than wedging the suite.
 
 ### R2 — a phaser used as a value runs when it is reached
 
@@ -144,6 +162,12 @@ issues' snippets agree with Rakudo apart from the elapsed times they print.
 - **rakudo#2174 ✓, #1959 ✓:** `does` is not callable as a routine, and
   `$set does …` dies.
 - **rakudo#1855 ✓:** `Rational[IntStr, IntStr]`'s numerator comes back an Int.
+- **A user class named like a core type is still the core type by name**
+  (found in R1 with rakudo#5537, ✓):
+  - with a user `class Rat` in scope, `my Rat $r = 2.2` is accepted, where
+    Rakudo refuses it;
+  - an instance of that class smartmatches Numeric;
+  - user classes named FatRat, IO::Path or Nil get the built-in `.new`.
 - The rest of FIX-LIST.md's oo PPBUG section: 27 cases in all.
 
 ### R4 — dispatch: ambiguity, coercion, `is cached`, `.assuming`
@@ -273,6 +297,10 @@ battery scan, and some need the decisions below first.
   - `self."!$name"()`;
   - `await start { return }`.
 - The rest of the LAX list: 95 cases, mostly in oo, syntax and dispatch.
+- **Unquoted symbols in a regex are matched literally** (moved here from
+  R1's rakudo#3775, ✓). Raku++ accepts `, = - / ` … → € © ¿` unquoted; Rakudo
+  refuses each ("Unrecognized regex metacharacter … (must be quoted to match
+  literally)"). Raku++ already refuses `;` and `!`.
 - **Not here:** a missing `;` between statements on separate lines. That is
   TODO's open decision on EVAL's strict statement separation. The tracker
   adds five issues whose snippets run only because of it.
@@ -323,9 +351,23 @@ Each is answered when its batch starts, not before.
 3. **(R3) Order of R3 and R4.** The read-only attribute (R3) and the ambiguity
    check (R4) are the two fixes most likely to turn up breakage in the
    battery. Doing them together, behind one battery scan, saves a scan.
+4. **(R1) rakudo#5868: one role per declaration, or a lock on the type
+   tables?** Rakudo's model would end the per-call type churn, and with it
+   the crash and a leak of one class per call. But it changes what such a
+   method sees: the last call's lexicals (`[3 3 3]`), where Raku++ gives each
+   call its own (`[1 2 3]`). Locking `classes_` and `lastDecl_` keeps today's
+   answers, but it is PARALLEL-PLAN's open project: every reader of those
+   tables races a writer.
 
 ## Progress
 
 | batch | state | commits | snippets MATCH (of 1,777) | Roast files | t/run.raku |
 |---|---|---|---:|---|---|
 | baseline, 2026-11-12 | — | 6ee8f413 | 1,264 | 1,425/1,425 | 2259/2259 |
+| R1, 2026-11-12 | 5 of 6; rakudo#5868 waits on decision 4 | 041789fd, 147d0b95, 7fc5b00b, b4f6e472 | 1,267 | 1,425/1,425 | 2263/2263 |
+
+R1's per-file changes against the baseline:
+- **3686 and 5835:** TIMEOUT to MATCH.
+- **5537:** to DIFF-EXIT; the R3 item above is what is left.
+- **1407 and 5995:** DIFF-EXIT to MATCH; unrelated, and not looked into.
+- **2181:** MATCH to DIFF-OUT; noise, the snippet prints `<0 1>.pick`.

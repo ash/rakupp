@@ -11,7 +11,7 @@ here.*
 *Covered so far: 59e9d3aa, e5b2b6c8, dec6d962, 15997e10, 71451a61, c68ec738,
 19078698, 9338d1b1, 58e2fdd4, abfea750, 8a11fb4d, 1d8f1495,
 fd3fda0f, 33351b91, 5b6a2753, d1e39cb5, 64e4c44f, 7800a133,
-9c45b83d.*
+9c45b83d, 041789fd, 147d0b95, 7fc5b00b, b4f6e472.*
 
 ---
 
@@ -131,6 +131,43 @@ fd3fda0f, 33351b91, 5b6a2753, d1e39cb5, 64e4c44f, 7800a133,
   Any, Nil — closes the child's stdin. `shell(…, :in)` pipes too, where it
   gave the child our stdin. `t/regression/run-in-non-handle-closes-stdin.raku`.
   Reported by Offizin.
+- **A regex value that names itself is a recursive pattern, not a crash**
+  (041789fd) (rakudo#3775). `my $r; $r = / a <$r>? /` matches "aaa" in
+  Rakudo; in Raku++ every recursive spelling took SIGBUS before a character
+  was matched: `<$r>`, `<x=$r>`, a bare `$r`, and two values naming each
+  other. Expanding `<$r>` pasted $r's source, and its own `<$r>` pasted it
+  again. Now a value's reappearance inside its own expansion is called when
+  the match reaches it, as Rakudo resolves it. A rule that calls itself
+  before consuming anything (`/ <$r> a /`, `token TOP { <TOP> a }`) cannot
+  end: Rakudo hangs, and Raku++ throws X::Recursion where it took SIGBUS.
+  `t/regression/regex-value-naming-itself.raku`.
+- **An index no machine could reach is refused, not grown into**
+  (147d0b95) (rakudo#5835). `my $b; $b[1e18] = "meow"` grew the array a slot
+  at a time until memory ran out: eight gigabytes in six seconds. So did
+  `.ASSIGN-POS`, `.BIND-POS`, a slice, a `:=` bind and a nested `[0][i]`.
+  Rakudo refuses each with "Unable to allocate an array of N elements"
+  (X::AdHoc), and Raku++ now does too. It refuses when the slots alone would
+  outweigh the machine's memory, so an ordinary large array still grows.
+  `t/regression/huge-array-index-refused.raku`.
+- **A user class may be called Rat** (7fc5b00b) (rakudo#5537).
+  `class Rat is Quadruped { … }; Rat.new` took SIGBUS. Whether a class does
+  Rational was also asked by its name, and for a class called Rat the core
+  Rat answered. Its `.new` then boxed a `Rat.new` that was itself.
+  `t/regression/user-class-named-rat.raku`.
+- **Two ways a `react` never ended** (b4f6e472) (rakudo#4853, rakudo#3686).
+  - `whenever $ch.closed { done }` never fired when the channel closed
+    after the react started. Closing kept `.closed` for `await`, but never
+    ran the continuations a react listens through. The reader behind
+    `whenever $ch` took the last value of a closed channel without keeping
+    `.closed` at all.
+  - A `whenever $promise` body waits until no other body of its react runs,
+    and that reader counted as running for as long as it polled. So beside
+    an empty channel, the promise's body never ran.
+
+  The issue's own program, a react re-entered once per value until a
+  promise says stop, now reads all 100 values from each channel. That is
+  what rakudo#3686 asks for: Rakudo 2026.09 loses values there and Raku++
+  used to hang. `t/regression/react-channel-closed-and-turns.raku`.
 
 ### Behaves like Rakudo
 
