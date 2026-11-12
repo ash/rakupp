@@ -2168,7 +2168,7 @@ class Interpreter {
 public:
     Interpreter();
     int run(Program& prog);
-    void setArgs(std::vector<std::string> a) { argv_ = std::move(a); }
+    void setArgs(std::vector<std::string> a);   // …and binds @*ARGS, as a run does (InterpreterBinding.cpp)
 
     // evaluation
     Value eval(Expr* e);

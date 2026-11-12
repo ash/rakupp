@@ -118,6 +118,22 @@ bool nestedSubUnsafe(const std::vector<StmtPtr>& scope, const SubDecl* d, const 
     return unsafe;
 }
 
+// A positional Pair whose value is a variable (`"length=i" => $length`) holds
+// that variable's CONTAINER, and a routine handed one may bind it and write
+// through it — Getopt::Long's get-options does (issue #255). A native
+// program's variable is a C++ value the Pair only copies, so such a call to a
+// module's routine is the interpreter's to make.
+bool pairHoldsVariable(const std::vector<ExprPtr>& args) {
+    for (auto& a : args) {
+        if (!a || a->kind != NK::Pair || syntacticNamedPair(a.get())) continue;
+        const Expr* v = static_cast<const PairExpr*>(a.get())->value.get();
+        if (v && v->kind == NK::VarExpr && !static_cast<const VarExpr*>(v)->declare &&
+            static_cast<const VarExpr*>(v)->name.rfind('$', 0) == 0)
+            return true;
+    }
+    return false;
+}
+
 // Does the LEAVE at body[j] read a name a statement before it declares? One
 // that does not can be armed at the routine's start — where an error in an
 // earlier statement cannot leave it unarmed — rather than keep the routine
