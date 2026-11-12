@@ -35,7 +35,7 @@ const char* routineIntrospectionRefusal(const Program&);
 bool exprMayUseTopic(const Expr* e);   // Interpreter.cpp: may `e` read or write `$_`?
 const char* builtinRefusal(const std::string& name, bool inTopic);   // codegen/Refusals.cpp, as are:
 const char* methodRefusal(const MethodCall* m, bool& routineWide); bool fatalCallSite(const Expr* e); bool isLeaveBlock(const Stmt* s);
-bool leaveReadsEarlier(const std::vector<StmtPtr>& body, size_t j);
+bool leaveReadsEarlier(const std::vector<StmtPtr>& body, size_t j); bool pairHoldsVariable(const std::vector<ExprPtr>& args);
 bool nestedSubUnsafe(const std::vector<StmtPtr>&, const SubDecl*, const std::set<std::string>&, const SubDecl*);
 std::string autothreadMask(const std::vector<Param>& ps, bool block);   // codegen/Autothread.cpp
 
@@ -2633,7 +2633,7 @@ struct Codegen {
                     if (!topics.empty()) return topics.back();
                     return "RT.dynVar(\"$_\")"; // the runtime topic (mainline $_)
                 }
-                if (v->name == "@*ARGS") return "RT.getArgs()";
+                if (v->name == "@*ARGS") return "RT.dynVarRef(\"@*ARGS\")";   // the Array itself, as interpreted (#255)
                 // (`&!f` too: a Callable attribute, called as `&!f(…)`)
                 if (v->name.size() > 2 && (v->name[0] == '$' || v->name[0] == '@' || v->name[0] == '%' ||
                                            v->name[0] == '&')
@@ -3373,6 +3373,8 @@ struct Codegen {
                 }
                 bool slip = false;
                 for (auto& a : c->args) if (isSlip(a.get())) slip = true;
+                if ((moduleExports_.count(c->name) || callEnvNames_.count(c->name)) && pairHoldsVariable(c->args))
+                    unsupported("a Pair holding a variable, passed to a module's routine");
                 std::string vl = argsVL(c->args);
                 // `next(L)`, `last $v`, `redo OUTER`: the argument picks the
                 // candidate (Interpreter::loopControlWith); the bare callee
@@ -5230,7 +5232,8 @@ struct Codegen {
                 refuseConstrainedWrite(tgt, "a binding");
                 return lvalueExpr(tgt) + " = " + exArg(a->value.get());
             }
-            unsupported("binding (:=) of a non-scalar");
+            // (routine-wide: a delegated `%h{k} := v` binds into a COPY of the routine's %h)
+            throw CodegenError{"binding (:=) of a non-scalar", /*routineWide=*/true};
         }
         std::string rhs = exArg(a->value.get());
         // `$fh.out-buffer = N` is not a slot write: the resize has to flush what

@@ -150,6 +150,63 @@ three, 2026-10-03 on the M3; the results are identical in both columns:
 What is left is mostly method dispatch: a native body calls a module's methods
 through the interpreter's dispatcher, the same one an interpreted call uses.
 
+## What compiled natively, and what did not
+
+Whether the program itself compiled natively is on the last line of the
+compile: `Compiled (native) …`, or a `note:` naming the construct that made it
+bundle (line number included). For the routines — every module routine, and
+the program's own when it bundled — ask for the report at compile time:
+
+```sh
+RAKUPP_AOT_REPORT=report.tsv rakupp --exe app.raku -o app
+```
+
+It is written once the binary is built, one tab-separated row per routine,
+then one per statement a native body hands to the interpreter:
+
+```
+# rakupp --exe module routine report
+routine    Getopt::Long  263  method new-from-objects  native
+routine    Getopt::Long  534  method get-options       interpreted  a sub declared inside a routine, closing over its variables
+delegated  Getopt::Long  612  method get-options
+```
+
+| Row | Means |
+|---|---|
+| `routine … native` | the body runs as compiled C++ |
+| `routine … interpreted REASON` | the body runs in the interpreter, and why |
+| `delegated …` | a native body hands the statement at that line to the interpreter |
+| `failed` / `disabled` at the top | the C++ compile failed / `RAKUPP_NO_AOT` was set |
+
+A program's own routines appear under the module name `<main>`. When the whole
+program compiled natively it has no rows: nothing in it is interpreted.
+
+Two greps that answer most questions:
+
+```sh
+grep -P '\tinterpreted\t' report.tsv | cut -f6 | sort | uniq -c | sort -rn   # which refusals cost you most
+grep get-options report.tsv                                                 # what became of one routine
+```
+
+The other switches, for when a compiled program and its interpreted run
+disagree (please report it — it is a bug):
+
+| Variable | When | Does |
+|---|---|---|
+| `RAKUPP_AOT_VERBOSE=1` | compile | names each routine that stays interpreted, and why, as it goes; shows the C++ compiler's errors when a native body is dropped |
+| `RAKUPP_AOT_RUNLOG=FILE` | run | the binary writes, at exit, how often each native body ran |
+| `RAKUPP_NO_AOT=1` | run | runs every module routine interpreted — if the difference goes away, a native body is the cause |
+| `RAKUPP_AOT_RANGE=LO-HI[,LO-HI…]` | run | attaches only the native bodies with those ordinals (in load order): bisect to the one that is wrong |
+| `RAKUPP_AOT_TRACE=1` | run | logs each body as it attaches, with its ordinal, and each one declined |
+
+Bisecting with the last two, on a binary `./app` whose output differs:
+
+```sh
+RAKUPP_NO_AOT=1 ./app            # right now? then a native body is wrong
+RAKUPP_AOT_RANGE=0-40 ./app      # halve the range until one ordinal is left …
+RAKUPP_AOT_RANGE=3-3 RAKUPP_AOT_TRACE=1 ./app 2>&1 | grep '\[aot\] #'   # … and name it
+```
+
 ## Numbers
 
 User CPU time, best of 3, arm64 build on an M3 (macOS). Measured 2026-07-12.

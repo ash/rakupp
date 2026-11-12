@@ -3410,6 +3410,18 @@ Value Interpreter::callEnvFirstAmp(const std::string& ampName, ValueList args) {
     return callBuiltin(ampName.substr(1), std::move(args));
 }
 
+// The process's arguments, bound as the top-level `@*ARGS` Array a run binds
+// (InterpreterModules.cpp): a compiled binary's main calls this and never runs
+// that code, so a module routine reading `@*ARGS` — Getopt::Long's
+// get-options — found none and bound Any (issue #255).
+void Interpreter::setArgs(std::vector<std::string> a) {
+    argv_ = std::move(a);
+    if (!global_) return;
+    Value args = Value::array();   // (an Array, as the run's: getArgs answers a List)
+    for (auto& s : argv_) args.arr()->push_back(Value::str(s));
+    global_->define("@*ARGS", args);
+}
+
 Value Interpreter::getArgs() {
     Value a = Value::array(); a.isList = true;
     for (auto& s : argv_) a.arr()->push_back(Value::str(s));
@@ -7012,12 +7024,16 @@ Value rtObjHash(const Value& v) {
 // into the variable checks it (rtKeptAssign)
 thread_local KeptItem t_keptItem;
 static Value& elemWriteTarget(Value& slot, bool list) {
+    (void)list;
     if (slot.isCell()) return *slot.deref();
-    if (list)
-        if (PRef<Value> c = cellOfProxy(&slot)) {
-            if (g_cbInterp && g_cbInterp->keptTyped(slot)) t_keptItem = {&slot, c.get()};
-            return *c;
-        }
+    // an element BOUND to a variable (`%h<k> := $x`, which the interpreter
+    // stores as a Proxy over $x's cell) is written through to the variable,
+    // in a Hash as in a List: Getopt::Long's store wrote over the binding
+    // and the program's `$length` never saw the option (issue #255)
+    if (PRef<Value> c = cellOfProxy(&slot)) {
+        if (g_cbInterp && g_cbInterp->keptTyped(slot)) t_keptItem = {&slot, c.get()};
+        return *c;
+    }
     return slot;
 }
 void RtKept::check(Interpreter& I, Value& r) {

@@ -74,9 +74,11 @@ target, or in CI for each target.
 
 ## Will my program behave the same compiled?
 
-That is the intent, and it is tested — `tools/run-optbench.raku` checks that the
-interpreter, `--exe`, `--exe -O` and Rakudo all produce identical output, and
-fails if any row diverges.
+That is the intent, and it is tested: `t/exe/parity.raku` compiles every
+program in the test suite and the examples — about 1,570 — and fails if any
+binary's output or exit status differs from the interpreted run. Where the
+compiled code cannot mean what the interpreter means, `--exe` bundles the
+interpreter instead (it says so in a `note:`), which costs speed, not meaning.
 
 It is not a guarantee. The code generator is a second implementation of the
 language, and a divergence there is a bug we want reported: run your program both
@@ -87,6 +89,28 @@ rakupp prog.raku > a.txt
 rakupp --exe prog.raku -o prog && ./prog > b.txt
 diff a.txt b.txt
 ```
+
+If they differ and the program uses modules, `RAKUPP_NO_AOT=1 ./prog` runs
+the modules' routines interpreted: if that fixes it, a native body is at
+fault, and `RAKUPP_AOT_RANGE` finds which one — see the next answer.
+
+## Which parts of my program were compiled natively?
+
+The last line of the compile says whether the program itself was: `Compiled
+(native) …`, or a `note:` naming what made it bundle. For each routine, set
+`RAKUPP_AOT_REPORT` when you compile:
+
+```bash
+RAKUPP_AOT_REPORT=report.tsv rakupp --exe prog.raku -o prog
+grep -P '\tinterpreted\t' report.tsv | cut -f6 | sort | uniq -c | sort -rn
+```
+
+Each row is `routine MODULE LINE NAME native`, or `… interpreted REASON`, or
+`delegated MODULE LINE NAME` for a statement a native body hands to the
+interpreter. `RAKUPP_AOT_VERBOSE=1` prints the same reasons as it compiles.
+The row format and the run-time switches (`RAKUPP_AOT_RUNLOG`,
+`RAKUPP_NO_AOT`, `RAKUPP_AOT_RANGE`, `RAKUPP_AOT_TRACE`) are in
+[NATIVE.md](../NATIVE.md#what-compiled-natively-and-what-did-not).
 
 ## Startup time
 
