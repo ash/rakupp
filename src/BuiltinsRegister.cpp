@@ -89,6 +89,33 @@ static int stdinFdForHandle(const Value& h, bool& resolved) {
 #endif
 }
 
+// An `:in` that is not a usable handle, by Rakudo's rule (Proc's BUILD): True
+// is a pipe the program writes (1), the Str '-' inherits (0), and anything
+// else — False, a Str naming a file, a number, Any, Nil — closes the child's
+// stdin (-1), so a child that reads it meets EOF at once. Every truthy value
+// was a pipe here, never closed, so `run(:in("x"), "cat", :out)` deadlocked
+// the program against its child (#258). A handle this could not use keeps the
+// piped mode it had.
+static int stdinModeOf(const Value* v) {
+    if (!v || (v->t == VT::Bool && v->b)) return 1;
+    if (v->t == VT::Str && v->s == "-") return 0;
+    if (v->t == VT::Hash && v->hashKind == "FileHandle") return v->truthy() ? 1 : 0;
+    return -1;
+}
+// The child's stdin for an `:in` value, run's and shell's: a handle's
+// descriptor, or the closed stdin's (the null device: a read is EOF), lands in
+// `inFd`; true answers the pipe True asks for. -1 stays inherit.
+static bool stdinFor(const Value* v, int& inFd) {
+    bool resolved = false;
+    const int fd = v ? stdinFdForHandle(*v, resolved) : -1;
+    if (resolved) { inFd = fd; return false; }
+    const int mode = stdinModeOf(v);
+#if !defined(_WIN32)
+    if (mode < 0) inFd = ::open("/dev/null", O_RDONLY);
+#endif
+    return mode == 1;
+}
+
 // `+values`: ONE non-itemized Iterable argument IS the list; anything else is
 // an element, and an ITEMIZED list counts as one element rather than
 // flattening. `skip(5, @a)` skips the array's elements while `skip(5, $a)`
@@ -2049,12 +2076,8 @@ void Interpreter::registerBuiltinsPart2() {
                             continue;
                         }
                     }
-                    // a HANDLE is the child's stdin (stdinFdForHandle); a Bool
-                    // keeps the deferred piped mode below
-                    bool resolved = false;
-                    int fd = v.pairVal() ? stdinFdForHandle(*v.pairVal(), resolved) : -1;
-                    if (resolved) { inFd = fd; haveInHandle = true; }
-                    else wantIn = v.pairVal() ? v.pairVal()->truthy() : true;
+                    // a handle or the closed stdin, else the piped mode below (stdinFor)
+                    wantIn = stdinFor(v.pairVal(), inFd); haveInHandle = inFd >= 0;
                 }
                 // :timeout(N) — a rakupp extension (Rakudo's run has no such
                 // adverb): SIGKILL the child's process group after N seconds.
@@ -2195,7 +2218,7 @@ void Interpreter::registerBuiltinsPart2() {
         refuseUnknownProcNamed(I, a, /*shell=*/true);
         std::string cmd; bool wantOut = false, wantErr = false, merge = false, binPipes = false;
         int outMode = -1, errMode = -1; // -1 unspecified, 0 :!x discard, 1 :x capture
-        int inFd = -1; // `:in($handle)`: the child's stdin itself (a Bool `:in` is not a shell() mode)
+        int inFd = -1; bool pipeIn = false; // `:in($handle)`: the child's stdin itself; `:in`: a pipe
         std::vector<std::string> envKV; bool haveEnv = false; std::string cwd;
         Value outSink, errSink; bool haveOutSink = false, haveErrSink = false;
         for (auto& v : flattenArgs(a)) {
@@ -2204,7 +2227,7 @@ void Interpreter::registerBuiltinsPart2() {
                                     if (asSink(v.pairVal())) { outSink = *v.pairVal(); haveOutSink = true; } }
                 else if (v.s == "err") { wantErr = v.pairVal() ? v.pairVal()->truthy() : true; errMode = wantErr ? 1 : 0;
                                     if (asSink(v.pairVal())) { errSink = *v.pairVal(); haveErrSink = true; } }
-                else if (v.s == "in" && v.pairVal()) { bool resolved = false; int fd = stdinFdForHandle(*v.pairVal(), resolved); if (resolved) inFd = fd; }
+                else if (v.s == "in" && v.pairVal()) pipeIn = stdinFor(v.pairVal(), inFd);   // (as run's)
                 else if (v.s == "merge") merge = v.pairVal() ? v.pairVal()->truthy() : true; // as in run(), above
                 else if (v.s == "bin") binPipes = v.pairVal() ? v.pairVal()->truthy() : true;
                 // :cwd — where the command runs. Parsed by run() since it was
@@ -2242,15 +2265,15 @@ void Interpreter::registerBuiltinsPart2() {
         long long childPid = 0;
         if (merge) { if (outMode == -1) { outMode = 1; wantOut = true; } errMode = -1; } // as in run(), above
 #if !defined(_WIN32)
-        // `:out` / `:err` pipes are live, as in run() above
-        if ((outMode == 1 || errMode == 1) && !haveOutSink && !haveErrSink) {
+        // `:in` / `:out` / `:err` pipes are live, as in run() above
+        if ((pipeIn || outMode == 1 || errMode == 1) && !haveOutSink && !haveErrSink) {
             SpawnStdio io;
             io.stdinFd = inFd;
             io.captureOut = outMode == 1; io.outToNull = outMode == 0;
             io.captureErr = errMode == 1; io.errToNull = errMode == 0;
             io.mergeErr = merge;
             long long pid = 0; std::string spawnErr;
-            long long tok = liveProcStart(argv, cwd, haveEnv ? &envKV : nullptr, io, false, pid, spawnErr);
+            long long tok = liveProcStart(argv, cwd, haveEnv ? &envKV : nullptr, io, pipeIn, pid, spawnErr);
             if (tok) {
                 if (inFd >= 0) ::close(inFd);
                 Value p = Value::makeHash(); p.hashKind = "Proc";
