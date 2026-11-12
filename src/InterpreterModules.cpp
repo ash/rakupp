@@ -2582,6 +2582,14 @@ bool Interpreter::bareNameResolves(const std::string& n, const Program& unit, bo
     };
     if (declaredIn(unit)) return true;
     if (const Program* outer = unitCurrent(); outer ? declaredIn(*outer) : needOuter) return true;
+    // `Pkg::NAME` in a package that resolves is that package's `our`
+    // constant or sub — a term, not a call that swallows the block: Rakudo
+    // reads `for RakuPress::Schema::WP-TABLES -> $t {…}` as a loop over the
+    // constant (RakuPress's import refused to compile). The X:: names are
+    // asked below, against Rakudo's own exceptions.
+    if (size_t c = n.rfind("::"); c != std::string::npos && c > 0 && n.rfind("X::", 0) != 0 &&
+        bareNameResolves(n.substr(0, c), unit, needOuter))
+        return true;
     // a pseudo-package or CORE-qualified name is not this check's business
     static const char* const kPseudo[] = {"MY::", "OUR::", "CORE::", "GLOBAL::", "PROCESS::", "COMPILING::",
         "DYNAMIC::", "CALLER::", "CALLERS::", "LEXICAL::", "OUTER::", "OUTERS::", "SETTING::", "UNIT::",

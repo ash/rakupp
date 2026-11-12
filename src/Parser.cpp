@@ -10169,7 +10169,7 @@ ExprPtr Parser::parsePrimary() {
             // …and so, before a block or a pointy, are `rand`, `i`, `Empty` and a TYPE: the
             // block is the statement's (`if rand { … }`, `for buf8 -> \bt { }`), as in Rakudo
             if (listopOk && (isKind(Tok::LBrace) || isOp("->") || isOp("<->")) && (name == "rand" || name == "i" ||
-                (name == "Empty" && !declaredSubNames_.count(name)) || (name.size() > 2 && !name.compare(name.size() - 2, 2, "::")) ||   // a stash, `for A:: -> $p` (#238)
+                (name == "Empty" && !declaredSubNames_.count(name)) || (name.size() > 2 && !name.compare(name.size() - 2, 2, "::")) || (stmtCond_ && name.find("::") != std::string::npos && name.rfind("X::", 0) != 0) ||   // a stash, `for A:: -> $p` (#238); `for Pkg::CONST -> $t`, a package's term (refuseGobbledBlocks decides)
                 isKnownTypeName(name) || declTypeNames_.count(name) || declClassDecls_.count(name) || usedTypeNames_.count(name) ||
                 (isNativeTypeName(name) && !declaredSubNames_.count(name)))) listopOk = false;   // `for uint64 -> \T`
             // callsame/nextsame are nullary redispatchers — they reuse the current
