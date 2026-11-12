@@ -11,7 +11,7 @@ here.*
 *Covered so far: 59e9d3aa, e5b2b6c8, dec6d962, 15997e10, 71451a61, c68ec738,
 19078698, 9338d1b1, 58e2fdd4, abfea750, 8a11fb4d, 1d8f1495,
 fd3fda0f, 33351b91, 5b6a2753, d1e39cb5, 64e4c44f, 7800a133,
-9c45b83d, 041789fd, 147d0b95, 7fc5b00b, b4f6e472.*
+9c45b83d, 041789fd, 147d0b95, 7fc5b00b, b4f6e472, 00c30ed1, b980a365.*
 
 ---
 
@@ -105,6 +105,31 @@ fd3fda0f, 33351b91, 5b6a2753, d1e39cb5, 64e4c44f, 7800a133,
   declaration and `s///`. A bare `/<[a]/` said it could not find the closing
   `/`. `t/regression/regex-class-assertion-needs-its-close.raku`. Reported by
   WeirdAnalyst.
+- **A phaser used as a value runs at its phase** (b980a365) (rakudo#4351, and
+  the 23 issues that time themselves with `now - ENTER now`). What was
+  wrong:
+  - `say "body"; my $x = INIT say "init"` said body first, and so did
+    BEGIN, CHECK and ENTER, in block and expression form;
+  - `say now - INIT now` printed about −0.00003;
+  - `CHECK <expr>` and `FIRST <expr>` were "Undefined routine";
+  - `FIRST { … }` used as a value in a loop ran on every iteration;
+  - an INIT parameter default ran on every call.
+
+  Now BEGIN, CHECK and INIT run before the code around them, the top level
+  included; ENTER runs at each entry of its block; FIRST runs at a loop's
+  first iteration, and every iteration reads its value. At the top level of
+  a program or an EVAL, the FIRSTs and then the ENTERs run on entry, as
+  Rakudo runs them: EVAL'd code ran even a statement-form ENTER in place. A
+  program that uses a value phaser bundles with the interpreter under
+  `--exe`, which had compiled it in place. Every snippet of those issues
+  now prints a positive time, except one that calls `nqp::time_n`.
+  `t/regression/value-phasers-run-at-their-phase.raku`.
+- **A set or bag operator op-assigned to an undefined target starts empty**
+  (00c30ed1). `my $s; $s ∪= 0` was Set.new(Any, 0), where Rakudo gives
+  Set.new(0): the undefined target joined in as a value. So did `(-)=`,
+  `⊖=` and `⊎=`. The target now starts from set() or bag(), and so does a
+  reduce over nothing: `[∪] ()` and `[⊎] ()` were Any.
+  `t/regression/set-op-assign-starts-empty.raku`.
 
 ### Fixed: crashes
 

@@ -125,25 +125,46 @@ regression fails the test rather than wedging the suite.
 
 ### R2 — a phaser used as a value runs when it is reached
 
-`say "body"; my $x = INIT say "init"` prints `body` first; Rakudo prints
-`init` first. `ENTER <expr>`, `BEGIN <expr>`, and presumably `CHECK <expr>`
-do the same. The `INIT <expr> — a value phaser` branch in src/Parser.cpp
-builds a `do` around an INIT-flagged block, and that block is evaluated where
-it stands. Three things to fix:
+*Done 2026-11-13 (00c30ed1, b980a365).*
 
-- Run the phaser's expression at its phase and cache the value, for INIT,
-  BEGIN, CHECK and ENTER.
-- Make `FIRST <expr>` a term. Today `say FIRST 2` dies with "Undefined routine
-  'FIRST'" (rakudo#4351, ✓).
-- Fold in TODO §2's open "an INIT default that reads an earlier parameter
-  (`$y = INIT { $x }`) still runs per call".
+- **Value phasers — fixed (b980a365).** The parser wrapped a value phaser in
+  a `do` that ran where it stood. Now each runs at its phase:
+  - BEGIN, CHECK and INIT values come from the pass that runs the static
+    phasers before the code around them, the top level included. A phaser
+    that pass cannot model runs once, where it is first reached.
+  - ENTER values are computed at each entry of their block.
+  - `FIRST <expr>` is a term (rakudo#4351). Its value is computed at a
+    loop's first iteration, and every iteration reads it.
+  - At the top level of a program or an EVAL, FIRSTs and then ENTERs run
+    on entry, each in source order, in either form. EVAL'd code had run
+    even its statement-form ENTERs in place.
+  - `--exe` compiled a value phaser in place. A program that uses one now
+    bundles with the interpreter, its routines native where they can be,
+    and the JIT leaves a loop that holds one to the interpreter.
+  - TODO §2's INIT default that reads an earlier parameter
+    (`$y = INIT { $x }`) runs once, at program start, and sees Any, as in
+    Rakudo.
 
-These are 42 cases in 23 issues: rakudo#1323, 1329, 1368, 1385, 1415, 1416,
-1491, 1656, 1668, 1681, 1740, 1741, 1973, 2002, 2387, 2537, 2925, 2988, 3185,
-3560, 3620, 4504 and 5919. Test the order of output, not timings.
-
-Done when the order matches Rakudo for every value phaser, and those 23
-issues' snippets agree with Rakudo apart from the elapsed times they print.
+  Every snippet of the 23 issues now prints a positive time, except one
+  that calls `nqp::time_n`.
+- **Set and bag op-assign — fixed (00c30ed1), found by this batch.** Roast's
+  S04-phasers/enter-leave.t builds a set with `∪=` beside
+  `last if ENTER $set<>`. It passed by accident while ENTER ran in place.
+  At the block's entry it exposed `my $s; $s ∪= 0` giving Set.new(Any, 0):
+  an undefined target now starts from set() or bag(), as in Rakudo, and so
+  does a reduce over nothing.
+- **Left, found beside it.**
+  - Rakudo's `INIT $c` and `ENTER { …; $i }` hand back the variable
+    itself, so a later assignment shows through:
+    `our $c = 1; my $v := INIT $c; $c = 5; say $v` prints 5 in Rakudo.
+    Raku++ keeps the value from the phase, (Any). No issue asks for it.
+  - Rakudo runs a top-level FIRST even before INIT (`INIT say "i"; FIRST
+    say "f"` prints f first). Raku++ runs it after INIT, beside the ENTERs.
+  - `--target=js` still runs a value phaser where it stands, as it ran
+    `INIT <expr>` before R2. Refusing one would stop such a program
+    compiling to JavaScript without `--fallback=wasm`.
+  - `FIRST(…)` with parentheses is a call of the phaser in Raku++; Rakudo
+    refuses it as an undeclared routine. That belongs to R10.
 
 ### R3 — objects: read-only attributes, typed containers, roles, the MOP
 
@@ -214,6 +235,8 @@ issues' snippets agree with Rakudo apart from the elapsed times they print.
 - **rakudo#5138 ✓:** `(1..*).Slip.is-lazy` is False.
 - **rakudo#1399 ✓, #1398 ✓:** `.sink for 1..*` returns at once. A pure loop
   over an infinite range is elided; it must run forever.
+- Found by R2: the set predicates reduced over nothing or one operand.
+  `[⊆] ()` is Any and `[∈] (1,)` is 1; Rakudo gives True, as a chain does.
 - The rest of the lists, hashes and numeric sections.
 
 ### R6 — regexes and grammars
@@ -307,6 +330,9 @@ battery scan, and some need the decisions below first.
   R1's rakudo#3775, ✓). Raku++ accepts `, = - / ` … → € © ¿` unquoted; Rakudo
   refuses each ("Unrecognized regex metacharacter … (must be quoted to match
   literally)"). Raku++ already refuses `;` and `!`.
+- **A phaser called like a routine** (found by R2). Raku++ runs
+  `FIRST($_ * 10)` as the phaser; Rakudo refuses it as an undeclared
+  routine, as it does `ENTER(…)` and `INIT(…)`.
 - **Not here:** a missing `;` between statements on separate lines. That is
   TODO's open decision on EVAL's strict statement separation. The tracker
   adds five issues whose snippets run only because of it.
@@ -375,9 +401,20 @@ Each is answered when its batch starts, not before.
 |---|---|---|---:|---|---|
 | baseline, 2026-11-12 | — | 6ee8f413 | 1,264 | 1,425/1,425 | 2259/2259 |
 | R1, 2026-11-12 | done; rakudo#5868 deferred to PARALLEL-PLAN (decision 4) | 041789fd, 147d0b95, 7fc5b00b, b4f6e472 | 1,267 | 1,425/1,425 | 2263/2263 |
+| R2, 2026-11-13 | done | 00c30ed1, b980a365 | 1,270 | 1,425/1,425 | 2265/2265 |
 
 R1's per-file changes against the baseline:
 - **3686 and 5835:** TIMEOUT to MATCH.
 - **5537:** to DIFF-EXIT; the R3 item above is what is left.
 - **1407 and 5995:** DIFF-EXIT to MATCH; unrelated, and not looked into.
 - **2181:** MATCH to DIFF-OUT; noise, the snippet prints `<0 1>.pick`.
+
+R2's per-file changes against R1:
+- **4351:** DIFF-BOTH to MATCH (`say FIRST 2`).
+- **4504/0:** DIFF-OUT to MATCH (`now - ENTER now` at the top level).
+  4504/1, the same with a `multi`, stays DIFF-OUT on Rakudo's side: its
+  `.race` runs serially there and prints 3, and Raku++ prints 1.
+- **2181:** back to MATCH; noise, as in R1.
+- The other timing snippets are NONDET, so the diff run leaves them out.
+  Run through the harness by name, each prints a positive time, except
+  3620/0, which calls `nqp::time_n`.

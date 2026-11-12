@@ -230,8 +230,10 @@ The same items grouped by theme, with a complexity estimate for each:
   naming itself, a huge index, a class named `Rat`, and two `react` hangs.
   Its sixth crash, rakudo#5868 (a `.race` over `but role` mixins), is
   deferred to PARALLEL-PLAN by the plan's decision 4: it is the unlocked
-  `classes_` write of the `nonblocking-await.t` item below. Next step: R2,
-  value phasers.
+  `classes_` write of the `nonblocking-await.t` item below. R2 is done
+  (00c30ed1, b980a365, 2026-11-13): a phaser used as a value runs at its
+  phase, and a set op-assigned to an undefined target starts empty. Next
+  step: R3, objects.
 
   R9's `use Telemetry` can run beside any batch. The plan's other questions
   are answered when their batch (R3, R10) starts.
@@ -400,8 +402,6 @@ The same items grouped by theme, with a complexity estimate for each:
     right-hand side.
   - `for $l.list` over a quit Supply's list raises before the values;
     `for $l` and `for @$l` read them first, as Rakudo does.
-  - An INIT default that reads an earlier parameter (`$y = INIT { $x }`)
-    still runs per call.
   - `Int:D()` given a Str type object dies at bind; Rakudo is not consistent
     there (it dies, or returns an undefined value).
   Also a `my class` used earlier in its OWN block is no longer reported as a
