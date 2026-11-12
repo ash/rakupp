@@ -7813,7 +7813,7 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
                         for (ClassInfo* c = ci.get(); c && !rational; c = c->parent.get())
                             for (auto& r : c->doneRoles)
                                 if (r == "Rational" || r.rfind("Rational[", 0) == 0) { rational = true; break; }
-                        if (!rational) rational = typeOrSubsetMatches(Value::typeObj(ci->name), "Rational");
+                        if (!rational && ci->name != "Rat" && ci->name != "FatRat" && ci->name != "Rational") rational = typeOrSubsetMatches(Value::typeObj(ci->name), "Rational");   // (never by a core rational's NAME: a user `class Rat` boxed a `Rat.new` that was itself, rakudo#5537)
                         ci->rationalNew = rational;
                     }
                     ValueList pos;
