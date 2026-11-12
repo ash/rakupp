@@ -2271,6 +2271,7 @@ bool Interpreter::bindElemMethodAlias(Assign* a, Value& out) {
         auto arr = base->arrS();
         const size_t at = (size_t)kv.i;
         Value fill = containerFill(*base);
+        if (at >= ((size_t)1 << 20)) growToIndexCheck((long long)at);   // (an index past the machine's memory)
         while (arr->size() <= at) arr->push_back(fill);   // (as `$x := @a[5]` grows it)
         const Value guard = elemAliasGuard(*base, false, vn);
         proxy = (*arr)[at].t == VT::Hash && (*arr)[at].hashKind == "Proxy" && (*arr)[at].hash()
@@ -7076,6 +7077,7 @@ Value& rtIndexRef(Value& base, const Value& key, bool isHash, const char* stepOp
     if (base.t != VT::Array || !base.arr()) { base = Value::array(); base.itemized = true; }
     long long i = writeIndexInt(key);
     if (i < 0) negIndexThrow(i);
+    if (i >= (1LL << 20)) growToIndexCheck(i);   // (an index past the machine's memory)
     if (i >= (long long)base.arr()->size())
         // the gaps read as the container's own default — `is default(v)` first,
         // then the element type's object (sheet LA-21)

@@ -45,6 +45,7 @@ static bool hashTypeParam(const Value& inv, bool key, Value& out) {
 bool isP5Pattern(std::string_view pat);   // InterpreterRegex.cpp: a `:P5`/`:Perl5` regex
 std::string sameCase(const std::string& s, const std::string& pat);   // Builtins.cpp: `.samecase`, by grapheme
 std::shared_ptr<const Regex> compileRegexCached(const std::string& pat, const std::string& flags);   // InterpreterCore.cpp
+void growToIndexCheck(long long i);   // InterpreterCore.cpp: an index past the machine's memory is refused
 // A pattern for one `.contains` / `.comb` / `.split` call: the per-thread
 // cache's compiled form (these compiled it afresh on every call, half of a
 // `.split(/\s+/)` loop's time), or, when a `<?{…}>` needs this call's hooks on
@@ -1734,6 +1735,7 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
                     }
                     // an unshaped structure autovivifies on a write, like `@a[1][2] = 9`
                     if (!(cur->t == VT::Array && cur->arr())) *cur = Value::array({});
+                    if (ix >= (1LL << 20)) growToIndexCheck(ix);   // (an index past the machine's memory)
                     while ((long long)cur->arr()->size() <= ix) cur->arr()->push_back(Value::any());
                 }
                 if (leaf) {
@@ -1783,6 +1785,7 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
         if (m == "AT-POS") return in ? (*inv.arr())[i] : inv.isList ? Value::nil() : Value::any();
         if (m == "ASSIGN-POS") {
             Value v = args.size() > 1 ? args[1] : Value::any();
+            if (i >= (1LL << 20)) growToIndexCheck(i);   // (an index past the machine's memory)
             if (i >= 0) { while ((long long)inv.arr()->size() <= i) inv.arr()->push_back(Value::any());
                           (*inv.arr())[i] = rtElementItem(v); }
             return v;

@@ -9,6 +9,11 @@
 #include <sys/syscall.h>
 #include <unistd.h>
 #endif
+#if defined(__APPLE__)
+#include <sys/sysctl.h>   // hw.memsize: an array grown past the machine's memory (growToIndexCheck)
+#elif !defined(_WIN32)
+#include <unistd.h>       // sysconf(_SC_PHYS_PAGES): the same, elsewhere
+#endif
 
 namespace rakupp {
 extern std::string g_exeInterpreterOverride;   // Runtime.cpp: a harness's $*EXECUTABLE for a compiled binary
@@ -7675,6 +7680,29 @@ void regexStackCheck() {
         throw RakuError{Value::typeObj("X::Recursion"),
                         "Too many levels of recursion in a regex (does a rule call itself before matching anything?)"};
 }
+// An index no machine could reach: `my $b; $b[1e18] = "meow"` grew the array a
+// slot at a time until memory ran out, eight gigabytes in six seconds
+// (rakudo#5835). Refused up front, as Rakudo refuses what it cannot allocate,
+// when the slots alone outweigh the machine's memory. growToIndex asks only
+// past a million slots, so an ordinary grow pays one compare.
+static unsigned long long physicalMemoryBytes() {
+#if defined(_WIN32)
+    MEMORYSTATUSEX ms; ms.dwLength = sizeof ms;
+    return GlobalMemoryStatusEx(&ms) ? (unsigned long long)ms.ullTotalPhys : 0;
+#elif defined(__APPLE__)
+    unsigned long long mem = 0; size_t len = sizeof mem;
+    return sysctlbyname("hw.memsize", &mem, &len, nullptr, 0) == 0 ? mem : 0;
+#else
+    const long pages = sysconf(_SC_PHYS_PAGES), page = sysconf(_SC_PAGESIZE);
+    return pages > 0 && page > 0 ? (unsigned long long)pages * (unsigned long long)page : 0;
+#endif
+}
+void growToIndexCheck(long long i) {
+    static const unsigned long long mem = physicalMemoryBytes();
+    const unsigned long long slots = (unsigned long long)i + 1;
+    if (slots > (mem ? mem : 16ULL << 30) / sizeof(Value))   // a slot is one Value at the least
+        throw RakuError{Value::typeObj("X::AdHoc"), "Unable to allocate an array of " + std::to_string(slots) + " elements"};
+}
 
 bool Interpreter::boolify(const Value& v) {
     // Failure.Bool is False and HANDLES it: `$x %% 0 && …` in sink context
@@ -13017,6 +13045,7 @@ Value* Interpreter::lvalue(Expr* e, bool asInvocant) {
                 long long n = k.toInt();
                 if (n >= 0) {
                     idxHold = b;
+                    if ((long long)n >= (1LL << 20)) growToIndexCheck((long long)n);   // (an index past the machine's memory)
                     if ((size_t)n >= idxHold.arr()->size()) idxHold.arr()->resize((size_t)n + 1, Value::any());
                     return &(*idxHold.arr())[(size_t)n];
                 }
@@ -14188,6 +14217,7 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
                             if (lazy && i >= lim) { stop = true; break; }
                             Value v = nextVal();
                             if (i >= 0) {
+                                if ((long long)i >= (1LL << 20)) growToIndexCheck((long long)i);   // (an index past the machine's memory)
                                 if ((size_t)i >= bp->arr()->size()) bp->arr()->resize((size_t)i + 1, Value::any());
                                 (*bp->arr())[(size_t)i] = v;
                             }
@@ -15040,6 +15070,7 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
                 for (size_t i = 0; i < idx.size(); i++) {
                     long long k = idx[i];
                     if (k < 0) negIndexThrow(k);
+                    if (k >= (1LL << 20)) growToIndexCheck(k);   // (an index past the machine's memory)
                     while ((long long)base->arr()->size() <= k) base->arr()->push_back(Value::any());
                     Value v = i < vs.size() ? vs[i] : Value::any();
                     v.itemized = false;
@@ -15435,6 +15466,7 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
                         else {
                             long long n = ks[i].toInt();
                             if (n < 0) continue;
+                            if ((long long)n >= (1LL << 20)) growToIndexCheck((long long)n);   // (an index past the machine's memory)
                             if ((size_t)n >= basep->arr()->size()) basep->arr()->resize((size_t)n + 1, Value::any());
                             (*basep->arr())[(size_t)n] = v;
                         }
@@ -15935,6 +15967,7 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
                             else if (bp->t == VT::Array && bp->arr()) {
                                 long long j = ks[i].toInt();
                                 if (j < 0) negIndexThrow(j); // (this skipped the key and kept the rest of the assignment)
+                                if ((long long)j >= (1LL << 20)) growToIndexCheck((long long)j);   // (an index past the machine's memory)
                                 if ((long long)bp->arr()->size() <= j) bp->arr()->resize(j + 1, Value::any());
                                 storeThrough((*bp->arr())[j], v);
                             }
@@ -23344,6 +23377,7 @@ Value Interpreter::evalBinary(Binary* b) {
                                     else if (bp->t == VT::Array && bp->arr()) {
                                         long long j = keys[i].toInt();
                                         if (j < 0) continue;
+                                        if ((long long)j >= (1LL << 20)) growToIndexCheck((long long)j);   // (an index past the machine's memory)
                                         if ((long long)bp->arr()->size() <= j) bp->arr()->resize(j + 1);
                                         (*bp->arr())[j] = v;
                                     }

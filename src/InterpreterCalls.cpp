@@ -767,6 +767,7 @@ bool Interpreter::assignMultiDimSlice(Expr* target, const Value& rhs) {
                 if (node->t != VT::Array) *node = Value::array();
                 long long i = tup[d2].toInt();
                 if (i < 0) negIndexThrow(i);
+                if (i >= (1LL << 20)) growToIndexCheck(i);   // (an index past the machine's memory)
                 while ((long long)node->arr()->size() <= i) node->arr()->push_back(Value::any());
                 node = &(*node->arr())[i];
             }
@@ -2973,6 +2974,7 @@ static Value keptWrite(Interpreter& I, const Value& proxy, Value nv) {
             Interpreter::ParStripe ps(I, in);
             if (at >= in->size()) {
                 if (!grow) return;
+                if (at >= ((size_t)1 << 20)) growToIndexCheck((long long)at);   // (an index past the machine's memory)
                 while (in->size() <= at) in->push_back(Value::any());   // (a slice's place past the end)
             }
             Value& slot = (*in)[at];
@@ -3667,6 +3669,7 @@ static Value slotProxyWriteRef(Interpreter& I, const Value& proxy, const Value& 
     Interpreter::ParStripe ps(I, arr);
     if (Value* last = proxy.hash()->findPre(kSlotLast().s, kSlotLast().h)) *last = nv;
     if (slotProxyDetached(ref, arr)) return nv;  // written to the detached element
+    if (idx >= ((size_t)1 << 20)) growToIndexCheck((long long)idx);   // (an index past the machine's memory)
     while (arr->size() <= idx) arr->push_back(ref.ofType().empty() ? Value::any() : nativeFill(ref.ofType()));
     (*arr)[idx] = nv;
     return nv;
@@ -4198,6 +4201,7 @@ void Interpreter::assignListTarget(ListExpr* lst, const Value& rhs, bool isBindi
                         else {
                             long long i = k.toInt();
                             if (i < 0) continue;
+                            if (i >= (1LL << 20)) growToIndexCheck(i);   // (an index past the machine's memory)
                             if ((size_t)i >= bp->arr()->size()) bp->arrRef().resize((size_t)i + 1, Value::any());
                             bp->arrRef()[(size_t)i] = v;
                         }
@@ -6118,6 +6122,7 @@ bool Interpreter::packedElemStore(Assign* a, Value& out) {
     if (!plainWordValue(v, pa->isNum)) return false;
     // past the end (an `=` only): the gap holds the native default, 0 or 0e0,
     // whose bits are all zero — as `my int @a; @a[3] = 7` is (0, 0, 0, 7)
+    if (i >= ((size_t)1 << 20)) growToIndexCheck((long long)i);   // (an index past the machine's memory)
     if (i >= pa->w.size()) pa->w.resize(i + 1, 0);
     if (op != '=') {
         if (pa->isNum) {

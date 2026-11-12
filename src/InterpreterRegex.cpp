@@ -4195,6 +4195,7 @@ Value Interpreter::containerOfExpr(Expr* e) {
                     long long i = kv.toInt();
                     if (i < 0) negIndexThrow(i);
                     if (i >= 0) {
+                        if (i >= (1LL << 20)) growToIndexCheck(i);   // (an index past the machine's memory)
                         while ((long long)arr->size() <= i) arr->push_back(Value::any());
                         size_t at = (size_t)i;
                         // the slot may itself hold an alias — pass that one along

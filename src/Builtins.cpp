@@ -7,6 +7,7 @@
 
 namespace rakupp {
 void refuseNonBlobWrite(Interpreter& I, const ValueList& args, const char* param, bool concrete);   // (MethodCallPart1b.cpp)
+void growToIndexCheck(long long i);   // (InterpreterCore.cpp) an index past the machine's memory is refused
 
 // One mutex PER SUPPLIER, not a slot from the shared 64-stripe pool. The
 // serialization contract (emissions are serialized per supplier, and done/quit
@@ -6949,6 +6950,7 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
                 {{"what", Value::str("Index")}, {"got", args[0]}, {"range", Value::str("0..^Inf")}},
                 "Index out of range. Is: " + args[0].toStr() + ", should be in 0..^Inf");
         // a LAZY array reifies up to the position first, so the bind lands there
+        if (i >= (1LL << 20)) growToIndexCheck(i);
         if (inv.ext()) materializeLazy(inv, (size_t)i + 1);
         if (i >= 0) {
             while ((long long)inv.arr()->size() <= i) inv.arr()->push_back(Value::any());

@@ -1360,9 +1360,11 @@ Value containerFill(const Value& base);
 // stripe: two workers auto-extending one array each realloc'd its buffer at
 // once (t/stress/ub-indexed-grow). `named`, when this grew it, is what slot `i`
 // starts as (`is default`). One compare and nothing else when `i` is there.
+void growToIndexCheck(long long i);   // InterpreterCore.cpp: an index past the machine's memory is refused
 template <class F>
 inline void growToIndex(const Interpreter& I, ValueList& a, long long i, F fill, const Value* named = nullptr) {
     if ((long long)a.size() > i) return;
+    if (i >= (1LL << 20)) growToIndexCheck(i);
     Interpreter::ParStripe gs(I, &a); raceLen(&a, RaceAcc::Write);   // (--race: a store past the end grows it)
     while ((long long)a.size() <= i) a.push_back(fill());
     if (named) a[(size_t)i] = *named;

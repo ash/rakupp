@@ -1149,6 +1149,7 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
         long long i = writeIndexInt(args[0]);
         if (i < 0) i += (long long)inv.arr()->size();
         if (i < 0) i = 0;
+        if (i >= (1LL << 20)) growToIndexCheck(i);   // (an index past the machine's memory)
         while ((long long)inv.arr()->size() <= i) inv.arr()->push_back(Value::any());
         (*inv.arr())[(size_t)i] = args[1];
         return args[1];
