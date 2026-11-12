@@ -597,7 +597,7 @@ static const std::string& aliasedClassName(const std::string& n) {
 // UPDATE that one — a match inside a desugared block (`(S/// with X)` becomes
 // `do { with X { … } }`) must be visible to the caller, like Rakudo's
 // per-routine $/ declaration.
-void Interpreter::setMatchVar(Value v) {
+void Interpreter::setMatchVar(Value v, bool overParam) {
     // a match made on the caller's behalf (junction collapse, .grep/.first
     // matcher) publishes nothing — see matchVarSuppressed_ in the header
     if (matchVarSuppressed_) return;
@@ -609,7 +609,9 @@ void Interpreter::setMatchVar(Value v) {
             // `.match` in the body does not overwrite the match that was passed
             // in. Clobbering it made YAMLish's `$value.=subst(…)` wipe `$/`, so
             // the `$<properties>` read on the next line saw an empty Match.
-            if (it->second.readonly) return;
+            // A regex's code block is the exception (overParam): its `$/` and
+            // `$0` are the cursor's, and its binder puts the parameter back.
+            if (it->second.readonly && !overParam) return;
             it->second = std::move(v); return; // update the visible $/
         }
         if (e->routineFrame || !e->parent) { e->vars["$/"] = std::move(v); return; } // scope to the routine (or program top)
@@ -17057,7 +17059,7 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
             // …except in a native, which has no undefined value to reset to
             nativeUndefCheck(rhs, a->target.get(), lv);
             const std::string& nm = static_cast<VarExpr*>(a->target.get())->name;
-            Value dv = Value::any();
+            Value dv = nm == "$/" || nm == "$!" ? Value::nil() : Value::any();   // (theirs is Nil: `.VAR.default`)
             // An ATTRIBUTE resets to its DECLARED TYPE object, not to bare Any:
             // `$!authority = Nil` leaves `Authority`, so the very next
             // `$!authority .= new(…)` has a type to call `new` on. Attributes are
@@ -21074,31 +21076,15 @@ Value Interpreter::regexMatch(const std::string& subject, std::string_view patte
         Value cursor = build(cur);
         bool hadSlash = tctx().cur->find("$/") != nullptr;
         Value savedSlash = hadSlash ? *tctx().cur->find("$/") : Value::nil();
-        std::vector<std::pair<std::string, Value>> savedCaps;
-        auto bindCap = [&](const std::string& nm, const Value& v) {
-            Value* old = tctx().cur->find(nm);
-            savedCaps.push_back({nm, old ? *old : Value::nil()});
-            tctx().cur->define(nm, v);
-        };
-        if (cursor.arr()) for (size_t k = 0; k < cursor.arr()->size(); k++)
-            bindCap("$" + std::to_string(k), (*cursor.arr())[k]);
-        // …and a `$N` the cursor does NOT have is Nil here, not a slot a
-        // PREVIOUS match left standing (the finished match clears them the same way)
-        for (size_t k = cursor.arr() ? cursor.arr()->size() : 0; ; k++) {
-            const std::string nm = "$" + std::to_string(k);
-            if (!tctx().cur->find(nm)) break;
-            bindCap(nm, Value::nil());
-        }
-        if (cursor.hash()) for (auto& kv : *cursor.hash()) bindCap("$<" + kv.first + ">", kv.second);
+        // the block's `$/` — and so its `$0` and `$<name>` — is the cursor, even
+        // where a `$/` parameter stands (put back below)
         const bool quiet = liftMatchVarQuiet();
-        setMatchVar(cursor);
+        setMatchVar(cursor, true);
         Value out = Value::nil(); bool featThrow = false; FeatureNotBuilt fe; std::exception_ptr rakuErr;
         try { out = evalString(code); }
         catch (FeatureNotBuilt& e) { featThrow = true; fe = e; }
         catch (RakuError& e) { if (!regexBlockErrorStaysQuiet(e)) rakuErr = std::current_exception(); } // `<?{ die }>` leaves the parse (Rakudo) — re-raised after the restores
         catch (ExitEx&) { throw; } catch (WorkerAbortEx&) { throw; } catch (...) {}   // (an `exit` in the block leaves, and a worker told to stop does: both were swallowed here, and the match went on)
-        for (auto it = savedCaps.rbegin(); it != savedCaps.rend(); ++it)
-            tctx().cur->define(it->first, it->second);
         if (Value* s2 = tctx().cur->find("$/")) { if (hadSlash) *s2 = savedSlash; }
         restoreMatchVarQuiet(quiet, hadSlash);
         if (featThrow) throw fe;
@@ -21153,26 +21139,9 @@ Value Interpreter::regexMatch(const std::string& subject, std::string_view patte
             Value savedSlash = hadSlash ? *tctx().cur->find("$/") : Value::nil();
             Value* csl = tctx().cur->find("$\xC2\xA2");
             Value savedCursor = csl ? *csl : Value::nil();
-            // `$0`/`$<name>` are separate slots from `$/`, and a PREVIOUS match's are
-            // still standing: without overwriting them the block reads the last
-            // regex's captures rather than this one's.
-            std::vector<std::pair<std::string, Value>> savedCaps;
-            auto bindCap = [&](const std::string& nm, const Value& v) {
-                Value* old = tctx().cur->find(nm);
-                savedCaps.push_back({nm, old ? *old : Value::nil()});
-                tctx().cur->define(nm, v);
-            };
-            if (cursor.arr()) for (size_t k = 0; k < cursor.arr()->size(); k++)
-                bindCap("$" + std::to_string(k), (*cursor.arr())[k]);
-            // (a `$N` this cursor lacks is Nil in the block — S05-capture/caps.t)
-            for (size_t k = cursor.arr() ? cursor.arr()->size() : 0; ; k++) {
-                const std::string nm = "$" + std::to_string(k);
-                if (!tctx().cur->find(nm)) break;
-                bindCap(nm, Value::nil());
-            }
-            if (cursor.hash()) for (auto& kv : *cursor.hash()) bindCap("$<" + kv.first + ">", kv.second);
+            // the block's `$/`, `$0` and `$<name>` are the cursor (as evalInCursor's)
             const bool quiet = liftMatchVarQuiet();
-            setMatchVar(cursor);
+            setMatchVar(cursor, true);
             tctx().cur->define("$\xC2\xA2", cursor);
             Value tgt; tctx().makeTargets.push_back(&tgt);
             // FeatureNotBuilt (a SLIM stub — under --slim=-eval evalString IS
@@ -21185,12 +21154,9 @@ Value Interpreter::regexMatch(const std::string& subject, std::string_view patte
             catch (ExitEx&) { throw; } catch (WorkerAbortEx&) { throw; } catch (...) {}   // (as the first of these)
             tctx().makeTargets.pop_back();
             if (tgt.pairVal()) inlineMade = tgt.pairValS();
-            // All of these are scoped to the block: the caller sets `$/` and the
-            // capture slots to the finished match straight after, and `$\xC2\xA2`
-            // is Nil outside a regex.
+            // Both are scoped to the block: the caller sets `$/` to the finished
+            // match straight after, and `$\xC2\xA2` is Nil outside a regex.
             tctx().cur->define("$\xC2\xA2", savedCursor);
-            for (auto it = savedCaps.rbegin(); it != savedCaps.rend(); ++it)
-                tctx().cur->define(it->first, it->second);
             if (Value* s2 = tctx().cur->find("$/")) { if (hadSlash) *s2 = savedSlash; }
             restoreMatchVarQuiet(quiet, hadSlash);
             if (featThrow) throw fe;
@@ -21389,30 +21355,7 @@ Value Interpreter::regexMatch(const std::string& subject, std::string_view patte
     else mv = Value::nil();
     if (mv.t == VT::Match && inlineMade) mv.setPairVal(inlineMade); // $/.ast
     unwire();
-    setMatchVar(mv);
-    if (mv.t == VT::Match) {
-        if (mv.arr()) for (size_t k = 0; k < mv.arr()->size(); k++) tctx().cur->define("$" + std::to_string(k), (*mv.arr())[k]);
-        if (mv.hash()) for (auto& kv : *mv.hash()) tctx().cur->define("$<" + kv.first + ">", kv.second);
-        // …and clear the slots THIS match does not have. `$0..$N` are aliases of
-        // `$/`, but an earlier match defined them as real vars in scopes still
-        // visible from here, so a narrower match read the previous one's
-        // captures: `"a" ~~ m:P5/a|(b)/` left `$0` holding whatever the last
-        // match put there instead of the undefined the unmatched group means.
-        for (long k = (long)(mv.arr() ? mv.arr()->size() : 0); ; k++) {
-            std::string nm = "$" + std::to_string(k);
-            if (!tctx().cur->find(nm)) break;
-            tctx().cur->define(nm, Value::nil());
-        }
-    } else {
-        // FAILED match: $0..$N are aliases of $/ (now Nil), but earlier matches
-        // defined them as real vars in scopes still visible from here — shadow
-        // every one that resolves, so the alias contract holds after failure
-        for (long k = 0; ; k++) {
-            std::string nm = "$" + std::to_string(k);
-            if (!tctx().cur->find(nm)) break;
-            tctx().cur->define(nm, Value::nil());
-        }
-    }
+    setMatchVar(mv);   // (`$0`, `$<name>` read through it: see evalVarExpr)
     return mv;
 }
 struct HyperOpName {
@@ -31078,6 +31021,23 @@ Value Interpreter::evalVarExpr(Expr* e) {
             if (Value r; engineProxySlotRead(*this, p, r)) return r;
         }
     }
+    // `$0`, `$1`, … ARE `$/[0]`, `$/[1]`, … of the `$/` in scope (#256), as
+    // `$<name>` is `$/<name>`: a `my $/`, a `$/` parameter, an action method's
+    // `$/`. They were slots of their own that each `~~` wrote, so they read the
+    // last `~~` anywhere visible — JSON::Tiny's `$0.Str ne '"'` saw a stale
+    // capture and prefixed every key.
+    if (sigil == '$' && ve->name.size() >= 2 && !ve->declare &&
+        ve->name.find_first_not_of("0123456789", 1) == std::string::npos)
+        if (Value* sl = tctx().cur->find("$/")) {
+            // (a 19+-digit `$1111…` is past any capture list, not a stoul overflow)
+            const size_t idx = ve->name.size() < 19 ? std::stoul(ve->name.substr(1)) : SIZE_MAX;
+            if (sl->arr()) return idx < sl->arr()->size() ? (*sl->arr())[idx] : Value::nil();
+            if (sl->t == VT::Match || sl->t == VT::Nil || idx == SIZE_MAX) return Value::nil();
+            // anything else answers what `$/[N]` does: `Any[0]` is Any, `'ab'[0]` the Str
+            Index ix; ix.line = e->line;
+            ix.base = std::make_unique<VarExpr>("$/"); ix.index = std::make_unique<IntLit>((long long)idx);
+            return evalIndex(&ix);
+        }
     // a placeholder's caret/colon spelling reads its BARE slot ($^b and a
     // later $b are one variable; the binder defines only the bare name)
     if (ve->name.size() > 2 && (ve->name[1] == '^' || ve->name[1] == ':'))
@@ -31730,19 +31690,7 @@ Value Interpreter::evalVarExpr(Expr* e) {
         }
         if (const Value* ref = builtinRef(bare)) return *ref;  // one stable Callable per builtin
     }
-    // $0, $1, … are aliases for $/[N]; fall back to $/ when not directly bound
-    if (ve->name.size() >= 2 && ve->name[0] == '$' && ascii::isdigit((unsigned char)ve->name[1])) {
-        bool alldig = true;
-        for (size_t k = 1; k < ve->name.size(); k++) if (!ascii::isdigit((unsigned char)ve->name[k])) alldig = false;
-        if (alldig) if (Value* sl = tctx().cur->find("$/")) {
-            // (a 19+-digit `$1111…` is past any capture list, not a stol overflow)
-            if (sl->arr() && ve->name.size() < 19) { long idx = std::stol(ve->name.substr(1)); if (idx < (long)sl->arr()->size()) return (*sl->arr())[idx]; }
-            // a plain VALUE bound to `$/` is its own one-element list: `$0` is `$/[0]`
-            else if (ve->name == "$0" && (sl->t == VT::Str || sl->t == VT::Int || sl->t == VT::Num || sl->t == VT::Rat))
-                return *sl;
-        }
-    }
-    // …and `@0` is `@($0)`: the quantified capture's list (or a lone Match's
+    // `@0` is `@($0)`: the quantified capture's list (or a lone Match's
     // own positional captures)
     if (ve->name.size() >= 2 && ve->name.size() < 19 && ve->name[0] == '@' &&
         ascii::isdigit((unsigned char)ve->name[1])) {

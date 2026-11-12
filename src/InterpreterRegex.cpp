@@ -2331,11 +2331,7 @@ std::string Interpreter::substSelect(const std::string& subj, const std::string&
         std::string orig = subj.substr(mm.from, mm.to - mm.from);
         std::string r;
         Value matchV = build(mm);
-        auto bindCaps = [&]() {
-            setMatchVar(matchV);
-            if (matchV.arr()) for (size_t k = 0; k < matchV.arr()->size(); k++) tctx().cur->define("$" + std::to_string(k), (*matchV.arr())[k]);
-            for (auto& kv : *matchV.hash()) tctx().cur->define("$<" + kv.first + ">", kv.second);
-        };
+        auto bindCaps = [&]() { setMatchVar(matchV); };   // (`$0` is `$/[0]`: evalVarExpr)
         if (replArg && replArg->t == VT::Code) {
             bindCaps();
             // $_ may live in an OUTER scope: restore must ERASE our local shadow
@@ -2718,7 +2714,6 @@ Value Interpreter::grammarParse(ClassInfo* g, const std::string& input, bool sub
         if (homes->any) homeSwap.enter(homes->eff, gm.currentHome(), homes->matchScope, tctx());
         // build $/ over [from..to] with the named sub-captures attached
         Value m;
-        std::vector<std::pair<std::string, Value>> capSlots;
         if (cc && cc->children) {
             // With the cursor's capture records, `$/` is built the way the
             // finished match will be — by matchFromNode, from a node standing for
@@ -2739,11 +2734,6 @@ Value Interpreter::grammarParse(ClassInfo* g, const std::string& input, bool sub
             cur.listCaps = cc->listCaps;
             cur.listNames = cc->listNames;
             m = matchFromNode(cur, input, targetStr, blockMemo.get(), firedLookup.get());
-            if (caps) {
-                size_t built = m.arr() ? m.arr()->size() : 0;
-                for (size_t ci = 0; ci < caps->size(); ci++)
-                    capSlots.push_back({"$" + std::to_string(ci), ci < built ? (*m.arr())[ci] : Value::any()});
-            }
         }
         else {
             m = subMatch(from, to);
@@ -2759,7 +2749,6 @@ Value Interpreter::grammarParse(ClassInfo* g, const std::string& input, bool sub
                     Value cv = cb >= 0 && ce >= cb ? subMatch(cb, ce)
                                                    : Value::any();
                     m.arrRef().push_back(cv);
-                    capSlots.push_back({"$" + std::to_string(ci), cv});
                 }
             }
         }
@@ -2773,8 +2762,9 @@ Value Interpreter::grammarParse(ClassInfo* g, const std::string& input, bool sub
             restore.push_back({name, own ? std::optional<Value>(*own) : std::nullopt});
             tctx().cur->define(name, v);
         };
+        // the block's `$/` (so its `$0`) is the cursor, a `$/` parameter's too
         Value* slash = matchVarSlot(); Value savedSlash = slash ? *slash : Value::nil();
-        setMatchVar(m);
+        setMatchVar(m, true);
         // `self` in a rule's code is the cursor the rule was called with — it
         // answers `.orig`, and `.pos`/`.from` where the rule began (`:my $o =
         // self.orig;`, issue #109). Only where nothing else is `self`; gone
@@ -2787,7 +2777,6 @@ Value Interpreter::grammarParse(ClassInfo* g, const std::string& input, bool sub
             tctx().cur->define("self", subMatch(from, from));
             selfGuard.e = tctx().cur.get();
         }
-        for (auto& cs : capSlots) overlay(cs.first, cs.second);
         for (auto& p : params) {
             // A rule parameter with NO textual value (the entry rule's, when the
             // caller passed `args => (…)` instead of a `<rule($x)>` argument
