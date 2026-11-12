@@ -287,7 +287,7 @@ my $running = $proc.start;
 my %shell;
 my $up = False;
 for ^60 {
-    %shell = try zconnect(%ports<shell>, 'DEALER');
+    %shell = (try zconnect(%ports<shell>, 'DEALER')) // {};
     if %shell && %shell<sock> { $up = True; last }
     sleep 0.1;
 }

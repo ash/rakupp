@@ -6,6 +6,7 @@
 #include "ChildSignals.h"
 
 namespace rakupp {
+void refuseNonBlobWrite(Interpreter& I, const ValueList& args, const char* param, bool concrete);   // (MethodCallPart1b.cpp)
 
 // One mutex PER SUPPLIER, not a slot from the shared 64-stripe pool. The
 // serialization contract (emissions are serialized per supplier, and done/quit
@@ -10023,6 +10024,11 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
     // for the plain case; this is the one with arguments or skipOwn set.
     if (inv.t == VT::Object)
         if (auto r = ncStructFieldGet(inv, m)) return std::move(*r);
+    // `.write` binds ONE Blob on every handle kind (refuseNonBlobWrite, MethodCallPart1b.cpp)
+    if (m == "write" && inv.t == VT::Hash && (inv.hashKind == "FileHandle" || inv.hashKind == "ProcIn" ||
+        inv.hashKind == "Socket" || inv.hashKind == "AsyncSocket" || inv.hashKind == "Proc::Async"))
+        refuseNonBlobWrite(*this, args, inv.hashKind == "Proc::Async" || inv.hashKind == "AsyncSocket" ? "$b" : "$buf",
+                           inv.hashKind != "AsyncSocket");
     // Segments continue in methodCallPart1b and methodCallPart1c (MethodCallPart1b.cpp, MethodCallPart1c.cpp) — same ordered chain.
     if (auto r = methodCallPart1b(inv, m, args, rwArgs)) return std::move(*r);
     if (auto r = methodCallPart1c(inv, m, args, rwArgs)) return std::move(*r);
@@ -10295,6 +10301,7 @@ Value Interpreter::methodCallUnresolved(const Value& inv, const MName& m, ValueL
             // `.print-nl` sends the handle's nl-out, `.write` hands its Blob on
             // as is, and `.spurt` either (a Str is encoded, a Blob is not)
             if (m == "printf" || m == "print-nl" || m == "write" || m == "spurt") {
+                if (m == "write") refuseNonBlobWrite(*this, args, "$buf", true);   // (IO::Handle's own signature)
                 if (Value* wm = inv.obj()->cls->findMethod("WRITE")) {
                     ValueList pos;
                     for (auto& a : args) if (!(a.t == VT::Pair && a.namedArg)) pos.push_back(a);

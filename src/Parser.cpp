@@ -17953,8 +17953,8 @@ Program Parser::parseProgram() {
 
 // After a statement with no `;`: the next token must start a new line or follow
 // a block's closing brace — `$obj.doit ()` is "two terms in a row" (Confused).
-// Enforced only in EVAL'd snippets (strictSep_): whole test files keep the
-// tolerant statement-split behavior so one bad line cannot kill their TAP.
+// Enforced only in snippets, EVAL'd (strictSep_) or interpolated (inEmbedded_):
+// whole test files keep the tolerant statement split, so one bad line cannot kill their TAP.
 // The one exception is text after a block's `}` on its line, which whole files
 // refuse too (#206).
 // `runaway multi-line "" quote starting at line 1 maybe?` — when the token
@@ -18077,7 +18077,7 @@ void Parser::enforceStmtSep() {
                           {"replacement", "either . to call a method, or whitespace "
                                           "to delimit a pointy block"}});
     checkTextAfterBlock();
-    if (!strictSep_) return;
+    if (!strictSep_ && !inEmbedded_) return;   // (an interpolated "{…}" is a snippet too: #260)
     const bool closesBlock = pv.kind == Tok::RBrace || pos_ - 1 == lastRegexDeclBody_;
     if (!closesBlock && pv.kind != Tok::Semicolon && cur().line == pv.line) {
         // A `[` here was read as a bracketed INFIX whose brackets do not spell an

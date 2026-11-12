@@ -4281,6 +4281,7 @@ std::function<bool(const Value&, ValueList&)> g_objListItems;
     Value shown = last;
     if (shown.t == VT::Array || shown.t == VT::Hash) shown.itemized = true; // a hash value is itemized
     std::string repr = g_rakuRepr ? g_rakuRepr(shown) : shown.gist();
+    if (last.t == VT::Any || last.t == VT::Type) repr = "type object '" + last.typeName() + "'";   // (Rakudo's words)
     std::string msg = "Odd number of elements found where hash initializer expected:\n";
     msg += found == 1 ? "Only saw: " + repr
                       : "Found " + std::to_string(found) + " (implicit) elements:\nLast element seen: " + repr;
@@ -4362,7 +4363,11 @@ Value coerceHash(const Value& v, bool store, bool objKeyed) {
     else if (v.t == VT::Pair) items.push_back(v);
     else if (v.t == VT::Range && !v.itemized) items = v.flatten();   // `my %h = 1..4` is 1 => 2, 3 => 4
     else if (v.t == VT::Object && g_objListItems && g_objListItems(v, items)) { /* filled above */ }
-    else if (v.t != VT::Nil && v.t != VT::Any) items.push_back(v);
+    // A STORE iterates its right side, where Nil takes one slot (Empty takes
+    // none), and so does the undefined Any a variable holds: `my %h = Nil` and
+    // `%h = $unset` are the odd-number error, as Rakudo and the Nil docs have
+    // it — they were an empty Hash (#259). A coercion still reads them as none.
+    else if (store || (v.t != VT::Nil && v.t != VT::Any)) items.push_back(v);
     // The key a value stands for in a plain / object hash: an OBJECT hash keys
     // a type object (and an enum's bare type) by "(Name)", the same convention
     // the subscript paths use, instead of the empty stringification that

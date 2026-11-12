@@ -109,10 +109,31 @@ ExprPtr Parser::parseEmbeddedExpr(const std::string& src, bool ownScope) {
     std::vector<Token> toks = lx.tokenize();
     if (embedLineBase_ > 1) for (auto& t : toks) t.line += embedLineBase_ - 1;   // (the file's lines)
     Parser p(std::move(toks));
+    p.src_ = &src;   // (its own text: what reads the source, and a parse error's column)
     // Inherit user-defined operators so `"{ 4! }"` sees this program's `postfix:<!>`
     // (and custom infix/prefix/circumfix) just as top-level code does.
     inheritSyntax(p);
-    Program prog = p.parseProgram();
+    Program prog;
+    // A parse error's `^` goes under its column in the FILE, not at the end of
+    // the string (#260): on the snippet's first line its column in the snippet
+    // is shifted by where the snippet starts there; a later line of the snippet
+    // is a whole line of the file. Unplaced, the enclosing parse places it.
+    try { prog = p.parseProgram(); }
+    catch (ParseError& e) {
+        // (this parser's own text starts on its first token's line when it is
+        // itself a snippet — a string inside a `"{…}"` — and on line 1 when not)
+        size_t base = std::string::npos, ls = 0;
+        const int line0 = inEmbedded_ && !toks_.empty() ? toks_[0].line : 1;
+        for (int l = line0; src_ && embedLineBase_ > 0 && l < embedLineBase_ && ls != std::string::npos; l++)
+            if ((ls = src_->find('\n', ls)) != std::string::npos) ls++;
+        if (src_ && embedLineBase_ > 0 && ls != std::string::npos) {
+            const size_t at = src_->find(src, ls);   // (the first such snippet on its line)
+            if (at != std::string::npos && src_->find('\n', ls) >= at) base = at - ls;
+        }
+        if (base == std::string::npos) e.col = 0;
+        else if (e.line == embedLineBase_ && e.col) e.col += (int)base;
+        throw;
+    }
     if (p.sawEndPhaser_) sawEndPhaser_ = true;   // `"{ END { … } }"` needs the END walk too
     if (p.sawOur_) sawOur_ = true;
     // a single bare expression interpolates directly — unless it is a `{…}`

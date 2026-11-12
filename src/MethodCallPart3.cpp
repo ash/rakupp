@@ -6849,10 +6849,7 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
             if (pin.t != VT::Code) return pin.toStr();
             bool hadLocalTopic = tctx().cur->vars.count("$_") > 0;
             Value saved = hadLocalTopic ? tctx().cur->vars["$_"] : Value::any();
-            if (topicV.t == VT::Match) {
-                setMatchVar(topicV);
-                if (topicV.arr()) for (size_t k = 0; k < topicV.arr()->size(); k++) tctx().cur->define("$" + std::to_string(k), (*topicV.arr())[k]);
-            }
+            if (topicV.t == VT::Match) setMatchVar(topicV);   // (and so `$0`: evalVarExpr)
             tctx().cur->define("$_", topicV);
             auto restoreTopic = [&] {
                 if (hadLocalTopic) tctx().cur->vars["$_"] = saved;
