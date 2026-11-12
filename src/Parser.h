@@ -639,7 +639,7 @@ private:
     void resolveConstWords(std::vector<std::string>& w);
     void checkVirtualCallInDefault(size_t defStart); // `has $.x = $.y` is illegal
     static void checkNullRegex(const std::string& pat, int line,
-                               bool branches = true); // `/ /`; branches: `/a|/` too
+                               int branches = 1); // `/ /`; 1: `/a|/` too, 2: s///
     StmtPtr parseSub(bool isMulti, bool isProto = false, bool asMethod = false);
     StmtPtr parseClass(bool isRole, bool isGrammar = false, bool isPackage = false, bool isUnit = false,
                        const std::string& kindKw = "");

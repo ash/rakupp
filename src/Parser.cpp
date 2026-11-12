@@ -7527,7 +7527,7 @@ ExprPtr Parser::parsePrimary() {
         }
         case Tok::SubstLit: {
             const Token& t = advance();
-            checkNullRegex(t.text, t.line, /*branches=*/false);
+            checkNullRegex(t.text, t.line, /*s///=*/2);
             {   // `s/-/1/` — a pattern cannot START with a bare `-` or `!` (unless :P5)
                 size_t i = 0; bool p5 = false;
                 while (i < t.text.size() && t.text[i] == ':') {
