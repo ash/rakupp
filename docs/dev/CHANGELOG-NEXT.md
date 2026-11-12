@@ -10,7 +10,8 @@ here.*
 
 *Covered so far: 59e9d3aa, e5b2b6c8, dec6d962, 15997e10, 71451a61, c68ec738,
 19078698, 9338d1b1, 58e2fdd4, abfea750, 8a11fb4d, 1d8f1495,
-fd3fda0f, 33351b91, 5b6a2753, d1e39cb5, 64e4c44f, 7800a133.*
+fd3fda0f, 33351b91, 5b6a2753, d1e39cb5, 64e4c44f, 7800a133,
+9c45b83d.*
 
 ---
 
@@ -98,6 +99,12 @@ fd3fda0f, 33351b91, 5b6a2753, d1e39cb5, 64e4c44f, 7800a133.*
   stdin, sockets, Proc::Async and IO::Handle subclasses.
   `t/regression/handle-write-binds-a-blob.raku`. Reported by the open pull
   request #257, whose change is not used.
+- **An unclosed character class is refused at compile time** (9c45b83d) (#254):
+  `m/<-[W]*/`, the `>` left out, matched "Hello " where Rakudo dies
+  "couldn't find final '>'"; so did `m/<[a]/`, `rx//`, `m{}`, a `regex`
+  declaration and `s///`. A bare `/<[a]/` said it could not find the closing
+  `/`. `t/regression/regex-class-assertion-needs-its-close.raku`. Reported by
+  WeirdAnalyst.
 
 ### Fixed: crashes
 
