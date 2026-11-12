@@ -6,6 +6,41 @@
 
 namespace rakupp {
 
+// `.write` binds ONE Blob, as every Rakudo handle's does — IO::Handle's (so
+// `$*OUT`, a file, a Proc's stdin) and IO::Socket's `Blob:D $buf`,
+// Proc::Async's `Blob:D $b`, IO::Socket::Async's `Blob $b` (`concrete` false:
+// a type object binds there) — and `.print` is the text form. A Blob is a byte
+// Str here, so every `.write` took text too, and an Int or a List: the text
+// went out as the engine's UTF-8 whatever the handle's `:enc` said, so
+// `$fh.write("é")` on a Latin-1 handle wrote (195 169) where Rakudo refuses
+// the call and `.print` writes (233). Refused now with Rakudo's binding
+// errors; a named argument binds, as a method's `*%_` takes it.
+bool typeMatchesArg(const Value& arg, const std::string& type);   // (InterpreterCore.cpp)
+void refuseNonBlobWrite(Interpreter& I, const ValueList& args, const char* param, bool concrete) {
+    const Value* buf = nullptr; size_t n = 0;
+    for (auto& a : args) if (!(a.t == VT::Pair && a.namedArg) && n++ == 0) buf = &a;
+    if (n != 1)
+        throw RakuError{Value::typeObj("X::AdHoc"), std::string(n ? "Too many" : "Too few") +
+            " positionals passed; expected 2 arguments but got " + std::to_string(n + 1)};
+    const std::string p = param;
+    if (buf->t == VT::Type && typeMatchesArg(*buf, "Blob")) {
+        if (!concrete) return;
+        const std::string got = buf->s.c_str();
+        I.throwTypedV("X::Parameter::InvalidConcreteness",
+            {{"expected", Value::str("Blob")}, {"got", *buf}, {"routine", Value::str("write")},
+             {"param", Value::str(p)}, {"should-be-concrete", Value::boolean(true)},
+             {"param-is-invocant", Value::boolean(false)}},
+            "Parameter '" + p + "' of routine 'write' must be an object instance of type 'Blob', "
+            "not a type object of type '" + got + "'. Did you forget a '.new'?");
+    }
+    if (buf->t != VT::Type && typeMatchesArg(*buf, "Blob")) return;
+    I.throwTypedV("X::TypeCheck::Binding::Parameter",
+        {{"got", *buf}, {"expected", Value::typeObj("Blob")}, {"symbol", Value::str(p)}},
+        "Type check failed in binding to parameter '" + p + "'; expected Blob but got " + buf->typeName() +
+        " (" + typeCheckRepr(*buf) + ")" + (buf->t == VT::Array ? ". You have to pass an explicitly typed array, "
+        "not one that just might happen to contain elements of the correct type." : ""));
+}
+
 // Segment 1b of the method-dispatch chain, split out of methodCallInner for
 // compile time. The chain is ORDER-SENSITIVE (an earlier arm shadows a later
 // one), so these arms run after the ones above and before methodCallPart1c. nullopt = "not handled here".
