@@ -436,6 +436,32 @@ void Interpreter::throwTypedV(const std::string& type,
     throw RakuError{ex, message};
 }
 
+// The one BYTES argument of `.write` — see the declaration in Interpreter.h for
+// why all four write arms ask here. Rakudo's binder words both refusals, and
+// the answers here are its: an arity error is X::AdHoc ("Too many positionals
+// passed; expected 2 arguments but got 3" — the invocant is one of them) and a
+// wrong type is X::TypeCheck::Binding::Parameter with the same message a
+// `Blob:D $buf` parameter gives.
+std::string Interpreter::writeBytes(const ValueList& args) {
+    const Value* buf = nullptr;
+    int pos = 0;
+    for (auto& a : args) {
+        if (a.t == VT::Pair && a.namedArg) continue;   // `:scheduler` and friends are not content
+        buf = &a;
+        ++pos;
+    }
+    if (pos != 1)
+        throwTyped("X::AdHoc", {},
+            std::string(pos ? "Too many" : "Too few") +
+            " positionals passed; expected 2 arguments but got " + std::to_string(pos + 1));
+    if (!rtIsBuf(*buf))
+        throwTypedV("X::TypeCheck::Binding::Parameter",
+            {{"got", *buf}, {"expected", Value::typeObj("Blob")}, {"symbol", Value::str("$buf")}},
+            "Type check failed in binding to parameter '$buf'; expected Blob but got " +
+                buf->typeName() + " (" + typeCheckRepr(*buf) + ")");
+    return buf->s.copyText();
+}
+
 Value Interpreter::ioFailure(const std::string& type,
                              std::vector<std::pair<std::string, Value>> attrs,
                              const std::string& message) {

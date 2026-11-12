@@ -4015,13 +4015,8 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
             return Value::boolean(::isatty(fd) != 0);
 #endif
         }
-        if (m == "write") { // binary write: append the Blob/Buf's raw bytes
-            std::string bytes;
-            for (auto& a : args) {
-                if (a.t == VT::Str) bytes += a.s; // Buf/Blob byte string (or a plain Str's bytes)
-                else if ((a.t == VT::Array || a.t == VT::Range) && !(a.t == VT::Array && !a.arr()))
-                    for (auto& e : a.flatten()) bytes += (char)(unsigned char)(e.toInt() & 0xFF);
-            }
+        if (m == "write") { // binary write: the Blob's raw bytes, as Rakudo's `Blob:D $buf`
+            std::string bytes = writeBytes(args);
             auto wstd = inv.hash()->find("std");
             if (wstd != inv.hash()->end()) { // $*OUT / $*ERR: straight to the stream,
                 bool toErr = wstd->second.toStr() == "err";  // as .print does — a std

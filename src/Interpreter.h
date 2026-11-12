@@ -3633,6 +3633,15 @@ public:
     [[noreturn]] void throwTypedV(const std::string& type,
                     std::vector<std::pair<std::string, Value>> attrs,
                     const std::string& message); // same, attribute values as Values
+    // `.write` takes BYTES on every handle Rakudo has — `Blob:D $buf` on
+    // IO::Handle, IO::Pipe, IO::Socket::Async and Proc::Async — and the string
+    // form is `.print`. A Blob IS a byte Str here, so a loose `t == VT::Str`
+    // test took a text Str too: it wrote the internal UTF-8 whatever the
+    // handle's `:enc` said, and ran a program MoarVM refuses at the call
+    // ("expected Blob but got Str"). One source, green on one engine and red on
+    // the other, is the worst kind of portability bug, so all four arms ask
+    // this instead of testing for a Str.
+    std::string writeBytes(const ValueList& args);
     Value checkRetType(const Callable& c, Value v); // enforce declared return type
     Value checkRetTypeOfProxy(const Callable& c, Value v); // …on what a Proxy holds (InterpreterCalls.cpp)
     unsigned retFastDecide(const Callable& c);       // …and its accepting shortcut (InterpreterCore.cpp)

@@ -4089,7 +4089,7 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
         const long long tok = (*inv.hash())["live-tok"].toInt();
         if (m == "print" || m == "spurt" || m == "write" || m == "say" || m == "put") {
             std::string add; bool closeAfter = false;
-            if (m == "write" && !args.empty() && args[0].t == VT::Str) add = args[0].s;
+            if (m == "write") add = writeBytes(args);   // bytes only, never text
             else for (auto& a : args) {
                 if (a.t == VT::Pair && a.namedArg) {
                     if (m == "spurt" && a.s == "close" && (!a.pairVal() || a.pairVal()->truthy())) closeAfter = true;
@@ -4118,7 +4118,7 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
             // a NAMED argument is not content: `.spurt($s, :close)` wrote
             // "close\tTrue" into the child's stdin and left the pipe open
             bool closeAfter = false;
-            if (m == "write" && !args.empty() && args[0].t == VT::Str) add = args[0].s;
+            if (m == "write") add = writeBytes(args);   // bytes only, never text
             else for (auto& a : args) {
                 if (a.t == VT::Pair && a.namedArg) {
                     if (m == "spurt" && a.s == "close" && (!a.pairVal() || a.pairVal()->truthy())) closeAfter = true;
@@ -9155,7 +9155,7 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
             return out;
         }
         if (m == "print" || m == "write" || m == "send" || m == "put" || m == "say") {
-            std::string data = args.empty() ? "" : (m == "say" ? gistOf(args[0]) : args[0].toStr()); // Blob is a byte-Str
+            std::string data = m == "write" ? writeBytes(args) : args.empty() ? "" : (m == "say" ? gistOf(args[0]) : args[0].toStr()); // .write is the byte path: a Str is refused, as Rakudo refuses it
             if (m == "put" || m == "say") data += "\n"; // `.say` used to fall to the universal arm and print the socket's gist to stdout
             size_t off = 0;
             bool p = gilPark();

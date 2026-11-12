@@ -1839,7 +1839,10 @@ std::optional<Value> Interpreter::methodCallPart1c(const Value& inv, const MName
             int wfd = (int)wf->second.toInt();
             if (m == "close-stdin") { ::close(wfd); inv.hash()->erase(wf); return Value::boolean(true); }
             // the bytes go out now; the Promise is kept with their count (Rakudo)
-            std::string data = args.empty() ? "" : (m == "say" ? gistOf(args[0]) : args[0].toStr()); // a Blob is a byte-Str
+            // `.write` takes a Blob (`Blob:D $b`), so a Str is refused there;
+            // `.print`/`.say`/`.put` take text and encode it
+            std::string data = m == "write" ? writeBytes(args)
+                             : args.empty() ? "" : (m == "say" ? gistOf(args[0]) : args[0].toStr());
             if (m == "say" || m == "put") data += "\n";
             // text goes out in the process's encoding (a Blob is bytes already)
             if (m != "write") {

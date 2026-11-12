@@ -10293,13 +10293,15 @@ Value Interpreter::methodCallUnresolved(const Value& inv, const MName& m, ValueL
             }
             // …and the rest of the writers funnel there too: `.printf` formats,
             // `.print-nl` sends the handle's nl-out, `.write` hands its Blob on
-            // as is, and `.spurt` either (a Str is encoded, a Blob is not)
+            // as is (text is refused, as Rakudo's `Blob:D $buf` refuses it), and
+            // `.spurt` either (a Str is encoded, a Blob is not)
             if (m == "printf" || m == "print-nl" || m == "write" || m == "spurt") {
                 if (Value* wm = inv.obj()->cls->findMethod("WRITE")) {
                     ValueList pos;
                     for (auto& a : args) if (!(a.t == VT::Pair && a.namedArg)) pos.push_back(a);
                     Value blob;
-                    if ((m == "write" || m == "spurt") && !pos.empty() && pos[0].t == VT::Str &&
+                    if (m == "write") { writeBytes(args); blob = pos[0]; }
+                    else if (m == "spurt" && !pos.empty() && pos[0].t == VT::Str &&
                         (pos[0].hashKind == "Blob" || pos[0].hashKind == "Buf"))
                         blob = pos[0];
                     else {

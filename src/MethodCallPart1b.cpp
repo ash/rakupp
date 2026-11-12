@@ -934,9 +934,12 @@ std::optional<Value> Interpreter::methodCallPart1b(const Value& inv, const MName
             return s;
         }
         if (m == "write" || m == "print" || m == "put" || m == "say") {
-            std::string data = args.empty() ? "" : args[0].toStr();
+            // `.write` is the BYTE path (Rakudo's `Blob $b`), so it takes a Blob
+            // and the other three take text, which goes out in the socket's encoding
+            std::string data;
+            if (m == "write") data = writeBytes(args);
+            else data = args.empty() ? "" : args[0].toStr();
             if (m == "put" || m == "say") data += "\n";
-            // text goes out in the socket's encoding (a `.write` Blob is bytes already)
             if (m != "write" && inv.hash()->count("enc")) {
                 const std::string enc = (*inv.hash())["enc"].toStr();
                 if (!enc.empty() && enc != "utf8" && enc != "utf-8") data = encodeTextEnc(data, enc);
