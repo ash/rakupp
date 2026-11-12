@@ -44,7 +44,9 @@ fd3fda0f.*
   interpreter's own function it computes the same answer; where the meaning is
   the interpreter's alone (`EVAL`, pseudo-packages, most of `.^`, `callframe`,
   KEEP/UNDO, `.wrap`, a capturing nested sub that escapes) the program bundles
-  with the interpreter, slower but the same. `.map(|*.list)` curries (#243).
+  with the interpreter, slower but the same — except an `EVAL` under
+  `--slim=-eval`, which compiles to the X::Feature::NotBuilt it throws, since a
+  bundle needs the parser the cut removed. `.map(|*.list)` curries (#243).
   A program whose generated C++ does not compile bundles instead of leaving no
   binary (88264aeb). `$s = $s ~ X` in a loop is linear compiled too (160k
   appends: 1.4 s → 5 ms). Reported by Zer0-Tolerance (#240, #242, #243).

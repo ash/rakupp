@@ -87,6 +87,8 @@ local does not have (`EVAL`, `MY::`/`CALLER::` and the other pseudo-packages,
 most `.^` metamodel calls, `callframe`, `.backtrace`), `temp` and `let`,
 KEEP/UNDO, `.wrap`, a `multi` whose candidate order the native dispatcher
 cannot prove right, and a handful more. They cost speed, never meaning.
+(Under `--slim=-eval` an `EVAL` compiles after all: with the parser cut it
+can only throw `X::Feature::NotBuilt`, and a bundle would need the parser.)
 
 The two modes are held to that. `t/exe/parity.raku` compiles every program in
 `examples/` and `t/regression/` (about 1,570) and compares each binary's

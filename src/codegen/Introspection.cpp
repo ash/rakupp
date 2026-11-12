@@ -43,7 +43,9 @@ static bool containerName(const MethodCall* m) {
 static bool madeOnMatch(const MethodCall* m) { return !m->meta && m->method == "make"; }
 
 // The first construct in `prog` a native program cannot answer, or "".
-std::string introspectionRefusal(const Program& prog) {
+// `evalCut` (--slim cut eval): an EVAL only throws X::Feature::NotBuilt, so
+// what its code could not see does not matter, and it refuses nothing.
+std::string introspectionRefusal(const Program& prog, bool evalCut) {
     // `.^name` and the ones the native class table answers as the
     // interpreter's does; every other metamodel call asks the interpreter
     static const std::set<std::string> nativeMeta = {"name", "shortname", "mro", "can", "isa"};
@@ -73,14 +75,14 @@ std::string introspectionRefusal(const Program& prog) {
                 const std::string& nm = static_cast<Call*>(n)->name;
                 if (introspectiveCallName(nm))
                     why = "a pseudo-package lookup (MY::, UNIT::, OUTER::, …) — native locals and routines have no runtime names";
-                else if (nm == "EVAL" || nm == "EVALFILE")
+                else if ((nm == "EVAL" || nm == "EVALFILE") && !evalCut)
                     why = "`" + nm + "` — the evaluated code cannot see the program's native routines and variables";
                 break;
             }
             case NK::MethodCall: {
                 auto* m = static_cast<MethodCall*>(n);
                 if (m->method == "WHY") asksWhy = true;
-                if (m->method == "EVAL" || m->method == "EVALFILE")
+                if ((m->method == "EVAL" || m->method == "EVALFILE") && !evalCut)
                     why = "`." + m->method + "` — the evaluated code cannot see the program's native routines and variables";
                 else if (m->meta && !nativeMeta.count(m->method))
                     why = "`.^" + m->method + "` — the native class table is no metaobject";
