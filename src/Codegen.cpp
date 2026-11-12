@@ -2942,6 +2942,8 @@ struct Codegen {
                                 ? ", true)" : ")");
                 }
                 if (u->op == "do" || u->op == "try") { // do { } / try { }  (value = last statement)
+                    if (u->operand->kind == NK::BlockExpr && !static_cast<BlockExpr*>(u->operand.get())->phaser.empty())   // `now - ENTER now`: at its phase
+                        throw CodegenError{"a phaser used as a value (" + static_cast<BlockExpr*>(u->operand.get())->phaser + ")", /*routineWide=*/true};
                     std::string body;
                     // a Failure the block returns is consumed (rtTryFailure),
                     // unless the block says `no fatal`: then it is the value

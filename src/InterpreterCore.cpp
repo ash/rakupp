@@ -26,6 +26,7 @@ Value nilResetForAttrSlot(const Value& v, const Value& self, const std::string& 
 bool liftMatchVarQuiet();   // InterpreterRegex.cpp: a regex block sees its cursor as `$/`…
 void restoreMatchVarQuiet(bool quiet, bool hadSlash);   // …under a quiet match (.grep) too
 bool isRxSelfCall(const std::string& code); Value rxSelfCallee(const std::string& code);   // …and a regex value naming itself
+void valuePhasersIn(const std::vector<StmtPtr>& stmts, std::vector<BlockExpr*>& out, char want); std::string valuePhaserSlot(const BlockExpr* be);   // InterpreterOperators.cpp
 bool operatorNameDeclared(Interpreter& I, const std::string& name);   // InterpreterOperators.cpp
 bool endsElementCall(const Expr* rv);   // InterpreterCalls.cpp: `@a.first`, `.head`, `.tail`
 bool bridgedNumericInfix(Interpreter& I, const std::string& op, const Value& l, const Value& r, Value& out);   // …too
@@ -785,6 +786,8 @@ static int stmtsEntryWork(const std::vector<StmtPtr>& stmts) {
         }
         else if (hoistableTypeDecl(s.get())) m |= 8;
     }
+    // 64: a phaser in TERM position (`my $v = ENTER …`), which runEnterPhasers runs at entry too
+    { std::vector<BlockExpr*> vp; valuePhasersIn(stmts, vp, 'E'); if (!vp.empty()) m |= 2 | 64; }
     // 16: the LAST statement might not be the block's value, so execBlock has
     // to look for it. Deliberately wider than the scan it gates — any phaser
     // block, CATCH or named sub — because isBlockPhaser's answer for an INIT
@@ -895,7 +898,7 @@ static bool isBlockPhaser(const Stmt* s) {
            p == "PRE" || p == "POST" ||
            p == "NEXT" || p == "LAST" || p == "QUIT" || p == "CLOSE" || p == "TEMP";
 }
-void Interpreter::runEnterPhasers(const std::vector<StmtPtr>& stmts, Callable* firstOnce) {
+void Interpreter::runEnterPhasers(const std::vector<StmtPtr>& stmts, Callable* firstOnce, bool valuePh) {
     // PRE: a precondition, checked on entry — false is X::Phaser::PrePost. The
     // PREs all run BEFORE any ENTER, wherever they stand in the block.
     for (auto& s : stmts) if (s->kind == NK::Block) { auto* b = static_cast<Block*>(s.get());
@@ -913,7 +916,12 @@ void Interpreter::runEnterPhasers(const std::vector<StmtPtr>& stmts, Callable* f
     // every time it runs, so its FIRST runs every time (`for 1..3 { { FIRST … } }`: thrice).
     const bool runFirst = &stmts != t_hot.poll.firstBody &&
         (!firstOnce || !firstOnce->state.firstDone.exchange(true, std::memory_order_acq_rel));
-    for (int pass = runFirst ? 0 : 1; pass < 2; pass++) for (auto& s : stmts) if (s->kind == NK::Block) {
+    std::vector<BlockExpr*> vp;   // the phasers in TERM position, run with the others: a FIRST's value kept
+    if (valuePh) valuePhasersIn(stmts, vp, 'E');   // where every later entry sees it (valuePhaser)
+    for (int pass = runFirst ? 0 : 1; pass < 2; pass++) {
+    for (BlockExpr* be : vp) if (be->phaser == (pass ? "ENTER" : "FIRST"))
+        (!pass && tctx().cur->parent ? tctx().cur->parent : tctx().cur)->define(valuePhaserSlot(be), runsInPlace(be) ? runBlockInPlace(be) : callCallable(makeClosure(be), {}));
+    for (auto& s : stmts) if (s->kind == NK::Block) {
         auto* b = static_cast<Block*>(s.get());
         if (b->phaser == (pass ? "ENTER" : "FIRST")) {
             auto sc = makeSlabShared<Env>(); sc->parent = tctx().cur;
@@ -931,6 +939,7 @@ void Interpreter::runEnterPhasers(const std::vector<StmtPtr>& stmts, Callable* f
             tctx().cur->define("\x01enter-tail", b->phaser == "INIT" ? initValues_[b] :
                                firstOnce && firstOnce->state.firstValue ? *firstOnce->state.firstValue : lv ? *lv : Value::nil());
         }
+    }
     }
 }
 // Every END nested anywhere in a routine's body runs at exit in THIS call's
@@ -1261,7 +1270,7 @@ Value Interpreter::execBlockFull(Block* b, std::shared_ptr<Env> scope, bool sink
     // The ENDs this block holds bind to THIS entry — the innermost scope that
     // actually ran wins, so `for 1..3 -> $i { END say $i }` says 3.
     for (Block* e : b->endsWithin) captureEndScope(e);
-    if (entryWork & 2) runEnterPhasers(b->stmts);
+    if (entryWork & 2) runEnterPhasers(b->stmts, nullptr, entryWork & 64);
     // The unsuccessful exit: an exception leaves the block. A `take`/`emit`/
     // `done` outside its construct goes to this block's CONTROL first — true
     // when that handled it, and the block then returns Nil having left
@@ -1499,6 +1508,7 @@ signed char loopPhaserMask(Block* body) {
                 else if (b->phaser == "LAST") mask |= 2;
                 else if (b->phaser == "FIRST") mask |= 4;
             }
+        { std::vector<BlockExpr*> vp; valuePhasersIn(body->stmts, vp, 'F'); if (!vp.empty()) mask |= 4; }   // (`say FIRST $_`)
         body->loopPhasers = mask;
     }
     return body->loopPhasers;
@@ -9460,10 +9470,10 @@ resumeBody:
             if (c.ci().body && lpc) {
                 if (lpc & 1) runFirstPhasers(*c.ci().body);   // (before ENTER, as Rakudo runs them)
                 const std::vector<StmtPtr>* savedSF = t_hot.poll.firstBody; t_hot.poll.firstBody = c.ci().body;
-                runEnterPhasers(*c.ci().body); // ENTER only; FIRST suppressed
+                runEnterPhasers(*c.ci().body, nullptr, bodyWork & 64); // ENTER only; FIRST suppressed
                 t_hot.poll.firstBody = savedSF;
             }
-            else if (c.ci().body && (bodyWork & 2)) runEnterPhasers(*c.ci().body, &c);
+            else if (c.ci().body && (bodyWork & 2)) runEnterPhasers(*c.ci().body, &c, bodyWork & 64);
         }
         if (c.ci().body) {
             // a native body (an embedded module's, AotModules.h) runs in place of the walk
@@ -11172,7 +11182,7 @@ Value Interpreter::invokeMethod(const Value& codeVal, const Value& self, ValueLi
     }
     const bool hasPhasers = c.ci().phaserScan == 1;
     captureBodyEnds(c);   // …and a method's, which phaserScan does not cover
-    if (hasPhasers && c.ci().body) runEnterPhasers(*c.ci().body, &c);
+    if (c.ci().body && (hasPhasers || (bodyEntryWork(c) & 64))) runEnterPhasers(*c.ci().body, &c, bodyEntryWork(c) & 64);
     bool phasersDone = false;
     // …and `temp`/`let` in a method body must be undone on the way out, which is
     // the other half of what runLeavePhasers does. It ran only for a body with
@@ -25119,10 +25129,7 @@ Value Interpreter::evalUnary(Unary* u) {
     if (opEq(u->op, "do")) {
         if (u->operand->kind == NK::BlockExpr) {
             auto* be = static_cast<BlockExpr*>(u->operand.get());
-            if (!be->phaser.empty() && !staticPhaserVal_.empty()) {   // ran before the code around it
-                auto sv = staticPhaserVal_.find(be);
-                if (sv != staticPhaserVal_.end()) return sv->second;
-            }
+            if (!be->phaser.empty()) return valuePhaser(be);   // its value from its own phase
             // a `do { }` block takes no arguments, so a placeholder inside it is
             // a compile error (X::Placeholder::Block), like Rakudo (asked until
             // runsInPlace has decided, which a block that has one never reaches)

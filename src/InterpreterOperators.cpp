@@ -824,6 +824,10 @@ Value Interpreter::prefixNumeric(const std::string& op, const Value& v) {
 // exist at that moment — declared, not yet initialized — so each enclosing scope
 // gets a STATIC environment, and that scope's first real run starts from it
 // (`{ my $s; BEGIN { $s = 3 }; say $s }` says 3: `my $s;` does not reset it).
+// A walked routine body's parameters, by the body (spWalkStmt fills it, runStaticPhasers
+// reads it): a phaser in a default (`$y = INIT { $x }`) runs at program start, before
+// any call has bound $x, so $x is declared there and still undefined, as in Rakudo.
+static thread_local std::unordered_map<const void*, std::vector<const Param*>> t_spParams;
 struct StaticPhaserRec {
     std::string kind;
     Block* blk = nullptr;          // statement form
@@ -845,8 +849,11 @@ static void spWalkExpr(Expr* e, std::vector<const std::vector<StmtPtr>*>& chain,
             auto* u = static_cast<Unary*>(e);
             if (u->op == "do" && u->operand && u->operand->kind == NK::BlockExpr) {
                 auto* be = static_cast<BlockExpr*>(u->operand.get());
+                if (be->phaser == "ENTER" || be->phaser == "FIRST") { spWalkBody(be->body, chain, out, true); return; }
                 if (!be->phaser.empty()) {
-                    if (!chain.empty()) out.push_back({be->phaser, nullptr, be, chain});
+                    // (a TERM at the top level too: nothing else runs it before the
+                    // mainline, where `say "x"; my $v = INIT …` printed x first)
+                    out.push_back({be->phaser, nullptr, be, chain});
                     return;   // its own body belongs to that one run
                 }
             }
@@ -906,6 +913,7 @@ static void spWalkStmt(Stmt* s, std::vector<const std::vector<StmtPtr>*>& chain,
             // …and its parameter defaults, which are in the routine's scope:
             // `:$language = INIT { user-language }` is computed once
             chain.push_back(&sd->body);
+            for (auto& p : sd->params) if (!p.name.empty()) t_spParams[&sd->body].push_back(&p);
             for (auto& p : sd->params) spWalkExpr(p.defaultVal.get(), chain, out);
             chain.pop_back();
             spWalkBody(sd->body, chain, out, true); return; }
@@ -993,10 +1001,94 @@ bool unitHasNestedPhasers(const std::vector<StmtPtr>& stmts) {
     return false;
 }
 
+// The phasers in TERM position that a scope's own statements hold — `my $v =
+// ENTER …`, `say FIRST $_` — not a nested block's, which does its own entry
+// work. `want` 'E': ENTER and FIRST; 'F': FIRST alone (a loop's first
+// iteration). See Interpreter::valuePhaser.
+static void vpWalkExpr(Expr* e, std::vector<BlockExpr*>& out, char want) {
+    if (!e) return;
+    switch (e->kind) {
+        case NK::Unary: {
+            auto* u = static_cast<Unary*>(e);
+            if (u->op == "do" && u->operand && u->operand->kind == NK::BlockExpr) {
+                auto* be = static_cast<BlockExpr*>(u->operand.get());
+                if (be->phaser == "FIRST" || (want == 'E' && be->phaser == "ENTER")) out.push_back(be);
+                return;   // any other block is a scope of its own
+            }
+            vpWalkExpr(u->operand.get(), out, want); return;
+        }
+        case NK::Assign: { auto* a = static_cast<Assign*>(e); vpWalkExpr(a->target.get(), out, want); vpWalkExpr(a->value.get(), out, want); return; }
+        case NK::Binary: { auto* b = static_cast<Binary*>(e); vpWalkExpr(b->lhs.get(), out, want); vpWalkExpr(b->rhs.get(), out, want); return; }
+        case NK::Call: { auto* c = static_cast<Call*>(e); vpWalkExpr(c->callee.get(), out, want); for (auto& a : c->args) vpWalkExpr(a.get(), out, want); return; }
+        case NK::MethodCall: { auto* m = static_cast<MethodCall*>(e); vpWalkExpr(m->inv.get(), out, want); for (auto& a : m->args) vpWalkExpr(a.get(), out, want); return; }
+        case NK::Index: { auto* x = static_cast<Index*>(e); vpWalkExpr(x->base.get(), out, want); vpWalkExpr(x->index.get(), out, want); return; }
+        case NK::Ternary: { auto* t = static_cast<Ternary*>(e); vpWalkExpr(t->cond.get(), out, want); vpWalkExpr(t->then.get(), out, want); vpWalkExpr(t->els.get(), out, want); return; }
+        case NK::Range: { auto* r = static_cast<RangeExpr*>(e); vpWalkExpr(r->from.get(), out, want); vpWalkExpr(r->to.get(), out, want); return; }
+        case NK::Pair: { auto* p = static_cast<PairExpr*>(e); vpWalkExpr(p->keyExpr.get(), out, want); vpWalkExpr(p->value.get(), out, want); return; }
+        case NK::ListExpr: for (auto& i : static_cast<ListExpr*>(e)->items) vpWalkExpr(i.get(), out, want); return;
+        case NK::ArrayLit: for (auto& i : static_cast<ArrayLit*>(e)->items) vpWalkExpr(i.get(), out, want); return;
+        case NK::ChainExpr: for (auto& i : static_cast<ChainExpr*>(e)->operands) vpWalkExpr(i.get(), out, want); return;
+        case NK::InterpStr: for (auto& p : static_cast<InterpStr*>(e)->parts) vpWalkExpr(p.get(), out, want); return;
+        default: return;
+    }
+}
+void valuePhasersInStmt(Stmt* s, std::vector<BlockExpr*>& out, char want) {
+    if (!s) return;
+    switch (s->kind) {
+        case NK::ExprStmt: vpWalkExpr(static_cast<ExprStmt*>(s)->e.get(), out, want); break;
+        case NK::ReturnStmt: vpWalkExpr(static_cast<ReturnStmt*>(s)->value.get(), out, want); break;
+        case NK::IfStmt: for (auto& br : static_cast<IfStmt*>(s)->branches) vpWalkExpr(br.first.get(), out, want); break;
+        case NK::ForStmt: vpWalkExpr(static_cast<ForStmt*>(s)->list.get(), out, want); break;
+        case NK::WhileStmt: vpWalkExpr(static_cast<WhileStmt*>(s)->cond.get(), out, want); break;
+        default: break;
+    }
+}
+void valuePhasersIn(const std::vector<StmtPtr>& stmts, std::vector<BlockExpr*>& out, char want) {
+    for (auto& st : stmts) valuePhasersInStmt(st.get(), out, want);
+}
+// Where an ENTER or FIRST term keeps its value: the scope it was run for.
+std::string valuePhaserSlot(const BlockExpr* be) { return "\x01phv" + std::to_string((uintptr_t)be); }
+
+// A phaser in TERM position — `my $v = INIT now`, `say FIRST 2`, `ENTER $x`,
+// `(BEGIN …)[$i]` — is its value as computed at ITS phase, not where the
+// expression stands: `say "body"; my $x = INIT say "init"` says init first.
+// - BEGIN, CHECK and INIT run before the code around them (runStaticPhasers)
+//   and are read from staticPhaserVal_. One that pass could not model runs
+//   once, here, and is kept: Digest::SHA2 indexes `(BEGIN blob64.new: map {
+//   frac 3√$_, 64 }, @primes[^80])[$t]` in its round loop, and running it per
+//   round recomputed 6,400 FatRat square roots per block.
+// - ENTER and FIRST run at their block's entry (runEnterPhasers) and at a
+//   loop's first iteration (runFirstPhasers), which keep the value under
+//   valuePhaserSlot; one they did not reach runs here.
+Value Interpreter::valuePhaser(BlockExpr* be) {
+    auto run = [&]() { return runsInPlace(be) ? runBlockInPlace(be) : callCallable(makeClosure(be), {}); };
+    const std::string& ph = be->phaser;
+    if (ph == "ENTER" || ph == "FIRST") {
+        const std::string slot = valuePhaserSlot(be);
+        if (tctx().cur) if (const Value* v = tctx().cur->find(slot)) return *v;
+        Value v = run();
+        if (ph == "FIRST" && tctx().cur) tctx().cur->define(slot, v);
+        return v;
+    }
+    if (!staticPhaserVal_.empty()) {
+        auto sv = staticPhaserVal_.find(be);
+        if (sv != staticPhaserVal_.end()) return sv->second;
+    }
+    {
+        std::lock_guard<std::mutex> lk(beginCacheMu_);
+        auto it = beginCache_.find(be);
+        if (it != beginCache_.end()) return it->second;
+    }
+    Value v = run();
+    std::lock_guard<std::mutex> lk(beginCacheMu_);
+    return beginCache_.emplace(be, v).first->second;
+}
+
 void Interpreter::runStaticPhasers(const std::vector<StmtPtr>& stmts, const std::shared_ptr<Env>& unitEnv,
                                    bool unitIsLive) {
     std::vector<StaticPhaserRec> recs;
     std::vector<const std::vector<StmtPtr>*> chain;
+    t_spParams.clear();
     for (auto& s : stmts) spWalkStmt(s.get(), chain, recs);
     if (recs.empty()) return;
     // A MAINLINE variable declared bare (`my $hist;`) is pre-declared before
@@ -1032,6 +1124,7 @@ void Interpreter::runStaticPhasers(const std::vector<StmtPtr>& stmts, const std:
             std::vector<const VarExpr*> decls;
             spDeclaredIn(*scope, decls);
             for (auto* v : decls) declared.insert(v->name);
+            if (auto pi = t_spParams.find(scope); pi != t_spParams.end()) for (auto* p : pi->second) declared.insert(p->name);
             // a variable its scope INITIALIZES (`my $foo = 42`) keeps the phaser
             // in place: what reads it later (a `constant`, evaluated at compile
             // time in Rakudo) would see the initializer where it should see the
@@ -1075,6 +1168,14 @@ void Interpreter::runStaticPhasers(const std::vector<StmtPtr>& stmts, const std:
         for (auto* scope : r.chain) {
             auto it = staticEnvs_.find(scope);
             if (it == staticEnvs_.end()) {
+                // a routine's parameters, unbound at that phase, get a layer of
+                // their own UNDER the scope's: seedStaticScope hands the scope's
+                // own lexicals to its first call, and must not hand it these
+                if (auto pi = t_spParams.find(scope); pi != t_spParams.end()) {
+                    auto pe = makeSlabShared<Env>(); pe->parent = parent;
+                    for (auto* p : pi->second) pe->define(p->name, typedDefault(p->type, p->sigil));
+                    parent = pe;
+                }
                 auto env = makeSlabShared<Env>(); env->parent = parent;
                 std::vector<const VarExpr*> decls;
                 spDeclaredIn(*scope, decls);

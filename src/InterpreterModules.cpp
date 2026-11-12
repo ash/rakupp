@@ -3122,10 +3122,17 @@ Value Interpreter::evalString(const std::string& srcIn, bool mainlinePH, bool* i
     // block's are: in the REPL, `my $x := True || (my $s := 5)` left no $s for
     // the next line (#248)
     if (mainlinePH && tctx().cur) hoistExprDecls(prog->stmts, tctx().cur.get(), nullptr);
+    Value enterTail = Value::nil();
+    if (mainlinePH && !checkOnly) runUnitEntryPhasers(prog->stmts, &enterTail);   // its FIRST and ENTER, as a program's
     for (auto& s : prog->stmts) {
         tctx().endCurTopStmt = s.get();   // for a `use` in it
         if (prog->mayHaveRoutineUse) preloadRoutineUses(s.get());
         if (s.get() == unitCatch) continue;
+        if (mainlinePH && !checkOnly && s->kind == NK::Block && (static_cast<Block*>(s.get())->phaser == "ENTER" ||
+            static_cast<Block*>(s.get())->phaser == "FIRST") && !static_cast<Block*>(s.get())->isCatch) {   // (ran above)
+            if (&s == &prog->stmts.back()) last = enterTail;
+            continue;
+        }
         // a top-level INIT just ran above; running it again here would double it
         if (s->kind == NK::Block && static_cast<Block*>(s.get())->initHoisted) continue;
         // Loop control inside the EVAL, with a loop OUTSIDE it, belongs to that
@@ -3596,7 +3603,34 @@ void Interpreter::registerEnds(const Program& prog) {
     if (!endsUnder_.empty()) endsUnderAny_.store(true, std::memory_order_relaxed);
     g_endChain.clear(); g_endBlockChain.clear(); g_endEdges.clear();
 }
+void valuePhasersIn(const std::vector<StmtPtr>& stmts, std::vector<BlockExpr*>& out, char want);   // InterpreterOperators.cpp
+void valuePhasersInStmt(Stmt* s, std::vector<BlockExpr*>& out, char want);
+std::string valuePhaserSlot(const BlockExpr* be);
+// A unit's FIRST and then its ENTER phasers, on entry, before its mainline:
+// each kind in source order, the TERM form (`say now - ENTER now`) among the
+// statements. Rakudo runs a top-level FIRST even before INIT; here it runs
+// after, beside the ENTERs. `tail` takes the value of one that ends the unit:
+// `EVAL q[ENTER 5]` is 5.
+void Interpreter::runUnitEntryPhasers(const std::vector<StmtPtr>& stmts, Value* tail) {
+    for (const char* ph : {"FIRST", "ENTER"}) for (auto& st : stmts) {
+        if (st && st->kind == NK::Block) { auto* b = static_cast<Block*>(st.get());
+            if (b->phaser != ph || b->isCatch) continue;
+            std::shared_ptr<Env> sc = tctx().cur;   // (a statement form, `ENTER my $x = …`, declares in the unit)
+            if (!b->stmtForm) { sc = makeSlabShared<Env>(); sc->parent = tctx().cur; }
+            Value v = execBlock(b, sc);
+            if (tail && &st == &stmts.back()) *tail = std::move(v);
+            continue; }
+        std::vector<BlockExpr*> vp; valuePhasersInStmt(st.get(), vp, 'E');
+        for (BlockExpr* be : vp) if (be->phaser == ph)
+            tctx().cur->define(valuePhaserSlot(be), runsInPlace(be) ? runBlockInPlace(be) : callCallable(makeClosure(be), {}));
+    }
+}
 void Interpreter::runFirstPhasers(const std::vector<StmtPtr>& stmts) {
+    // a FIRST in TERM position (`say FIRST $_`) too: its value kept around the
+    // loop, where every iteration reads it (valuePhaser), as the tail's below
+    std::vector<BlockExpr*> vp; valuePhasersIn(stmts, vp, 'F');
+    for (BlockExpr* be : vp)
+        (tctx().cur->parent ? tctx().cur->parent : tctx().cur)->define(valuePhaserSlot(be), runsInPlace(be) ? runBlockInPlace(be) : callCallable(makeClosure(be), {}));
     for (auto& s : stmts) if (s->kind == NK::Block) { auto* b = static_cast<Block*>(s.get());
         if (b->phaser != "FIRST") continue;
         auto sc = makeSlabShared<Env>(); sc->parent = tctx().cur;
@@ -9417,7 +9451,7 @@ int Interpreter::run(Program& prog) {
             if (b->phaser == "INIT")  { continue; }  // collected by the whole-program walk below
             // END: left in the mainline. The walk below registers it like any
             // other, and reaching it only captures the mainline scope.
-            if (b->phaser == "ENTER") { enterP.push_back(b); continue; } // file scope: before the mainline body
+            if (b->phaser == "ENTER" || b->phaser == "FIRST") { enterP.push_back(b); continue; } // file scope: before the mainline body
             if (b->phaser == "LEAVE" || b->phaser == "KEEP" || b->phaser == "UNDO")
                                       { leaveP.push_back(b); continue; }
         }
@@ -9709,7 +9743,7 @@ int Interpreter::run(Program& prog) {
             // `--doc` renders the Pod and stops there, as Rakudo's does (its DOC
             // INIT exits): no mainline, no MAIN and no END. It ran the program first.
             if (docMode_) { std::cout << docModeText(); std::cout.flush(); drainWorkers(); return 0; }
-            for (auto* b : enterP) runPhaser(b);                                  // ENTER: on UNIT-block entry, before the mainline
+            runUnitEntryPhasers(prog.stmts);   // FIRST and ENTER (enterP among them): on UNIT-block entry, before the mainline
         }
         // a mainline CONTROL {} is the outermost warn handler for the run
         if (topControl) tctx().controlHandlers.push_back({topControl, tctx().cur});

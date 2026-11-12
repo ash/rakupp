@@ -9192,8 +9192,8 @@ ExprPtr Parser::parsePrimary() {
                     u->operand = parseExpr(BP_COMMA);
                 return u;
             }
-            if (name == "INIT" && peek().kind != Tok::LBrace &&
-                peek().kind != Tok::Semicolon && peek().kind != Tok::End) { // INIT <expr> — a value phaser
+            if ((name == "INIT" || ((name == "BEGIN" || name == "CHECK" || name == "ENTER" || name == "FIRST") && !kwCallHere(name))) &&
+                peek().kind != Tok::LBrace && peek().kind != Tok::Semicolon && peek().kind != Tok::End) { // INIT <expr> — a value phaser
                 advance(); // consume INIT
                 // …and the operand may be a whole STATEMENT rather than an
                 // expression, exactly as `do`'s is: `state $ = INIT given try
@@ -9203,10 +9203,12 @@ ExprPtr Parser::parsePrimary() {
                 // undefined routine of that name.
                 // Either way it is the same once-only phaser as `INIT { … }`:
                 // `my $fh = INIT open(…)` inside a sub opens at program start,
-                // and every call reads that one value (advent2012-day15.t)
+                // and every call reads that one value (advent2012-day15.t).
+                // BEGIN, CHECK, ENTER and FIRST are the same shape: Interpreter::
+                // valuePhaser runs each at its phase and answers the value kept.
                 auto u = std::make_unique<Unary>(); u->op = "do";
                 auto be = std::make_unique<BlockExpr>();
-                be->phaser = "INIT";
+                be->phaser = name;
                 if (isIdent("given") || isIdent("with") || isIdent("without") ||
                     isIdent("if") || isIdent("unless") || isIdent("for") ||
                     isIdent("while") || isIdent("until") || isIdent("loop") ||
@@ -9329,7 +9331,7 @@ ExprPtr Parser::parsePrimary() {
                 be->body = std::move(blk->stmts);
                 // BEGIN/CHECK/INIT run ONCE, before the code around them; their
                 // value is what the expression yields every time after
-                if (name == "BEGIN" || name == "CHECK" || name == "INIT") be->phaser = name;
+                if (name != "END" && name != "LEAVE") be->phaser = name;   // (ENTER and FIRST too: valuePhaser)
                 // an END term registers for program exit and is Nil where it
                 // stands: its block becomes an END statement of the do-block
                 if (name == "END") {
@@ -9405,20 +9407,14 @@ ExprPtr Parser::parsePrimary() {
                                (peek().kind == Tok::Ident && peek(2).kind == Tok::Op &&
                                 peek(2).text == ":" && !peek(2).spaceBefore && loopWord(peek(3))));
             if ((name == "do" || name == "try" || name == "gather" || name == "quietly" ||
-                 name == "once" || loopPrefix || name == "BEGIN" || name == "ENTER") && !kwCallHere(name)) {
+                 name == "once" || loopPrefix) && !kwCallHere(name)) {
                 advance();
                 auto u = std::make_unique<Unary>();
-                // BEGIN/ENTER in value position evaluate their block/expr and yield it
-                // (a tree-walker has no separate compile phase, so `do` semantics suffice).
                 // hyper/race/eager/lazy collect the loop's values like `do` does.
                 // A `hyper for`/`race for` also marks its ForStmt, whose
                 // iterations then run over worker threads (runHyperLoop).
-                // BEGIN keeps its own op: it evaluates ONCE (per node, the
-                // tree-walker's compile-once) — Digest::SHA2 indexes
-                // `(BEGIN blob64.new: map { frac 3√$_, 64 }, @primes[^80])[$t]`
-                // inside its round loop, and do-semantics recomputed the whole
-                // 80-root table per round: 6,400 FatRat square roots per block.
-                u->op = (name == "ENTER" || loopPrefix) ? "do" : name;
+                // (BEGIN and ENTER in value position are value phasers, above.)
+                u->op = loopPrefix ? "do" : name;
                 // `lazy for …` is a Seq the loop fills on its first pull, not
                 // a List run on the spot (S32-list/seq.t)
                 if (loopPrefix && name == "lazy") u->op = "lazydo";
