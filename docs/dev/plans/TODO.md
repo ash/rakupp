@@ -1,6 +1,6 @@
 # What is open
 
-*Started 2026-10-03. Last updated 2026-11-01.*
+*Started 2026-10-03. Last updated 2026-11-12.*
 
 This is the one list of work that has been started and is not finished, across
 every plan in this directory. Each line gives the plan that owns the details
@@ -222,6 +222,18 @@ The same items grouped by theme, with a complexity estimate for each:
 
 ## 2. Correctness (v5 error batches)
 
+- [ ] **What Rakudo's issue tracker found**
+  ([RAKUDO-ISSUES-PLAN.md](RAKUDO-ISSUES-PLAN.md), from
+  findings/RAKUDO-ISSUES-2026-11.md, 2026-11-12): 8 crashes or hangs, 160
+  issues with a wrong answer, 82 strictness gaps and 25 missing features, in
+  twelve batches. Next step: R1, the six crashes and hangs:
+  - three SIGBUS (a `.race` over mixins, a user class named `Rat`, a regex
+    naming itself);
+  - a hang on `$b[1e18] = …`;
+  - two `react` blocks that never end.
+
+  R9's `use Telemetry` can run beside any batch. The plan's three questions
+  for the maintainer are answered when their batch (R3, R10) starts.
 - [ ] **A native array's derived lists hand out boxed elements**, found
   2026-11-06 beside the native-element work: `.head`, `.tail`, `.list`, a
   slice `@a[1..2]`, `.reverse`, `.sort`, `.kv`, `.values`, `.pairs` and a

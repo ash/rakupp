@@ -1,0 +1,331 @@
+# Plan: fixing what Rakudo's issue tracker found
+
+*Written 2026-11-12 from
+[findings/RAKUDO-ISSUES-2026-11.md](../findings/RAKUDO-ISSUES-2026-11.md), at
+Raku++ 5.7.0-111-g56aec789 against Rakudo v2026.09.*
+
+- **Notation.** `rakudo#N` is issue N of rakudo/rakudo; a bare `#N` is one of
+  ours.
+- **Scope.** The full list of findings, grouped by area, is
+  [FIX-LIST.md](../findings/rakudo-issues-2026-11/FIX-LIST.md). This plan puts
+  it in order.
+- **The snippets.** They live in
+  [raku-corpus-snippets](https://github.com/ash/raku-corpus-snippets), under
+  `rakudo-issues/{open,closed}/<issue>/<k>`.
+
+## How the order is chosen
+
+1. **A crash or a hang comes before anything else.** It costs the user the
+   whole program and its output.
+2. **A wrong answer comes before a refusal.** A silent wrong value is the
+   worst class; a parse error at least says something is wrong. Within the
+   class, reach decides:
+   - first, the fix that settles many cases at once (R2 settles 42);
+   - then what ordinary programs hit: attributes, dispatch, operators, lists;
+   - corners last.
+3. **Valid code we refuse comes before invalid code we accept.** A refusal
+   stops someone porting a program to Raku++. A laxness only lets a program
+   fail later, on Rakudo, and tightening it can break code that runs here
+   today.
+4. **Usefulness counts, not officialness.** A Rakudo module or routine that
+   people actually use ranks with the language features, whether or not Roast
+   specifies it. `use Telemetry` sits beside `Routine.prec`, not at the
+   bottom.
+5. **Rakudo's insides and RakuAST's newer corners come last.** That covers:
+   - `nqp::`, CompUnit and precompilation internals, `--ll-exception`;
+   - the RakuAST API's extras (`.AST` of a grammar rule, RakuDoc trees,
+     `RakuAST::Deparse::Highlight`);
+   - error-message wording;
+   - the open Rakudo bugs we share, which wait on each issue's own consensus.
+
+## How every batch runs
+
+- **Re-verify first.** 104 findings were re-run by hand (✓ in FIX-LIST.md).
+  The rest are a reviewer's reading of recorded outputs, and a few of those
+  turned out to be misreadings. Rerun the batch's paths in
+  raku-corpus-snippets with `RAKUPP=… harness/diff.sh ./rakudo-issues/…`.
+  Reduce each live finding to a one-liner, and drop the dead ones with a note
+  in the batch's row below.
+- **One regression file per fix** under `t/regression/`, written so that
+  Rakudo 2026.09 passes it too, as for #254.
+- **Gates.**
+  - `build/rakupp tools/source-helpers/budget.raku` (1 s).
+  - Roast (~6 min) first, then t/run.raku (~20 min).
+  - t/exe/parity.raku after a codegen change.
+  - For any new strictness, a clean `tools/battery-scan.raku` against the
+    last release.
+- **A CHANGELOG-NEXT.md entry** naming the rakudo issues.
+- **The progress number.** After the batch, run `harness/diff.sh` over the
+  whole snippet set. Record the MATCH count (baseline 1,264 of 1,777), and diff
+  its `summary.tsv` against the previous run's. A PPWIN that turns into a
+  MATCH is a regression to Rakudo's bug, not progress. When a batch touches a
+  PPWIN's area, turn that PPWIN into a regression test.
+- **Parser.cpp has no room.** It is at 18,459 lines against an 18,460 ceiling.
+  A batch that touches the parser either starts with R7.0 or folds each change
+  into existing lines.
+
+## Order
+
+R1–R6 are the wrong answers and crashes. R7–R8 are refusals and the
+remaining wrong answers. R9 is missing features, R10 strictness, and R11
+speed, which is handed to the speed track. R12 is last.
+
+**R9's Telemetry item is independent of the rest** and can be done at any
+time, beside any batch.
+
+### R1 — crashes and hangs
+
+- **rakudo#5868 ✓ (SIGBUS):** `(^100_000).race.map` calls a sub that returns
+  `Foo.new but role :: { method get-value { $value } }`, a role closing over a
+  lexical. A reduction without the closed-over lexical survives 2,000
+  iterations. The suspect is a race between mixin creation and a captured
+  frame. Reproduce under ASan/TSan before reading code.
+- **rakudo#5537 ✓ (SIGBUS):** a user `class Rat is Quadruped` dies partway
+  through the issue's script, right after the core `Rat` prints. Reduce it
+  first; a bare `class Rat is Mu {}; Rat.new` survives.
+- **rakudo#3775 ✓ (SIGBUS):** `$regex = /… <$regex> …/` recurses through
+  `<$var>` until the stack is gone. It needs two fixes:
+  - a depth guard that throws;
+  - refusing the bare `…`, as Rakudo does ("Unrecognized regex
+    metacharacter").
+- **rakudo#5835 ✓ (hang):** `my $b; $b[1e18] = "meow"` hangs. Throw instead;
+  the issue asks for a catchable exception, and Rakudo panics.
+- **rakudo#4853 ✓, rakudo#3686 ✓ (react never ends):** in #4853, two
+  `start react` blocks share a Channel, one closes it, and both end on
+  `whenever $ch.closed { done }`; the `Supply.interval`s tick on forever. In
+  #3686, a repeated `react` over two Channels hangs.
+
+Done when none of the six reproduces. Each gets a regression test that runs
+the case in a child process, so a regression fails the test rather than
+killing the suite.
+
+### R2 — a phaser used as a value runs when it is reached
+
+`say "body"; my $x = INIT say "init"` prints `body` first; Rakudo prints
+`init` first. `ENTER <expr>`, `BEGIN <expr>`, and presumably `CHECK <expr>`
+do the same. The `INIT <expr> — a value phaser` branch in src/Parser.cpp
+builds a `do` around an INIT-flagged block, and that block is evaluated where
+it stands. Three things to fix:
+
+- Run the phaser's expression at its phase and cache the value, for INIT,
+  BEGIN, CHECK and ENTER.
+- Make `FIRST <expr>` a term. Today `say FIRST 2` dies with "Undefined routine
+  'FIRST'" (rakudo#4351, ✓).
+- Fold in TODO §2's open "an INIT default that reads an earlier parameter
+  (`$y = INIT { $x }`) still runs per call".
+
+These are 42 cases in 23 issues: rakudo#1323, 1329, 1368, 1385, 1415, 1416,
+1491, 1656, 1668, 1681, 1740, 1741, 1973, 2002, 2387, 2537, 2925, 2988, 3185,
+3560, 3620, 4504 and 5919. Test the order of output, not timings.
+
+Done when the order matches Rakudo for every value phaser, and those 23
+issues' snippets agree with Rakudo apart from the elapsed times they print.
+
+### R3 — objects: read-only attributes, typed containers, roles, the MOP
+
+- **rakudo#5908 ✓, #6113 ✓, #4463 ✓: a read-only attribute is assignable.**
+  Inside a method, `$.b = 666` assigns to `has $.b`, which has no `is rw`;
+  Rakudo throws "Cannot modify an immutable Int". The same happens through a
+  `method b is raw { $.a }`. The fix can break code that runs on Raku++ today,
+  so it needs a clean battery scan.
+- **rakudo#2068 ✓:** `my Int %h; %h.map({ .value = "meows" })` stores the
+  Str. A Pair's `.value` must check the hash's element type.
+- **rakudo#1285 ✓:** a coercion type as a role argument does not coerce
+  (`R[Int()]`, `has T $.c`).
+- **rakudo#6031 ✓:** `is Set[Int()]` does not coerce its keys; neither do Bag
+  and Mix.
+- **rakudo#2663 ✓:** with a role mixed in, `self!bow` reaches the role's
+  private method instead of the class's own.
+- **rakudo#3292 ✓:** `my \foo = HistoryVar.new; foo = 1` does not call the
+  user container's STORE.
+- **rakudo#4543 ✓:** a CALL-ME mixed into `&grep` is ignored.
+- **rakudo#3976 ✓:** a `multi submethod` lands in the method table instead of
+  the submethod table.
+- **rakudo#2174 ✓, #1959 ✓:** `does` is not callable as a routine, and
+  `$set does …` dies.
+- **rakudo#1855 ✓:** `Rational[IntStr, IntStr]`'s numerator comes back an Int.
+- The rest of FIX-LIST.md's oo PPBUG section: 27 cases in all.
+
+### R4 — dispatch: ambiguity, coercion, `is cached`, `.assuming`
+
+- **rakudo#1286 ✓: ambiguity between user multis is not detected.** With
+  `multi f(Int \a, Any \b)` and `multi f(Any \a, Int \b)`, `f(42, 42)` quietly
+  takes the first. Rakudo dies with X::Multi::Ambiguous. TODO §2 already notes
+  the same symptom for two unrelated types (in "#110 constructor type
+  checks"). Do the user-versus-user case here; user-versus-core waits on the
+  open decision "User candidates beside a core ROUTINE".
+- **rakudo#6860 ✓:** a user `multi infix:<~>(Str() $a, Int:U $b)` loses to the
+  built-in. The coercion parameter is not considered.
+- **rakudo#4665 ✓, #4666 ✓: `is cached` never caches.** `pow2` makes 4,094
+  calls where Rakudo makes 11. Requiring `use experimental :cached` is R10's
+  business.
+- **rakudo#4553 ✓:** `.assuming` loses an optional parameter's default.
+- The rest of the dispatch PPBUG section.
+
+### R5 — operators, lists and sequences
+
+- **rakudo#4757 ✓:** `2 R- 3 R- 4` gives 3; it should give −1. R must
+  reverse the associativity too.
+- **rakudo#6128 ✓, #1616 ✓:** R does not compose over Z or S (`RZ`,
+  `&[RZ,]`).
+- **rakudo#4128 ✓:** `reduce &[>], 6, 5, 4` gives False. A chaining operator
+  must chain under `reduce`.
+- **rakudo#2217 ✓:** `½ ∈ ^2` is True. A Range coerces to the Set of its
+  integers.
+- **rakudo#2000 ✓:** `&postcircumfix:<{ }>` is not a callable routine.
+- **rakudo#1447 ✓:** `roundrobin` does not apply the single-argument rule.
+- **rakudo#2485 ✓:** `.head(*.elems - 1)` gives `()`.
+- **rakudo#3881 ✓:** `{ … } ...^ 21` never stops.
+- **rakudo#1692 ✓:** `eager Seq.from-loop: {…}, {1}` dies with "Cannot eager".
+- **rakudo#1629 ✓:** `.combinations(2.3..^3.6)` drops a combination.
+- **rakudo#1355 ✓, #3621 ✓:** the `$( )` of an itemised inner list is lost by
+  `+l` and by `.raku`.
+- **rakudo#5951 ✓:** `[»+«]` over two arrays loses a level.
+- **rakudo#5138 ✓:** `(1..*).Slip.is-lazy` is False.
+- **rakudo#1399 ✓, #1398 ✓:** `.sink for 1..*` returns at once. A pure loop
+  over an infinite range is elided; it must run forever.
+- The rest of the lists, hashes and numeric sections.
+
+### R6 — regexes and grammars
+
+- **rakudo#1551 ✓:** `'hello' ~~ TR/e/1/` gives False.
+- **rakudo#1243 ✓:** `.subparse(:pos)` ignores `:pos`, and a failed subparse
+  returns Nil instead of a failed Match.
+- **rakudo#4752 ✓:** `<same> ** 2..4` never matches.
+- **rakudo#5799 ✓:** a literal base character plus a combining mark in a
+  pattern does not match its grapheme (NFG).
+- **rakudo#2791 ✓:** `<!before \S>` at the end of the string fails inside a
+  grammar rule.
+- **rakudo#6810 ✓:** a `my token` in a sub cannot see the sub's lexicals
+  through `<{$re}>`.
+- **rakudo#3410 ✓:** `self` inside an anonymous token's code block is
+  refused.
+- **rakudo#3775 ✓:** ｢{｣ corner-bracket quotes with `:my $L` in a regex fail
+  to parse.
+- **rakudo#2059 ✓:** an actions class's `FALLBACK` is never called.
+- The rest of the regex and grammar sections.
+
+### R7 — valid code we refuse
+
+- **R7.0, make room.** Move a self-contained group of functions out of
+  src/Parser.cpp into a file of its own, and record the new ceilings in
+  tools/source-helpers/budget.txt. Commit this alone, so the moves and the
+  fixes can be reviewed apart.
+- **rakudo#1360 ✓, #2078 ✓:** an anonymous class as the first term of a
+  statement takes no postfix or infix after it (`class {…}.new for ^5`,
+  `class {…}.new.z = 42`).
+- **rakudo#2243 ✓:** `LEAVE { … } if False;` is refused by the #206 rule. That
+  rule must allow a statement modifier after a block-statement phaser.
+- **rakudo#5027 ✓:** sigilless parameters whose names end in `_` fail to
+  parse.
+- **rakudo#2336 ✓:** `my (&op:(Int, Int --> Int)) = …` fails to parse.
+- **rakudo#3376 ✓:** `enum E does Positional <a b>` fails to parse.
+- **rakudo#5901 ✓:** `*>>.fmt("%02x")` fails to parse.
+- **Found while probing:** `($n++; last if $n > 3) for 1..*` is "Two terms in
+  a row". A statement modifier inside a parenthesised statement list is not
+  accepted.
+- **rakudo#1264 ✓:** a user `infix:«"z"»` is invisible to EVAL.
+- **rakudo#2129 ✓:** `return 0.flip or die "bar"` returns `(Any)`.
+- The rest of the syntax PPBUG section: 34 cases in all.
+
+### R8 — strings, numbers, dates, formatting
+
+- **rakudo#1460 ✓:** `"%h».sort…"` is not interpolated.
+- **rakudo#1961 ✓:** `"count {$++}" for ^3` gives 0 1 2. Each closure clone
+  needs its own anonymous state.
+- **rakudo#2434 ✓:** `dd` of a Failure later throws it.
+- **rakudo#2097 ✓:** a leap second is lost in a timezone that is not a whole
+  number of minutes.
+- The rest of the strings, formatting, numeric and datetime sections.
+
+### R9 — missing features, most useful first
+
+- **`use Telemetry` ✓** (rakudo#1513, #3844, #5144). It is Rakudo's, not
+  Roast's, but it is how people measure a Raku program: `T<max-rss>`,
+  `snapper`, `report`, `Telemetry::Instrument::*`. Independent of everything
+  else; it can start any time.
+- **`CALLERS::`** (rakudo#2639), a specced pseudo-package.
+- **`Routine.prec` ✓** (rakudo#4780).
+- **`⚛==` ✓** (rakudo#6873), and whatever else of the atomic operator family
+  is missing.
+- **IO::Socket::Async over Unix sockets**: `listen-path` and `connect-path`
+  (rakudo#5358, #5359).
+- **IPv6 sockets** (rakudo#1879).
+- **Nested coercion types** (rakudo#4517), and `role R[::T] does array[T]`
+  (rakudo#4361).
+- **`Metamodel::EnumHOW.add_enum_value` ✓** (rakudo#2165), and `.twigil` on a
+  method's invocant Parameter ✓ (rakudo#2275).
+- **`use trace`** (rakudo#5546), last.
+
+### R10 — strictness: code we run and Rakudo refuses
+
+Each item can stop code that runs here today, so each lands only with a clean
+battery scan, and some need the decisions below first.
+
+- **Test's and NativeCall's exports visible without `use`** (✓ `is-deeply`,
+  ✓ `CArray`; also `ok`, `lives-ok`, `cglobal`, `Pointer`).
+- **`use v6.e` without `.PREVIEW` ✓**, and **`is cached` without
+  `use experimental :cached` ✓**.
+- **Declarations Rakudo refuses**, all ✓: `has Int $.count!`, `sub ($!x) {}`
+  outside a class, and `-> < 1/2> {…}`.
+- **Calls Rakudo refuses**, all ✓:
+  - `'x'.substr(/x/, 'x')` (Rakudo suggests `subst`);
+  - `self."!$name"()`;
+  - `await start { return }`.
+- The rest of the LAX list: 95 cases, mostly in oo, syntax and dispatch.
+- **Not here:** a missing `;` between statements on separate lines. That is
+  TODO's open decision on EVAL's strict statement separation. The tracker
+  adds five issues whose snippets run only because of it.
+
+### R11 — speed, handed to SPEED-BACKLOG.md
+
+- **rakudo#2844 ✓:** `1,1,*+*...*` to 40k terms takes 1.5 s here and 0.28 s
+  in Rakudo. The time grows quadratically, and lives in the sequence
+  operator's two-argument generator path; the same numbers from a `gather`
+  loop take 0.23 s.
+- **rakudo#1416 ✓:** a hot loop of `my $ = …` is about 3.4× slower than in
+  Rakudo.
+
+These are scheduled by the speed track (one speed item per sitting), not
+here.
+
+### R12 — last
+
+- **The RakuAST API's extras:**
+  - `.AST` of a grammar rule (rakudo#5479, #5978, #5991);
+  - RakuDoc `.AST` trees (rakudo#5798, #5721);
+  - `RakuAST::Deparse::Highlight` (rakudo#5628);
+  - our demand for `use experimental :rakuast` where Rakudo makes none
+    (rakudo#6134, #6137);
+  - the 4 rakuast PPBUG cases.
+- **INTERNAL (29 cases):** `nqp::` ops, CompUnit and precomp internals,
+  `--ll-exception`. No shared expectation; fix only if a real module needs one.
+- **ERRMSG (41 cases):** error wording. Fix when a batch is already in the
+  code.
+- **SHARED (72 cases, 63 issues):** open Rakudo bugs we reproduce. Each waits
+  for the issue thread to agree on the answer, and is a chance to be right
+  first.
+- **UNCLEAR (43 cases):** re-read with the issue's comments, which the sweep
+  did not download.
+
+## Decisions for the maintainer
+
+Each is answered when its batch starts, not before.
+
+1. **(R10) Tightenings that can break code that runs on Raku++ today:**
+   - Test's and NativeCall's exports without their `use`;
+   - `use v6.e` without `.PREVIEW`;
+   - `is cached` without its pragma.
+
+   Refuse them as Rakudo does, or warn for one release first?
+2. **(R10) A missing `;` across lines.** This is already in TODO's decisions;
+   the tracker data is new evidence for it.
+3. **(R3) Order of R3 and R4.** The read-only attribute (R3) and the ambiguity
+   check (R4) are the two fixes most likely to turn up breakage in the
+   battery. Doing them together, behind one battery scan, saves a scan.
+
+## Progress
+
+| batch | state | commits | snippets MATCH (of 1,777) | Roast files | t/run.raku |
+|---|---|---|---:|---|---|
+| baseline, 2026-11-12 | — | 6ee8f413 | 1,264 | 1,425/1,425 | 2259/2259 |
