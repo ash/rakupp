@@ -222,6 +222,7 @@ into three times the load on someone else's server.
 ```raku
 use Cro::HTTP::Client;
 
+my $url  = @*ARGS[0] // 'https://raku.online';
 my $resp = await Cro::HTTP::Client.get($url);
 say 'status : ', $resp.status;
 say 'type   : ', $resp.header('Content-Type');
@@ -229,13 +230,14 @@ say 'bytes  : ', (await $resp.body-text).chars;
 ```
 
 ```sh
-rakupp tls.raku
+rakupp tls.raku                        # https://raku.online
+rakupp tls.raku https://example.com    # or any URL you give it
 ```
 
 ```output
 status : 200
 type   : text/html; charset=utf-8
-bytes  : 76140
+bytes  : 76130
 ```
 
 The program is [http/tls.raku](http/tls.raku). The client offers HTTP/2 in the
