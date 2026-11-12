@@ -20,6 +20,7 @@ void noteAttrInit(const ObjectData* od, const Value* slot);   // …the attribut
 Value nilResetForAttrSlot(const Value& v, const Value& self, const std::string& an);   // InterpreterBinding.cpp
 bool liftMatchVarQuiet();   // InterpreterRegex.cpp: a regex block sees its cursor as `$/`…
 void restoreMatchVarQuiet(bool quiet, bool hadSlash);   // …under a quiet match (.grep) too
+bool isRxSelfCall(const std::string& code); Value rxSelfCallee(const std::string& code);   // …and a regex value naming itself
 bool operatorNameDeclared(Interpreter& I, const std::string& name);   // InterpreterOperators.cpp
 bool endsElementCall(const Expr* rv);   // InterpreterCalls.cpp: `@a.first`, `.head`, `.tail`
 bool bridgedNumericInfix(Interpreter& I, const std::string& op, const Value& l, const Value& r, Value& out);   // …too
@@ -7661,6 +7662,19 @@ struct DepthGuard {
     }
     ~DepthGuard() { --d; }
 };
+// The same headroom test for the regex matcher, at each subrule call: a rule or
+// `<$var>` that calls itself before consuming anything (`token t { <t> a }`)
+// recursed in C++ until the process took SIGBUS (rakudo#3775). Rakudo hangs.
+void regexStackCheck() {
+    char probe;
+    char* here = &probe;
+    if (!t_stack.top) { t_stack.top = here; t_stack.limit = currentThreadStackSize(); }
+    size_t reserve = size_t(2) << 20;
+    if (t_stack.limit < reserve * 4) reserve = t_stack.limit / 4;
+    if ((size_t)(t_stack.top - here) + reserve >= t_stack.limit)
+        throw RakuError{Value::typeObj("X::Recursion"),
+                        "Too many levels of recursion in a regex (does a rule call itself before matching anything?)"};
+}
 
 bool Interpreter::boolify(const Value& v) {
     // Failure.Bool is False and HANDLES it: `$x %% 0 && …` in sink context
@@ -21187,7 +21201,7 @@ Value Interpreter::regexMatch(const std::string& subject, std::string_view patte
                                                const std::vector<std::pair<long, long>>& caps,
                                                const GrammarHooks::ParamMap&,
                                                const std::string& flags) -> const Regex* {
-            return dynRegexFor(evalInCursor(code, from, to, named, caps), flags);
+            return dynRegexFor(isRxSelfCall(code) ? rxSelfCallee(code) : evalInCursor(code, from, to, named, caps), flags);
         };
         wantHooks = true;
     }

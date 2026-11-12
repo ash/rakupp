@@ -1666,6 +1666,7 @@ Regex::NodePtr Regex::parseQuant() {
 
 static std::string ruleFlag(const std::string& nm); // built-in rule → classMatch flags
 bool charClassMatch(char flag, uint32_t cp);        // the POSIX-named classes, over a codepoint
+void regexStackCheck();                             // InterpreterCore.cpp: X::Recursion before the stack runs out
 
 Regex::NodePtr Regex::parseAtom() {
     skipWs();
@@ -4888,6 +4889,7 @@ bool Regex::matchNode(const Node* n, MState& st, long pos, const FnRef& k) const
 // table: `k` is threaded through, so the caller can still backtrack into the callee.
 bool Regex::matchInlineSub(const Node* n, const Regex* re, MState& st, long pos, const FnRef& k,
                            const std::string* capKeyOverride, const std::string* alsoName) const {
+    regexStackCheck();
     MState sub{st.s, std::vector<std::pair<long, long>>(re->ncaps(), {-1, -1}), {}, {}, st.resolver, st.grammar};
     sub.hooks = st.hooks; sub.lexNames = st.lexNames; sub.curSym = st.curSym;
     sub.startPos = pos; sub.probing = st.probing; sub.steps = st.steps;
@@ -5495,6 +5497,7 @@ bool GrammarMatcher::matchSubMeta(const GrammarRuleMeta& meta, const std::string
                                   const std::string& args, const std::string& capKey,
                                   Regex::MState& st, long pos, const FnRef& k,
                                   bool alsoBareName) {
+    regexStackCheck();
     // `<sym>` inside a proto candidate (`token alt:sym<foo> { <sym> }`) matches that
     // candidate's sym literal ("foo"), threaded in via st.curSym.
     if (name == "sym" && args.empty()) {

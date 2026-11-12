@@ -293,6 +293,41 @@ static Value rxLiteralAlternatives(const Value& v) {
 static std::string rxKindAdverbs(const Value& v) {
     return v.t != VT::Regex ? "" : v.hashKind == "rule" ? ":r :s " : v.hashKind == "token" ? ":r " : "";
 }
+
+// A regex VALUE that names itself — `my $r; $r = / a <$r>? /`, or two that
+// name each other. Expanding `<$r>` pasted $r's source, its own `<$r>` pasted
+// it again, and the C++ stack ran out before one character was matched
+// (SIGBUS, rakudo#3775). Rakudo resolves `<$r>` when the match reaches it. So
+// while a value is being expanded (t_rxExpanding: its scope and source), its
+// reappearance becomes a `<{…}>` call that fetches the value back at match
+// time: `\x01Q<n>` names slot n of g_rxSelf, which keeps the value — and the
+// scope its variables read from — alive. Every dynRule hook answers the mark.
+static std::mutex g_rxSelfMu;
+static std::vector<Value> g_rxSelf;
+static thread_local std::vector<std::pair<const void*, std::string>> t_rxExpanding;
+static bool rxBeingExpanded(const Value& v) {
+    if (v.t != VT::Regex || !v.ext() || t_rxExpanding.empty()) return false;
+    const std::string src = v.s.copyText();
+    for (auto& e : t_rxExpanding)
+        if (e.first == v.ext().get() && e.second == src) return true;
+    return false;
+}
+static std::string rxSelfCallMark(const Value& v) {
+    const std::string src = v.s.copyText();
+    std::lock_guard<std::mutex> lock(g_rxSelfMu);
+    size_t n = 0;
+    while (n < g_rxSelf.size() && !(g_rxSelf[n].ext() == v.ext() && g_rxSelf[n].hashKind == v.hashKind &&
+                                    g_rxSelf[n].s.copyText() == src)) n++;
+    if (n == g_rxSelf.size()) g_rxSelf.push_back(v);
+    return "<{\x01" "Q" + std::to_string(n) + "}>";
+}
+bool isRxSelfCall(const std::string& code) { return code.size() > 2 && code[0] == '\x01' && code[1] == 'Q'; }
+Value rxSelfCallee(const std::string& code) {
+    const size_t n = std::strtoul(code.c_str() + 2, nullptr, 10);
+    std::lock_guard<std::mutex> lock(g_rxSelfMu);
+    return n < g_rxSelf.size() ? g_rxSelf[n] : Value();
+}
+
 std::string Interpreter::closedRegexSource(const Value& v) {
     std::string src = v.s.copyText();
     if (isP5Pattern(src)) return src;
@@ -303,12 +338,14 @@ std::string Interpreter::closedRegexSource(const Value& v) {
     if (!arr && !sc) return rxKindAdverbs(v) + src;
     auto savedOuter = tctx().cur;
     tctx().cur = std::static_pointer_cast<Env>(v.ext());
+    t_rxExpanding.emplace_back(v.ext().get(), src);
     try {
         if (sc) src = interpRegexPattern(src);
         if (arr) src = rxInterpArrays(src);
     }
-    catch (...) { tctx().cur = savedOuter; throw; }
+    catch (...) { tctx().cur = savedOuter; t_rxExpanding.pop_back(); throw; }
     tctx().cur = savedOuter;
+    t_rxExpanding.pop_back();
     return rxKindAdverbs(v) + src;
 }
 
@@ -964,7 +1001,8 @@ std::string Interpreter::interpRegexPattern(const std::string& in) {
                 }
                 if (depth == 0) {
                     Value v = evalString(pat.substr(i, j - i));   // the whole `$( … )`
-                    out += v.t == VT::Regex ? spliceRegexValue(closedRegexSource(v)) : quoteMetaRx(v.toStr());
+                    out += v.t != VT::Regex ? quoteMetaRx(v.toStr())
+                         : rxBeingExpanded(v) ? rxSelfCallMark(v) : spliceRegexValue(closedRegexSource(v));
                     i = j - 1;
                     continue;
                 }
@@ -1006,6 +1044,8 @@ std::string Interpreter::interpRegexPattern(const std::string& in) {
                     // frame, so an inner `(…)` stays the callee's `$0` and never
                     // renumbers onto the host's — Rakudo discards it entirely for
                     // the unaliased form, since nothing names the sub-match.
+                    // (A value already being expanded is called at match time.)
+                    if (rxBeingExpanded(*v)) { out += rxSelfCallMark(*v); i = j; continue; }
                     bool vp5 = false;
                     std::string vsrc = calleeSource(*v, vp5);
                     if (v->t == VT::Str && !vp5 && rxRestricted()) rxRestrictedCheck(vsrc);
@@ -1055,6 +1095,7 @@ std::string Interpreter::interpRegexPattern(const std::string& in) {
                         // grouped: the callee's `(\S+)` became the host's `$0` and
                         // `$<alias>` reported the whole span, so Sparrow6 read
                         // "ABCDCBA" where Rakudo reads "BCDCB".
+                        if (rxBeingExpanded(*v)) { out += "[ $<" + alias + ">=" + rxSelfCallMark(*v) + " ]"; i = j; continue; }
                         bool vp5 = false;
                         std::string vsrc = calleeSource(*v, vp5);
                         out += Regex::subSpliceOf(alias, vsrc, vp5);
@@ -1067,7 +1108,7 @@ std::string Interpreter::interpRegexPattern(const std::string& in) {
                 // how IO::Glob assembles a glob out of per-term matchers. Only a
                 // Str value keeps the quote-it-literally reading.
                 if (v && v->t == VT::Regex) {
-                    out += spliceRegexValue(closedRegexSource(*v));
+                    out += rxBeingExpanded(*v) ? rxSelfCallMark(*v) : spliceRegexValue(closedRegexSource(*v));
                     i = j - 1;
                     continue;
                 }
@@ -1139,8 +1180,8 @@ std::string Interpreter::spliceRegexVars(const std::string& pat) {
                     // Path::Finder's `{a,b}` and `[a-z]` matchers, built as
                     // `/@list/` inside a grammar action and then folded
                     // together by a `reduce`, came out matching nothing.
-                    std::string src = closedRegexSource(*v);
-                    out += spliceRegexValue(src); sawRegex = true;
+                    out += rxBeingExpanded(*v) ? rxSelfCallMark(*v) : spliceRegexValue(closedRegexSource(*v));
+                    sawRegex = true;
                 }
                 else out += quoteMetaRx(v->toStr());
                 i = j - 1;
@@ -1514,7 +1555,7 @@ GrammarHooks Interpreter::codeAssertHooks() {
     h.dynRule = [this](const std::string& code, long, long, const GrammarHooks::NamedMap&,
                        const std::vector<std::pair<long, long>>&, const GrammarHooks::ParamMap&,
                        const std::string& flags) -> const Regex* {
-        return dynRegexFor(evalString(code), flags);
+        return dynRegexFor(isRxSelfCall(code) ? rxSelfCallee(code) : evalString(code), flags);
     };
     return h;
 }
@@ -2882,6 +2923,7 @@ Value Interpreter::grammarParse(ClassInfo* g, const std::string& input, bool sub
                                        const std::string& flags) -> const Regex* {
         if (code.size() > 2 && code[0] == '\x01' && code[1] == 'L')   // grammarArrayAtoms' mark
             return dynRegexFor(rxLiteralAlternatives(runCode(code.substr(2), from, to, nm, pm, &caps)), flags);
+        if (isRxSelfCall(code)) return dynRegexFor(rxSelfCallee(code), flags);   // a regex value naming itself
         return dynRegexFor(runCode(code, from, to, nm, pm, &caps), flags);
     };
     gm.hooks.range = [this, runCode](const std::string& code, const NamedMap& nm, const ParamMap& pm) -> std::pair<long, long> {
