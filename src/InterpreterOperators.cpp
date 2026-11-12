@@ -3439,7 +3439,7 @@ Value Interpreter::applyReduce(std::string op, ValueList& items) {
         if (op == "lcm") return Value::integer(1);
         if (op == "gcd" || op == "x" || op == "xx")
             return armedFailure("X::NoZeroArgMeaning", "No zero-arg meaning for infix:<" + op + ">");
-        if (op == "(^)" || op == "\xE2\x8A\x96") return setWrap({}, setOpMinTier(op)); // [⊖] () is set()
+        if (isSetOpStr(op) && !isSetPredicateStr(op)) return setWrap({}, setOpMinTier(op)); // [∪] () is set(), [⊎] () bag()
         // list-building ops over nothing build nothing: [Z] () / [Z~] () / [X] () are ()
         if (op == "," ) { Value o = Value::array(); o.isList = true; return o; }
         if (op == "Z" || op == "X" ||

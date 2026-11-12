@@ -17699,6 +17699,7 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
             throw RakuError{Value::typeObj("X::NoZeroArgMeaning"),
                             "No zero-argument meaning for: infix:<" + binop + ">"};
         else if (binop == "+" || binop == "-") slotStore(lv, Value::integer(0));
+        else if (isSetOpStr(binop) && !isSetPredicateStr(binop)) slotStore(lv, setWrap({}, setOpMinTier(binop)));
     }
     // `$s ~= $obj` honours a user-defined Str method, exactly like binary `~`
     // (XML::Document.Str appends its root element object this way)
