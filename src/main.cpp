@@ -2041,7 +2041,7 @@ static int compileNative(const std::string& src, const std::string& srcName, std
                 if (m.src.find(w) != std::string::npos)
                     throw CodegenError{"a module (" + m.name + ") that " +
                                        (w[0] == 'E' ? "supplies a metaclass (EXPORTHOW)" : "is a slang ($*LANG)")};
-        cpp = transpileToCpp(prog, optimize, absPath(srcName), moduleExports, src);
+        cpp = transpileToCpp(prog, optimize, absPath(srcName), moduleExports, src, g_slim.cut[kSlimEval]);
         if (!mods.empty()) {
             std::ostringstream decls, calls;
             emitModuleTable(mods, decls, calls);

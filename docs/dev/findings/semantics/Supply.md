@@ -294,7 +294,8 @@ Falsy time returns the invocant; otherwise every event, including done and quit,
 say Supply.from-list(1,2,3).delayed(0).list, " ", Supply.from-list(1,2,3).delayed(0.01).list
 # rakudo 2026.08: (1 2 3) (1 2 3)
 ```
-rakupp 4.0.2: matches.
+rakupp after 5.7.0: matches, done and quit included (until then both passed
+at once: an empty source was not delayed, and a quit cut off a waiting value).
 
 ### S-23  schedule-on                                              D:yes R:yes V:spec
 Every event is handed to the given scheduler for delivery. Ordering between

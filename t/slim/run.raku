@@ -377,8 +377,12 @@ my $catch = probe('catch.raku', q:to/END/);
     check !$line.contains('"unicode-names"') && $line.contains('"eval"'),
           '…while still cutting what the program does not use', $line;
 }
+# (The pair EVALs through eval-lives-ok, which the scan reads as EVAL by name:
+# a bare EVAL keeps the program from compiling natively at all — it bundles,
+# and a bundle cuts nothing — so it could tell auto from max no more.)
+my $evalprog = probe('eval-auto.raku', q{use Test; eval-lives-ok '40+2', 'evals'; done-testing;});
+my $evalout = "ok 1 - evals\n1..1\n";
 {
-    my $evalprog = probe('eval-auto.raku', q{print EVAL '40+2';});
     my $p = run $*EXECUTABLE, '--exe', $evalprog, '--slim',
                 '-o', $tmp.add('eval-auto').Str, :out, :err;
     my $err = $p.err.slurp(:close);
@@ -389,19 +393,19 @@ my $catch = probe('catch.raku', q:to/END/);
     my $info = run $*EXECUTABLE, '--exe-info', $tmp.add('eval-auto').Str, :out, :err;
     my $line = $info.out.slurp(:close);
     $info.err.slurp(:close);
-    check $line.contains('"cut":[]'), '…and the manifest shows nothing cut', $line;
+    check $line.contains('"mode":"native"') && $line.contains('"cut":[]'),
+          '…and the manifest shows nothing cut', $line;
     my ($xc, $out, $) = run-bin($tmp.add('eval-auto').Str);
-    check $xc == 0 && $out eq '42', '…and the binary works', $out;
+    check $xc == 0 && $out eq $evalout, '…and the binary works', $out;
 }
 {
-    my $evalprog = probe('eval-max.raku', q{print EVAL '40+2';});
     my ($rc, $log, $bin) = compile($evalprog, 'eval-max-bin', '--exe', '--slim=max');
     check $rc == 0, '--slim=max compiles the same program', $log;
     my ($xc, $out, $) = run-bin($bin);
     my $info = run $*EXECUTABLE, '--exe-info', $bin, :out, :err;
     my $line = $info.out.slurp(:close);
     $info.err.slurp(:close);
-    check $xc == 0 && $out eq '42'
+    check $xc == 0 && $out eq $evalout
           && !$line.contains('"eval"') && $line.contains('"unicode-names"'),
           'max keeps eval (static use) and still cuts the unused Unicode tables', "$out / $line";
 }
@@ -607,14 +611,16 @@ for ('up-w',    q{print 'a'.uniprop('W');},                                     
 # The runtime keeps a few classes and combinators as Raku source, compiled on
 # first use (BuiltinRakuSrc.h). A binary without a parser carries their ASTs
 # instead, so none of these may need the eval feature the scan proved unused.
+# (The supplies drain through .list: a `react` keeps the program from
+# compiling natively, and a bundle carries the parser it is meant to lack.)
 {
     my $src = probe('builtin-raku.raku', q:to/END/);
         my $s = supply { emit 1; emit 2 };
         $s.map(* * 2).tap({ print $_, ' ' });
         $s.grep(* > 1).tap({ print $_, ' ' });
         my $c = Channel.new; $c.send(5); $c.close;
-        react { whenever $c.Supply { print $_, ' ' } }
-        react { whenever supply { emit 3 }.stable(0.01) { print $_, ' ' } }
+        print $c.Supply.list.join, ' ';
+        print supply { emit 3 }.stable(0.01).list.join, ' ';
         print IO::Notification::Change.new(path => 'p', event => FileChanged).path;
         END
     my ($rc, $log, $bin) = compile($src, 'builtin-raku-bin', '--exe', '--slim');

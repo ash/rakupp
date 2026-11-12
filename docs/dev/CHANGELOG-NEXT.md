@@ -44,7 +44,9 @@ fd3fda0f.*
   interpreter's own function it computes the same answer; where the meaning is
   the interpreter's alone (`EVAL`, pseudo-packages, most of `.^`, `callframe`,
   KEEP/UNDO, `.wrap`, a capturing nested sub that escapes) the program bundles
-  with the interpreter, slower but the same. `.map(|*.list)` curries (#243).
+  with the interpreter, slower but the same — except an `EVAL` under
+  `--slim=-eval`, which compiles to the X::Feature::NotBuilt it throws, since a
+  bundle needs the parser the cut removed. `.map(|*.list)` curries (#243).
   A program whose generated C++ does not compile bundles instead of leaving no
   binary (88264aeb). `$s = $s ~ X` in a loop is linear compiled too (160k
   appends: 1.4 s → 5 ms). Reported by Zer0-Tolerance (#240, #242, #243).
@@ -75,6 +77,11 @@ fd3fda0f.*
   False. `.DEPARSE` still writes Rakudo's text byte for byte.
   `t/regression/rakuast-eval-keeps-tree-grouping.raku`. Reported by
   Zer0-Tolerance.
+- **`.delayed` delays done and quit as well, as Rakudo's does**: a quit cut
+  off the value still waiting (`$s.emit(1); $s.quit(…)` on a `.delayed(0.3)`
+  delivered nothing, Rakudo's 1 and then the quit), and an empty source was
+  done at once, not after the delay.
+  `t/regression/supply-delayed-delays-done-and-quit.raku`.
 
 ### Fixed: crashes
 

@@ -30,7 +30,7 @@ bool operatorRoutineName(const std::string& n, std::string& cat, std::string& op
 std::string classRefusal(const ClassDecl*, const std::set<std::string>&);   // src/codegen/ClassRefusal.cpp
 std::string multiOrderRefusal(const std::vector<SubDecl*>&, const std::vector<const Program*>&,
                               int (*)(const SubDecl*));   // codegen/MultiOrder.cpp
-std::string introspectionRefusal(const Program&); bool introspectiveCallName(const std::string&); // codegen/Introspection.cpp
+std::string introspectionRefusal(const Program&, bool evalCut); bool introspectiveCallName(const std::string&); // codegen/Introspection.cpp
 const char* routineIntrospectionRefusal(const Program&);
 bool exprMayUseTopic(const Expr* e);   // Interpreter.cpp: may `e` read or write `$_`?
 const char* builtinRefusal(const std::string& name, bool inTopic);   // codegen/Refusals.cpp, as are:
@@ -477,6 +477,7 @@ struct Codegen {
     }
     std::map<std::string, int> fastSubs; // -O: fixed-arity subs with direct Value params (name -> arity)
     bool optimize_ = false;              // -O codegen pass enabled
+    bool evalCut_ = false;               // --slim cut eval: an EVAL only throws, so sees no topic
     std::string stepOp_;                 // set by stepLvalueExpr for the lvalueExpr it calls
     // A List KEPT from a literal holds its variables' containers — `my $m =
     // ($c, 2); $m[0] = 5` writes $c — as the interpreter's keepListContainers
@@ -1330,7 +1331,7 @@ struct Codegen {
 
     std::string builtinCall(const std::string& name, const std::string& vl) {
         // `callframe`, `samewith`, `react`, an EVAL under a native topic (Refusals.cpp)
-        if (const char* why = builtinRefusal(name, !topics.empty())) throw CodegenError{why, /*routineWide=*/true};
+        if (const char* why = builtinRefusal(name, !topics.empty() && !evalCut_)) throw CodegenError{why, /*routineWide=*/true};
         // (no built-in: "Undefined routine"; nor delegable, its undo is the routine's exit)
         if (name == "temp" || name == "let") throw CodegenError{"`" + name + "`", /*routineWide=*/true};
         // `@a >>[&op]<< @b`: evalCall's own arm (shape rules, writes through the operands)
@@ -10027,11 +10028,12 @@ void Codegen::scanUserOps(Program& prog, const std::map<std::string, std::vector
 
 std::string transpileToCpp(Program& prog, bool optimize, const std::string& srcPath,
                            const std::set<std::string>& moduleExports,
-                           const std::string& srcText) {
+                           const std::string& srcText, bool evalCut) {
     const std::string mainSig = mainSigBlob(prog);
-    if (std::string why = introspectionRefusal(prog); !why.empty()) throw CodegenError{why};
+    if (std::string why = introspectionRefusal(prog, evalCut); !why.empty()) throw CodegenError{why};
     Codegen g;
     g.optimize_ = optimize;
+    g.evalCut_ = evalCut;
     g.labelNames = prog.labelNames;
     g.moduleExports_ = moduleExports;
     g.prog_ = &prog;

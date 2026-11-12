@@ -64,9 +64,12 @@ std::string coreTypedMultiRefusal(const std::vector<Program*>& units, const std:
 // have no declaration to emit a C++ local from, so they are compiled as runtime
 // slots instead. Passing "" answers "no name is declared anywhere", which is
 // safe (a lax unit then falls back to bundling) but coarse.
+// `evalCut`: --slim cut the eval feature, so an EVAL can only throw
+// X::Feature::NotBuilt. It compiles to that throw instead of refusing for the
+// names its code could not see — the refusal's answer, a bundle, IS a parser.
 std::string transpileToCpp(Program& prog, bool optimize = false, const std::string& srcPath = "",
                            const std::set<std::string>& moduleExports = {},
-                           const std::string& srcText = "");
+                           const std::string& srcText = "", bool evalCut = false);
 
 // ---- module routines (AotModules.h) -----------------------------------------
 //
