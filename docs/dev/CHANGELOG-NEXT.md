@@ -10,7 +10,7 @@ here.*
 
 *Covered so far: 59e9d3aa, e5b2b6c8, dec6d962, 15997e10, 71451a61, c68ec738,
 19078698, 9338d1b1, 58e2fdd4, abfea750, 8a11fb4d, 1d8f1495,
-fd3fda0f.*
+fd3fda0f, 33351b91, 5b6a2753, d1e39cb5, 64e4c44f, 7800a133.*
 
 ---
 
@@ -82,6 +82,22 @@ fd3fda0f.*
   delivered nothing, Rakudo's 1 and then the quit), and an empty source was
   done at once, not after the delay.
   `t/regression/supply-delayed-delays-done-and-quit.raku`.
+- **`$0`, `$1`, … read the `$/` in scope** (33351b91) (#256): a `my $/`, a `$/`
+  parameter, a pointy block's and an action method's `$/` saw the captures of
+  the last `~~` anywhere visible, since each match also wrote `$0..$N` as
+  variables of their own. JSON::Tiny guards on `$0.Str ne '"'`, so after any
+  capturing `~~` every key it parsed gained a prefix (`{"a":1}` → `Za`). They
+  are `$/[N]` now, as `$<name>` was; a regex code block's `$/` is the cursor
+  even under a `$/` parameter, and `$/ = Nil` leaves Nil.
+  `t/regression/capture-var-reads-scoped-match.raku`. Reported by Offizin.
+- **`.write` takes a Blob and refuses a Str** (7800a133): every handle's
+  `.write` took text and sent the engine's UTF-8 whatever its `:enc` said —
+  `$fh.write("é")` on a Latin-1 handle wrote (195 169), where Rakudo refuses
+  the call and `.print` writes (233) — and took an Int, a List, no argument
+  or two. Rakudo's binding errors now, on files, `$*OUT`/`$*ERR`, a Proc's
+  stdin, sockets, Proc::Async and IO::Handle subclasses.
+  `t/regression/handle-write-binds-a-blob.raku`. Reported by the open pull
+  request #257, whose change is not used.
 
 ### Fixed: crashes
 
@@ -102,6 +118,12 @@ fd3fda0f.*
   `while $s.match($rx, :$c) { $c = $/.pos }` walk found its last match
   forever. `t/regression/match-continue-ignoremark.raku`. Reported by
   Zer0-Tolerance.
+- **`run(:in("x"), "cat", :out)` no longer deadlocks** (5b6a2753) (#258): every
+  truthy `:in` opened a stdin pipe nothing closed. As in Rakudo, only True is
+  that pipe, the Str '-' inherits, and anything else — False, a Str, a number,
+  Any, Nil — closes the child's stdin. `shell(…, :in)` pipes too, where it
+  gave the child our stdin. `t/regression/run-in-non-handle-closes-stdin.raku`.
+  Reported by Offizin.
 
 ### Behaves like Rakudo
 
@@ -145,6 +167,17 @@ fd3fda0f.*
   on `Unicode.new`, were X::Method::NotFound: a program could not ask which
   Unicode the engine knows. They answer `v18.0` (Rakudo 2026.09: `v17.0`)
   and `True`. `t/regression/unicode-version-and-nfg.raku`. Reported by
+  Offizin.
+- **`my %h = Nil` is the odd-number error** (d1e39cb5) (#259), as the Nil docs
+  say: Nil takes one slot in a list, and a hash store needs an even count. It
+  and `%h = $was-set-to-Nil` were an empty Hash. `%(Nil)` and `%(Any)` are
+  `.hash`, the empty Hash (`%(Any)` had thrown).
+  `t/regression/hash-store-of-nil-is-odd.raku`. Reported by Offizin.
+- **A malformed `{…}` in a string is refused at compile time** (64e4c44f) (#260):
+  `say "{1 2}"` printed 2, `"{\\hsize=100pt}"` died at run time as "Target
+  is not assignable", and `-c` passed both. An interpolated block has an
+  EVAL snippet's rule, two terms in a row, and its parse errors point into
+  the string. `t/regression/interpolated-block-two-terms.raku`. Reported by
   Offizin.
 
 ### Platforms and packaging
