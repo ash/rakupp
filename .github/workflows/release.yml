@@ -57,10 +57,14 @@ jobs:
     name: ${{ matrix.name }}
     needs: release-meta
     runs-on: ${{ matrix.os }}
-    # A healthy run takes ~10 minutes; the default limit is 6 HOURS, so one
-    # hung gate step held a runner all day (the MCP smoke did, 2026-08-25).
-    # Fail in minutes instead: a hang is a red build, not a stuck queue.
-    timeout-minutes: 45
+    # The default limit is 6 HOURS, so one hung gate step held a runner all
+    # day (the MCP smoke did, 2026-08-25). Fail in minutes instead: a hang is a
+    # red build, not a stuck queue. A healthy run took ~10 minutes then; by
+    # 2026-11 the green macOS and linux-x86_64 legs took 41-45 minutes (a
+    # 12-17 minute build, a 15-19 minute example suite), and 45 cancelled the
+    # macOS leg of 7279c977 in its Unicode oracle gate. 60, as linux-musl and
+    # linux-riscv64 have, still ends a hang within the hour.
+    timeout-minutes: 60
     strategy:
       fail-fast: false
       matrix:
