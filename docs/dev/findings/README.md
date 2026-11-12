@@ -42,6 +42,19 @@ logs and the reviews. This page is the complete list.
   — the 18 disagreements found by dual-verifying 260 examples across 111
   raku.online specification pages; 17 fixed, leaving native typed arrays boxed as
   `Array[int]`.
+- **[RAKUDO-ISSUES-2026-11.md](RAKUDO-ISSUES-2026-11.md)** *(2026-11-12,
+  Rakudo v2026.09)* — all 3,222 rakudo/rakudo GitHub issues, classified by
+  area, kind and relevance to another engine. The code from 2,017 of them was
+  run under both engines in a sandbox and 1,084 cases were judged:
+  - 8 Raku++ crashes or hangs;
+  - 160 issues with a wrong answer, 23 of them one bug (a phaser used as a
+    value runs late);
+  - 82 strictness gaps and 25 missing features;
+  - 144 issues where Raku++ is right and Rakudo still is not;
+  - 63 open Rakudo bugs Raku++ shares.
+
+  Fix list, wins list and harness in
+  [`rakudo-issues-2026-11/`](rakudo-issues-2026-11/).
 - **[ROSETTACODE.md](ROSETTACODE.md)** — 333 RosettaCode Raku tasks under both
   engines: of the 197 comparable ones, 34 match byte-for-byte and 41% run to
   completion, parse errors the largest blocker. Eleven fixes landed.

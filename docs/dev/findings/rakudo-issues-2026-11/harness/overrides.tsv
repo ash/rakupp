@@ -1,0 +1,4 @@
+1427.2	LAX	oo	`has Int $.count!` is accepted; Rakudo refuses it ("Negation metaoperator not followed by valid infix")
+3119.0	UNCLEAR	regex	`'match' ~~ P::r` for an `our regex` in a package: Raku++ False, Rakudo dies "Too few positionals"; neither obviously right
+2608.0	UNCLEAR	regex	`so $rr` (a Regex in Bool context inside .map) matches $_ in Raku++, Rakudo 2026.09 gives all False; closed Blin regression, intended answer unclear
+1631.0	NOISE	concurrency	`.throttle` event interleaving differs run to run
