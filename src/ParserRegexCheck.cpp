@@ -83,24 +83,70 @@ static size_t boundQuantifierEnd(const std::string& p, size_t i) {
     return k;
 }
 
-void Parser::checkNullRegex(const std::string& pat, int line, bool branches) {
+// After a character class's `]` (and each `+[…]` / `-[…]` combined with it)
+// the assertion ENDS: at `at`, past the blanks, only its `>`, a named `+`/`-`
+// member or a comment may come. `m/<-[W]*/` matched as if the `>` were there
+// (#254), where Rakudo refuses it.
+static void classAssertionEnds(const std::string& pat, size_t at, int line) {
+    if (at < pat.size() && pat[at] && std::strchr(">+-#", pat[at])) return;
+    if (at < pat.size() && (ascii::isalpha((unsigned char)pat[at]) || pat[at] == ':'))
+        throw ParseError("Missing + or - between character class elements", line, "X::Comp::AdHoc", {});
+    throw ParseError("Unable to parse expression in metachar:sym<assert>; couldn't find final '>'",
+                     line, "X::Comp::FailGoal", {{"dba", "metachar:sym<assert>"}, {"goal", "'>'"}});
+}
+
+// An `s///` pattern skips the walk in checkNullRegex (its `|` and `&` can be
+// literal there), but its classes close as any pattern's do. `text` is the
+// token's, adverbs first; a `:P5` pattern has no such classes.
+static void substClassesClose(const std::string& text, int line) {
+    size_t i = 0;
+    while (i < text.size() && text[i] == ':') {
+        const size_t j = text.find(' ', i);
+        if (j == std::string::npos) return;
+        const std::string adv = text.substr(i + 1, j - i - 1);
+        if (adv == "P5" || adv == "Perl5") return;
+        i = j + 1;
+    }
+    auto blank = [&](size_t k) { while (k < text.size() && (text[k] == ' ' || text[k] == '\t' || text[k] == '\n')) k++; return k; };
+    for (char q = 0; i < text.size(); i++) {
+        const char c = text[i];
+        if (q) { if (c == '\\') i++; else if (c == q) q = 0; continue; }
+        if (c == '\\') { i++; continue; }
+        if (c == '\'' || c == '"') { q = c; continue; }
+        if (c == '#') { i = text.find('\n', i); if (i == std::string::npos) return; continue; }
+        size_t k = i + 1;
+        if (c != '<') continue;
+        if (k < text.size() && std::strchr("-+?!", text[k]) && text[k]) k++;
+        if (k >= text.size() || text[k] != '[') continue;
+        for (;;) {   // the class, then each `+[…]` / `-[…]` it is combined with
+            for (k++; k < text.size() && text[k] != ']'; k++) if (text[k] == '\\') k++;
+            const size_t n = blank(k + 1), m = n < text.size() ? blank(n + 1) : n;
+            if (n < text.size() && (text[n] == '+' || text[n] == '-') && m < text.size() && text[m] == '[') { k = m; continue; }
+            classAssertionEnds(text, n, line);
+            i = n - 1; break;   // (a comment there is skipped as one)
+        }
+    }
+}
+
+void Parser::checkNullRegex(const std::string& pat, int line, int branches) {
     // an empty regex (or an empty alternation branch / group) is X::Syntax::
     // Regex::NullRegex — `/ /`, `/ a | /`, `/ [] /`, `/ () /`, `s//x/`.
-    // branches=false skips the trailing |/& heuristic (P5 regexes and
-    // substitution patterns, where those chars can be literal).
+    // branches 0 or 2 skips the rest: a P5 regex, and (2) a substitution's
+    // pattern, where `|` and `&` can be literal — only its classes are checked.
+    if (branches == 2) substClassesClose(pat, line);
     size_t b = pat.find_first_not_of(" \t\n");
     std::string t = b == std::string::npos
         ? std::string()
         : pat.substr(b, pat.find_last_not_of(" \t\n") - b + 1);
     bool null = t.empty() ||
-        (branches && (t == "[]" || t == "()" || t == "[ ]" || t == "( )"));
-    if (!null && branches && (t.back() == '|' || t.back() == '&') &&
+        (branches == 1 && (t == "[]" || t == "()" || t == "[ ]" || t == "( )"));
+    if (!null && branches == 1 && (t.back() == '|' || t.back() == '&') &&
         (t.size() < 2 || t[t.size() - 2] != '\\'))
         null = true;
     if (null)
         throw ParseError("Null regex not allowed", line,
                          "X::Syntax::Regex::NullRegex", {});
-    if (!branches) return;
+    if (branches != 1) return;
     // `/\ X/` — an unspace; `/m ** 1 ..2/` — a spaced bare range. Both are
     // compile-time refusals; quotes and character classes are left alone.
     char q = 0; int cls = 0;
@@ -158,6 +204,7 @@ void Parser::checkNullRegex(const std::string& pat, int line, bool branches) {
                     while (k < pat.size() && (pat[k] == ' ' || pat[k] == '\t' || pat[k] == '\n')) k++;
                     if (k < pat.size() && pat[k] == '[') { cls = 1; i = k; }
                 }
+                if (cls == 0) classAssertionEnds(pat, j, line);   // …or the assertion ends
                 continue;
             }
             // `<[a-z]>` — Perl's range spelling

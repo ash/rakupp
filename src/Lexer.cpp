@@ -5140,7 +5140,17 @@ void Lexer::tokenizeImpl(std::vector<Token>& out) {
                 // that never closed, so the closing `/` stayed shielded and the
                 // scan ate 300 lines. Only `]` ends the class.
                 if (inClass) {
-                    if (ch == ']') { inClass = false; brack--; }
+                    if (ch == ']') {
+                        inClass = false; brack--;
+                        // …and the class's `<` closes at its `>` (or goes on with a
+                        // `+`/`-` member or a comment): anything else is an unclosed
+                        // `<-[W]*`, which the regex check refuses in Rakudo's words,
+                        // not a `<` that hid the closing `/` to the end of the file (#254)
+                        size_t k = 1;
+                        while (peek(k) == ' ' || peek(k) == '\t' || peek(k) == '\n' || peek(k) == '\r') k++;
+                        const char nx = peek(k);
+                        if (angle > 0 && nx != '>' && nx != '+' && nx != '-' && nx != '#') angle--;
+                    }
                     raw += advance();
                     continue;
                 }
