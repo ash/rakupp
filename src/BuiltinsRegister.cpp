@@ -202,33 +202,44 @@ Value rtFailureFor(Interpreter& I, ValueList& a) {
 // `fail` in a compiled ROUTINE: it returns the Failure from that routine (the
 // routine's ReturnEx catch), where the builtin, which sees no routine frame
 // of the interpreter's, threw it as `die` — every compiled sub that failed died.
-// It still dies under `use fatal`, and while a compiled `try` runs: the
-// interpreter runs a `try`'s callee under `use fatal` (`try q(-1)` catches q's
-// failure), and a compiled `try` catches only what is thrown.
+// It still dies under `use fatal` — a compiled `try`'s scope is one when the
+// `fail` is written inside it (`fatal`). A routine CALLED in a `try` returns
+// its Failure, and the call site throws it (rtFatalCall), as the interpreter's
+// does: `try { q(-1) // 'dflt' }` is 'dflt'.
 [[noreturn]] static void failAsDie(const Value& f) {
     throw RakuError{(*f.hash())["exception"], (*f.hash())["message"].toStr()};
 }
-[[noreturn]] Value rtFailRoutine(Interpreter& I, ValueList a) {
+void failureDetonate(const Value& v);   // InterpreterOperators.cpp
+void rtFatalFailure(Interpreter&, const Value& v) { failureDetonate(v); }
+[[noreturn]] Value rtFailRoutine(Interpreter& I, ValueList a, bool fatal) {
     Value f = rtFailureFor(I, a);
-    if (I.fatalHere() || I.tctx().compiledTry > 0) failAsDie(f);
+    if (fatal || I.fatalHere()) failAsDie(f);
     throw ReturnEx{f};
 }
 // …and in one of its BLOCKS, which may run after the routine has returned, on
 // another thread, or through interpreted code: aimed at the routine's frame as
 // a `return` there is (rtReturnFrom), and `die` once that frame is gone
-[[noreturn]] Value rtFailFrom(Interpreter& I, ValueList a, uint64_t id, const std::shared_ptr<bool>& live) {
+[[noreturn]] Value rtFailFrom(Interpreter& I, ValueList a, uint64_t id, const std::shared_ptr<bool>& live, bool fatal) {
     Value f = rtFailureFor(I, a);
-    if (I.fatalHere() || I.tctx().compiledTry > 0 || !*live) failAsDie(f);
+    if (fatal || I.fatalHere() || !*live) failAsDie(f);
     throw ReturnEx{f, id};
 }
 // …and in a BLOCK of a module routine, which runs in a frame of the
 // interpreter's (`__fid`, `__env`): the builtin, run by the block, saw the
 // frame of whatever routine called the block — `ap({ fail "z" })` returned
 // from ap
-[[noreturn]] Value rtFailAt(Interpreter& I, ValueList a, uint64_t id, const Env* env) {
+[[noreturn]] Value rtFailAt(Interpreter& I, ValueList a, uint64_t id, const Env* env, bool fatal) {
     Value f = rtFailureFor(I, a);
-    if (I.fatalHere() || I.tctx().compiledTry > 0 || !id || !env || !I.routineEnvRunning(env)) failAsDie(f);
+    if (fatal || I.fatalHere() || !id || !env || !I.routineEnvRunning(env)) failAsDie(f);
     throw ReturnEx{f, id};
+}
+// …and a `return` there: once the routine has returned there is nothing to
+// return from, and it is X::ControlFlow::Return, as the interpreter's (a bare
+// ReturnEx went past every `try` and ended the program)
+[[noreturn]] void rtReturnAt(Interpreter& I, Value v, uint64_t id, const Env* env) {
+    if (!id || !env || !I.routineEnvRunning(env))
+        throw RakuError{Value::typeObj("X::ControlFlow::Return"), "Attempt to return outside of any Routine"};
+    throw ReturnEx{std::move(v), id};
 }
 
 void Interpreter::registerBuiltins() {

@@ -22,6 +22,11 @@ void noteAttrInit(const ObjectData* od, const Value* slot);   // …the attribut
 static void walkAot(std::vector<StmtPtr>& stmts, const std::function<void(SubDecl*)>& fn);
 
 static void walkAotClass(ClassDecl* cd, const std::function<void(SubDecl*)>& fn) {
+    // A role's routines are generic: `$?CLASS` is whichever class composes it
+    // and a type parameter `T` is the parameterization's, which one native body
+    // compiled for the role cannot be (`$?CLASS.^name` answered "::?CLASS",
+    // `T()` "Undefined routine 'T'"). They stay interpreted.
+    if (cd->isRole) return;
     for (auto& m : cd->methods) fn(m.get());
     walkAot(cd->body, fn);
 }
@@ -267,6 +272,17 @@ Value* rtAotOuter(Env* frame, const char* name) {
     return p;
 }
 
+// …the same for a name the body resolves BY NAME (a bareword, `&name`, a call
+// to a sub of the module graph; Codegen::aotSlot), which may be a builtin or a
+// type and need not be in scope at all: null does not decline the body, the
+// use then looks the name up as it always did. Bound here, from the routine's
+// LEXICAL scope, so a closure the body hands out keeps seeing it (#240 #242).
+Value* rtAotOuterOpt(Env* frame, const char* name) {
+    if (!frame || frame->localRaw(name)) return nullptr;
+    Env* up = frame->parent.get();
+    return up ? up->findRaw(name) : nullptr;
+}
+
 // …and the way back, as a native body leaves. A Buf the caller passed is bound
 // for copy-back (setupRwLinks puts the parameter in rwSynced, and copyOutRw
 // writes it to the caller's variable when it changed), but the body worked on
@@ -435,6 +451,20 @@ Value rtAotAttr(Interpreter& I, const Value& self, Expr* node, bool inClosure) {
 // shadowed or native-memory attributes — is assigned BY the interpreter: an
 // `ATTR = $v` node built once around the attribute, run with `self` and `$v`
 // bound in a scope of its own.
+// …the inline store is for an attribute that takes ANY value: one with a type,
+// a `where` or a container trait checks what it is given (`has Int:U $!u`
+// took a 5 when a native method stored it inline), and that check is the
+// interpreter's assignment
+static bool attrTakesAnything(ClassInfo* cls, const std::string& bare) {
+    for (int depth = 0; cls && depth < 64; depth++) {
+        for (auto& a : cls->attrs)
+            if (a.name == bare) return (a.type.empty() || a.type == "Mu") && !a.where && a.containerIs.empty();
+        if (!cls->extraParents.empty()) return false;
+        cls = cls->parent.get();
+    }
+    return false;
+}
+
 Value rtAotAttrAssign(Interpreter& I, const Value& self, Expr* node, bool inClosure, Value v) {
     auto* ve = static_cast<VarExpr*>(node);
     const bool definedValue = v.t != VT::Any && v.t != VT::Nil && v.t != VT::Type &&
@@ -446,7 +476,7 @@ Value rtAotAttrAssign(Interpreter& I, const Value& self, Expr* node, bool inClos
         if (cls && cls->shadowsAttrs == 0 && cls->repr.empty()) {
             auto it = od->attrs.find(ve->attrBare);
             if (it != od->attrs.end() && it->second.hashKind != "Proxy" && !it->second.isCell() &&
-                !it->second.readonly) {
+                !it->second.readonly && attrTakesAnything(cls, ve->attrBare)) {
                 if (ve->name[0] == '$') v = rtItemized(std::move(v));
                 v.readonly = false;
                 Interpreter::ParStripe ws(I, &it->second);
@@ -485,6 +515,39 @@ Value rtAotAttrAssign(Interpreter& I, const Value& self, Expr* node, bool inClos
     return I.eval(as);
 }
 
+// `$obj.name = v` and `$obj."$name"() = v` (native codegen): the assignment
+// through the interpreter's own lvalue of a method call, which knows what
+// RT.accessorRef does not — a `%` or `@` attribute takes a container
+// assignment, a typed one checks the value, an `is rw` method (`.calc`, an
+// Array's `.tail`) hands out the container it returns.
+Value rtAccessorAssign(Interpreter& I, Value& inv, const std::string& name, Value v) {
+    static std::mutex mu;
+    static std::map<std::string, std::unique_ptr<Assign>> nodes;   // one per method name, kept for good
+    Assign* as;
+    {
+        std::lock_guard<std::mutex> g(mu);
+        auto& slot = nodes[name];
+        if (!slot) {
+            slot = std::make_unique<Assign>();
+            slot->op = "=";
+            auto mc = std::make_unique<MethodCall>();
+            mc->inv = std::make_unique<VarExpr>("$\x01aot-inv");
+            mc->method = name;
+            slot->target = std::move(mc);
+            slot->value = std::make_unique<VarExpr>("$\x01aot-value");
+        }
+        as = slot.get();
+    }
+    ExecContext& tcx = I.tctx();
+    auto scope = makeSlabShared<Env>();
+    scope->parent = tcx.cur;
+    scope->define("$\x01aot-inv", *inv.deref());
+    scope->define("$\x01aot-value", std::move(v));
+    struct Restore { ExecContext& t; std::shared_ptr<Env> s; ~Restore() { t.cur = std::move(s); } } rs{tcx, tcx.cur};
+    tcx.cur = scope;
+    return I.eval(as);   // (an object, an Array, a Pair share what the store writes)
+}
+
 // A mutating method (push, append, write-…, splice …) on a value whose bytes
 // live in the value itself — a Buf/Blob — changes the INVOCANT'S VARIABLE,
 // which the interpreter reaches through the call's invocant expression. A
@@ -493,7 +556,9 @@ Value rtAotAttrAssign(Interpreter& I, const Value& self, Expr* node, bool inClos
 // written back. Any other invocant takes the ordinary call.
 Value rtMutMethod(Interpreter& I, Value& inv, const char* name, ValueList args) {
     Value* tgt = inv.deref();
-    if (!(tgt->t == VT::Str && (tgt->hashKind == "Buf" || tgt->hashKind == "Blob")))
+    // (…and an undefined one goes through the interpreter's own method call
+    // too, which vivifies it — `my $x; $x.push(1)` is `$[1]`, the itemized Array)
+    if (!(tgt->t == VT::Str && (tgt->hashKind == "Buf" || tgt->hashKind == "Blob")) && tgt->t != VT::Any)
         return I.methodCall(*tgt, name, std::move(args));
     static std::mutex mu;
     static std::map<std::string, std::unique_ptr<MethodCall>> nodes;

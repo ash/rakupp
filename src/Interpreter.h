@@ -2615,6 +2615,11 @@ public:
     Value callEnvFirst(const std::string& name, ValueList args);
     Value callEnvFirstAmp(const std::string& ampName, ValueList args);   // …given `&name`, as compiled call sites keep it
     Value envAmpOr(const std::string& ampName, const Value& fallback);   // the env's `&name` itself, else fallback
+    Value infixCallable(const std::string& bare);   // `&infix:<op>` of a built-in op (evalVarExpr's)
+    // …each through the slot a native module routine bound at entry, when it has one (rtAotOuterOpt)
+    Value envAmpOrAt(Value* slot, const std::string& ampName, const Value& fallback);
+    Value callAmpAt(Value* slot, const std::string& ampName, ValueList args);
+    Value rtNameTermAt(Value* slot, Value* amp, const std::string& n);
     // Resolve a builtin's function once (at compiled-program startup) so call
     // sites can go through the pointer directly, skipping callBuiltin's
     // per-call name hash + map lookup. Null when the name is not a registered
@@ -2653,6 +2658,7 @@ public:
     Value dynVar(const std::string& name);
     Value rakuIntrospection(bool compiler); // $*RAKU / $*RAKU.compiler // $* / $? magical variables (used by codegen)
     Value& dynVarRef(const std::string& name); // assignable dynamic-var slot (used by codegen)
+    Value& dynVarWrite(const std::string& name); // …a write: what nothing declares is GLOBAL's, else NotFound
     Value& laxVarRef(const std::string& name); // `no strict` auto-vivified slot (used by codegen)
     // $*var resolution in PROPER dynamic order: the current frame's own
     // declaration first (its env chain up to the enclosing routine activation,
@@ -2961,6 +2967,8 @@ public:
     // a DateTime against a number, and a class DERIVING DateTime: operators and
     // the DateTimes its methods answer go by Rakudo's definitions (InterpreterCalls.cpp)
     std::optional<Value> dateTimeArith(const std::string& op, const Value& l, const Value& r);
+    // evalBinary's DateTime/Date arm; applyArith asks it too (--exe calls applyArith)
+    std::optional<Value> temporalArith(const std::string& op, const Value& l, const Value& r);
     Value rewrapDerivedDateTime(const Value& inv, const std::string& m, Value r);
     // Could a method call by this NAME hand back a CONTAINER? Only if some type
     // declares an `is rw` public attribute of that name, or a routine of that
@@ -3606,6 +3614,10 @@ public:
     [[noreturn]] void throwInvalidParamType(const std::string& type);
     bool paramTypeUndeclared(const std::string& t);
     std::string noMatchProfile(const Value& self, const ValueList& as, bool withInvocant);
+    [[noreturn]] void throwMultiNoMatch(const Value& codeVal, const ValueList& as);   // a multi sub no candidate took
+    [[noreturn]] void throwMethodNoMatch(const Value& codeVal, const Value& self, const ValueList& as); // …a method
+    [[noreturn]] void rtMultiNoMatch(const std::string& name, ValueList cands, const ValueList& as,
+                                     const std::string& cls = ""); // …compiled code's (cls: a method's class)
     std::string subsetNominal(const std::string& type);   // `subset CN of Str …` → Str
     void refuseUnpassedSubset(const Param& p);            // …whose `where` an unpassed default must pass
     [[noreturn]] void throwNeedleNoMatch(const Value& inv, const std::string& m, const ValueList& args);
@@ -3964,6 +3976,11 @@ public:
     std::string interpP5Pattern(const std::string& in); // :P5 — $vars splice as raw regex source
     // Bake regex-valued variables into an `rx//` source at construction time.
     std::string spliceRegexVars(const std::string& pat);
+    Value substMutate(Value* lv, ValueList sargs);   // `$s.subst-mutate(…)` on its slot (both engines)
+    // `topic ~~ any(…)`: each eigenstate matched, collapsed (evalBinary's; rtSmartmatch's)
+    Value junctionMatcher(const std::string& op, const Value& lTopic, const Value& r);
+    // `l ~~ /pat/` / `l !~~ /pat/` on a value (evalBinary's arm; --exe calls it too)
+    Value regexLitMatch(const std::string& op, const Value& l, const std::string& pat, bool isM);
     Value regexMatch(const std::string& subject, std::string_view pattern,
                      const Value* rxVal = nullptr,
                      const std::string& declKind = std::string());
@@ -5823,9 +5840,22 @@ inline Value rtMul(const Value& l, const Value& r) { long long z; double a, b; i
 // answered +0 for `-$x` on 0e0, where the interpreter and Rakudo answer -0.
 Value rtNegSlow(Interpreter& I, const Value& v);
 Value rtFailureFor(Interpreter& I, ValueList& a);             // the Failure `fail` returns (BuiltinsRegister.cpp)
-[[noreturn]] Value rtFailRoutine(Interpreter& I, ValueList a); // `fail` in a compiled routine
-[[noreturn]] Value rtFailFrom(Interpreter& I, ValueList a, uint64_t id, const std::shared_ptr<bool>& live); // …in a block of one
-[[noreturn]] Value rtFailAt(Interpreter& I, ValueList a, uint64_t id, const Env* env); // …in a block of a module routine
+// (`fatal`: the `fail` is written inside a compiled `try`, whose scope is under `use fatal`)
+[[noreturn]] Value rtFailRoutine(Interpreter& I, ValueList a, bool fatal = false); // `fail` in a compiled routine
+[[noreturn]] Value rtFailFrom(Interpreter& I, ValueList a, uint64_t id, const std::shared_ptr<bool>& live,
+                              bool fatal = false);   // …in a block of one
+[[noreturn]] Value rtFailAt(Interpreter& I, ValueList a, uint64_t id, const Env* env,
+                            bool fatal = false);     // …in a block of a module routine
+[[noreturn]] void rtReturnAt(Interpreter& I, Value v, uint64_t id, const Env* env);   // …and its `return`
+// A call written inside a compiled `try` that hands back a Failure throws it,
+// as the interpreter's `use fatal` call site does (not in a boolean or
+// definedness context: the parser's fatalExempt, which the codegen reads)
+void rtFatalFailure(Interpreter& I, const Value& v);
+template <class T> inline T&& rtFatalCall(Interpreter&, T&& v) { return std::forward<T>(v); }
+inline Value rtFatalCall(Interpreter& I, Value v) {
+    if (RAKUPP_UNLIKELY(v.t == VT::Hash && v.hashKind == "Failure")) rtFatalFailure(I, v);
+    return v;
+}
 inline Value rtNeg(Interpreter& I, const Value& v) {
     if (v.hashKind.empty()) {
         if (v.t == VT::Num) return Value::number(-v.n);
@@ -6186,6 +6216,8 @@ Value rtStarKey(const Value& base, const Value& key);
 // `$buf.push(…)` (native codegen): a mutator on a Buf/Blob writes its result
 // back into the invocant's variable, as the interpreter's does (AotModules.cpp).
 Value rtMutMethod(Interpreter& I, Value& inv, const char* name, ValueList args);
+// `$obj.name = v` (native codegen): through the interpreter's own assignment (AotModules.cpp)
+Value rtAccessorAssign(Interpreter& I, Value& inv, const std::string& name, Value v);
 // What a `for` iterates (native codegen): an ITEMIZED list — `for $x` with an
 // array in $x — is ONE item, as the interpreter's `for` has it.
 Value rtArrayVal(const Value& v);
@@ -6215,6 +6247,24 @@ inline Value rtForList(const Value& v) {
 template <class T> inline void rtSinkStmt(Interpreter&, const T&) {}
 inline void rtSinkStmt(Interpreter& I, const Value& v) {
     if (RAKUPP_UNLIKELY((v.t == VT::Hash && !v.hashKind.empty()) || (v.t == VT::Array && v.ext()))) I.sinkValue(v);
+}
+// …and a METHOD call's discarded result that is an object of a class with a
+// `sink` method has it run first, as the interpreter's exec does (HTTP::Status
+// registers each `HTTP::Status.new: …` statement that way)
+void rtSinkUserMethod(Interpreter& I, const Value& v);
+// A CALL's value is sunk only when it did not come out still in a container:
+// a block whose last statement reads or assigns a variable hands its Scalar on
+// (valContained, which the interpreted callee's statements set), and Rakudo
+// does not sink through one — `sub sinker(&b) { b(); … }` with `b` ending in
+// `$q = failing-proc()`. The call site clears the flag first (rtUncontained),
+// so a native callee, which sets none, is sunk as before.
+inline bool rtUncontained() { Interpreter::tctx().valContained = false; return true; }
+template <class T> inline void rtSinkCallStmt(Interpreter&, const T&, bool = false) {}
+inline void rtSinkCallStmt(Interpreter& I, const Value& v, bool method = false) {
+    if (RAKUPP_UNLIKELY(method && v.t == VT::Object)) rtSinkUserMethod(I, v);
+    if (RAKUPP_UNLIKELY((v.t == VT::Hash && !v.hashKind.empty()) || (v.t == VT::Array && v.ext())) &&
+        !Interpreter::tctx().valContained)
+        I.sinkValue(v);
 }
 bool rtForPull(const Value& lst, size_t i);   // the cold half: grow a lazy source
 inline bool rtForHas(const Value& lst, size_t i) {
@@ -6319,6 +6369,7 @@ Value  rtSlipVal(const Value& v);   // |x as a list element (a List that splices
 Value  rtSlipShallow(const Value& v); // |x in value position (one-level splice marker)
 void   rtXxAppend(ValueList& out, Value one); // one `xx` replication: a Slip contributes its elements
 void   rtXxCountCheck(const Value& count);   // `xx NaN` / `xx -Inf` name no count: X::Numeric::CannotConvert
+long long rtXxCount(const Value& count);     // …and as xxRepeat reads it: `xx "b"` is X::Str::Numeric
 Value  rtSpliceIfList(const Value& v); // [..] item: a List value splices one level
 Value  rtOneArgItem(const Value& v);   // [..] one-arg rule: single list-valued item spreads
 Value  rtOneArgArray(const Value& v);
@@ -6333,6 +6384,14 @@ Value  rtThrowRedo(const std::string& label = ""); // expression-position / labe
 Value  rtIndexAdverb(Value& base, const Value& keyIn, bool isHash, const std::string& adverb); // :exists/:delete/…
 Value  rtSliceFrom(const Value& base, long long from, bool exFrom); // @a[$i .. *] tail slice
 Value  rtRangeVal(const Value& from, const Value& to, bool exFrom, bool exTo); // from..to (string ranges too)
+// A Junction argument autothreads a compiled routine's call, as callCallable
+// does an interpreted one's: `mask` marks the positional parameters that take
+// a junction apart (codegen/Autothread.cpp). An all/none junction threads first.
+bool   rtJunctionArg(const ValueList& a, uint64_t mask);
+Value  rtAutothread(ValueList& a, uint64_t mask, const std::function<Value(ValueList&)>& f);
+std::function<Value(ValueList&)> rtThreaded(uint64_t mask, std::function<Value(ValueList&)> f);
+Value  rtPrefixBitNot(const Value& v);   // prefix `+^` (evalUnary's; a non-numeric Str throws)
+Value  rtPrefixUpto(const Value& v);     // prefix `^`  (evalUnary's: `^5.5`, a big bound, a Str throws)
 int    rtBigRangeStep(const Value& r, Value& cur, bool first); // a BigInt-ended range's next element (Interpreter.cpp)
 // argv -> MAIN args (--opt named, rest positional). `scope`, when given, is the
 // interpreter whose symbols decide whether a word NAMES an enum value; without

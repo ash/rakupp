@@ -53,7 +53,7 @@ sub check(Str $desc, $got, $want) {
 # (so the two agree with each other, and — case 4 excepted, see there — with
 # Rakudo's answer), and that the compile went down the native path rather than
 # bundling.
-sub agree(Str $name, Str $code, Str $want) {
+sub agree(Str $name, Str $code, Str $want, Bool :$bundles) {
     my $src = $work.add($name ~ '.raku');
     $src.spurt($code);
     my $bin = $work.add($name);
@@ -70,7 +70,7 @@ sub agree(Str $name, Str $code, Str $want) {
         note "compile of $name failed:\n$cout";
         return;
     }
-    unless $cout.contains('(native)') {
+    unless $bundles || $cout.contains('(native)') {
         $fails++;
         note "$name was expected to compile natively, but did not:\n$cout";
     }
@@ -141,7 +141,7 @@ agree('callable-and-coercion', q:to/END/, '6|11|18|2,4,6|2,4,6|(Rat)|(Int)|AB,cd
 # 4. The metamodel form takes a computed name too. (rakupp-only: Rakudo
 #    rejects an interpolated `.^` name — what is pinned here is that the two
 #    rakupp faces answer alike, not parity with Rakudo.)
-agree('meta-computed-name', q:to/END/, 'Str|Int');
+agree('meta-computed-name', q:to/END/, 'Str|Int', :bundles);   # (a computed `.^` name may be any metamethod: it bundles)
     my $n = "name";
     say "abc".^"$n"();
     say 42.^"name"();

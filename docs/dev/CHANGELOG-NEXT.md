@@ -16,9 +16,40 @@ fd3fda0f.*
 
 ### New
 
+- **`t/exe/parity.raku`: a compiled program behaves as the interpreted one, or
+  the gate fails** (5f0da948, a7fab7cb). Every program in `examples/` and
+  `t/regression/` — 1,573 — is built with `--exe` and run against its
+  interpreted run, stdout and exit status; one that does not build fails too.
+  The old `t/exe/run.raku` compared `-O` with no `-O` and only counted the
+  binaries that disagreed with the interpreter, so on 2026-11-11 143 programs
+  answered differently compiled and 14 did not build. The binary is built
+  beside its source and run with `RAKUPP_EXE_INTERPRETER`, which a compiled
+  binary's `$*EXECUTABLE` answers, so the 284 programs that spawn "the
+  interpreter" compare too. `t/exe/parity-known.txt` lists what is left: empty.
+
 ### Faster
 
 ### Fixed: silent wrong answers
+
+- **`--exe` gives the program the interpreter gives** (the `--exe` parity
+  round: 75425e0a … 00938a8e, four merged branches). From 160 divergences to
+  none on `t/exe/parity.raku`. The silent ones included: a block a module
+  routine hands another module's routine read the wrong `my constant` and died
+  on its own private subs (#240, #242); `say %h<missing>` printed Nil, not
+  (Any); `%h<k> = @x` stored three items, not one; `multi f(Mu)` beside
+  `multi f(Any)` took Mu for everything; a typed `has Int:U $!u` or a `buf8`
+  parameter took what it should refuse; `is rw` writes were lost in several
+  call shapes; Cro's router pushed a whole Junction (routes answered 404);
+  `temp` in a routine was never undone. Where the native code now calls the
+  interpreter's own function it computes the same answer; where the meaning is
+  the interpreter's alone (`EVAL`, pseudo-packages, most of `.^`, `callframe`,
+  KEEP/UNDO, `.wrap`, a capturing nested sub that escapes) the program bundles
+  with the interpreter, slower but the same. `.map(|*.list)` curries (#243).
+  A program whose generated C++ does not compile bundles instead of leaving no
+  binary (88264aeb). `$s = $s ~ X` in a loop is linear compiled too (160k
+  appends: 1.4 s → 5 ms). Reported by Zer0-Tolerance (#240, #242, #243).
+- **A junction matcher smartmatches a stored Whatever as a value**
+  (e99c5e25): `my $w = *; $w ~~ any(Pair, Int)` was True; Rakudo's False.
 
 - **`s///` decodes `\x41`, `\x[…]`, `\o101`, `\c65` and `\c[NAME]` in its
   replacement** (59e9d3aa) (#236): it dropped the backslash and put in the

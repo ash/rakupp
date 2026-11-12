@@ -1965,6 +1965,7 @@ static bool mayUseTopicStmt(const Stmt* s) {
         default: return true;   // a `when` among them
     }
 }
+bool exprMayUseTopic(const Expr* e) { return mayUseTopic(e); }   // (for the --exe codegen)
 bool Interpreter::bodyMayUseTopic(const Callable& c) {
     const CodeInfo& ci = c.ci();
     signed char t = ci.topicScan;
@@ -2725,9 +2726,10 @@ Value Interpreter::seqOp(Value l, Value r, bool exclusive) {
         // than being fed made-up zeros
         long long needArity = arity;
         if (hasGen && gen.code() && arity > 0 && gen.code()->ci().whateverArity <= 0 &&
-            gen.code()->ci().placeholders.empty() && gen.code()->ci().params) {
+            gen.code()->ci().placeholders.empty() && (gen.code()->ci().params || gen.code()->ci().isBlock)) {
+            // (a bare block's topic is optional: --exe builds one with no params)
             needArity = 0;
-            for (auto& p : *gen.code()->ci().params)
+            if (gen.code()->ci().params) for (auto& p : *gen.code()->ci().params)
                 if (!p.named && !p.slurpy && !p.optional && !p.defaultVal) needArity++;
         }
         auto tooFew = [needArity](size_t n) {
@@ -3116,7 +3118,24 @@ void Interpreter::runBigRangeFor(ForStmt* fs, const Value& r, const std::string&
     }
 }
 
-Value rtRangeVal(const Value& from, const Value& to, bool exFrom, bool exTo) {
+Value rtRangeVal(const Value& from, const Value& toIn, bool exFrom, bool exTo) {
+    // a Date..Date range enumerates days eagerly (numeric Range can't hold
+    // Date endpoints; a century is only ~36k elements). The endpoints'
+    // formatter rides along: such a range joins as formatted dates.
+    if (from.t == VT::Hash && from.hashKind == "Date" && from.hash() &&
+        toIn.t == VT::Hash && toIn.hashKind == "Date" && toIn.hash()) {
+        auto fld = [](const Value& v, const char* k) -> long long {
+            auto it = v.hash()->find(k); return it != v.hash()->end() ? it->second.toInt() : 1;
+        };
+        long long lo = civilToDays(fld(from, "year"), fld(from, "month"), fld(from, "day")) + (exFrom ? 1 : 0);
+        long long hi = civilToDays(fld(toIn, "year"), fld(toIn, "month"), fld(toIn, "day")) - (exTo ? 1 : 0);
+        Value arr = Value::array(); arr.isList = true;
+        for (long long d = lo; d <= hi; d++) arr.arr()->push_back(makeDate(d, &from));
+        return arr;
+    }
+    // `'A'..∞` is `'A'..*`: a string range with no top
+    Value to = toIn;
+    if (from.t == VT::Str && to.t == VT::Num && std::isinf(to.n) && to.n > 0) to.t = VT::Whatever;
     if (from.t == VT::Str && to.t == VT::Str) {
         if (u8CpLen(from.s) == 1 && u8CpLen(to.s) == 1) {
             Value rr = Value::range(u8FirstCp(from.s), u8FirstCp(to.s), exFrom, exTo);
@@ -3223,14 +3242,16 @@ Value rtSliceFrom(const Value& base, long long from, bool exFrom) {
 // preserving, no deep flatten) — mirrors the interpreter's hyper method call.
 Value rtHyperMethod(Interpreter& I, const Value& inv, const std::string& m, ValueList args) {
     // `».(args)` keeps the interpreter's shape and descent rules
-    if (opEq(m, kHyperInvoke)) return I.hyperMethodEach(inv, m, args, false);
-    Value out = Value::array();
-    if (inv.t == VT::Array && inv.arr())
-        for (auto& el : *inv.arr()) out.arr()->push_back(I.methodCall(el, m, args));
-    else
-        for (auto& el : inv.flatten()) out.arr()->push_back(I.methodCall(el, m, args));
-    out.isList = true;
-    return out;
+    // …and so does `».method`, as the interpreter's MethodCall eval does it: a
+    // hash keeps its keys (`%h».succ`), a non-nodal method reaches the leaves,
+    // and a junction autothreads, each eigenstate hyper'd on its own
+    // (`all(1, 2)».succ` is all((2), (3)), not the List (2 3))
+    if (isJunction(inv)) {
+        Value j = Value::array(); j.setEnumName(inv.enumName());
+        for (auto& e : *inv.arr()) j.arr()->push_back(I.hyperMethodEach(e, m, args, false));
+        return j;
+    }
+    return I.hyperMethodEach(inv, m, args, false);
 }
 
 // An INDIRECT method call for native codegen — `$obj."$name"()`, `$obj.$code`,
@@ -3474,6 +3495,10 @@ Value Interpreter::rtNameTerm(const std::string& n) {
     // builtin enum members (the SAME list the NameTerm eval reads): without the
     // numeric payload a native `sort { $a < $b ?? Less !! More }` compares 0 vs 0
     { Value c; if (coreEnumValue(n, c)) return c; }
+    // a class declared further down the file, used here as a VALUE
+    // (`G.parse($s, :actions(A))` in a native routine): built now, as the
+    // NameTerm eval builds it — the stub type object had no methods
+    if (!classes_.count(n)) materializePendingType(n);
     return Value::typeObj(n);
 }
 // A site of a core type name the program binds nowhere (Codegen::stableNameTerm)
@@ -3542,7 +3567,9 @@ void Interpreter::rtUse(const std::string& module, const std::string& arg, bool 
         if (!arg.empty()) useLibPath(arg);
         return;
     }
-    if (!module.empty()) loadModule(module);
+    // (the import list is the `sub EXPORT`'s arguments and the tags, as the
+    // UseStmt arm hands them: `use M <a>` ran EXPORT with none)
+    if (!module.empty()) loadModule(module, isNo ? std::vector<std::string>{} : importArgs);
 }
 
 // |@a in VALUE position (a return value, an assignment RHS) for native codegen:
@@ -3575,8 +3602,11 @@ Value rtPairKeyed(const Value& kv, Value value) {
     if (kv.t == VT::Int || kv.t == VT::Num || kv.t == VT::Rat || kv.t == VT::Bool ||
         kv.t == VT::Array || kv.t == VT::Hash || kv.t == VT::Object || kv.t == VT::Pair ||
         kv.t == VT::Match || kv.t == VT::Code || kv.t == VT::Regex ||
-        kv.t == VT::Type || kv.t == VT::Complex || kv.t == VT::Nil || kv.t == VT::Range)
-        pr.setPairKey(kv);
+        kv.t == VT::Type || kv.t == VT::Complex || kv.t == VT::Nil || kv.t == VT::Range ||
+        kv.t == VT::Whatever) {   // (`$w => 1` keys the star, as the interpreter's Pair arm)
+        Value k = kv; k.itemized = false;   // (decontainerized, as there)
+        pr.setPairKey(std::move(k));
+    }
     return pr;
 }
 
@@ -3672,6 +3702,10 @@ static bool lazyListArray(const Value& v, Value& out) {
     if (v.t != VT::Array || !v.ext() || v.itemized || !(endlessLazy(v) || declLazyLive(v))) return false;
     out = v; out.isList = false; out.s.clear();
     return true;
+}
+void rtSinkUserMethod(Interpreter& I, const Value& v) {
+    if (v.t == VT::Object && v.obj() && v.obj()->cls && v.obj()->cls->findMethod("sink"))
+        I.methodCall(v, "sink", ValueList{});
 }
 extern void (*g_pullLazy)(const Value&, size_t);   // Value.cpp
 bool rtForPull(const Value& lst, size_t i) {

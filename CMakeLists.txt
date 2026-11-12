@@ -149,8 +149,15 @@ list(REMOVE_ITEM RAKUPP_SOURCES "${RAKUPP_ARDUINO}")
 # JIT a generated binary can switch on is copy-and-patch, which lowers from the
 # AST and emits no C++ at all (see rakuppCnpBundled). The call goes through
 # jit::g_emitKernel now, installed by main.cpp, so the edge is gone with it.
-set(RAKUPP_CODEGEN "${CMAKE_CURRENT_SOURCE_DIR}/src/Codegen.cpp")
-list(REMOVE_ITEM RAKUPP_SOURCES "${RAKUPP_CODEGEN}")
+# (…with the pieces of it that live in files of their own)
+set(RAKUPP_CODEGEN "${CMAKE_CURRENT_SOURCE_DIR}/src/Codegen.cpp"
+                   "${CMAKE_CURRENT_SOURCE_DIR}/src/codegen/Operators.cpp"
+                   "${CMAKE_CURRENT_SOURCE_DIR}/src/codegen/MultiOrder.cpp"
+                   "${CMAKE_CURRENT_SOURCE_DIR}/src/codegen/ClassRefusal.cpp"
+                   "${CMAKE_CURRENT_SOURCE_DIR}/src/codegen/Introspection.cpp"
+                   "${CMAKE_CURRENT_SOURCE_DIR}/src/codegen/Refusals.cpp"
+                   "${CMAKE_CURRENT_SOURCE_DIR}/src/codegen/Autothread.cpp")
+list(REMOVE_ITEM RAKUPP_SOURCES ${RAKUPP_CODEGEN})
 # `--doc-links` and the docs.raku.org index it resolves against (~300 KB of
 # rows) belong to the CLI as well: no `--exe` binary links a program to its
 # documentation. Raku.js compiles them in — the playground's Docs pane is
@@ -534,7 +541,7 @@ if(RAKUPP_BUILD_SHARED OR RAKUPP_LINK_SHARED)
 endif()
 
 add_executable(rakupp "${RAKUPP_MAIN}" "${RAKUPP_REPL}" ${RAKUPP_JS} "${RAKUPP_ARDUINO}"
-                      "${RAKUPP_CODEGEN}" ${RAKUPP_DOCLINKS} ${RAKUPP_TOOLS})
+                      ${RAKUPP_CODEGEN} ${RAKUPP_DOCLINKS} ${RAKUPP_TOOLS})
 # The blob is a GENERATED source, so the generator has to have run before this
 # target compiles; nothing else links it.
 add_dependencies(rakupp rakupp_embed_tools)

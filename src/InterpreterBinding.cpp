@@ -6,6 +6,7 @@
 #include <cstddef>   // offsetof: a CStruct member's alignment, as C lays it out
 
 namespace rakupp {
+extern std::string g_exeInterpreterOverride;   // Runtime.cpp: a harness's $*EXECUTABLE for a compiled binary
 
 extern std::atomic<int> g_attrInitWatchers;   // InterpreterOperators.cpp: construction is noting
 void noteAttrInit(const ObjectData* od, const Value* slot);   // …the attribute slots it writes
@@ -3377,9 +3378,31 @@ Value Interpreter::callEnvFirst(const std::string& name, ValueList args) {
 Value Interpreter::envAmpOr(const std::string& ampName, const Value& fallback) {
     Value* p = tctx().cur ? tctx().cur->find(ampName) : nullptr;
     if (!p && global_) { auto g = global_->vars.find(ampName); if (g != global_->vars.end()) p = &g->second; }
+    // a built-in is its one stable Callable, as the interpreter's `&say` is —
+    // its .name, .candidates and identity — not an anonymous forwarding closure
+    if (!p && ampName == "&trait_mod:<is>") return builtinTraitIsGroup();
+    if (!p && ampName.size() > 1) p = const_cast<Value*>(builtinRef(ampName.substr(1)));
     return p ? *p : fallback;
 }
 
+// A native module routine's by-name lookups, through the slot its lexical
+// scope gave the name at entry (rtAotOuterOpt): a closure it handed another
+// module's routine runs under that routine's frame, where `tctx().cur` holds
+// the other module's names (#240 #242). No slot: the by-name lookup.
+Value Interpreter::envAmpOrAt(Value* slot, const std::string& ampName, const Value& fallback) {
+    if (Value* p = slot ? slot->deref() : nullptr) return *p;
+    return envAmpOr(ampName, fallback);
+}
+Value Interpreter::callAmpAt(Value* slot, const std::string& ampName, ValueList args) {
+    if (Value* p = slot ? slot->deref() : nullptr) return callCallable(*p, std::move(args));
+    return callEnvFirstAmp(ampName, std::move(args));
+}
+Value Interpreter::rtNameTermAt(Value* slot, Value* amp, const std::string& n) {
+    if (Value* p = slot ? slot->deref() : nullptr)
+        return (p->t == VT::Hash && p->hashKind == "Proxy" && p->hash()) ? deproxy(*p) : *p;
+    if (Value* f = amp ? amp->deref() : nullptr) return callCallable(*f, {});
+    return rtNameTerm(n);
+}
 Value Interpreter::callEnvFirstAmp(const std::string& ampName, ValueList args) {
     Value* p = tctx().cur ? tctx().cur->find(ampName) : nullptr;
     if (!p && global_) { auto g = global_->vars.find(ampName); if (g != global_->vars.end()) p = &g->second; }
@@ -3899,7 +3922,7 @@ Value Interpreter::dynVar(const std::string& name) {
     if (name == "$*PROGRAM") { Value p = Value::str(progName()); p.hashKind = "IO"; return p; }
     if (name == "$*PROGRAM-NAME") return Value::str(progName());
     if (name == "$*USAGE") { std::string u = mainUsage(); if (!u.empty() && u.back() == '\n') u.pop_back(); return Value::str(u); }
-    if (name == "$*EXECUTABLE" || name == "$*EXECUTABLE-NAME") { Value p = Value::str(execPath_); p.hashKind = "IO"; return p; }
+    if (name == "$*EXECUTABLE" || name == "$*EXECUTABLE-NAME") { Value p = Value::str(g_exeInterpreterOverride.empty() ? execPath_ : g_exeInterpreterOverride); p.hashKind = "IO"; return p; }
     if (name == "$*OUT" || name == "$*ERR" || name == "$*IN") { Value h = Value::makeHash(); h.hashKind = "FileHandle"; (*h.hash())["std"] = Value::str(name == "$*ERR" ? "err" : name == "$*IN" ? "in" : "out"); return h; }
     // $*ARGFILES — the files named in @*ARGS as ONE handle (awk/perl style),
     // or standard input when there are none. Built on ACCESS, not at startup:
@@ -4017,8 +4040,12 @@ Value Interpreter::dynVar(const std::string& name) {
     // is found through the CALLERS first, as the interpreter's own read finds
     // it: a routine's `my $*X` is what its callees see, not whatever `$*X`
     // their lexical scope holds.
-    if (name.size() > 1 && name[1] == '*')
+    // Nothing declares it: GLOBAL's, twigil dropped, else the armed Failure —
+    // as the interpreter's read (evalVarExpr) answers; `%*X` read `%GLOBAL::X`
+    if (name.size() > 1 && name[1] == '*') {
         if (Value* p = findDynamicLenient(name)) return *p;
+        if (!isBuiltinDynamic(name)) return dynMiss(name);
+    }
     if (tctx().cur) if (Value* p = tctx().cur->find(name)) return *p;
     if (global_) { auto it = global_->vars.find(name); if (it != global_->vars.end()) return it->second; }
     return Value::any();
@@ -4207,6 +4234,8 @@ Value rtIndexAdverb(Value& base, const Value& keyIn, bool isHash, const std::str
             auto it = base.hash()->find(key);
             if (it != base.hash()->end()) { exists = true; val = it->second; }
         }
+        // a Pair is associative on its one key (the interpreter's lookup1)
+        if (base.t == VT::Pair && key == base.s && base.pairVal()) { exists = true; val = *base.pairVal(); }
     } else {
         ai = keyIn.toInt();
         // a LAZY array reifies up to the index first (see the evaluator's
@@ -4936,6 +4965,16 @@ Value& Interpreter::dynVarRef(const std::string& name) {
     if (Value* p = findDynamicLenient(name)) return *p;
     return global_->define(name, Value::any());
 }
+// A compiled write to `$*X` (not its declaration): as the interpreter's
+// lvalue has it, a name nothing declares is GLOBAL's (`our $COUNT` at the top,
+// `$GLOBAL::COUNT`), else X::Dynamic::NotFound — never a slot minted for it.
+Value& Interpreter::dynVarWrite(const std::string& name) {
+    if (name.size() > 1 && name[1] == '*') {
+        if (Value* p = findDynamicLenient(name)) return *p;
+        if (!isBuiltinDynamic(name)) return *dynMissSlot(name);
+    }
+    return dynVarRef(name);
+}
 Value& Interpreter::laxVarRef(const std::string& name) {
     if (Value* p = findDynamicLenient(name)) return *p;
     // The PACKAGE the write stands in, not the block that happened to run
@@ -5360,6 +5399,20 @@ Value rtIndexGet(const Value& base, const Value& key, bool isHash) {
             auto it = base.hash()->find(hashSubKey(key, &base));
             if (it != base.hash()->end()) return it->second;
         }
+        // an array-backed base: a Capture (or an argument list that kept its
+        // named parts) answers its named part, anything else dies, as the
+        // interpreter's evalIndex (native code read Nil from `@a.item<k>`)
+        if (base.t == VT::Array) {
+            const std::string k = key.toStr();
+            bool capturish = base.hashKind == "Capture";
+            if (base.arr() && !capturish)
+                for (auto& el : *base.arr()) if (el.t == VT::Pair && el.namedArg) { capturish = true; break; }
+            if (base.arr() && capturish)
+                for (auto& el : *base.arr())
+                    if (el.t == VT::Pair && el.s == k) return el.pairVal() ? *el.pairVal() : Value::any();
+            if (capturish) return Value::any();
+            throw RakuError{Value::typeObj("X::AdHoc"), "Type Array does not support associative indexing."};
+        }
         // a Pair is associative on its ONE key; any other key is Nil, as the
         // interpreter's lookup answers (native code read Nil for the key too)
         if (base.t == VT::Pair)
@@ -5373,12 +5426,39 @@ Value rtIndexGet(const Value& base, const Value& key, bool isHash) {
             // template) but can be tested for (Nil-Any sheet NA-37).
             return refusedSubscript("X::AdHoc",
                 "Type " + base.typeName() + " does not support associative indexing.");
+        // an undefined base — `my $u; $u<k>`, `Str<k>` — reads (Any), as the
+        // interpreter's does; Nil was native code's answer alone
+        if (base.t == VT::Any || (base.t == VT::Type && base.s != "Mu" && base.enumName().empty()))
+            return Value::any();
+        // a key a container does not hold: a Hash's is its default, (Any) when
+        // untyped, a QuantHash's its zero weight; a Map, like a List, has no
+        // containers and answers Nil — as the interpreter's missLeaf
+        if (base.t == VT::Hash) {
+            const std::string& hk = base.hashKind;
+            if (hk.empty()) { Value dv = arrayMissingDefault(base); return dv.t == VT::Nil ? Value::any() : dv; }
+            if (hk == "Set" || hk == "SetHash") return Value::boolean(false);
+            if (hk == "Bag" || hk == "BagHash" || hk == "Mix" || hk == "MixHash") return Value::integer(0);
+        }
         return typedElemDefault(base);
     }
+    // …and an undefined value read positionally is an empty container: (Any)
+    if (base.t == VT::Any) return Value::any();
     if (base.t == VT::Range) {
         if (base.rTo() >= 9000000000000000000LL) { // infinite range: index directly, don't materialise
+            // …as the interpreter's subscript does: an arithmetic one by adding,
+            // anything else through its lazy `.list` — `(Inf..Inf)[0]` is Nil,
+            // `(1.5..Inf)[2]` 3.5, `("a"..*)[3]` "d", `(-Inf..0)[1]` -Inf
+            const RangeEnds* re = rangeEnds(base);
+            const bool arith = !base.rNum() && base.ofType() != "Str" && degenRange(base) == DegenRange::No &&
+                               (!re || re->from.t == VT::Int);
+            const long long lo = base.rFrom() + (base.rExFrom() ? 1 : 0);
+            if (arith && key.isNumeric() && !key.big()) {
+                long long i = key.toInt();
+                if (i >= 0 && lo <= 9223372036854775807LL - i) return Value::integer(lo + i);
+            }
+            if (g_cbInterp) return rtIndexGet(g_cbInterp->methodCall(base, "list", {}), key, false);
             long long i = key.toInt(); if (i < 0) return Value::nil();
-            return Value::integer(base.rFrom() + (base.rExFrom() ? 1 : 0) + i);
+            return Value::integer(lo + i);
         }
         ValueList f = base.flatten();
         long long i = key.toInt(); if (i < 0) return negIndexFailure(i);
@@ -5418,6 +5498,8 @@ Value rtIndexGet(const Value& base, const Value& key, bool isHash) {
             // an Array's element lives in a Scalar container, so an Array or a
             // Hash read out of one is an item, as the interpreter's itemizeElem
             // has it (a List's elements are bare)
+            // (an untyped Array's hole is an empty container: (Any))
+            if (base.t == VT::Array && !base.isList && v.t == VT::Nil) return Value::any();
             Value r = v;
             if (base.t == VT::Array && !base.isList && !v.ext()) itemizeScalar(r);
             return r;
@@ -5452,6 +5534,12 @@ Value rtIndexGet(const Value& base, const Value& key, bool isHash) {
         if (Interpreter::ncIsPointerElem(of) && el.t == VT::Int && g_cbInterp)
             return g_cbInterp->ncMakeLiveCArray(of, (void*)(intptr_t)el.toInt());
         return el;
+    }
+    // past an Array's end is its default — (Any) untyped — as the interpreter's
+    // read has it; a List's (no containers) is Nil
+    if (base.t == VT::Array && !base.isList && base.hashKind.empty()) {
+        Value dv = arrayMissingDefault(base);
+        return dv.t == VT::Nil ? Value::any() : dv;
     }
     return arrayMissingDefault(base);
 }
@@ -6405,16 +6493,32 @@ Value Interpreter::hyperCompoundAssign(const std::string& inner, const Value& l,
     return l;
 }
 
+// A list-infix reduce ([Z]/[X] and their metaop forms, minmax, a set op)
+// keeps each operand list whole: [Z] @a, @b zips the two arrays, [Z] @matrix
+// zips the rows, and `[(^)] @s1.words, @s2.words` is the symmetric difference
+// of two word LISTS, while a lone list operand still spreads one level.
+bool reduceKeepsOperands(const std::string& op) {
+    const std::string bop = !op.empty() && op[0] == '\\' ? op.substr(1) : op;
+    bool listInfix = !bop.empty() && (bop[0] == 'Z' || bop[0] == 'X') &&
+                     !isSetOpStr(bop) && bop != "X"; // "X" alone is still the cross op
+    return listInfix || bop == "Z" || bop == "X" || bop == "minmax" || isSetOpStr(op);
+}
+
 Value rtReduce(Interpreter& I, const std::string& op, const Value& list, bool operands) {
     // The fold itself is applyReduce — the same implementation the interpreter
     // uses, so a compiled binary chains comparisons, runs scan forms and honors
     // the R-metaop exactly as the interpreted program does. This used to be a
     // plain left fold: `[<] 3,1,2` was False interpreted and True compiled,
     // and `[\+]` folded with the literal op string (REVIEW-3.7 finding 1).
-    if (!op.empty() && op[0] != '\\') { // an endless operand is answered whole
+    // An endless operand is answered whole, and an Int Range's `+`/min/max
+    // from its endpoints — for ONE operand, as the interpreter's reduce does:
+    // with several (`[+] 1..Inf, 5`) each is an operand as it is, and a
+    // list-infix op (`[Z]`, `[X]`, minmax, a set op) keeps its operands whole.
+    if (!op.empty() && op[0] != '\\' && !operands && !reduceKeepsOperands(op)) {
         Value r;
         if (endlessReduce(op, list, r)) return r;
-        if (list.t == VT::Array && list.arr())
+        if ((op == "+" || op == "min" || op == "max") && I.intRangeReduce(op, list, r)) return r;
+        if (list.t == VT::Array && list.arr() && !list.itemized)
             for (auto& v : *list.arr()) if (endlessReduce(op, v, r)) return r;
     }
     // SEVERAL comma items are that many operands, each as it is — `[Z] $l, $m`
@@ -6756,6 +6860,37 @@ void rtViewSyncSlow(const Value& base) {
         if (si < vw->src->size()) (*vw->src)[si] = (*base.arr())[i];
     }
 }
+// The positional argument a junction of which the call threads over: the
+// first all/none one, else the first any/one one (callCallable's order). -1: none.
+static int junctionArgAt(const ValueList& a, uint64_t mask) {
+    int first = -1;
+    unsigned pos = 0;
+    for (size_t i = 0; i < a.size() && pos < 64; i++) {
+        if (isNamedArg(a[i])) continue;
+        if ((mask >> pos++ & 1) && isJunction(a[i])) {
+            const std::string& k = a[i].enumName();
+            if (k == "all" || k == "none") return (int)i;
+            if (first < 0) first = (int)i;
+        }
+    }
+    return first;
+}
+bool rtJunctionArg(const ValueList& a, uint64_t mask) { return junctionArgAt(a, mask) >= 0; }
+Value rtAutothread(ValueList& a, uint64_t mask, const std::function<Value(ValueList&)>& f) {
+    const int at = junctionArgAt(a, mask);
+    if (at < 0) return f(a);
+    const Value j = a[(size_t)at];
+    Value out = Value::array(); out.setEnumName(j.enumName());
+    for (auto& e : *j.arr()) {
+        ValueList a2 = a; a2[(size_t)at] = e;
+        out.arr()->push_back(rtAutothread(a2, mask, f));   // nested junctions thread to their leaves
+    }
+    return out;
+}
+std::function<Value(ValueList&)> rtThreaded(uint64_t mask, std::function<Value(ValueList&)> f) {
+    return [mask, f](ValueList& a) -> Value { return junctionArgAt(a, mask) < 0 ? f(a) : rtAutothread(a, mask, f); };
+}
+
 Value rtSig(Value c, const RtSigParam* ps, size_t n, const char* name, const char* retType, unsigned cflags) {
     if (c.t != VT::Code || !c.code()) return c;
     // one Param list per descriptor table: every evaluation of the closure
@@ -6804,7 +6939,9 @@ Value rtSlurpyPos(Interpreter& I, const ValueList& a, size_t from, bool boxed, c
         return pos[0];
     if (kind == 'f')
         for (size_t i = 0; i < pos.size() && !slurpyLazyTail(I, pos, i, o); i++) slurpySpread(pos[i], *o.arr());
-    else if (pos.size() == 1 && slurpyLoneIterable(pos[0])) {
+    // (`**@a` keeps every argument as it came, a lone Array too: only `+@a`
+    // has the single-argument rule, as the binder's slurpyKind 'n' arm)
+    else if (kind != 'n' && pos.size() == 1 && slurpyLoneIterable(pos[0])) {
         if (!slurpyLazyTail(I, pos, 0, o)) slurpyLoneElements(pos[0], *o.arr());
     }
     else for (auto& v : pos) {

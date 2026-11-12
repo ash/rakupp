@@ -11,6 +11,7 @@
 #endif
 
 namespace rakupp {
+extern std::string g_exeInterpreterOverride;   // Runtime.cpp: a harness's $*EXECUTABLE for a compiled binary
 
 extern std::atomic<uint64_t> g_symbolGen;   // Interpreter.cpp: moves on every structural symbol change
 extern std::atomic<bool> g_lexTypeAlias;    // InterpreterOperators.cpp: a type was bound under another name
@@ -8802,22 +8803,7 @@ Value Interpreter::callCallableRaw(const Value& codeVal, ValueList args, const s
                              {"arguments", argTypes}, {"protoguilt", Value::boolean(true)}},
                             "Calling " + c.ci().name + "(" + argProf + ") will never work with proto signature (" + sigt + ")");
                     }
-                // …and then the candidates' signatures, as Rakudo lists them
-                std::string sigs;
-                for (auto& cand : c.cold().candidates) {
-                    if (!cand.code() || cand.code()->ci().isProto || cand.code()->ci().isProtoBody) continue;
-                    try {
-                        Value sg = methodCall(cand, "signature", {});
-                        sigs += "\n    " + methodCall(sg, "gist", {}).toStr();
-                    } catch (...) {}
-                }
-                std::string defProf = noMatchProfile(Value(), as, /*withInvocant=*/false);
-                // …and the exception carries what was called and with what
-                Value cap = Value::array(); cap.hashKind = "Capture"; cap.itemized = true;
-                *cap.arr() = as;
-                throwTypedV("X::Multi::NoMatch", {{"dispatcher", codeVal}, {"capture", cap}},
-                            "Cannot resolve caller " + c.ci().name + "(" + defProf +
-                            "); none of these signatures matches:" + sigs);
+                throwMultiNoMatch(codeVal, as);
             }
             visited.push_back(best);
             RedispatchCtx rc;
@@ -10822,27 +10808,7 @@ Value Interpreter::invokeMethod(const Value& codeVal, const Value& self, ValueLi
                         if (it != selfCopy.obj()->attrs.end()) return deproxy(it->second);
                     }
                 }
-                // Rakudo's wording: the capture as types, invocant first, named
-                // arguments as `:name(Type)`
-                std::string prof = noMatchProfile(selfCopy, as, /*withInvocant=*/true);
-                Value cap = Value::array(); cap.hashKind = "Capture"; cap.itemized = true;
-                cap.arr()->push_back(selfCopy);
-                cap.arr()->insert(cap.arr()->end(), as.begin(), as.end());
-                // …and the candidates' signatures, as Rakudo lists them (`(A $:: Int $a, *%_)`), as a sub's are;
-                // a role's, which names no invocant, takes the class that composed the role
-                std::string sigs;
-                for (auto& cand : c.cold().candidates)
-                    if (cand.code() && !cand.code()->ci().isProto && !cand.code()->ci().isProtoBody)
-                        try {
-                            std::string g = methodCall(methodCall(cand, "signature", {}), "gist", {}).toStr();
-                            if (g.find("$::") == std::string::npos && g.size() > 1 && selfCopy.t == VT::Object && selfCopy.obj())
-                                for (ClassInfo* k = selfCopy.obj()->cls.get(); k; k = k->parent.get())
-                                    if (k->doneRoles.count(cand.code()->ci().pkg)) { g.insert(1, k->name + (g.size() > 2 ? " $:: " : " $::")); break; }
-                            sigs += "\n    " + g;
-                        } catch (...) {}
-                throwTypedV("X::Multi::NoMatch", {{"dispatcher", codeVal}, {"capture", cap}},
-                            "Cannot resolve caller " + c.ci().name + "(" + prof +
-                            "); none of these signatures matches" + (sigs.empty() ? "" : ":" + sigs));
+                throwMethodNoMatch(codeVal, selfCopy, as);
             }
             visited.push_back(best);
             RedispatchCtx rc;
@@ -18758,7 +18724,17 @@ static Value applyArithGeneral(const std::string& op, const Value& l, const Valu
     if (!skipCurry && !valueMatch && (isWhateverish(l) || isWhateverish(r))) return whateverInfixCurry(op, op, l, r);
 
     // ---- Date arithmetic ----
-    if (isDateVal(l) && isDateVal(r) && opEq(op, "-")) return Value::integer(dateDays(l) - dateDays(r));
+    // (evalBinary's DateTime/Date arm first: an operator --exe compiled comes here
+    // directly, and `DateTime.new(0) + 60` numified to 60, not Instant:70)
+    {
+        auto temporal = [](const Value& v) {
+            return v.hashKind == "DateTime" || v.hashKind == "Date" ||
+                   (v.t == VT::Object && v.obj() && v.obj()->hasBoxed && v.obj()->boxed().hashKind == "DateTime");
+        };
+        if (g_cbInterp && (temporal(l) || temporal(r)))
+            if (auto v = g_cbInterp->temporalArith(op, l, r)) return *v;
+    }
+    if (isDateVal(l) && isDateVal(r) && opEq(op, "-"))return Value::integer(dateDays(l) - dateDays(r));
     if (isDateVal(l) && (r.t == VT::Int || r.t == VT::Bool) && (opEq(op, "+") || opEq(op, "-")))
         return makeDate(dateDays(l) + (opEq(op, "+") ? r.toInt() : -r.toInt()), &l);
     if (isDateVal(r) && l.t == VT::Int && opEq(op, "+")) return makeDate(dateDays(r) + l.toInt(), &r);
@@ -21467,10 +21443,267 @@ Value rtSmartmatch(Interpreter& I, const char* op, const Value& l, const Value& 
         if (!neg && m.t == VT::Match) return m;
         return Value::boolean(I.boolify(m) != neg);
     }
+    // a junction MATCHER against a plain topic threads as evalBinary threads it:
+    // a block eigenstate is CALLED (`'abc' ~~ any({ … }, { … })` never ran them)
+    if (isJunction(r) && !isJunction(l)) return I.junctionMatcher(op, l, r);
     return I.smartmatchValue(op, l, r);
 }
 bool rtWhenMatch(Interpreter& I, const Value& topic, const Value& cond) {
     return rtSmartmatch(I, "~~", topic, cond).truthy();
+}
+
+// DateTime and Date operators as evalBinary gives them: a DateTime against a
+// number is its Instant (dateTimeArith), and a DateTime or Date against
+// another, or moved, works on the absolute instant. applyArith asks it too,
+// so --exe's compiled operators, which call applyArith directly, agree.
+// nullopt when none of these applies.
+std::optional<Value> Interpreter::temporalArith(const std::string& op, const Value& l, const Value& r) {
+    // a DateTime against a number, or one of a class DERIVING DateTime (dateTimeArith)
+    if (l.t == VT::Object || r.t == VT::Object || l.hashKind == "DateTime" || r.hashKind == "DateTime")
+        if (auto v = dateTimeArith(op, l, r)) return *v;
+    // DateTime/Date arithmetic & comparison work on the absolute instant (posix),
+    // not the hash's numeric coercion (which would be 0).
+    {
+        bool ldt = l.hashKind == "DateTime" || l.hashKind == "Date";
+        bool rdt = r.hashKind == "DateTime" || r.hashKind == "Date";
+        if (ldt || rdt) {
+            // leap-second boundaries in POSIX seconds (end of each historical leap day)
+            static const long long* leapPx = [] {
+                static long long v[27]; static const long long ymd[] = {
+                    19720630, 19721231, 19731231, 19741231, 19751231, 19761231, 19771231,
+                    19781231, 19791231, 19810630, 19820630, 19830630, 19850630, 19871231,
+                    19891231, 19901231, 19920630, 19930630, 19940630, 19951231, 19970630,
+                    19981231, 20051231, 20081231, 20120630, 20150630, 20161231};
+                for (int i = 0; i < 27; i++)
+                    v[i] = (civilToDays(ymd[i] / 10000, ymd[i] / 100 % 100, ymd[i] % 100) + 1) * 86400;
+                return v;
+            }();
+            // Rakudo does DateTime algebra in Instant/TAI, which counts leap seconds.
+            // dtSec = TAI seconds (posix + fractional + leap seconds elapsed).
+            auto dtSec = [](const Value& v) -> double {
+                if (v.hashKind != "DateTime" && v.hashKind != "Date") return v.toNum();
+                // A Date compares by DAYCOUNT (Rakudo's Dateish Numeric), not by
+                // an instant: it names a civil day and carries no clock fields.
+                if (v.hashKind == "Date") return dateNumeric(v);
+                double p = v.hash() && v.hash()->count("posix") ? (*v.hash())["posix"].toNum() : 0.0;
+                if (v.hash() && v.hash()->count("second")) {
+                    double s = (*v.hash())["second"].toNum(); p += s - std::floor(s);
+                    if (s >= 60) p += 1.0;   // :60 stores the posix of :59; it is one TAI second on
+                }
+                long long ip = (long long)std::floor(p);
+                for (int i = 0; i < 27; i++) if (leapPx[i] <= ip) p += 1.0;
+                return p;
+            };
+            // TAI back to POSIX (the i-th leap's TAI boundary is leapPx[i] + i)
+            auto taiToPosix = [](double tai) -> double {
+                long long it = (long long)std::floor(tai); double off = 0;
+                for (int i = 0; i < 27; i++) if (leapPx[i] + i <= it) off += 1.0;
+                return tai - off;
+            };
+            auto mkDT = [&](double taiVal, const Value& tzFrom) -> Value {
+                long long tz = tzFrom.hash() && tzFrom.hash()->count("timezone") ? (*tzFrom.hash())["timezone"].toInt() : 0;
+                Value res = methodCall(Value::typeObj("DateTime"), "new", ValueList{Value::number(taiToPosix(taiVal))});
+                if (tz) res = methodCall(res, "in-timezone", ValueList{Value::integer(tz)});
+                return res;
+            };
+            // DateTime against DateTime, and DateTime ± a duration, go through
+            // the EXACT Instant (a Rat, leap seconds counted): the double here
+            // made `$dt1 - $dt2` 59826610.48000002 and read 23:59:60 and the
+            // midnight after it as the same moment
+            auto exactInst = [&](const Value& v) {
+                Value i = methodCall(v, "Instant", ValueList{}); i.hashKind = ""; return i;
+            };
+            if (l.hashKind == "DateTime" && r.hashKind == "DateTime" &&
+                (opEq(op, "<") || opEq(op, ">") || opEq(op, "<=") || opEq(op, ">=") || opEq(op, "==") || opEq(op, "!=") ||
+                 opEq(op, "<=>") || opEq(op, "-"))) {
+                Value diff = applyArith("-", exactInst(l), exactInst(r));
+                if (opEq(op, "-")) {
+                    if (diff.t == VT::Num && std::isfinite(diff.n)) diff = methodCall(diff, "Rat", ValueList{});
+                    diff.hashKind = "Duration"; return identify(diff);
+                }
+                int c = diff.toNum() < 0 ? -1 : diff.toNum() > 0 ? 1 : 0;
+                if (opEq(op, "<=>")) return Value::orderVal(c);
+                bool res = opEq(op, "<") ? c < 0 : opEq(op, ">") ? c > 0 : opEq(op, "<=") ? c <= 0
+                         : opEq(op, ">=") ? c >= 0 : opEq(op, "==") ? c == 0 : c != 0;
+                return Value::boolean(res);
+            }
+            auto moveDT = [&](const Value& dt, const Value& by, bool minus) {
+                Value b = by; b.hashKind = "";
+                Value inst = applyArith(minus ? "-" : "+", exactInst(dt), b);
+                inst.hashKind = "Instant";
+                long long tz = dt.hash() && dt.hash()->count("timezone") ? (*dt.hash())["timezone"].toInt() : 0;
+                Value res = methodCall(Value::typeObj("DateTime"), "new",
+                    ValueList{inst, Value::pair("timezone", Value::integer(tz))});
+                if (dt.hash() && dt.hash()->count("formatter") && res.t == VT::Hash && res.hash())
+                    (*res.hash())["formatter"] = (*dt.hash())["formatter"];
+                return res;
+            };
+            if ((opEq(op, "+") || opEq(op, "-")) && l.hashKind == "DateTime" &&
+                (r.t == VT::Int || r.t == VT::Num || r.t == VT::Rat) && r.hashKind != "Instant")
+                return moveDT(l, r, opEq(op, "-"));
+            if (opEq(op, "+") && r.hashKind == "DateTime" &&
+                (l.t == VT::Int || l.t == VT::Num || l.t == VT::Rat) && l.hashKind != "Instant")
+                return moveDT(r, l, false);
+            if (ldt && rdt && (opEq(op, "<") || opEq(op, ">") || opEq(op, "<=") || opEq(op, ">=") ||
+                               opEq(op, "==") || opEq(op, "!=") || opEq(op, "<=>"))) {
+                double a = dtSec(l), c = dtSec(r);
+                // `<=>` yields an Order, like every other numeric comparison —
+                // this arm handed back a bare Int (-1/0/1) instead
+                if (opEq(op, "<=>")) return Value::orderVal(a < c ? -1 : a > c ? 1 : 0);
+                bool res = opEq(op, "<") ? a < c : opEq(op, ">") ? a > c : opEq(op, "<=") ? a <= c
+                         : opEq(op, ">=") ? a >= c : opEq(op, "==") ? a == c : a != c;
+                return Value::boolean(res);
+            }
+            if (opEq(op, "-") && l.hashKind == "DateTime" && r.hashKind == "DateTime") {
+                Value d = Value::number(dtSec(l) - dtSec(r)); d.hashKind = "Duration"; return identify(d);
+            }
+            if ((opEq(op, "+") || opEq(op, "-")) && l.hashKind == "DateTime" &&
+                (r.t == VT::Int || r.t == VT::Num || r.t == VT::Rat || r.hashKind == "Duration"))
+                return mkDT(dtSec(l) + (opEq(op, "-") ? -r.toNum() : r.toNum()), l);
+            if (opEq(op, "+") && r.hashKind == "DateTime" &&
+                (l.t == VT::Int || l.t == VT::Num || l.t == VT::Rat || l.hashKind == "Duration"))
+                return mkDT(dtSec(r) + l.toNum(), r);
+        }
+    }
+    return std::nullopt;
+}
+
+// `l ~~ /pat/` and `l !~~ /pat/` once the left side is a value: a junction
+// autothreads, a list or hash is matched element by element, the pattern
+// sees the subject as `$_`. evalBinary and --exe's compiled `~~` both call it.
+Value Interpreter::regexLitMatch(const std::string& op, const Value& l, const std::string& pat, bool isM) {
+    // a junction LHS autothreads: (any("4","5") ~~ /4/) is a junction of
+    // per-eigenstate results — 'any(｢4｣, Nil)' (S03-junctions/misc.t)
+    if (l.t == VT::Array && l.arr() &&
+        (l.enumName() == "any" || l.enumName() == "all" ||
+         l.enumName() == "one" || l.enumName() == "none")) {
+        Value out = Value::array(); out.setEnumName(l.enumName());
+        // the Matches go into the RESULT, not into `$/`: Rakudo answers
+        // `any(｢4｣, Nil)` here with `$/` still undefined
+        MatchVarGuard noSlash;
+        for (auto& e : *l.arr()) {
+            Value m = regexMatch(rxSubject(e), pat);
+            if (opEq(op, "~~")) out.arr()->push_back(m.truthy() ? m : Value::nil());
+            else out.arr()->push_back(Value::boolean(!m.truthy()));
+        }
+        return out;
+    }
+    // `~~` topicalizes: code inside the pattern — `/$( $_ )/`,
+    // `/<{ $_ }>/`, `/{ say $_ }/` — sees the SUBJECT as `$_`
+    const bool wantsTopic = pat.find("$_") != std::string::npos && tctx().cur;
+    Value* topicSlot = wantsTopic ? tctx().cur->find("$_") : nullptr;
+    Value savedTopic;
+    if (topicSlot) { savedTopic = *topicSlot; *topicSlot = l; }
+    // no `$_` in scope at all: a scope of its own holds the topic for
+    // the match (`$/` is still found — and set — outside it)
+    std::shared_ptr<Env> topicEnv, savedCur;
+    if (wantsTopic && !topicSlot) {
+        topicEnv = makeSlabShared<Env>();
+        topicEnv->parent = tctx().cur;
+        topicEnv->define("$_", l);
+        savedCur = tctx().cur;
+        tctx().cur = topicEnv;
+    }
+    Value m;
+    try {
+        // A LIST is matched element by element and a HASH key by key —
+        // the first that matches answers (Regex.ACCEPTS), so
+        // `@a ~~ /^ 'a' $/` is about each string, not their join.
+        // A lazy list keeps the single-string reading: it may not end.
+        if (l.t == VT::Array && l.arr() && !l.ext() && l.enumName().empty() && !l.arr()->empty()) {
+            for (auto& e : *l.arr()) { m = regexMatch(rxSubject(e), pat); if (m.truthy()) break; }
+        }
+        else if (l.t == VT::Hash && l.hash() && !l.hash()->empty()) {
+            for (auto& kv : *l.hash()) { m = regexMatch(kv.first, pat); if (m.truthy()) break; }
+        }
+        else {
+            m = regexMatch(rxSubject(l), pat);
+            keepMatchOrig(m, l);
+        }
+    }
+    catch (...) { if (topicSlot) *topicSlot = savedTopic; if (savedCur) tctx().cur = savedCur; throw; }
+    if (topicSlot) *topicSlot = savedTopic;
+    if (savedCur) tctx().cur = savedCur;
+    // `~~` yields the Match on success (Nil on failure); `!~~` yields a Bool.
+    // A MULTI-match form (:g, :ex, an :nth list) answers with a List, and an
+    // empty List is the right answer for "nothing matched" — collapsing it
+    // to Nil made `("abc" ~~ m:g/z/).elems` 1 instead of 0. Both are falsy,
+    // so only code that counts or iterates the result could see it.
+    // …and a failed `m//` answers False where a failed bare `/…/` answers
+    // Nil. Both are falsy, so only `===`/`.WHAT` can tell them apart —
+    // which is exactly what S03-smartmatch/00-sanity.t asks.
+    // (a JUNCTION of matches — `m:nth(1|2)//` — answers as the Bool it collapses to)
+    if (opEq(op, "~~") && m.t == VT::Array && !m.enumName().empty() &&
+        (m.enumName() == "any" || m.enumName() == "all" || m.enumName() == "one" || m.enumName() == "none"))
+        return Value::boolean(m.truthy());
+    if (opEq(op, "~~"))
+        return m.t == VT::Array ? m
+             : m.truthy()       ? m
+             : isM ? Value::boolean(false)
+                                                         : Value::nil();
+    return Value::boolean(!m.truthy());
+}
+
+// `topic ~~ any(…)` with a junction MATCHER: each eigenstate matched with full
+// `~~` semantics (a Regex with `$/` kept the caller's, a block called, a
+// filetest adverb asked of the path) and collapsed to a Bool. evalBinary and
+// --exe's rtSmartmatch both call it.
+Value Interpreter::junctionMatcher(const std::string& op, const Value& lTopic, const Value& r) {
+    auto fileTest = [&](const Value& pair) {   // (as evalBinary's: a missing file is False)
+        bool actual = false;
+        try { actual = boolify(methodCall(lTopic, pair.s.copyText(), {})); } catch (RakuError&) { actual = false; }
+        bool want = pair.pairVal() ? boolify(*pair.pairVal()) : true;
+        return actual == want;
+    };
+    // autothread the smartmatch over the junction's eigenstates (each matched
+    // with full ~~ semantics, so a junction of regexes / blocks works too)
+    JunctionCollapse jc(r.enumName());        // short-circuits; see Value.h
+    for (auto& e : *r.arr()) {
+        bool m;
+        // the guard is scoped to the REGEX arm alone: a Code eigenstate
+        // is the caller's own block and keeps its own `$/`
+        if (e.t == VT::Regex) { MatchVarGuard noSlash;
+            m = regexMatch(rxSubject(lTopic), e.s, &e).truthy(); } // &e: an interpolating eigenstate resolves vars from ITS captured env
+        else if (e.t == VT::Code) m = boolify(callCallable(e, ValueList{lTopic}));
+        // a filetest adverb eigenstate — `$p.IO ~~ :d & :x`. The generic
+        // smartmatch below knows nothing about IO or Pairs and answered
+        // False for every one of them, so the whole junction was False.
+        else if (e.t == VT::Pair && lTopic.hashKind == "IO" && !e.s.empty()) m = fileTest(e);
+        // (the value smartmatch: a Whatever the topic HOLDS is a value, which
+        // applyArith's `~~` would curry into a truthy WhateverCode)
+        else m = smartmatchValue("~~", lTopic, e).truthy();
+        jc.feed(m);
+        if (jc.done()) break;
+    }
+    bool res = jc.verdict();
+    return Value::boolean(opEq(op, "~~") ? res : !res);
+}
+
+// `$s.subst-mutate(…)` on the invocant's slot: substitutes IN PLACE and
+// answers the Match. The MethodCall eval and --exe's compiled call share it.
+Value Interpreter::substMutate(Value* lv, ValueList sargs) {
+    // the adverbs are NAMED, wherever they are written: `:g` or a
+    // slipped `|(nth => 1..3)` may come before the pattern
+    ValueList posArgs, adv;
+    for (auto& a : sargs) ((a.t == VT::Pair && a.namedArg) ? adv : posArgs).push_back(a);
+    std::string pat; bool literal = false;
+    // interpRegexPattern FIRST: a regex argument arrives as its raw
+    // SOURCE, so `$q` and `@alpha` atoms in it are still text. The
+    // `.subst` path has always run both passes; this one ran only
+    // the array pass, so `$t.subst-mutate(/( $q | $e )/, …)`
+    // matched the literal characters "$q" and changed nothing —
+    // Text::CSV escapes its quotes exactly that way.
+    // (and a regex value reads its own variables where it was written first)
+    if (!posArgs.empty() && posArgs[0].t == VT::Regex)
+        pat = rxInterpArrays(interpRegexPattern(closedRegexSource(posArgs[0])));
+    else if (!posArgs.empty()) { pat = posArgs[0].toStr(); literal = true; }
+    Value replArg = posArgs.size() > 1 ? posArgs[1] : Value::str("");
+    long nsub = 0; Value mres;
+    std::string out = substSelect(lv->toStr(), pat, &replArg, adv, nsub, literal, nullptr, &mres);
+    // nothing matched, nothing changed: the container keeps what
+    // it held (an Int stays an Int, as in Rakudo)
+    if (nsub) raceW(lv) = Value::str(out);
+    return mres;
 }
 
 Value Interpreter::applyBinOp(const std::string& op, const Value& l, const Value& r) {
@@ -23020,113 +23253,10 @@ Value Interpreter::evalBinary(Binary* b) {
             if (l.t == VT::Whatever || r.t == VT::Whatever) refuseWhateverNumeric(op);
             Interpreter::valueSmartmatch_ = true; return applyBinOp(op, l, r); }
         if (RAKUPP_UNLIKELY(uninitOperand(l) || uninitOperand(r))) uninitBinaryOperands(b, op, l, r);
-        // a DateTime against a number, or one of a class DERIVING DateTime (dateTimeArith)
-        if (l.t == VT::Object || r.t == VT::Object || l.hashKind == "DateTime" || r.hashKind == "DateTime")
-            if (auto v = dateTimeArith(op, l, r)) return *v;
-        // DateTime/Date arithmetic & comparison work on the absolute instant (posix),
-        // not the hash's numeric coercion (which would be 0).
-        {
-            bool ldt = l.hashKind == "DateTime" || l.hashKind == "Date";
-            bool rdt = r.hashKind == "DateTime" || r.hashKind == "Date";
-            if (ldt || rdt) {
-                // leap-second boundaries in POSIX seconds (end of each historical leap day)
-                static const long long* leapPx = [] {
-                    static long long v[27]; static const long long ymd[] = {
-                        19720630, 19721231, 19731231, 19741231, 19751231, 19761231, 19771231,
-                        19781231, 19791231, 19810630, 19820630, 19830630, 19850630, 19871231,
-                        19891231, 19901231, 19920630, 19930630, 19940630, 19951231, 19970630,
-                        19981231, 20051231, 20081231, 20120630, 20150630, 20161231};
-                    for (int i = 0; i < 27; i++)
-                        v[i] = (civilToDays(ymd[i] / 10000, ymd[i] / 100 % 100, ymd[i] % 100) + 1) * 86400;
-                    return v;
-                }();
-                // Rakudo does DateTime algebra in Instant/TAI, which counts leap seconds.
-                // dtSec = TAI seconds (posix + fractional + leap seconds elapsed).
-                auto dtSec = [](const Value& v) -> double {
-                    if (v.hashKind != "DateTime" && v.hashKind != "Date") return v.toNum();
-                    // A Date compares by DAYCOUNT (Rakudo's Dateish Numeric), not by
-                    // an instant: it names a civil day and carries no clock fields.
-                    if (v.hashKind == "Date") return dateNumeric(v);
-                    double p = v.hash() && v.hash()->count("posix") ? (*v.hash())["posix"].toNum() : 0.0;
-                    if (v.hash() && v.hash()->count("second")) {
-                        double s = (*v.hash())["second"].toNum(); p += s - std::floor(s);
-                        if (s >= 60) p += 1.0;   // :60 stores the posix of :59; it is one TAI second on
-                    }
-                    long long ip = (long long)std::floor(p);
-                    for (int i = 0; i < 27; i++) if (leapPx[i] <= ip) p += 1.0;
-                    return p;
-                };
-                // TAI back to POSIX (the i-th leap's TAI boundary is leapPx[i] + i)
-                auto taiToPosix = [](double tai) -> double {
-                    long long it = (long long)std::floor(tai); double off = 0;
-                    for (int i = 0; i < 27; i++) if (leapPx[i] + i <= it) off += 1.0;
-                    return tai - off;
-                };
-                auto mkDT = [&](double taiVal, const Value& tzFrom) -> Value {
-                    long long tz = tzFrom.hash() && tzFrom.hash()->count("timezone") ? (*tzFrom.hash())["timezone"].toInt() : 0;
-                    Value res = methodCall(Value::typeObj("DateTime"), "new", ValueList{Value::number(taiToPosix(taiVal))});
-                    if (tz) res = methodCall(res, "in-timezone", ValueList{Value::integer(tz)});
-                    return res;
-                };
-                // DateTime against DateTime, and DateTime ± a duration, go through
-                // the EXACT Instant (a Rat, leap seconds counted): the double here
-                // made `$dt1 - $dt2` 59826610.48000002 and read 23:59:60 and the
-                // midnight after it as the same moment
-                auto exactInst = [&](const Value& v) {
-                    Value i = methodCall(v, "Instant", ValueList{}); i.hashKind = ""; return i;
-                };
-                if (l.hashKind == "DateTime" && r.hashKind == "DateTime" &&
-                    (opEq(op, "<") || opEq(op, ">") || opEq(op, "<=") || opEq(op, ">=") || opEq(op, "==") || opEq(op, "!=") ||
-                     opEq(op, "<=>") || opEq(op, "-"))) {
-                    Value diff = applyArith("-", exactInst(l), exactInst(r));
-                    if (opEq(op, "-")) {
-                        if (diff.t == VT::Num && std::isfinite(diff.n)) diff = methodCall(diff, "Rat", ValueList{});
-                        diff.hashKind = "Duration"; return identify(diff);
-                    }
-                    int c = diff.toNum() < 0 ? -1 : diff.toNum() > 0 ? 1 : 0;
-                    if (opEq(op, "<=>")) return Value::orderVal(c);
-                    bool res = opEq(op, "<") ? c < 0 : opEq(op, ">") ? c > 0 : opEq(op, "<=") ? c <= 0
-                             : opEq(op, ">=") ? c >= 0 : opEq(op, "==") ? c == 0 : c != 0;
-                    return Value::boolean(res);
-                }
-                auto moveDT = [&](const Value& dt, const Value& by, bool minus) {
-                    Value b = by; b.hashKind = "";
-                    Value inst = applyArith(minus ? "-" : "+", exactInst(dt), b);
-                    inst.hashKind = "Instant";
-                    long long tz = dt.hash() && dt.hash()->count("timezone") ? (*dt.hash())["timezone"].toInt() : 0;
-                    Value res = methodCall(Value::typeObj("DateTime"), "new",
-                        ValueList{inst, Value::pair("timezone", Value::integer(tz))});
-                    if (dt.hash() && dt.hash()->count("formatter") && res.t == VT::Hash && res.hash())
-                        (*res.hash())["formatter"] = (*dt.hash())["formatter"];
-                    return res;
-                };
-                if ((opEq(op, "+") || opEq(op, "-")) && l.hashKind == "DateTime" &&
-                    (r.t == VT::Int || r.t == VT::Num || r.t == VT::Rat) && r.hashKind != "Instant")
-                    return moveDT(l, r, opEq(op, "-"));
-                if (opEq(op, "+") && r.hashKind == "DateTime" &&
-                    (l.t == VT::Int || l.t == VT::Num || l.t == VT::Rat) && l.hashKind != "Instant")
-                    return moveDT(r, l, false);
-                if (ldt && rdt && (opEq(op, "<") || opEq(op, ">") || opEq(op, "<=") || opEq(op, ">=") ||
-                                   opEq(op, "==") || opEq(op, "!=") || opEq(op, "<=>"))) {
-                    double a = dtSec(l), c = dtSec(r);
-                    // `<=>` yields an Order, like every other numeric comparison —
-                    // this arm handed back a bare Int (-1/0/1) instead
-                    if (opEq(op, "<=>")) return Value::orderVal(a < c ? -1 : a > c ? 1 : 0);
-                    bool res = opEq(op, "<") ? a < c : opEq(op, ">") ? a > c : opEq(op, "<=") ? a <= c
-                             : opEq(op, ">=") ? a >= c : opEq(op, "==") ? a == c : a != c;
-                    return Value::boolean(res);
-                }
-                if (opEq(op, "-") && l.hashKind == "DateTime" && r.hashKind == "DateTime") {
-                    Value d = Value::number(dtSec(l) - dtSec(r)); d.hashKind = "Duration"; return identify(d);
-                }
-                if ((opEq(op, "+") || opEq(op, "-")) && l.hashKind == "DateTime" &&
-                    (r.t == VT::Int || r.t == VT::Num || r.t == VT::Rat || r.hashKind == "Duration"))
-                    return mkDT(dtSec(l) + (opEq(op, "-") ? -r.toNum() : r.toNum()), l);
-                if (opEq(op, "+") && r.hashKind == "DateTime" &&
-                    (l.t == VT::Int || l.t == VT::Num || l.t == VT::Rat || l.hashKind == "Duration"))
-                    return mkDT(dtSec(r) + l.toNum(), r);
-            }
-        }
+        // a DateTime or Date against a number or another (temporalArith)
+        if (l.t == VT::Object || r.t == VT::Object || l.hashKind == "DateTime" || r.hashKind == "DateTime" ||
+            l.hashKind == "Date" || r.hashKind == "Date")
+            if (auto v = temporalArith(op, l, r)) return *v;
         // A user `infix:<+>`/`<->` over a NATIVE handle (Pointer / CArray) wins over
         // the Instant/Duration arm below: those are tagged Hashes here, not objects,
         // so `multi infix:<+>(Pointer:D \p, Int $o)` — NativeHelpers::Pointer's
@@ -23973,76 +24103,7 @@ Value Interpreter::evalBinary(Binary* b) {
                 };
                 return code;
             }
-            // a junction LHS autothreads: (any("4","5") ~~ /4/) is a junction of
-            // per-eigenstate results — 'any(｢4｣, Nil)' (S03-junctions/misc.t)
-            if (l.t == VT::Array && l.arr() &&
-                (l.enumName() == "any" || l.enumName() == "all" ||
-                 l.enumName() == "one" || l.enumName() == "none")) {
-                Value out = Value::array(); out.setEnumName(l.enumName());
-                // the Matches go into the RESULT, not into `$/`: Rakudo answers
-                // `any(｢4｣, Nil)` here with `$/` still undefined
-                MatchVarGuard noSlash;
-                for (auto& e : *l.arr()) {
-                    Value m = regexMatch(rxSubject(e), pat);
-                    if (opEq(op, "~~")) out.arr()->push_back(m.truthy() ? m : Value::nil());
-                    else out.arr()->push_back(Value::boolean(!m.truthy()));
-                }
-                return out;
-            }
-            // `~~` topicalizes: code inside the pattern — `/$( $_ )/`,
-            // `/<{ $_ }>/`, `/{ say $_ }/` — sees the SUBJECT as `$_`
-            const bool wantsTopic = pat.find("$_") != std::string::npos && tctx().cur;
-            Value* topicSlot = wantsTopic ? tctx().cur->find("$_") : nullptr;
-            Value savedTopic;
-            if (topicSlot) { savedTopic = *topicSlot; *topicSlot = l; }
-            // no `$_` in scope at all: a scope of its own holds the topic for
-            // the match (`$/` is still found — and set — outside it)
-            std::shared_ptr<Env> topicEnv, savedCur;
-            if (wantsTopic && !topicSlot) {
-                topicEnv = makeSlabShared<Env>();
-                topicEnv->parent = tctx().cur;
-                topicEnv->define("$_", l);
-                savedCur = tctx().cur;
-                tctx().cur = topicEnv;
-            }
-            Value m;
-            try {
-                // A LIST is matched element by element and a HASH key by key —
-                // the first that matches answers (Regex.ACCEPTS), so
-                // `@a ~~ /^ 'a' $/` is about each string, not their join.
-                // A lazy list keeps the single-string reading: it may not end.
-                if (l.t == VT::Array && l.arr() && !l.ext() && l.enumName().empty() && !l.arr()->empty()) {
-                    for (auto& e : *l.arr()) { m = regexMatch(rxSubject(e), pat); if (m.truthy()) break; }
-                }
-                else if (l.t == VT::Hash && l.hash() && !l.hash()->empty()) {
-                    for (auto& kv : *l.hash()) { m = regexMatch(kv.first, pat); if (m.truthy()) break; }
-                }
-                else {
-                    m = regexMatch(rxSubject(l), pat);
-                    keepMatchOrig(m, l);
-                }
-            }
-            catch (...) { if (topicSlot) *topicSlot = savedTopic; if (savedCur) tctx().cur = savedCur; throw; }
-            if (topicSlot) *topicSlot = savedTopic;
-            if (savedCur) tctx().cur = savedCur;
-            // `~~` yields the Match on success (Nil on failure); `!~~` yields a Bool.
-            // A MULTI-match form (:g, :ex, an :nth list) answers with a List, and an
-            // empty List is the right answer for "nothing matched" — collapsing it
-            // to Nil made `("abc" ~~ m:g/z/).elems` 1 instead of 0. Both are falsy,
-            // so only code that counts or iterates the result could see it.
-            // …and a failed `m//` answers False where a failed bare `/…/` answers
-            // Nil. Both are falsy, so only `===`/`.WHAT` can tell them apart —
-            // which is exactly what S03-smartmatch/00-sanity.t asks.
-            // (a JUNCTION of matches — `m:nth(1|2)//` — answers as the Bool it collapses to)
-            if (opEq(op, "~~") && m.t == VT::Array && !m.enumName().empty() &&
-                (m.enumName() == "any" || m.enumName() == "all" || m.enumName() == "one" || m.enumName() == "none"))
-                return Value::boolean(m.truthy());
-            if (opEq(op, "~~"))
-                return m.t == VT::Array ? m
-                     : m.truthy()       ? m
-                     : static_cast<RegexLit*>(b->rhs.get())->isM ? Value::boolean(false)
-                                                                 : Value::nil();
-            return Value::boolean(!m.truthy());
+            return regexLitMatch(op, l, pat, static_cast<RegexLit*>(b->rhs.get())->isM);
         }
         if (b->rhs->kind == NK::SubstLit) {
             auto* sub = static_cast<SubstLit*>(b->rhs.get());
@@ -24200,26 +24261,7 @@ Value Interpreter::evalBinary(Binary* b) {
                 };
                 return code;
             }
-            // autothread the smartmatch over the junction's eigenstates (each matched
-            // with full ~~ semantics, so a junction of regexes / blocks works too)
-            JunctionCollapse jc(r.enumName());        // short-circuits; see Value.h
-            for (auto& e : *r.arr()) {
-                bool m;
-                // the guard is scoped to the REGEX arm alone: a Code eigenstate
-                // is the caller's own block and keeps its own `$/`
-                if (e.t == VT::Regex) { MatchVarGuard noSlash;
-                    m = regexMatch(rxSubject(lTopic), e.s, &e).truthy(); } // &e: an interpolating eigenstate resolves vars from ITS captured env
-                else if (e.t == VT::Code) m = boolify(callCallable(e, ValueList{lTopic}));
-                // a filetest adverb eigenstate — `$p.IO ~~ :d & :x`. The generic
-                // smartmatch below knows nothing about IO or Pairs and answered
-                // False for every one of them, so the whole junction was False.
-                else if (e.t == VT::Pair && lTopic.hashKind == "IO" && !e.s.empty()) m = fileTest(e);
-                else m = applyArith("~~", lTopic, e).truthy();
-                jc.feed(m);
-                if (jc.done()) break;
-            }
-            bool res = jc.verdict();
-            return Value::boolean(opEq(op, "~~") ? res : !res);
+            return junctionMatcher(op, lTopic, r);
         }
         if (r.t == VT::Regex) {
             Value m = regexMatch(rxSubject(lTopic), r.s, &r);
@@ -24541,6 +24583,50 @@ static signed char unaryPath(const std::string& op) {
     return 2;
 }
 
+// prefix `+^` and `^` on a value: evalUnary's arms, which --exe's compiled
+// prefixes call too (a non-numeric string is X::Str::Numeric, not 0).
+Value rtPrefixBitNot(const Value& v) {
+    // bitwise NOT: -(x+1), exact at any width (SHA-512's Ch reads +^ of a
+    // top-bit-set 64-bit word — ~strictInt saturated it to LLONG_MIN and the
+    // digest was garbage)
+    if (v.big()) {
+        BigInt res = BigInt(0) - (*v.big() + BigInt(1));
+        return res.fitsLL() ? Value::integer(res.toLL()) : Value::bigint(res);
+    }
+    return Value::integer(~strictInt(v));
+}
+Value rtPrefixUpto(const Value& v) {
+    // `^5.5` is `0 ..^ 5.5`, NOT `0 ..^ 5` — the upper bound keeps its own
+    // type, so the range holds six integers and reports 5.5 as its max.
+    if (v.t == VT::Num || v.t == VT::Rat) {
+        double top = v.toNum();
+        // The range STAYS exclusive-at-the-top — `(^5.5).excludes-max` is True
+        // — so the integer field is the first integer past the bound: `^5.5`
+        // walks 0..5 as `0..^6` does, and `.max`/`.raku` read the real 5.5
+        // off the carried endpoints.
+        //
+        // A NON-FINITE bound has no integer to floor, and casting one to
+        // long long is undefined — the architectures disagree about it.
+        // arm64 saturates (+Inf gives the int64 maximum, which IS the
+        // "endless" sentinel the range walk reads); x86_64 gives the int64
+        // MINIMUM. So `^Inf` built 0..^int64-min there — an enormous range
+        // running the wrong way — and `(^Inf).head(3)` never came back,
+        // while arm64 answered (0 1 2). NaN takes the same top sentinel
+        // `1..NaN` does: no comparison against NaN is ever true, so nothing
+        // stops the walk, and Rakudo's `(^NaN).head(3)` is (0 1 2) too.
+        long long ti;
+        if (std::isnan(top) || top >= 9223372036854775807.0) ti = 9223372036854775807LL;
+        else if (top <= -9223372036854775808.0) ti = -9223372036854775807LL - 1;
+        else { bool whole = top == std::floor(top); ti = (long long)std::floor(top) + (whole ? 0 : 1); }
+        Value r = Value::range(0, ti, false, true);
+        attachRangeEnds(r, Value::integer(0), v);
+        return r;
+    }
+    Value r = Value::range(0, strictInt(v), false, true);
+    if (v.t == VT::Int && v.big()) r.bigM() = v.big(); // keep the big bound (pick/roll sample it)
+    return r;
+}
+
 Value Interpreter::evalUnary(Unary* u) {
     signed char path = u->evalPath;
     if (path < 0) u->evalPath = path = unaryPath(u->op);
@@ -24797,14 +24883,7 @@ Value Interpreter::evalUnary(Unary* u) {
         // list-infix reduces ([Z]/[X] and their metaop forms) keep each operand
         // list whole: [Z] @a, @b zips the two arrays, [Z] @matrix zips the rows
         const std::string bop = scanForm ? op.substr(1) : op;
-        bool listInfix = !bop.empty() && (bop[0] == 'Z' || bop[0] == 'X') &&
-                         !isSetOpStr(bop) && bop != "X"; // "X" alone is still the cross op
-        if (bop == "Z" || bop == "X" || bop == "minmax") listInfix = true;
-        // SET-op reduces treat each comma item as ONE operand too:
-        // `[(^)] @s1.words, @s2.words` is the symmetric difference of two word
-        // LISTS (flattening merged them and answered per-word parity), while a
-        // lone list operand still spreads one level (`[(^)] @case.words`).
-        if (isSetOpStr(op)) listInfix = true;
+        bool listInfix = reduceKeepsOperands(op);
         // The reduce takes its operands by the single-argument rule (`+@list`):
         // SEVERAL comma items are that many operands, each as it is (`[+] (1,2),
         // (3,4)` is 2 + 2, `[+] @a, @b` adds the two counts), a Slip spreading
@@ -25952,15 +26031,7 @@ Value Interpreter::evalUnary(Unary* u) {
     }
     if (opEq(u->op, "!")) return Value::boolean(!boolify(v));
     if (opEq(u->op, "?")) return Value::boolean(boolify(v));
-    if (opEq(u->op, "+^")) { // bitwise NOT: -(x+1), exact at any width (SHA-512's Ch
-                          // reads +^ of a top-bit-set 64-bit word — ~strictInt
-                          // saturated it to LLONG_MIN and the digest was garbage)
-        if (v.big()) {
-            BigInt res = BigInt(0) - (*v.big() + BigInt(1));
-            return res.fitsLL() ? Value::integer(res.toLL()) : Value::bigint(res);
-        }
-        return Value::integer(~strictInt(v));
-    }
+    if (opEq(u->op, "+^")) return rtPrefixBitNot(v);
     if (opEq(u->op, "?^")) return Value::boolean(!boolify(v));
     if (opEq(u->op, "~^")) {
         // On a Blob/Buf this is the byte-wise complement, and Rakudo implements
@@ -25991,37 +26062,7 @@ Value Interpreter::evalUnary(Unary* u) {
             return f;
         }
     }
-    if (opEq(u->op, "^")) {
-        // `^5.5` is `0 ..^ 5.5`, NOT `0 ..^ 5` — the upper bound keeps its own
-        // type, so the range holds six integers and reports 5.5 as its max.
-        if (v.t == VT::Num || v.t == VT::Rat) {
-            double top = v.toNum();
-            // The range STAYS exclusive-at-the-top — `(^5.5).excludes-max` is True
-            // — so the integer field is the first integer past the bound: `^5.5`
-            // walks 0..5 as `0..^6` does, and `.max`/`.raku` read the real 5.5
-            // off the carried endpoints.
-            //
-            // A NON-FINITE bound has no integer to floor, and casting one to
-            // long long is undefined — the architectures disagree about it.
-            // arm64 saturates (+Inf gives the int64 maximum, which IS the
-            // "endless" sentinel the range walk reads); x86_64 gives the int64
-            // MINIMUM. So `^Inf` built 0..^int64-min there — an enormous range
-            // running the wrong way — and `(^Inf).head(3)` never came back,
-            // while arm64 answered (0 1 2). NaN takes the same top sentinel
-            // `1..NaN` does: no comparison against NaN is ever true, so nothing
-            // stops the walk, and Rakudo's `(^NaN).head(3)` is (0 1 2) too.
-            long long ti;
-            if (std::isnan(top) || top >= 9223372036854775807.0) ti = 9223372036854775807LL;
-            else if (top <= -9223372036854775808.0) ti = -9223372036854775807LL - 1;
-            else { bool whole = top == std::floor(top); ti = (long long)std::floor(top) + (whole ? 0 : 1); }
-            Value r = Value::range(0, ti, false, true);
-            attachRangeEnds(r, Value::integer(0), v);
-            return r;
-        }
-        Value r = Value::range(0, strictInt(v), false, true);
-        if (v.t == VT::Int && v.big()) r.bigM() = v.big(); // keep the big bound (pick/roll sample it)
-        return r;
-    }
+    if (opEq(u->op, "^")) return rtPrefixUpto(v);
     if (opEq(u->op, "|")) { // slip: spread handled in evalArgs; anywhere else the
         // value IS a Slip — mark it so list consumers (map, list literals) splice it.
         return slipOf(v);
@@ -30010,96 +30051,8 @@ struct RatLitParts {
                     return code;
                 }
             }
-            // a Date..Date range enumerates days eagerly (numeric Range can't
-            // hold Date endpoints; a century is only ~36k elements)
-            if (from.t == VT::Hash && from.hashKind == "Date" && from.hash() &&
-                to.t == VT::Hash && to.hashKind == "Date" && to.hash()) {
-                auto fld = [](const Value& v, const char* k) -> long long {
-                    auto it = v.hash()->find(k); return it != v.hash()->end() ? it->second.toInt() : 1;
-                };
-                long long lo = civilToDays(fld(from, "year"), fld(from, "month"), fld(from, "day")) + (r->exFrom ? 1 : 0);
-                long long hi = civilToDays(fld(to, "year"), fld(to, "month"), fld(to, "day")) - (r->exTo ? 1 : 0);
-                Value arr = Value::array(); arr.isList = true;
-                // the endpoints' formatter rides along: `Date.new(…, :formatter($f))
-                // .. Date.new(…, :formatter($f))` joins as formatted dates
-                for (long long d = lo; d <= hi; d++) arr.arr()->push_back(makeDate(d, &from));
-                return arr;
-            }
-            if (from.t == VT::Str && to.t == VT::Str) {
-                // single-CHARACTER endpoints walk CODEPOINTS: chr(0)..chr(0x7F)
-                // is the 128 ASCII chars ('<'..'F' includes the symbols between)
-                if (u8CpLen(from.s) == 1 && u8CpLen(to.s) == 1) {
-                    // a real Str Range VALUE: codepoints live in rFrom/rTo
-                    // (so elems/iteration arithmetic works), the endpoint
-                    // text DERIVES from those codepoints, ofType tags it
-                    // (raku/gist, smartmatch, and flatten() render chars from it)
-                    Value rr = Value::range(u8FirstCp(from.s), u8FirstCp(to.s),
-                                            r->exFrom, r->exTo);
-                    rr.ofTypeM() = "Str"; // endpoint text derives from the codepoints
-                    return rr;
-                }
-                return strRangeVal(from, to, r->exFrom, r->exTo);
-            }
-            // `1..*` / `*..5`: a Whatever endpoint is unbounded (the LLONG extreme
-            // marks an infinite range, same as 1..Inf)
-            checkRangeEndpoint(from); checkRangeEndpoint(to);
-            // `'A'..∞` is `'A'..*`: a string range with no top
-            if (from.t == VT::Str && to.t == VT::Num && std::isinf(to.n) && to.n > 0) to.t = VT::Whatever;
-            // (the `^` markers survive: `1..^*` still excludes its endpoint, which
-            // is what .excludes-max and .raku report; a STRING endpoint opposite
-            // the Whatever stays a string — see the twin in rangeFromValues)
-            if (from.t == VT::Whatever && to.t == VT::Whatever)
-                return Value::range(-9223372036854775807LL - 1, 9223372036854775807LL, r->exFrom, r->exTo);
-            if (to.t == VT::Whatever) {
-                Value rr = Value::range(from.t == VT::Str ? (long long)u8FirstCp(from.s) : from.toInt(),
-                                        9223372036854775807LL, r->exFrom, r->exTo);
-                if (from.t == VT::Str) attachRangeEnds(rr, from, Value::number(INFINITY));
-                else if (endlessFracStart(from)) {           // `1.5..*` steps 1.5, 2.5, …
-                    rr.rNumM() = true; rr.n = from.toNum(); rr.imM() = INFINITY;
-                    attachRangeEnds(rr, from, Value::number(INFINITY));
-                }
-                // (a BigInt start is not in the integer fields: `2**64..*` kept int64's max)
-                else if (from.t == VT::Int && from.big()) attachRangeEnds(rr, from, Value::number(INFINITY));
-                return rr;
-            }
-            if (from.t == VT::Whatever) {
-                Value rr = Value::range(-9223372036854775807LL - 1,
-                                        to.t == VT::Str ? (long long)u8FirstCp(to.s) : to.toInt(),
-                                        r->exFrom, r->exTo);
-                if (to.t == VT::Str) attachRangeEnds(rr, Value::number(-INFINITY), to);
-                return rr;
-            }
-            // Fractional numeric range: at least one endpoint is a non-integer
-            // Num/Rat. Keep the real endpoints (elements step by 1 from `from`).
-            {
-                // (see the twin in rtRangeVal: a MIXED string/numeric range keeps
-                // the string endpoint it was written with)
-                if ((from.t == VT::Str) != (to.t == VT::Str) &&
-                    (from.t == VT::Str || from.isNumeric()) && (to.t == VT::Str || to.isNumeric())) {
-                    if (from.t == VT::Str) return strLeftRange(from, to, r->exFrom, r->exTo);
-                    Value num = numifyStrOrThrow(to.s.str());   // `1.."b"` is X::Str::Numeric
-                    Value rr = Value::range(from.toInt(), num.toInt(), r->exFrom, r->exTo);
-                    setRangeEnds(rr, from, num);
-                    return rr;
-                }
-                // (…and a Num/Rat endpoint makes the elements Nums/Rats, whole or not)
-                bool fFrac = (from.t == VT::Num || from.t == VT::Rat);
-                bool tFrac = (to.t == VT::Num || to.t == VT::Rat);
-                if ((fFrac || tFrac) && from.isNumeric() && to.isNumeric() &&
-                    std::isfinite(from.toNum()) && std::isfinite(to.toNum())) {
-                    Value rr = Value::range((long long)std::floor(from.toNum()),
-                                            (long long)std::floor(to.toNum()), r->exFrom, r->exTo);
-                    rr.rNumM() = true; rr.n = from.toNum(); rr.imM() = to.toNum();
-                    setRangeEnds(rr, from, to); // a Rat endpoint stays a Rat
-                    return rr;
-                }
-            }
-            {
-                Value rr = Value::range(from.toInt(), rangeTopInt(to), r->exFrom, r->exTo);
-                if (to.t == VT::Int && to.big()) rr.bigM() = to.big(); // keep the big bound (pick/roll sample it)
-                setRangeEnds(rr, from, to);
-                return rr;
-            }
+            // (one construction for both engines: --exe calls the same function)
+            return rtRangeVal(from, to, r->exFrom, r->exTo);
         }
         case NK::Pair: {
             auto* p = static_cast<PairExpr*>(e);
@@ -30855,10 +30808,122 @@ const Value& builtinTraitIsGroup() {
     return proto;
 }
 
+// A multi sub no candidate took: X::Multi::NoMatch with what was called and
+// with what, its message listing the candidates' signatures as Rakudo does.
+// Compiled code's multi dispatcher throws through here too (rtMultiNoMatch).
+void Interpreter::throwMultiNoMatch(const Value& codeVal, const ValueList& as) {
+    const Callable& c = *codeVal.code();
+    // …the candidates' signatures, as Rakudo lists them
+    std::string sigs;
+    for (auto& cand : c.cold().candidates) {
+        if (!cand.code() || cand.code()->ci().isProto || cand.code()->ci().isProtoBody) continue;
+        try {
+            Value sg = methodCall(cand, "signature", {});
+            sigs += "\n    " + methodCall(sg, "gist", {}).toStr();
+        } catch (...) {}
+    }
+    std::string defProf = noMatchProfile(Value(), as, /*withInvocant=*/false);
+    // …and the exception carries what was called and with what
+    Value cap = Value::array(); cap.hashKind = "Capture"; cap.itemized = true;
+    *cap.arr() = as;
+    throwTypedV("X::Multi::NoMatch", {{"dispatcher", codeVal}, {"capture", cap}},
+                "Cannot resolve caller " + c.ci().name + "(" + defProf +
+                "); none of these signatures matches:" + sigs);
+}
+
+// A multi method no candidate took: the exception, as a sub's (throwMultiNoMatch)
+// but with the invocant leading the capture. Compiled code's too (rtMultiNoMatch).
+void Interpreter::throwMethodNoMatch(const Value& codeVal, const Value& self, const ValueList& as) {
+    const Callable& c = *codeVal.code();
+    // Rakudo's wording: the capture as types, invocant first, named
+    // arguments as `:name(Type)`
+    std::string prof = noMatchProfile(self, as, /*withInvocant=*/true);
+    Value cap = Value::array(); cap.hashKind = "Capture"; cap.itemized = true;
+    cap.arr()->push_back(self);
+    cap.arr()->insert(cap.arr()->end(), as.begin(), as.end());
+    // …and the candidates' signatures, as Rakudo lists them (`(A $:: Int $a, *%_)`), as a sub's are;
+    // a role's, which names no invocant, takes the class that composed the role
+    std::string sigs;
+    for (auto& cand : c.cold().candidates)
+        if (cand.code() && !cand.code()->ci().isProto && !cand.code()->ci().isProtoBody)
+            try {
+                std::string g = methodCall(methodCall(cand, "signature", {}), "gist", {}).toStr();
+                if (g.find("$::") == std::string::npos && g.size() > 1 && self.t == VT::Object && self.obj())
+                    for (ClassInfo* k = self.obj()->cls.get(); k; k = k->parent.get())
+                        if (k->doneRoles.count(cand.code()->ci().pkg)) { g.insert(1, k->name + (g.size() > 2 ? " $:: " : " $::")); break; }
+                sigs += "\n    " + g;
+            } catch (...) {}
+    throwTypedV("X::Multi::NoMatch", {{"dispatcher", codeVal}, {"capture", cap}},
+                "Cannot resolve caller " + c.ci().name + "(" + prof +
+                "); none of these signatures matches" + (sigs.empty() ? "" : ":" + sigs));
+}
+
+// Compiled code's multi sub that no candidate took: its candidates (each a
+// Callable carrying its signature) become a dispatch group of `name`, so the
+// exception and its message are the interpreter's.
+// A METHOD's (`cls` names its class) has the invocant first in `as`.
+void Interpreter::rtMultiNoMatch(const std::string& name, ValueList cands, const ValueList& as,
+                                 const std::string& cls) {
+    Value p; p.t = VT::Code; p.setCode(makePayload<Callable>());
+    p.code()->ciM().name = name;
+    p.code()->ciM().isMultiDispatcher = true;
+    p.code()->ciM().isMethod = !cls.empty();
+    for (Value& c : cands) {
+        if (!c.code()) continue;
+        c.setCode(makePayload<Callable>(*c.code()));
+        c.code()->ciM().isMultiCandidate = true;
+        if (!cls.empty()) { c.code()->ciM().isMethod = true; c.code()->ciM().pkg = cls; }
+        c.code()->dispatcherC = p.codeS();
+        p.code()->coldM().candidates.push_back(std::move(c));
+    }
+    if (cls.empty()) throwMultiNoMatch(p, as);
+    throwMethodNoMatch(p, as.empty() ? Value::any() : as[0], ValueList(as.begin() + (as.empty() ? 0 : 1), as.end()));
+}
+
 // eval's VarExpr arm, whole, in a frame of its own: the common read stays in
 // eval (see there); every other form of variable — pseudo-packages, special
 // names, attributes, placeholders, a miss — is here, where its locals no
 // longer size the frame every expression is evaluated in.
+// `&infix:<op>` for a built-in operator: a Callable that applies it, n-ary
+// as the reduce metaop folds. evalVarExpr and --exe's `&[op]` both make it
+// here, so `.reduce(&[+])` and sort see the same named operator.
+Value Interpreter::infixCallable(const std::string& bare) {
+    if (!operatorNameDeclared(*this, bare)) undeclaredRoutine(bare);   // `&infix:<nosuch>`
+    std::string op = bare.substr(7, bare.size() - 8);
+    if (op.size() > 2 && op.front() == '<' && op.back() == '>' && !angleShapedOp(op))
+        op = op.substr(1, op.size() - 2); // &infix:<<∈>> — double-angle form
+    op = normHyperMarkers(op, true); // &infix:<»+«> — hyper spelling
+    Value code; code.t = VT::Code; code.setCode(makePayload<Callable>()); code.code()->ciM().name = bare;
+    code.code()->ciM().whateverArity = 2; // an infix takes two operands (so sort treats it as a comparator)
+    code.code()->ciM().builtin = [op](Interpreter& I, ValueList& a) -> Value {
+        if (isSetOpStr(op) && a.size() < 2 && !isSetPredicateStr(op)) {
+            if (a.empty()) return setWrap({}, setOpMinTier(op));
+            return setCoerceOne(op, a[0]); // one arg coerces
+        }
+        if (a.size() >= 2) { // n-ary: left-fold like the reduce metaop
+            if (opEq(op, "(^)") || opEq(op, "\xE2\x8A\x96")) return setSymDiffN(a); // ⊖ is variadic
+            if (isSetOpStr(op) && !isSetPredicateStr(op))
+                if (auto j = setOpFoldN(op, a)) return *j; // one joint tier
+            Value acc = a[0];
+            for (size_t k = 1; k < a.size(); k++) acc = I.applyBinOp(op, acc, a[k]);
+            return acc;
+        }
+        if (a.size() == 1) { // single arg combines with the op's identity
+            const std::string bop = uniOpFold(op);
+            if (opEq(bop, "+") || opEq(bop, "-")) return I.applyBinOp(op, Value::integer(0), a[0]);
+            if (opEq(bop, "*") || opEq(bop, "/")) return I.applyBinOp(op, Value::integer(1), a[0]);
+            if (opEq(op, "~")) return I.applyBinOp(op, Value::str(""), a[0]);
+            return a[0];
+        }
+        // No operands at all: the operator's identity, which is the
+        // same table the reduce metaop uses — `&infix:<==>()` is
+        // True, as `[==] ()` is. Answering Any made every
+        // zero-argument comparison falsy.
+        { ValueList none; return I.applyReducePublic(op, none); }
+    };
+    return code;
+}
+
 Value Interpreter::evalVarExpr(Expr* e) {
     auto* ve = static_cast<VarExpr*>(e);
     const VarDeclInfo& vd = ve->d();   // (its declaration fields, read many times below)
@@ -31250,7 +31315,7 @@ Value Interpreter::evalVarExpr(Expr* e) {
     if (ve->name == "$*COLLATION")
         return global_->define(ve->name, makeCollation());
     if (ve->name == "$*USAGE") { std::string u = mainUsage(); if (!u.empty() && u.back() == '\n') u.pop_back(); return Value::str(u); }
-    if (ve->name == "$*EXECUTABLE" || ve->name == "$*EXECUTABLE-NAME") { Value p = Value::str(execPath_); p.hashKind = "IO"; return p; }
+    if (ve->name == "$*EXECUTABLE" || ve->name == "$*EXECUTABLE-NAME") { Value p = Value::str(g_exeInterpreterOverride.empty() ? execPath_ : g_exeInterpreterOverride); p.hashKind = "IO"; return p; }
     if (ve->name == "$*OUT" || ve->name == "$*ERR" || ve->name == "$*IN") {
         Value h = Value::makeHash(); h.hashKind = "FileHandle";
         (*h.hash())["std"] = Value::str(ve->name == "$*ERR" ? "err" : ve->name == "$*IN" ? "in" : "out");
@@ -31591,42 +31656,7 @@ Value Interpreter::evalVarExpr(Expr* e) {
             return ctl[bare] = p;
         }
         if (bare == "trait_mod:<is>") return builtinTraitIsGroup();
-        if (bare.rfind("infix:<", 0) == 0 && bare.back() == '>') {
-            if (!operatorNameDeclared(*this, bare)) undeclaredRoutine(bare);   // `&infix:<nosuch>`
-            std::string op = bare.substr(7, bare.size() - 8);
-            if (op.size() > 2 && op.front() == '<' && op.back() == '>' && !angleShapedOp(op))
-                op = op.substr(1, op.size() - 2); // &infix:<<∈>> — double-angle form
-            op = normHyperMarkers(op, true); // &infix:<»+«> — hyper spelling
-            Value code; code.t = VT::Code; code.setCode(makePayload<Callable>()); code.code()->ciM().name = bare;
-            code.code()->ciM().whateverArity = 2; // an infix takes two operands (so sort treats it as a comparator)
-            code.code()->ciM().builtin = [op](Interpreter& I, ValueList& a) -> Value {
-                if (isSetOpStr(op) && a.size() < 2 && !isSetPredicateStr(op)) {
-                    if (a.empty()) return setWrap({}, setOpMinTier(op));
-                    return setCoerceOne(op, a[0]); // one arg coerces
-                }
-                if (a.size() >= 2) { // n-ary: left-fold like the reduce metaop
-                    if (opEq(op, "(^)") || opEq(op, "\xE2\x8A\x96")) return setSymDiffN(a); // ⊖ is variadic
-                    if (isSetOpStr(op) && !isSetPredicateStr(op))
-                        if (auto j = setOpFoldN(op, a)) return *j; // one joint tier
-                    Value acc = a[0];
-                    for (size_t k = 1; k < a.size(); k++) acc = I.applyBinOp(op, acc, a[k]);
-                    return acc;
-                }
-                if (a.size() == 1) { // single arg combines with the op's identity
-                    const std::string bop = uniOpFold(op);
-                    if (opEq(bop, "+") || opEq(bop, "-")) return I.applyBinOp(op, Value::integer(0), a[0]);
-                    if (opEq(bop, "*") || opEq(bop, "/")) return I.applyBinOp(op, Value::integer(1), a[0]);
-                    if (opEq(op, "~")) return I.applyBinOp(op, Value::str(""), a[0]);
-                    return a[0];
-                }
-                // No operands at all: the operator's identity, which is the
-                // same table the reduce metaop uses — `&infix:<==>()` is
-                // True, as `[==] ()` is. Answering Any made every
-                // zero-argument comparison falsy.
-                { ValueList none; return I.applyReducePublic(op, none); }
-            };
-            return code;
-        }
+        if (bare.rfind("infix:<", 0) == 0 && bare.back() == '>') return infixCallable(bare);
         // &prefix:<-«> / &postfix:<»i> — hyper op spellings as Callables
         if (bare.rfind("prefix:<", 0) == 0 && bare.back() == '>') {
             std::string op = normHyperMarkers(bare.substr(8, bare.size() - 9));
@@ -32585,29 +32615,7 @@ Value Interpreter::evalMethodCallExpr(Expr* e, Value* handedInv) {
         Value* lv = nullptr;
         try { lv = lvalue(mc->inv.get()); } catch (RakuError&) {}
         if (lv) {
-            ValueList sargs = evalArgs(mc->args);
-            // the adverbs are NAMED, wherever they are written: `:g` or a
-            // slipped `|(nth => 1..3)` may come before the pattern
-            ValueList posArgs, adv;
-            for (auto& a : sargs) ((a.t == VT::Pair && a.namedArg) ? adv : posArgs).push_back(a);
-            std::string pat; bool literal = false;
-            // interpRegexPattern FIRST: a regex argument arrives as its raw
-            // SOURCE, so `$q` and `@alpha` atoms in it are still text. The
-            // `.subst` path has always run both passes; this one ran only
-            // the array pass, so `$t.subst-mutate(/( $q | $e )/, …)`
-            // matched the literal characters "$q" and changed nothing —
-            // Text::CSV escapes its quotes exactly that way.
-            // (and a regex value reads its own variables where it was written first)
-            if (!posArgs.empty() && posArgs[0].t == VT::Regex)
-                pat = rxInterpArrays(interpRegexPattern(closedRegexSource(posArgs[0])));
-            else if (!posArgs.empty()) { pat = posArgs[0].toStr(); literal = true; }
-            Value replArg = posArgs.size() > 1 ? posArgs[1] : Value::str("");
-            long nsub = 0; Value mres;
-            std::string out = substSelect(lv->toStr(), pat, &replArg, adv, nsub, literal, nullptr, &mres);
-            // nothing matched, nothing changed: the container keeps what
-            // it held (an Int stays an Int, as in Rakudo)
-            if (nsub) raceW(lv) = Value::str(out);
-            return mres;
+            return substMutate(lv, evalArgs(mc->args));
         }
     }
     // `.DEFINITE` as a literal identifier is a metamodel macro: it always

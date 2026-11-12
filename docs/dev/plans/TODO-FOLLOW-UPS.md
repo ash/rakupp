@@ -1,6 +1,6 @@
 # Follow-ups
 
-*Collected 2026-10-20; added to 2026-11-10.*
+*Collected 2026-10-20; added to 2026-11-12.*
 
 Findings that sessions on 2026-10-19 and 2026-10-20 proposed as follow-up
 work and nobody started: gaps found in passing while doing something else.
@@ -391,6 +391,20 @@ moves to [TODO.md](TODO.md).
   Each would carry its Expr, and the gist and `.raku` deparse it through the
   RakuAST view (RakuAstView.cpp) as `.AST.DEPARSE` does.
 
+- [ ] **A Junction passed to a slurpy is flattened** (found 2026-11-11 in the
+  --exe parity round):
+
+  ```raku
+  sub s(*@a) { @a.raku }; say s(1|2, 3);   # rakupp: [1, 2, 3]   Rakudo: [any(1, 2), 3]
+  ```
+
+- [ ] **`ck %<foe>.keys.List, …` is refused at compile time** (found
+  2026-11-11 writing t/regression/exe-value-semantics.raku): rakupp says
+  "Calling ck() will never work with declared signature ($got, $want,
+  $what)", where Rakudo reads `%<foe>` as the term and calls `ck` with three
+  arguments. `ck (%<foe>).keys.List, …` works. The compile-time call check
+  (CallCheck.cpp) or the listop parse miscounts a sigiled match variable.
+
 ## Control flow and containers
 
 - [ ] **`.list` on a native array is the array itself, so it is not `eqv` a
@@ -743,6 +757,15 @@ moves to [TODO.md](TODO.md).
   return hands back a container that is not that cell. Done when the
   returned container and the attribute share it.
 
+- [ ] **A block's last statement `$c` hands back the value, not the
+  container** (found 2026-11-11 writing exe-nested-sub-instances.raku):
+
+  ```raku
+  sub mk { my $c = 0; my &f = { $c++; $c }; &f }
+  my &g = mk(); my @r = g(), g();
+  say @r;     # rakupp: [1 2]   Rakudo: [2 2] — each element is the one $c
+  ```
+
 ## Processes and diagnostics
 
 - [ ] **Issue #211's other two reports** (open 2026-10-28; 0e44c5a6 fixed
@@ -989,14 +1012,71 @@ moves to [TODO.md](TODO.md).
   split Interpreter.cpp, and split.raku can cut along another one. Done
   when it is under its 34d064ca ceiling again.
 
-- [ ] **`--exe`: a multi dispatch no candidate takes says so in its own
-  words** (found 2026-11-08 checking the X::Multi::NoMatch profile):
+- [ ] **`--exe`: an uncaught exception prints its message alone** (found
+  2026-11-08 checking the X::Multi::NoMatch profile; the message itself is
+  the interpreter's since 2c1195fd):
 
   ```raku
   class A { multi method m(Int) { } }; A.new.m("x");
-  # interpreted and Rakudo: Cannot resolve caller m(A:D: Str:D); none of these signatures matches…
-  # --exe: No matching multi-method candidate for m
+  # interpreted: the message, then "  (X::Multi::NoMatch)" and the backtrace
+  # --exe:       the message only
   ```
+
+  Native code keeps no interpreter frames, so the generated `main`'s catch
+  prints `e.message`. t/exe/parity.raku compares stdout and the exit status,
+  not stderr, so it does not see this.
+
+- [ ] **`--exe`: a LEAVE that dies while an error is unwinding loses its own
+  error** (found 2026-11-11 in the --exe parity round, 53e92a9a):
+
+  ```raku
+  sub f { LEAVE die "x"; die "y" }
+  f(); CATCH { default { say .message } }
+  # interpreted and Rakudo: the caller's CATCH sees "y", then "x"; --exe: "y" alone
+  ```
+
+  A native LEAVE is a C++ scope guard, and C++ unwinds before any handler
+  runs, so a second exception in it is dropped (`leaveGuard`). Done when the
+  guard records the LEAVE's error and rethrows it after the handler, or when
+  a LEAVE that can die keeps its routine interpreted.
+
+- [ ] **`--exe`: a positional subscript on a variable holding a type object
+  reads Nil** (found 2026-11-11 in the --exe parity round, 090426b0):
+
+  ```raku
+  my $t = Int; say $t[0].raku;   # interpreted: Any   --exe: Nil
+  ```
+
+  An undefined `$u[0]` reads (Any) natively since 090426b0; a TYPE object
+  base does not. The interpreter tells a variable holding one (an empty
+  container: (Any)) from a bare type (a one-item list) by the subscript's
+  syntactic base (InterpreterCore.cpp, the "scalar is a ONE-item list"
+  block); rtIndexGet sees only the value. (Rakudo refuses a bare `Int[0]` at
+  compile time: "Int cannot be parameterized".) Done when Codegen passes the
+  base's kind to the read.
+
+- [ ] **`--exe`: a routine ending in a lazy `.map` / `.grep` bundles the
+  program** (refusal added 2026-11-11, f1897186): the interpreter's tail
+  map is lazy (it runs as its caller pulls), native code ran it eagerly, so
+  the parser's `lazyTail` mark now refuses. That shape is common —
+  `sub evens(@a) { @a.grep(* %% 2) }` — and costs the whole program its
+  native code. Done when the native tail returns a lazy Seq over a native
+  closure (rtGather has the machinery), and the refusal goes.
+
+- [ ] **`--exe`: in a bundled program, `fail` in a routine called from a
+  native `try` block still dies** (found 2026-11-11, d1203ef3): the `fail`
+  builtin checks the thread's `compiledTry` flag, which a native try block
+  sets for everything it calls, so a module-mode routine's `fail` throws
+  even where its caller only tests the Failure with `//`. Program-mode code
+  has the exact rule (`rtFatalCall`, `fatalExempt`); module mode does not.
+
+- [ ] **`--exe`: a block a module routine hands out keeps the old lookup
+  when its name is not in scope at entry** (75425e0a): rtAotOuterOpt binds
+  a bareword or a sub at routine entry from its lexical scope; a name that
+  is not there (a builtin, a type, something EVAL defines later) falls back
+  to the by-name lookup in the frame the closure RUNS in, where another
+  module's same-named routine could answer. No case found; noted because the
+  fallback is the shape #240 had.
 
 ## Performance
 

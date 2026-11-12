@@ -1307,6 +1307,7 @@ static void assembleModuleAot(const std::vector<BundledModule>& mods, const Modu
          "#include \"AotModules.h\"\n"
          "namespace rakupp {\n"
          "Value* rtAotOuter(Env*, const char*);\n"
+         "Value* rtAotOuterOpt(Env*, const char*);\n"
          "Value rtAotParam(Env*, const char*);\n"
          "Value rtAotParamAt(Env*, const std::string&, std::atomic<uint64_t>&);\n"
          "void rtAotParamBack(Env*, const std::string&, const Value&);\n"
@@ -1386,10 +1387,13 @@ static std::set<std::string> aotRoutinesAt(const std::string& genText, const std
 // Only the last attempt's diagnostics are shown.
 static int compileDroppingAot(const std::string& cmd, const std::string& genPath, const std::string& outPath,
                               ModuleAot& aot, const std::vector<BundledModule>& mods,
-                              const std::function<std::string()>& render, const char* mode) {
-    if (aot.live() == 0) { int rc = runCommand(cmd); writeAotReport(aot, mods, rc); return rc; }
+                              const std::function<std::string()>& render, const char* mode,
+                              bool fallsBack = false) {
     const std::string diagPath = outPath + ".rakupp.diag";
     const bool verbose = aotEnvOn("RAKUPP_AOT_VERBOSE");
+    // (`fallsBack`: a failure is followed by another attempt, which reports its
+    // own; the compiler's errors for this one are noise then, unless asked for)
+    if (aot.live() == 0 && !fallsBack) { int rc = runCommand(cmd); writeAotReport(aot, mods, rc); return rc; }
     std::string text = render();
     int rc;
     for (int attempt = 0;; attempt++) {
@@ -1397,7 +1401,7 @@ static int compileDroppingAot(const std::string& cmd, const std::string& genPath
         rc = runCommand(cmd + " 2> " + shq(diagPath));
         std::string diag;
         { std::ifstream in(diagPath, std::ios::binary); std::ostringstream ss; ss << in.rdbuf(); diag = ss.str(); }
-        if (rc == 0 || aot.live() == 0) { if (rc != 0) std::cerr << diag; break; }
+        if (rc == 0 || aot.live() == 0) { if (rc != 0 && (!fallsBack || verbose)) std::cerr << diag; break; }
         std::set<std::string> bad = attempt < 2 ? aotRoutinesAt(text, genPath, diag) : std::set<std::string>{};
         if (verbose) std::cerr << diag;
         for (auto& r : aot.routines)
@@ -1541,6 +1545,14 @@ static int compileToExe(const std::string& src, const std::string& srcName, std:
                         BundledModule mm;
                         mm.name = kMainAotKey;
                         mm.blob = serializeAst(mp);
+                        // A program that reads call frames (`callframe`, an
+                        // exception's or Failure's `.backtrace` / `.mess`) reads the
+                        // interpreter's, which a native routine neither pushes nor
+                        // gives a line — and one that wraps a routine needs every call
+                        // to see the wrapper, where a native call goes straight to the
+                        // body: its routines all stay interpreted
+                        for (const char* w : {"callframe", ".backtrace", ".mess", ".wrap"})
+                            if (src.find(w) != std::string::npos) mm.interpretOnly = true;
                         fp = aotFingerprint(mm.blob);
                         aotMods.push_back(std::move(mm));
                     }
@@ -2021,6 +2033,14 @@ static int compileNative(const std::string& src, const std::string& srcName, std
                                        &skips, &natives, nullptr, &engineAnswered);
         if (!reportModuleEmbedding("--exe", mods, skips, natives)) return 4;
         aotMods = mods;
+        // A module that supplies a metaclass (EXPORTHOW) builds the program's
+        // classes itself, and a slang's EXPORT runs under the parse's $*LANG:
+        // neither happens to a natively registered class or a run-time `use`.
+        for (auto& m : mods)
+            for (const char* w : {"EXPORTHOW", "$*LANG"})
+                if (m.src.find(w) != std::string::npos)
+                    throw CodegenError{"a module (" + m.name + ") that " +
+                                       (w[0] == 'E' ? "supplies a metaclass (EXPORTHOW)" : "is a slang ($*LANG)")};
         cpp = transpileToCpp(prog, optimize, absPath(srcName), moduleExports, src);
         if (!mods.empty()) {
             std::ostringstream decls, calls;
@@ -2075,15 +2095,21 @@ static int compileNative(const std::string& src, const std::string& srcName, std
         std::string ad, ac;
         assembleModuleAot(aotMods, aot, ad, ac);
         return injectModuleTable(cppProgram, modDecls + ad, modCalls + ac) + slimManifestTU("native");
-    }, "--exe");
+    }, "--exe", /*fallsBack=*/true);
     if (!std::getenv("RAKUPP_KEEPGEN")) removeFile(genPath);
     if (!expList.empty()) removeFile(expList);
     if (rc != 0) {
-        std::cerr << "Compilation failed (compiler exit " << rc << ")\n";
+        // The backend took the program and the C++ it wrote does not compile —
+        // its bug, not the program's: bundle, as for a construct it refuses,
+        // rather than leave the user without a binary (a bundle that fails to
+        // compile as well is a toolchain problem, and says so itself).
+        std::cerr << "note: the C++ for " << srcName << " did not compile (compiler exit " << rc
+                  << "); bundling the program with the interpreter instead, its routines compiled natively "
+                     "where they can be.\n";
 #ifdef _WIN32
         winCompilerHint(lib, cxx, rc);
 #endif
-        return 5;
+        return compileToExe(src, srcName, outPath, selfExe, libPaths, /*moduleBodies=*/true, optimize);
     }
     if (!g_quiet) std::cerr << "Compiled (native) " << srcName << " -> " << outPath << "\n";
     return 0;

@@ -568,7 +568,15 @@ static void setEnvVar(const char* name, const std::string& value) {
 #endif
 }
 
+// A TEST HARNESS's override of a compiled binary's $*EXECUTABLE: with
+// RAKUPP_EXE_INTERPRETER naming an interpreter, a program that spawns
+// `$*EXECUTABLE` reaches it rather than re-running itself, so a harness can
+// run the same program both ways and compare the two (t/exe/parity.raku).
+// Read here, where only a compiled binary passes; rakupp itself ignores it.
+std::string g_exeInterpreterOverride;
+
 int rakuppRefuseInterpreterEval(int argc, char** argv) {
+    if (const char* o = getenv("RAKUPP_EXE_INTERPRETER"); o && *o) g_exeInterpreterOverride = o;
     std::string me = selfPath(argc, argv);
     // The messages below deliberately do NOT name argv[0]. They are read by
     // tools/slim-diff.raku, which compares two builds of the same program

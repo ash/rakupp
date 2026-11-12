@@ -663,57 +663,6 @@ Value Interpreter::evalNqpOp(NqpOp* n) {
     // shared leaf op knows only the core REPRs and answered a bare buffer, so
     // `my %h is Hash::int` got an Array back from `.new` and fell through to
     // a plain Hash — every method the class defines silently unused.
-    // The Unicode property reads go through the `uniprop` method, which knows
-    // every property name and its value forms; the property arrives as MoarVM's
-    // number (see uniPropCodeOf) and is read back by name. `_str` is the
-    // value's string form (General_Category → "Lu", East_Asian_Width → "W";
-    // "" for a binary property, as MoarVM has it), `_bool` 0/1, and `_int` a
-    // value NUMBER — the one unipvalcode answers, so matchuniprop is exactly
-    // `getuniprop_int(cp, prop) == value`, and hasuniprop that at a position.
-    if ((n->op == NqpOpc::GetUniPropStr || n->op == NqpOpc::GetUniPropBool ||
-         n->op == NqpOpc::GetUniPropInt || n->op == NqpOpc::MatchUniProp ||
-         n->op == NqpOpc::HasUniProp) && v.size() >= 2) {
-        long long cp;
-        size_t pi = 1;
-        if (n->op == NqpOpc::HasUniProp) {
-            // codepoint-indexed, as nqp::ordat is; past either end matches nothing
-            if (v.size() < 4) return Value::integer(0);
-            std::vector<uint32_t> cps = utf8cp(v[0].toStr());
-            long long at = v[1].toInt();
-            if (at < 0 || at >= (long long)cps.size()) return Value::integer(0);
-            cp = cps[(size_t)at];
-            pi = 2;
-        } else {
-            cp = v[0].toInt();
-        }
-        const std::string prop = uniPropNameOf(v[pi]);
-        Value r;
-        if (prop.empty()) r = Value::boolean(false);
-        else if (uniIsGcGroup(prop)) {
-            const std::string gc = uniGeneralCategory((uint32_t)cp);
-            bool in = prop == "Any" ? true
-                    : prop == "Assigned" ? gc != "Cn"
-                    : prop == "LC" ? (gc == "Lu" || gc == "Ll" || gc == "Lt")
-                    : gc[0] == prop[0];
-            r = Value::boolean(in);
-        } else {
-            ValueList pa; pa.push_back(Value::str(prop));
-            r = methodCall(Value::integer(cp), "uniprop", pa);
-        }
-        if (n->op == NqpOpc::GetUniPropStr) return Value::str(r.t == VT::Bool ? std::string() : r.toStr());
-        if (n->op == NqpOpc::GetUniPropBool) return Value::integer(r.truthy() ? 1 : 0);
-        long long code;
-        if (r.t == VT::Bool) code = r.truthy() ? 1 : 0;
-        else if (r.t == VT::Str && (prop == "General_Category" || prop == "East_Asian_Width")) {
-            const auto& tbl = prop == "General_Category" ? uniGcValueCodes() : uniEawValueCodes();
-            auto g = tbl.find(r.toStr());
-            code = g != tbl.end() ? g->second : 0;
-        }
-        else if (r.t == VT::Str) code = uniInternedValueCode(r.toStr());
-        else code = r.toInt();
-        if (n->op == NqpOpc::GetUniPropInt) return Value::integer(code);
-        return Value::integer(code == v[pi + 1].toInt() ? 1 : 0);
-    }
     if (n->op == NqpOpc::Create && v.size() == 1 && v[0].t == VT::Type) {
         std::string tn = v[0].s.copyText();
         auto it = classes_.find(tn);
@@ -800,8 +749,66 @@ Value Interpreter::nqpThrow(const Value& e) {
 // forms (Stmts/While/Until/IfNull) are emitted as native C++ by the codegen and
 // nqp::if/unless are Ternaries, so only these leaf ops need a runtime entry.
 extern Interpreter* g_cbInterp;   // nqp::throw reaches CONTROL through it (InterpreterParts.h)
+// The Unicode property reads go through the `uniprop` method, which knows
+// every property name and its value forms; the property arrives as MoarVM's
+// number (see uniPropCodeOf) and is read back by name. `_str` is the
+// value's string form (General_Category → "Lu", East_Asian_Width → "W";
+// "" for a binary property, as MoarVM has it), `_bool` 0/1, and `_int` a
+// value NUMBER — the one unipvalcode answers, so matchuniprop is exactly
+// `getuniprop_int(cp, prop) == value`, and hasuniprop that at a position.
+// (rtNqpOp's, so the interpreter and --exe's compiled nqp:: calls share them)
+static bool uniPropOp(NqpOpc op, ValueList& v, Value& out) {
+    if ((op == NqpOpc::GetUniPropStr || op == NqpOpc::GetUniPropBool ||
+         op == NqpOpc::GetUniPropInt || op == NqpOpc::MatchUniProp ||
+         op == NqpOpc::HasUniProp) && v.size() >= 2) {
+        long long cp;
+        size_t pi = 1;
+        if (op == NqpOpc::HasUniProp) {
+            // codepoint-indexed, as nqp::ordat is; past either end matches nothing
+            if (v.size() < 4) { out = Value::integer(0); return true; }
+            std::vector<uint32_t> cps = utf8cp(v[0].toStr());
+            long long at = v[1].toInt();
+            if (at < 0 || at >= (long long)cps.size()) { out = Value::integer(0); return true; }
+            cp = cps[(size_t)at];
+            pi = 2;
+        } else {
+            cp = v[0].toInt();
+        }
+        const std::string prop = uniPropNameOf(v[pi]);
+        Value r;
+        if (prop.empty()) r = Value::boolean(false);
+        else if (uniIsGcGroup(prop)) {
+            const std::string gc = uniGeneralCategory((uint32_t)cp);
+            bool in = prop == "Any" ? true
+                    : prop == "Assigned" ? gc != "Cn"
+                    : prop == "LC" ? (gc == "Lu" || gc == "Ll" || gc == "Lt")
+                    : gc[0] == prop[0];
+            r = Value::boolean(in);
+        } else {
+            ValueList pa; pa.push_back(Value::str(prop));
+            r = g_cbInterp->methodCall(Value::integer(cp), "uniprop", pa);
+        }
+        if (op == NqpOpc::GetUniPropStr) { out = Value::str(r.t == VT::Bool ? std::string() : r.toStr()); return true; }
+        if (op == NqpOpc::GetUniPropBool) { out = Value::integer(r.truthy() ? 1 : 0); return true; }
+        long long code;
+        if (r.t == VT::Bool) code = r.truthy() ? 1 : 0;
+        else if (r.t == VT::Str && (prop == "General_Category" || prop == "East_Asian_Width")) {
+            const auto& tbl = prop == "General_Category" ? uniGcValueCodes() : uniEawValueCodes();
+            auto g = tbl.find(r.toStr());
+            code = g != tbl.end() ? g->second : 0;
+        }
+        else if (r.t == VT::Str) code = uniInternedValueCode(r.toStr());
+        else code = r.toInt();
+        if (op == NqpOpc::GetUniPropInt) { out = Value::integer(code); return true; }
+        out = Value::integer(code == v[pi + 1].toInt() ? 1 : 0);
+        return true;
+    }
+    return false;
+}
+
 Value rtNqpOp(NqpOpc op, ValueList& v) {
     using O = NqpOpc;
+    if (Value u; g_cbInterp && uniPropOp(op, v, u)) return u;   // the Unicode property reads
     // An IterationBuffer is a tagged HASH here, not an Array, so the list ops
     // below — every one of which tests for VT::Array — silently did nothing to
     // one. `nqp::splice($buffer, nqp::list($value), $pos, 0)` is how
