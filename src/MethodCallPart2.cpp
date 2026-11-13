@@ -7162,13 +7162,13 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
                         (*out.hash())[kv.first.substr(1)] = kv.second;
                 return out;
             }
-            // `.^submethod_table` — name => Submethod for the type's own submethods
-            // (and those its roles composed in, which 6.e no longer does)
+            // `.^submethod_table` — name => Submethod for the type's own submethods (and those its roles composed in, which 6.e no longer does)
+            auto isSubm = [](const Value& v) { const Callable* c = v.t == VT::Code ? v.code() : nullptr;   // (and a `multi submethod`'s dispatcher, rakudo#3976)
+                return c && (c->ci().isSubmethod || (c->ci().isMultiDispatcher && std::any_of(c->cold().candidates.begin(), c->cold().candidates.end(), [](const Value& x) { return x.code() && x.code()->ci().isSubmethod; }))); };
             if (m == "submethod_table" && ci) {
                 Value out = Value::makeHash();
                 for (auto& kv : ci->methods)
-                    if (kv.second.t == VT::Code && kv.second.code() && kv.second.code()->ci().isSubmethod &&
-                        !ci->roleSubmethodsHidden.count(kv.first) && !(kv.first.size() && kv.first[0] == '!'))
+                    if (isSubm(kv.second) && !ci->roleSubmethodsHidden.count(kv.first) && !(kv.first.size() && kv.first[0] == '!'))
                         (*out.hash())[kv.first] = kv.second;
                 return out;
             }
@@ -7193,8 +7193,8 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
                 std::function<void(ClassInfo*)> walk = [&](ClassInfo* c) {
                     if (!c || !visited.insert(c).second) return;
                     for (auto& kv : c->methods) {
-                        // private (!p) methods stay out, as in Rakudo
-                        if (!kv.first.empty() && kv.first[0] == '!') continue;
+                        // private (!p) methods stay out, as in Rakudo, and a submethod out of the TABLE (rakudo#3976)
+                        if ((!kv.first.empty() && kv.first[0] == '!') || (table && isSubm(kv.second))) continue;
                         if (local && !seen.insert(kv.first).second) continue;
                         // a composed ROLE's method was flattened into the class
                         // that does it: the class's entry (a multi's one
