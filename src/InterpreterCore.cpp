@@ -18541,8 +18541,7 @@ static Value applyArithGeneral(const std::string& op, const Value& l, const Valu
     if (op.size() >= 5 && (op.substr(0, 2) == ">>" || op.substr(0, 2) == "<<") &&
         (op.substr(op.size() - 2) == ">>" || op.substr(op.size() - 2) == "<<")) {
         std::string inner = op.substr(2, op.size() - 4);
-        // the bracket-cited operator form: `(1,2) >>[+]<< (3,4)` — the citation
-        // means the bare infix, element-wise (roast issue-2353 test)
+        // the bracket-cited operator form: `(1,2) >>[+]<< (3,4)` — the citation means the bare infix, element-wise (roast issue-2353 test)
         if (inner.size() >= 3 && inner.front() == '[' && inner.back() == ']')
             inner = inner.substr(1, inner.size() - 2);
         // hyper compound assignment — the shared implementation, reached
@@ -18559,6 +18558,7 @@ static Value applyArithGeneral(const std::string& op, const Value& l, const Valu
                     (*l.arr())[i] = applyArith(base, (*l.arr())[i], rhs[i % rhs.size()]);
             return l;
         }
+        if (g_cbInterp) return g_cbInterp->applyBinOpPublic(op.substr(0, 2) + inner + op.substr(op.size() - 2), l, r);   // the interpreter's hyper: nesting, hashes, containers (a compiled `%h »+« %g` was (2,))
         ValueList a = listCtx(l), b = listCtx(r);
         Value out = Value::array(); out.isList = true;
         size_t n = a.size() > b.size() ? a.size() : b.size();
