@@ -9207,6 +9207,7 @@ ExprPtr Parser::parsePrimary() {
                     u->operand = parseExpr(BP_COMMA);
                 return u;
             }
+            refusePhaserCall(name);   // `FIRST($_ * 10)` is a call (ParserPackages.cpp)
             if ((name == "INIT" || ((name == "BEGIN" || name == "CHECK" || name == "ENTER" || name == "FIRST") && !kwCallHere(name))) &&
                 peek().kind != Tok::LBrace && peek().kind != Tok::Semicolon && peek().kind != Tok::End) { // INIT <expr> — a value phaser
                 advance(); // consume INIT
@@ -10179,8 +10180,7 @@ ExprPtr Parser::parsePrimary() {
             bool listopOk = startsListopArg(cur(), name);
             // `now` and `time` are TERMS, never listops: `now +300` is now + 300
             if (listopOk && (name == "now" || name == "time") && cur().kind != Tok::LParen) listopOk = false;
-            // `T{"max-rss"}`: a brace TIGHT against a routine of the program's subscripts its answer, as in Rakudo (rakudo#5144)
-            if (listopOk && isKind(Tok::LBrace) && !cur().spaceBefore && (declaredSubNames_.count(name) || capSubNames_.count(name))) listopOk = false;
+            if (listopOk && isKind(Tok::LBrace) && !cur().spaceBefore && (declaredSubNames_.count(name) || capSubNames_.count(name))) listopOk = false;   // `T{"max-rss"}`: a TIGHT brace subscripts the call's answer (rakudo#5144)
             // …and so, before a block or a pointy, are `rand`, `i`, `Empty` and a TYPE: the
             // block is the statement's (`if rand { … }`, `for buf8 -> \bt { }`), as in Rakudo
             if (listopOk && (isKind(Tok::LBrace) || isOp("->") || isOp("<->")) && (name == "rand" || name == "i" ||

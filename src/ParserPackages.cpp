@@ -4,6 +4,7 @@
 #include "AsciiCtype.h"
 #include "Parser.h"
 #include <memory>
+#include <set>
 #include <string>
 #include <vector>
 
@@ -113,6 +114,18 @@ ExprPtr Parser::parsePkgNameLookup() {
     cat->rhs = std::move(name);
     sr->nameExpr = std::move(cat);
     return sr;
+}
+
+// `FIRST($_ * 10)`, `ENTER(1)`: a phaser's name with a TIGHT paren is a CALL,
+// as in Rakudo, of a routine nothing declares (cur() is the name). It ran the
+// phaser over the parenthesized expression.
+void Parser::refusePhaserCall(const std::string& name) {
+    static const std::set<std::string> kPhasers = {"INIT", "BEGIN", "CHECK", "ENTER", "FIRST", "END", "LEAVE",
+        "NEXT", "LAST", "KEEP", "UNDO", "PRE", "POST", "CATCH", "CONTROL", "QUIT", "CLOSE"};
+    if (!kPhasers.count(name) || peek().kind != Tok::LParen || peek().spaceBefore || kwCallHere(name) ||
+        declaredSubNames_.count(name) || importsModules_) return;
+    throw ParseError("Undeclared routine:\n    " + name + " used at line " + std::to_string(cur().line), cur().line,
+                     "X::Undeclared::Symbols", {});
 }
 
 // `method z { $^a }` — a method with no signature of its own may not take
