@@ -16883,6 +16883,14 @@ StmtPtr Parser::parseStatementImpl() {
                 }
             }
             else { b->stmts.push_back(parseStatement()); b->stmtForm = true; } // PHASER statement; — declarations belong to the enclosing scope
+            // `LEAVE { … } if False;` — a modifier on the block's line (rakudo#2243). The phaser is
+            // a declaration, there whatever the condition says; the modifier governs the
+            // statement's VALUE, Nil, and runs as a statement of its own after it
+            if (!b->stmtForm && cur().line == toks_[pos_ - 1].line && atExprModifier()) {
+                auto es = std::make_unique<ExprStmt>(); es->line = cur().line;
+                es->e = std::make_unique<NameTerm>("Nil");
+                pendingStmts_.push_back(applyModifiers(std::move(es)));
+            }
             return b;
         }
     }
