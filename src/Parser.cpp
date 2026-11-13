@@ -14125,6 +14125,21 @@ StmtPtr Parser::parseClass(bool isRole, bool isGrammar, bool isPackage, bool isU
                         size_t idx = 1;
                         if (vn.size() > 1 && (vn[1] == '.' || vn[1] == '!')) { a.pub = (vn[1] == '.'); a.twigilWritten = true; idx = 2; }
                         a.name = vn.substr(idx);
+                        // …and its OWN traits, before its default: `has ($.z is rw = 42)` lost both (rakudo#2078)
+                        while (isIdent("is") && peek().kind == Tok::Ident) {
+                            advance();
+                            const std::string tn = advance().text;
+                            if (tn == "rw") a.rw = true;
+                            else if (tn == "readonly") a.readonly = true;
+                            else if (tn == "required") a.required = true;
+                            else if (tn == "built") a.built = true;
+                            if (isKind(Tok::LParen) && !cur().spaceBefore) {
+                                advance();
+                                ExprPtr arg = isKind(Tok::RParen) ? nullptr : parseExpression();
+                                expectKind(Tok::RParen, ")");
+                                if (tn == "default" && arg) a.defaultTrait = std::move(arg);
+                            }
+                        }
                         if (matchOp("=")) {
                             size_t defStart = pos_;
                             a.def = parseExpr(BP_ASSIGN);
