@@ -4464,6 +4464,7 @@ std::shared_ptr<Param> signatureParamCopy(const Param& p) {
     q->isRw = p.isRw; q->isCopy = p.isCopy; q->typeIsSetting = p.typeIsSetting;
     q->hadWhere = p.whereExpr != nullptr || p.hadWhere;
     q->defaultRaku = renderDefault(p);
+    q->defaultFrom = p.defaultVal ? p.defaultVal.get() : p.defaultFrom;
     return q;
 }
 
@@ -4957,8 +4958,7 @@ Value makeSignature(const Callable* c) {
         }
         // `.default` is a Callable producing the default — undefined when the
         // parameter has none
-        if (p.defaultVal) {
-            const Expr* de = p.defaultVal.get();
+        if (const Expr* de = p.defaultVal ? p.defaultVal.get() : p.defaultFrom) {   // (a .assuming residual's: rakudo#4553)
             Value dc; dc.t = VT::Code; dc.setCode(makePayload<Callable>());
             dc.code()->ciM().builtin = [de](Interpreter& I, ValueList&) -> Value {
                 return I.eval(const_cast<Expr*>(de));

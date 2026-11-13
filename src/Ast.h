@@ -868,6 +868,7 @@ struct Param {
     ExprPtr litVal;     // literal parameter, e.g. MAIN('population') — arg must equal this
     ExprPtr defaultVal; // may be null
     std::string defaultRaku; // pre-rendered default, for a .assuming residual signature
+    const Expr* defaultFrom = nullptr; // …and the default itself, borrowed from the AST, for its `.default`
                              // (priming a named param turns it into `:$a = <primed value>`)
     bool hadWhere = false;   // residual-signature copies can't own whereExpr; remember it was there
     bool typeCapture = false; // `::T $x` — `type` names a type variable, not a real type
