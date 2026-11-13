@@ -451,9 +451,28 @@ bool asyncSockAddrFwd(const std::string& h, int p, sockaddr_storage& ss, socklen
 bool sockAddrOfFamily(const std::string& h, int p, int fam, sockaddr_storage& ss, socklen_t& len) {
     return asyncSockAddr(h, p, ss, len, fam);
 }
+// A UNIX-domain address: false for a path too long for one (or on Windows,
+// whose AF_UNIX is not wired up, as for IO::Socket::INET's PF_UNIX)
+bool unixSockAddr(const std::string& path, sockaddr_storage& ss, socklen_t& len) {
+    std::memset(&ss, 0, sizeof(ss));
+#ifdef _WIN32
+    (void)path; (void)len; return false;
+#else
+    auto* un = (sockaddr_un*)&ss;
+    if (path.size() >= sizeof(un->sun_path)) return false;
+    un->sun_family = AF_UNIX;
+    std::memcpy(un->sun_path, path.data(), path.size());
+    len = (socklen_t)sizeof(sockaddr_un);
+    return true;
+#endif
+}
 // The host and port of a socket address, IPv4 or IPv6.
 static void asyncSockName(const sockaddr_storage& ss, std::string& host, long long& port) {
     char buf[INET6_ADDRSTRLEN] = {0};
+#ifndef _WIN32
+    // a UNIX-domain socket's name is its path ("" when unnamed), and it has no port
+    if (ss.ss_family == AF_UNIX) { host = ((const sockaddr_un*)&ss)->sun_path; port = 0; return; }
+#endif
     if (ss.ss_family == AF_INET6) {
         auto* a6 = (const sockaddr_in6*)&ss;
         inet_ntop(AF_INET6, &a6->sin6_addr, buf, sizeof(buf)); port = ntohs(a6->sin6_port);
@@ -2659,19 +2678,25 @@ Value Interpreter::tapSupply(const Value& s, Value emitCb, Value doneCb, Value q
         std::string host = h.count("host") ? h.at("host").toStr() : "localhost";
         int port = h.count("port") ? (int)h.at("port").toInt() : 0;
         sockaddr_storage addr{}; socklen_t addrLen = 0;
-        bool badHost = !asyncSockAddr(host, port, addr, addrLen);
+        // `listen-path`: a UNIX-domain socket at that path (rakudo#5358, #5359),
+        // whose failure says why, as libuv's lower-case words say it
+        const bool unixPath = h.count("path") > 0;
+        std::string why;
+        bool badHost = unixPath ? !unixSockAddr(host = h.at("path").toStr(), addr, addrLen) : !asyncSockAddr(host, port, addr, addrLen);
         int lfd = badHost ? -1 : ::socket(addr.ss_family, SOCK_STREAM, 0);
         if (!badHost && lfd < 0) throw RakuError{Value::typeObj("X::IO"), "Cannot create socket"};
-        if (lfd >= 0) { int yes = 1; setsockopt(lfd, SOL_SOCKET, SO_REUSEADDR, (const char*)&yes, sizeof(yes)); }
+        if (lfd >= 0 && !unixPath) { int yes = 1; setsockopt(lfd, SOL_SOCKET, SO_REUSEADDR, (const char*)&yes, sizeof(yes)); }
         if (badHost || ::bind(lfd, (sockaddr*)&addr, addrLen) < 0 || ::listen(lfd, 128) < 0) {
+            if (unixPath) { why = badHost ? "path too long" : std::strerror(errno); if (!why.empty()) why[0] = (char)std::tolower((unsigned char)why[0]); }
             if (lfd >= 0) ::close(lfd);
             // a tap with a :quit hears the failure as the supply's quit
             if (quitCb.t == VT::Code) {
-                Value ex = makeTypedEx("X::AdHoc", {}, "Cannot listen on " + host + ":" + std::to_string(port));
+                Value ex = makeTypedEx("X::AdHoc", {}, unixPath ? why : "Cannot listen on " + host + ":" + std::to_string(port));
                 ValueList one{ex};
                 callCallable(quitCb, one);
                 Value t = Value::makeHash(); t.hashKind = "Tap"; return t;
             }
+            if (unixPath) throw RakuError{Value::typeObj("X::AdHoc"), why};
             throw RakuError{Value::typeObj("X::IO"), "Cannot listen on " + host + ":" + std::to_string(port)};
         }
         // the address actually bound — `.socket-port` answers the port a `0` asked the OS for
@@ -2712,7 +2737,7 @@ Value Interpreter::tapSupply(const Value& s, Value emitCb, Value doneCb, Value q
         Interpreter* self = this;
         const std::string listenEnc = h.count("enc") ? h.at("enc").toStr() : std::string();
         throttleSpawn();
-        addWorker(BigStackThread([self, lfd, emitCb, handle, fin, spawnScope, listenEnc, pending]() mutable {
+        addWorker(BigStackThread([self, lfd, emitCb, handle, fin, spawnScope, listenEnc, pending, unixPath]() mutable {
             t_hot.poll.isWorker = true;
             auto deliver = [&](int cfd) {
                 self->gilLock();
@@ -2721,6 +2746,7 @@ Value Interpreter::tapSupply(const Value& s, Value emitCb, Value doneCb, Value q
                 tctx().dynStack.push_back(spawnScope.get());
                 Value sock = makeAsyncSocket(cfd);
                 if (!listenEnc.empty()) (*sock.hash())["enc"] = Value::str(listenEnc);   // `listen(…, :enc)`
+                if (unixPath) (*sock.hash())["socket-host"] = Value::str("");   // (Rakudo's names the server end no more than the client's)
                 if (emitCb.t == VT::Code) {
                     ValueList one{sock};
                     try { self->callCallable(emitCb, one); }
