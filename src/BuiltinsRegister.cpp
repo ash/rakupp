@@ -1688,6 +1688,49 @@ static bool openDash(Interpreter& I, ValueList& a, Value& out) {
     return false;
 }
 
+// `&postcircumfix:<[ ]>(@a, 1)` and `&postcircumfix:<{ }>(%h, <a b>, :exists)`:
+// the subscript itself, evaluated over its two operands bound in a scope of their
+// own — the base by its kind's sigil, so `:delete` reaches the caller's container,
+// and a List, Range or Seq index by `@`, so it slices (an itemized one is one
+// position, as `@a[$r]` is). A named argument is an adverb (`:!exists` negates it,
+// a false `:delete` is none); one operand alone is the zen slice, and a third is
+// assigned, as Rakudo's assign candidate does: `&postcircumfix:<[ ]>(@a, 1, 77)`.
+static Value postcircumfixByName(Interpreter& I, ValueList& a, bool hash) {
+    ValueList pos; std::string adv;
+    for (auto& v : a) {
+        if (!(v.t == VT::Pair && v.namedArg)) { pos.push_back(v); continue; }
+        const bool on = v.pairVal() && v.pairVal()->truthy();
+        if (on || v.s != "delete") adv += (adv.empty() ? "" : ":") + std::string(on ? "" : "!") + v.s;
+    }
+    const std::string name = hash ? "postcircumfix:<{ }>" : "postcircumfix:<[ ]>";
+    if (pos.empty() || pos.size() > 3 || (pos.size() == 3 && !adv.empty())) {
+        std::string sig;
+        for (auto& v : pos) sig += (sig.empty() ? "" : ", ") + v.typeName();
+        throw RakuError{Value::typeObj("X::Multi::NoMatch"), "Cannot resolve caller " + name + "(" + sig + "); none of these signatures matches"};
+    }
+    if (pos.size() == 1 && adv.empty()) return pos[0];
+    const Value& b = pos[0];
+    const char bs = b.t == VT::Hash && !b.itemized ? '%' : b.t == VT::Array && !b.itemized ? '@' : '$';
+    auto scope = makeSlabShared<Env>(); scope->parent = I.tctx().cur;
+    scope->define(std::string(1, bs) + "__pc_base", b);
+    Index ix; ix.line = I.testLine(); ix.isHash = hash; ix.adverb = adv;
+    ix.base = std::make_unique<VarExpr>(std::string(1, bs) + "__pc_base");
+    if (pos.size() == 1) { ix.zen = true; ix.index = std::make_unique<WhateverExpr>(); }
+    else {
+        const char is = (pos[1].t == VT::Array || pos[1].t == VT::Range) && !pos[1].itemized ? '@' : '$';
+        scope->define(std::string(1, is) + "__pc_index", pos[1]);
+        ix.index = std::make_unique<VarExpr>(std::string(1, is) + "__pc_index");
+    }
+    struct Back { ExecContext& t; std::shared_ptr<Env> s; ~Back() { t.cur = s; } } back{I.tctx(), I.tctx().cur};
+    I.tctx().cur = scope;
+    if (pos.size() < 3) return I.eval(&ix);
+    scope->define("$__pc_value", pos[2]);
+    Assign as; as.line = ix.line; as.op = "="; as.value = std::make_unique<VarExpr>("$__pc_value");
+    as.target.reset(&ix);
+    struct Keep { Assign& a; ~Keep() { (void)a.target.release(); } } keep{as};   // (ix is this frame's)
+    return I.eval(&as);
+}
+
 // A named argument run() or shell() does not take is no match, as Rakudo's
 // dispatcher says: `run(…, :ENV(%e))` ran the child with this process's
 // environment, and a whole campaign went to the wrong directory unnoticed
@@ -1903,6 +1946,10 @@ void Interpreter::registerBuiltinsPart2() {
         }
         (void)I; return h;
     };
+    // …and the two subscripts by theirs (rakudo#2000): `&postcircumfix:<{ }>(%h, 'a', :exists)`
+    // is `%h{'a'}:exists` (postcircumfixByName)
+    for (bool hash : {false, true}) B[hash ? "postcircumfix:<{ }>" : "postcircumfix:<[ ]>"] =
+        [hash](Interpreter& I, ValueList& a) -> Value { return postcircumfixByName(I, a, hash); };
     B["RUN-MAIN"] = [](Interpreter& I, ValueList& a) -> Value {
         if (a.empty() || a[0].t != VT::Code) return Value::any();
         Value mainSub = a[0];
