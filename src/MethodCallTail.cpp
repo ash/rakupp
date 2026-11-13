@@ -3783,9 +3783,10 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
         auto resolveCount = [&](Value a, long long sz) -> long long {
             if (a.t == VT::Whatever) return sz;
             if (a.isNumeric() && std::isinf(a.toNum())) return sz; // head(Inf) / tail(Inf) = all
-            // ANY Callable count is called with the element count — `*-2` and the
-            // spelled-out `{ $_ - 2 }` mean the same thing to .head/.tail/.skip
-            if (a.t == VT::Code) { ValueList one{Value::integer(sz)}; return callCallable(a, one).toInt(); }
+            // ANY Callable count is an offset from the END, as Rakudo reads it: called
+            // with 0, and added to the element count — `*-2` is all but two, and
+            // `*.elems - 1` (0.elems - 1, so 0) is all of it (rakudo#2485)
+            if (a.t == VT::Code) { ValueList one{Value::integer(0)}; return sz + callCallable(a, one).toInt(); }
             if (a.t == VT::Str) { // a non-numeric string count is an error (.skip("foo"))
                 const std::string_view s = a.s; bool num = !s.empty();
                 for (char c : s) if (!ascii::isdigit((unsigned char)c) && c != '-' && c != '+' && c != '.' && c != ' ') { num = false; break; }
