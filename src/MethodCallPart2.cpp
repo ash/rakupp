@@ -5942,6 +5942,12 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
             }
             else if (t == "X::NYI" && at.count("feature"))
                 syn = at["feature"] + " not yet implemented. Sorry.";
+            else if (t == "X::Method::NotFound" && at.count("method") && at.count("typename"))
+                syn = std::string(at.count("private") && at["private"] == "True" ? "No such private method '!" : "No such method '") +
+                      at["method"] + "' for invocant of type '" + at["typename"] + "'";
+            else if (t == "X::Numeric::DivideByZero")   // (rakudo#2434's leftover: its `.message` was Any)
+                syn = "Attempt to divide" + (at.count("numerator") && at["numerator"] != "0" ? " " + at["numerator"] : "") + " by zero" +
+                      (at.count("using") ? " using " + at["using"] : "") + (at.count("details") ? " " + at["details"] : "");
             else syn = typeCheckMessageFor(std::string(t), args);   // X::TypeCheck and its family
             // The rendered message WINS over an explicit `message` argument, as
             // Rakudo's `method message` does — it is a method there, so an
@@ -5950,7 +5956,7 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
                 for (size_t i = 0; i < args.size(); )
                     if (args[i].t == VT::Pair && args[i].s == "message") args.erase(args.begin() + i);
                     else ++i;
-                args.push_back(Value::pair("message", Value::str(syn)));
+                Value mp = Value::pair("message", Value::str(syn)); mp.namedArg = true; args.push_back(mp);
             }
         }
         if ((t.rfind("X::", 0) == 0 || t.rfind("CX::", 0) == 0) && !classes_.count(t)) {
