@@ -246,7 +246,10 @@ The same items grouped by theme, with a complexity estimate for each:
   FALLBACK and `ws`, and `\c[name]` in any case. R7 is done (9e12d938 …
   ce72763f, 2026-11-13): Parser.cpp's interpolation moved out (R7.0), and
   eleven refusals and wrong parses fixed, with two regressions full Roast
-  caught on the way. Next step: R8, strings, numbers, dates, formatting.
+  caught on the way. R8 is done (bfd530f9 … 6b8c1d1a, 2026-11-13): hyper
+  calls in interpolation, anonymous state in string blocks, `dd` and a
+  built-in exception's `.raku`, and a leap second in an odd timezone. Next
+  step: R9, missing features, most useful first.
 
   R9's `use Telemetry` can run beside any batch. The plan's other questions
   are answered when their batch (R10) starts.

@@ -20,7 +20,7 @@ ad10ad81, 3db5cae5, c109e8ec, c47aa1ea, cfbda86a, ccda30e9, 1c4da191,
 6b709af5, 31206e76, a2fcf5bb, e9aaf6b3, 9e693ab0, edc8bf39, 1ea5c984,
 2137a05d, d45f616e, 9e12d938, 70ee4e8b, 6fcd9181, f102e0f5, b1040540,
 d77e1185, 953adf0a, 73357985, 9badbec4, b590c1ec, f9028851, fdaa60ec,
-f8b5555c, ce72763f.*
+f8b5555c, ce72763f, bfd530f9, eb482a9f, 7e5a643e, 6b8c1d1a.*
 
 ---
 
@@ -281,6 +281,20 @@ f8b5555c, ce72763f.*
 - **A sigilless name in a list assignment holds a list as it is** (d77e1185)
   (rakudo#5027): `my (\a, \b) = (1, 2), 3` made a `$(1, 2)`.
   `t/regression/sigilless-names-token-and-destructure.raku`.
+- **A hyper method call interpolates in a string** (6b8c1d1a) (rakudo#1460):
+  `"%add».sort.map(*.fmt("%s %s"))"` stayed literal text.
+  `t/regression/interpolated-hyper-method-chain.raku`.
+- **An anonymous state variable in a string's `{ … }` is fresh each time**
+  (7e5a643e) (rakudo#1961): `"count {$++}" for ^3` counted 0 1 2, where
+  Rakudo prints count 0 three times. `t/regression/string-block-anonymous-state.raku`.
+- **A leap second stays one in a timezone of odd seconds** (bfd530f9)
+  (rakudo#2097): `DateTime.new('2016-12-31T23:59:60Z').in-timezone(514)` gave
+  00:08:34, where Rakudo keeps the second, 00:08:60.
+  `t/regression/leap-second-in-timezone.raku`.
+- **A built-in exception's `.raku` is Rakudo's** (eb482a9f) (rakudo#2434): it
+  showed a `message => …` attribute, which is a method in Rakudo, and
+  X::Numeric::DivideByZero's attributes in the order they were thrown.
+  `t/regression/dd-failure-not-sunk-and-exception-raku.raku`.
 ### Fixed: crashes
 
 - **A long run of a quantified group no longer overflows the stack**
@@ -501,6 +515,9 @@ f8b5555c, ce72763f.*
   `t/regression/paren-segment-statement-modifier.raku`.
 - **A declaration called at once takes a postfix chain** (f9028851):
   `sub foo { 7 }().say` printed (Any). `t/regression/return-is-a-list-operator.raku`.
+- **`dd` answers Nil** (eb482a9f) (rakudo#2434): `dd $x % 0e0` printed the
+  Failure and then threw it, because dd handed its argument back to be sunk.
+  `t/regression/dd-failure-not-sunk-and-exception-raku.raku`.
 ### Platforms and packaging
 
 ### Tools

@@ -424,12 +424,28 @@ is not started.*
 
 ### R8 — strings, numbers, dates, formatting
 
-- **rakudo#1460 ✓:** `"%h».sort…"` is not interpolated.
-- **rakudo#1961 ✓:** `"count {$++}" for ^3` gives 0 1 2. Each closure clone
-  needs its own anonymous state.
-- **rakudo#2434 ✓:** `dd` of a Failure later throws it.
-- **rakudo#2097 ✓:** a leap second is lost in a timezone that is not a whole
-  number of minutes.
+*2026-11-13. The named items are done; the rest of the strings, formatting,
+numeric and datetime sections is not started.*
+
+- **rakudo#1460 — fixed (6b8c1d1a).** A hyper method call joins an
+  interpolated variable's method chain: `"%add».sort.map(…)"`. As Rakudo
+  does, it joins only where no bare `.name` is still pending
+  (`"@a.sort».uc()"` stays literal).
+- **rakudo#1961 — fixed (7e5a643e).** An anonymous state variable in a
+  string's `{ … }` is that block's, fresh each time the string is built:
+  `"count {$++}" for ^3` is count 0 three times, as in Rakudo. It had
+  counted 0 1 2, and two blocks in one string shared one `$`.
+- **rakudo#2434 — fixed (eb482a9f).** `dd` answers Nil, so a Failure it
+  showed is not sunk after it. A built-in exception's `.raku` leaves out the
+  `message` slot (a method in Rakudo), and X::Numeric::DivideByZero shows
+  Rakudo's attributes in Rakudo's order. Left:
+  `X::Numeric::DivideByZero.new(numerator => 5).message` is (Any), where
+  Rakudo composes the text; only DivideByZero has Rakudo's order so far.
+- **rakudo#2097 — fixed (bfd530f9).** A leap second stays one when moved to
+  a timezone that is not a whole number of minutes, as in Rakudo's own
+  in-timezone: the shift moves its minute. Rakudo's `.Instant` of such a
+  converted leap second is its own (1483228863 for the issue's); Raku++'s
+  is not compared.
 - The rest of the strings, formatting, numeric and datetime sections.
 
 ### R9 — missing features, most useful first
@@ -550,6 +566,7 @@ Each is answered when its batch starts, not before.
 | R5, 2026-11-13 | named items done but rakudo#5138; PPBUG remainders open | 521d34ae, a0437c10, 703198f5, cb91f67b, 2416bbe5, 8c513f23, 133560ad, ad10ad81, 3db5cae5, c109e8ec, c47aa1ea, cfbda86a, ccda30e9, 22520fae, 1c4da191, 585a8ee1, eca56b5a, 1ba950a5, 7dc4809d, 9bb82a6c, 57b07f65, 1f205847 | 1,289 | 1,425/1,425 | 2293/2293 |
 | R6, 2026-11-13 | named items done; regex and grammar remainders open | 6b709af5, 31206e76, a2fcf5bb, e9aaf6b3, 9e693ab0, edc8bf39, 1ea5c984, 2137a05d, d45f616e | 1,302 | 1,425/1,425 | 2302/2302 |
 | R7, 2026-11-13 | R7.0 and the named items done; syntax PPBUG remainders open | 9e12d938, 70ee4e8b, 6fcd9181, f102e0f5, b1040540, d77e1185, 953adf0a, 73357985, 9badbec4, b590c1ec, f9028851, fdaa60ec, f8b5555c, ce72763f | 1,318 | 1,425/1,425 | 2313/2313 |
+| R8, 2026-11-13 | named items done; strings, numeric and datetime remainders open | bfd530f9, eb482a9f, 7e5a643e, 6b8c1d1a | 1,324 | 1,425/1,425 | 2317/2317 |
 
 R1's per-file changes against the baseline:
 - **3686 and 5835:** TIMEOUT to MATCH.
@@ -642,3 +659,13 @@ closed: 9badbec4 (S12-methods/calling_syntax.t) and b590c1ec
 a `sleep`-timed test that passes alone, three runs of three. Codegen
 changed (6fcd9181), so the full t/exe/parity.raku ran: 1,638 agree,
 0 differ.
+
+R8's per-file changes against R7:
+- **1961/0, 2097/2, 2434/0 and /1:** to MATCH.
+- **2265/1, 2266/0 and /1, 2452/1:** DIFF-EXIT to MATCH; each is a `dd` of a
+  Failure, which no longer explodes after it (eb482a9f).
+- **1460/0** prints Rakudo's words in its own hash order, and is NONDET.
+- **2181, 5868/0:** noise.
+
+The full t/exe/parity.raku ran too (dd, exceptions and interpolation are
+shared with compiled programs): 1,642 agree, 0 differ.
