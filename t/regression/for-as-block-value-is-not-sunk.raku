@@ -21,6 +21,11 @@ sub v { 42 for ^2 }
 check v().raku, 'Nil', 'the block\'s value is Nil';
 my @a = (Failure.new for ^2);
 check @a.elems, '2', 'a loop in an expression keeps its values';
+# …but a gather block's value is nobody's: its last statement is sunk
+my class Sinker { method sink { take 'Blub' } }
+check (gather for ^3 { Sinker.new }).join(','), 'Blub,Blub,Blub', 'a gather over a for sinks its body';
+check (gather { Sinker.new }).join(','), 'Blub', 'a gather block\'s last statement sinks';
+check (try { my @g = gather { take 1; Failure.new }; 'ok' }) // 'threw', 'threw', '…a Failure there throws';
 
 say $fails ?? "FAIL ($fails)" !! 'PASS';
 exit $fails ?? 1 !! 0;
