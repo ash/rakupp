@@ -21376,7 +21376,7 @@ Value Interpreter::regexMatch(const std::string& subject, std::string_view patte
     // `rule`-kind (sigspace) declines until the builder models <.ws>. The
     // returned text doubles as the staleness stamp — registration is
     // last-wins, so LtmNfa::stillValid re-asks and rebuilds on change.
-    if (!namedRegex_.empty()) {
+    if (!namedRegex_.empty() || pat.find("<&?BLOCK") != std::string::npos) {
         rmHooks.namedRule = [this](const std::string& name, std::string& text,
                                    std::string& flags) -> bool {
             if (name == "ws") return false; // the match path hardcodes <ws>
@@ -21393,7 +21393,8 @@ Value Interpreter::regexMatch(const std::string& subject, std::string_view patte
         // …and a `regex`-kind one is called BACKTRACKABLY (GrammarHooks::lexCallee),
         // compiled exactly as the resolver compiles it; a token/rule never gives
         // back what it matched, so those stay on the resolver.
-        rmHooks.lexCallee = [this](const std::string& name) -> std::shared_ptr<const Regex> {
+        rmHooks.lexCallee = [this, reP](const std::string& name) -> std::shared_ptr<const Regex> {
+            if (name == "?BLOCK") return reP;   // `<&?BLOCK>`: the regex itself, recursing (rakudo#3775)
             auto it = namedRegex_.find(name);
             if (it == namedRegex_.end()) return nullptr;
             auto kit = namedRegexKind_.find(name);

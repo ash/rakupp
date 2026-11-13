@@ -113,6 +113,10 @@ static void substClassesClose(const std::string& text, int line) {
         if (q) { if (c == '\\') i++; else if (c == q) q = 0; continue; }
         if (c == '\\') { i++; continue; }
         if (c == '\'' || c == '"') { q = c; continue; }
+        if (text.compare(i, 3, "\xEF\xBD\xA2") == 0) {   // (and ｢…｣)
+            size_t e = text.find("\xEF\xBD\xA3", i + 3);
+            if (e != std::string::npos) { i = e + 2; continue; }
+        }
         if (c == '#') { i = text.find('\n', i); if (i == std::string::npos) return; continue; }
         size_t k = i + 1;
         if (c != '<') continue;
@@ -542,6 +546,15 @@ void Parser::checkNullRegex(const std::string& pat, int line, int branches) {
                                  line, "X::Comp::FailGoal", {{"dba", "metachar:sym<assert>"}, {"goal", "'>'"}});
         }
         if (c == '\'' || c == '"') { q = c; continue; }
+        if (pat.compare(i, 3, "\xEF\xBD\xA2") == 0) {   // ｢…｣ quotes too: `[｢{｣ <&?BLOCK>? ｢}｣]?` (rakudo#3775)
+            size_t e = pat.find("\xEF\xBD\xA3", i + 3);
+            if (e != std::string::npos) { i = e + 2; atomStart = groupStart = afterBranch = false; lastKind = LkAtom; continue; }
+        }
+        // …and a `<&name>` call is one atom, `<&?BLOCK>` too: its `?` is the name's twigil
+        if (c == '<' && i + 1 < pat.size() && pat[i + 1] == '&') {
+            size_t e = pat.find('>', i + 2);
+            if (e != std::string::npos) { i = e; atomStart = groupStart = afterBranch = false; lastKind = LkAtom; continue; }
+        }
         if (c == '<' && i + 1 < pat.size() && (pat[i + 1] == '[' || ((pat[i + 1] == '-' || pat[i + 1] == '+' || pat[i + 1] == '!' || pat[i + 1] == '?') && i + 2 < pat.size() && pat[i + 2] == '['))) { cls = 1; continue; }
         // `<:Kata :Hira>` / `<+alpha digit>` — two members of a composed class
         // with neither `+` nor `-` between them
