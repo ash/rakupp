@@ -2609,9 +2609,7 @@ Regex::NodePtr Regex::parseAtom() {
                         size_t a2 = tok.find_first_not_of(" \t"), b2 = tok.find_last_not_of(" \t");
                         if (a2 != std::string::npos) {
                             tok = tok.substr(a2, b2 - a2 + 1);
-                            long cp = ascii::isdigit((unsigned char)tok[0])
-                                        ? std::strtol(tok.c_str(), nullptr, 10)
-                                        : (long)uniCharByName(tok);
+                            long cp = namedCp(tok);   // (a decimal, a name in any case, an abbreviation)
                             if (cp >= 0) lit += cpToU8((uint32_t)cp);
                         }
                         if (comma == std::string::npos) break;
@@ -5083,6 +5081,9 @@ static int32_t namedCp(const std::string& nm) {
     if (!nm.empty() && ascii::isdigit((unsigned char)nm[0])) return (int32_t)std::strtol(nm.c_str(), nullptr, 10);
     int32_t cp = uniCharByName(nm);
     if (cp >= 0) return cp;
+    // names are case-insensitive, as in a string: `/\c[combining ring above]/` (rakudo#5799)
+    { std::string up = nm; for (auto& ch : up) ch = (char)ascii::toupper((unsigned char)ch);
+      if (up != nm && (cp = uniCharByName(up)) >= 0) return cp; }
     static const std::map<std::string, int> ab = {
         {"NUL",0},{"SOH",1},{"STX",2},{"ETX",3},{"EOT",4},{"ENQ",5},{"ACK",6},{"BEL",7},
         {"BS",8},{"HT",9},{"TAB",9},{"LF",0x0A},{"VT",0x0B},{"FF",0x0C},{"CR",0x0D},
