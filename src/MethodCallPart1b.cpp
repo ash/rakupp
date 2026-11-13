@@ -1299,7 +1299,8 @@ std::optional<Value> Interpreter::methodCallPart1b(const Value& inv, const MName
     if (inv.t == VT::Hash && inv.hashKind == "StrDistance") {
         auto fld = [&](const char* k) { auto it = inv.hash()->find(k); return it != inv.hash()->end() ? it->second : Value::str(""); };
         if (m == "before" || m == "after") return fld(m.c_str());
-        if (m == "Str" || m == "gist") return fld("after"); // "$dist" interpolates the resulting string
+        if (m == "Str") return fld("after"); // "$dist" interpolates the resulting string
+        if (m == "gist" || m == "raku") return Value::str(inv.gist());   // StrDistance.new(before => …, after => …)
         if (m == "Bool") return Value::boolean(fld("before").toStr() != fld("after").toStr());
         if (m == "Rat" || m == "FatRat" || m == "Numeric" || m == "Int" || m == "Num" || m == "chars") {
             // a tr/// result carries the substitution count; .new-built ones numify to .after.chars

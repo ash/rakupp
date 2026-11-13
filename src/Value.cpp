@@ -1270,6 +1270,8 @@ std::string Value::toStr() const {
 std::string Value::gist() const {
     // a Tap is an opaque handle: Rakudo shows `Tap.new`, not its record
     if (t == VT::Hash && hashKind == "Tap") return "Tap.new";
+    // …and a tr/// StrDistance its constructor, as its `.raku` (Rakudo's Mu.gist)
+    if (t == VT::Hash && hashKind == "StrDistance" && g_rakuRepr) return g_rakuRepr(*this);
     // `Unicode.new` (#252) shows its constructor, as Mu.gist does in Rakudo
     if (t == VT::Hash && hashKind == "Unicode" && hash() && hash()->count("version") && hash()->count("NFG"))
         return "Unicode.new(version => " + hash()->at("version").gist() + ", NFG => Bool::" +

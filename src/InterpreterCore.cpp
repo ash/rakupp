@@ -24174,10 +24174,9 @@ Value Interpreter::evalBinary(Binary* b) {
             if (isTrSubst(sub->pattern)) { // tr/from/to/ — transliteration, returns a StrDistance
                 std::string before = l.toStr();
                 std::string out = trApply(*this, before, sub->pattern, sub->repl);
-                // `$x ~~ TR///` does NOT mutate: it transliterates $x and then
-                // smartmatches the result against it, so `1 ~~ TR/\#//` is True
-                // (nothing to delete) while `"ab" ~~ TR/ab/01/` is False.
-                if (sub->nonMut) return applyBinOp("~~", l, Value::str(out));
+                // `$x ~~ TR///` does NOT mutate: it answers the transliterated Str, as
+                // Rakudo does (rakudo#1551: `'hello' ~~ TR/e/1/` is "h1llo", not False)
+                if (sub->nonMut) return Value::str(out);
                 // `s///` MUTATES its left side, so a readonly target is an error.
                 // This is the shape the report arrived as, and it slipped past the
                 // assignment guard because a substitution never goes through `=`.

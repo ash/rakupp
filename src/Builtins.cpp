@@ -2168,6 +2168,11 @@ std::string rakuReprImpl(const Value& v, int depth, std::set<const void*>& seen)
         try { return g_cbInterp->methodCall(v, "raku", ValueList{}).toStr(); }
         catch (RakuError&) {}
     }
+    // a tr/// StrDistance renders as its constructor, as Rakudo's `.raku` and `.gist` do
+    if (v.t == VT::Hash && v.hashKind == "StrDistance" && v.hash()) {
+        auto fld = [&](const char* k) { auto it = v.hash()->find(k); return it != v.hash()->end() ? rakuRepr(it->second, depth + 1, seen) : std::string("\"\""); };
+        return "StrDistance.new(before => " + fld("before") + ", after => " + fld("after") + ")";
+    }
     // a FAILURE renders as the constructor call that rebuilds it, `handled`
     // flag included: `.raku.EVAL` round-trips it
     if (v.t == VT::Hash && v.hashKind == "Failure" && v.hash()) {
