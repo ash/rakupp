@@ -15,6 +15,119 @@ extern thread_local bool g_rxReservedHash;   // Parser.cpp: the RegexLit reads i
 
 namespace rakupp {
 
+// The character at `i` (a whole UTF-8 sequence), and whether, met bare where
+// an atom stands, it is one Rakudo refuses to read as itself: `,`, a backtick,
+// an `=` that follows no capture name (`$<x>=`, `@<x>=`, `$0=`), or a
+// codepoint beyond ASCII that is neither a word character (ID_Continue, as the
+// parser has it), a space, nor `«`/`»` (the word boundaries).
+static std::string utf8CharAt(const std::string& s, size_t i) {
+    size_t n = 1;
+    const unsigned char c = (unsigned char)s[i];
+    if (c >= 0xF0) n = 4; else if (c >= 0xE0) n = 3; else if (c >= 0xC0) n = 2;
+    return s.substr(i, n);
+}
+// Is `i` at the pattern's own level: outside a `<…>` assertion (and the
+// char classes and capture names written inside one), a quote, a `{…}` code
+// block, a `#` comment, and not escaped? The checker's loop walks into some
+// of those, and a `-` in `<-alpha>` or an `=` in `<name=rule>` is theirs.
+// The closer of a quote that opens at `k` (`'`, `"`, and the curly and corner
+// quotes `‘’`, `“”`, `｢｣`), or "" when none opens there.
+static std::string regexQuoteCloserAt(const std::string& pat, size_t k) {
+    if (pat[k] == '\'' || pat[k] == '"') return std::string(1, pat[k]);
+    // ‚…’, ‚…‘ close on either single curly, „…”, „…“ on either double (‘…’ and “…” nest: regexTopLevelAt)
+    if (pat.compare(k, 3, "\xE2\x80\x98") == 0 || pat.compare(k, 3, "\xE2\x80\x9A") == 0) return "S";
+    if (pat.compare(k, 3, "\xE2\x80\x9C") == 0 || pat.compare(k, 3, "\xE2\x80\x9E") == 0) return "D";
+    if (pat.compare(k, 3, "\xEF\xBD\xA2") == 0) return "\xEF\xBD\xA3";   // ｢ ｣
+    return "";
+}
+static bool regexTopLevelAt(const std::string& pat, size_t i) {
+    int angle = 0, brace = 0;
+    std::string q;   // the closer of the quote we are in
+    // …and `｢…｣`, `‘…’` and `“…”` NEST, so the pair we are in and its depth
+    static const char* const kNest[][2] = {{"\xEF\xBD\xA2", "\xEF\xBD\xA3"}, {"\xE2\x80\x98", "\xE2\x80\x99"},
+                                           {"\xE2\x80\x9C", "\xE2\x80\x9D"}, {"\xE2\x80\x9A", "\xE2\x80\x99"},
+                                           {"\xE2\x80\x9E", "\xE2\x80\x9D"}};   // ｢｣ ‘’ “” ‚’ „”
+    int corner = 0, pair = 0;
+    for (size_t k = 0; k < i; k++) {
+        const char c = pat[k];
+        if (corner) {
+            if (pat.compare(k, 3, kNest[pair][0]) == 0) { corner++; k += 2; }
+            else if (pat.compare(k, 3, kNest[pair][1]) == 0) { corner--; k += 2; }
+            continue;
+        }
+        if (q.empty()) {
+            int np = -1;
+            for (int j = 0; j < 5; j++) if (pat.compare(k, 3, kNest[j][0]) == 0) np = j;
+            if (np >= 0) { pair = np; corner = 1; k += 2; continue; }
+        }
+        if (!q.empty()) {
+            const bool closes = q == "S" ? (pat.compare(k, 3, "\xE2\x80\x99") == 0 || pat.compare(k, 3, "\xE2\x80\x98") == 0)
+                              : q == "D" ? (pat.compare(k, 3, "\xE2\x80\x9D") == 0 || pat.compare(k, 3, "\xE2\x80\x9C") == 0)
+                              : pat.compare(k, q.size(), q) == 0;
+            if (closes) { k += (q == "S" || q == "D") ? 2 : q.size() - 1; q.clear(); }
+            continue;
+        }
+        if (c == '\\') {   // an escape, and `\c[…]` / `\x[…]` / `\o[…]` take a bracket
+            if (k + 2 < pat.size() && std::strchr("cCxXoO", pat[k + 1]) && pat[k + 2] == '[') {
+                size_t e = pat.find(']', k + 3);
+                if (e == std::string::npos || e >= i) return false;
+                k = e;
+                continue;
+            }
+            if (++k == i) return false;
+            continue;
+        }
+        if (brace) { if (c == '{') brace++; else if (c == '}') brace--; continue; }
+        if (c == '#' && !angle) { while (k + 1 < i && pat[k + 1] != '\n') k++; if (k + 1 >= i) return false; continue; }
+        if (std::string cl = regexQuoteCloserAt(pat, k); !cl.empty()) { q = cl; k += (c == '\'' || c == '"') ? 0 : 2; continue; }
+        if (c == '{') { brace = 1; continue; }
+        if (c == '<') { if (k + 1 < pat.size() && (pat[k + 1] == '<' || pat[k + 1] == '(')) { k++; continue; } angle++; continue; }
+        if (c == '>') { if (!angle && k + 1 < pat.size() && pat[k + 1] == '>') { k++; continue; } if (angle) angle--; }
+    }
+    return !angle && !brace && q.empty() && !corner;
+}
+static bool unquotedLiteralAt(const std::string& pat, size_t i) {
+    const unsigned char c = (unsigned char)pat[i];
+    // (the cheap test first: the mask walks the pattern from its start)
+    if (!(c == ',' || c == '`' || c == '-' || c == '=' || c >= 0xC0) || !regexTopLevelAt(pat, i)) return false;
+    if (c == '-') {   // …but one inside a VARIABLE's name is the name's: `$fence-char`, `@no-proxy`
+        size_t b = i;
+        while (b > 0 && (ascii::isalnum((unsigned char)pat[b - 1]) || pat[b - 1] == '_' || pat[b - 1] == '-' || (unsigned char)pat[b - 1] >= 0x80)) b--;
+        if (b < i && b > 0 && std::strchr("$@%&", pat[b - 1]) && i + 1 < pat.size() &&
+            (ascii::isalpha((unsigned char)pat[i + 1]) || (unsigned char)pat[i + 1] >= 0xC0)) return false;   // (`$é-ü` too)
+        if (b < i && b > 1 && std::strchr("!.*", pat[b - 1]) && std::strchr("$@%&", pat[b - 2])) return false;   // (`$!attr-name`)
+        return true;
+    }
+    if (c == ',' || c == '`') return true;
+    if (c == '=') {
+        size_t b = i;
+        while (b > 0 && std::strchr(" \t\n", pat[b - 1])) b--;
+        if (b == 0) return true;
+        {   // `$foo=[…]` / `@foo=` alias to a variable
+            size_t w = b;
+            while (w > 0 && (ascii::isalnum((unsigned char)pat[w - 1]) || pat[w - 1] == '_' || pat[w - 1] == '-')) w--;
+            if (w < b && w > 0 && (pat[w - 1] == '$' || pat[w - 1] == '@')) return false;
+        }
+        if (pat[b - 1] == '>') {   // `$<x>=` / `@<x>=` alias a capture; `<digit>=` is an assertion's (rakudo#4927)
+            const size_t lt = pat.rfind('<', b - 1);
+            return !(lt != std::string::npos && lt > 0 && (pat[lt - 1] == '$' || pat[lt - 1] == '@'));
+        }
+        size_t d = b;
+        while (d > 0 && ascii::isdigit((unsigned char)pat[d - 1])) d--;
+        return !(d < b && d > 0 && (pat[d - 1] == '$' || pat[d - 1] == '@'));   // `$0=`
+    }
+    if (c < 0xC0) return false;
+    const std::string ch = utf8CharAt(pat, i);
+    uint32_t cp = 0;
+    const size_t n = ch.size();
+    cp = n == 2 ? (c & 0x1F) : n == 3 ? (c & 0x0F) : (c & 0x07);
+    for (size_t k = 1; k < n; k++) cp = (cp << 6) | ((unsigned char)ch[k] & 0x3F);
+    if (cp == 0xAB || cp == 0xBB || cp == 0xFF62 || uniIdContinue(cp) || !regexQuoteCloserAt(pat, i).empty()) return false;   // (`‘…’`, `｢…｣` open a quote)
+    const bool space = cp == 0x85 || cp == 0xA0 || cp == 0x1680 || (cp >= 0x2000 && cp <= 0x200A) ||
+                       cp == 0x2028 || cp == 0x2029 || cp == 0x202F || cp == 0x205F || cp == 0x3000;
+    return !space;
+}
+
 // A named binding takes ONE quantified atom, and the binding is then an atom
 // itself (Rakudo's metachar:sym<var>): in `$<w>=.*? +%% [ … ]` the `*?` is the
 // bound atom's and the `+` quantifies the binding. Given the position after
@@ -400,6 +513,12 @@ void Parser::checkNullRegex(const std::string& pat, int line, int branches) {
             throw ParseError(std::string("Unrecognized regex metacharacter ") + c +
                                  " (must be quoted to match literally)", line,
                              "X::Syntax::Regex::UnrecognizedMetachar", {{"metachar", std::string(1, c)}});
+        // …nor a `,`, a backtick, an `=` that aliases no capture (`$<x>=`, `$0=`, `@<x>=`)
+        // or a symbol beyond ASCII (`…`, `→`, `€`, `©`, an emoji): each is matched
+        // literally only when quoted, as in Rakudo, which refuses the bare one
+        if (unquotedLiteralAt(pat, i))
+            throw ParseError("Unrecognized regex metacharacter " + utf8CharAt(pat, i) + " (must be quoted to match literally)", line,
+                             "X::Syntax::Regex::UnrecognizedMetachar", {{"metachar", utf8CharAt(pat, i)}});
         // `:11` — digits make a modifier only with a letter after them (`:2nd`, `:3x`)
         if (c == ':' && i + 1 < pat.size() && ascii::isdigit((unsigned char)pat[i + 1])) {
             size_t j = i + 1;
