@@ -1593,6 +1593,9 @@ bool Parser::startsListopArg(const Token& t, const std::string& lhsName) const {
                    // `isa-ok *[0], …` — a TIGHT subscript on `*` curries too
                    (t.text == "*" && &t == &cur() && !peek().spaceBefore &&
                     (peek().kind == Tok::LBracket || peek().kind == Tok::LBrace)) ||
+                   // …and so does a tight HYPER method call: `say *>>.fmt("%02x")` (rakudo#5901)
+                   (t.text == "*" && &t == &cur() && !peek().spaceBefore && peek().kind == Tok::Op &&
+                    (peek().text == ">>" || peek().text == "\xC2\xBB") && peek(2).kind == Tok::Op && peek(2).text == ".") ||
                    (t.text == "*" && &t == &cur() &&
                     ((peek().kind == Tok::Op &&
                       (peek().text == ".." || peek().text == "..^" || peek().text == "..." ||
