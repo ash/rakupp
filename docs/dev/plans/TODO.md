@@ -240,7 +240,11 @@ The same items grouped by theme, with a complexity estimate for each:
   open. R5 is done but rakudo#5138 (521d34ae … 1f205847, 2026-11-13): R's
   associativity and its composition with Z and X, chaining reductions, a
   Range as a Set, the subscripts as routines, ten smaller fixes, and three
-  `--exe` gaps found beside them. Next step: R6, regexes and grammars.
+  `--exe` gaps found beside them. R6 is done (6b709af5 … d45f616e,
+  2026-11-13): TR/// under `~~`, `.subparse(:pos)`, zero-width quantified
+  items, `my token` closures, `self` in tokens, `<&?BLOCK>`, actions'
+  FALLBACK and `ws`, and `\c[name]` in any case. Next step: R7, valid code
+  we refuse, which starts with R7.0 (making room in Parser.cpp).
 
   R9's `use Telemetry` can run beside any batch. The plan's other questions
   are answered when their batch (R10) starts.

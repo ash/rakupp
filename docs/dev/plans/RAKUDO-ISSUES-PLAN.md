@@ -307,21 +307,60 @@ lists, hashes and numeric sections is not started.*
 
 ### R6 — regexes and grammars
 
-- **rakudo#1551 ✓:** `'hello' ~~ TR/e/1/` gives False.
-- **rakudo#1243 ✓:** `.subparse(:pos)` ignores `:pos`, and a failed subparse
-  returns Nil instead of a failed Match.
-- **rakudo#4752 ✓:** `<same> ** 2..4` never matches.
-- **rakudo#5799 ✓:** a literal base character plus a combining mark in a
-  pattern does not match its grapheme (NFG).
-- **rakudo#2791 ✓:** `<!before \S>` at the end of the string fails inside a
-  grammar rule.
-- **rakudo#6810 ✓:** a `my token` in a sub cannot see the sub's lexicals
-  through `<{$re}>`.
-- **rakudo#3410 ✓:** `self` inside an anonymous token's code block is
-  refused.
-- **rakudo#3775 ✓:** ｢{｣ corner-bracket quotes with `:my $L` in a regex fail
-  to parse.
-- **rakudo#2059 ✓:** an actions class's `FALLBACK` is never called.
+*2026-11-13. The named items are done; the rest of the regex and grammar
+sections is not started.*
+
+- **rakudo#1551 — fixed (6b709af5).** `$x ~~ TR///` answers the
+  transliterated Str: `'hello' ~~ TR/e/1/` is "h1llo". An older regression
+  test asserted the previous answer, which Rakudo 2026.09 does not give
+  either; it now asserts Rakudo's. A StrDistance's `.gist` and `.raku` are
+  its constructor, as Rakudo's.
+- **rakudo#1243 — fixed (31206e76).** `.parse` and `.subparse` start at
+  `:pos`, in characters. A failed `.subparse` is a failed Match of the
+  grammar's type: false, defined, `#<failed match>`, with Rakudo's `.to` of
+  -3. A failed `.parse` stays Nil.
+- **rakudo#4752 — fixed (a2fcf5bb).** A bounded quantifier repeats a
+  zero-width item to its maximum (its minimum when frugal), each capture
+  recorded: `<same> ** 2..4` is four. Under `*` and `+` it is still taken
+  once, where Rakudo loops forever.
+- **rakudo#2791 — fixed (e9aaf6b3).** Not the lookahead: `.parse` and
+  `.subparse` took their first argument as the target, so
+  `Chord.subparse(:rule<bare-key>, 'C#')` parsed the `:rule` Pair. An
+  undefined target dies, as Rakudo's does; the check was there but never
+  fired.
+- **rakudo#6810 — fixed (9e693ab0).** A `my token` or `my regex` returned
+  from a sub closes over the call that declared it. Each call's `&F` is
+  its own routine, by `===` and `.WHICH`, and a routine's `.WHICH` is now a
+  serial, as Rakudo's `Sub|…` is (two closures of one `sub { … }` had been
+  one Set element). Rakudo 2026.09 shares one object between the calls, so
+  its first `&F` ends up matching the second call's pattern; the issue asks
+  for what Raku++ now does.
+- **rakudo#3410 — fixed (edc8bf39).** `self` in a standalone token's code
+  is the cursor it was entered with: where the rule began, and for a token
+  matched directly, where the scan began (Rakudo's 0 and 5). A plain
+  `/…/` gets one too, where Rakudo refuses `self` at compile time; that is
+  R10's.
+- **rakudo#3775 — fixed (1ea5c984).** A ｢…｣ quote in a regex is a literal
+  whatever brackets it holds, a `<&name>` call is one atom to the parse
+  checks, and `<&?BLOCK>` recurses into the regex itself; it matched
+  nothing. Left:
+  - the issue's `:my $L = ~$0;` after `{}` warns once that `$0` is
+    undefined, because the declaration runs before the cursor's `$0` is
+    published;
+  - a `"$0"` after the recursion is Nil, where Rakudo interpolates an
+    empty string and matches;
+  - Rakudo refuses a `…` in a regex as an unknown metacharacter
+    (rakudo#3775's third snippet), and Raku++ accepts it; that is R10's.
+- **rakudo#2059 — fixed (2137a05d).** An actions class's FALLBACK is
+  called, as `FALLBACK($name, $/)`, for every rule it has no method for.
+  The actions of `ws` (implicit or written) and of an inlined
+  one-character token called as `<.q>` fire too; neither did. The issue's
+  program now dies where Rakudo's does, on `ws`. The X::Multi::NoMatch
+  message shows the arguments' types, where Rakudo's shows their values.
+- **rakudo#5799 — fixed (d45f616e).** `\c[NAME]` in a regex, bare or in a
+  quoted literal, takes the name in any case. The lower-case name resolved
+  to nothing, so `o\c[combining ring above]` was a bare `o`. An unknown
+  name still resolves to nothing, where Rakudo refuses it; that is R10's.
 - The rest of the regex and grammar sections.
 
 ### R7 — valid code we refuse
@@ -473,6 +512,7 @@ Each is answered when its batch starts, not before.
 | R2, 2026-11-13 | done | 00c30ed1, b980a365 | 1,270 | 1,425/1,425 | 2265/2265 |
 | R3 + R4, 2026-11-13 | named items done but the coercion ones and four narrow ones; PPBUG remainders open | 4f507a0f, 401e19e8, cee2cd42, 29f64dcc, bdb022c4, 38cb1d1e, a64cd841, 91033936, 2987aab9, b66ccda3 | 1,277 | 1,425/1,425 | 2274/2274 |
 | R5, 2026-11-13 | named items done but rakudo#5138; PPBUG remainders open | 521d34ae, a0437c10, 703198f5, cb91f67b, 2416bbe5, 8c513f23, 133560ad, ad10ad81, 3db5cae5, c109e8ec, c47aa1ea, cfbda86a, ccda30e9, 22520fae, 1c4da191, 585a8ee1, eca56b5a, 1ba950a5, 7dc4809d, 9bb82a6c, 57b07f65, 1f205847 | 1,289 | 1,425/1,425 | 2293/2293 |
+| R6, 2026-11-13 | named items done; regex and grammar remainders open | 6b709af5, 31206e76, a2fcf5bb, e9aaf6b3, 9e693ab0, edc8bf39, 1ea5c984, 2137a05d, d45f616e | 1,302 | 1,425/1,425 | 2302/2302 |
 
 R1's per-file changes against the baseline:
 - **3686 and 5835:** TIMEOUT to MATCH.
@@ -532,3 +572,18 @@ R5's per-file changes against R3 + R4:
 R5 changed no codegen, but three of its fixes are in the runtime that
 compiled programs call (by-name infix calls, a lone reduce operand, the
 hyper operator), so the full t/exe/parity.raku ran: 1,618 agree, 0 differ.
+
+R6's per-file changes against R5:
+- **1243/0 and /1, 1551/0, 2059/0, 2791/0, 3410/0, 3775/0 and /1, 4752/0,
+  /1 and /2, 5799/1:** to MATCH.
+- **5782/0 and /1:** DIFF-OUT to MATCH; unlisted, but they call
+  `G.parse(:rule<bar>, …)` with the named argument first, which e9aaf6b3
+  fixed.
+- **6810/0:** MATCH to DIFF-OUT, and **6810/1 and /2** DIFF-BOTH to
+  DIFF-OUT. Raku++ now gives each call its own routine, which the issue
+  asks for; Rakudo 2026.09 shares one, so `$a === $b` is True there.
+- **2181:** MATCH to DIFF-OUT and **5329/0** DIFF-OUT to MATCH; noise.
+- **5868/0:** TIMEOUT to DIFF-EXIT; the deferred race, noise.
+
+The regex engine and the grammar runtime are shared with compiled
+programs, so the full t/exe/parity.raku ran: 1,627 agree, 0 differ.

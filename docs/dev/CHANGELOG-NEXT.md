@@ -16,7 +16,9 @@ fd3fda0f, 33351b91, 5b6a2753, d1e39cb5, 64e4c44f, 7800a133,
 91033936, 2987aab9, b66ccda3, 6eef76fd, ecaee71c, 24256603, 521d34ae,
 a0437c10, 703198f5, cb91f67b, 2416bbe5, 8c513f23, 585a8ee1, 133560ad,
 ad10ad81, 3db5cae5, c109e8ec, c47aa1ea, cfbda86a, ccda30e9, 1c4da191,
-22520fae, eca56b5a, 1ba950a5, 7dc4809d, 9bb82a6c, 57b07f65, 1f205847.*
+22520fae, eca56b5a, 1ba950a5, 7dc4809d, 9bb82a6c, 57b07f65, 1f205847,
+6b709af5, 31206e76, a2fcf5bb, e9aaf6b3, 9e693ab0, edc8bf39, 1ea5c984,
+2137a05d, d45f616e.*
 
 ---
 
@@ -230,6 +232,36 @@ ad10ad81, 3db5cae5, c109e8ec, c47aa1ea, cfbda86a, ccda30e9, 1c4da191,
 - **A compiled hyper operator is the interpreter's** (9bb82a6c): in a `--exe`
   binary `%h »+« %g` was `(2,)` where it is `{:a(3)}`, and every array answer
   came back a List. `t/regression/hyper-reduce-one-operand.raku`.
+- **`$x ~~ TR///` answers the transliterated Str** (6b709af5) (rakudo#1551):
+  `'hello' ~~ TR/e/1/` was False, the result smartmatched against 'hello',
+  where Rakudo answers "h1llo". A tr/// StrDistance's `.gist` and `.raku`
+  are `StrDistance.new(before => …, after => …)`, as Rakudo's.
+  `t/regression/tr-smartmatch-answers-the-string.raku`.
+- **`.parse` and `.subparse` start at `:pos`** (31206e76) (rakudo#1243):
+  `G.subparse("ABCDE", :pos(4))` matched all five letters. A failed
+  `.subparse` answers a failed Match, `#<failed match>`, where it was Any.
+  `t/regression/subparse-pos-and-failed-match.raku`.
+- **A bounded quantifier repeats a zero-width item** (a2fcf5bb)
+  (rakudo#4752): `'00000' ~~ m{^ 0 <same> ** 2..4}` never matched; Rakudo
+  matches with four `same` captures.
+  `t/regression/bounded-quantifier-zero-width-item.raku`.
+- **A grammar's parse target is its first positional argument** (e9aaf6b3)
+  (rakudo#2791): `Chord.subparse(:rule<bare-key>, 'C#')` parsed the `:rule`
+  Pair, so the issue's `<!before \S>` rules never matched. An undefined
+  target dies, as Rakudo's does.
+  `t/regression/grammar-parse-named-before-target.raku`.
+- **An actions class's FALLBACK is called, and `ws` actions fire**
+  (2137a05d) (rakudo#2059): FALLBACK was never called, `rule TOP { a b }`
+  never fired `method ws`, and `<.q>` over `token q { 'q' }` never fired
+  `method q`. `t/regression/grammar-actions-fallback-and-ws.raku`.
+- **`\c[NAME]` in a regex takes the name in any case** (d45f616e)
+  (rakudo#5799): the lower-case name resolved to nothing, so
+  `/o\c[combining ring above]/` failed against "o̊" and
+  `/.\c[combining ring above]/` matched it.
+  `t/regression/regex-char-names-any-case.raku`.
+- **Every routine is its own `.WHICH`** (9e693ab0): two closures of one
+  `sub { … }` had one identity, so a Set of them held one element.
+  `t/regression/my-token-closes-over-its-frame.raku`.
 ### Fixed: crashes
 
 - **A long run of a quantified group no longer overflows the stack**
@@ -407,6 +439,18 @@ ad10ad81, 3db5cae5, c109e8ec, c47aa1ea, cfbda86a, ccda30e9, 1c4da191,
   `infix:<~>("a", "b")` died "Undefined routine 'infix:<~>'" in a `--exe`
   binary. It is the operator, as `&infix:<~>` is.
   `t/regression/hyper-reduce-one-operand.raku`.
+- **A `my token` returned from a sub closes over its call** (9e693ab0)
+  (rakudo#6810): `<{$re}>` inside it died "Variable '$re' is not declared"
+  once the sub had returned `&FULLRE`. Each call's routine is its own, by
+  `===` too; Rakudo 2026.09 shares one between the calls.
+  `t/regression/my-token-closes-over-its-frame.raku`.
+- **`self` in a standalone token's code is its cursor** (edc8bf39)
+  (rakudo#3410): `token { 'a' <?{ say self.pos }> 'a' }` died "'self' used
+  where no object is available". `t/regression/self-in-token-code-block.raku`.
+- **A ｢…｣ quote in a regex holds any bracket, and `<&?BLOCK>` recurses**
+  (1ea5c984) (rakudo#3775): `[｢{｣ <&?BLOCK>? ｢}｣]?` died "Unable to parse
+  regex; couldn't find final ')'", and `<&?BLOCK>` matched nothing.
+  `t/regression/regex-corner-quotes-and-block-recursion.raku`.
 ### Platforms and packaging
 
 ### Tools
