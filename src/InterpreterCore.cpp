@@ -27007,7 +27007,7 @@ Value Interpreter::evalCall(Call* c) {
                 "=:=", "!=:=", "before", "after", "~~", "!~~", "=~=", "\xE2\x89\x85"};
             const std::string bop = uniOpFold(op);   // (`infix:<≤>`'s rules are `<=`'s)
             if (kChaining.count(bop)) return Value::boolean(true);
-            if (opEq(bop, "+") || opEq(bop, "-") || opEq(bop, "*") || opEq(bop, "/")) {
+            if (opEq(bop, "+") || opEq(bop, "-") || opEq(bop, "*") || opEq(bop, "/") || opEq(bop, "~")) {   // (`~` joins a list: `ab`)
                 ValueList one{args[0]};
                 return applyReduce(op, one);
             }

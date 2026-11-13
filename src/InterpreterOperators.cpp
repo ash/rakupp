@@ -3550,6 +3550,11 @@ Value Interpreter::applyReduce(std::string op, ValueList& items) {
         if (chains) return Value::boolean(true); // [<] () is vacuously True
         return Value::any();
     }
+    // a HYPER op over ONE operand is its inner op's one-argument form: `[»+«]
+    // [[1,2],]` numifies the list, 2 (rakudo#5951)
+    if (items.size() == 1 && op.size() >= 5 && (op.compare(0, 2, ">>") == 0 || op.compare(0, 2, "<<") == 0) &&
+        (op.compare(op.size() - 2, 2, ">>") == 0 || op.compare(op.size() - 2, 2, "<<") == 0))
+        return applyReduce(op.substr(2, op.size() - 4), items);
     // the one-argument arithmetic candidates NUMIFY: `[+] "2"` is 2, `[*] $obj`
     // is `$obj.Numeric`, and `[-] 'hello'` throws X::Str::Numeric
     if (items.size() == 1 && (op == "+" || op == "-" || op == "*" || op == "/")) {
@@ -3558,8 +3563,14 @@ Value Interpreter::applyReduce(std::string op, ValueList& items) {
     }
     // …and the one-argument `~` STRINGIFIES: `[~] 1` and `&[~](1)` are "1"
     // (S32-list/unique.t maps with `&[~]`)
-    if (items.size() == 1 && op == "~" && items[0].t != VT::Str && !isJunction(items[0]))
+    // (a LIST joins its elements, as Rakudo's one-argument candidate does: `ab`)
+    if (items.size() == 1 && op == "~" && items[0].t != VT::Str && !isJunction(items[0])) {
+        if ((items[0].t == VT::Array && items[0].arr() && items[0].hashKind.empty()) || items[0].t == VT::Range) {
+            std::string out; for (auto& e : toList(items[0])) out += strOf(e);
+            return Value::str(out);
+        }
         return Value::str(strOf(items[0]));
+    }
     if (chains) {
         for (size_t k = 1; k < items.size(); k++) {
             bool ok = metaInfixStep(ufBase, base, items[k - 1], items[k]).truthy();
