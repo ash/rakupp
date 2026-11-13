@@ -4290,6 +4290,10 @@ void Interpreter::assignListTarget(ListExpr* lst, const Value& rhs, bool isBindi
                     : slotDefault      ? eval(const_cast<Expr*>(slotDefault))
                                        : Value::any();
             vi++;
+            // a SIGILLESS name has no container, so it holds the list as it is: `my (\a, \b) = (1, 2), 3`
+            // makes a the List (1, 2), not $(1, 2) (rakudo#5027's `my (Map \labels, \_) = reduce(…)`)
+            if (tgt->kind == NK::VarExpr && !static_cast<VarExpr*>(tgt)->name.empty() &&
+                !std::strchr("$@%&", static_cast<VarExpr*>(tgt)->name[0])) v.itemized = false;
             // a TYPED slot the list does not reach holds its type object:
             // `my Str ($a) = ()` leaves $a as (Str)
             if (noValue && !isBinding && tgt->kind == NK::VarExpr) {

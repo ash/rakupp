@@ -3753,10 +3753,13 @@ bool Lexer::tryRuleDecl(std::vector<Token>& out, bool spaced) {
     if (!out.empty() && out.back().kind == Tok::Ident &&
         (out.back().text == "sub" || out.back().text == "method" ||
          out.back().text == "submethod")) return false;
+    // …nor a sigilless parameter's: `-> \labels, \token { … }` (rakudo#5027)
+    if (!out.empty() && out.back().kind == Tok::Op && out.back().text == "\\") return false;
     const Mark save = mark();
     std::string kw;
     while (!eof() && ascii::isalpha((unsigned char)peek())) kw += advance();
-    if (kw != "token" && kw != "rule" && kw != "regex") { rewind(save); return false; }
+    // (the keyword is a WHOLE word: `token_ {`, `rules {` and `regex-x {` name something else)
+    if ((kw != "token" && kw != "rule" && kw != "regex") || isIdentCont(peek()) || rakuIdentJoins(peek(), peek(1))) { rewind(save); return false; }
     while (!eof() && (peek() == ' ' || peek() == '\t')) advance();
     // optional rule name (ident, may include - ' :sym<...>)
     std::string name;
