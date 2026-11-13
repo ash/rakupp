@@ -3439,7 +3439,8 @@ Value Interpreter::applyReduce(std::string op, ValueList& items) {
         "=:=", "===", "eqv", "before", "after", "~~"};
     bool neg = op.size() > 1 && op[0] == '!' && op != "!=" && op != "!==";
     std::string base = neg ? op.substr(1) : op;
-    const bool chains = chainOps.count(chainRule.empty() ? base : chainRule) != 0;
+    // (the set relations chain too: `[⊆] ()` is vacuously True, `[∈] (1,)` True)
+    const bool chains = chainOps.count(chainRule.empty() ? base : chainRule) != 0 || isSetPredicateStr(base);
     // the program's own operator, which every step below meets as `a op b` would
     Value* uf = metaInfixUser(op);
     Value* ufBase = neg ? metaInfixUser(base) : uf;
