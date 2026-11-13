@@ -30,6 +30,13 @@ static std::string causeMessageOf(Interpreter& I, const Value& cause, const std:
 // one of the same name still replaces an earlier one).
 void Interpreter::registerBuiltinsPart5() {
     auto& B = builtins_;
+    // `use trace` (rakudo#5546): the statement about to run, as Rakudo
+    // announces it — `ID (FILE line N)` and its source (Parser::traceStmt)
+    B["rakupp-trace"] = [](Interpreter&, ValueList& a) -> Value {
+        if (a.size() == 4)
+            std::cerr << a[0].toStr() << " (" << a[1].toStr() << " line " << a[2].toStr() << ")\n" << a[3].toStr() << "\n" << std::flush;
+        return Value::nil();
+    };
     // `use Telemetry`'s probe (rakulib/Telemetry.rakumod, after Rakudo's
     // nqp::getrusage): getrusage(2)'s fields in MoarVM's order — user and
     // system CPU as seconds and microseconds, max-rss in KB, then ixrss …

@@ -651,6 +651,13 @@ private:
     std::vector<bool> attrPkgStack_;
     void refuseFreeMethodAttrs(size_t bodyAt);
     bool dynScopeAll_ = false;               // `use dynamic-scope` in force (block-scoped)
+    // `use trace` (rakudo#5546): each statement after it in its block is
+    // announced on $*ERR as it runs, as `ID (FILE line N)` and its source.
+    // `stmtId_` numbers statements as Rakudo's compiler does — one for each
+    // statement and one for the end of each block's list (traceStmt, ParserInterp.cpp)
+    bool trace_ = false;
+    int stmtId_ = 0;
+    StmtPtr traceStmt(int id, size_t from, size_t to);
     ExprPtr parsePkgNameLookup();   // `CALLERS::('$_')`, `M::('$q')` (ParserPackages.cpp)
     const Expr* rChainList_ = nullptr;       // the ListExpr the last `R,` built (a chain extends it)
     std::set<std::string> dynScopeNames_;    // `use dynamic-scope <$a $b>`: just these

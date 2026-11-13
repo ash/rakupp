@@ -10947,10 +10947,14 @@ std::unique_ptr<Block> Parser::parseBlock() {
     // `{ constant True = 42 }` shadows the Bool literal for this block only:
     // outside it the name resolves to CORE again (constant.t)
     const bool trueWasTerm = sigilless_.count("True"), falseWasTerm = sigilless_.count("False");
+    const bool savedTrace = trace_;   // (`use trace` is the block's)
     auto blk = std::make_unique<Block>();
     while (!isKind(Tok::RBrace) && !isKind(Tok::End)) {
         if (matchKind(Tok::Semicolon)) continue;
-        blk->stmts.push_back(parseStatement());
+        const int sid = ++stmtId_; const size_t sat = pos_; const bool tracing = trace_;
+        StmtPtr st = parseStatement();
+        if (tracing && trace_) blk->stmts.push_back(traceStmt(sid, sat, pos_));
+        blk->stmts.push_back(std::move(st));
         for (auto& ps : pendingStmts_) blk->stmts.push_back(std::move(ps)); // `will leave` desugars
         pendingStmts_.clear();
         if (isKind(Tok::Comma) && blk->stmts.back() && blk->stmts.back()->kind == NK::SubDecl) { advance(); continue; }
@@ -10976,6 +10980,7 @@ std::unique_ptr<Block> Parser::parseBlock() {
     dynScopeAll_ = savedDynAll;
     dynScopeNames_ = savedDynNames;
     supersedeHow_ = savedSupersede;
+    trace_ = savedTrace; ++stmtId_;   // (the list's end takes a number of its own)
     lastBlockClose_ = pos_; // this `}` closes a BLOCK — see the note on the field
     expectKind(Tok::RBrace, "}");
     opRollback(opMark);
@@ -16147,6 +16152,8 @@ StmtPtr Parser::parseStatementImpl() {
             if (!u->isNo && isKind(Tok::Ident) && cur().text == "isms") ismsPerl5_ = true;
             // `use dynamic-scope` / `use dynamic-scope <$a $b>`: `my` variables
             // declared after it in this block are dynamic (all, or those named)
+            if (isKind(Tok::Ident) && cur().text == "trace" && (peek().kind == Tok::Semicolon || peek().kind == Tok::End || peek().kind == Tok::RBrace))
+                trace_ = !u->isNo;   // `use trace` / `no trace`, for the rest of the block
             if (!u->isNo && isKind(Tok::Ident) && cur().text == "dynamic-scope") {
                 advance();
                 if (isOp("<")) {
@@ -17284,7 +17291,10 @@ Program Parser::parseProgram() {
     try {
         while (!isKind(Tok::End)) {
             if (matchKind(Tok::Semicolon)) continue;
-            prog.stmts.push_back(parseStatement());
+            const int sid = ++stmtId_; const size_t sat = pos_; const bool tracing = trace_;
+            StmtPtr st = parseStatement();
+            if (tracing && trace_) prog.stmts.push_back(traceStmt(sid, sat, pos_));
+            prog.stmts.push_back(std::move(st));
             for (auto& ps : pendingStmts_) prog.stmts.push_back(std::move(ps)); // `will leave` desugars
             pendingStmts_.clear();
             // `multi MAIN(…) { … }, multi MAIN() { … }` — declarations are terms,

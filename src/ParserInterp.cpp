@@ -728,4 +728,38 @@ ExprPtr Parser::parseInterpString(const std::string& rawIn) {
     return result;
 }
 
+// `use trace`'s announcement of the statement in tokens [from, to): a call,
+// run just before it, that writes `ID (FILE line N)` and its source text on
+// $*ERR, as Rakudo's trace pragma does (rakudo#5546). The text is the source
+// between the previous token and the statement's last, without the blanks
+// and comments in front of it; without a source to cut it from, the tokens.
+StmtPtr Parser::traceStmt(int id, size_t from, size_t to) {
+    std::string text;
+    if (to > from && to <= toks_.size() && src_) {
+        const size_t b = from > 0 ? toks_[from - 1].off : 0, e = toks_[to - 1].off;
+        if (b < e && e <= src_->size()) text = src_->substr(b, e - b);
+        size_t k = 0;
+        for (;;) {
+            while (k < text.size() && ascii::isspace((unsigned char)text[k])) k++;
+            if (k < text.size() && text[k] == '#') { while (k < text.size() && text[k] != '\n') k++; continue; }
+            break;
+        }
+        text = text.substr(k);
+        if (!text.empty() && text.back() == ';') text.pop_back();
+    }
+    if (text.empty())
+        for (size_t k = from; k < to && k < toks_.size(); k++) text += (text.empty() ? "" : " ") + toks_[k].text;
+    auto c = std::make_unique<Call>();
+    c->name = "rakupp-trace";
+    c->line = from < toks_.size() ? toks_[from].line : 0;
+    c->args.push_back(std::make_unique<IntLit>(id));
+    c->args.push_back(std::make_unique<StrLit>(srcFile_.empty() ? std::string("-e") : srcFile_));
+    c->args.push_back(std::make_unique<IntLit>(c->line));
+    c->args.push_back(std::make_unique<StrLit>(text));
+    auto st = std::make_unique<ExprStmt>();
+    st->line = c->line;
+    st->e = std::move(c);
+    return st;
+}
+
 } // namespace rakupp
