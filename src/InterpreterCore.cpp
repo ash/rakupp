@@ -7302,7 +7302,9 @@ int Interpreter::scoreCandidate(const Value& cand, const ValueList& args,
                     : !p.type.empty() ? Value::typeObj(p.type) : Value::any();
             if (supplied && isSeqForAtParam(p, v)) v = seqAsBoundList(v);
             if (!supplied && p.defaultVal) {
-                auto denv = makeSlabShared<Env>(); denv->parent = tctx().cur;
+                // (in the CANDIDATE's scope, as binding is: a default may read the
+                // module's `my %defaults`, which the caller cannot see — Data::Dump)
+                auto denv = makeSlabShared<Env>(); denv->parent = whereScope;
                 defineSelf(*denv);
                 // A default may read the parameters declared BEFORE it, as binding
                 // lets it: `:$style = 'double', :$corners where … = W{$style}`. Put
