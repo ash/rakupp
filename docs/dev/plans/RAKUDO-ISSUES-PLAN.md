@@ -445,3 +445,12 @@ R3 and R4's per-file changes against R2:
 Codegen changed three ways in R3 + R4 (cached and `.default`-reading
 routines refused, a class's `self!p` qualified), so the full
 t/exe/parity.raku ran too: 1,599 agree, 0 differ.
+
+The battery run decision 3 asked for (RELEASING.md step 6,
+tier2/run-dist-tests.raku, run inside harness/battery.sb, so with no
+network) found no regression. The candidate passes the same test files
+as v5.8.0 in every dist: 41 PASS, 10 DIFF, 7 ENV, 1 without tests. All ten
+DIFFs are there at v5.8.0 too. Against the battery's committed baseline
+(v5.0.0, run outside the sandbox), seven dists went PASS -> DIFF or ENV;
+five need the network the sandbox denies. Data::Dump and Log::Async do
+not, and are TODO §2's.
