@@ -8146,7 +8146,7 @@ ExprPtr Parser::parsePrimary() {
                 while (matchKind(Tok::Semicolon)) {
                     if (isKind(Tok::RParen)) break;
                     if (isKind(Tok::Semicolon)) { lst->items.push_back(std::make_unique<NameTerm>("Nil")); continue; }
-                    lst->items.push_back(parseExpression());
+                    lst->items.push_back(applyExprModifiers(parseExpression()));   // (a segment takes a modifier: see below)
                 }
                 expectKind(Tok::RParen, ")");
                 if (lst->items.size() == 1) return std::move(lst->items[0]);
@@ -8346,7 +8346,9 @@ ExprPtr Parser::parsePrimary() {
                 lst->items.push_back(std::move(e));
                 while (matchKind(Tok::Semicolon)) {
                     if (isKind(Tok::RParen)) break; // trailing ;
-                    lst->items.push_back(parseExpression());
+                    // every segment takes a statement modifier, as the first does:
+                    // `($n++; last if $n > 3) for 1..*` was "Two terms in a row"
+                    lst->items.push_back(applyExprModifiers(parseExpression()));
                 }
                 expectKind(Tok::RParen, ")");
                 // a lone segment with a TRAILING `;` (`( expr; )`) is just the
