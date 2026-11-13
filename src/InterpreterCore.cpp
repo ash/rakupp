@@ -12756,6 +12756,7 @@ Value* Interpreter::lvalue(Expr* e, bool asInvocant) {
         if (base->t == VT::Hash && base->hash() && base->hashKind == "Attribute" &&
             mcName == "get_value" && mc->args.size() == 1 && !mc->meta && !mc->hyper) {
             Value obj = eval(mc->args[0].get());
+            if (Value* ms = mixinAttrSlot(*base, obj)) return ms;   // (an Attribute a role was mixed into)
             if (obj.t == VT::Object && obj.obj()) {
                 auto nit = base->hash()->find("name");
                 std::string an = nit != base->hash()->end() ? nit->second.toStr() : "";
@@ -25351,8 +25352,7 @@ Value Interpreter::evalUnary(Unary* u) {
                 // `try EXPR` is a thunk, a frame of its own in Rakudo's backtrace (`code`, at
                 // this line): Log::Async drops it as the exception's own and reads the caller
                 // from the next one. A scope marked as runBlockInPlace marks its (btThunk).
-                ExecContext& tcx = tctx();
-                PooledFrame frame_{tcx};
+                ExecContext& tcx = tctx(); PooledFrame frame_{tcx};
                 frame_.env->parent = tcx.cur;
                 frame_.env->btBlock = frame_.env->btCalled = frame_.env->btThunk = true;
                 frame_.env->btLine = curLine_;

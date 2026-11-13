@@ -6169,6 +6169,24 @@ static bool junctionInvocantThreads(const Value& inv, const std::string& m) {
     return m != "defined" && !junctionOwn.count(m) && !(inv.s == "slice" && sliceResizers.count(m));
 }
 
+// The slot a role MIXED INTO an Attribute (or Parameter) keeps one of its
+// attributes in: the meta-object's own map, a private one under the key
+// privMixinKey spells, made on first use with its sigil's empty value. What
+// that attribute's `.get_value($attr)` reads and writes — AttrX::Mooish sets
+// every option of its trait through `….get_value(self) = $value`.
+Value* mixinAttrSlot(const Value& attrMeta, Value& obj) {
+    if (obj.t != VT::Hash || !obj.hash() || (obj.hashKind != "Attribute" && obj.hashKind != "Parameter") ||
+        attrMeta.t != VT::Hash || !attrMeta.hash())
+        return nullptr;
+    auto nit = attrMeta.hash()->find("name");
+    std::string an = nit != attrMeta.hash()->end() ? nit->second.toStr() : "";
+    const char sigil = an.empty() ? '$' : an[0];
+    while (!an.empty() && std::strchr("$@%&!.", an[0])) an.erase(0, 1);
+    auto& oh = *obj.hash();
+    const std::string key = oh.count(an) ? an : "\x01" "p" + an;   // (privMixinKey)
+    if (!oh.count(key)) oh[key] = sigil == '@' ? Value::array() : sigil == '%' ? Value::makeHash() : Value::any();
+    return &oh[key];
+}
 Value* privateInCallerPackage(Interpreter& I, const Value& inv, const std::string& name);   // MethodCallEntry.cpp
 Value Interpreter::methodCall(const Value& inv, const std::string& m, ValueList args, const std::vector<ExprPtr>* rwArgs,
                               bool skipOwn, bool noMethodBack) {
@@ -8481,6 +8499,24 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
     }
     if (!m.empty() && m[0] == '^') {
         std::string mm = m.substr(1);
+        // `.^get_attribute_for_usage('$!lazy')` — an attribute of a role MIXED INTO
+        // this Attribute: AttrX::Mooish sets every option of its trait through
+        // `self.^get_attribute_for_usage('$!' ~ $name).get_value(self) = $value`
+        if (mm == "get_attribute_for_usage" && !args.empty() && inv.t == VT::Hash && inv.hash() &&
+            (inv.hashKind == "Attribute" || inv.hashKind == "Parameter")) {
+            auto& h = *inv.hash();
+            std::string want = args[0].toStr(), bare = want;
+            while (!bare.empty() && std::strchr("$@%&!.", bare[0])) bare.erase(0, 1);
+            if (auto rit = h.find(ATTR_ROLES_KEY); rit != h.end() && rit->second.t == VT::Array && rit->second.arr())
+                for (auto ri = rit->second.arr()->rbegin(); ri != rit->second.arr()->rend(); ++ri)
+                    if (auto cit = classes_.find(ri->s); cit != classes_.end() && cit->second)
+                        if (const ClassAttr* a = cit->second->findAttr(bare))
+                            return attributeMetaObject(const_cast<ClassAttr&>(*a), cit->second->name);
+            std::string mixed;   // Rakudo names the mixin type: "No $!nope attribute in Attribute+{O}"
+            if (auto rit = h.find(ATTR_ROLES_KEY); rit != h.end() && rit->second.t == VT::Array && rit->second.arr())
+                for (auto& r : *rit->second.arr()) mixed += "+{" + r.s.copyText() + "}";
+            throw RakuError{Value::typeObj("X::AdHoc"), "No " + want + " attribute in " + inv.hashKind.str() + mixed};
+        }
         // what a SUBSET refines and how: Red's sub-models read both
         // (`model.^refinee.^all(|c).grep: model.^refinement`)
         if ((mm == "refinee" || mm == "refinement") && inv.t == VT::Type &&

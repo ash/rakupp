@@ -2311,6 +2311,9 @@ struct ClassAttr {
 // The Attribute meta-object for one declared attribute, built once and cached on
 // the ClassAttr (MethodCallPart2.cpp) — user `is` traits mix roles into it.
 Value attributeMetaObject(ClassAttr& a, const std::string& ownerName);
+// …and the slot such an attribute keeps in an Attribute or Parameter meta-object
+// a role was MIXED INTO (its `.get_value($attr)`), or null for any other object
+Value* mixinAttrSlot(const Value& attrMeta, Value& obj);   // Builtins.cpp
 // …and the key an object's attribute map keeps the attribute that meta-object
 // describes under (bare name `an`, sigil `sigil`): ClassInfo::attrSlot, from
 // the class the meta-object names as its package.

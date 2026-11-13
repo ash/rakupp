@@ -458,6 +458,9 @@ evaluated defaults in the caller's scope (broken since v5.3.0), and
 `try EXPR` left no frame for Log::Async to drop, exposed when v5.7.0
 hid `is hidden-from-backtrace` frames. With them the battery reads 43
 PASS, 8 DIFF, 7 ENV, 1 without tests, and the only dists below the v5.0.0
-baseline are the five that need the network. AttrX::Mooish (1/35) is DIFF
-at v5.0.0 too: `.^get_attribute_for_usage` on an Attribute with its role
-mixed in is "No such method", which battery: 50/59 at v4.0.0 passed.
+baseline are the five that need the network. AttrX::Mooish (1/35) never
+passed: at v4.0.0 Rakudo too ran only 1 of its 35 files there. Its first
+blocker is fixed (a mixed-in Attribute's `.^get_attribute_for_usage`).
+The rest is Rakudo's MOP internals: a role mixed into the class's HOW,
+its `@!BUILDPLAN` rewritten through `nqp::getattr`/`nqp::bindattr` so
+construction runs its lazy builders, and Attribute's own `$!composed`.

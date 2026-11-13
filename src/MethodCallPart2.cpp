@@ -3522,7 +3522,8 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
             std::string an = h.count("name") ? h["name"].toStr() : "";
             char sigil = an.empty() ? '$' : an[0];
             while (!an.empty() && (an[0]=='$'||an[0]=='@'||an[0]=='%'||an[0]=='&'||an[0]=='!'||an[0]=='.')) an = an.substr(1);
-            Value obj = args[0];
+            Value obj = args[0];   // (an Attribute a role was mixed into keeps that role's attributes in its own map)
+            if (Value* ms = mixinAttrSlot(inv, obj)) return m == "set_value" && args.size() > 1 ? (*ms = args[1]) : *ms;   // (a mixed-in role's)
             if (obj.t == VT::Object && obj.obj()) {
                 // (a subclass declaring the name again keeps it apart)
                 std::string slotBuf;
