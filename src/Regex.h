@@ -302,6 +302,7 @@ struct GrammarRuleMeta {
     Regex* noArg = nullptr;        // pre-compiled body for a parameterless rule
     const std::vector<std::string>* proto = nullptr; // protoregex candidate names (if this name is a proto)
     bool isWs = false;             // built-in <ws>
+    bool hasAct = false;           // the actions class acts on it (hooks.hasAction, asked once): an inlined or built-in call fires it
     bool isMethod = false;         // not a rule/proto, but the grammar has an ordinary method by this name
     bool viaHow = false;           // a rule of a grammar whose HOW overrides find_method (GrammarHooks::viaHow)
     bool scoped = false;           // body declares `:my` — its dynamic vars are per-invocation

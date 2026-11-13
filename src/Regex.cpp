@@ -5370,6 +5370,7 @@ const GrammarMatcher::NameMeta& GrammarMatcher::nameMeta(const std::string& name
         std::map<std::string, std::string> b;
         m.noArg = compiled(name, "", b);
         // (not when the metaclass must see every call: an inlined rule has none)
+        // (…nor when it has an ACTION: an inlined call completes no rule, and `<.q>` fired nothing)
         if (m.ratchet && m.noArg && m.noArg->rootIsSingleChar() && !hooks.viaHow) m.singleChar = m.noArg;
     }
     auto pit = protos.find(name);
@@ -5383,6 +5384,7 @@ const GrammarMatcher::NameMeta& GrammarMatcher::nameMeta(const std::string& name
     // Only fall back to the built-in <ws> when the grammar hasn't defined its own —
     // a user `token ws { … }` (e.g. to skip comments) must win over the builtin.
     m.isWs = (name == "ws" && !rule && !m.isMethod);
+    m.hasAct = hooks.hasAction && hooks.hasAction(name);
     if (!rule && !m.isMethod) { // built-in char-class fallbacks for names the grammar doesn't define
         if (name == "digit") m.builtinClass = "d"; else if (name == "alpha") m.builtinClass = "a";
         else if (name == "alnum" || name == "ident") m.builtinClass = "ad";
@@ -5663,6 +5665,12 @@ bool GrammarMatcher::matchSubMeta(const GrammarRuleMeta& meta, const std::string
     }
     if (meta.isWs) { // built-in <ws>: \s* gated by <!ww> — same matcher as the plain-regex path
         long p = builtinRuleMatch("ws", st.s, pos, (long)st.s.size());
+        // …and its action fires as a declared rule's does: `method ws($/)`, and a
+        // FALLBACK's "ws" (rakudo#2059). Not for a probe, which only measures.
+        if (p >= 0 && meta.hasAct && !st.probing && !st.probeAbove && !noFire_ && st.hooks && st.hooks->onRule) {
+            ParseNode fp; fp.name = "ws"; fp.from = pos; fp.to = p;
+            st.hooks->onRule(std::move(fp));
+        }
         return p < 0 ? false : k(p);
     }
     // built-in rules (<.alpha> …, <ident>) when the grammar doesn't redefine them
@@ -5715,7 +5723,16 @@ bool GrammarMatcher::matchSubMeta(const GrammarRuleMeta& meta, const std::string
         // nest exactly that way.
         candDeclEnd_ = np;
         candLitPrefix_ = meta.singleChar->rootIsSingleLiteral() ? np - pos : 0;
-        if (capKey.empty()) return k(np);
+        // The call completes the rule, so its action fires now, in order with the rest, as
+        // a declared rule's does — a non-capturing one too (`<.q>`, rakudo#2059). A captured
+        // leaf is then found fired when the tree is built.
+        auto fireInline = [&]() {
+            if (meta.hasAct && !st.probing && !st.probeAbove && !noFire_ && st.hooks && st.hooks->onRule) {
+                ParseNode fp; fp.name = name; fp.from = pos; fp.to = np;
+                st.hooks->onRule(std::move(fp));
+            }
+        };
+        if (capKey.empty()) { fireInline(); return k(np); }
         // capturing <name>: record a leaf node spanning the one char, then continue
         ParseNode pn; pn.name = name; pn.from = pos; pn.to = np;
         bool hadSpan = st.named.count(capKey); auto savedSpan = hadSpan ? st.named[capKey] : std::pair<long,long>{-1,-1};
@@ -5724,6 +5741,7 @@ bool GrammarMatcher::matchSubMeta(const GrammarRuleMeta& meta, const std::string
         st.named[capKey] = {pos, np};
         if (alsoRuleName) { pn.aliasId = newAliasId(); st.named[name] = {pos, np}; st.children[name].push_back(pn); }
         st.children[capKey].push_back(std::move(pn));
+        fireInline();
         if (k(np)) return true;
         st.children[capKey].pop_back();
         if (st.children[capKey].empty()) st.children.erase(capKey);

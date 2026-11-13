@@ -2561,13 +2561,16 @@ Value Interpreter::grammarParse(ClassInfo* g, const std::string& input, bool sub
     };
 
     // run the actions method for `name` (if any) on a freshly built Match, setting .made
+    // An actions class with a FALLBACK has an action for every rule: FALLBACK(name, $/),
+    // as Rakudo calls it (rakudo#2059)
+    Value* fallbackAct = actCls ? actCls->findMethod("FALLBACK") : nullptr;
     auto runAction = [&](const std::string& name, Value& mv) -> bool {
         if (!haveActions || !actCls) return false;
         Value* method = resolveAction(name);
-        if (!method) return false;
+        if (!method && !fallbackAct) return false;
         if (g) stampMatchGrammar(mv, g->name);   // an action's $/ is a G too
         tctx().makeTargets.push_back(&mv);
-        try { invokeMethod(*method, actions, {mv}); }
+        try { if (method) invokeMethod(*method, actions, {mv}); else invokeMethod(*fallbackAct, actions, {Value::str(name), mv}); }
         catch (RakuError& e) { if (std::getenv("RAKUPP_ACTTRACE")) std::cerr << "[ACT] " << name << " threw: " << e.message << "\n"; tctx().makeTargets.pop_back(); throw; }
         catch (...) { tctx().makeTargets.pop_back(); throw; }
         tctx().makeTargets.pop_back();
@@ -3390,8 +3393,8 @@ Value Interpreter::grammarParse(ClassInfo* g, const std::string& input, bool sub
     // A completed subrule that HAS an action method is built, and fired, at
     // once (see `fired` above).
     if (haveActions && actCls) {
-        gm.hooks.hasAction = [resolveAction](const std::string& nm) -> bool {
-            if (resolveAction(nm)) return true; // cached; guillemet form included
+        gm.hooks.hasAction = [resolveAction, fallbackAct](const std::string& nm) -> bool {
+            if (fallbackAct || resolveAction(nm)) return true; // cached; guillemet form included
             size_t c = nm.find(':'); // proto candidate falls back to the base name
             if (c != std::string::npos && c > 0 && resolveAction(nm.substr(0, c))) return true;
             return false;
