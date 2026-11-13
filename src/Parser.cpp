@@ -10947,7 +10947,7 @@ std::unique_ptr<Block> Parser::parseBlock() {
     // `{ constant True = 42 }` shadows the Bool literal for this block only:
     // outside it the name resolves to CORE again (constant.t)
     const bool trueWasTerm = sigilless_.count("True"), falseWasTerm = sigilless_.count("False");
-    const bool savedTrace = trace_;   // (`use trace` is the block's)
+    const bool savedTrace = trace_, savedCached = experimentalCached_;   // (`use trace` and `use experimental :cached` are the block's)
     auto blk = std::make_unique<Block>();
     while (!isKind(Tok::RBrace) && !isKind(Tok::End)) {
         if (matchKind(Tok::Semicolon)) continue;
@@ -10980,7 +10980,7 @@ std::unique_ptr<Block> Parser::parseBlock() {
     dynScopeAll_ = savedDynAll;
     dynScopeNames_ = savedDynNames;
     supersedeHow_ = savedSupersede;
-    trace_ = savedTrace; ++stmtId_;   // (the list's end takes a number of its own)
+    trace_ = savedTrace; experimentalCached_ = savedCached; ++stmtId_;   // (the list's end takes a number of its own)
     lastBlockClose_ = pos_; // this `}` closes a BLOCK — see the note on the field
     expectKind(Tok::RBrace, "}");
     opRollback(opMark);
@@ -13097,6 +13097,9 @@ StmtPtr Parser::parseSub(bool isMulti, bool isProto, bool asMethod) {
             if (!builtinTraits.count(peek().text)) {
                 advance(); // is
                 SubTraitSpec st; st.name = advance().text;
+                if (st.name == "cached" && !experimentalCached_)   // (as in Rakudo: an experiment needs asking for)
+                    throw ParseError("Use of the 'is cached' trait is experimental; please 'use experimental :cached;'",
+                                     cur().line, "X::Experimental", {{"feature", "the 'is cached' trait"}, {"use", "cached"}});
                 if (isKind(Tok::LParen)) {
                     advance();
                     st.arg = parseExpression();
@@ -16416,6 +16419,7 @@ StmtPtr Parser::parseStatementImpl() {
             if (u->module == "experimental" && !u->isNo)
                 for (auto& tag : u->importArgs)
                     if (tag == "rakuast") usesRakuAst_ = true;
+                    else if (tag == "cached") experimentalCached_ = true;
             // SLANG-PLAN §A: the module registers a slang. Run it now, and read the
             // rest of this unit through what it registered. (`need` and `require`
             // run no EXPORT, so they activate nothing — as in Rakudo.)

@@ -658,6 +658,7 @@ private:
     // statement and one for the end of each block's list (traceStmt, ParserInterp.cpp)
     bool trace_ = false;
     int stmtId_ = 0;
+    bool experimentalCached_ = false;   // `use experimental :cached` in force (block-scoped): `is cached` is allowed
     StmtPtr traceStmt(int id, size_t from, size_t to);
     ExprPtr parsePkgNameLookup();   // `CALLERS::('$_')`, `M::('$q')` (ParserPackages.cpp)
     const Expr* rChainList_ = nullptr;       // the ListExpr the last `R,` built (a chain extends it)
