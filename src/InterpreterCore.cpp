@@ -21167,7 +21167,17 @@ Value Interpreter::regexMatch(const std::string& subject, std::string_view patte
     // and answer its value, every slot restored after. Shared by the assertion
     // and by the `<{ … }>` pattern hook, which differ only in what they do with
     // the answer. A quiet error answers Nil.
-    auto evalInCursor = [this, &build](const std::string& code, long from, long to,
+    // `self` in a token's code is the cursor the token was entered with: where the rule began,
+    // and for a routine matched directly (`~~ $tok`, `~~ &tok`) where the scan began (rakudo#3410).
+    // Only where nothing else is `self`; gone again on the way out.
+    const long rxSelfFrom = (!declKind.empty() || (rxVal && rxVal->t == VT::Regex && !rxVal->hashKind.empty())) ? contStart : -1;
+    struct RxSelfG { Env* e = nullptr; ~RxSelfG() { if (e) { e->undefine("self"); e->selfSlot = nullptr; } } };
+    auto bindRxSelf = [this, &build, rxSelfFrom](RxSelfG& g, long from) {
+        if (tctx().cur->findSelf()) return;
+        RxMatch sm; sm.matched = true; sm.from = sm.to = rxSelfFrom >= 0 ? rxSelfFrom : from;
+        tctx().cur->define("self", build(sm)); g.e = tctx().cur.get();
+    };
+    auto evalInCursor = [this, &build, bindRxSelf](const std::string& code, long from, long to,
                                        const GrammarHooks::NamedMap& named,
                                        const std::vector<std::pair<long, long>>& caps,
                                        const RxCursorCaps* cc = nullptr) -> Value {
@@ -21187,6 +21197,7 @@ Value Interpreter::regexMatch(const std::string& subject, std::string_view patte
         // where a `$/` parameter stands (put back below)
         const bool quiet = liftMatchVarQuiet();
         setMatchVar(cursor, true);
+        RxSelfG selfG; bindRxSelf(selfG, from);
         Value out = Value::nil(); bool featThrow = false; FeatureNotBuilt fe; std::exception_ptr rakuErr;
         try { out = evalString(code); }
         catch (FeatureNotBuilt& e) { featThrow = true; fe = e; }
@@ -21221,7 +21232,7 @@ Value Interpreter::regexMatch(const std::string& subject, std::string_view patte
     // abandoned never fires and a branch that is retried never fires twice. Running
     // them eagerly instead is what broke subst.t and longest-alternative.t.
     if (hookScan.find('{') != std::string::npos) {
-        auto runBlock = [this, &inlineMade, &build](
+        auto runBlock = [this, &inlineMade, &build, bindRxSelf](
                               const std::string& code, long from, long to,
                               const GrammarHooks::NamedMap& named,
                               const std::vector<std::pair<long, long>>& caps,
@@ -21250,6 +21261,7 @@ Value Interpreter::regexMatch(const std::string& subject, std::string_view patte
             const bool quiet = liftMatchVarQuiet();
             setMatchVar(cursor, true);
             tctx().cur->define("$\xC2\xA2", cursor);
+            RxSelfG selfG; bindRxSelf(selfG, from);
             Value tgt; tctx().makeTargets.push_back(&tgt);
             // FeatureNotBuilt (a SLIM stub — under --slim=-eval evalString IS
             // the stub) is re-raised after the scope restores below; anything
@@ -21470,20 +21482,6 @@ struct HyperOpName {
     explicit HyperOpName(const std::string& n) : prev(g_hyperOpName) { g_hyperOpName = &n; }
     ~HyperOpName() { g_hyperOpName = prev; }
 };
-// A TYPED Array operand of a hyper keeps its type on the result when every element still fits it
-// (`my Int @a; @a >>*>> 4` is an Array[Int]), and the answer is a plain List when one does not (`@a >>/>> 4`) — S03-metaops/hyper.t
-static Value typedHyperResult(Interpreter& I, const Value& l, const Value& r, Value res) {   // (…and its LEFT operand's container: `$[1,2] »+« $[3,4]` is `$[4, 6]`)
-    if (l.itemized && (res.t == VT::Array || res.t == VT::Hash)) res.itemized = true;
-    const Value* typed = (l.t == VT::Array && !l.isList && !l.ofType().empty()) ? &l
-                       : (r.t == VT::Array && !r.isList && !r.ofType().empty()) ? &r : nullptr;
-    if (!typed || res.t != VT::Array || !res.arr() || isNativeTypeName(typed->ofType())) return res;
-    bool fits = true;
-    for (auto& e : *res.arr()) if (!I.typeOrSubsetMatches(e, typed->ofType())) { fits = false; break; }
-    if (fits) { res.isList = false; res.ofTypeM() = typed->ofType(); }
-    else { res.isList = true; res.ofTypeM() = ""; }
-    return res;
-}
-
 Value rtSmartmatch(Interpreter& I, const char* op, const Value& l, const Value& r) {
     const bool neg = op[0] == '!';
     if (r.t == VT::Code && r.code()) {

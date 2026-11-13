@@ -3910,6 +3910,20 @@ static const std::set<std::string> kCorePostfixOps = {
     "++", "--", "i", "\xE2\x81\xBF", "\xE2\x9A\x9B++", "\xE2\x9A\x9B--"};
 static const std::set<std::string> kCoreCircumfixOps = {":{ }", "[ ]", "{ }"};
 static const std::set<std::string> kCorePostcircumfixOps = {"[ ]", "[; ]", "{ }", "{; }"};
+// A TYPED Array operand of a hyper keeps its type on the result when every element still fits it
+// (`my Int @a; @a >>*>> 4` is an Array[Int]), and the answer is a plain List when one does not (`@a >>/>> 4`) — S03-metaops/hyper.t
+Value typedHyperResult(Interpreter& I, const Value& l, const Value& r, Value res) {   // (…and its LEFT operand's container: `$[1,2] »+« $[3,4]` is `$[4, 6]`)
+    if (l.itemized && (res.t == VT::Array || res.t == VT::Hash)) res.itemized = true;
+    const Value* typed = (l.t == VT::Array && !l.isList && !l.ofType().empty()) ? &l
+                       : (r.t == VT::Array && !r.isList && !r.ofType().empty()) ? &r : nullptr;
+    if (!typed || res.t != VT::Array || !res.arr() || isNativeTypeName(typed->ofType())) return res;
+    bool fits = true;
+    for (auto& e : *res.arr()) if (!I.typeOrSubsetMatches(e, typed->ofType())) { fits = false; break; }
+    if (fits) { res.isList = false; res.ofTypeM() = typed->ofType(); }
+    else { res.isList = true; res.ofTypeM() = ""; }
+    return res;
+}
+
 // The operands a reduction takes from ONE Array: its elements, which an Array
 // holds in containers. Under a hyper operator, whose answer takes its left
 // operand's container, that is what makes `[»+«] @a` one item, `$[…]`, as in
