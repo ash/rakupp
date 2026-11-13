@@ -232,11 +232,15 @@ The same items grouped by theme, with a complexity estimate for each:
   deferred to PARALLEL-PLAN by the plan's decision 4: it is the unlocked
   `classes_` write of the `nonblocking-await.t` item below. R2 is done
   (00c30ed1, b980a365, 2026-11-13): a phaser used as a value runs at its
-  phase, and a set op-assigned to an undefined target starts empty. Next
-  step: R3, objects.
+  phase, and a set op-assigned to an undefined target starts empty. R3 and
+  R4 ran together (4f507a0f … b66ccda3, 2026-11-13): read-only `$.x`,
+  ambiguity with sigilless parameters, `is cached`, private calls in
+  mixins, and six smaller fixes. Their coercion items (rakudo#1285, #6031),
+  four narrow ones and the rest of the oo and dispatch PPBUG sections are
+  open. Next step: R5, operators and lists.
 
   R9's `use Telemetry` can run beside any batch. The plan's other questions
-  are answered when their batch (R3, R10) starts.
+  are answered when their batch (R10) starts.
 - [ ] **A native array's derived lists hand out boxed elements**, found
   2026-11-06 beside the native-element work: `.head`, `.tail`, `.list`, a
   slice `@a[1..2]`, `.reverse`, `.sort`, `.kv`, `.values`, `.pairs` and a

@@ -168,49 +168,64 @@ regression fails the test rather than wedging the suite.
 
 ### R3 — objects: read-only attributes, typed containers, roles, the MOP
 
-- **rakudo#5908 ✓, #6113 ✓, #4463 ✓: a read-only attribute is assignable.**
-  Inside a method, `$.b = 666` assigns to `has $.b`, which has no `is rw`;
-  Rakudo throws "Cannot modify an immutable Int". The same happens through a
-  `method b is raw { $.a }`. The fix can break code that runs on Raku++ today,
-  so it needs a clean battery scan.
-- **rakudo#2068 ✓:** `my Int %h; %h.map({ .value = "meows" })` stores the
-  Str. A Pair's `.value` must check the hash's element type.
-- **rakudo#1285 ✓:** a coercion type as a role argument does not coerce
-  (`R[Int()]`, `has T $.c`).
-- **rakudo#6031 ✓:** `is Set[Int()]` does not coerce its keys; neither do Bag
-  and Mix.
-- **rakudo#2663 ✓:** with a role mixed in, `self!bow` reaches the role's
-  private method instead of the class's own.
-- **rakudo#3292 ✓:** `my \foo = HistoryVar.new; foo = 1` does not call the
-  user container's STORE.
-- **rakudo#4543 ✓:** a CALL-ME mixed into `&grep` is ignored.
-- **rakudo#3976 ✓:** a `multi submethod` lands in the method table instead of
-  the submethod table.
-- **rakudo#2174 ✓, #1959 ✓:** `does` is not callable as a routine, and
-  `$set does …` dies.
-- **rakudo#1855 ✓:** `Rational[IntStr, IntStr]`'s numerator comes back an Int.
-- **A user class named like a core type is still the core type by name**
-  (found in R1 with rakudo#5537, ✓):
-  - with a user `class Rat` in scope, `my Rat $r = 2.2` is accepted, where
-    Rakudo refuses it;
-  - an instance of that class smartmatches Numeric;
-  - user classes named FatRat, IO::Path or Nil get the built-in `.new`.
+*Run with R4, by decision 3: 2026-11-13. The named items are done but the
+coercion ones and four narrow ones below; the rest of FIX-LIST.md's oo PPBUG
+section is not started.*
+
+- **rakudo#5908, #6113, #4463 — fixed (4f507a0f).** `$.x` in a method is
+  `$(self.x)`. Through a read-only accessor a plain `$.b = 666` refuses, and
+  any other write (`$.n++`, `$.h<k> = 1`) reaches a copy, as in Rakudo.
+  Stricter in one corner: `($.a) = 5` refuses too, where Rakudo's list
+  assignment changes the copy.
+- **rakudo#2068 — fixed (a64cd841).** A typed hash's Pairs carry its element
+  type. Left: a typed Array's `.pairs` writes unchecked, `.value = Nil`
+  does not reset to `is default`, and the message does not name `%h`.
+- **rakudo#2663 — fixed (91033936).** A private call resolves in the package
+  it is written in, in the interpreter (methodCall) and in native code (a
+  class's `self!p` is emitted as `!Class::p`). A compiled `$o!Pkg::name`
+  works now; it died.
+- **rakudo#3976 — fixed (2987aab9).** A `multi submethod` is in
+  `.^submethod_table`, and submethods are out of `.^method_table`.
+- **rakudo#3292 — fixed (b66ccda3).** Assigning to a sigilless name bound to
+  an object with STORE calls it. Left: `foo = 1, 2` is an item assignment
+  here, and a sigilless parameter bound to a caller's `$o` calls STORE where
+  Rakudo assigns the container (older than this batch).
+- **rakudo#2174, the `does(…)` half of #1959 — dead.** Rakudo refuses
+  `does(…)` as a routine too, and #2174's snippets agree.
+- **Left, coercion types in a parameterization: rakudo#1285, #6031.** Raku++
+  drops the coercion when it binds `R[Int()]`'s `::T` and when it records
+  `Set[Int()]` (`.keyof` is Int, Rakudo's Int(Any)). The fix runs through
+  the binder's captured types, the parser and every QuantHash write.
+- **Left, narrow:**
+  - rakudo#4543, a CALL-ME mixed into `&grep`;
+  - rakudo#1855, `Rational[IntStr, IntStr]`'s numerator type;
+  - rakudo#1959, `$set does "foo"` (X::AdHoc here, nothing in Rakudo);
+  - a user class named like a core type (`class Rat {}; my Rat $r = 2.2`,
+    `Rat.new ~~ Numeric`, `class Nil` getting the built-in `.new`).
 - The rest of FIX-LIST.md's oo PPBUG section: 27 cases in all.
 
 ### R4 — dispatch: ambiguity, coercion, `is cached`, `.assuming`
 
-- **rakudo#1286 ✓: ambiguity between user multis is not detected.** With
-  `multi f(Int \a, Any \b)` and `multi f(Any \a, Int \b)`, `f(42, 42)` quietly
-  takes the first. Rakudo dies with X::Multi::Ambiguous. TODO §2 already notes
-  the same symptom for two unrelated types (in "#110 constructor type
-  checks"). Do the user-versus-user case here; user-versus-core waits on the
-  open decision "User candidates beside a core ROUTINE".
-- **rakudo#6860 ✓:** a user `multi infix:<~>(Str() $a, Int:U $b)` loses to the
-  built-in. The coercion parameter is not considered.
-- **rakudo#4665 ✓, #4666 ✓: `is cached` never caches.** `pow2` makes 4,094
-  calls where Rakudo makes 11. Requiring `use experimental :cached` is R10's
-  business.
-- **rakudo#4553 ✓:** `.assuming` loses an optional parameter's default.
+*Run with R3: 2026-11-13. The named items are done; the rest of the
+dispatch PPBUG section is not started.*
+
+- **rakudo#1286 — fixed (401e19e8).** Ambiguity counts sigilless, `is raw`
+  and `is copy` parameters as plain ones, as Rakudo does; `is rw` still
+  decides. User-versus-core ambiguity waits on TODO's open decision, as
+  planned.
+- **rakudo#6860 — fixed (bdb022c4).** The cause was not the coercion: a user
+  class's TYPE OBJECT never met the program's `multi infix:<op>`. A core
+  type object still goes to the built-in (`"x" ~ Int` beside a user
+  `(Str, Any)` candidate), because the merged candidate group then lost
+  X::Numeric::Uninitialized.
+- **rakudo#4665, #4666 — fixed (cee2cd42).** `is cached` caches, keyed on
+  the Capture's gist as in Rakudo. Two answers are better than Rakudo's:
+  through `samewith` (11 calls to Rakudo's 2,047) and with a Set argument
+  (1 call to 6). Left: `is cached` on a method runs uncached, where Rakudo
+  refuses it as NYI. Requiring `use experimental :cached` stays with R10.
+- **rakudo#4553 — fixed (29f64dcc, 38cb1d1e).** `.assuming`'s residual
+  `.default` is callable. Under `--exe`, a routine whose defaults the program
+  reads with `.default` runs in the interpreter.
 - The rest of the dispatch PPBUG section.
 
 ### R5 — operators, lists and sequences
@@ -383,6 +398,9 @@ Each is answered when its batch starts, not before.
 3. **(R3) Order of R3 and R4.** The read-only attribute (R3) and the ambiguity
    check (R4) are the two fixes most likely to turn up breakage in the
    battery. Doing them together, behind one battery scan, saves a scan.
+
+   *Answered 2026-11-13: together.* R3 and R4 run as one batch, behind one
+   battery scan.
 4. **(R1) rakudo#5868: one role per declaration, or a lock on the type
    tables?** Rakudo's model would end the per-call type churn, and with it
    the crash and a leak of one class per call. But it changes what such a
@@ -402,6 +420,7 @@ Each is answered when its batch starts, not before.
 | baseline, 2026-11-12 | — | 6ee8f413 | 1,264 | 1,425/1,425 | 2259/2259 |
 | R1, 2026-11-12 | done; rakudo#5868 deferred to PARALLEL-PLAN (decision 4) | 041789fd, 147d0b95, 7fc5b00b, b4f6e472 | 1,267 | 1,425/1,425 | 2263/2263 |
 | R2, 2026-11-13 | done | 00c30ed1, b980a365 | 1,270 | 1,425/1,425 | 2265/2265 |
+| R3 + R4, 2026-11-13 | named items done but the coercion ones and four narrow ones; PPBUG remainders open | 4f507a0f, 401e19e8, cee2cd42, 29f64dcc, bdb022c4, 38cb1d1e, a64cd841, 91033936, 2987aab9, b66ccda3 | 1,277 | 1,425/1,425 | 2274/2274 |
 
 R1's per-file changes against the baseline:
 - **3686 and 5835:** TIMEOUT to MATCH.
@@ -418,3 +437,11 @@ R2's per-file changes against R1:
 - The other timing snippets are NONDET, so the diff run leaves them out.
   Run through the harness by name, each prints a positive time, except
   3620/0, which calls `nqp::time_n`.
+
+R3 and R4's per-file changes against R2:
+- **1286, 2068/2, 4463, 4553, 5908, 6113, 6860, 2663:** to MATCH.
+- **3683:** MATCH to DIFF-OUT; noise, the snippet prints today's date.
+
+Codegen changed three ways in R3 + R4 (cached and `.default`-reading
+routines refused, a class's `self!p` qualified), so the full
+t/exe/parity.raku ran too: 1,599 agree, 0 differ.

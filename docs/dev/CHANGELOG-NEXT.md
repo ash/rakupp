@@ -11,7 +11,9 @@ here.*
 *Covered so far: 59e9d3aa, e5b2b6c8, dec6d962, 15997e10, 71451a61, c68ec738,
 19078698, 9338d1b1, 58e2fdd4, abfea750, 8a11fb4d, 1d8f1495,
 fd3fda0f, 33351b91, 5b6a2753, d1e39cb5, 64e4c44f, 7800a133,
-9c45b83d, 041789fd, 147d0b95, 7fc5b00b, b4f6e472, 00c30ed1, b980a365.*
+9c45b83d, 041789fd, 147d0b95, 7fc5b00b, b4f6e472, 00c30ed1, b980a365,
+4f507a0f, 401e19e8, cee2cd42, 29f64dcc, bdb022c4, 38cb1d1e, a64cd841,
+91033936, 2987aab9, b66ccda3.*
 
 ---
 
@@ -131,6 +133,37 @@ fd3fda0f, 33351b91, 5b6a2753, d1e39cb5, 64e4c44f, 7800a133,
   reduce over nothing: `[∪] ()` and `[⊎] ()` were Any.
   `t/regression/set-op-assign-starts-empty.raku`.
 
+- **`is cached` caches** (cee2cd42) (rakudo#4665, rakudo#4666). The trait
+  was accepted and did nothing: `pow2(10)`, recursing twice per level, made
+  2,047 calls where Rakudo makes 11. A call is keyed on the gist of its
+  Capture, as Rakudo keys it, and every closure of one declaration shares one
+  cache. `samewith` goes through the cache too (Rakudo's skips it), and a Set
+  argument is one key whatever its order. Under `--exe` such a program
+  bundles with the interpreter.
+  `t/regression/is-cached-answers-a-seen-call.raku`.
+- **`self!name` reaches the private method of the package it is written in**
+  (91033936) (rakudo#2663). With `(Puppy.new but Violinist) but Diva`,
+  Puppy's own `greet` bowed as the Diva, and so did the Violinist's
+  `fiddle`. A class's method now reaches its class's `!name`, and a role's
+  method the class the role was composed into, as in Rakudo. A compiled
+  `$o!Pkg::name` had died "No such private method".
+  `t/regression/private-call-resolves-in-its-package.raku`.
+- **The program's `multi infix:<op>` meets its own classes' type objects**
+  (bdb022c4) (rakudo#6860). With `multi infix:<~>(Str() $a, A $b)`,
+  `"A: " ~ A` printed "A: " where Rakudo prints the candidate's answer; an
+  instance already met it. `t/regression/user-infix-takes-a-type-object.raku`.
+- **A typed hash's Pairs check what `.value` is given** (a64cd841)
+  (rakudo#2068): `my Int %h = :42foo; %h.map: { .value = 'meows' }` stored
+  the Str. `t/regression/typed-hash-pair-value-checks-type.raku`.
+- **`.assuming` keeps a remaining parameter's `.default`** (29f64dcc,
+  38cb1d1e) (rakudo#4553): it was the Code type object, where Rakudo answers a
+  block that gives the default. Under `--exe` a routine whose defaults the
+  program reads with `.default` runs in the interpreter, since a compiled
+  signature carries only the default's text.
+  `t/regression/assuming-residual-default.raku`.
+- **A `multi submethod` is a submethod** (2987aab9) (rakudo#3976): it was in
+  `.^method_table` and missing from `.^submethod_table`, and a plain
+  submethod was in both. `t/regression/submethod-table-and-method-table.raku`.
 ### Fixed: crashes
 
 - **A long run of a quantified group no longer overflows the stack**
@@ -249,6 +282,21 @@ fd3fda0f, 33351b91, 5b6a2753, d1e39cb5, 64e4c44f, 7800a133,
   the string. `t/regression/interpolated-block-two-terms.raku`. Reported by
   Offizin.
 
+- **`$.x` in a method is `$(self.x)`** (4f507a0f) (rakudo#5908, rakudo#6113,
+  rakudo#4463). Through a read-only accessor, `$.b = 666` refuses with
+  "Cannot modify an immutable Int (42)", and `$.n++`, `$.n += 1` or an
+  autovivifying `$.h<k> = 1` change only a copy, as in Rakudo. All of them had
+  written the attribute. `is rw`, the class's `is rw` and a user method that
+  is rw still write. Assigning from outside (`$o.b = 5`) names the value in
+  its refusal too. `t/regression/dot-attr-through-read-only-accessor.raku`.
+- **Two multi candidates that tie are ambiguous with sigilless, `is raw` or
+  `is copy` parameters too** (401e19e8) (rakudo#1286): `multi f(Int \a, Any
+  \b)` beside `multi f(Any \a, Int \b)` quietly took the first for
+  `f(42, 42)`, where Rakudo dies X::Multi::Ambiguous.
+  `t/regression/multi-tie-sigilless-raw-copy.raku`.
+- **Assigning to a sigilless name bound to an object with STORE calls it**
+  (b66ccda3) (rakudo#3292): `my \foo = HistoryVar.new; foo = 1` died "Cannot
+  modify an immutable HistoryVar". `t/regression/sigilless-object-store.raku`.
 ### Platforms and packaging
 
 ### Tools
