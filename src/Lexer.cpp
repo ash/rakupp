@@ -4631,6 +4631,12 @@ void Lexer::tokenizeImpl(std::vector<Token>& out) {
             else if (peek() == '=' && peek(1) != '=') { advance(); op += "="; }
             else if (peek() == '+' && peek(1) == '=') { advance(); advance(); op += "+="; }
             else if (peek() == '-' && peek(1) == '=') { advance(); advance(); op += "-="; }
+            // `⚛−=`, with U+2212 MINUS SIGN, is the same operator as `⚛-=`
+            else if ((unsigned char)peek() == 0xE2 && (unsigned char)peek(1) == 0x88 && (unsigned char)peek(2) == 0x92 &&
+                     peek(3) == '=') { for (int k = 0; k < 4; k++) advance(); op += "-="; }
+            // `$x ⚛== 1` is no comparison and no write (rakudo#6873, where it writes 1)
+            else if (peek() == '=' && peek(1) == '=')
+                throw ParseError("There is no ⚛== operator; to compare an atomic read, write ⚛$x == 1", ln);
             t.kind = Tok::Op; t.text = op; t.line = ln; t.spaceBefore = spaced;
             out.push_back(t);
             continue;

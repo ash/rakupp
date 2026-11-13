@@ -31770,11 +31770,11 @@ Value Interpreter::evalVarExpr(Expr* e) {
                 return code;
             }
         }
-        // `&postfix:<++>`, `&prefix:<-->`: the step on the container it is handed,
-        // as a routine of that name (`@a.map(&postfix:<++>)`, `f($y)` steps $y)
-        if (bare == "prefix:<++>" || bare == "prefix:<-->" || bare == "postfix:<++>" || bare == "postfix:<-->") {
-            const bool post = bare[1] == 'o', inc = bare.find("++") != std::string::npos;
-            Value code = evalString(std::string("sub ($x is rw) { ") + (post ? "$x" : "") + (inc ? "++" : "--") + (post ? "" : "$x") + " }");
+        // `&postfix:<++>`, `&prefix:<-->` and the atomic `&prefix:<⚛>`, `&postfix:<⚛++>`…: the step on the container it is
+        // handed, as a routine of that name (`@a.map(&postfix:<++>)`, `f($y)` steps $y)
+        if (static const std::set<std::string> kSteps = {"prefix:<++>", "prefix:<-->", "postfix:<++>", "postfix:<-->", "prefix:<\xE2\x9A\x9B>", "prefix:<++\xE2\x9A\x9B>", "prefix:<--\xE2\x9A\x9B>", "postfix:<\xE2\x9A\x9B++>", "postfix:<\xE2\x9A\x9B-->"}; kSteps.count(bare)) {
+            const bool post = bare[1] == 'o'; const std::string op = bare.substr(post ? 9 : 8, bare.size() - (post ? 10 : 9));
+            Value code = evalString("sub ($x is rw) { " + (post ? "$x" + op : op + "$x") + " }");
             code.setCode(makePayload<Callable>(*code.code())); code.code()->ciM().name = bare;
             return code;
         }
