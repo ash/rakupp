@@ -18,7 +18,9 @@ a0437c10, 703198f5, cb91f67b, 2416bbe5, 8c513f23, 585a8ee1, 133560ad,
 ad10ad81, 3db5cae5, c109e8ec, c47aa1ea, cfbda86a, ccda30e9, 1c4da191,
 22520fae, eca56b5a, 1ba950a5, 7dc4809d, 9bb82a6c, 57b07f65, 1f205847,
 6b709af5, 31206e76, a2fcf5bb, e9aaf6b3, 9e693ab0, edc8bf39, 1ea5c984,
-2137a05d, d45f616e.*
+2137a05d, d45f616e, 9e12d938, 70ee4e8b, 6fcd9181, f102e0f5, b1040540,
+d77e1185, 953adf0a, 73357985, 9badbec4, b590c1ec, f9028851, fdaa60ec,
+f8b5555c, ce72763f.*
 
 ---
 
@@ -262,6 +264,23 @@ ad10ad81, 3db5cae5, c109e8ec, c47aa1ea, cfbda86a, ccda30e9, 1c4da191,
 - **Every routine is its own `.WHICH`** (9e693ab0): two closures of one
   `sub { … }` had one identity, so a Set of them held one element.
   `t/regression/my-token-closes-over-its-frame.raku`.
+- **`return` takes its value as a list operator** (f9028851) (rakudo#2129):
+  `return 0 or 5` returned 5; it is `(return 0) or 5`, and answers 0.
+  `t/regression/return-is-a-list-operator.raku`.
+- **An operator named by a quoted word is that word** (ce72763f)
+  (rakudo#1264): `sub infix:«"z"» (…)` declared an operator named `"z"`,
+  quotes and all, so `42 z 42` gave 42 and the operator was invisible to
+  EVAL. `t/regression/operator-name-quoted-guillemet-word.raku`.
+- **An item in a `has (…)` list keeps its own traits** (f102e0f5)
+  (rakudo#2078): `has ($.z is rw = 42)` declared a read-only `$.z` with no
+  default. `t/regression/has-list-item-traits.raku`.
+- **A gather block's last statement is sunk** (b590c1ec):
+  `gather { take 1; Failure.new }` handed back [1], where Rakudo throws, and
+  `gather { Sinker.new }` took nothing.
+  `t/regression/for-as-block-value-is-not-sunk.raku`.
+- **A sigilless name in a list assignment holds a list as it is** (d77e1185)
+  (rakudo#5027): `my (\a, \b) = (1, 2), 3` made a `$(1, 2)`.
+  `t/regression/sigilless-names-token-and-destructure.raku`.
 ### Fixed: crashes
 
 - **A long run of a quantified group no longer overflows the stack**
@@ -451,6 +470,37 @@ ad10ad81, 3db5cae5, c109e8ec, c47aa1ea, cfbda86a, ccda30e9, 1c4da191,
   (1ea5c984) (rakudo#3775): `[｢{｣ <&?BLOCK>? ｢}｣]?` died "Unable to parse
   regex; couldn't find final ')'", and `<&?BLOCK>` matched nothing.
   `t/regression/regex-corner-quotes-and-block-recursion.raku`.
+- **An anonymous class that opens a statement is a term like any other**
+  (70ee4e8b, 9badbec4) (rakudo#1360, rakudo#2078): `class { … } for ^5` died
+  "Missing ';' before 'for'", and `class { … }.new.z = 42` "unexpected
+  operator in term position".
+  `t/regression/anon-class-statement-takes-infix-and-modifier.raku`.
+- **A `for` that is its block's value does not sink its iterations**
+  (6fcd9181) (rakudo#1360): `{ Failure.new for ^5 }()` threw, where Rakudo
+  answers Nil; compiled code agrees.
+  `t/regression/for-as-block-value-is-not-sunk.raku`.
+- **A block phaser takes a statement modifier** (b1040540) (rakudo#2243):
+  `LEAVE { say 42 } if False;` was refused at parse time. The phaser stays
+  declared, as a declaration does. `t/regression/phaser-block-takes-statement-modifier.raku`.
+- **A name that starts with `token`, `rule` or `regex` is a name** (d77e1185)
+  (rakudo#5027): `-> \labels_, \token_ { … }` failed to parse, `token_ {`
+  read as a regex declaration.
+  `t/regression/sigilless-names-token-and-destructure.raku`.
+- **A `&` item in a declaration list takes a signature** (953adf0a)
+  (rakudo#2336): `my (&op:(Int, Int --> Int)) = …` failed to parse, and
+  `my (&op) = …; op(2, 3)` was "Undeclared routine".
+  `t/regression/declaration-list-routine-items.raku`.
+- **`enum E does R <a b>` parses** (73357985) (rakudo#3376), and an enum's
+  archetypes say it is composalizable, as Rakudo's 1/0 integers.
+  `t/regression/enum-does-role-and-archetypes.raku`.
+- **`say *>>.fmt("%02x")(42)` parses** (fdaa60ec) (rakudo#5901): a tight
+  hyper method call on `*` after a list operator is a WhateverCode.
+  `t/regression/whatever-hyper-method-after-listop.raku`.
+- **Every `;` segment of a parenthesised list takes a statement modifier**
+  (f8b5555c): `($n++; last if $n > 3) for 1..*` was "Two terms in a row".
+  `t/regression/paren-segment-statement-modifier.raku`.
+- **A declaration called at once takes a postfix chain** (f9028851):
+  `sub foo { 7 }().say` printed (Any). `t/regression/return-is-a-list-operator.raku`.
 ### Platforms and packaging
 
 ### Tools

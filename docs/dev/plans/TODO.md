@@ -243,8 +243,10 @@ The same items grouped by theme, with a complexity estimate for each:
   `--exe` gaps found beside them. R6 is done (6b709af5 … d45f616e,
   2026-11-13): TR/// under `~~`, `.subparse(:pos)`, zero-width quantified
   items, `my token` closures, `self` in tokens, `<&?BLOCK>`, actions'
-  FALLBACK and `ws`, and `\c[name]` in any case. Next step: R7, valid code
-  we refuse, which starts with R7.0 (making room in Parser.cpp).
+  FALLBACK and `ws`, and `\c[name]` in any case. R7 is done (9e12d938 …
+  ce72763f, 2026-11-13): Parser.cpp's interpolation moved out (R7.0), and
+  eleven refusals and wrong parses fixed, with two regressions full Roast
+  caught on the way. Next step: R8, strings, numbers, dates, formatting.
 
   R9's `use Telemetry` can run beside any batch. The plan's other questions
   are answered when their batch (R10) starts.

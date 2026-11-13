@@ -365,25 +365,61 @@ sections is not started.*
 
 ### R7 — valid code we refuse
 
-- **R7.0, make room.** Move a self-contained group of functions out of
-  src/Parser.cpp into a file of its own, and record the new ceilings in
-  tools/source-helpers/budget.txt. Commit this alone, so the moves and the
-  fixes can be reviewed apart.
-- **rakudo#1360 ✓, #2078 ✓:** an anonymous class as the first term of a
-  statement takes no postfix or infix after it (`class {…}.new for ^5`,
-  `class {…}.new.z = 42`).
-- **rakudo#2243 ✓:** `LEAVE { … } if False;` is refused by the #206 rule. That
-  rule must allow a statement modifier after a block-statement phaser.
-- **rakudo#5027 ✓:** sigilless parameters whose names end in `_` fail to
-  parse.
-- **rakudo#2336 ✓:** `my (&op:(Int, Int --> Int)) = …` fails to parse.
-- **rakudo#3376 ✓:** `enum E does Positional <a b>` fails to parse.
-- **rakudo#5901 ✓:** `*>>.fmt("%02x")` fails to parse.
-- **Found while probing:** `($n++; last if $n > 3) for 1..*` is "Two terms in
-  a row". A statement modifier inside a parenthesised statement list is not
-  accepted.
-- **rakudo#1264 ✓:** a user `infix:«"z"»` is invisible to EVAL.
-- **rakudo#2129 ✓:** `return 0.flip or die "bar"` returns `(Any)`.
+*2026-11-13. The named items are done; the rest of the syntax PPBUG section
+is not started.*
+
+- **R7.0 — done (9e12d938).** String interpolation (parseInterpString and
+  the two helpers only it uses) moved to src/ParserInterp.cpp, unchanged.
+  Parser.cpp went from 18,455 lines against 18,460 to 17,766 against a
+  re-recorded 18,299. Only its ceiling was re-recorded: `--record` rewrites
+  every one, and would have loosened the others.
+- **rakudo#1360, #2078 — fixed (70ee4e8b, 9badbec4).** An anonymous class
+  that opens a statement takes a modifier, and its postfix chain an infix:
+  `class { … } for ^5`, `class { … }.new.z = 42`. 9badbec4 repairs what
+  70ee4e8b broke: a term-position `my class C {…}.Str, "x"` handed its
+  caller one list (Roast's S12-methods/calling_syntax.t). A NAMED class
+  before a bare modifier is left alone: Rakudo declares it once, at compile
+  time.
+- **rakudo#1360's other snippet — fixed (6fcd9181, b590c1ec).** A `for`
+  that is its block's value does not sink its iterations
+  (`{ Failure.new for ^5 }()` threw), in the interpreter and in compiled
+  code. b590c1ec repairs what 6fcd9181 exposed: a gather block's last
+  statement is sunk, as in Rakudo, so `gather for ^5 { Sinker.new }` takes
+  again (Roast's S04-statements/for.t), and `gather { take 1; Failure.new }`
+  throws, as Rakudo's does.
+- **rakudo#2078's third snippet — fixed (f102e0f5).** An item in a
+  `has (…)` list takes its own traits before its default:
+  `has ($.z is rw = 42)` lost both. Left: `dd` of the accessor shows the
+  value, where Rakudo names the container (`$!z = 42`).
+- **rakudo#2243 — fixed (b1040540).** A block phaser takes a modifier on its
+  line. The phaser stays declared whatever the condition; the modifier
+  governs the statement's value, Nil, queued after it. The issue's sub now
+  prints 42 and answers 99, as it expects; Rakudo 2026.09 crashes there
+  ("setcodeobj needs a code ref"). Rakudo's compile-time "Undeclared
+  routines" for `LEAVE { blah } if foo` is R10's.
+- **rakudo#5027 — fixed (d77e1185).** Not the underscore: the lexer read
+  `token_ {` as the declarator `token`, a rule named `_` and a regex body.
+  The keyword is now a whole word and never follows a `\`. And a sigilless
+  name in a list assignment holds a list as it is (`my (\a, \b) = (1,2), 3`).
+- **rakudo#2336 — fixed (953adf0a).** A `&` item in a declaration list takes
+  a signature, which Rakudo neither checks nor does Raku++, and declares a
+  callable name. The single-variable form `my &op:(…) = …` is a compile error
+  in Rakudo and a run-time one here; that is R10's.
+- **rakudo#3376 — fixed (73357985).** `enum E does R <a b>` parses. An
+  enum's metaobject is composalizable, and every archetype answers 1 or 0,
+  as Rakudo's native ints do. Left: the role is consumed, not composed into
+  the values (Rakudo's `a.hi` works).
+- **rakudo#5901 — fixed (fdaa60ec).** `say *>>.fmt("%02x")(42)`: a tight
+  hyper method call on `*` after a list operator is a WhateverCode.
+- **Found while probing — fixed (f8b5555c).** Every `;` segment of a
+  parenthesised list takes a modifier: `($n++; last if $n > 3) for 1..*`.
+  Left: a `for` modifier in a later segment yields a Seq, where Rakudo's is
+  a List.
+- **rakudo#1264 — fixed (ce72763f).** A quoted word in an operator name's
+  `« »` list is the word: `infix:«"z"»` is `z`, in EVAL too.
+- **rakudo#2129 — fixed (f9028851).** `return` takes its value as a list
+  operator, below the loose `and`/`or`: `return 0 or 5` is 0. And a
+  declaration called at once takes a postfix chain, `sub foo {…}().say`.
 - The rest of the syntax PPBUG section: 34 cases in all.
 
 ### R8 — strings, numbers, dates, formatting
@@ -513,6 +549,7 @@ Each is answered when its batch starts, not before.
 | R3 + R4, 2026-11-13 | named items done but the coercion ones and four narrow ones; PPBUG remainders open | 4f507a0f, 401e19e8, cee2cd42, 29f64dcc, bdb022c4, 38cb1d1e, a64cd841, 91033936, 2987aab9, b66ccda3 | 1,277 | 1,425/1,425 | 2274/2274 |
 | R5, 2026-11-13 | named items done but rakudo#5138; PPBUG remainders open | 521d34ae, a0437c10, 703198f5, cb91f67b, 2416bbe5, 8c513f23, 133560ad, ad10ad81, 3db5cae5, c109e8ec, c47aa1ea, cfbda86a, ccda30e9, 22520fae, 1c4da191, 585a8ee1, eca56b5a, 1ba950a5, 7dc4809d, 9bb82a6c, 57b07f65, 1f205847 | 1,289 | 1,425/1,425 | 2293/2293 |
 | R6, 2026-11-13 | named items done; regex and grammar remainders open | 6b709af5, 31206e76, a2fcf5bb, e9aaf6b3, 9e693ab0, edc8bf39, 1ea5c984, 2137a05d, d45f616e | 1,302 | 1,425/1,425 | 2302/2302 |
+| R7, 2026-11-13 | R7.0 and the named items done; syntax PPBUG remainders open | 9e12d938, 70ee4e8b, 6fcd9181, f102e0f5, b1040540, d77e1185, 953adf0a, 73357985, 9badbec4, b590c1ec, f9028851, fdaa60ec, f8b5555c, ce72763f | 1,318 | 1,425/1,425 | 2313/2313 |
 
 R1's per-file changes against the baseline:
 - **3686 and 5835:** TIMEOUT to MATCH.
@@ -587,3 +624,21 @@ R6's per-file changes against R5:
 
 The regex engine and the grammar runtime are shared with compiled
 programs, so the full t/exe/parity.raku ran: 1,627 agree, 0 differ.
+
+R7's per-file changes against R6:
+- **1264/0, 1360/0 and /2, 2078/0 and /1, 2129/0, 2336/2, 3376/0, 5027/0,
+  /1 and /2, 5901/0:** to MATCH.
+- **2174/0, /1 and /2:** DIFF-EXIT to MATCH; `class {}.new does Foo` is the
+  anonymous-class statement 70ee4e8b fixed.
+- **4522/1:** DIFF-BOTH to MATCH; a `has (…)` item's traits (f102e0f5).
+- **2243/0:** MATCH to DIFF-BOTH. Both engines had printed nothing; Raku++
+  now prints the 42 the issue expects, where Rakudo crashes ("setcodeobj
+  needs a code ref").
+- **2181, 5329/0, 5868/0:** noise, as before.
+
+Full Roast found two regressions on the way, both fixed before the batch
+closed: 9badbec4 (S12-methods/calling_syntax.t) and b590c1ec
+(S04-statements/for.t). The final run had S17-supply/unique.t at 15/16,
+a `sleep`-timed test that passes alone, three runs of three. Codegen
+changed (6fcd9181), so the full t/exe/parity.raku ran: 1,638 agree,
+0 differ.
