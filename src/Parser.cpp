@@ -5910,6 +5910,12 @@ ExprPtr Parser::parseDeclarator(const std::string& scope) {
             // ("expected )"), which took all fifteen tests of
             // S02-names-vars/signature.t with it.
             if (isOp("?") || isOp("!")) advance();
+            // `my (&op:(Int, Int --> Int)) = …` — a signature on a `&` item, which Rakudo
+            // accepts and does not check (rakudo#2336): read past it
+            if (dnm[0] == '&' && isOp(":") && peek().kind == Tok::LParen && !peek().spaceBefore) {
+                advance(); int d = 0;
+                do { if (isKind(Tok::LParen)) d++; else if (isKind(Tok::RParen)) d--; advance(); } while (d > 0 && !isKind(Tok::End));
+            }
             // `my ($a, @b is copy) := …` — a parameter trait; the item is a
             // fresh container either way
             while (isIdent("is") && (peek().text == "copy" || peek().text == "rw" || peek().text == "raw")) { advance(); advance(); }

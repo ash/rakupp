@@ -7276,10 +7276,10 @@ void Interpreter::checkUndeclaredCalls(const std::vector<StmtPtr>& stmts, bool u
         if (st && st->kind == NK::ExprStmt) {
             const Expr* e = static_cast<const ExprStmt*>(st.get())->e.get();
             if (e && e->kind == NK::Assign) e = static_cast<const Assign*>(e)->target.get();
-            if (e && e->kind == NK::VarExpr) {
-                auto* ve = static_cast<const VarExpr*>(e);
-                if (ve->declare && ve->name.size() > 1 && ve->name[0] == '&') declared.insert(ve->name.substr(1));
-            }
+            auto noteAmp = [&](const Expr* x) { auto* ve = x && x->kind == NK::VarExpr ? static_cast<const VarExpr*>(x) : nullptr;
+                if (ve && ve->declare && ve->name.size() > 1 && ve->name[0] == '&') declared.insert(ve->name.substr(1)); };
+            if (e && e->kind == NK::ListExpr) for (auto& it : static_cast<const ListExpr*>(e)->items) noteAmp(it->kind == NK::Assign ? static_cast<const Assign*>(it.get())->target.get() : it.get());   // …and a list's: `my (&op) = …`
+            else noteAmp(e);
         }
     }
     if (calls.count("\x01other")) return;
