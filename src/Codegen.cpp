@@ -2451,6 +2451,7 @@ struct Codegen {
     // A block `{ ... }` / pointy `-> $x { ... }` becomes a native closure.
     std::string emitBlockClosure(BlockExpr* be) {
         Nest __nest{this, be->isSub ? 's' : 'b'};
+        for (auto& st : be->userTraits) if (st.name == "cached") throw CodegenError{"a routine that is cached", true};
         BodyScope __bs{this, /*closure=*/true};
         // an anonymous `sub` is a routine of its own; a plain block is not
         std::unique_ptr<RoutineScope> __rs;
@@ -9876,8 +9877,8 @@ struct Codegen {
     }
     void subDef(SubDecl* d) {
         if (d->isNative) { nativeSubDef(d); return; }
-        RoutineScope __rs{this, subRefSig("Value::closure([](ValueList& __a)->Value{ return " +
-                                          mangleSub(d->name) + "(__a); })", d->name)};
+        for (auto& st : d->traits) if (st.name == "cached") throw CodegenError{"a routine that is cached", true};   // (callCached)
+        RoutineScope __rs{this, subRefSig("Value::closure([](ValueList& __a)->Value{ return " + mangleSub(d->name) + "(__a); })", d->name)};
         nrWrapFor_ = d->name;   // a native routine's Value function calls its native function
         rwDirect_ = !moduleMode_ && srcText_.find("&" + d->name) == std::string::npos;
         struct OuterR { const SubDecl*& r; const SubDecl* s; ~OuterR() { r = s; } } __or{outerRoutine_, std::exchange(outerRoutine_, d)};

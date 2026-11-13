@@ -6287,6 +6287,8 @@ static void refuseRoleClashes(Interpreter& I, const std::string& clsName, const 
             // `sub foo() is traced {…}` calls trait_mod:<is>($foo, :traced).
             // Skipped while hoisting — traits run at the declaration's textual
             // position (see the hoist-skip sites), after earlier `my`s initialized.
+            for (auto& st : sd->traits)   // `sub f($x) is cached`: a call seen before answers its value
+                if (st.name == "cached" && !st.arg && !sd->isMethod) markCached(code, sd);
             if (!sd->traits.empty() && !hoistingSubs_) {
                 if (Value* tm = tctx().cur->find("&trait_mod:<is>")) {
                     if (tm->t == VT::Code) for (auto& st : sd->traits) callRoutineTrait(*tm, code, st);

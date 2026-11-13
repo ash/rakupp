@@ -6564,6 +6564,8 @@ void Interpreter::applySubTraits(SubDecl* sd) {
         fn->code()->ciM().protoDeclared = true;
     applyParamTraits(sd->params, *fn);
     if (sd->traits.empty()) return;
+    for (auto& st : sd->traits)   // `is cached`: a call seen before answers its value
+        if (st.name == "cached" && !st.arg && !sd->isMethod) markCached(*fn, sd);
     Value* tm = tctx().cur->find("&trait_mod:<is>");
     if (!tm || tm->t != VT::Code) {
         // no `trait_mod:<is>` at all: a trait that names no type is unknown

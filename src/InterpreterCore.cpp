@@ -7847,7 +7847,12 @@ static Value dropNativeTag(Value v) {
     return v;
 }
 
+extern thread_local const Callable* t_cachedBypass;   // InterpreterCalls.cpp
 Value Interpreter::callCallable(const Value& codeVal, ValueList args, const std::vector<ExprPtr>* rwArgs, bool ownFrame, bool arityCheck, bool whereVerified) {
+    if (codeVal.t == VT::Code && codeVal.code() && codeVal.code()->ci().isCached) {   // `is cached`
+        if (t_cachedBypass != codeVal.code()) return callCached(codeVal, std::move(args), rwArgs, ownFrame, arityCheck, whereVerified);
+        t_cachedBypass = nullptr;   // (callCached's own call: the routine runs)
+    }
     // `is test-assertion`: the outermost one's call site is where a failure inside it is reported
     struct TALine { int& ref; bool set; ~TALine() { if (set) ref = 0; } }
         taLine{testAssertLine_, false};
@@ -7988,7 +7993,7 @@ static signed char plainSubShape(Callable& c) {
         return false;                                   // not settled yet
     bool plain = !c.ci().isBlock && !c.ci().isMethod && !c.ci().builtin && !c.cold().isNative && !c.ci().isMultiDispatcher &&
                  !c.ci().isMultiCandidate && !c.ci().isProto && !c.ci().isWhateverCode && !c.ci().isRegexRoutine &&
-                 !c.cold().deprecated && !c.ci().testAssertion && c.ci().hadSig && c.ci().params && c.ci().body &&
+                 !c.cold().deprecated && !c.ci().testAssertion && !c.ci().isCached && c.ci().hadSig && c.ci().params && c.ci().body &&
                  c.ci().placeholders.empty() && !c.ci().usesArgs && !c.ci().implicitArgs && !c.cold().hasPrimed &&
                  !c.ci().retLiteral && !c.ci().retRw && c.ci().padLayout &&
                  bodyEntryWork(c) == 0 && c.ci().catchScan.get() == 0 && c.ci().controlScan.get() == 0 &&

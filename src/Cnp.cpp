@@ -1796,7 +1796,7 @@ bool inlineExpr(const Expr* e, const std::set<std::string>& params, Env* env) {
 
 const Expr* inlineBody(const Callable& c, Env* env) {
     if (c.ci().isMultiDispatcher || c.ci().isMultiCandidate || c.ci().isProto || c.ci().isMethod || c.ci().isBlock ||
-        c.ci().isWhateverCode || c.ci().isRegexRoutine || c.cold().isNative || c.cold().deprecated || !c.cold().retType.empty() ||
+        c.ci().isWhateverCode || c.ci().isRegexRoutine || c.cold().isNative || c.cold().deprecated || c.ci().isCached || !c.cold().retType.empty() ||
         c.ci().retRw || !c.cold().wrappers.empty() || !c.ci().placeholders.empty() || !c.ci().params || !c.ci().body ||
         c.ci().body->size() != 1)
         return nullptr;

@@ -716,8 +716,10 @@ struct ClassInfo;   // (checkRetType's shortcut below names one)
 // DEPRECATED`, a declared return type, an `.assuming` residual signature —
 // behind one pointer, so a closure does not carry ~330 bytes of them
 // (SPEED-BACKLOG 8, step 1; Callable 704 -> ~390 bytes).
+struct CachedCalls;   // `is cached`: what each call answered, by the gist of its Capture (InterpreterCalls.cpp)
 struct CallableCold {
     ValueList candidates;                          // multi-dispatch candidates
+    std::shared_ptr<CachedCalls> cache;            // `is cached` (null = not)
     std::shared_ptr<std::string> deprecated;        // `is DEPRECATED`: what to use instead (null = not)
     // Declared return type (`of`/`returns`/`-->`), "" = none. A COERCING one
     // keeps its parens — `Map()` — because that is the whole difference between
@@ -936,6 +938,7 @@ struct CodeInfo : RefCounted {
     CallableCold& coldM();
     bool isStub = false;                              // body is a bare `...`/`!!!` stub (role requirement)
     bool testAssertion = false; // `is test-assertion` (see Interpreter::testAssertLine_)
+    bool isCached = false;      // `is cached`: a call it has seen answers from cold().cache (Interpreter::callCached)
     bool isNodal = false;       // `is nodal` (see the hyper callable path)
     bool hiddenBt = false;      // `is hidden-from-backtrace` (btFrameHidden)
     bool usesArgs = false;                            // body references @_ / %_ (implicit slurpy signature)

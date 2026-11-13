@@ -302,6 +302,8 @@ Value Interpreter::makeClosure(BlockExpr* be) {
     // belongs to its class (above).
     if (!be->termName.empty() && !be->isMethodTerm && !be->anonTerm)
         tctx().cur->define("&" + be->termName, code);
+    for (auto& st : be->userTraits)   // `sub ($x) is cached {…}`
+        if (st.name == "cached" && !st.arg && !be->isMethodTerm) markCached(code, be);
     // a USER trait on the anonymous routine (`sub (…) is memoized(%c) {…}`)
     if (!be->userTraits.empty())
         if (Value* tm = tctx().cur->find("&trait_mod:<is>"))

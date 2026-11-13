@@ -3694,6 +3694,9 @@ public:
     // called, whose FIRST runs on its first call only; a block run in place has none.
     void runEnterPhasers(const std::vector<StmtPtr>& stmts, Callable* firstOnce = nullptr, bool valuePh = false);   // (valuePh: entryWork bit 64)
     void runUnitEntryPhasers(const std::vector<StmtPtr>& stmts, Value* tail = nullptr);   // a program's or an EVAL's FIRST and ENTER
+    Value callCached(const Value& codeVal, ValueList args, const std::vector<ExprPtr>* rwArgs, bool ownFrame,
+                     bool arityCheck, bool whereVerified);   // `is cached` (InterpreterCalls.cpp)
+    void markCached(Value& code, const void* decl);   // one cache per DECLARATION, shared by its clones
     Value valuePhaser(BlockExpr* be);   // a phaser in TERM position: its value, from its phase
     void runFirstPhasers(const std::vector<StmtPtr>& stmts); // FIRST once before a loop's first iteration
     void runLastPhasers(const std::vector<StmtPtr>& stmts);  // LAST once after a loop's last iteration

@@ -6939,5 +6939,54 @@ void slurpyLoneElements(const Value& only, ValueList& out) {
     else for (auto& x : only.flatten()) out.push_back(x);
 }
 
+// `is cached`, as Rakudo's experimental trait does it: a call whose Capture has
+// the GIST of one already made answers that call's value, without running the
+// routine (`sub pow2($a) is cached`, recursing twice per level, runs once per
+// level). The gist is Rakudo's key too, so what it tells apart is what Rakudo
+// tells apart: `f(1)` from `f("1")`, and an Array by its elements at the time.
+struct CachedCalls {
+    std::mutex mu;
+    std::unordered_map<std::string, Value> byGist;
+};
+thread_local const Callable* t_cachedBypass = nullptr;
+// Rakudo applies the trait once, to the routine its declaration compiles to, so
+// every closure of that declaration shares one cache: a `sub inner … is cached`
+// inside another routine keeps its answers from one call of that routine to the next.
+static std::mutex g_cachedMu;
+static std::unordered_map<const void*, std::shared_ptr<CachedCalls>> g_cachedByDecl;
+void Interpreter::markCached(Value& code, const void* decl) {
+    if (code.t != VT::Code || !code.code() || code.code()->ci().isMultiDispatcher) return;
+    if (code.code()->ci().isCached && code.code()->cold().cache) return;
+    std::shared_ptr<CachedCalls> c;
+    {
+        std::lock_guard<std::mutex> g(g_cachedMu);
+        auto& slot = g_cachedByDecl[decl];
+        if (!slot) slot = std::make_shared<CachedCalls>();
+        c = slot;
+    }
+    code.code()->ciM().isCached = true;
+    code.code()->coldM().cache = std::move(c);
+}
+Value Interpreter::callCached(const Value& codeVal, ValueList args, const std::vector<ExprPtr>* rwArgs, bool ownFrame,
+                              bool arityCheck, bool whereVerified) {
+    std::shared_ptr<CachedCalls> cache = codeVal.code()->cold().cache;
+    Value cap = Value::array();
+    *cap.arr() = args;
+    cap.hashKind = "Capture";
+    const std::string key = methodCall(cap, "gist", ValueList{}).toStr();
+    if (cache) {
+        std::lock_guard<std::mutex> g(cache->mu);
+        auto it = cache->byGist.find(key);
+        if (it != cache->byGist.end()) return it->second;
+    }
+    t_cachedBypass = codeVal.code();
+    Value r = callCallable(codeVal, std::move(args), rwArgs, ownFrame, arityCheck, whereVerified);
+    if (cache) {
+        std::lock_guard<std::mutex> g(cache->mu);
+        cache->byGist.insert_or_assign(key, r);
+    }
+    return r;
+}
+
 } // namespace rakupp
 

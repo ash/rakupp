@@ -1618,7 +1618,7 @@ KNode* Compiler::ltail(IKernel& k, const std::vector<StmtPtr>& ss) {
 // nothing a first call works out is needed here.
 bool kernelShape(const Callable& c) {
     if (c.ci().isBlock || c.ci().isMethod || c.ci().builtin || c.cold().isNative || c.ci().isMultiDispatcher ||
-        c.ci().isMultiCandidate || c.ci().isProto || c.ci().isWhateverCode || c.ci().isRegexRoutine || c.cold().deprecated ||
+        c.ci().isMultiCandidate || c.ci().isProto || c.ci().isWhateverCode || c.ci().isRegexRoutine || c.cold().deprecated || c.ci().isCached ||
         c.ci().testAssertion || !c.ci().hadSig || !c.ci().params || !c.ci().body || c.ci().body->empty() ||
         !c.ci().placeholders.empty() || c.ci().usesArgs || c.ci().implicitArgs || c.cold().hasPrimed ||
         c.ci().retLiteral || c.ci().retRw || c.ci().params->size() > (size_t)kMaxParams)
