@@ -520,7 +520,21 @@ void Interpreter::registerBuiltinsPart5() {
         // interleave the input lists: round 0 = one from each, round 1 = next, … skipping exhausted lists
         std::vector<ValueList> lists;
         bool slip = false; // `:slip` flattens the rounds into one list
-        for (auto& v : a) {
+        // the SINGLE-ARGUMENT rule: one positional list stands for its elements,
+        // so `roundrobin ((1,2,3), (4,5))` takes turns between the two (rakudo#1447)
+        size_t npos = 0; const Value* only = nullptr;
+        for (auto& v : a) if (!(v.t == VT::Pair && v.namedArg)) { npos++; only = &v; }
+        // (a Range's too; an ARRAY's elements are containers, each one item)
+        ValueList spread;
+        if (npos == 1 && ((only->t == VT::Array && only->arr()) || only->t == VT::Range) && !only->itemized) {
+            for (auto& v : a) if (v.t == VT::Pair && v.namedArg) spread.push_back(v);
+            const bool array = only->t == VT::Array && !only->isList && only->s != "Seq";
+            for (auto& x : only->t == VT::Range ? only->flatten() : *only->arr()) {
+                spread.push_back(x);
+                if (array && (spread.back().t == VT::Array || spread.back().t == VT::Range)) spread.back().itemized = true;
+            }
+        }
+        for (auto& v : spread.empty() ? a : spread) {
             if (v.t == VT::Pair && v.namedArg) { if (v.s == "slip") slip = !v.pairVal() || v.pairVal()->truthy(); continue; }
             // an ITEMIZED list is one element, not a list to take turns from
             ValueList l = ((v.t == VT::Array || v.t == VT::Range) && !v.itemized) ? v.flatten() : ValueList{v};
