@@ -12604,6 +12604,8 @@ StmtPtr Parser::parseSub(bool isMulti, bool isProto, bool asMethod) {
             std::string un;
             for (size_t i = 0; i < in.size(); i++)
                 un += in[i] == '\\' && i + 1 < in.size() ? in[++i] : in[i];
+            // a QUOTED word in the list is the word: `infix:«"z"»` is `z` (rakudo#1264)
+            if (un.size() > 2 && (un[0] == '"' || un[0] == '\'') && un.back() == un[0]) un = un.substr(1, un.size() - 2);
             w.push_back(un);
             resolveConstWords(w);
         }
