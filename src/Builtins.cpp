@@ -9357,7 +9357,11 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
         if (m == "type" && inv.hash()->count("type-obj")) return (*inv.hash())["type-obj"];
         if (m == "type" && inv.hash()->count(m.s)) return (*inv.hash())[m.s];
         if (m == "positional") return Value::boolean(!(*inv.hash())["named"].truthy() && !(*inv.hash())["slurpy"].truthy());
-        if (m == "sigil") { const std::string_view n = (*inv.hash())["name"].s; return Value::str(n.empty() ? "$" : n.substr(0, 1)); }
+        // a sigilless `\g` answers `\`, a capture `|c` `|`; `.twigil` is the `!`, `.` or `*` after the sigil (rakudo#2275)
+        if (m == "sigil" || m == "twigil") { const std::string_view n = (*inv.hash())["name"].s;
+            const bool sig = !n.empty() && std::strchr("$@%&", n[0]);
+            if (m == "twigil") return Value::str(sig && n.size() > 1 && std::strchr("!.*", n[1]) ? n.substr(1, 1) : "");
+            return Value::str(inv.hash()->count("capture") && (*inv.hash())["capture"].truthy() ? "|" : n.empty() ? "$" : sig ? n.substr(0, 1) : "\\"); }
         // An accessor of a role a parameter trait mixed in (`$param does
         // Formatted::Named(:$argument)` put the role's attributes into this same
         // map): `$param.argument`. Last, so it can never shadow a real
