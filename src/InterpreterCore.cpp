@@ -24738,14 +24738,14 @@ Value Interpreter::evalUnary(Unary* u) {
         // nothing after it uses the Any it hands back (ctlOnStmtPath); as any
         // other operand it throws, and the loop catches the exception exactly
         // as it does from a nested block
-        if (tctx().frameTop == tctx().curLoopFrame && ctlOnStmtPath(tctx(), u)) {
+        if (tctx().frameTop == tctx().curLoopFrame && !u->operand && ctlOnStmtPath(tctx(), u)) {
             tctx().loopCtl = opEq(u->op, "next") ? 1 : opEq(u->op, "last") ? 2 : 3; // cooperative
             tctx().loopCtlLabel = nullptr;
             return Value::any();
         }
-        if (opEq(u->op, "last")) throw LastEx{};
-        if (opEq(u->op, "next")) throw NextEx{};
-        throw RedoEx{};
+        if (opEq(u->op, "last")) throw LastEx{u->operand ? static_cast<StrLit*>(u->operand.get())->v : std::string()};   // (`… or last LOOP`)
+        if (opEq(u->op, "next")) throw NextEx{u->operand ? static_cast<StrLit*>(u->operand.get())->v : std::string()};
+        throw RedoEx{u->operand ? static_cast<StrLit*>(u->operand.get())->v : std::string()};
     }
     // reduction metaoperator [op] — and its triangular/scan form [\op]
     if (u->op.size() >= 3 && u->op.front() == '[' && u->op.back() == ']') {

@@ -8737,8 +8737,8 @@ ExprPtr Parser::parsePrimary() {
                 auto c = std::make_unique<Call>(); c->name = advance().text;
                 // `!!! 42` / `... "not yet"` — the stub's message follows it
                 switch (cur().kind) {
-                    case Tok::IntLit: case Tok::NumLit: case Tok::StrLit: case Tok::StrInterp: case Tok::Var:
-                        if (cur().line == t.line) c->args.push_back(parseExpr(BP_COMMA + 1));
+                    case Tok::IntLit: case Tok::NumLit: case Tok::StrLit: case Tok::StrInterp: case Tok::Var: case Tok::Op:   // (Op: `!!! ::?CLASS.^name ~ '…'`, Testo's)
+                        if (cur().line == t.line && (cur().kind != Tok::Op || cur().text == "::")) c->args.push_back(parseExpr(BP_COMMA + 1));
                         break;
                     default: break;
                 }
@@ -9195,14 +9195,14 @@ ExprPtr Parser::parsePrimary() {
                 // the op's (cooperative) result (zef: `next() R, DEBUG(...)`).
                 if (name != "return" && name != "return-rw" &&
                     isKind(Tok::LParen) && peek().kind == Tok::RParen) { advance(); advance(); }
+                if (name != "return" && name != "return-rw" && cur().kind == Tok::Ident && labelNames_.count(cur().text) && cur().line == toks_[pos_ - 1].line) u->operand = std::make_unique<StrLit>(advance().text);   // `… or last LOOP`: its label
                 // (a keyword only as a WORD: a literal's text is its contents, so
                 // `f($i) or return "no"` lost its "no" to the keyword `no` and
                 // returned Nil; and `not` is a prefix like any other term)
                 bool retTerm = startsTermToken(cur()) &&
                                (cur().kind != Tok::Ident || !kBlockKeywords.count(cur().text) ||
                                 cur().text == "not" || kwCallHere(cur().text));
-                // sub/method/do/start blocks are valid expression operands too, as is
-                // an anonymous type literal (`return role {…}`)
+                // sub/method/do/start blocks are valid expression operands too, as is an anonymous type literal (`return role {…}`)
                 if (isIdent("sub") || isIdent("method") || isIdent("do") || isIdent("start")) retTerm = true;
                 if ((isIdent("role") || isIdent("class") || isIdent("grammar")) &&
                     (peek().kind == Tok::LBrace || (peek().kind == Tok::Op && peek().text == "::"))) retTerm = true;
@@ -9841,6 +9841,7 @@ ExprPtr Parser::parsePrimary() {
                         }
                         return c;
                     }
+                    if (pseudoPkg == "GLOBAL" && !keyExpr) if (ExprPtr st = pkgStashSubscript("GLOBAL", {sym})) return st;   // `GLOBAL::<Build>:delete`: the Stash's, as `Foo::<…>:delete` (a Pair of its own)
                     long long outerHops = 0;
                     for (size_t k = 0; k + 7 <= name.size(); k++)
                         if (name.compare(k, 7, "OUTER::") == 0) outerHops++;
@@ -9919,8 +9920,7 @@ ExprPtr Parser::parsePrimary() {
                 bool sigilled = !key.empty() &&
                     (key[0] == '$' || key[0] == '@' || key[0] == '%' || key[0] == '&');
                 std::string qual = sigilled ? key.substr(0, 1) + pkg + "::" + key.substr(1) : pkg + "::" + key;
-                if (ExprPtr st = pkgStashSubscript(pkg, words)) return st;   // `Foo::<$x>:p`, `Foo::<$x $y>`
-                if (ExprPtr ex = pkgExistsAdverb(qual)) return ex;   // `Foo::<$x>:exists`
+                if (ExprPtr st = pkgStashSubscript(pkg, words)) return st; else if (ExprPtr ex = pkgExistsAdverb(qual)) return ex;   // `Foo::<$x>:p`, `Foo::<$x $y>`; `Foo::<$x>:exists`
                 auto ve = std::make_unique<VarExpr>(qual);
                 ve->pkgSymbol = true; // assignment autovivifies the slot
                 return ve;
@@ -16776,7 +16776,7 @@ StmtPtr Parser::parseStatementImpl() {
                        // `return has("a")` where this unit declares `sub has`: the
                        // call, not a bare return followed by a `has` statement
                        kwCallHere(cur().text) ||
-                       isIdent("sub") || isIdent("method") || isIdent("do") || isIdent("start") ||
+                       isIdent("sub") || isIdent("method") || isIdent("do") || isIdent("start") || isIdent("not") ||   // (`return not $x`: it returned Nil)
                        ((isIdent("role") || isIdent("class") || isIdent("grammar")) &&
                         (peek().kind == Tok::LBrace || (peek().kind == Tok::Op && peek().text == "::")))) {
                 r->value = parseExpr(BP_AND + 1);
