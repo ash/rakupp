@@ -6645,7 +6645,7 @@ static void refuseRoleClashes(Interpreter& I, const std::string& clsName, const 
             if (!hoistingSubs_) {
                 auto unknownRole = [&](const std::string& rn) {
                     if (rn.empty() || rn.find("::") != std::string::npos || rn.find('[') != std::string::npos) return false;
-                    if (classes_.count(rn) || isKnownTypeName(rn) || subsets_.count(rn)) return false;
+                    if (classes_.count(rn) || isKnownTypeName(rn) || subsets_.count(rn) || rn == "array") return false;   // (`does array[T]`, rakudo#4361)
                     if (!tctx().pkgPrefix.empty() && classes_.count(tctx().pkgPrefix + rn)) return false;
                     if (classes_.count(resolveClassAlias(rn))) return false;
                     if (tctx().cur->find(rn)) return false;   // an enum / constant / imported symbol
@@ -7575,7 +7575,7 @@ static void refuseRoleClashes(Interpreter& I, const std::string& clsName, const 
                 {   // only a role (or an unknown/built-in role name) composes;
                     // a class or concrete core type is X::Composition::NotComposable
                     static const std::set<std::string> kConcrete = {
-                        "Int", "Str", "Num", "Rat", "Bool", "Complex", "Array", "Hash"};
+                        "Int", "Str", "Num", "Rat", "Bool", "Complex", "Array", "Hash", "array"};
                     bool bad = (it != classes_.end() && !it->second->isRole) ||
                                (it == classes_.end() && kConcrete.count(rn));
                     if (bad)
