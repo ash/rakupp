@@ -2555,7 +2555,7 @@ ExprPtr Parser::parseExpr(int minbp) {
                 auto bin = std::make_unique<Binary>();
                 bin->op = "R" + baseOp;
                 bin->lhs = std::move(lhs);
-                bin->rhs = parseExpr(base.lbp + 1);
+                bin->rhs = parseExpr(base.rightAssoc || base.lbp == BP_COMPARE ? base.lbp + 1 : base.lbp);   // R flips the associativity too (rakudo#4757): `2 R- 3 R- 4` is -1
                 lhs = std::move(bin);
                 continue;
             }
