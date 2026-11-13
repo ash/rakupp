@@ -1709,12 +1709,14 @@ struct ExecContext {
     //   pendingArgWriter  a composed curry's argument writer, re-indexed
     //   noAutothread      do NOT autothread junction args (Junction.THREAD)
     //   loopPhaserCtl     FIRST/NEXT/LAST control from an iterating driver
-    //   forceRoutineFrame a worker's starting block owns its `$/`, as a routine
+    //   forceRoutineFrame a worker's starting block owns its `$/`, as a routine;
+    //                     2: and is no routine to `return` from (a `start` made
+    //                     outside every routine: `await start { return }`)
     Value* topicWriteback = nullptr;
     const std::vector<Value*>* pendingRwSlots = nullptr;
     const CallArgWriter* pendingArgWriter = nullptr;
     bool noAutothread = false;
-    bool forceRoutineFrame = false;
+    char forceRoutineFrame = 0;
     int loopPhaserCtl = 0;
     int subSigBind = 0; // > 0 while a sub-signature destructures (bindParams' lax-overflow rule is off)
     // The invocant EXPRESSION of the method call currently being set up, for a

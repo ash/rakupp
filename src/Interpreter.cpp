@@ -6996,8 +6996,11 @@ Value Interpreter::spawnPromise(Value code, Value threadVal) {
         workerStarting();
         auto fin = std::make_shared<std::atomic<bool>>(false);
         auto spawnScope = tctx().cur ? tctx().cur : global_;
+        // made outside every routine, its `return` has nothing to leave (as in Rakudo)
+        const Value* lexRoutine = lexicalRoutineVal();
+        const bool noRoutine = !lexRoutine || lexRoutine->t != VT::Code;
         throttleSpawn();
-        addWorker(BigStackThread([self, code, ps, fin, spawnScope, threadVal]() mutable {
+        addWorker(BigStackThread([self, code, ps, fin, spawnScope, threadVal, noRoutine]() mutable {
             t_hot.poll.isWorker = true;
             if (threadVal.t == VT::Hash) t_threadSelf = threadVal;
             tctx().cur = workerOwnScope(spawnScope);   // anchor: dynamics visible at the spawn point
@@ -7020,7 +7023,7 @@ Value Interpreter::spawnPromise(Value code, Value threadVal) {
                 // It is also what the semantics want: a thread's match is its
                 // own. Sharing one `$/` would let one worker read another's
                 // match, which no program could rely on — and Rakudo does not.
-                tctx().forceRoutineFrame = true;
+                tctx().forceRoutineFrame = noRoutine ? 2 : 1;
                 r = code.t == VT::Code ? self->callCallable(code, noargs) : code;
             }
             catch (const RakuError& e) {

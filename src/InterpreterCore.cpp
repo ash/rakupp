@@ -9418,10 +9418,10 @@ Value Interpreter::callCallableRaw(const Value& codeVal, ValueList args, const s
     // A bare block is not a routine — except the one a worker thread starts on,
     // which must own its `$/` rather than share the lexical scope every worker
     // closes over. One-shot, consumed here (see spawnPromise).
-    bool isRoutine = !c.ci().isBlock || tcx.forceRoutineFrame;
-    tcx.forceRoutineFrame = false;
+    bool isRoutine = !c.ci().isBlock || tcx.forceRoutineFrame; const bool noLexRoutine = tcx.forceRoutineFrame == 2;   // (a mainline `start`'s: no id, so a `return` there has nothing to leave)
+    tcx.forceRoutineFrame = 0;
     Env* const savedRoutineEnv = tcx.curRoutineEnv;
-    if (isRoutine) { tcx.curRoutineFrame = tcx.frameTop; env->routineFrame = true; env->routineFrameId = tcx.frameTop; tcx.curRoutineEnv = env.get(); } // $/ scopes here
+    if (isRoutine) { tcx.curRoutineFrame = tcx.frameTop; env->routineFrame = true; env->routineFrameId = noLexRoutine ? 0 : tcx.frameTop; tcx.curRoutineEnv = env.get(); } // $/ scopes here
     // (…and the caller's statement, which the callee's own replaced: a
     // `f($i) or next` after the call is still that statement's — ctlOnStmtPath)
     struct FrameGuard {
@@ -9531,7 +9531,7 @@ resumeBody:
                 // the many one-line accessor/action methods a grammar parse calls).
                 // ROUTINES only: in a bare Block, `return` belongs to the enclosing
                 // routine (or is an error without one) — it must take the throw path.
-                if (i + 1 == nst && s->kind == NK::ReturnStmt && isRoutine) {
+                if (i + 1 == nst && s->kind == NK::ReturnStmt && isRoutine && !noLexRoutine) {
                     auto* r = static_cast<ReturnStmt*>(s);
                     if (g_traceStmts) traceStmt(s);   // --trace: this return never reaches exec()
                     // `return-rw` under an lvalue-mode call: surface the
