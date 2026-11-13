@@ -61,6 +61,7 @@ struct DoomedCall {
 // finding exists). `isCoreRoutine` answers whether the setting has a routine of
 // that name: a `multi` the unit declares without a proto of its own joins the
 // setting's candidates, which this pass cannot see, so such a name is left be.
+const char* gatedModuleOf(const std::string& name);   // "Test" / "NativeCall": a routine only its `use` brings in
 std::vector<DoomedCall> findDoomedCalls(const Program& prog, const std::vector<std::string>& searchPath,
                                         const std::function<bool(const std::string&)>& isCoreRoutine);
 

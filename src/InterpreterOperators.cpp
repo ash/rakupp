@@ -2,6 +2,7 @@
 //
 // One of the parts InterpreterParts.h lists; what they share is declared there.
 #include "InterpreterParts.h"
+#include "CallCheck.h"
 
 namespace rakupp {
 
@@ -3957,6 +3958,19 @@ void reduceArrayElems(const std::string& op, const Value& arr, ValueList& items)
 // dynamic, but not the topic a `given`, a `for` or any block binds, which is
 // a parameter of that block (rakudo#2639: `given 'foo' { f() }` with
 // `CALLERS::('$_')` in f answers the mainline's Any). Every other name as before.
+// EVAL'd code is judged alone, but it sees its caller's imports, as in Rakudo:
+// `use Test; EVAL 'ok 1'` calls Test's `ok`. So a Test or NativeCall routine
+// the check found undeclared is no finding when the calling scope has the
+// module: Test by the marker its `use` leaves in that scope, NativeCall by the
+// names it installs.
+void dropGatedInScope(Interpreter& I, std::vector<DoomedCall>& dc) {
+    dc.erase(std::remove_if(dc.begin(), dc.end(), [&](const DoomedCall& d) {
+        const char* mod = d.undeclared ? gatedModuleOf(d.name) : nullptr;
+        if (!mod) return false;
+        if (!std::strcmp(mod, "Test")) return I.tctx().cur && I.tctx().cur->find("\x01import:Test") != nullptr;
+        return I.global_ && I.global_->find("NativeCall") != nullptr;
+    }), dc.end());
+}
 bool callersSees(Interpreter& I, Env* frame, const std::string& name) {
     if (name != "$_" || I.langRev_ < 1) return true;   // (6.c's `$_` is dynamic everywhere)
     for (Env* e = frame; e; e = e->parent.get()) {

@@ -372,6 +372,21 @@ const std::set<std::string>& testExports() {
     return names;
 }
 
+// The routines Rakudo's Test and NativeCall export, which Raku++ answers as
+// built-ins: without a `use` of the module (or of one that may re-export it,
+// see findDoomedCalls) each is an undeclared routine, as in Rakudo (rakudo#1631,
+// #3607, #4967, #1612, #2191). The module's name, or null for any other name.
+const char* gatedModuleOf(const std::string& n) {
+    static const std::set<std::string> test = {
+        "plan", "done-testing", "ok", "nok", "is", "isnt", "is-approx", "cmp-ok", "like", "unlike",
+        "isa-ok", "does-ok", "can-ok", "use-ok", "dies-ok", "lives-ok", "eval-dies-ok", "eval-lives-ok",
+        "throws-like", "fails-like", "is-deeply", "diag", "skip", "skip-rest", "todo", "pass", "flunk",
+        "subtest", "bail-out"};
+    static const std::set<std::string> nativeCall = {
+        "nativecast", "cglobal", "nativesizeof", "explicitly-manage", "refresh"};
+    return test.count(n) ? "Test" : nativeCall.count(n) ? "NativeCall" : nullptr;
+}
+
 namespace {
 
 // ---- a walk over every node, for the facts gathered before the real walk ---
@@ -552,6 +567,8 @@ struct Checker {
     std::set<std::string> imports;       // non-pragma modules the unit `use`s
     std::vector<std::string> extraLibs;  // literal `use lib` directories
     bool usesTest = false;
+    bool usesNativeCall = false;
+    std::set<std::string> gatedReported;   // (one finding per gated name)
     bool standDown = false;              // the unit can conjure routines at compile time
     std::set<const SubDecl*> implicitArgs;   // sig-less subs whose body reads @_, %_ or a placeholder
     std::set<const Expr*> feedTargets;        // the call a feed (`==>`, `<==`) appends its list to
@@ -617,6 +634,7 @@ struct Checker {
                     return;
                 }
                 if (u->module == "Test") usesTest = true;
+                if (u->module == "NativeCall") usesNativeCall = true;
                 if (!u->isNeed && !u->isNo && !u->module.empty() && !isPragmaName(u->module))
                     imports.insert(u->module);
             }
@@ -1735,7 +1753,23 @@ struct Checker {
     void judge(const std::string& name, const std::vector<ExprPtr>* argExprs, int line) {
         if (name.empty() || name.find(':') != std::string::npos) return;   // a package path, an operator
         Target tg;
-        if (!resolve(name, line, tg)) { judgeLoopControl(name, argExprs, line); return; }
+        if (!resolve(name, line, tg)) {
+            // a Test or NativeCall routine the unit never `use`s that module for (gatedModuleOf)
+            const char* mod = gatedModuleOf(name);
+            for (auto it = scopes.rbegin(); mod && it != scopes.rend(); ++it)   // (a sigilless `\plan`, a `my &ok` here is no call of Test's)
+                if (it->terms.count(name) || it->vars.count("&" + name)) mod = nullptr;
+            if (mod)
+                if (!(std::strcmp(mod, "Test") ? usesNativeCall : usesTest) && (*isCore)(name) && gatedReported.insert(name).second) {
+                    DoomedCall d;
+                    d.undeclared = true;
+                    d.name = name;
+                    d.line = line;
+                    out.push_back(std::move(d));
+                    return;
+                }
+            judgeLoopControl(name, argExprs, line);
+            return;
+        }
         std::vector<ArgT> args;
         if (argExprs)
             for (auto& ae : *argExprs) {

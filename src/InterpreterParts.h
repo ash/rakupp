@@ -1346,6 +1346,7 @@ static inline Value* dynInFrame(Env* e, const std::string& name, const Env* stop
     }
     return nullptr;
 }
+void dropGatedInScope(Interpreter& I, std::vector<struct DoomedCall>& dc);   // an EVAL sees its caller's `use Test` (InterpreterOperators.cpp)
 bool callersSees(Interpreter& I, Env* frame, const std::string& name);   // a caller's `$_` CALLERS:: reaches (InterpreterOperators.cpp)
 Env* gatherDynBoundary(GatherCoro* g);
 size_t gatherDynBase(GatherCoro* g);

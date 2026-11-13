@@ -7,6 +7,7 @@
 #   5. Pointer.new / .deref / .defined / Pointer[T]
 #   6. CArray element read — byte-backed and live (native memory)
 # Contract: exit 0 + last line PASS.
+use NativeCall;   # (its routines are undeclared without it, as in Rakudo: R10)
 my @fail;
 
 # 1. is rw write-back: time(time_t*) fills the out-param and returns the same value

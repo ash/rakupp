@@ -2947,7 +2947,7 @@ Value Interpreter::evalString(const std::string& srcIn, bool mainlinePH, bool* i
     // snippet's own subs are judged — one the caller declared is the binder's
     // to refuse when the call runs.
     if (mainlinePH && callCheckEnabled()) {
-        auto dc = findDoomedCalls(*prog, libPaths_, [this](const std::string& n) { return builtinRef(n) != nullptr; });
+        auto dc = findDoomedCalls(*prog, libPaths_, [this](const std::string& n) { return builtinRef(n) != nullptr; }); dropGatedInScope(*this, dc);   // (the caller's `use Test` is the EVAL's)
         if (!dc.empty()) {
             const DoomedCall& d = dc.front();
             if (d.undeclared) {   // a routine run while compiling, declared further down (#196)
