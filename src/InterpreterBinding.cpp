@@ -2520,7 +2520,7 @@ bool Interpreter::multiTie(const Value& a, const Value& b) {
             if (p.named) return false;
             if (p.pastDoubleSemi) break;
             if (p.slurpy || p.optional || p.defaultVal || p.whereExpr || p.hadWhere || p.litVal ||
-                p.subSig || p.coerce || p.typeCapture || p.sigil != '$') return false;
+                p.subSig || p.coerce || p.typeCapture || (p.sigil != '$' && p.sigil != '\\')) return false;   // (`\a` dispatches as `$a`)
             out.push_back(&p);
         }
         return true;
@@ -2553,8 +2553,9 @@ bool Interpreter::multiTie(const Value& a, const Value& b) {
         const Param& x = *pa[i];
         const Param& y = *pb[i];
         if (x.defConstraint != y.defConstraint) return false;
-        // `is rw` / `is copy` / `is raw` decide by what the argument is
-        if (x.isRw != y.isRw || x.isCopy != y.isCopy || x.isRaw != y.isRaw) return false;
+        // `is rw` decides by what the argument is; `is copy`, `is raw` and a
+        // sigilless `\a` do not (Rakudo 2026.09: `(Int \a)` beside `(Int $a)` is ambiguous)
+        if (x.isRw != y.isRw) return false;
         // (an untyped parameter is Any)
         const std::string xt = x.type.empty() ? "Any" : x.type, yt = y.type.empty() ? "Any" : y.type;
         if (xt == yt) continue;
