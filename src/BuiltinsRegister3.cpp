@@ -30,6 +30,31 @@ static std::string causeMessageOf(Interpreter& I, const Value& cause, const std:
 // one of the same name still replaces an earlier one).
 void Interpreter::registerBuiltinsPart5() {
     auto& B = builtins_;
+    // `use Telemetry`'s probe (rakulib/Telemetry.rakumod, after Rakudo's
+    // nqp::getrusage): getrusage(2)'s fields in MoarVM's order — user and
+    // system CPU as seconds and microseconds, max-rss in KB, then ixrss …
+    // nivcsw — and, 18th, the wall-clock microseconds since the program began
+    B["rakupp-getrusage"] = [](Interpreter& I, ValueList&) -> Value {
+        long long f[19] = {0};
+#ifndef _WIN32
+        rusage ru{};
+        if (getrusage(RUSAGE_SELF, &ru) == 0) {
+            f[0] = ru.ru_utime.tv_sec; f[1] = ru.ru_utime.tv_usec; f[2] = ru.ru_stime.tv_sec; f[3] = ru.ru_stime.tv_usec;
+#ifdef __APPLE__
+            f[4] = ru.ru_maxrss / 1024;   // (bytes on macOS, KB elsewhere: Rakudo's are KB)
+#else
+            f[4] = ru.ru_maxrss;
+#endif
+            f[5] = ru.ru_ixrss; f[6] = ru.ru_idrss; f[7] = ru.ru_isrss; f[8] = ru.ru_minflt; f[9] = ru.ru_majflt;
+            f[10] = ru.ru_nswap; f[11] = ru.ru_inblock; f[12] = ru.ru_oublock; f[13] = ru.ru_msgsnd;
+            f[14] = ru.ru_msgrcv; f[15] = ru.ru_nsignals; f[16] = ru.ru_nvcsw; f[17] = ru.ru_nivcsw;
+        }
+#endif
+        f[18] = (long long)((epochNowSecs() - I.initInstant_) * 1e6);
+        Value out = Value::array(); out.isList = true;
+        for (long long x : f) out.arr()->push_back(Value::integer(x));
+        return out;
+    };
     // `sleep-until $instant` sleeps until that moment and answers whether it
     // actually waited — an instant already past answers False without sleeping.
     B["sleep-until"] = [](Interpreter& I, ValueList& a) -> Value {
