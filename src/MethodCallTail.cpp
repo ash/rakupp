@@ -752,6 +752,18 @@ static std::string builtinChainOp(const Value& f) {
     return chainOps.count(cop) ? cop : std::string();
 }
 
+// `.combinations` over a NON-Int Range of sizes, as Rakudo reads it (rakudo#1629):
+// from `(min + excludes-min).Int`, to `(max - excludes-max).Int`, or every size
+// when max is past the list's — `2.3..^3.6` over three elements is sizes 2 and 3
+static bool ratSizeRange(const Value& k, size_t n, long long& lo, long long& hi) {
+    const RangeEnds* re = k.t == VT::Range ? rangeEnds(k) : nullptr;
+    if (!re || !re->from.isNumeric() || !re->to.isNumeric() || (re->from.t == VT::Int && re->to.t == VT::Int)) return false;
+    const double mn = re->from.toNum(), mx = re->to.toNum();
+    lo = mn < 0 ? 0 : (long long)std::trunc(mn + (k.rExFrom() ? 1 : 0));
+    hi = mx > (double)n ? (long long)n : (long long)std::trunc(mx - (k.rExTo() ? 1 : 0));
+    return true;
+}
+
 std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& m,
                                                  ValueList& args,
                                                  const std::vector<ExprPtr>* rwArgs) {
@@ -2889,8 +2901,9 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
                 // `1^..3` is sizes 2 through 3, `0^..0` none at all. The low
                 // `^` was ignored, so every such call also produced the sizes
                 // below it (roast S32-list/combinations.t).
-                if (k.t == VT::Range) { lo = k.rFrom() + (k.rExFrom() ? 1 : 0);
-                                        hi = k.rExTo() ? k.rTo() - 1 : k.rTo(); }
+                if (ratSizeRange(k, items.size(), lo, hi)) {}   // (a non-Int range of sizes, rakudo#1629)
+                else if (k.t == VT::Range) { lo = k.rFrom() + (k.rExFrom() ? 1 : 0);
+                                             hi = k.rExTo() ? k.rTo() - 1 : k.rTo(); }
                 else { lo = hi = k.toInt(); }
             }
             if (hi > (long long)items.size()) hi = (long long)items.size();
