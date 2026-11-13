@@ -5916,6 +5916,9 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
         return Value::str(s.substr(a, b - a));
     }
     if (m == "substr" || m == "substr-rw") {
+        // a Regex is no position: Rakudo's own hint (it took it as 0)
+        if (!args.empty() && args[0].typeName() == "Regex")
+            throw RakuError{Value::typeObj("X::AdHoc"), "You cannot use a Regex on '" + m + "', did you mean 'subst'?"};
         // Raku indexes by GRAPHEME, so `n` counts clusters and every cut lands on a
         // cluster boundary. Indexing codepoints directly splits "ŕ̥" into its base
         // and its combining ring, which is how `substr` and `chars` came to

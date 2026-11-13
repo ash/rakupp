@@ -3994,6 +3994,9 @@ static bool quoteBlockedHere(const std::vector<Token>& out, bool spaced) {
     if (out.empty()) return false;
     const Token& pv = out.back();
     if (pv.kind == Tok::Op && (pv.text == "." || pv.text == ".&" || pv.text == "->")) return true;
+    // …and a PRIVATE method's name: `method !q { … }` declares `!q`, no `q{…}` quote
+    if (pv.kind == Tok::Op && pv.text == "!" && !spaced && out.size() >= 2 && out[out.size() - 2].kind == Tok::Ident &&
+        (out[out.size() - 2].text == "method" || out[out.size() - 2].text == "submethod")) return true;
     // …and after the dispatch-modifier forms `.*` `.+` `.?` `.^` `.=`, whose
     // name is a METHOD too: `$obj.*m;` must not open an `m;…;` match
     if (pv.kind == Tok::Op && !spaced && out.size() >= 2 &&

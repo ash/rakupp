@@ -4684,7 +4684,8 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
         auto st = inv.ext() ? std::static_pointer_cast<LockState>(inv.ext()) : nullptr;
         const void* raceKey = st ? (const void*)st.get() : (const void*)inv.hash();   // (no mutex under the GIL: the edges all the same)
         if (m == "protect" || m == "protect-or-queue-on-recursion") {
-            if (args.empty() || args[0].t != VT::Code) return args.empty() ? Value::any() : args[0];
+            if (args.empty() || args[0].t != VT::Code)   // a Hash (`{}`) or any other non-Callable: no candidate takes it (rakudo#1644)
+                throwTypedV("X::Multi::NoMatch", {}, "Cannot resolve caller " + std::string(m) + "(Lock:D: " + (args.empty() ? std::string() : args[0].typeName() + (rtIsDefined(args[0]) ? ":D" : ":U")) + "); none of these signatures matches:\n    (Lock:D $:: &code, *%_)");
             if (st) { // real mutual exclusion, released even if the block throws
                 // Acquire with the GIL RELEASED when contended: a worker that holds
                 // the GIL and blocks here would otherwise deadlock the lock's holder

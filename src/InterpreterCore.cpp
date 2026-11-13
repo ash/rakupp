@@ -32196,21 +32196,20 @@ Value Interpreter::evalMethodCallExpr(Expr* e, Value* handedInv) {
     tctx().rwInvocantExpr = mc->inv.get();
     if (mc->methodExpr) { // indirect ."$name"() / .$var (Callable or name)
         Value mv = eval(mc->methodExpr.get());
-        // `.$var` is an INVOCATION of what the variable holds, never a method
-        // lookup by name: a Str there is a string being called (Rakudo:
-        // "No such method 'CALL-ME' for string 'uc'"). Only `."$name"()`
-        // names a method.
+        // `.$var` INVOKES what the variable holds, never a lookup by name ("No such method 'CALL-ME' for string 'uc'")
         if (mv.t == VT::Str && mc->methodExpr->kind == NK::VarExpr && !mv.isAllomorph())
             throwTypedV("X::Method::NotFound",
                         {{"method", Value::str("CALL-ME")}, {"typename", Value::str("Str")},
                          {"private", Value::boolean(false)}},
                         "No such method 'CALL-ME' for string '" + mv.toStr() + "'");
-        // A TYPE OBJECT is invocable too: Rakudo compiles `.$foo` to
-        // `$foo($invocant)`, so `$value.$ct` with `my $ct = Rat` is the
-        // COERCION Rat($value) — which is how DBDish::SQLite types every
-        // column it reads (`($ct === Any || $value ~~ $ct) ?? $value !! $value.$ct`).
-        // Falling through to the name path below stringified the type
-        // object to nothing and reported "No such method ''".
+        // …and `."$name"()` names a public method, never a private one: `self."!$n"()` is Rakudo's X::Method::NotFound
+        if (mv.t == VT::Str && mv.s.size() > 1 && mv.s[0] == '!')
+            throwTypedV("X::Method::NotFound", {{"method", mv}, {"typename", Value::str(inv.typeName())}, {"private", Value::boolean(false)}},
+                        "No such method '" + mv.toStr() + "' for invocant of type '" + inv.typeName() + "'. Method name starts with '!', did you mean 'self!\"" + mv.toStr().substr(1) + "\"()'?");
+        // A TYPE OBJECT is invocable too: Rakudo compiles `.$foo` to `$foo($invocant)`, so `$value.$ct` with
+        // `my $ct = Rat` is the COERCION Rat($value), how DBDish::SQLite types every column it reads
+        // (`($ct === Any || $value ~~ $ct) ?? $value !! $value.$ct`). Falling through to the name path below
+        // stringified the type object to nothing and reported "No such method ''".
         if (mv.t == VT::Code || mv.t == VT::Type) { // a method object / callable: invoke with the invocant
             // `*.&sub` (or a WhateverCode invocant) curries into a WhateverCode
             // instead of calling eagerly — otherwise `sub($_)` runs on the bare

@@ -1395,8 +1395,8 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
         bool infinite = lst->infinite;
         // a list DECLARED lazy (`lazy gather {…}`) has no count to give
         // until it is made eager: Rakudo refuses rather than reifying it
-        if (m == "elems" && lst->declaredLazy && !lst->exhausted)
-            throwTypedV("X::Cannot::Lazy", {{"action", Value::str(".elems")}}, "Cannot .elems a lazy list");
+        if (m == "elems" && lst->declaredLazy && !lst->exhausted) throwTypedV("X::Cannot::Lazy", {{"action", Value::str(".elems")}}, "Cannot .elems a lazy list");
+        if (m == "chrs" && infinite) throwTypedV("X::Cannot::Lazy", {{"action", Value::str(".chrs")}, {"what", Value::str("List")}}, "Cannot .chrs a lazy list onto a List");   // (rakudo#2742)
         // a sequence whose length is KNOWN (`permutations(30)`, `42 xx 2**62`)
         // answers its count without building anything
         if (lst->hasCount && (m == "elems" || m == "Numeric" || m == "Int" || m == "Bool") &&
