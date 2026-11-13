@@ -1997,6 +1997,16 @@ static void attachFrames(Value& ex, const RakuError& e) {
     ex.obj()->attrs["__bt"] = std::move(h);
 }
 
+// A built-in exception's attributes in Rakudo's own order, where a class made by
+// its first throw or `.new` would take them in the caller's (rakudo#2434):
+// `.raku` shows them so. Null for a type with no entry.
+const std::vector<std::string>* builtinExAttrOrder(const std::string& t) {
+    static const std::map<std::string, std::vector<std::string>> kOrder = {
+        {"X::Numeric::DivideByZero", {"using", "details", "numerator"}}};
+    auto o = kOrder.find(t);
+    return o == kOrder.end() ? nullptr : &o->second;
+}
+
 Value Interpreter::exceptionFor(const RakuError& e) {
     // A Str payload NAMING an exception type ("X::Recursion", "X::Multi::NoMatch")
     // builds a real exception object like a type payload would — otherwise the
@@ -2013,7 +2023,7 @@ Value Interpreter::exceptionFor(const RakuError& e) {
     if (it != classes_.end()) ci = it->second;
     else {
         ci = std::make_shared<ClassInfo>();
-        ci->name = tn;
+        ci->name = tn; ci->synthEx = true;
         ci->nativeParent = "Exception";   // as the registered ones are
         ClassAttr a; a.name = "message"; a.sigil = '$'; a.pub = true;
         ci->attrs.push_back(a);

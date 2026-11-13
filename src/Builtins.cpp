@@ -2689,7 +2689,7 @@ std::string rakuReprImpl(const Value& v, int depth, std::set<const void*>& seen)
             // An exception's `message` is a METHOD in Rakudo, not an attribute
             // it was built with: `X::AdHoc.new(payload => "…")` is the whole of
             // its .raku (ours keeps the text in a slot so .message can answer)
-            const bool isEx = v.obj()->cls->isException();
+            const bool isEx = v.obj()->cls->isException() || v.obj()->cls->synthEx;
             // A native struct's fields live in ITS memory, not in attrs — the
             // accessor reads them there, so `.raku` shows what C put in them
             const std::string& repr = v.obj()->cls->repr;
@@ -2707,7 +2707,7 @@ std::string rakuReprImpl(const Value& v, int depth, std::set<const void*>& seen)
                 if (isEx && at->name == "message") {
                     bool own = false;   // …unless the class declares one itself
                     for (auto& a2 : v.obj()->cls->attrs) if (&a2 == at) own = true;
-                    if (!own || v.obj()->cls->name == "X::AdHoc" || v.obj()->cls->name == "Exception") continue;
+                    if (!own || v.obj()->cls->synthEx || v.obj()->cls->name == "X::AdHoc" || v.obj()->cls->name == "Exception") continue;
                 }
                 // (a parent's attribute that a subclass declares again keeps a
                 // slot of its own: ClassInfo::attrSlot)

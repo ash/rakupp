@@ -378,8 +378,7 @@ std::pair<long, long> Interpreter::dynQuantLimits(const Value& v, bool unbounded
 Value Interpreter::makeTypedEx(const std::string& type,
                                std::vector<std::pair<std::string, Value>> attrs,
                                const std::string& message) {
-    // While workers are live, other threads read classes_ and every ClassInfo
-    // without a lock (the symbol-table freeze, see symbolsFrozen_), so a throw
+    // While workers are live, other threads read classes_ and every ClassInfo without a lock (the symbol-table freeze, see symbolsFrozen_), so a throw
     // then neither registers a class nor extends one: it carries a class of
     // its own. Four workers failing one bind at once inserted the same name
     // into classes_ concurrently and died (t/race/evalcall.raku).
@@ -388,9 +387,11 @@ Value Interpreter::makeTypedEx(const std::string& type,
     auto it = classes_.find(type);
     if (it == classes_.end()) {
         auto ci = std::make_shared<ClassInfo>();
-        ci->name = type;
-        for (auto& kv : attrs) { ClassAttr a; a.name = kv.first; a.sigil = '$'; a.pub = true; ci->attrs.push_back(a); }
-        { ClassAttr a; a.name = "message"; a.sigil = '$'; a.pub = true; ci->attrs.push_back(a); }
+        ci->name = type; ci->synthEx = true;
+        if (auto* o = builtinExAttrOrder(type))   // Rakudo's own attribute order, as its `.raku` shows (rakudo#2434)
+            for (auto& n : *o) { ClassAttr a; a.name = n; a.sigil = '$'; a.pub = true; ci->attrs.push_back(a); }
+        for (auto& kv : attrs) { if (ci->findAttr(kv.first)) continue; ClassAttr a; a.name = kv.first; a.sigil = '$'; a.pub = true; ci->attrs.push_back(a); }
+        { ClassAttr a; a.name = "message"; a.sigil = '$'; a.pub = true; ci->attrs.push_back(a); }   // (its slot; no attribute: synthEx)
         if (!shared) classes_[type] = ci;
         cls = ci;
     }

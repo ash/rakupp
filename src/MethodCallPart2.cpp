@@ -67,6 +67,7 @@ static long long supplyByArity(const rakupp::Value& c) {
 }
 
 namespace rakupp {
+const std::vector<std::string>* builtinExAttrOrder(const std::string& t);   // a built-in exception's attribute order (InterpreterOperators.cpp)
 const std::map<std::string, int>& signalNameMapFwd();
 Value makeSignalEnumValueFwd(int sig);
 Value arrayMissingDefaultPublic(const Value& base);   // InterpreterBinding.cpp
@@ -5954,9 +5955,11 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
         }
         if ((t.rfind("X::", 0) == 0 || t.rfind("CX::", 0) == 0) && !classes_.count(t)) {
             auto ci = std::make_shared<ClassInfo>();
-            ci->name = t;
+            ci->name = t; ci->synthEx = true;
             ci->nativeParent = "Exception";
             std::set<std::string> seen;
+            if (auto* o = builtinExAttrOrder(std::string(t)))   // (Rakudo's order: builtinExAttrOrder)
+                for (auto& n : *o) { seen.insert(n); ClassAttr ca; ca.name = n; ca.sigil = '$'; ca.pub = true; ci->attrs.push_back(ca); }
             for (auto& a : args)
                 if (a.t == VT::Pair && seen.emplace(a.s).second) {
                     ClassAttr ca; ca.name = a.s; ca.sigil = '$'; ca.pub = true;

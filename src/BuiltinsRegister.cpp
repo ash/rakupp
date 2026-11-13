@@ -833,7 +833,7 @@ void Interpreter::registerBuiltins() {
             out += I.methodCall(a[i], "raku", none).toStr();
         }
         std::cerr << out << "\n";
-        return a.empty() ? Value::any() : a[0];
+        return Value::nil();   // dd answers Nil, as Rakudo's: a Failure it showed is not sunk after (rakudo#2434)
     };
     // mathematical constants (callable as bare terms: pi, tau, e, and π τ 𝑒)
     // NB: pi/tau/e are TERMS (handled in NameTerm eval), not subs — calling `pi()` must die.

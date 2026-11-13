@@ -2398,6 +2398,7 @@ struct ClassInfo {
     bool isRole = false;
     signed char langRev = -1; // the language revision it was declared under (`.^language-revision`)
     bool isMonitor = false; // `monitor Foo {…}` — per-instance lock around every method call
+    bool synthEx = false;   // a built-in exception class made by its first throw (makeTypedEx): its `message` slot is no attribute
     // A `POPULATE` method — Rakudo's name for the routine that runs an object's
     // build plan, and the one a metaclass wraps or supplies to get at every
     // construction (OO::Monitors makes the instance's lock there). Flagged so
