@@ -584,6 +584,7 @@ static Value iterEntryPair(const Value& h, const std::string& k, Value& stored) 
         p.t = VT::Pair; p.s = std::move(pk);
         p.setPairVal(h.hash()->aliasOf(stored));
         p.setPairLive();
+        if (!h.ofType().empty()) p.ofTypeM() = h.ofType();   // (and checks the hash's element type)
     }
     else {
         Value sv = stored;

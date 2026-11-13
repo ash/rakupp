@@ -2015,6 +2015,7 @@ inline Value hashEntryPair(const Value& h, const std::string& key, Value& entry)
     if (h.t == VT::Hash && h.hashKind.empty() && h.hash()) {
         p.setPairVal(h.hash()->aliasOf(entry));
         p.setPairLive();
+        if (!h.ofType().empty()) p.ofTypeM() = h.ofType();   // `my Int %h`: `.value = "x"` refuses (rakudo#2068)
     }
     else {
         p.setPairVal(makePayload<Value>(entry));
