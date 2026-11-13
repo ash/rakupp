@@ -4559,30 +4559,6 @@ Value setOp(const std::string& op, const Value& l, const Value& r) {
     setOpCheckFailure(l); setOpCheckFailure(r);
     // membership against a RANGE is an arithmetic bounds check — no
     // materialization, so 0..10**42 (and open-ended ranges) work
-    auto rangeHas = [](const Value& rng, const Value& x) -> bool {
-        if (rng.ofType() == "Str") { // Str range: string ordering between endpoints
-            const std::string v = x.toStr();
-            const RangeEnds* sre = rangeEnds(rng);
-            const std::string lo = sre ? sre->from.toStr() : cpToU8((uint32_t)rng.rFrom());
-            const std::string hi = sre ? sre->to.toStr() : cpToU8((uint32_t)rng.rTo());
-            return (rng.rExFrom() ? v > lo : v >= lo) &&
-                   (rng.rExTo() ? v < hi : v <= hi);
-        }
-        // A BIGINT endpoint does not fit `i`, which saturates to the sentinel the
-        // endless test uses — so `0 .. 10**42` read as unbounded above and held
-        // every larger number. The carried endpoint objects answer exactly.
-        if (const RangeEnds* re = rangeEnds(rng)) {
-            if (x.isNumeric() && re->from.isNumeric() && re->to.isNumeric()) {
-                if (!applyArith(rng.rExFrom() ? ">" : ">=", x, re->from).truthy()) return false;
-                return applyArith(rng.rExTo() ? "<" : "<=", x, re->to).truthy();
-            }
-        }
-        double v = x.toNum();
-        double lo = (double)rng.rFrom() + (rng.rExFrom() ? 1 : 0);
-        if (rng.rTo() >= 9000000000000000000LL) return v >= lo; // huge/unbounded top
-        double hi = (double)rng.rTo() - (rng.rExTo() ? 1 : 0);
-        return v >= lo && v <= hi;
-    };
     // MEMBERSHIP is an IDENTITY question — `'123' (elem) [123]` is False, the
     // Str and the Int are different elements — while the quanthash STORAGE keys
     // stay renderings (changing those was tried and costs ~700 roast assertions
@@ -4649,6 +4625,22 @@ Value setOp(const std::string& op, const Value& l, const Value& r) {
             return hay.pairVal() && hay.pairVal()->truthy() &&
                    elemMatches(hay.pairKeyV());
         return elemMatches(hay); // a scalar is a one-element set
+    };
+    // A RANGE is the Set of what it iterates, as Rakudo coerces it (rakudo#2217):
+    // an Int range holds what is an Int between its ends — `½ ∈ ^2` and `1.0 ∈ ^2`
+    // are False, `"1" ∈ ^2` too, `True` and `<1>` are in — and any other range the
+    // values it steps through, matched by identity (`"aa" ∈ "a".."c"` is False).
+    // An endless one is lazy, refused as Rakudo words it.
+    auto rangeHas = [&](const Value& rng, const Value& x) -> bool {
+        const RangeEnds* re = rangeEnds(rng);
+        if (rng.rTo() >= 9000000000000000000LL && !(re && re->to.t == VT::Int))
+            throw RakuError{Value::typeObj("X::Cannot::Lazy"), "Cannot (elem) a lazy list"};   // (`∋` too, in Rakudo's words)
+        if (rng.ofType() != "Str" && (!re || (re->from.t == VT::Int && re->to.t == VT::Int))) {
+            if (x.t != VT::Int && x.t != VT::Bool) return false;   // (an IntStr, a Bool, an Int enum: each is an Int)
+            const Value lo = re ? re->from : Value::integer(rng.rFrom()), hi = re ? re->to : Value::integer(rng.rTo());
+            return applyArith(rng.rExFrom() ? ">" : ">=", x, lo).truthy() && applyArith(rng.rExTo() ? "<" : "<=", x, hi).truthy();
+        }
+        return hasElem(rng, x);
     };
     if (op == "(elem)" || op == "∈" || op == "(!elem)" || op == "∉") {
         bool neg = (op == "(!elem)" || op == "∉");
