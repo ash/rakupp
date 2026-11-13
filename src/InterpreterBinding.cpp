@@ -3368,6 +3368,7 @@ Value Interpreter::callBuiltin(const std::string& name, ValueList args) {
             if (!p && global_) { auto g = global_->vars.find("&" + name); if (g != global_->vars.end()) p = &g->second; }
             if (p && p->t == VT::Code) return callCallable(*p, std::move(args));
         }
+        if (name.rfind("infix:<", 0) == 0 && name.back() == '>') return callCallable(infixCallable(name), std::move(args));   // native `infix:<~>(…)`: `&infix:<~>(…)`
         undeclaredRoutine(name);
     }
     return it->second(*this, args);
