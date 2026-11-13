@@ -3413,7 +3413,7 @@ ExprPtr Parser::parseExpr(int minbp) {
             c->name = "__assign-immutable";
             c->line = cur().line;
             c->args.push_back(std::move(lhs));
-            (void)parseExpr(in.rightAssoc ? in.lbp : in.lbp + 1);
+            c->args.push_back(parseExpr(in.rightAssoc ? in.lbp : in.lbp + 1));   // (an object's STORE takes it, rakudo#3292)
             lhs = std::move(c);
             continue;
         }
