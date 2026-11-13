@@ -4638,7 +4638,10 @@ bool Regex::matchNode(const Node* n, MState& st, long pos, const FnRef& k) const
                             matchNode(child, st, q, grab);
                         if (np < 0) break;
                         // an EMPTY item still is one — `:r [ $ || x ]` matched once —
-                        // and every further one would match empty the same way
+                        // and every further one would match empty the same way. Under
+                        // a BOUNDED quantifier Rakudo repeats it to the maximum, each
+                        // capture recorded: `<same> ** 2..4` is four (rakudo#4752)
+                        if (np == q && mx >= 0) { cnt++; continue; }
                         if (np == q) { if (!sep && cnt < mn) cnt = mn; break; }
                         q = np; cnt++;
                     }
@@ -4706,6 +4709,7 @@ bool Regex::matchNode(const Node* n, MState& st, long pos, const FnRef& k) const
                         } else
                             matchNode(child, st, q, grab);
                         if (np < 0) break;
+                        if (np == q && mx >= 0 && !p5_) { c++; continue; }   // (a bounded zero-width run repeats to its max: below)
                         if (np == q) { zeroWidth = true; break; }   // (the recursion's own rule decides)
                         q = np; c++;
                     }
@@ -4715,10 +4719,12 @@ bool Regex::matchNode(const Node* n, MState& st, long pos, const FnRef& k) const
                 if (greedy) {
                     if (mx < 0 || count < mx) {
                         auto more = [&](long np) {
-                            if (np != p) return self(self, count + 1, np);
+                            // (a zero-width iteration under a BOUNDED quantifier is one
+                            // more, as Rakudo counts them: `<same> ** 2..4`, rakudo#4752)
+                            if (np != p || (mx >= 0 && !p5_)) return self(self, count + 1, np);
                             // zero-width child match: Perl admits it as ONE final
                             // iteration — `(]*)?\1` participates with an empty
-                            // capture (re_tests 1327). Raku rejects it outright.
+                            // capture (re_tests 1327). Raku rejects it under `*` and `+`.
                             return p5_ && count + 1 >= mn && finish(np, count + 1);
                         };
                         if (matchOne(p, more)) return true;
@@ -4729,7 +4735,7 @@ bool Regex::matchNode(const Node* n, MState& st, long pos, const FnRef& k) const
                     if (count >= mn && finish(p, count)) return true;
                     if (mx < 0 || count < mx) {
                         auto more = [&](long np) {
-                            if (np != p) return self(self, count + 1, np);
+                            if (np != p || (mx >= 0 && !p5_)) return self(self, count + 1, np);
                             return p5_ && count + 1 >= mn && finish(np, count + 1);
                         };
                         return matchOne(p, more);
