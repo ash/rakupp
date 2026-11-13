@@ -6617,10 +6617,13 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
                     // an undefined parse target dies (Rakudo: warns on Any-to-Str
                     // coercion, then dies calling .chars on it) instead of
                     // silently parsing "" and returning Nil
-                    if (!a.empty() && (a[0].t == VT::Any || a[0].t == VT::Nil))
+                    // (the target is the first POSITIONAL, wherever the nameds stand:
+                    // `C.subparse(:rule<k>, "C#")` parsed the Pair — rakudo#2791)
+                    const Value* tgt = nullptr; for (auto& x : a) if (!(x.t == VT::Pair && x.namedArg)) { tgt = &x; break; }
+                    if (tgt && (tgt->t == VT::Any || tgt->t == VT::Nil || (tgt->t == VT::Type && tgt->typeName() == "Any")))
                         throw RakuError{Value::typeObj("X::Method::NotFound"),
                             "No such method 'chars' for invocant of type '" +
-                            a[0].typeName() + "'"};
+                            tgt->typeName() + "'"};
                     // no start rule at all: Rakudo calls it as a method and dies
                     if (!ci->findRule(startRule) && !ci->findMethod(startRule) &&
                         startRule != "ws" && startRule != "ident" && startRule != "alpha" &&
@@ -6628,7 +6631,7 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
                         throwTyped("X::Method::NotFound",
                                    {{"method", startRule}, {"typename", ci->name}},
                                    "No such method '" + startRule + "' for invocant of type '" + ci->name + "'");
-                    std::string input = a.empty() ? "" : a[0].toStr();
+                    std::string input = tgt ? tgt->toStr() : "";
                     const long posB = (long)graphemeToByte(input, startPos);   // (past the end: no match at all)
                     const bool past = startPos > 0 && posB == (long)input.size() && graphemeToByte(input, startPos - 1) == input.size();
                     Value r = past ? Value::nil() : grammarParse(ci.get(), input, sub, startRule, actions, ruleArgs.empty() ? nullptr : &ruleArgs, posB);
@@ -6643,7 +6646,8 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
                 };
                 if (m == "parsefile") { // slurp the file, then parse its contents
                     if (g_sandboxChecks) sandboxRefuse(*this, "Grammar.parsefile", SandboxCap::Read);
-                    std::string input = args.empty() ? "" : args[0].toStr();
+                    size_t fi = 0; while (fi < args.size() && args[fi].t == VT::Pair && args[fi].namedArg) fi++;   // (the file: the first positional)
+                    std::string input = fi < args.size() ? args[fi].toStr() : "";
                     std::ifstream in(input);
                     if (!in)
                         throwTyped("X::AdHoc", {},
@@ -6651,7 +6655,7 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
                     std::ostringstream ss; ss << in.rdbuf(); input = ss.str();
                     // Rakudo's parsefile matches the file contents verbatim,
                     // trailing newline included (rule sigspace absorbs it)
-                    ValueList a2 = args; if (!a2.empty()) a2[0] = Value::str(input); else a2.push_back(Value::str(input));
+                    ValueList a2 = args; if (fi < a2.size()) a2[fi] = Value::str(input); else a2.push_back(Value::str(input));
                     return builtinParse(a2);
                 }
                 // A user-defined `method parse`/`subparse` (e.g. YAMLish wires :actions via nextwith)
