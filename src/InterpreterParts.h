@@ -197,6 +197,9 @@ static inline bool isAnyTypeObject(const Value& v) {
 
 int ncScalarWidth(const std::string& t, bool& sign, bool& isFloat);
 bool valueEqv(const Value& a, const Value& b);
+// The private method `self!name` reaches from the package the call is written
+// in (rakudo#2663), or null for the ordinary lookup (InterpreterCore.cpp)
+Value* privateInCallerPackage(Interpreter& I, const Value& inv, const std::string& name);
 // A type object of one of the program's own classes (`A`, not `Int`): the
 // program's `multi infix:<op>` is asked about it before anything treats it as an
 // undefined operand (rakudo#6860: `"A: " ~ A` with `multi infix:<~>(Str() $a, A $b)`)

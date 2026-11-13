@@ -336,4 +336,35 @@ std::optional<Value> Interpreter::unicodeMethod(const Value& inv, const std::str
     return std::nullopt;
 }
 
+
+// `self!name` is resolved in the package it is WRITTEN in, as Rakudo resolves
+// it: in a class's method, that class's own `!name`, even when the object is
+// a mixin or a subclass with one of its own; in a role's method, the class
+// the role was composed into — the nearest one up the object's chain. So
+// `(Puppy.new but Violinist) but Diva` bows as a Puppy in `greet`, as a
+// Violinist in `fiddle` and as a Diva in `captivate` (rakudo#2663). Null
+// leaves the ordinary lookup, as outside a class and for `!Pkg::name`.
+Value* privateInCallerPackage(Interpreter& I, const Value& inv, const std::string& name) {
+    if (inv.t != VT::Object || !inv.obj() || !inv.obj()->cls || name.find("::") != std::string::npos) return nullptr;
+    for (Env* e = Interpreter::tctx().cur.get(); e; e = e->parent.get()) {
+        auto t = e->xr().pkgType.lock();
+        if (!t) continue;
+        if (t->isRole) {
+            for (ClassInfo* c = inv.obj()->cls.get(); c; c = c->parent.get())
+                if (c->doneRoles.count(t->name)) return c->findMethod("!" + name);   // (a mixin's role too)
+            return nullptr;
+        }
+        if (t.get() == inv.obj()->cls.get()) return nullptr;
+        std::function<bool(const ClassInfo*)> isa = [&](const ClassInfo* c) {
+            if (!c) return false;
+            if (c == t.get()) return true;
+            for (auto& x : c->extraParents) if (isa(x.get())) return true;
+            return isa(c->parent.get());
+        };
+        if (!isa(inv.obj()->cls.get())) return nullptr;
+        return t->findMethod("!" + name);
+    }
+    return nullptr;
+}
+
 } // namespace rakupp

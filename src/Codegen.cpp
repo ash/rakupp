@@ -787,6 +787,7 @@ struct Codegen {
         unsupported("prefix operator '" + u->op + "'");
     }
     std::string self_;                   // C++ expr for `self` inside a method ("" outside)
+    std::string curClass_;   // the class whose method is being emitted: its `self!p` is `!Class::p` (rakudo#2663)
     std::vector<std::string> topics;  // stack of C++ var names bound to $_
     int tmp = 0;
     std::string gensym(const char* p) { return std::string(p) + std::to_string(tmp++); }
@@ -2943,8 +2944,7 @@ struct Codegen {
                                 ? ", true)" : ")");
                 }
                 if (u->op == "do" || u->op == "try") { // do { } / try { }  (value = last statement)
-                    if (u->operand->kind == NK::BlockExpr && !static_cast<BlockExpr*>(u->operand.get())->phaser.empty())   // `now - ENTER now`: at its phase
-                        throw CodegenError{"a phaser used as a value (" + static_cast<BlockExpr*>(u->operand.get())->phaser + ")", /*routineWide=*/true};
+                    if (u->operand->kind == NK::BlockExpr && !static_cast<BlockExpr*>(u->operand.get())->phaser.empty()) throw CodegenError{"a phaser used as a value (" + static_cast<BlockExpr*>(u->operand.get())->phaser + ")", /*routineWide=*/true};   // `now - ENTER now`: at its phase
                     std::string body;
                     // a Failure the block returns is consumed (rtTryFailure),
                     // unless the block says `no fatal`: then it is the value
@@ -3532,7 +3532,7 @@ struct Codegen {
                     if (m->mutate) unsupported(">>.= hyper-mutate");
                     return "rtHyperMethod(RT, " + ex(m->inv.get()) + ", " + cesc(m->method) + ", " + argsVL(m->args) + ")";
                 }
-                std::string name = pfx + m->method;
+                std::string name = pfx + (m->bang && !curClass_.empty() && m->method.find("::") == std::string::npos ? curClass_ + "::" : std::string()) + m->method;   // (`self!p` names its class)
                 if (m->mutate) { // $x .= meth : rebind the invocant to the result
                     if (m->inv->kind != NK::VarExpr && m->inv->kind != NK::Index) unsupported(".= on this invocant");
                     checkWritable(m->inv.get());
@@ -9549,7 +9549,7 @@ struct Codegen {
             lexDirect_.clear();   // a C++ function of its own: no enclosing handle is in reach
             RoutineScope __rs{this, ""};   // (a routine: its `fail` returns from it)
             FrameScope __fs{this};
-            std::string saved = self_;
+            std::string saved = self_; struct CurC { std::string& c; std::string s; ~CurC() { c = s; } } __cc{curClass_, std::exchange(curClass_, cd->isRole ? std::string() : cd->name)};
             std::string mbody = capture([&]() {
                 line(1, "Value __self = __a.size() > 0 ? __a[0] : Value::any();");
                 self_ = "__self";   // (before the binding: a default may read `$!a` or `self`)

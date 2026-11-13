@@ -6169,8 +6169,31 @@ static bool junctionInvocantThreads(const Value& inv, const std::string& m) {
     return m != "defined" && !junctionOwn.count(m) && !(inv.s == "slice" && sliceResizers.count(m));
 }
 
+Value* privateInCallerPackage(Interpreter& I, const Value& inv, const std::string& name);   // MethodCallEntry.cpp
 Value Interpreter::methodCall(const Value& inv, const std::string& m, ValueList args, const std::vector<ExprPtr>* rwArgs,
                               bool skipOwn, bool noMethodBack) {
+    // A private call: a plain `self!name` is resolved in the package the call is
+    // written in (privateInCallerPackage, rakudo#2663); `!Pkg::name` is the private
+    // method OF THAT PACKAGE — what compiled code calls for `$o!Pkg::name`, and
+    // for a plain `self!name` in a class's method, which names its class
+    // (Codegen). An object that is no Pkg, or a Pkg without one, gets the
+    // ordinary lookup of `!name`.
+    if (RAKUPP_UNLIKELY(m.size() > 1 && m[0] == '!') && inv.t == VT::Object && inv.obj() && inv.obj()->cls) {
+        const size_t q = m.rfind("::");
+        if (q == std::string::npos) {
+            if (Value* um = privateInCallerPackage(*this, inv, m.substr(1))) return invokeMethod(*um, inv, std::move(args), rwArgs);
+        }
+        else {
+            const std::string bare = "!" + m.substr(q + 2);
+            auto ci = classes_.find(m.substr(1, q - 1));
+            if (ci != classes_.end() && ci->second) {
+                bool isa = false;
+                for (ClassInfo* c = inv.obj()->cls.get(); c && !isa; c = c->parent.get()) isa = c == ci->second.get();
+                if (isa) if (Value* um = ci->second->findMethod(bare)) return invokeMethod(*um, inv, std::move(args), rwArgs);
+            }
+            return methodCall(inv, bare, std::move(args), rwArgs, skipOwn, noMethodBack);
+        }
+    }
     // A PLAIN class's default constructor (plainNewClass): straight to the
     // build, past the general path's special cases, which it cannot meet. The
     // build's own Failure (BuildFailureEx) is caught here as the general path
