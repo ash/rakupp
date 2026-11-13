@@ -372,6 +372,15 @@ ExprPtr Parser::parseInterpString(const std::string& rawIn) {
                         if (startOk && endOk) return true;
                     }
                 }
+                // …and an ANONYMOUS state variable, `$++` / `($)`: its state is the closure's,
+                // fresh each time the string is built, as in Rakudo (rakudo#1961: `"count {$++}"`
+                // counted 0 1 2 across a loop, and two blocks in one string shared one `$`)
+                for (size_t at = inner.find('$'); at != std::string::npos; at = inner.find('$', at + 1)) {
+                    const char nx = at + 1 < inner.size() ? inner[at + 1] : '\0';
+                    const bool prevOk = at == 0 || !(ascii::isalnum((unsigned char)inner[at - 1]) || inner[at - 1] == '\\');
+                    if (prevOk && (nx == '\0' || nx == '+' || nx == '-' || nx == ')' || nx == ';' || nx == ',' ||
+                                   nx == '}' || nx == ' ' || nx == '\t' || nx == '\n')) return true;
+                }
                 return false;
             };
             // A block is CODE, as it is anywhere else: code that does not parse
