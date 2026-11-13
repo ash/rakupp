@@ -16,6 +16,11 @@ check 'the method form', (1, 2, 3).reduce(&[<]), True;
 check 'a Unicode spelling', (3, 2, 1).reduce(&[≥]), True;
 check 'string comparisons', ((reduce &[eq], <a a a>), (reduce &[eq], <a a b>)), (True, False);
 check 'a non-chaining operator still folds', (1, 2, 3).reduce(&[+]), 6;
+# …and the reduce metaop over a built-in's Callable folds it, as Rakudo does:
+# `[[&infix:«>»]]` is ((6 > 5) > 4), False, where it died "Unsupported operator"
+check '[[&infix:«>»]] folds', ([[&infix:«>»]] 6, 5, 4), False;
+check '[[&infix:<+>]]', ([[&infix:<+>]] 1, 2, 3), 6;
+check 'its scan form', ([\[&infix:<~>]] <a b c>).List, <a ab abc>;
 
 if @fail {
     note "FAILED:\n" ~ @fail.map({ "  - $_" }).join("\n");

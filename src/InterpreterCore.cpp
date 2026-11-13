@@ -21832,10 +21832,10 @@ Value Interpreter::applyBinOp(const std::string& op, const Value& l, const Value
     // `[+]`): the citation means the bare operator; strip once and recurse
     if (op.size() >= 3 && op.front() == '[' && op.back() == ']' && !opEq(op, "[=]"))
         return applyBinOp(op.substr(1, op.size() - 2), l, r);
-    // A CALLABLE named as the operator — `[[&foo]] @list`, `A [&foo] B` in its
-    // reduce form. The `&` spelling cannot collide with any infix.
+    // A CALLABLE named as the operator — `[[&foo]] @list`, `A [&foo] B` in its reduce form. The `&` spelling cannot collide with any infix.
     if (op.size() > 1 && op[0] == '&' && tctx().cur)
         if (Value* f = tctx().cur->find(op)) return callCallable(*f, ValueList{l, r});
+    if (op.rfind("&infix:<", 0) == 0 && op.back() == '>') return callCallable(infixCallable(op.substr(1)), ValueList{l, r});   // …a built-in's, as `&infix:<>>` answers: `[[&infix:«>»]] 6, 5, 4` folds, False (rakudo#4128)
     // reverse metaop (`a R- b` == `b - a`) — so `[R-]`/`[R~]` reduce works like the
     // standalone `R-` binary does (evalBinary strips it; applyBinOp must too).
     if (op.size() > 1 && op[0] == 'R' && (!ascii::isalnum((unsigned char)op[1]) || reverseWordOp(op)))
