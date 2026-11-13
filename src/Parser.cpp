@@ -16180,8 +16180,9 @@ StmtPtr Parser::parseStatementImpl() {
                 }
                 { std::string ver = advance().text; // VersionLit text is like "6.e" (no leading v)
                   // swallow any dotted tail the version lexer didn't take (.PREVIEW)
-                  while (!isKind(Tok::Semicolon) && !isKind(Tok::End)) ver += advance().text;
+                  while (!isKind(Tok::Semicolon) && !isKind(Tok::End) && cur().line == toks_[pos_ - 1].line) ver += advance().text;   // (not past the line: `use v6.c` with no `;`)
                   u->module = (ver.empty() || ver[0] != 'v') ? "v" + ver : ver; // exec() reads langRev from this
+                  checkLangVersion(u->module, toks_[pos_ - 1].line);   // (6.e needs PREVIEW: rakudo#2783)
                   // …and the parser reads it now, for syntax that is 6.e-only.
                   langRev_ = langRevOfPragma(u->module); }
                 matchKind(Tok::Semicolon);

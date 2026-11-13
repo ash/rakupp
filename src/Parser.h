@@ -97,6 +97,7 @@ std::shared_ptr<SlangSeams> rakuppActivateSlang(const std::string& module,
 // `use v6.e.PREVIEW`, `use v6e.PREVIEW`): 0 = 6.c, 1 = 6.d, 2 = 6.e and later.
 // The dot is optional, as in Rakudo. A BARE `use v6` asks for "some Raku 6",
 // which is the current default revision — 6.d — not the newest one known.
+void checkLangVersion(const std::string& version, int line);   // a revision Rakudo has a compiler for (ParserPackages.cpp)
 inline int langRevOfPragma(const std::string& module) {
     size_t k = module.find('6');
     if (k == std::string::npos || k + 1 >= module.size()) return 1;

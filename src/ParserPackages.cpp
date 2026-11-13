@@ -1,6 +1,7 @@
 // The parser's side of PACKAGE SYMBOLS: `Foo::<$x>` with an adverb or a
 // slice, `Foo::<$x>:exists`, and the tags of an `is export(:a :b)` trait. Split out of Parser.cpp, whose size it was; it
 // rides the same `parse` archive (CMakeLists.txt).
+#include "AsciiCtype.h"
 #include "Parser.h"
 #include <memory>
 #include <string>
@@ -112,6 +113,36 @@ ExprPtr Parser::parsePkgNameLookup() {
     cat->rhs = std::move(name);
     sr->nameExpr = std::move(cat);
     return sr;
+}
+
+// `use v6…`: the revisions and modifiers Rakudo 2026.09 has a compiler for.
+// 6.c and 6.d stand alone (6.d may still say PREVIEW), and 6.e is a preview,
+// so it needs `.PREVIEW` (or `.*`): a bare `use v6.e` is X::Language::ModRequired
+// (rakudo#2783), where it was taken as 6.e. Any other revision, modifier or
+// language is X::Language::Unsupported. `version` is spelled as written, `v6.e`.
+void checkLangVersion(const std::string& version, int line) {
+    auto unsupported = [&] {
+        throw ParseError("No compiler available for Raku " + version, line, "X::Language::Unsupported",
+                         {{"version", version}});
+    };
+    size_t i = 1;   // past the `v`
+    while (i < version.size() && ascii::isdigit((unsigned char)version[i])) i++;
+    if (version.substr(1, i - 1) != "6") unsupported();
+    if (i < version.size() && version[i] == '.') i++;
+    if (i >= version.size() || version[i] == '*') return;   // `v6`, `v6.*`
+    const char rev = version[i++];
+    std::vector<std::string> mods;
+    while (i < version.size()) {
+        if (version[i] == '.') { i++; continue; }
+        size_t j = version.find('.', i);
+        mods.push_back(version.substr(i, j == std::string::npos ? std::string::npos : j - i));
+        i = j == std::string::npos ? version.size() : j;
+    }
+    if (rev != 'c' && rev != 'd' && rev != 'e') unsupported();
+    if (mods.size() > 1 || (mods.size() == 1 && mods[0] != "*" && !(mods[0] == "PREVIEW" && rev != 'c'))) unsupported();
+    if (rev == 'e' && mods.empty())
+        throw ParseError("Raku " + version + " requires PREVIEW modifier", line, "X::Language::ModRequired",
+                         {{"version", version}, {"modifier", "PREVIEW"}});
 }
 
 } // namespace rakupp
