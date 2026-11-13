@@ -9582,7 +9582,7 @@ resumeBody:
                          s->kind == NK::ExprStmt && isElementPath(static_cast<ExprStmt*>(s)->e.get()))
                     last = makePathProxy(tcx.cur, static_cast<ExprStmt*>(s)->e.get());
                 else
-                    last = exec(s, i != lastReal); // non-final statements sink
+                    last = exec(s, i != lastReal || tcx.sinkTailCallable == &c); // non-final statements sink (and a gather block's last)
                 if (tcx.returning) { // cooperative return reached this routine
                     if (isRoutine) {
                         tcx.returning = false; last = std::move(tcx.returnV); explicitTailReturn = true;

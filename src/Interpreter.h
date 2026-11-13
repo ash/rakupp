@@ -1965,6 +1965,9 @@ struct ExecContext {
     // its body is not sunk, nor kept (Rakudo answers Nil). Keyed to the body block,
     // so a loop nested in it sinks its own way (rakudo#1360: `{ Failure.new for ^5 }()`).
     const void* unsunkBody = nullptr;
+    // …and the one CALLABLE whose last statement is sunk all the same: a gather's block,
+    // whose value nobody reads (`gather for ^5 { Sinker.new }` takes five times)
+    const void* sinkTailCallable = nullptr;
     // mirror of protoStack_.size(), kept here so the per-block-statement
     // "inside a proto body?" probe reads the ALREADY-LOADED tctx() instead of
     // paying a second TLS wrapper call + init guard for the stack itself
