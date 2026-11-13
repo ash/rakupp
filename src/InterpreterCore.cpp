@@ -21470,10 +21470,10 @@ struct HyperOpName {
     explicit HyperOpName(const std::string& n) : prev(g_hyperOpName) { g_hyperOpName = &n; }
     ~HyperOpName() { g_hyperOpName = prev; }
 };
-// A TYPED Array operand of a hyper keeps its type on the result when every
-// element still fits it (`my Int @a; @a >>*>> 4` is an Array[Int]), and the
-// answer is a plain List when one does not (`@a >>/>> 4`) — S03-metaops/hyper.t
-static Value typedHyperResult(Interpreter& I, const Value& l, const Value& r, Value res) {
+// A TYPED Array operand of a hyper keeps its type on the result when every element still fits it
+// (`my Int @a; @a >>*>> 4` is an Array[Int]), and the answer is a plain List when one does not (`@a >>/>> 4`) — S03-metaops/hyper.t
+static Value typedHyperResult(Interpreter& I, const Value& l, const Value& r, Value res) {   // (…and its LEFT operand's container: `$[1,2] »+« $[3,4]` is `$[4, 6]`)
+    if (l.itemized && (res.t == VT::Array || res.t == VT::Hash)) res.itemized = true;
     const Value* typed = (l.t == VT::Array && !l.isList && !l.ofType().empty()) ? &l
                        : (r.t == VT::Array && !r.isList && !r.ofType().empty()) ? &r : nullptr;
     if (!typed || res.t != VT::Array || !res.arr() || isNativeTypeName(typed->ofType())) return res;
@@ -25004,7 +25004,7 @@ Value Interpreter::evalUnary(Unary* u) {
             if (v.t == VT::Range) { for (auto& x : v.flatten()) items.push_back(x); }
             else if (v.t == VT::Array && v.arr() && !v.itemized) {
                 if (v.ext()) drainIfFiniteLazy(v);   // (the scan form missed endlessReduce's drain)
-                for (auto& x : *v.arr()) items.push_back(x);
+                reduceArrayElems(op, v, items);
             }
             else items.push_back(std::move(v));
         }

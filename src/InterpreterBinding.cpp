@@ -6570,7 +6570,7 @@ Value rtReduce(Interpreter& I, const std::string& op, const Value& list, bool op
             else items.push_back(v);
         }
     }
-    else if (list.t == VT::Array && list.arr() && !list.itemized && !list.ext()) items = *list.arr();   // ONE operand: its elements, one level, as the interpreter's (`[+] [[1,2],[3,4]]` is 4)
+    else if (list.t == VT::Array && list.arr() && !list.itemized && !list.ext()) reduceArrayElems(op, list, items);   // ONE operand: its elements, one level, as the interpreter's (`[+] [[1,2],[3,4]]` is 4)
     else items = list.flatten();
     return I.applyReduce(op, items); // empty-list identities live there too
 }

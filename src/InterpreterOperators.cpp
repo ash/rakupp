@@ -3910,6 +3910,20 @@ static const std::set<std::string> kCorePostfixOps = {
     "++", "--", "i", "\xE2\x81\xBF", "\xE2\x9A\x9B++", "\xE2\x9A\x9B--"};
 static const std::set<std::string> kCoreCircumfixOps = {":{ }", "[ ]", "{ }"};
 static const std::set<std::string> kCorePostcircumfixOps = {"[ ]", "[; ]", "{ }", "{; }"};
+// The operands a reduction takes from ONE Array: its elements, which an Array
+// holds in containers. Under a hyper operator, whose answer takes its left
+// operand's container, that is what makes `[»+«] @a` one item, `$[…]`, as in
+// Rakudo (rakudo#5951); a List's elements and every other operator are as they were.
+void reduceArrayElems(const std::string& op, const Value& arr, ValueList& items) {
+    const std::string o = !op.empty() && op[0] == '\\' ? op.substr(1) : op;
+    auto marker = [&](size_t at) { return o.compare(at, 2, ">>") == 0 || o.compare(at, 2, "<<") == 0 ||
+                                          o.compare(at, 2, "\xC2\xBB") == 0 || o.compare(at, 2, "\xC2\xAB") == 0; };
+    const bool items_ = o.size() > 4 && marker(0) && marker(o.size() - 2) && !arr.isList && arr.s != "Seq";
+    for (auto& x : *arr.arr()) {
+        items.push_back(x);
+        if (items_ && (x.t == VT::Array || x.t == VT::Hash)) items.back().itemized = true;
+    }
+}
 bool corePrefixName(const std::string& n) { return n.size() > 10 && kCorePrefixOps.count(n.substr(9, n.size() - 10)); }
 static const std::set<std::string>* coreOpsOf(const std::string& cat) {
     return cat == "infix" ? &kCoreInfixOps : cat == "prefix" ? &kCorePrefixOps

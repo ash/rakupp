@@ -208,6 +208,7 @@ inline bool userClassTypeObj(const Interpreter& I, const Value& v) {
 }
 bool isSetOpStr(const std::string& o);
 bool reduceKeepsOperands(const std::string& op);   // [Z]/[X]/minmax/set-op reduce: operands stay whole
+void reduceArrayElems(const std::string& op, const Value& arr, ValueList& items);   // ONE Array operand's elements (InterpreterOperators.cpp)
 static bool boxedIteration(const Value& v);
 void spDeclaredInRaw(const std::vector<StmtPtr>& body, std::vector<const VarExpr*>& out);
 bool pureSubscriptBase(const Expr* b);

@@ -20,6 +20,16 @@ check 'the issue\'s shape', ([»+«] @a), [5, 7, 9];
 check 'infix:<~>(<a b>)', infix:<~>(<a b>), 'ab';
 check '[~] $(<a b>)', ([~] $(<a b>)), 'ab';
 check 'one scalar stays', (infix:<~>(5), [~] 1), ('5', '1');
+# …and over an Array's elements, which are items, the answer is one item, as a
+# hyper's answer takes its left operand's container: the issue's "lost level"
+my @r = [»+«] @a;
+check 'assigned, one element', @r.elems, 1;
+check 'an item', ([»+«] @a).raku, '$[5, 7, 9]';
+check 'a List of Arrays is not', ([»+«] ([1,2],[3,4])).raku, '[4, 6]';
+check '$[…] »+« $[…]', ($[1,2] »+« $[3,4]).raku, '$[4, 6]';
+check 'a Hash item', (${a=>1} »+« ${a=>2}).raku, '${:a(3)}';
+check 'the scan form', ([\»+«] @a).raku, '($[1, 2, 3], $[5, 7, 9]).Seq';
+check '[+] unchanged', ([+] @a), 6;
 
 if @fail {
     note "FAILED:\n" ~ @fail.map({ "  - $_" }).join("\n");
