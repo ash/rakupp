@@ -16422,6 +16422,22 @@ StmtPtr Parser::parseStatementImpl() {
                     if (ip.invocant)
                         throw ParseError("Cannot use an invocant in a sub", cur().line,
                                          "X::Syntax::Signature::InvocantNotAllowed", {});
+            // `sub foo { … }().say` — a declaration called at once, then a postfix chain: the
+            // call's value is the term (rakudo#2129's snippet; `.say` read as a topic call)
+            // The declaration stands (hoisted, as any), and the call with its chain is the
+            // statement after it.
+            if (d && d->kind == NK::SubDecl && static_cast<SubDecl*>(d.get())->immediateCall &&
+                !static_cast<SubDecl*>(d.get())->name.empty() && isOp(".") && !cur().spaceBefore) {
+                auto* sd = static_cast<SubDecl*>(d.get());
+                sd->immediateCall = false;
+                auto call = std::make_unique<Call>(); call->name = sd->name; call->parenned = true; call->line = cur().line;
+                call->args = std::move(sd->immediateArgs);
+                auto es = std::make_unique<ExprStmt>(); es->line = cur().line;
+                presetLhs_ = parsePostfix(std::move(call), true);
+                es->e = parseExpression();
+                pendingStmts_.push_back(applyModifiers(std::move(es)));
+                return d;
+            }
             // A routine declaration is a TERM in Raku, so a comma strings several
             // into one statement — PDF::Content::PageTree declares the FETCH and
             // STORE of a Proxy as `sub FETCH($) {…}, sub STORE($, $_) {…}`. The
@@ -16681,9 +16697,11 @@ StmtPtr Parser::parseStatementImpl() {
                 advance(); advance();
                 return applyModifiers(std::move(r));
             }
+            // (`return` is a LIST operator, below the loose `and`/`or`: `return 0 or 5` is
+            // `(return 0) or 5`, which answers 0 and never reaches the 5 — rakudo#2129)
             if (!isKind(Tok::Semicolon) && !isKind(Tok::End) && !isKind(Tok::RBrace) &&
                 cur().kind != Tok::Ident) {
-                r->value = parseExpression();
+                r->value = parseExpr(BP_AND + 1);
             // `return without $path;` — a bare return under a MODIFIER, not a
             // return whose value is a call to `without`. `with`/`without` start
             // a term elsewhere, so they are deliberately absent from
@@ -16697,8 +16715,11 @@ StmtPtr Parser::parseStatementImpl() {
                        isIdent("sub") || isIdent("method") || isIdent("do") || isIdent("start") ||
                        ((isIdent("role") || isIdent("class") || isIdent("grammar")) &&
                         (peek().kind == Tok::LBrace || (peek().kind == Tok::Op && peek().text == "::")))) {
-                r->value = parseExpression();
+                r->value = parseExpr(BP_AND + 1);
             }
+            // …so a loose infix after it is dead code: read and dropped
+            while (isIdent("or") || isIdent("and") || isIdent("xor") || isIdent("andthen") ||
+                   isIdent("orelse") || isIdent("notandthen")) { advance(); (void)parseExpr(BP_AND + 1); }
             markLazyTail(r->value.get());   // `return @a.map(…)` is the routine's value too
             return applyModifiers(std::move(r));
         }
