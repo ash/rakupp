@@ -934,6 +934,7 @@ struct Env {
     // a `try`, `do` or `quietly` block run in place (runBlockInPlace): a
     // printed frame of its own, "in block", as the closure it stands in for was.
     bool btCalled = false;
+    bool btThunk = false;   // …and one that is a `try EXPR`'s thunk: Rakudo's `code`, not a block
     int btLine = 0;
     uint64_t routineFrameId = 0; // …and its frame number, what a lexical `return` targets
     // A `strict` pragma ran HERE: 1 = `no strict` (undeclared variables
@@ -5046,6 +5047,7 @@ public:
         bool colour   = false;  // ANSI, only for a terminal
         bool collapse = true;   // fold runs of identical frames, cap the total
         bool full     = false;  // --ll-exception: hidden frames too, no cap
+        bool inPlace  = false;  // print an in-place try/do/quietly block's frame (a warning's position does)
         int  cap      = 40;
     };
     bool llException_ = false;        // --ll-exception: every frame, uncollapsed, uncapped

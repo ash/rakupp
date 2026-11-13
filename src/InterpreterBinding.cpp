@@ -5834,6 +5834,19 @@ static const PRef<Callable>& btInPlaceBlockCode() {
     return code;
 }
 
+// …and what a `try EXPR`'s thunk names: Rakudo's frame for it is `code`, printed
+// by `.full` as "in code" (btFrameName) and left out of the short form as an
+// in-place block's is
+static const PRef<Callable>& btThunkCode() {
+    static const PRef<Callable> code = [] {
+        auto c = makePayload<Callable>();
+        c->ciM().isBlock = true;
+        c->ciM().langRev = 0;
+        return c;
+    }();
+    return code;
+}
+
 static std::shared_ptr<BtRecord> btCaptureNow() {
     auto& fr = Interpreter::tctx().callFrames;
     auto out = std::make_shared<BtRecord>();
@@ -5859,7 +5872,7 @@ static std::shared_ptr<BtRecord> btCaptureNow() {
         int bl = line, at = line;
         for (Env* e = scope; e && !e->callEnv && !e->routineFrame && !e->unitFrame; e = e->parent.get())
             if (e->btBlock) {
-                if (e->btCalled) { out->frames.push_back(BtFrame{btInPlaceBlockCode(), at}); at = e->btLine; }
+                if (e->btCalled) { out->frames.push_back(BtFrame{e->btThunk ? btThunkCode() : btInPlaceBlockCode(), at}); at = e->btLine; }
                 else out->frames.push_back(BtFrame{nullptr, bl, 1});
                 bl = e->btLine;
             }
@@ -5937,6 +5950,7 @@ std::string btDisplayPath(const std::string& file, const std::string& srcAbs,
 // `block ` (two spaces before `at`) for an anonymous one.
 static std::string btFrameName(const Callable* c, bool outermost) {
     if (!c) return outermost ? "block <unit>" : "block ";
+    if (c == btThunkCode().get()) return "code ";
     std::string kind = c->ci().isSubmethod    ? "submethod"
                      : c->ci().isMethod       ? "method"
                      : c->ci().isRegexRoutine ? "regex"
@@ -6001,6 +6015,9 @@ std::string Interpreter::renderFrames(const BtRecord& rec, const BtStyle& st) {
         if (fr[i].kind) continue;   // bare-block and setting frames are the list's, not the printout's
         const Callable* c = fr[i].code.get();
         if (!st.full && btFrameHidden(c)) continue;
+        // a `try`, `do` or `quietly` run in place, and a `try EXPR`'s thunk, is a
+        // frame of the LIST (as Rakudo's is) that Rakudo's printout leaves out
+        if (!st.full && !st.inPlace && c && (c == btInPlaceBlockCode().get() || c == btThunkCode().get())) continue;
         std::string file = c && !c->ci().declFile.empty() ? c->ci().declFile
                          : (!originFile.empty() ? originFile : srcFileAbs_);
         out.push_back({btFrameName(c, i + 1 == n),
@@ -6085,6 +6102,7 @@ std::string Interpreter::renderError(const RakuError& e, const BtStyle& st) {
 std::string Interpreter::warnFrame() {
     BtStyle st = btStyleForStderr();
     st.excerpt = st.typeLine = st.colour = false;   // it goes through $*ERR, which may be a file
+    st.inPlace = true;   // `try { warn … }` names the block, in Rakudo too
     if (st.cap == 0 && !st.full) return "";
     auto rec = btCaptureNow();
     if (rec) rec->frames.erase(std::remove_if(rec->frames.begin(), rec->frames.end(),

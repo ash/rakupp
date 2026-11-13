@@ -1930,7 +1930,7 @@ struct FramePool {
         // one must not outlive it
         e->routineFrame = e->staticSeeded = e->unitFrame = e->packageFrame = false;
         e->evalFrame = e->stateFrame = e->loopFrame = false;
-        e->btBlock = e->callEnv = e->btCalled = false;
+        e->btBlock = e->callEnv = e->btCalled = e->btThunk = false;
         e->btLine = 0;
         e->routineFrameId = 0;
         e->strictPragma = e->fatalPragma = 0;
@@ -1962,6 +1962,14 @@ struct PooledFrame {
 // Callable, binding, redispatch and dynamic-scope bookkeeping, CATCH and phaser
 // scans) was most of such a block's cost. A `return` is a ReturnEx and `next`
 // or `last` a flag either way, so both reach their routine or loop as they did.
+// Does `try EXPR`'s operand declare a name (`try my $x = f()`)? It declares
+// it in the scope around, so it is evaluated there rather than in a thunk's.
+static bool tryOperandDeclares(const Expr* e) {
+    if (!e) return false;
+    if (e->kind == NK::Assign) e = static_cast<const Assign*>(e)->target.get();
+    if (e && e->kind == NK::VarExpr) return static_cast<const VarExpr*>(e)->declare;
+    return e && (e->kind == NK::ListExpr || e->kind == NK::SubDecl);
+}
 Value Interpreter::runBlockInPlace(BlockExpr* be) {
     ExecContext& tcx = tctx();
     PooledFrame frame_{tcx};
@@ -25339,7 +25347,20 @@ Value Interpreter::evalUnary(Unary* u) {
                 t_fatalTry = true;
                 r = runsInPlace(be) ? runBlockInPlace(be) : callCallable(makeClosure(be), {});
             }
-            else r = eval(u->operand.get());
+            else if (!tryOperandDeclares(u->operand.get())) {
+                // `try EXPR` is a thunk, a frame of its own in Rakudo's backtrace (`code`, at
+                // this line): Log::Async drops it as the exception's own and reads the caller
+                // from the next one. A scope marked as runBlockInPlace marks its (btThunk).
+                ExecContext& tcx = tctx();
+                PooledFrame frame_{tcx};
+                frame_.env->parent = tcx.cur;
+                frame_.env->btBlock = frame_.env->btCalled = frame_.env->btThunk = true;
+                frame_.env->btLine = curLine_;
+                struct Restore { ExecContext& t; std::shared_ptr<Env> saved; ~Restore() { t.cur = std::move(saved); } } restore{tcx, std::move(tcx.cur)};
+                tcx.cur = frame_.env;
+                r = eval(u->operand.get());
+            }
+            else r = eval(u->operand.get());   // (`try my $x = …` declares where it stands)
             // A block that RETURNS a live Failure sets `$!` too — it did not throw,
             // but the failure is still what happened (`try { 1 % 0 }` handed back
             // an undefined value with `$!` cleared, and nothing said what went
