@@ -661,6 +661,7 @@ private:
     bool experimentalCached_ = false;   // `use experimental :cached` in force (block-scoped): `is cached` is allowed
     StmtPtr traceStmt(int id, size_t from, size_t to);
     ExprPtr parsePkgNameLookup();   // `CALLERS::('$_')`, `M::('$q')` (ParserPackages.cpp)
+    void refuseMethodPlaceholders(size_t bodyAt, const std::string& name);   // `method z { $^a }` (ParserPackages.cpp)
     const Expr* rChainList_ = nullptr;       // the ListExpr the last `R,` built (a chain extends it)
     std::set<std::string> dynScopeNames_;    // `use dynamic-scope <$a $b>`: just these
     std::set<std::string> ourProtos_; // names with an our-scoped proto (our multi is then legal)
@@ -720,6 +721,7 @@ private:
     std::vector<Param> parseSignature(Tok closeTok = Tok::RParen); // after '(' … ')' (or '[' … ']' for a sub-signature)
     void recordParamTrait(Param& p, const std::string& name); // `is option("=s%")` — a user parameter trait
     std::vector<Param> parsePointyParams();   // -> $a, \b { ... }  (stops at '{')
+    void refuseAttrParamsWithoutSelf(const std::vector<Param>& ps);   // `-> $!x { }` outside a method
 
     // expressions
     ExprPtr parseExpression();

@@ -9268,7 +9268,7 @@ ExprPtr Parser::parsePrimary() {
                 if (isKind(Tok::LParen)) {
                     advance(); sigRetType_.clear(); sigRetLiteral_.reset();
                     be->sigParens = true;
-                    be->params = parseSignature();
+                    be->params = parseSignature(); if (name == "sub") refuseAttrParamsWithoutSelf(be->params);
                     be->retType = sigRetType_;   // `sub (--> Int) { … }`
                     subRetLit = std::move(sigRetLiteral_);
                     expectKind(Tok::RParen, ")");
@@ -11405,6 +11405,8 @@ std::vector<Param> Parser::parseSignature(Tok closeTok) {
         // words between `<` and `>` are one literal, whatever the lexer made of
         // them here
         if (isOp("<")) {
+            // …and with a space after the `<` it is none: Rakudo's signature ends there ("Missing block")
+            if (peek().spaceBefore) throw ParseError("Missing block", cur().line, "X::Syntax::Missing", {{"what", "block"}});
             size_t j = pos_ + 1;
             std::string word;
             bool ok = false;
@@ -12214,6 +12216,10 @@ std::vector<Param> Parser::parseSignature(Tok closeTok) {
         if (p.isRw && p.defaultVal)
             throw ParseError("Cannot use 'is rw' on optional parameter '" + p.name + "'.", cur().line,
                              "X::Trait::Invalid", {{"type", "is"}, {"subtype", "rw"}, {"declaring", "parameter"}, {"name", p.name}});
+        // …nor can a REQUIRED one (`$count!`, `is required`), which never goes without (rakudo#1426)
+        if (p.required && p.defaultVal && !p.named)   // (a named one is left: GLib's `:$reversed is required = False` is in the battery)
+            throw ParseError("Cannot put default on required parameter " + p.name, cur().line, "X::Parameter::Default",
+                             {{"how", "required"}, {"parameter", p.name}});
         { // trailing `#= description` on this param's line — DEFERRED. Whether
           // the doc belongs to the param or to the ROUTINE depends on where the
           // signature closes: a comment runs to end of line, so a `#=` sharing
@@ -12427,7 +12433,20 @@ std::vector<Param> Parser::parseSignature(Tok closeTok) {
 std::vector<Param> Parser::parsePointyParams() {
     // pointy blocks share the full signature grammar (types, coercions, slurpies,
     // named params, destructuring, traits) — the body brace ends the signature
-    return parseSignature(Tok::LBrace);
+    std::vector<Param> ps = parseSignature(Tok::LBrace);
+    refuseAttrParamsWithoutSelf(ps);
+    return ps;
+}
+
+// An ATTRIBUTIVE parameter (`$!x`, `$.x`) needs a `self` to bind into: a
+// pointy block or an anonymous sub outside every method has none, as in
+// Rakudo (X::Syntax::NoSelf). A named sub's check is parseSub's own.
+void Parser::refuseAttrParamsWithoutSelf(const std::vector<Param>& ps) {
+    if (selfDepth_ || evalSelfInScope_) return;
+    for (auto& ap : ps)
+        if (ap.name.size() > 2 && (ap.name[1] == '.' || ap.name[1] == '!') && std::strchr("$@%&", ap.name[0]))
+            throw ParseError("Variable " + ap.name + " used where no 'self' is available", cur().line,
+                             "X::Syntax::NoSelf", {{"variable", ap.name}});
 }
 
 // `my $m = method { $!a }` with no class around it: nothing can declare the
@@ -13207,6 +13226,7 @@ StmtPtr Parser::parseSub(bool isMulti, bool isProto, bool asMethod) {
         auto blk = parseBlock();
         selfDepth_ -= hasSelf;
         checkNativeParamAssign(s->params, bodyAt);
+        if ((asMethod || s->isMethod || s->isSubmethod) && !s->hadSig) refuseMethodPlaceholders(bodyAt, s->name);
         if (asMethod) refuseFreeMethodAttrs(bodyAt);
         // `return-rw` makes the routine container-returning even with no `is rw`
         // trait, which is what Rakudo does (`method m($i) { return-rw @!a[$i] }`).
@@ -14225,6 +14245,9 @@ StmtPtr Parser::parseClass(bool isRole, bool isGrammar, bool isPackage, bool isU
                 size_t idx = 1;
                 if (vn.size() > 1 && (vn[1] == '.' || vn[1] == '!')) { a.pub = (vn[1] == '.'); a.twigilWritten = true; idx = 2; }
                 a.name = vn.substr(idx);
+                // `has Int $.count!` is no required attribute: Rakudo reads the `!` as a negation metaop with no infix
+                if (isOp("!") && (peek().kind == Tok::Semicolon || peek().kind == Tok::RBrace || peek().kind == Tok::End))
+                    throw ParseError("Negation metaoperator not followed by valid infix", cur().line, "X::AdHoc", {});
                 // a SHAPED array attribute: `has @.a[3;3]`
                 if (a.sigil == '@' && isKind(Tok::LBracket) && !cur().spaceBefore) {
                     advance(); // '['
@@ -14910,6 +14933,9 @@ StmtPtr Parser::parseClass(bool isRole, bool isGrammar, bool isPackage, bool isU
                                          {{"method", c.first}, {"typename", cd->name}, {"private", "True"}});
         }
     }
+    // `class Foo is repr('CStruct') { }` — a struct of nothing, which Rakudo refuses (rakudo#2673)
+    if (cd->repr == "CStruct" && cd->attrs.empty() && cd->parent.empty() && cd->extraParents.empty() && cd->roles.empty() && !cd->isRole)
+        throw ParseError("Class " + cd->name + " has no attributes, which is illegal with the CStruct representation.", pos_ > 0 ? toks_[pos_ - 1].line : cur().line, "X::AdHoc", {});
     return cd;
 }
 

@@ -115,6 +115,23 @@ ExprPtr Parser::parsePkgNameLookup() {
     return sr;
 }
 
+// `method z { $^a }` — a method with no signature of its own may not take
+// placeholders, as in Rakudo (rakudo#2320); a block inside it (`{ $^a }`) has
+// its own. Tokens from the body's `{` (bodyAt) to here.
+void Parser::refuseMethodPlaceholders(size_t bodyAt, const std::string& name) {
+    int depth = 0;
+    for (size_t k = bodyAt; k < pos_ && k < toks_.size(); k++) {
+        const Token& t = toks_[k];
+        if (t.kind == Tok::LBrace) depth++;
+        else if (t.kind == Tok::RBrace) depth--;
+        else if (depth == 1 && t.kind == Tok::Var && t.text.size() > 2 && t.text[1] == '^' &&
+                 (ascii::isalpha((unsigned char)t.text[2]) || t.text[2] == '_'))
+            throw ParseError("Placeholder variables (eg. " + t.text + ") cannot be used in a method.\n"
+                             "Please specify an explicit signature, like method " + name + " (" + t.text.substr(0, 1) +
+                             t.text.substr(2) + ") { ... }", t.line, "X::AdHoc", {});
+    }
+}
+
 // `use v6…`: the revisions and modifiers Rakudo 2026.09 has a compiler for.
 // 6.c and 6.d stand alone (6.d may still say PREVIEW), and 6.e is a preview,
 // so it needs `.PREVIEW` (or `.*`): a bare `use v6.e` is X::Language::ModRequired
