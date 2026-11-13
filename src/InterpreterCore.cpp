@@ -3302,9 +3302,9 @@ Value Interpreter::execForStmt(Stmt* s, bool sink) {
             if (!oneItem && lv.t == VT::Range && !lv.rNum() && !lv.ext() && !lv.big() &&
                 lv.ofType() != "Str" && degenRange(lv) == DegenRange::No &&
                 !(lre && ((lre->from.t == VT::Int && lre->from.big()) || (lre->to.t == VT::Int && lre->to.big()))) &&
-                lv.rTo() < 9000000000000000000LL && lv.rFrom() > -9000000000000000000LL) {
-                const long long lo = lv.rFrom() + (lv.rExFrom() ? 1 : 0);
-                const long long hi = lv.rTo() - (lv.rExTo() ? 1 : 0);
+                lv.rFrom() > -9000000000000000000LL) {
+                const long long lo = lv.rFrom() + (lv.rExFrom() ? 1 : 0);   // (an ENDLESS one never ends: `.sink for 1..*`, rakudo#1399)
+                const long long hi = lv.rTo() >= 9000000000000000000LL ? LLONG_MAX : lv.rTo() - (lv.rExTo() ? 1 : 0);
                 const bool imm = immutableQuantSource(fs->list.get()) || immutableLoopSource(fs->list.get());
                 for (long long k = lo; k <= hi; k++) {
                     Value& tv = env->vars["$_"];
