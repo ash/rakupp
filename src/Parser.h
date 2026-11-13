@@ -580,6 +580,7 @@ private:
     std::string nativeRetParam(size_t identPos) const;
     size_t lastBlockClose_ = (size_t)-1;
     ExprPtr presetLhs_;                  // parseExpr's first operand, read already (`class A {} === A`)
+    bool termDecl_ = false;              // the statement being parsed is a term-position `my class …` (parsePrimary)
     // the innermost enclosing ROLE (what ::?ROLE names), past any class or
     // grammar declared inside it — "" outside every role
     std::string enclosingRoleName() const {

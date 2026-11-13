@@ -9580,7 +9580,9 @@ ExprPtr Parser::parsePrimary() {
                      (peek().kind == Tok::Op && peek().text == "::"))) {
                     auto u = std::make_unique<Unary>(); u->op = "do";
                     auto be = std::make_unique<BlockExpr>();
+                    termDecl_ = true;   // (its postfix chain is the term: see the class statement)
                     be->body.push_back(parseStatement());
+                    termDecl_ = false;
                     u->operand = std::move(be);
                     return u;
                 }
@@ -16789,6 +16791,7 @@ StmtPtr Parser::parseStatementImpl() {
             (peek().kind == Tok::Ident || peek().kind == Tok::LBrace ||
              (peek().kind == Tok::Op && peek().text == "::"))) {
             advance();
+            const bool termDecl = std::exchange(termDecl_, false);   // (a term-position `my class`: its caller reads on)
             StmtPtr decl = parseClass(kw == "role", kw == "grammar",
                                       kw == "module" || kw == "package",
                                       false, kw);
@@ -16808,14 +16811,16 @@ StmtPtr Parser::parseStatementImpl() {
             // …and an ANONYMOUS one before a statement modifier on its line (`class { … } for ^5`,
             // rakudo#1360): the type is the modifier's term. (A named one is declared once, at
             // compile time, in Rakudo; wrapping it would run its declaration per iteration.)
-            const bool modAfter = decl && decl->kind == NK::ClassDecl && static_cast<ClassDecl*>(decl.get())->name.empty() &&
+            const bool modAfter = !termDecl && decl && decl->kind == NK::ClassDecl && static_cast<ClassDecl*>(decl.get())->name.empty() &&
                                   cur().line == toks_[pos_ - 1].line && atExprModifier();
             if ((isOp(".") && !cur().spaceBefore) || infix || modAfter) {
                 auto be = std::make_unique<BlockExpr>();
                 be->body.push_back(std::move(decl));
                 auto u = std::make_unique<Unary>(); u->op = "do"; u->operand = std::move(be);
                 auto es = std::make_unique<ExprStmt>();
-                // a postfix chain goes on into an infix and the modifiers: `class {…}.new.z = 42` (rakudo#2078)
+                // a postfix chain goes on into an infix and the modifiers: `class {…}.new.z = 42` (rakudo#2078);
+                // in TERM position the chain is the term, and the caller reads what follows (`f my class C {}.Str, 1`)
+                if (termDecl && !infix) { es->e = parsePostfix(std::move(u), true); return es; }
                 presetLhs_ = isOp(".") && !cur().spaceBefore ? parsePostfix(std::move(u), true) : std::move(u);
                 es->e = parseExpression();
                 return applyModifiers(std::move(es));
