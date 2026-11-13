@@ -3217,6 +3217,13 @@ ExprPtr Parser::parseExpr(int minbp) {
                     throw ParseError("Preceding context expects a term, but found infix "
                                      + nx.op + " instead",
                                      cur().line, "X::Syntax::InfixInTermPosition", {{"infix", nx.op}});
+                // `say 1, 2, and 3` — a loose word infix where a term belongs is a NAME
+                // there, and nothing declares a routine of it (Rakudo; it was `(say 1, 2) and 3`)
+                if (cur().kind == Tok::Ident && (cur().text == "and" || cur().text == "or" || cur().text == "xor" ||
+                    cur().text == "andthen" || cur().text == "orelse" || cur().text == "notandthen") &&
+                    !declaredSubNames_.count(cur().text) && !importsModules_)
+                    throw ParseError("Undeclared routine:\n    " + cur().text + " used at line " + std::to_string(cur().line),
+                                     cur().line, "X::Undeclared::Symbols", {});
             }
             // `1, 2, ... 3` — after a comma, `...` stands in TERM position: it is
             // the yada stub (dying with its argument), not the sequence operator
@@ -4099,6 +4106,10 @@ bool Parser::prefixOpCallAt(size_t i) const {
 // A declaration leaves it alone: Rakudo's declarator has a $*LEFTSIGIL of its own.
 ExprPtr Parser::parsePostfix(ExprPtr base, bool stopAtSpaceDot) {
     const Expr* b0 = base.get();
+    // `42:foo`, `False:so` — an adverb glued to a LITERAL modifies nothing (Rakudo: X::Syntax::Adverb)
+    if (b0 && (b0->kind == NK::IntLit || b0->kind == NK::NumLit || b0->kind == NK::BoolLit) && pos_ > 0 && isOp(":") &&
+        !cur().spaceBefore && peek().kind == Tok::Ident && !peek().spaceBefore)
+        throw ParseError("You can't adverb " + toks_[pos_ - 1].text, cur().line, "X::Syntax::Adverb", {{"what", toks_[pos_ - 1].text}});
     const bool decl = b0 && b0->kind == NK::VarExpr && static_cast<const VarExpr*>(b0)->declare;
     if (b0 && !decl && !leftSigil_ && !parenned_.count(b0)) {   // (`($x)` was an expression of its own)
         if (b0->kind == NK::VarExpr && !static_cast<const VarExpr*>(b0)->name.empty())
