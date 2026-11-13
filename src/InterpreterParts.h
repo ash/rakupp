@@ -209,6 +209,9 @@ inline bool userClassTypeObj(const Interpreter& I, const Value& v) {
 bool isSetOpStr(const std::string& o);
 bool reduceKeepsOperands(const std::string& op);   // [Z]/[X]/minmax/set-op reduce: operands stay whole
 void reduceArrayElems(const std::string& op, const Value& arr, ValueList& items);   // ONE Array operand's elements (InterpreterOperators.cpp)
+std::vector<std::string> opPropsFromTraits(Interpreter& I, const std::string& name, const std::vector<std::string>& traits);   // an operator's `.prec`, as its traits set it (OperatorProps.cpp)
+std::vector<std::string> opPropsOfHash(const Value& h);   // …as `is prec(%p)` sets it
+std::optional<Value> codePrecMethod(Interpreter& I, const Value& inv, const std::string& m, const ValueList& args);   // …and `.prec`, `.precedence`, `.associative`, `.thunky`, `.iffy`
 const std::vector<std::string>* builtinExAttrOrder(const std::string& t);   // Rakudo's attribute order for a built-in exception (InterpreterOperators.cpp)
 Value typedHyperResult(Interpreter& I, const Value& l, const Value& r, Value res);   // a hyper's answer: its operands' type and container (InterpreterOperators.cpp)
 static bool boxedIteration(const Value& v);

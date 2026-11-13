@@ -749,6 +749,8 @@ struct CallableCold {
     mutable CifSlot nativeCifCache;
     std::string pod;                                  // `#|` leading declarator pod (.WHY)
     std::string podTrail;                             // …its `#=` part alone
+    std::vector<std::string> opProps;                 // an operator's properties as its traits set them, flat
+                                                      // (key, value) pairs (`.prec`); empty = its category's
     bool hasPrimed = false;                           // .assuming wrapper: primedParams is the residual signature
     std::vector<std::shared_ptr<Param>> primedParams; // the residual signature (copies: a primed named param
                                                       // survives with the primed value as its default)

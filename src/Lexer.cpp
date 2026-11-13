@@ -854,6 +854,39 @@ std::vector<std::pair<std::string, std::string>> infixTraitsIn(const std::string
     return out;
 }
 
+// The same traits read off a routine declaration's own TOKENS, `from` up to
+// its body (Parser::parseSub), for `.prec` at run time: flat (trait, argument)
+// pairs, the argument the operator as written (`&infix:<+>`, `&[*]`, `*` from
+// `is tighter<*>`) or the associativity's word (`left`, from `is assoc<left>`
+// or `is assoc('left')`).
+std::vector<std::string> precTraitsOfTokens(const std::vector<Token>& t, size_t from, size_t to) {
+    std::vector<std::string> out;
+    for (size_t i = from; i + 2 < to && i + 2 < t.size(); i++) {
+        if (!(t[i].kind == Tok::Ident && t[i].text == "is" && t[i + 1].kind == Tok::Ident)) continue;
+        const std::string& tr = t[i + 1].text;
+        if (tr != "tighter" && tr != "looser" && tr != "equiv" && tr != "assoc") continue;
+        const Token& a = t[i + 2];
+        std::string arg;
+        if (a.kind == Tok::QwList) arg = a.text;
+        else if (a.kind == Tok::LParen || (a.kind == Tok::Op && a.text == "<")) {
+            const bool paren = a.kind == Tok::LParen;
+            int depth = 1;
+            for (size_t k = i + 3; k < to && k < t.size(); k++) {
+                if (paren && t[k].kind == Tok::LParen) depth++;
+                if ((paren && t[k].kind == Tok::RParen && --depth == 0) || (!paren && t[k].kind == Tok::Op && t[k].text == ">")) break;
+                // (`is equiv<+>` lexes its `+>` whole: the `>` closes it)
+                if (!paren && t[k].kind == Tok::Op && t[k].text.size() > 1 && t[k].text.back() == '>') { arg += t[k].text.substr(0, t[k].text.size() - 1); break; }
+                arg += t[k].text;
+            }
+        }
+        else continue;
+        size_t b = arg.find_first_not_of(" \t'\""), e = arg.find_last_not_of(" \t'\"");
+        out.push_back(tr);
+        out.push_back(b == std::string::npos ? std::string() : arg.substr(b, e - b + 1));
+    }
+    return out;
+}
+
 void Lexer::scanUserOps() {
     for (size_t p = src_.find("infix:<"); p != std::string::npos; p = src_.find("infix:<", p + 1)) {
         size_t b = p + 7, e = b;

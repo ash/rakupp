@@ -30,6 +30,7 @@ bool uniTypeLikeName(const std::string& n);   // Unicode.cpp: `Foo`, `Éx`, `万
 size_t readOpNameInAngles(const std::string& src, size_t open, std::string& name);   // Lexer.cpp: `<(\<&)>` is `(<&)`
 bool lexesSplitUnlessNoted(const std::string& name, bool term);   // Lexer.cpp: `(<&)` and `⨁⨁` are, `⨁` is not
 std::vector<std::pair<std::string, std::string>> infixTraitsIn(const std::string& decl);   // Lexer.cpp: `is assoc<right>`, …
+std::vector<std::string> precTraitsOfTokens(const std::vector<Token>& t, size_t from, size_t to);   // …and off a declaration's tokens
 static bool typeLikeName(const std::string& n) { return uniTypeLikeName(n); }
 
 // A routine's or a closure's VALUE that is a plain one-argument map or grep is
@@ -12807,6 +12808,7 @@ StmtPtr Parser::parseSub(bool isMulti, bool isProto, bool asMethod) {
     // (note whether an `is export` trait is present — governs module visibility;
     //  capture `of T` / `returns T` / `--> T` as the return type)
     std::set<std::string> seenIsTraits;   // `sub f is rw is rw` — Rakudo worries about the second
+    const size_t traitsAt = pos_;          // (where the traits start: precTraitsOfTokens reads them off for `.prec`)
     while (!isKind(Tok::LBrace) && !isKind(Tok::End) && !isKind(Tok::Semicolon)) {
         if (isIdent("is") && peek().kind == Tok::Ident && !strictSep_ &&
             !seenIsTraits.insert(peek().text).second)
@@ -13176,6 +13178,7 @@ StmtPtr Parser::parseSub(bool isMulti, bool isProto, bool asMethod) {
         }
         advance();
     }
+    s->precTraits = precTraitsOfTokens(toks_, traitsAt, pos_);
     bool hadBlock = false;
     if (isKind(Tok::LBrace)) {
         hadBlock = true;

@@ -1112,6 +1112,9 @@ struct SubDecl : Stmt {
     bool assocRight = false; // `is assoc<right>` on an operator: `[op]` reduces from the right
     bool assocNon = false;   // `is assoc<non>`: the operator does not chain
     bool assocChain = false; // `is assoc<chain>`: `[op] a, b, c` is `a op b && b op c`
+    // its precedence and associativity traits, for `.prec`, as flat (trait, argument)
+    // pairs: `equiv`/`tighter`/`looser` and the operator named, or `assoc` and its word
+    std::vector<std::string> precTraits;
     bool isMulti = false;
     bool isProto = false; // `proto` — defines the dispatch group; not a candidate itself
     bool hadSig = false;  // explicit `(...)` signature (even empty) — placeholders then illegal

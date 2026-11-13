@@ -6550,7 +6550,7 @@ bool Interpreter::routineTraitKnown(const std::string& n) {
         "readonly", "dynamic", "required", "built", "DEPRECATED", "test-assertion",
         "hidden-from-backtrace", "implementation-detail", "specialized", "context", "parsed",
         "reparsed", "controlled", "cloned", "item", "revision-gated", "tighter", "looser", "equiv",
-        "assoc", "native", "symbol", "nativeconv", "encoded", "rakudo", "repr", "box_target",
+        "assoc", "prec", "native", "symbol", "nativeconv", "encoded", "rakudo", "repr", "box_target",
         "leading_docs", "trailing_docs"};
     return kBuiltin.count(n) || classes_.count(n) || isKnownTypeName(n);
 }

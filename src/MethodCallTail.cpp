@@ -797,7 +797,7 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
                                                  ValueList& args,
                                                  const std::vector<ExprPtr>* rwArgs) {
     auto a0 = [&]() -> Value { return args.empty() ? Value::any() : args[0]; };
-    if (auto r = inv.t == VT::Type && inv.s == "Metamodel::EnumHOW" ? enumHowMethod(m, args) : std::nullopt) return r;   // `E.HOW.add_enum_value`
+    if (auto r = inv.t == VT::Code ? codePrecMethod(*this, inv, m, args) : inv.t == VT::Type && inv.s == "Metamodel::EnumHOW" ? enumHowMethod(m, args) : std::nullopt) return r;   // `&infix:<+>.prec` (OperatorProps.cpp), `E.HOW.add_enum_value`
     if (m == "fmt" && inv.t == VT::Pair)
         return Value::str(doSprintf(args.empty() ? "%s\t%s" : a0().toStr(),
                                     {inv.pairKeyV(),
