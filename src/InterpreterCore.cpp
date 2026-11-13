@@ -5150,7 +5150,7 @@ void Interpreter::bindParams(const std::vector<Param>& params, ValueList& args,
                 // A SLIP flattens into every slurpy, itemization notwithstanding —
                 // that is the whole of what a Slip is for, and assigning one to a
                 // scalar itemizes it. Shared by all three branches below.
-                auto isSlip = [](const Value& e) {
+                bool loneArray = false; auto isSlip = [](const Value& e) {   // (loneArray: a lone ARRAY was spread)
                     return e.t == VT::Array && e.arr() && e.s == "Slip";
                 };
                 if (p.slurpyKind == 'f') {
@@ -5231,7 +5231,7 @@ void Interpreter::bindParams(const std::vector<Param>& params, ValueList& args,
                                          positional[pi].isList && positional[pi].s == "Seq";
                     if (lazyTail) pi++;
                     else if (remaining == 1 && (loneSeq || slurpyLoneIterable(positional[pi]))) {
-                        slurpyLoneElements(positional[pi], *a.arr());   // the lone Iterable's ELEMENTS
+                        slurpyLoneElements(positional[pi], *a.arr()); loneArray = positional[pi].t == VT::Array && !positional[pi].isList && positional[pi].s != "Seq";   // the lone Iterable's ELEMENTS
                         if (loneSeq) a.isList = true;
                         pi++;
                     } else {
@@ -5245,9 +5245,9 @@ void Interpreter::bindParams(const std::vector<Param>& params, ValueList& args,
                 // a sigilless `+a` is a List, whatever it was handed (a lone
                 // Seq excepted, bound as it came above)
                 if (p.sigil == '\\' && p.slurpyKind == '1') a.isList = true;
-                // …and so is an `is raw` slurpy: `**@v is raw` / `*@v is raw`
-                // bind the List of what came, not an Array copying it
+                // …and so is an `is raw` slurpy: `**@v is raw` / `*@v is raw` bind the List of what came, not an Array copying it
                 if (p.isRaw && !capture && p.sigil == '@') a.isList = true;
+                if (a.isList && loneArray) for (auto& e : *a.arr()) if (e.t == VT::Array && !e.itemized) e.itemized = true;   // …a List of an ARRAY's elements keeps their containers: `-> +l { l }([1, (2, 3)])` is `(1, $(2, 3))` (rakudo#1355)
                 // a `|c` capture also carries the UNCLAIMED named args (as
                 // namedArg pairs), so `samewith(|c)` re-passes them — Base64's
                 // adverb multis peel one named per round and forward the rest
