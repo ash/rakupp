@@ -1646,7 +1646,7 @@ bool Interpreter::runLoopBody(Block* body, const std::shared_ptr<Env>& scope, co
         runLast(); t_hot.poll.firstBody = savedSF; return true;
     }
     for (;;) {
-        try { Value v = execBlock(body, scope, /*sink=*/collect == nullptr);
+        try { Value v = execBlock(body, scope, /*sink=*/collect == nullptr && tc.unsunkBody != body);
               // cooperative return: stop looping. A `when … { return … }` in the
               // body raised the when-match flag too, and nobody past this loop
               // consumes it: left set, it rode out of the routine and cut the
@@ -1709,7 +1709,7 @@ bool Interpreter::runLoopBody(Block* body, const std::shared_ptr<Env>& scope, co
                   // the iteration's value and NEXT/LAST still run (Rakudo; `do for
                   // 1..3 { when 2 { "two" }; "other" }` used to lose the "two")
                   tc.givenCtl = 0; v = std::move(tc.givenV); whenValue = true;
-                  if (!collect) sinkDiscarded(v);   // …which a loop that keeps nothing sinks
+                  if (!collect && tc.unsunkBody != body) sinkDiscarded(v);   // …which a loop that keeps nothing sinks
               }
               if (collect) {
                   Value cont;
@@ -2848,6 +2848,8 @@ Value Interpreter::execForStmt(Stmt* s, bool sink) {
         ExecContext& t; const void* b; const Expr* e;
         ~TailG() { t.collectTailBody = b; t.collectTail = e; }
     } tailG{tctx(), tctx().collectTailBody, tctx().collectTail};
+    struct UnsunkG { ExecContext& t; const void* b; ~UnsunkG() { t.unsunkBody = b; } } unsunkG{tctx(), tctx().unsunkBody};
+    if (!sink && !fs->asExpr) tctx().unsunkBody = fs->body.get();   // (the block's last statement: see unsunkBody)
     const Expr* tailVar = fs->asExpr ? forBodyTailVar(fs->body.get()) : nullptr;
     tctx().collectTailBody = tailVar ? fs->body.get() : nullptr;
     tctx().collectTail = tailVar;

@@ -1961,6 +1961,10 @@ struct ExecContext {
     // to the body block, so a loop nested in it collects its own way.
     const void* collectTailBody = nullptr;
     const struct Expr* collectTail = nullptr;
+    // A `for` statement whose value its block wants (its last statement):
+    // its body is not sunk, nor kept (Rakudo answers Nil). Keyed to the body block,
+    // so a loop nested in it sinks its own way (rakudo#1360: `{ Failure.new for ^5 }()`).
+    const void* unsunkBody = nullptr;
     // mirror of protoStack_.size(), kept here so the per-block-statement
     // "inside a proto body?" probe reads the ALREADY-LOADED tctx() instead of
     // paying a second TLS wrapper call + init guard for the stack itself

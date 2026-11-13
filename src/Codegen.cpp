@@ -504,8 +504,8 @@ struct Codegen {
     };
     std::set<std::string> keptNames_, writtenNames_;
     const std::vector<Param>* curParams_ = nullptr;   // the routine bodyDef is emitting
-    // A kept list literal's `$name` (or `my $name = …`) and `@a[k]` / `%h{k}`
-    // items: what keeping it shares. Records them; true when there was one.
+    const Stmt* unsunkStmt_ = nullptr;   // the last statement of a routine's trailing `for` body: its value is not sunk (rakudo#1360)
+    // A kept list literal's `$name` (or `my $name = …`) and `@a[k]` / `%h{k}` items: what keeping it shares. Records them; true when there was one.
     bool noteKeptItems(const Expr* e) {
         if (!e || e->kind != NK::ListExpr) return false;
         bool any = false;
@@ -4660,6 +4660,7 @@ struct Codegen {
                         return;
                     }
                 }
+                if (s == unsunkStmt_) { line(ind, "(void)(" + ex(e) + ");"); return; }   // (see unsunkStmt_)
                 if (e->kind == NK::MethodCall || e->kind == NK::Call ||
                     (e->kind == NK::Unary && static_cast<Unary*>(e)->op == "gather")) {
                     const bool m = e->kind == NK::MethodCall && !static_cast<MethodCall*>(e)->mutate;   // (rtSinkCallStmt)
@@ -9767,7 +9768,7 @@ struct Codegen {
                 stmtValue(s, 1, rv);
                 line(1, "return " + rv + ";");
             }
-            else stmt(s, 1);
+            else { if (i + 1 == body.size() && s->kind == NK::ForStmt && !static_cast<ForStmt*>(s)->asExpr && static_cast<ForStmt*>(s)->body && !static_cast<ForStmt*>(s)->body->stmts.empty()) unsunkStmt_ = static_cast<ForStmt*>(s)->body->stmts.back().get(); stmt(s, 1); }
         }
         line(1, std::string("return ") + tailFallback(body) + ";");
     }
@@ -9779,8 +9780,7 @@ struct Codegen {
         const std::string nrw = nrSub.empty() ? std::string() : nrWrapper(nrSub, ps);
         BodyScope __bs{this, /*closure=*/false};
         lexDirect_.clear();   // a C++ function of its own: no enclosing handle is in reach
-        struct CurParams { Codegen* g; const std::vector<Param>* saved; ~CurParams() { g->curParams_ = saved; } }
-            __cp{this, std::exchange(curParams_, &ps)};
+        struct CurParams { Codegen* g; const std::vector<Param>* saved; ~CurParams() { g->curParams_ = saved; } } __cp{this, std::exchange(curParams_, &ps)};
         std::set<std::string> params;
         for (auto& p : ps) if (!p.name.empty()) insertName(params, p.name);
         analyzeCells(body, params);
