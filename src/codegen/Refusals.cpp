@@ -49,6 +49,20 @@ const char* methodRefusal(const MethodCall* m, bool& routineWide) {
     return nullptr;
 }
 
+// A routine the interpreter runs, whole: one that is `is cached` (callCached
+// answers its calls), and one with a parameter default in a program that reads
+// `.default` — a compiled signature carries the default's text, not the
+// default, so `&f.signature.params[1].default` (and `.assuming`'s residual one,
+// rakudo#4553) would have nothing to call. `traits` are a sub's own; a sub
+// term's are its userTraits.
+const char* routineRefusal(const std::vector<SubTraitSpec>& traits, const std::vector<Param>& ps,
+                           const std::string& srcText) {
+    for (auto& st : traits) if (st.name == "cached") return "a routine that is cached";
+    if (srcText.find(".default") != std::string::npos)
+        for (auto& p : ps) if (p.defaultVal) return "a parameter default the program reads with `.default`";
+    return nullptr;
+}
+
 // Is `e` a call that a `try` block's `use fatal` reaches — one whose Failure
 // throws where it is handed back? Not in a boolean or definedness context (the
 // parser's fatalExempt), and not a control call, which hands nothing back.

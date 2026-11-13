@@ -34,7 +34,7 @@ std::string introspectionRefusal(const Program&, bool evalCut); bool introspecti
 const char* routineIntrospectionRefusal(const Program&);
 bool exprMayUseTopic(const Expr* e);   // Interpreter.cpp: may `e` read or write `$_`?
 const char* builtinRefusal(const std::string& name, bool inTopic);   // codegen/Refusals.cpp, as are:
-const char* methodRefusal(const MethodCall* m, bool& routineWide); bool fatalCallSite(const Expr* e); bool isLeaveBlock(const Stmt* s);
+const char* methodRefusal(const MethodCall* m, bool& routineWide); bool fatalCallSite(const Expr* e); bool isLeaveBlock(const Stmt* s); const char* routineRefusal(const std::vector<SubTraitSpec>& traits, const std::vector<Param>& ps, const std::string& srcText);
 bool leaveReadsEarlier(const std::vector<StmtPtr>& body, size_t j); bool pairHoldsVariable(const std::vector<ExprPtr>& args);
 bool nestedSubUnsafe(const std::vector<StmtPtr>&, const SubDecl*, const std::set<std::string>&, const SubDecl*);
 std::string autothreadMask(const std::vector<Param>& ps, bool block);   // codegen/Autothread.cpp
@@ -2451,7 +2451,7 @@ struct Codegen {
     // A block `{ ... }` / pointy `-> $x { ... }` becomes a native closure.
     std::string emitBlockClosure(BlockExpr* be) {
         Nest __nest{this, be->isSub ? 's' : 'b'};
-        for (auto& st : be->userTraits) if (st.name == "cached") throw CodegenError{"a routine that is cached", true};
+        if (const char* why = be->isSub ? routineRefusal(be->userTraits, be->params, srcText_) : nullptr) throw CodegenError{why, true};
         BodyScope __bs{this, /*closure=*/true};
         // an anonymous `sub` is a routine of its own; a plain block is not
         std::unique_ptr<RoutineScope> __rs;
@@ -9877,7 +9877,7 @@ struct Codegen {
     }
     void subDef(SubDecl* d) {
         if (d->isNative) { nativeSubDef(d); return; }
-        for (auto& st : d->traits) if (st.name == "cached") throw CodegenError{"a routine that is cached", true};   // (callCached)
+        if (const char* why = routineRefusal(d->traits, d->params, srcText_)) throw CodegenError{why, true};   // (Refusals.cpp)
         RoutineScope __rs{this, subRefSig("Value::closure([](ValueList& __a)->Value{ return " + mangleSub(d->name) + "(__a); })", d->name)};
         nrWrapFor_ = d->name;   // a native routine's Value function calls its native function
         rwDirect_ = !moduleMode_ && srcText_.find("&" + d->name) == std::string::npos;
