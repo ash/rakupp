@@ -7552,7 +7552,7 @@ struct Codegen {
         if (moduleMode_) return;
         if (const char* nk = std::getenv("RAKUPP_NO_KERNELS")) if (*nk && *nk != '0') return;
         // a wrapper must see every call, and these name a routine's lexicals at run time
-        for (const char* w : {".wrap", "EVAL", "::(", "CALLER::", "OUTER::", "MY::", "LEXICAL::", "callframe"})
+        for (const char* w : {".wrap", "EVAL", "::(", "CALLER::", "CALLERS::", "OUTER::", "MY::", "LEXICAL::", "callframe"})
             if (srcText.find(w) != std::string::npos) return;
         nrSixE_ = srcText.find("v6.e") != std::string::npos;
         nrOn_ = true;
