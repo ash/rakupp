@@ -16781,14 +16781,20 @@ StmtPtr Parser::parseStatementImpl() {
             // …and so is it before an infix on its line (`class A {} === A`, Roast's
             // `class {} − class {}`): the operator's left operand
             const bool infix = cur().kind == Tok::Op && cur().line == toks_[pos_ - 1].line && !(isOp(".") && !cur().spaceBefore);
-            if ((isOp(".") && !cur().spaceBefore) || infix) {
+            // …and an ANONYMOUS one before a statement modifier on its line (`class { … } for ^5`,
+            // rakudo#1360): the type is the modifier's term. (A named one is declared once, at
+            // compile time, in Rakudo; wrapping it would run its declaration per iteration.)
+            const bool modAfter = decl && decl->kind == NK::ClassDecl && static_cast<ClassDecl*>(decl.get())->name.empty() &&
+                                  cur().line == toks_[pos_ - 1].line && atExprModifier();
+            if ((isOp(".") && !cur().spaceBefore) || infix || modAfter) {
                 auto be = std::make_unique<BlockExpr>();
                 be->body.push_back(std::move(decl));
                 auto u = std::make_unique<Unary>(); u->op = "do"; u->operand = std::move(be);
                 auto es = std::make_unique<ExprStmt>();
-                if (infix) { presetLhs_ = std::move(u); es->e = parseExpression(); return applyModifiers(std::move(es)); }
-                es->e = parsePostfix(std::move(u), true);
-                return es;
+                // a postfix chain goes on into an infix and the modifiers: `class {…}.new.z = 42` (rakudo#2078)
+                presetLhs_ = isOp(".") && !cur().spaceBefore ? parsePostfix(std::move(u), true) : std::move(u);
+                es->e = parseExpression();
+                return applyModifiers(std::move(es));
             }
             // …and `class { } but role { … }`: the type is the left operand of
             // a mixin
