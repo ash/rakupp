@@ -6019,13 +6019,12 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
             throw RakuError{Value::typeObj("X::Multi::NoMatch"),
                             "Cannot resolve caller from-loop(Seq: " + std::to_string(pos.size()) +
                             " positionals); none of these signatures matches"};
-        Value body = pos[0];
-        Value cond = pos.size() > 1 ? pos[1] : Value();
+        Value body = pos[0], cond = pos.size() > 1 ? pos[1] : Value();
         Value after = pos.size() > 2 ? pos[2] : Value();
         bool hasCond = pos.size() > 1, hasAfter = pos.size() > 2;
         Value a = Value::seq();
         auto st = std::make_shared<LazySeqState>();
-        st->infinite = !hasCond;
+        st->infinite = !hasCond; st->mayEnd = !hasCond;   // (rakudo#1692)
         // with a condition its end is unknown until it comes: walked live, like
         // a stream — a `for` pulls one per iteration, nothing reads ahead
         st->streaming = hasCond;
@@ -6037,7 +6036,8 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
             bool wasFirst = *first;
             *first = false;
             if (hasCond && !(repeat && wasFirst) && !callCallable(cond, {}).truthy()) { *done = true; return false; }
-            try { cache.push_back(callCallable(body, {})); }
+            try { Value r = callCallable(body, {});   // (an EMPTY Slip, a false `last if …`, adds nothing: rakudo#1692)
+                  if (!(r.t == VT::Array && r.s == "Slip" && r.arr() && r.arr()->empty())) cache.push_back(std::move(r)); }
             catch (LastEx& e) {
                 if (!e.label.empty() && e.label != label) throw;
                 *done = true; return false;

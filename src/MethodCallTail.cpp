@@ -1508,7 +1508,7 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
             // …except a `.map` over one, which may yet END — its block can say
             // `last` — so `.eager` runs it to that point, as Rakudo does:
             // `(^Inf).map({ last if $_ > 6; $_ }).eager` is (0 … 6)
-            if (m == "eager" && lst->mapView && lst->appendNext && !lst->exhausted) {
+            if (m == "eager" && (lst->mapView || lst->mayEnd) && lst->appendNext && !lst->exhausted) {   // (…and a from-loop)
                 ValueList& buf = *inv.arr();
                 while (lst->appendNext(buf)) {}
                 lst->exhausted = true;

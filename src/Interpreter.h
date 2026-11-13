@@ -2057,6 +2057,7 @@ struct LazySeqState {
     // a `.map` that runs its block as it is read: sinking it runs the block too
     // (Rakudo iterates a sunk Seq), however the source is made
     bool mapView = false;
+    bool mayEnd = false;   // endless, but its body can say `last` (Seq.from-loop): `.eager` runs it to there
     // a LIST over a finished stream (`Supply.list`): read like a handle's lines,
     // but sinking a List reads nothing, so a sunk `.list` raises no quit error
     bool listView = false;
