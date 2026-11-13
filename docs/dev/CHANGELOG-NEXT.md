@@ -13,7 +13,10 @@ here.*
 fd3fda0f, 33351b91, 5b6a2753, d1e39cb5, 64e4c44f, 7800a133,
 9c45b83d, 041789fd, 147d0b95, 7fc5b00b, b4f6e472, 00c30ed1, b980a365,
 4f507a0f, 401e19e8, cee2cd42, 29f64dcc, bdb022c4, 38cb1d1e, a64cd841,
-91033936, 2987aab9, b66ccda3, 6eef76fd, ecaee71c.*
+91033936, 2987aab9, b66ccda3, 6eef76fd, ecaee71c, 24256603, 521d34ae,
+a0437c10, 703198f5, cb91f67b, 2416bbe5, 8c513f23, 585a8ee1, 133560ad,
+ad10ad81, 3db5cae5, c109e8ec, c47aa1ea, cfbda86a, ccda30e9, 1c4da191,
+22520fae, eca56b5a, 1ba950a5, 7dc4809d, 9bb82a6c, 57b07f65, 1f205847.*
 
 ---
 
@@ -164,6 +167,69 @@ fd3fda0f, 33351b91, 5b6a2753, d1e39cb5, 64e4c44f, 7800a133,
 - **A `multi submethod` is a submethod** (2987aab9) (rakudo#3976): it was in
   `.^method_table` and missing from `.^submethod_table`, and a plain
   submethod was in both. `t/regression/submethod-table-and-method-table.raku`.
+- **R reverses an operator's associativity as well as its operands**
+  (521d34ae) (rakudo#4757): `2 R- 3 R- 4` grouped from the left and gave 3,
+  where Rakudo groups `R-` from the right and gives −1, as `[R-] 2, 3, 4`
+  does. `t/regression/r-metaop-flips-associativity.raku`.
+- **R composes over a zip or a cross** (8c513f23, 585a8ee1) (rakudo#6128,
+  rakudo#1616): `(1,2) RZ+ (10,20)` read the `+` as a prefix of the right
+  operand and gave ((2 1)), where Rakudo gives (11 22). `(1,2) RZ (3,4)`
+  died "Undefined routine 'RZ'", `[RZ] (1,2),(3,4)` was an array holding
+  the name, and `&[RZ,]` and `ZR-` were refused.
+  `t/regression/r-metaop-over-zip-and-cross.raku`.
+- **`reduce` with a built-in comparison chains, as `[op]` does** (a0437c10,
+  703198f5) (rakudo#4128): `reduce &[>], 6, 5, 4` folded `(6 > 5) > 4` and
+  gave False, where Rakudo answers `6 > 5 > 4`, True.
+  `t/regression/reduce-with-chaining-operator.raku`.
+- **A set relation reduces as a chain** (2416bbe5): `[⊆] ()` was Any and
+  `[∈] (1,)` was 1, where both are True; three operands test each adjacent
+  pair. `t/regression/set-predicate-reduce-chains.raku`.
+- **Set membership reads a Range as the Set of what it iterates** (cb91f67b)
+  (rakudo#2217): `½ ∈ ^2` was True, because the Range was asked whether ½
+  lay between its ends, and `"aa" ∈ "a".."c"` was True by string order. Over
+  an endless range `(elem)` now dies X::Cannot::Lazy, as in Rakudo; it
+  answered True. `t/regression/range-is-the-set-of-its-elements.raku`.
+- **`roundrobin` follows the single-argument rule** (133560ad)
+  (rakudo#1447): `roundrobin ((1, 2, 3), (4, 5), (6, 7, 8, 9))` took its one
+  argument as one list and answered nine rounds of one.
+  `t/regression/roundrobin-single-argument.raku`.
+- **A Callable count to `.head`, `.tail` and `.skip` counts from the end**
+  (ad10ad81) (rakudo#2485): it was called with the element count, so
+  `<a b c>.head(*.elems - 1)` was () where Rakudo takes all three. `*-N`
+  answered the same either way.
+  `t/regression/head-tail-callable-count-from-end.raku`.
+- **`.combinations` reads a Rat range of sizes as Rakudo does** (3db5cae5)
+  (rakudo#1629):
+  `<a b c>.combinations(2.3..^3.6)` dropped (a b c).
+  `t/regression/combinations-rat-range-sizes.raku`.
+- **`EXPR for 1..*` runs as long as the range does** (c109e8ec)
+  (rakudo#1399, rakudo#1398): the statement modifier stopped after 10,000
+  iterations, so `.sink for 1..*` returned at once.
+  `t/regression/modifier-for-over-endless-range.raku`.
+- **`[»op«]` over one operand is the inner operator's one-argument form**
+  (cfbda86a) (rakudo#5951): `[»+«] [[1,2],]` handed back [1 2] where Rakudo
+  numifies it to 2, and `infix:<~>(<a b>)` was "a b" where Rakudo joins it
+  to "ab". `t/regression/hyper-reduce-one-operand.raku`.
+- **A lone Array bound through a `+` slurpy keeps its elements' containers**
+  (ccda30e9) (rakudo#1355): `-> +l { l }([1, (2, 3)])` was `(1, (2, 3))`,
+  where Rakudo keeps `(1, $(2, 3))`.
+  `t/regression/plus-slurpy-keeps-array-containers.raku`.
+- **`.=` into a `$` variable itemizes what it stores, as `=` does**
+  (1c4da191) (rakudo#3621): `$x .= split(',')` held a bare Seq, so `.raku`
+  lost its `$( )` and `for $x` walked the elements.
+  `t/regression/dot-assign-itemizes-into-scalar.raku`.
+- **A compiled reduction over one Array takes its elements one level deep**
+  (1ba950a5): in a `--exe` binary `[+] [[1,2],[3,4]]` was 10 where it is 4,
+  `[»+«] @a` summed every number, and `[Z]` of a matrix zipped one flat
+  row. The interpreter was right. `t/regression/reduce-lone-array-operand.raku`.
+- **A hyper operator's answer takes its left operand's container** (57b07f65)
+  (rakudo#5951): `my @r = [»+«] @a` held the summed row's elements, where
+  Rakudo holds the row as one item, `[[5, 7, 9],]`, and `$[1,2] »+« $[3,4]`
+  was `[4, 6]` where Rakudo answers `$[4, 6]`.
+  `t/regression/hyper-reduce-one-operand.raku`.
+- **A compiled hyper operator is the interpreter's** (9bb82a6c): in a `--exe`
+  binary `%h »+« %g` was `(2,)` where it is `{:a(3)}`, and every array answer
+  came back a List. `t/regression/hyper-reduce-one-operand.raku`.
 ### Fixed: crashes
 
 - **A long run of a quantified group no longer overflows the stack**
@@ -226,6 +292,13 @@ fd3fda0f, 33351b91, 5b6a2753, d1e39cb5, 64e4c44f, 7800a133,
   promise says stop, now reads all 100 values from each channel. That is
   what rakudo#3686 asks for: Rakudo 2026.09 loses values there and Raku++
   used to hang. `t/regression/react-channel-closed-and-turns.raku`.
+- **A generator sequence stops at an excluded endpoint however it is read**
+  (7dc4809d) (rakudo#3881): `say { $++ * ($ *= -1) } ...^ 21` never ended.
+  The 21 was dropped and the walk went on for `.gist`, `.join` and an array
+  assignment, though `.elems` and indexing stopped. A Range on the right of a
+  lone generator is now a list, its first element the endpoint and the rest
+  following, as in Rakudo: `{ $++ } ... ^5` is (0 1 2 3 4).
+  `t/regression/sequence-generator-exclusive-endpoint.raku`.
 
 ### Behaves like Rakudo
 
@@ -310,6 +383,30 @@ fd3fda0f, 33351b91, 5b6a2753, d1e39cb5, 64e4c44f, 7800a133,
   the frames of `try`, `do` and `quietly` blocks, as Rakudo's does; a warning
   still names its block. Found by the module battery.
   `t/regression/try-statement-is-a-block-frame.raku`.
+- **`&postcircumfix:<[ ]>` and `&postcircumfix:<{ }>` are routines**
+  (22520fae) (rakudo#2000): both were Any, so `&postcircumfix:<{ }>(%h, 'a')`
+  died "Undefined routine". Named arguments are the adverbs (`:exists`,
+  `:delete`, `:kv`), and a third operand is assigned, as Rakudo's assign
+  candidate does. `t/regression/postcircumfix-routines-by-name.raku`.
+- **`eager` runs an unconditioned `Seq.from-loop` to its `last`** (c47aa1ea)
+  (rakudo#1692): `eager Seq.from-loop: { $i++; last if $i > 5; $i }` died
+  "Cannot eager a lazy list". A body whose value is Empty adds nothing.
+  `t/regression/eager-from-loop-runs-to-last.raku`.
+- **An Attribute with a role mixed in reaches the role's attributes**
+  (24256603): AttrX::Mooish's trait died "No such method
+  'get_attribute_for_usage' for invocant of type 'Attribute'" on its first
+  option. `.^get_attribute_for_usage('$!name')` answers the role's
+  attribute, and its `.get_value` and `.set_value` read and write the slot.
+  Past this, AttrX::Mooish needs Rakudo's MOP internals. Found by the module
+  battery. `t/regression/mixed-in-attribute-meta-access.raku`.
+- **The reduce metaop over a built-in operator's Callable folds it**
+  (1f205847) (rakudo#4128): `[[&infix:«>»]] 6, 5, 4` died "Unsupported
+  operator", where Rakudo folds ((6 > 5) > 4) and answers False.
+  `t/regression/reduce-with-chaining-operator.raku`.
+- **A compiled program calls a built-in infix by its name** (eca56b5a):
+  `infix:<~>("a", "b")` died "Undefined routine 'infix:<~>'" in a `--exe`
+  binary. It is the operator, as `&infix:<~>` is.
+  `t/regression/hyper-reduce-one-operand.raku`.
 ### Platforms and packaging
 
 ### Tools

@@ -230,28 +230,79 @@ dispatch PPBUG section is not started.*
 
 ### R5 — operators, lists and sequences
 
-- **rakudo#4757 ✓:** `2 R- 3 R- 4` gives 3; it should give −1. R must
-  reverse the associativity too.
-- **rakudo#6128 ✓, #1616 ✓:** R does not compose over Z or S (`RZ`,
-  `&[RZ,]`).
-- **rakudo#4128 ✓:** `reduce &[>], 6, 5, 4` gives False. A chaining operator
-  must chain under `reduce`.
-- **rakudo#2217 ✓:** `½ ∈ ^2` is True. A Range coerces to the Set of its
-  integers.
-- **rakudo#2000 ✓:** `&postcircumfix:<{ }>` is not a callable routine.
-- **rakudo#1447 ✓:** `roundrobin` does not apply the single-argument rule.
-- **rakudo#2485 ✓:** `.head(*.elems - 1)` gives `()`.
-- **rakudo#3881 ✓:** `{ … } ...^ 21` never stops.
-- **rakudo#1692 ✓:** `eager Seq.from-loop: {…}, {1}` dies with "Cannot eager".
-- **rakudo#1629 ✓:** `.combinations(2.3..^3.6)` drops a combination.
-- **rakudo#1355 ✓, #3621 ✓:** the `$( )` of an itemised inner list is lost by
-  `+l` and by `.raku`.
-- **rakudo#5951 ✓:** `[»+«]` over two arrays loses a level.
-- **rakudo#5138 ✓:** `(1..*).Slip.is-lazy` is False.
-- **rakudo#1399 ✓, #1398 ✓:** `.sink for 1..*` returns at once. A pure loop
-  over an infinite range is elided; it must run forever.
-- Found by R2: the set predicates reduced over nothing or one operand.
-  `[⊆] ()` is Any and `[∈] (1,)` is 1; Rakudo gives True, as a chain does.
+*2026-11-13. The named items are done but rakudo#5138; the rest of the
+lists, hashes and numeric sections is not started.*
+
+- **rakudo#4757 — fixed (521d34ae).** R reverses the associativity as well
+  as the operands: `2 R- 3 R- 4` groups from the right and gives −1, and
+  `2 R** 3 R** 2` from the left. A comparison is not regrouped. The issue's
+  snippet still differs: Rakudo refuses the file for a missing semicolon,
+  which Raku++ accepts, and that is R10's.
+- **rakudo#6128, #1616 — fixed (8c513f23, 585a8ee1).** R composes over Z
+  and X: `RZ`, `[RZ]`, `&[RZ,]`, `RZcmp`, and with a symbolic inner
+  operator, `RZ+`, which had given ((2 1)). Z and X compose over R too
+  (`ZR-`), which was an undeclared name. Left: rakudo#1616's second snippet,
+  a deep `RR…ZZ…RR…SS+` stack with S in it, is an undefined routine here.
+- **rakudo#4128 — fixed (a0437c10, 703198f5, 1f205847).** `reduce` with a
+  built-in chaining comparison chains, as `[op]` does, and the reduce metaop
+  over a built-in's Callable folds it: `[[&infix:«>»]] 6, 5, 4` is False.
+- **rakudo#2217 — fixed (cb91f67b).** Set membership reads a Range as the
+  Set of what it iterates: `½ ∈ ^2` is False, and `"aa" ∈ "a".."c"` too.
+  An Int range answers from its ends without iterating. Over an endless
+  range `(elem)` dies X::Cannot::Lazy, as in Rakudo; it had answered True.
+- **Found by R2 — fixed (2416bbe5).** A set relation reduces as a chain:
+  `[⊆] ()` and `[∈] (1,)` are True. Rakudo refuses `[(!elem)]`, `[(!=)]`
+  and `[(<>)]` at compile time; that is R10's.
+- **rakudo#2000 — fixed (22520fae).** `&postcircumfix:<[ ]>` and
+  `&postcircumfix:<{ }>` are routines. Called by name or through a
+  variable they subscript, their named arguments are the adverbs, and a
+  third operand is assigned. Left:
+  - assigning to the call's result refuses
+    (`&postcircumfix:<[ ]>(@a, 0) = 99`), as any `f(…) = …` through a
+    `my &f` does;
+  - `:BIND` is not read;
+  - `.^name` is Sub, where Rakudo says `Sub+{is-nodal}`.
+- **rakudo#1447 — fixed (133560ad).** `roundrobin` follows the
+  single-argument rule.
+- **rakudo#2485 — fixed (ad10ad81).** A Callable count to `.head`, `.tail`
+  and `.skip` is called with 0 and added to the element count.
+- **rakudo#1629 — fixed (3db5cae5).** `.combinations` over a non-Int Range
+  takes the sizes Rakudo does.
+- **rakudo#1399, #1398 — fixed (c109e8ec).** `EXPR for 1..*` runs as long
+  as the range does; it stopped after 10,000 iterations.
+- **rakudo#1692 — fixed (c47aa1ea).** `eager` runs an unconditioned
+  `Seq.from-loop` to its `last`, and a body whose value is Empty adds
+  nothing. Left as Rakudo's quirk: it stops such a loop at the first
+  body whose value is Empty.
+- **rakudo#5951 — fixed (cfbda86a, 57b07f65).** `[»op«]` over one operand
+  is the inner operator's one-argument form, and the one-argument `~` joins
+  a list. Over several, the answer is one item, as a hyper's answer takes
+  its left operand's container: `my @r = [»+«] @a` holds the row. Left:
+  `@a[0] »+« @a[1]` is `[4, 6]`, Rakudo's `$[4, 6]`, since an element read
+  from an Array is not marked as an item.
+- **rakudo#1355 — fixed (ccda30e9).** A lone Array bound through a `+`
+  slurpy keeps its elements' containers: `(1, $(2, 3))`. Left:
+  `+@l is raw` over a lone Seq binds a List, where Rakudo keeps the Seq.
+- **rakudo#3621 — fixed (1c4da191).** `.=` into a `$` variable itemizes
+  what it stores, as `=` does.
+- **Found by `--exe` parity on rakudo#5951's test — fixed (eca56b5a,
+  1ba950a5, 9bb82a6c).** In a compiled program:
+  - calling `infix:<~>(…)` by name died;
+  - a reduction flattened a lone Array operand all the way:
+    `[+] [[1,2],[3,4]]` was 10, where it is 4;
+  - a hyper operator zipped two flat lists: `%h »+« %g` was `(2,)`.
+- **rakudo#3881 — fixed (7dc4809d).** A generator sequence stops at an
+  excluded endpoint however it is read; printing `{ … } ...^ 21` never
+  ended. A Range after a lone generator is a list endpoint, as in Rakudo.
+- **rakudo#5138 — left.** `(1..*).Slip.is-lazy` is False. Marking the Slip
+  lazy broke `(|(1..*).Slip)[^4]`, which gave Nils: slipping a lazy list
+  into a list literal loses its laziness, an older gap. The change was
+  reverted.
+- **Left, found beside.**
+  - From a statement-modifier `with @a` or `given @a`, `.=reverse` does
+    not write back to the array; the block forms do.
+  - A generator sequence with a literal endpoint, `{ $++ } ...^ 5`, says
+    `.is-lazy` True, where Rakudo says False.
 - The rest of the lists, hashes and numeric sections.
 
 ### R6 — regexes and grammars
@@ -421,6 +472,7 @@ Each is answered when its batch starts, not before.
 | R1, 2026-11-12 | done; rakudo#5868 deferred to PARALLEL-PLAN (decision 4) | 041789fd, 147d0b95, 7fc5b00b, b4f6e472 | 1,267 | 1,425/1,425 | 2263/2263 |
 | R2, 2026-11-13 | done | 00c30ed1, b980a365 | 1,270 | 1,425/1,425 | 2265/2265 |
 | R3 + R4, 2026-11-13 | named items done but the coercion ones and four narrow ones; PPBUG remainders open | 4f507a0f, 401e19e8, cee2cd42, 29f64dcc, bdb022c4, 38cb1d1e, a64cd841, 91033936, 2987aab9, b66ccda3 | 1,277 | 1,425/1,425 | 2274/2274 |
+| R5, 2026-11-13 | named items done but rakudo#5138; PPBUG remainders open | 521d34ae, a0437c10, 703198f5, cb91f67b, 2416bbe5, 8c513f23, 133560ad, ad10ad81, 3db5cae5, c109e8ec, c47aa1ea, cfbda86a, ccda30e9, 22520fae, 1c4da191, 585a8ee1, eca56b5a, 1ba950a5, 7dc4809d, 9bb82a6c, 57b07f65, 1f205847 | 1,289 | 1,425/1,425 | 2293/2293 |
 
 R1's per-file changes against the baseline:
 - **3686 and 5835:** TIMEOUT to MATCH.
@@ -464,3 +516,19 @@ blocker is fixed (a mixed-in Attribute's `.^get_attribute_for_usage`).
 The rest is Rakudo's MOP internals: a role mixed into the class's HOW,
 its `@!BUILDPLAN` rewritten through `nqp::getattr`/`nqp::bindattr` so
 construction runs its lazy builders, and Attribute's own `$!composed`.
+
+R5's per-file changes against R3 + R4:
+- **1447/0, 1629/2, 1692/2, 2217/0, 2485/0, 3621/2, 3881/0, 4128/0,
+  5951/0, 6128/0, 6128/1:** to MATCH.
+- **1705/2:** DIFF-OUT to MATCH; `[(elem)] 2334`, the set-predicate
+  reduction (2416bbe5).
+- **1692/0 and 2000/0:** DIFF-BOTH to DIFF-OUT. The exit codes agree now;
+  what is left is in the R5 section (Rakudo's Empty quirk, assigning
+  through the call's result).
+- **5868/0:** DIFF-EXIT to TIMEOUT; noise. It is the `.race` crash
+  deferred by decision 4, and four runs gave SIGSEGV twice, SIGBUS once and
+  one timeout.
+
+R5 changed no codegen, but three of its fixes are in the runtime that
+compiled programs call (by-name infix calls, a lone reduce operand, the
+hyper operator), so the full t/exe/parity.raku ran: 1,618 agree, 0 differ.
