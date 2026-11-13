@@ -94,7 +94,7 @@ sub compile(Str $engine, Str $which, IO::Path $file --> Hash) {
     my $lib = $ROOT.add('dists').add($file.relative($ROOT.add('dists')).split('/')[0]).add('lib');
     my %r = run-capped([$engine, '-c', '-I', $lib.absolute, $file.absolute],
         :$cap, :work($WORK), :sandbox($SANDBOX),
-        :env(HOME => %HOME{$which}.absolute, RAKULIB => $RAKULIB, TZ => 'UTC'));
+        :env(%( HOME => %HOME{$which}.absolute, RAKULIB => $RAKULIB, TZ => 'UTC' )));
     %r<ok> = %r<rc> == 0 && %r<signal> == 0;
     %r<note> = %r<hung> ?? "(no answer in {$cap} s)"
             !! %r<signal> ?? "(killed by {signal-name(%r<signal>)})"
