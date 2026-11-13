@@ -2497,6 +2497,40 @@ struct RuleHomeSwap {
     }
 };
 
+// From 6.e a FAILED .parse is a Failure carrying X::Syntax::Confused, not a bare
+// Nil — 6.e gives grammars a base class whose parse reports where it stopped.
+// .subparse keeps answering with what it managed to match.
+Value Interpreter::grammarParseConfused(const std::string& input) {
+    Value f = rakuppNewFailure();
+    // where it stopped: the parse's high-water mark, as a
+    // line, a position, and the text either side of it
+    auto& d = grammarParseDiag();
+    std::vector<std::string> cps;
+    for (size_t i = 0; i < input.size();) {
+        unsigned char c0 = (unsigned char)input[i];
+        size_t l = c0 < 0x80 ? 1 : (c0 >> 5) == 6 ? 2 : (c0 >> 4) == 14 ? 3 : 4;
+        cps.push_back(input.substr(i, l)); i += l;
+    }
+    long pos = d.valid ? d.pos : 0;
+    if (pos > (long)cps.size()) pos = (long)cps.size();
+    // a failure at the START of a line is reported at the end of the
+    // line before it (the newline was what the grammar could not use)
+    if (pos > 0 && pos <= (long)cps.size() && cps[pos - 1] == "\n") pos--;
+    long line = 1, ls = 0;
+    for (long i = 0; i < pos; i++) if (cps[i] == "\n") { line++; ls = i + 1; }
+    std::string pre, post;
+    for (long i = ls; i < pos; i++) pre += cps[i];
+    for (long i = pos; i < (long)cps.size() && cps[i] != "\n"; i++) post += cps[i];
+    if (post.empty()) post = "<EOL>";
+    Value ex = makeTypedEx("X::Syntax::Confused",
+        {{"line", Value::integer(line)}, {"pos", Value::integer(pos)},
+         {"pre", Value::str(pre)}, {"post", Value::str(post)},
+         {"reason", Value::str("unknown")}}, "Confused");
+    (*f.hash())["exception"] = ex;
+    (*f.hash())["message"]   = Value::str("Confused");
+    return f;
+}
+
 Value Interpreter::grammarParse(ClassInfo* g, const std::string& input, bool subparse,
                                 const std::string& startRule, Value actions,
                                 const ValueList* ruleArgs, long startPos, long* consumedEnd) {

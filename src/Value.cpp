@@ -694,7 +694,7 @@ bool Value::truthy() const {
         case VT::Whatever: return true;
         case VT::Object: return true;
         case VT::Regex: return true;
-        case VT::Match: return true;
+        case VT::Match: return !(md() && md()->failed);   // (a failed .subparse's is false)
     }
     return false;
 }
@@ -1629,6 +1629,7 @@ std::string Value::gist() const {
             return toStr();
         }
         case VT::Match: {
+            if (md() && md()->failed) return "#<failed match>";
             // Rakudo's Match.gist: ｢matched｣, then one `key => value` line per
             // capture — a LIST capture (quantified subrule) contributes one line
             // per element under the same key — all ordered by match position,

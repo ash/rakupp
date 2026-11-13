@@ -1175,6 +1175,9 @@ struct MatchData {
     // of that grammar — `.^name`, `~~ G`, and G's own methods (#153). Empty on
     // every ordinary Match.
     std::string grammar;
+    // A FAILED match, as a failed `.subparse` answers (rakudo#1243): false, and
+    // `#<failed match>` as its gist. Rakudo's has a pos (`.to`) of -3, before its `.from`.
+    bool failed = false;
 };
 
 // What the payload slot holds. Distinct from VT on purpose — see MatchData.

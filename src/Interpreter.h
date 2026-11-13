@@ -4036,6 +4036,7 @@ public:
     // native-codegen entry point. Mutates *target unless nonMut; returns what the
     // interpreted form returns (Match/List for s///, count for tr///, Str for S///).
     Value substApply(Value* target, const std::string& pattern, const std::string& repl, bool nonMut);
+    Value grammarParseConfused(const std::string& input);   // 6.e's failed .parse: a Failure of X::Syntax::Confused
     Value grammarParse(ClassInfo* g, const std::string& input, bool subparse, const std::string& startRule, Value actions,
                        const ValueList* ruleArgs = nullptr, long startPos = 0,
                        long* consumedEnd = nullptr); // consumedEnd: where matching stopped (differs from .to under `<( )>`)

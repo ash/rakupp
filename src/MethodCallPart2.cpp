@@ -6592,11 +6592,12 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
                 bool sub = (m == "subparse");
                 // the built-in parse behavior (also the `next` candidate for a user override)
                 auto builtinParse = [this, ci, sub](ValueList a) -> Value {
-                    std::string startRule = "TOP"; Value actions;
+                    std::string startRule = "TOP"; Value actions; long startPos = 0;   // :pos, in characters
                     ValueList ruleArgs; // `args => (…)` — the start rule's parameters
                     for (auto& arg : a) {
                         if (arg.t == VT::Pair && arg.s == "rule") startRule = arg.pairVal() ? arg.pairVal()->toStr() : "TOP";
                         if (arg.t == VT::Pair && arg.s == "actions" && arg.pairVal()) actions = *arg.pairVal();
+                        if (arg.t == VT::Pair && arg.s == "pos" && arg.pairVal()) startPos = arg.pairVal()->toInt();
                         if (arg.t == VT::Pair && arg.s == "args" && arg.pairVal()) {
                             const Value& av = *arg.pairVal();
                             if (av.typeName() == "Capture") {
@@ -6628,45 +6629,16 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
                                    {{"method", startRule}, {"typename", ci->name}},
                                    "No such method '" + startRule + "' for invocant of type '" + ci->name + "'");
                     std::string input = a.empty() ? "" : a[0].toStr();
-                    Value r = grammarParse(ci.get(), input, sub, startRule, actions,
-                                           ruleArgs.empty() ? nullptr : &ruleArgs);
+                    const long posB = (long)graphemeToByte(input, startPos);   // (past the end: no match at all)
+                    const bool past = startPos > 0 && posB == (long)input.size() && graphemeToByte(input, startPos - 1) == input.size();
+                    Value r = past ? Value::nil() : grammarParse(ci.get(), input, sub, startRule, actions, ruleArgs.empty() ? nullptr : &ruleArgs, posB);
                     if (r.t == VT::Match && r.md() && actions.t != VT::Any && actions.t != VT::Nil)
                         r.mdW().actions = std::make_shared<Value>(actions);   // `$match.actions`
                     if (r.t == VT::Match) stampMatchGrammar(r, ci->name);
-                    // From 6.e a FAILED .parse is a Failure carrying
-                    // X::Syntax::Confused, not a bare Nil — 6.e gives grammars a
-                    // base class whose parse reports where it stopped. .subparse
-                    // keeps answering with what it managed to match.
-                    if (sixE() && !sub && (r.t == VT::Nil || r.t == VT::Any || r.t == VT::Type)) {
-                        Value f = rakuppNewFailure();
-                        // where it stopped: the parse's high-water mark, as a
-                        // line, a position, and the text either side of it
-                        auto& d = grammarParseDiag();
-                        std::vector<std::string> cps;
-                        for (size_t i = 0; i < input.size();) {
-                            unsigned char c0 = (unsigned char)input[i];
-                            size_t l = c0 < 0x80 ? 1 : (c0 >> 5) == 6 ? 2 : (c0 >> 4) == 14 ? 3 : 4;
-                            cps.push_back(input.substr(i, l)); i += l;
-                        }
-                        long pos = d.valid ? d.pos : 0;
-                        if (pos > (long)cps.size()) pos = (long)cps.size();
-                        // a failure at the START of a line is reported at the end of the
-                        // line before it (the newline was what the grammar could not use)
-                        if (pos > 0 && pos <= (long)cps.size() && cps[pos - 1] == "\n") pos--;
-                        long line = 1, ls = 0;
-                        for (long i = 0; i < pos; i++) if (cps[i] == "\n") { line++; ls = i + 1; }
-                        std::string pre, post;
-                        for (long i = ls; i < pos; i++) pre += cps[i];
-                        for (long i = pos; i < (long)cps.size() && cps[i] != "\n"; i++) post += cps[i];
-                        if (post.empty()) post = "<EOL>";
-                        Value ex = makeTypedEx("X::Syntax::Confused",
-                            {{"line", Value::integer(line)}, {"pos", Value::integer(pos)},
-                             {"pre", Value::str(pre)}, {"post", Value::str(post)},
-                             {"reason", Value::str("unknown")}}, "Confused");
-                        (*f.hash())["exception"] = ex;
-                        (*f.hash())["message"]   = Value::str("Confused");
-                        return f;
-                    }
+                    // From 6.e a FAILED .parse is a Failure carrying X::Syntax::Confused (grammarParseConfused)
+                    if (sixE() && !sub && (r.t == VT::Nil || r.t == VT::Any || r.t == VT::Type)) return grammarParseConfused(input);
+                    // …and a failed .subparse is a failed Match where it started, `#<failed match>`, as Rakudo's (rakudo#1243)
+                    if (sub && (r.t == VT::Nil || r.t == VT::Any)) { r = Value::matchVal("", startPos, -3); r.mdW().failed = true; stampMatchGrammar(r, ci->name); setMatchVar(r); }
                     return r;
                 };
                 if (m == "parsefile") { // slurp the file, then parse its contents
@@ -10222,6 +10194,8 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
         const Value& end = m == "from" ? inv.arr()->front() : inv.arr()->back();
         if (end.t == VT::Match) return graphemeOff(end, m == "from" ? end.rFrom() : end.rTo());
     }
+    if (inv.t == VT::Match && inv.md() && inv.md()->failed && (m == "from" || m == "to" || m == "pos"))
+        return Value::integer(m == "from" ? inv.rFrom() : -3);   // a failed .subparse: where it started (in characters), and Rakudo's -3
     if (inv.t == VT::Match && (m == "from")) return graphemeOff(inv, inv.rFrom());
     if (inv.t == VT::Match && (m == "to")) return graphemeOff(inv, inv.rTo());
     // `.pos` is where the engine has got to — meaningful on a match IN PROGRESS
