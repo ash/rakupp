@@ -244,6 +244,7 @@ set(RAKUPP_PARSE_SOURCES     "${CMAKE_CURRENT_SOURCE_DIR}/src/Lexer.cpp"
                              "${CMAKE_CURRENT_SOURCE_DIR}/src/ParserRegexCheck.cpp"
                              "${CMAKE_CURRENT_SOURCE_DIR}/src/ParserPackages.cpp"
                              "${CMAKE_CURRENT_SOURCE_DIR}/src/ParserWordPairs.cpp"
+                             "${CMAKE_CURRENT_SOURCE_DIR}/src/ParserInterp.cpp"
                              # `.AST` IS the parser, so the RakuAST:: registry
                              # rides the same archive and the same stub seam.
                              "${CMAKE_CURRENT_SOURCE_DIR}/src/RakuAstClasses.cpp"
