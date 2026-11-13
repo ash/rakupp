@@ -3758,6 +3758,8 @@ Value Interpreter::assignChecked(Expr* target, Value v, const Value* invVal) {
         // flatten its rows: `my @c[2;2] .= new(:shape(2,2), …)`)
         if (!nm.empty() && nm[0] == '@' && !(v.t == VT::Array && v.shape())) v = coerceArray(v);
         else if (!nm.empty() && nm[0] == '%') v = coerceHash(v);
+        // …and a `$` ITEMIZES it, as `=` does: `$x .= split(',')` is `$(…)` (rakudo#3621)
+        else if (!nm.empty() && nm[0] == '$' && (v.t == VT::Array || v.t == VT::Hash || v.t == VT::Range)) v.itemized = true;
     }
     if (target && target->kind == NK::Index) tctx().lastLvalueElemType.clear();
     if (Value* lv = lvalue(target)) {
@@ -3783,7 +3785,7 @@ Value Interpreter::assignChecked(Expr* target, Value v, const Value* invVal) {
             Env* own = nullptr;
             tctx().cur->findRaw("$_", &own);
             if (own && own->ex && own->ex->topicBindsArray) {
-                Value arr = coerceArray(v);
+                v.itemized = false; Value arr = coerceArray(v);   // (the `$_` itemizing above is a scalar's)
                 ValueList elems = arr.t == VT::Array && arr.arr() ? *arr.arr() : ValueList{v};
                 keptEndsRefill(lv->arr());
                 lv->arr()->swap(elems);
