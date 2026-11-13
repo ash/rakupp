@@ -764,10 +764,40 @@ static bool ratSizeRange(const Value& k, size_t n, long long& lo, long long& hi)
     return true;
 }
 
+// The EnumHOW protocol, called on the HOW with the enum first (rakudo#2165):
+// `E.HOW.add_enum_value(E, key => value)` adds a member after the
+// declaration, and the readers are the `.^` forms of the same names
+std::optional<Value> Interpreter::enumHowMethod(const MName& m, ValueList& args) {
+    if (!args.empty() && args[0].t == VT::Array && !args[0].enumType().empty() && args[0].enumName().empty()) {
+        const std::string tn(args[0].enumType().str());
+        if (m == "add_enum_value" && args.size() == 2 && args[1].t == VT::Pair) {
+            auto ep = enumPairs_.find(tn);
+            Value pairs = ep != enumPairs_.end() ? ep->second : args[0];
+            const std::string key = args[1].s.copyText();
+            const long long ord = (long long)pairs.arr()->size();
+            const Value val = args[1].pairVal() ? *args[1].pairVal() : Value::integer(ord);
+            Value ev = Value::enumVal(key, val.t == VT::Int ? val.toInt() : ord);
+            if (val.t != VT::Int) ev.setPairVal(makePayload<Value>(val));
+            ev.setEnumType(tn);
+            global_->define(tn + "::" + key, ev);   // (where `.pick`, `.succ` and `.^enum_value_list` find a member)
+            pairs.arr()->push_back(Value::pair(key, val));
+            return ev;
+        }
+        if (m == "enum_values" || m == "enum_value_list") return methodCall(args[0], "^" + m, ValueList{});
+        if (m == "enum_from_value" && args.size() == 2) {   // the member whose value it is, else Mu
+            for (auto& ev : toList(methodCall(args[0], "^enum_value_list", ValueList{})))
+                if (valueEqv(methodCall(ev, "value", ValueList{}), args[1])) return ev;
+            return Value::typeObj("Mu");
+        }
+    }
+    return std::nullopt;
+}
+
 std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& m,
                                                  ValueList& args,
                                                  const std::vector<ExprPtr>* rwArgs) {
     auto a0 = [&]() -> Value { return args.empty() ? Value::any() : args[0]; };
+    if (auto r = inv.t == VT::Type && inv.s == "Metamodel::EnumHOW" ? enumHowMethod(m, args) : std::nullopt) return r;   // `E.HOW.add_enum_value`
     if (m == "fmt" && inv.t == VT::Pair)
         return Value::str(doSprintf(args.empty() ? "%s\t%s" : a0().toStr(),
                                     {inv.pairKeyV(),
@@ -3092,7 +3122,7 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
         }
         if (m == "enums" || ((m == "^enum_values" || m == "enum_values") && !inv.enumType().empty())) { // enum type (a pair-list) -> Map of name => value
             Value h = Value::makeHash();
-            h.hashKind = "Map";
+            if (m == "enums") h.hashKind = "Map";   // (`.^enum_values` is a Hash in Rakudo)
             for (auto& v : items) if (v.t == VT::Pair) (*h.hash())[v.s] = v.pairVal() ? *v.pairVal() : Value::any();
             return h;
         }
@@ -4037,9 +4067,10 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
             return out;
         }
         if (m == "pick" || m == "roll") { // random element(s); pick = without replacement
-            // an enum type picks from its VALUES (red/green/blue), not its (key=>val) pairs
+            // an enum type picks from its VALUES (red/green/blue), not its (key=>val) pairs: the members, so a Str-valued one keeps its `.value` (rakudo#2165)
             ValueList enumVals;
             for (auto& pr : items) if (!inv.enumType().empty() && pr.t == VT::Pair) {
+                if (Value* f = tctx().cur->find(std::string(inv.enumType().c_str()) + "::" + pr.s)) { enumVals.push_back(*f); continue; }
                 Value ev = Value::enumVal(pr.s, pr.pairVal() ? pr.pairVal()->toInt() : 0);
                 ev.setEnumType(inv.enumType()); enumVals.push_back(ev);
             }

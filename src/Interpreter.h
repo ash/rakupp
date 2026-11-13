@@ -2842,6 +2842,7 @@ public:
                                          const std::vector<ExprPtr>* rwArgs);
     std::optional<Value> methodCallPart3(const Value& inv, const struct MName& m, ValueList& args,
                                          const std::vector<ExprPtr>* rwArgs);
+    std::optional<Value> enumHowMethod(const MName& m, ValueList& args);   // `E.HOW.add_enum_value(E, …)` (MethodCallTail.cpp)
     std::optional<Value> methodCallTail(const Value& inv, const struct MName& m, ValueList& args,
                                         const std::vector<ExprPtr>* rwArgs);
     // `.^nominalize`: the nominal type a coercion, definite type or subset

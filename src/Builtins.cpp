@@ -9753,7 +9753,7 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
         auto ce = kCoreEnums.find(std::string(inv.s.c_str()));
         if (ce != kCoreEnums.end()) {
             Value out = Value::array(); out.isList = true;
-            Value mp = Value::makeHash(); mp.hashKind = "Map";
+            Value mp = Value::makeHash();   // (a Hash, as Rakudo's `.^enum_values`; `.enums` is the Map)
             for (const char* nm : ce->second) {
                 Value ev;
                 if (!coreEnumValue(nm, ev)) continue;
