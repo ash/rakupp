@@ -4330,9 +4330,10 @@ Value& Interpreter::accessorRef(Value& base, const std::string& name) {
             for (auto& at : ci->attrs)
                 // public @./%. attrs assign through the accessor without `is rw`
                 if (at.name == name && (!acc || &at == acc) &&
-                    !(at.pub && (at.rw || at.sigil == '@' || at.sigil == '%')))
-                    throw RakuError{Value::typeObj("X::Assignment::RO"),
-                        "Cannot modify an immutable '" + name + "'"};
+                    !(at.pub && (at.rw || at.sigil == '@' || at.sigil == '%'))) {
+                    const Value* cur = base.obj()->attrs[acc ? *slot : name].deref();   // "…an immutable Int (42)", as Rakudo names it
+                    throwImmutable(cur ? *cur : Value::any());
+                }
         return base.obj()->attrs[acc ? *slot : name];
     }
     throw RakuError{Value::typeObj("X::Assignment::RO"), "Target is not assignable"};

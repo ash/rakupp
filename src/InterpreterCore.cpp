@@ -11410,6 +11410,36 @@ static bool doBlockEndsInPlace(const Expr* e) {
 // `has @.a`): reset by whoever asks, set by lvalue()'s accessor arm.
 static thread_local char g_lvAttrSigil = 0;
 
+// `$.x` is `$(self.x)`: through a READ-ONLY accessor it is a copy of the
+// value, so what is written to it is lost, as Rakudo loses it (`$.n++`,
+// `$.h<k> = 1` on an undefined `$.h`), while a container inside the value is
+// still the object's own (`$.list.push`). A plain `$.x = v` refuses instead
+// (evalAssignInner, isDotAttrCopy). Writable: `is rw`, the class's `is rw`,
+// or a user method of that name that is rw (a multi is left writable).
+static thread_local Value t_dotCopy[8];
+static thread_local unsigned t_dotCopyAt = 0;
+bool isDotAttrCopy(const Value* p) { return p >= t_dotCopy && p < t_dotCopy + 8; }
+static bool dotAccessorWritable(ClassInfo* cls, const std::string& n) {
+    if (Value* m = cls->findMethod(n))
+        return m->t != VT::Code || !m->code() || m->code()->ci().isMultiDispatcher ||
+               m->code()->ci().isMultiCandidate || m->code()->ci().retRw;
+    std::string buf; const std::string* key = nullptr;
+    const ClassAttr* a = cls->findAccessorAttr(n, key, buf);
+    return !a || a->rw || a->sigil != '$';
+}
+// The copy `$.n` stands for, or null where the accessor is writable. A user
+// `method n` answers `self.n`; the generated accessor reads the slot.
+static Value* dotAttrCopy(Interpreter& I, Value& self, const std::string& n, const Value* slot) {
+    ClassInfo* cls = self.obj()->cls.get();
+    if (!cls || dotAccessorWritable(cls, n)) return nullptr;
+    Value v = cls->findMethod(n) ? I.methodCall(self, n, ValueList{}) : slot ? *slot : Value::any();
+    Value& c = t_dotCopy[t_dotCopyAt++ & 7];
+    c = std::move(v); c.readonly = c.immutableBind = false;
+    return &c;
+}
+[[noreturn]] static void throwImmutableSlot(const Value* p) {
+    throwImmutable(p ? *p : Value::any());
+}
 Value* Interpreter::lvalue(Expr* e, bool asInvocant) {
     // set only by the arms that resolve an immutable place, which is rare —
     // test before clearing so the common lvalue() pays one length compare
@@ -11628,6 +11658,8 @@ Value* Interpreter::lvalue(Expr* e, bool asInvocant) {
                 std::string slotBuf;
                 if (!slot) slot = &selfp->obj()->attrs[ve->name[1] == '!' ? attrSlotFor(selfp->obj(), ve->attrBare, slotBuf)
                                                                           : ve->attrBare];
+                if (ve->name[0] == '$' && ve->name[1] == '.')   // through a read-only accessor: a copy
+                    if (Value* c = dotAttrCopy(*this, *selfp, ve->attrBare, slot->deref())) return c;
                 // (an object under construction notes the write for `is required`; `@!a.push` writes no slot)
                 if (!asInvocant && g_attrInitWatchers.load(std::memory_order_relaxed)) noteAttrInit(selfp->obj(), slot);
                 return raceNoteAttr(slot, selfp->obj());
@@ -12809,8 +12841,7 @@ Value* Interpreter::lvalue(Expr* e, bool asInvocant) {
                         // the delegate's own accessor rules still apply
                         if (!mc->bang && !asInvocant &&
                             !(target->pub && (target->rw || target->sigil == '@' || target->sigil == '%')))
-                            throw RakuError{Value::typeObj("X::Assignment::RO"),
-                                "Cannot modify an immutable '" + to + "'"};
+                            throwImmutableSlot(d->obj()->attrs[to].deref());
                         tcx.lastLvalueAttrType.clear();
                         tcx.lastLvalueAttrWhere = nullptr;
                         tcx.lastLvalueAttr = nullptr;
@@ -12858,9 +12889,8 @@ Value* Interpreter::lvalue(Expr* e, bool asInvocant) {
                         // contents — Cro: `.body-parsers = @!body-parsers`); only
                         // $-attrs need the rw trait
                         if (at.name == mcName && (!acc || &at == acc) &&
-                            !(at.pub && (at.rw || at.sigil == '@' || at.sigil == '%')))
-                            throw RakuError{Value::typeObj("X::Assignment::RO"),
-                                "Cannot modify an immutable '" + mcName + "'"};
+                            !(at.pub && (at.rw || at.sigil == '@' || at.sigil == '%')))   // "…an immutable Int (42)"
+                            throwImmutableSlot(base->obj()->attrs[acc ? *accSlot : mcName].deref());
             // record the attr's declared type so the assignment enforces it
             // (`has C $.x is rw` — `.x = 42` must throw X::TypeCheck::Assignment).
             // ALWAYS reset first: resolving the INVOCANT of a chained accessor
@@ -16765,6 +16795,7 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
             static_cast<VarExpr*>(a->target.get())->name.size() > 2 &&
             (static_cast<VarExpr*>(a->target.get())->name[1] == '.' ||
              static_cast<VarExpr*>(a->target.get())->name[1] == '!');
+        if (selfAttrTarget && opEq(a->op, "=") && isDotAttrCopy(lv)) throwImmutable(*lv);   // `$.x = v`, read-only accessor
         // `$obj.attr = Nil` RESETS the attribute to its default — Nil is the
         // reset value, never a stored one — the rule `$x = Nil`, `@a[0] = Nil`
         // and `$!attr = Nil` already followed. A reset is not an assignment, so
