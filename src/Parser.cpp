@@ -7307,6 +7307,9 @@ ExprPtr Parser::parsePrimary() {
         sr->nameExpr = std::make_unique<StrLit>(name);
         return sr;
     }
+    // …and with no `::` in front: `CALLERS::('$_')`, `M::('$q')` (ParserPackages.cpp)
+    if (cur().kind == Tok::Ident && cur().text.size() > 2 && cur().text.compare(cur().text.size() - 2, 2, "::") == 0 &&
+        peek().kind == Tok::LParen && !peek().spaceBefore) return parsePkgNameLookup();
     const Token& t = cur();
     switch (t.kind) {
         case Tok::FatArrow:

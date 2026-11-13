@@ -3953,6 +3953,19 @@ void reduceArrayElems(const std::string& op, const Value& arr, ValueList& items)
         if (items_ && (x.t == VT::Array || x.t == VT::Hash)) items.back().itemized = true;
     }
 }
+// `CALLERS::<$_>` reaches a routine's own `$_`, or the mainline's, which are
+// dynamic, but not the topic a `given`, a `for` or any block binds, which is
+// a parameter of that block (rakudo#2639: `given 'foo' { f() }` with
+// `CALLERS::('$_')` in f answers the mainline's Any). Every other name as before.
+bool callersSees(Interpreter& I, Env* frame, const std::string& name) {
+    if (name != "$_" || I.langRev_ < 1) return true;   // (6.c's `$_` is dynamic everywhere)
+    for (Env* e = frame; e; e = e->parent.get()) {
+        const bool here = (!e->vars.empty() && e->vars.find(name) != e->vars.end()) || (e->layout && e->padFind(name));
+        if (here) return e->routineFrame || !e->parent || e == I.global_.get();
+        if (e->routineFrame || e->callEnv) return false;
+    }
+    return false;
+}
 bool corePrefixName(const std::string& n) { return n.size() > 10 && kCorePrefixOps.count(n.substr(9, n.size() - 10)); }
 static const std::set<std::string>* coreOpsOf(const std::string& cat) {
     return cat == "infix" ? &kCoreInfixOps : cat == "prefix" ? &kCorePrefixOps

@@ -651,6 +651,7 @@ private:
     std::vector<bool> attrPkgStack_;
     void refuseFreeMethodAttrs(size_t bodyAt);
     bool dynScopeAll_ = false;               // `use dynamic-scope` in force (block-scoped)
+    ExprPtr parsePkgNameLookup();   // `CALLERS::('$_')`, `M::('$q')` (ParserPackages.cpp)
     const Expr* rChainList_ = nullptr;       // the ListExpr the last `R,` built (a chain extends it)
     std::set<std::string> dynScopeNames_;    // `use dynamic-scope <$a $b>`: just these
     std::set<std::string> ourProtos_; // names with an our-scoped proto (our multi is then legal)

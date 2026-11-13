@@ -29464,7 +29464,7 @@ struct RatLitParts {
             // `is dynamic`/`$*` names live; anything else falls through to the
             // lexical lookup, as before
             if (callerHead && !tctx().dynStack.empty() && tctx().dynStack.back())
-                if (Value* p = dynInFrame(tctx().dynStack.back(), nm)) {
+                if (Value* p = dynInFrame(tctx().dynStack.back(), nm); p && (sr->pkg != "CALLERS" || callersSees(*this, tctx().dynStack.back(), nm))) {
                     // …and only a DYNAMIC one may be read so: a plain `my $x`
                     // of the caller is X::Caller::NotDynamic
                     // (`$_` was dynamic in 6.c only: from 6.d it is refused too)
@@ -29505,7 +29505,7 @@ struct RatLitParts {
             // learn whether the code calling it imported Red's operators
             if (callerHead && sr->pkg == "CALLERS")
                 for (auto it = tctx().dynStack.rbegin(); it != tctx().dynStack.rend(); ++it)
-                    if (*it) if (Value* p = dynInFrame(*it, nm)) {
+                    if (*it) if (Value* p = dynInFrame(*it, nm); p && callersSees(*this, *it, nm)) {
                         // from 6.e only a DYNAMIC may be reached so; a plain
                         // `my $x` of a caller answers a Failure (pseudo-6e.t)
                         if (sixE() && nm.size() > 1 && (nm[0] == '$' || nm[0] == '@' || nm[0] == '%') &&

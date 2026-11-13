@@ -91,4 +91,27 @@ bool Parser::enclosingTypeHere(std::string& out, const char* none) {
     return true;
 }
 
+// `CALLERS::('$_')`, `M::('$q')`: a package name, then a parenthesized name
+// to look up in it, at run time — `::("M::" ~ EXPR)`, which it called a sub
+// `M::` (rakudo#2639). CALLER and CALLERS take the `<…>` forms' node, so a
+// pseudo-package's head is resolved as `CALLERS::<$_>` resolves it.
+ExprPtr Parser::parsePkgNameLookup() {
+    const std::string pk = advance().text;   // NAME::
+    advance();                               // (
+    ExprPtr name = parseExpression();
+    expectKind(Tok::RParen, "expected ')' after ::(");
+    auto sr = std::make_unique<SymbolicRef>();
+    if (pk == "CALLER::" || pk == "CALLERS::") {
+        sr->pkg = pk.substr(0, pk.size() - 2);
+        sr->nameExpr = std::move(name);
+        return sr;
+    }
+    auto cat = std::make_unique<Binary>();
+    cat->op = "~";
+    cat->lhs = std::make_unique<StrLit>(pk);
+    cat->rhs = std::move(name);
+    sr->nameExpr = std::move(cat);
+    return sr;
+}
+
 } // namespace rakupp
