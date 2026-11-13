@@ -739,6 +739,19 @@ static bool lazyReadOut(const Value& lst) {
     return st && st->exhausted && !st->infinite;
 }
 
+// The operator a BUILT-IN chaining comparison's Code stands for (`&[>]` is
+// `infix:«>»`), or "" for any other callable: `reduce &[>], 6, 5, 4` chains
+// as `[>]` does, 6 > 5 > 4, not (6 > 5) > 4 (rakudo#4128)
+static std::string builtinChainOp(const Value& f) {
+    if (f.t != VT::Code || !f.code() || !f.code()->ci().builtin) return "";
+    const std::string& rn = f.code()->ci().name;
+    std::string cop = rn.rfind("infix:<", 0) == 0 && rn.back() == '>' ? rn.substr(7, rn.size() - 8)
+                    : rn.rfind("infix:\u00AB", 0) == 0 && rn.size() > 10 ? rn.substr(8, rn.size() - 10) : std::string();
+    static const std::set<std::string> chainOps = {"<", "<=", ">", ">=", "==", "!=", "eq", "ne", "lt", "le",
+        "gt", "ge", "=:=", "===", "eqv", "before", "after", "~~"};
+    return chainOps.count(cop) ? cop : std::string();
+}
+
 std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& m,
                                                  ValueList& args,
                                                  const std::vector<ExprPtr>* rwArgs) {
@@ -3143,16 +3156,8 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
                     return acc;
                 }
             }
-            // …and so does a BUILT-IN chaining comparison, as under `[op]` (rakudo#4128):
-            // `reduce &[>], 6, 5, 4` is 6 > 5 > 4, True, not (6 > 5) > 4
-            if (args[0].code() && args[0].code()->ci().builtin) {
-                const std::string& rn = args[0].code()->ci().name;
-                std::string cop = rn.rfind("infix:<", 0) == 0 && rn.back() == '>' ? rn.substr(7, rn.size() - 8)
-                                : rn.rfind("infix:\u00AB", 0) == 0 && rn.size() > 10 ? rn.substr(8, rn.size() - 10) : std::string();
-                static const std::set<std::string> chainOps = {"<", "<=", ">", ">=", "==", "!=", "eq", "ne", "lt", "le",
-                    "gt", "ge", "=:=", "===", "eqv", "before", "after", "~~"};
-                if (chainOps.count(cop)) return applyReduce(cop, items);
-            }
+            // …and so does a BUILT-IN chaining comparison, as under `[op]` (rakudo#4128)
+            if (std::string cop = builtinChainOp(args[0]); !cop.empty()) return applyReduce(cop, items);
             // an `is assoc<chain>` operator tests each ADJACENT pair, as a chained
             // comparison does: `(5,4,3,2,1).reduce(&infix:<eog>)` is
             // 5 eog 4 && 4 eog 3 && …, False at the first pair that fails
