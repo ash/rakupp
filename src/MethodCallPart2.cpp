@@ -9670,8 +9670,10 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
                 Value a = Value::makeHash(); a.hashKind = "Archetypes";
                 const bool role = howObjName->find("Role") != std::string::npos;
                 const bool concrete = *howObjName == "Metamodel::ConcreteRoleHOW";
+                const bool en = howObjName->find("EnumHOW") != std::string::npos;   // (an enum composes into a role: `does E`)
                 (*a.hash())["nominal"]         = Value::boolean(true);
-                (*a.hash())["inheritable"]     = Value::boolean(!role);
+                (*a.hash())["inheritable"]     = Value::boolean(!role && !en);
+                (*a.hash())["composalizable"]  = Value::boolean(en);
                 (*a.hash())["composable"]      = Value::boolean(role);
                 (*a.hash())["parametric"]      = Value::boolean(role && !concrete);
                 (*a.hash())["inheritalizable"] = Value::boolean(role && !concrete);
@@ -9694,6 +9696,7 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
                 (*a.hash())["coercive"]      = Value::boolean(coercion);
                 (*a.hash())["definite"]      = Value::boolean(definite);
                 (*a.hash())["augmentable"]   = Value::boolean(!role);
+                (*a.hash())["composalizable"] = Value::boolean(inv.t == VT::Type && inv.s.find("EnumHOW") != std::string::npos);   // (an enum: `does E`)
                 return a;
             }
             if ((m == "can" || m == "^can") && !args.empty()) {
@@ -9704,10 +9707,10 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
             }
         }
     }
-    // the Archetypes value itself: every query is a stored boolean (absent = False)
+    // the Archetypes value itself: every query answers 1 or 0, as Rakudo's native ints do (absent = 0)
     if (inv.t == VT::Hash && inv.hashKind == "Archetypes") {
         auto it = inv.hash()->find(m.s);
-        return it != inv.hash()->end() ? it->second : Value::boolean(false);
+        return Value::integer(it != inv.hash()->end() && it->second.truthy() ? 1 : 0);
     }
     if (m == "can") { // Mu.can($name): list of matching methods ([] if none)
         std::string mn = args.empty() ? "" : args[0].toStr();

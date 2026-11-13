@@ -13341,7 +13341,10 @@ StmtPtr Parser::parseEnum() {
     else if (isOp("::")) advance();   // `enum :: <un>` — anonymous, spelled out
     if (!pendingEnumType_.empty()) { ed->ofType = pendingEnumType_; pendingEnumType_.clear(); }
     if (isIdent("of")) { advance(); if (isKind(Tok::Ident)) ed->ofType = advance().text; }
-    while (isIdent("is")) {
+    // (`enum E does R <a b>` — a role BEFORE the values too, read by its name alone, so the
+    // `<…>` after it stays the value list (rakudo#3376); consumed, as the one after them is)
+    while (isIdent("is") || isIdent("does")) {
+        if (isIdent("does") && peek().kind == Tok::Ident) { advance(); advance(); continue; }
         advance();
         if (isKind(Tok::Ident) || isKind(Tok::Var)) {
             const bool exp = cur().text == "export";
