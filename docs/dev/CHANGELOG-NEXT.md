@@ -13,7 +13,7 @@ here.*
 fd3fda0f, 33351b91, 5b6a2753, d1e39cb5, 64e4c44f, 7800a133,
 9c45b83d, 041789fd, 147d0b95, 7fc5b00b, b4f6e472, 00c30ed1, b980a365,
 4f507a0f, 401e19e8, cee2cd42, 29f64dcc, bdb022c4, 38cb1d1e, a64cd841,
-91033936, 2987aab9, b66ccda3.*
+91033936, 2987aab9, b66ccda3, 6eef76fd, ecaee71c.*
 
 ---
 
@@ -297,6 +297,19 @@ fd3fda0f, 33351b91, 5b6a2753, d1e39cb5, 64e4c44f, 7800a133,
 - **Assigning to a sigilless name bound to an object with STORE calls it**
   (b66ccda3) (rakudo#3292): `my \foo = HistoryVar.new; foo = 1` died "Cannot
   modify an immutable HistoryVar". `t/regression/sigilless-object-store.raku`.
+- **A multi's `where` check reads its defaults in the candidate's scope**
+  (6eef76fd): Data::Dump's every `Dump(…)` was X::Multi::NoMatch since
+  v5.3.0. Checking an unsupplied named's `where` evaluated the defaults before
+  it in the caller's scope, where Data::Dump's module-level `my %defaults` is
+  not. Found by the module battery.
+  `t/regression/multi-where-default-in-candidate-scope.raku`.
+- **`try EXPR` is a frame of its own, as in Rakudo** (ecaee71c): Log::Async's
+  `trace` died "No such method 'file' for invocant of type 'Any'". It drops
+  the `try`'s frame as the exception's own and reads the caller from the
+  next, and the statement form had none. The short printout now leaves out
+  the frames of `try`, `do` and `quietly` blocks, as Rakudo's does; a warning
+  still names its block. Found by the module battery.
+  `t/regression/try-statement-is-a-block-frame.raku`.
 ### Platforms and packaging
 
 ### Tools

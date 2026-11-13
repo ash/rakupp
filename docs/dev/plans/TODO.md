@@ -222,17 +222,6 @@ The same items grouped by theme, with a complexity estimate for each:
 
 ## 2. Correctness (v5 error batches)
 
-- [ ] **Two battery dists fail since v5.0.0**, found 2026-11-13 by the
-  R3 + R4 battery run (RAKUDO-ISSUES-PLAN, Progress), failing the same
-  way at v5.8.0, so older than that batch:
-  - Data::Dump 2/9 (was 9/9): `Dump(%h, :!color)` is X::Multi::NoMatch
-    against `Bool :$color` (t/01-hash.t, t/02-obj.t, t/03-array.t);
-  - Log::Async 15/17 (was 17/17): `trace $msg` dies "No such method 'file'
-    for invocant of type 'Any'", a call frame it asks for
-    (t/11-log-async-context.rakutest, t/12-context.rakutest).
-
-  Bisect between v5.0.0 and v5.8.0.
-
 - [ ] **What Rakudo's issue tracker found**
   ([RAKUDO-ISSUES-PLAN.md](RAKUDO-ISSUES-PLAN.md), from
   findings/RAKUDO-ISSUES-2026-11.md, 2026-11-12): 8 crashes or hangs, 160
