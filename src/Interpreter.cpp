@@ -2396,6 +2396,11 @@ Value Interpreter::seqOp(Value l, Value r, bool exclusive) {
         ValueList rl = r.flatten();
         if (rl.size() >= 2 && rl.size() < 1000000) {
             Value res = seqOp(l, rl[0], exclusive);
+            // (a generator walking to that endpoint is finite: realise it, so `{ … } ... ^21` appends 1..20 too — rakudo#3881)
+            if (res.t == VT::Array && res.arr() && res.ext() && !std::static_pointer_cast<LazySeqState>(res.ext())->infinite) {
+                materializeLazy(res, 1000000);
+                if (res.arr()->size() < 1000000) res.extM().reset();
+            }
             if (res.t == VT::Array && res.arr() && !res.ext()) {
                 for (size_t i = 1; i < rl.size(); i++) res.arr()->push_back(rl[i]);
                 return res;
@@ -2765,11 +2770,12 @@ Value Interpreter::seqOp(Value l, Value r, bool exclusive) {
             bool boundedGen = !infinite;
             st->infinite = !boundedGen; // a literal-endpoint gen seq CAN drain (stops on match)
             st->seqUserGen = infinite && hasGen;
+            auto exclHit = std::make_shared<bool>(false);   // `...^` met its endpoint: the end, however often a reader asks again (rakudo#3881)
             st->appendNext = [self, gen, hasGen, geometric, ratio, step, allInt, arity, tooFew,
                               deduceFailed, dedFrom, seqDeduceThrow,
                               succSeed, succDesc, succConst, ratioV, exactRatio, stepV, exactStep,
-                              boundedGen, endVal, endValue, atEnd, exclusive](ValueList& cache) -> bool {
-                if (cache.empty() && !hasGen) return false;
+                              boundedGen, endVal, endValue, atEnd, exclusive, exclHit](ValueList& cache) -> bool {
+                if (*exclHit || (cache.empty() && !hasGen)) return false;
                 if (boundedGen && !cache.empty() && atEnd(cache.back(), endValue))
                     return false; // endpoint reached
                 if (boundedGen && cache.size() >= 1000000) return false; // runaway cap (endpoint never matched)
@@ -2785,7 +2791,7 @@ Value Interpreter::seqOp(Value l, Value r, bool exclusive) {
                     try { next = self->callCallable(gen, args); }
                     catch (const LastEx&) { return false; }
                     if (boundedGen && exclusive && atEnd(next, endValue))
-                        return false; // ...^ drops the endpoint element
+                        return !(*exclHit = true); // ...^ drops the endpoint element
                 } else if (succSeed) { // 'a' ... * : step by succ/pred
                     const Value& lastE = cache.back();
                     if (succConst) next = lastE;
