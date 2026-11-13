@@ -422,15 +422,21 @@ Value Interpreter::drainSupplyBlock(const Value& s) {
 }
 
 // An address for an async socket: IPv4 or IPv6 (`::1`), numeric or by name.
-// "0.0.0.0" / "" binds every IPv4 interface, as it always has.
-static bool asyncSockAddr(const std::string& hostIn, int port, sockaddr_storage& ss, socklen_t& len) {
+// "0.0.0.0" / "" binds every IPv4 interface, as it always has. `fam` asks for
+// one family (IO::Socket::INET's `:family`): then "localhost" is that one's
+// loopback and "" or "::" every IPv6 interface.
+static bool asyncSockAddr(const std::string& hostIn, int port, sockaddr_storage& ss, socklen_t& len, int fam = AF_UNSPEC) {
     std::memset(&ss, 0, sizeof(ss));
-    std::string host = hostIn == "localhost" ? "127.0.0.1" : hostIn;
+    std::string host = hostIn == "localhost" ? (fam == AF_INET6 ? "::1" : "127.0.0.1") : hostIn;
+    if (fam == AF_INET6 && (host.empty() || host == "::" || host == "0.0.0.0")) {
+        auto* a6 = (sockaddr_in6*)&ss; a6->sin6_family = AF_INET6; a6->sin6_port = htons((uint16_t)port);
+        a6->sin6_addr = in6addr_any; len = sizeof(sockaddr_in6); return true;
+    }
     if (host.empty() || host == "0.0.0.0") {
         auto* a4 = (sockaddr_in*)&ss; a4->sin_family = AF_INET; a4->sin_port = htons((uint16_t)port);
         a4->sin_addr.s_addr = INADDR_ANY; len = sizeof(sockaddr_in); return true;
     }
-    addrinfo hints{}; hints.ai_socktype = SOCK_STREAM; hints.ai_family = AF_UNSPEC;
+    addrinfo hints{}; hints.ai_socktype = SOCK_STREAM; hints.ai_family = fam;
     addrinfo* res = nullptr;
     if (getaddrinfo(host.c_str(), nullptr, &hints, &res) != 0 || !res) return false;
     std::memcpy(&ss, res->ai_addr, res->ai_addrlen); len = (socklen_t)res->ai_addrlen;
@@ -441,6 +447,9 @@ static bool asyncSockAddr(const std::string& hostIn, int port, sockaddr_storage&
 }
 bool asyncSockAddrFwd(const std::string& h, int p, sockaddr_storage& ss, socklen_t& len) {
     return asyncSockAddr(h, p, ss, len);
+}
+bool sockAddrOfFamily(const std::string& h, int p, int fam, sockaddr_storage& ss, socklen_t& len) {
+    return asyncSockAddr(h, p, ss, len, fam);
 }
 // The host and port of a socket address, IPv4 or IPv6.
 static void asyncSockName(const sockaddr_storage& ss, std::string& host, long long& port) {

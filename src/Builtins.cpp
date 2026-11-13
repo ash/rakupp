@@ -10047,41 +10047,35 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
         long usePort = listen ? localport : port;
         if (usePort < 0 || usePort > 65535)
             throw RakuError{Value::typeObj("X::AdHoc"), "Invalid port: " + std::to_string(usePort)};
-        if (family != -2 && family != 0 && family != PF_INET) // validated, then IGNORED before: AF_INET was opened for :family(PF_INET6)
-            throw RakuError{Value::typeObj("X::AdHoc"), "Socket family " + std::to_string(family) + " is not supported: only PF_INET (" + std::to_string(PF_INET) + ")"};
-        auto resolve = [](const std::string& h, sockaddr_in& addr) {
-            addr.sin_addr.s_addr = inet_addr(h.c_str());
-            if (addr.sin_addr.s_addr == INADDR_NONE) {
-                if (hostent* he = gethostbyname(h.c_str())) memcpy(&addr.sin_addr, he->h_addr, he->h_length);
-            }
-        };
-        int fd = socket(AF_INET, SOCK_STREAM, 0);
+        if (family != -2 && family != 0 && family != PF_INET && family != PF_INET6)
+            throw RakuError{Value::typeObj("X::AdHoc"), "Socket family " + std::to_string(family) + " is not supported: only PF_INET (" +
+                            std::to_string(PF_INET) + ") and PF_INET6 (" + std::to_string(PF_INET6) + ")"};
+        // IPv6 when `:family(PF_INET6)` asks for it, or the address is one (`::1`) (rakudo#1879)
+        const bool v6 = family == PF_INET6 || (family != PF_INET && (listen ? localhost : host).find(':') != std::string::npos);
+        // A NAME is as valid here as a dotted quad — `:localhost<localhost>` is
+        // how a test spins up a server on the loopback.
+        sockaddr_storage addr{}; socklen_t addrLen = 0;
+        if (!sockAddrOfFamily(listen ? localhost : host, (int)(listen ? localport : port), v6 ? AF_INET6 : AF_INET, addr, addrLen))
+            throw RakuError{Value::typeObj("X::AdHoc"), std::string(listen ? "Cannot listen on " : "Cannot connect to ") +
+                            (listen ? localhost : host) + ":" + std::to_string(listen ? localport : port) + ": no such address"};
+        int fd = socket(addr.ss_family, SOCK_STREAM, 0);
         if (fd < 0) throw RakuError{Value::typeObj("X::AdHoc"), "Cannot create a socket: " + std::string(std::strerror(errno))};
-        sockaddr_in addr{}; addr.sin_family = AF_INET;
         if (listen) {
             int yes = 1; setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, (const char*)&yes, sizeof(yes));
-            addr.sin_port = htons((uint16_t)localport);
-            // A NAME is as valid here as a dotted quad — `:localhost<localhost>`
-            // is how a test spins up a server on the loopback. Only the client
-            // path resolved, so the listener bound to INADDR_NONE and failed,
-            // handing back Nil with nothing to say why.
-            if (localhost.empty() || localhost == "0.0.0.0") addr.sin_addr.s_addr = INADDR_ANY;
-            else resolve(localhost, addr);
-            if (::bind(fd, (sockaddr*)&addr, sizeof(addr)) < 0 || ::listen(fd, 128) < 0) { // a Nil here let the program run on with nobody listening
+            if (::bind(fd, (sockaddr*)&addr, addrLen) < 0 || ::listen(fd, 128) < 0) { // a Nil here let the program run on with nobody listening
                 int err = errno; ::close(fd);
                 throw RakuError{Value::typeObj("X::AdHoc"), "Cannot listen on " + (localhost.empty() ? std::string("0.0.0.0") : localhost) +
                                 ":" + std::to_string(localport) + ": " + std::strerror(err)};
             }
         } else {
-            addr.sin_port = htons((uint16_t)port);
-            resolve(host, addr);
-            bool p = gilPark(); int rc = ::connect(fd, (sockaddr*)&addr, sizeof(addr)); gilUnpark(p);
+            bool p = gilPark(); int rc = ::connect(fd, (sockaddr*)&addr, addrLen); gilUnpark(p);
             if (rc < 0) { // a Nil here let `$s.print` on Any pass silently
                 int err = errno; ::close(fd);
                 throw RakuError{Value::typeObj("X::AdHoc"), "Cannot connect to " + host + ":" + std::to_string(port) + ": " + std::strerror(err)};
             }
         }
         Value s = Value::makeHash(); s.hashKind = "Socket"; (*s.hash())["fd"] = Value::integer(fd);
+        (*s.hash())["family"] = Value::str(family == PF_INET6 ? "PF_INET6" : family == PF_INET ? "PF_INET" : "PF_UNSPEC");
         // Keep the name as GIVEN: `.localhost` answers what was asked for, not
         // what it resolved to, which is what Rakudo reports.
         if (listen) { if (!localhost.empty()) (*s.hash())["localhost"] = Value::str(localhost); }

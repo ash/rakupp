@@ -9046,19 +9046,22 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
                 auto given = inv.hash()->find(m.s);
                 return given != inv.hash()->end() ? given->second : Value::str("");
             }
-            sockaddr_in sa{};
+            sockaddr_storage sa{};
             socklen_t sl = sizeof(sa);
             bool peer = m[0] == 'p';
             int rc = peer ? ::getpeername(fd, (sockaddr*)&sa, &sl)
                           : ::getsockname(fd, (sockaddr*)&sa, &sl);
             if (rc < 0) return Value::nil();
-            if (m == "localport" || m == "peerport") return Value::integer(ntohs(sa.sin_port));
+            if (m == "localport" || m == "peerport") return Value::integer(ntohs(((sockaddr_in*)&sa)->sin_port));   // (an IPv6 port sits there too)
             auto given = inv.hash()->find(m.s);   // the name as the caller wrote it
             if (given != inv.hash()->end()) return given->second;
-            char buf[INET_ADDRSTRLEN] = {0};
-            inet_ntop(AF_INET, &sa.sin_addr, buf, sizeof(buf));
+            char buf[INET6_ADDRSTRLEN] = {0};
+            if (sa.ss_family == AF_INET6) inet_ntop(AF_INET6, &((sockaddr_in6*)&sa)->sin6_addr, buf, sizeof(buf));
+            else inet_ntop(AF_INET, &((sockaddr_in*)&sa)->sin_addr, buf, sizeof(buf));
             return Value::str(buf);
         }
+        if (m == "host" || m == "port") return methodCall(inv, m == "host" ? "peerhost" : "peerport", ValueList{});   // a client's, as asked
+        if (m == "family") { Value f; coreEnumValue(inv.hash()->count("family") ? (*inv.hash())["family"].toStr() : "PF_UNSPEC", f); return f; }
         // characters for text, bytes for `.read` and `:bin`, one buffer with `.get`
         if (m == "recv" || m == "read") return inetSocketRead(*this, inv, m, args);
         // `.get` — one line, buffered: bytes are pulled as they arrive, and the

@@ -448,6 +448,7 @@ static inline Value causeException(Interpreter& I, const Value& cause, const std
     return I.exceptionFor(RakuError{Value::typeObj("X::AdHoc"), m, RakuError::NoCapture{}});
 }
 bool asyncSockAddrFwd(const std::string& h, int p, sockaddr_storage& ss, socklen_t& len);
+bool sockAddrOfFamily(const std::string& h, int p, int fam, sockaddr_storage& ss, socklen_t& len);   // …of one family (AF_INET, AF_INET6)
 
 // Build an IO::Socket::Async connection value around a connected fd.
 Value makeAsyncSocket(int fd);
