@@ -480,8 +480,8 @@ bool Interpreter::chainLinkUser(const std::string& op, const Value& l, const Val
         if (Value* f = lexShadowedInfix(op, l, r)) { out = callCallable(*f, ValueList{l, r}); return true; }
         if (userInfixOverCore(op, l, r, out)) return true;
     }
-    if ((l.t == VT::Object || r.t == VT::Object || !l.enumType().empty() || !r.enumType().empty()) &&
-        boundInfixPossible(op))
+    if ((l.t == VT::Object || r.t == VT::Object || userClassTypeObj(*this, l) || userClassTypeObj(*this, r) ||
+         !l.enumType().empty() || !r.enumType().empty()) && boundInfixPossible(op))
         if (Value* f = tctx().cur->find("&infix:<" + op + ">"))
             try { out = callCallable(*f, ValueList{l, r}); return true; }
             catch (RakuError& e) {
@@ -3290,8 +3290,8 @@ Value whateverInfixCurry(const std::string& name, const std::string& op, const V
 Value Interpreter::applyUniOp(const std::string& name, const char* builtin, const Value& l, const Value& r) {
     if (whateverish(l) || whateverish(r)) return whateverInfixCurry(name, builtin, l, r);
     if (Value* f = lexShadowedInfix(name, l, r)) return callCallable(*f, ValueList{l, r});
-    if ((l.t == VT::Object || r.t == VT::Object || !l.enumType().empty() || !r.enumType().empty()) &&
-        boundInfixPossible(name) && tctx().cur)
+    if ((l.t == VT::Object || r.t == VT::Object || userClassTypeObj(*this, l) || userClassTypeObj(*this, r) ||
+         !l.enumType().empty() || !r.enumType().empty()) && boundInfixPossible(name) && tctx().cur)
         if (Value* f = tctx().cur->find("&infix:<" + name + ">"))
             try { return callCallable(*f, ValueList{l, r}); }
             catch (RakuError& e) { // only "no candidate took these operands" falls back

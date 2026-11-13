@@ -23290,7 +23290,12 @@ Value Interpreter::evalBinary(Binary* b) {
         if (whateverArrivedAsValue(b, l, r)) {   // (and a numeric operator has no Numeric of it to take)
             if (l.t == VT::Whatever || r.t == VT::Whatever) refuseWhateverNumeric(op);
             Interpreter::valueSmartmatch_ = true; return applyBinOp(op, l, r); }
-        if (RAKUPP_UNLIKELY(uninitOperand(l) || uninitOperand(r))) uninitBinaryOperands(b, op, l, r);
+        if (RAKUPP_UNLIKELY(uninitOperand(l) || uninitOperand(r))) {
+            // a user multi may take the type object (`multi infix:<+>(Int:U, Int)`) before it warns
+            if ((userClassTypeObj(*this, l) || userClassTypeObj(*this, r)) && boundInfixPossible(name))
+                if (Value res; objectOperandInfix(*this, name, l, r, res)) return res;
+            uninitBinaryOperands(b, op, l, r);
+        }
         // a DateTime or Date against a number or another (temporalArith)
         if (l.t == VT::Object || r.t == VT::Object || l.hashKind == "DateTime" || r.hashKind == "DateTime" ||
             l.hashKind == "Date" || r.hashKind == "Date")
@@ -23346,8 +23351,9 @@ Value Interpreter::evalBinary(Binary* b) {
         }
         // (an Order operand — `($a cmp $b) == Less` — asked on every evaluation,
         // so the walk waits until some scope has bound this spelling at all)
-        if ((l.t == VT::Object || r.t == VT::Object || !l.enumType().empty() || !r.enumType().empty()) &&
-            boundInfixPossible(name))
+        // (…or a user class's type object, rakudo#6860)
+        if ((l.t == VT::Object || r.t == VT::Object || userClassTypeObj(*this, l) || userClassTypeObj(*this, r) ||
+             !l.enumType().empty() || !r.enumType().empty()) && boundInfixPossible(name))
             if (Value* f = tctx().cur->find("&infix:<" + name + ">"))
                 try { return callCallable(*f, ValueList{l, r}); }
                 catch (RakuError& e) { // only "no candidate took these operands" falls back
@@ -23733,11 +23739,17 @@ Value Interpreter::evalBinary(Binary* b) {
             Value uv;
             if (userInfixOverCore(op, l, r, uv)) return uv;
         }
-        if (RAKUPP_UNLIKELY(uninitOperand(l) || uninitOperand(r))) uninitBinaryOperands(b, op, l, r);
-        // An object or enum operand meets a user `multi infix:<~>` first, as on the
-        // general path (`Rt.new ~ 1`, `Red ~ "x"`); then an operand that IS-A Str is
-        // a Str:D, concatenated by VALUE per operand: `("bb" but R) ~ Plain.new` is "bbplain".
-        if ((l.t == VT::Object || r.t == VT::Object || !l.enumType().empty() || !r.enumType().empty()) && boundInfixPossible(op))
+        if (RAKUPP_UNLIKELY(uninitOperand(l) || uninitOperand(r))) {
+            if ((userClassTypeObj(*this, l) || userClassTypeObj(*this, r)) && boundInfixPossible(op))   // `"A: " ~ A`
+                if (Value res; objectOperandInfix(*this, op, l, r, res)) return res;
+            uninitBinaryOperands(b, op, l, r);
+        }
+        // An object, a user class's type object or an enum operand meets a user `multi
+        // infix:<~>` first, as on the general path (`Rt.new ~ 1`, `Red ~ "x"`, `"A: " ~ A`);
+        // then an operand that IS-A Str is a Str:D, concatenated by VALUE per operand:
+        // `("bb" but R) ~ Plain.new` is "bbplain".
+        if ((l.t == VT::Object || r.t == VT::Object || userClassTypeObj(*this, l) || userClassTypeObj(*this, r) ||
+             !l.enumType().empty() || !r.enumType().empty()) && boundInfixPossible(op))
             if (Value res; objectOperandInfix(*this, op, l, r, res)) return res;
         if (l.t == VT::Object || r.t == VT::Object) {
             const std::string lt = strInStrContext(l);   // (composing across the join)

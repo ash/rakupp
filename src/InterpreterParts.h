@@ -197,6 +197,12 @@ static inline bool isAnyTypeObject(const Value& v) {
 
 int ncScalarWidth(const std::string& t, bool& sign, bool& isFloat);
 bool valueEqv(const Value& a, const Value& b);
+// A type object of one of the program's own classes (`A`, not `Int`): the
+// program's `multi infix:<op>` is asked about it before anything treats it as an
+// undefined operand (rakudo#6860: `"A: " ~ A` with `multi infix:<~>(Str() $a, A $b)`)
+inline bool userClassTypeObj(const Interpreter& I, const Value& v) {
+    return v.t == VT::Type && I.classes_.count(std::string(v.s.c_str())) != 0;
+}
 bool isSetOpStr(const std::string& o);
 bool reduceKeepsOperands(const std::string& op);   // [Z]/[X]/minmax/set-op reduce: operands stay whole
 static bool boxedIteration(const Value& v);
