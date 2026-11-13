@@ -248,11 +248,12 @@ The same items grouped by theme, with a complexity estimate for each:
   eleven refusals and wrong parses fixed, with two regressions full Roast
   caught on the way. R8 is done (bfd530f9 … 6b8c1d1a, 2026-11-13): hyper
   calls in interpolation, anonymous state in string blocks, `dd` and a
-  built-in exception's `.raku`, and a leap second in an odd timezone. Next
-  step: R9, missing features, most useful first.
-
-  R9's `use Telemetry` can run beside any batch. The plan's other questions
-  are answered when their batch (R10) starts.
+  built-in exception's `.raku`, and a leap second in an odd timezone. R9 is
+  done but rakudo#4517, nested coercion types (41150ad1 … 62ada605,
+  2026-11-13): `use Telemetry`, `use trace`, `Routine.prec`, `CALLERS::(…)`,
+  UNIX-domain and IPv6 sockets, the EnumHOW protocol, the atomic callables,
+  `.twigil` and `does array[T]`. Next step: R10, strictness. Its decisions
+  for the maintainer (the plan's 1 and 2) come first.
 - [ ] **A native array's derived lists hand out boxed elements**, found
   2026-11-06 beside the native-element work: `.head`, `.tail`, `.list`, a
   slice `@a[1..2]`, `.reverse`, `.sort`, `.kv`, `.values`, `.pairs` and a

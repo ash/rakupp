@@ -450,22 +450,83 @@ numeric and datetime sections is not started.*
 
 ### R9 — missing features, most useful first
 
-- **`use Telemetry` ✓** (rakudo#1513, #3844, #5144). It is Rakudo's, not
-  Roast's, but it is how people measure a Raku program: `T<max-rss>`,
-  `snapper`, `report`, `Telemetry::Instrument::*`. Independent of everything
-  else; it can start any time.
-- **`CALLERS::`** (rakudo#2639), a specced pseudo-package.
-- **`Routine.prec` ✓** (rakudo#4780).
-- **`⚛==` ✓** (rakudo#6873), and whatever else of the atomic operator family
-  is missing.
-- **IO::Socket::Async over Unix sockets**: `listen-path` and `connect-path`
-  (rakudo#5358, #5359).
-- **IPv6 sockets** (rakudo#1879).
-- **Nested coercion types** (rakudo#4517), and `role R[::T] does array[T]`
-  (rakudo#4361).
-- **`Metamodel::EnumHOW.add_enum_value` ✓** (rakudo#2165), and `.twigil` on a
-  method's invocant Parameter ✓ (rakudo#2275).
-- **`use trace`** (rakudo#5546), last.
+*2026-11-13. Done but nested coercion types (rakudo#4517).*
+
+- **rakudo#1513, #3844, #5144 — done (fcc6d577).** `use Telemetry` loads:
+  rakulib/Telemetry.rakumod ports Rakudo's lib/Telemetry.rakumod to plain
+  Raku (both Artistic 2.0), over one built-in, `rakupp-getrusage`, and is
+  embedded as a shadow module. `T<max-rss>`, `snap`, `snapper`, `periods`,
+  `report` and the END report are Rakudo's, column for column. `T{"max-rss"}`
+  needed a parser change: a brace tight against a routine's name subscripts
+  the call's answer, as in Rakudo. Left:
+  - Telemetry::Instrument::AdHoc does not work, because `*@v is raw` does not
+    hand on the caller's containers (`.VAR.name` is the parameter's, and a
+    kept `.VAR` does not follow later writes).
+  - The Thread and ThreadPool instruments read zeros: there is no
+    `Thread.usage` or `$*SCHEDULER.usage` yet.
+  - `snap(:heap)` dies; there is no heap to snapshot.
+- **rakudo#2639 — done (ef2e778b).** `CALLERS::('$_')`, `CALLER::(…)` and
+  `M::(…)` look the name up in the package; they called a sub named
+  `CALLERS::`. CALLERS reaches a routine's own `$_` or the mainline's, not a
+  `given` or `for` topic, as in Rakudo, so the issue's snippet answers Any
+  there and here. Left: a COMPUTED name (`CALLERS::("\$_")`, double quotes)
+  goes through the pseudo-stash, which still finds a block topic.
+- **rakudo#4780 — done (bec86076).** `.prec`, `.precedence`, `.associative`,
+  `.thunky` and `.iffy`, from Rakudo's table for the built-ins and from
+  `is equiv/tighter/looser/assoc/prec` for declared operators.
+  `.prec('prec')` answers the string, where Rakudo dies on its own return
+  type, which is the bug the issue records. Left:
+  - The ordering itself: a prefix `is tighter(&postcircumfix:<[ ]>)` still
+    applies after the postcircumfix, so the snippet's `§42⸨0⸩` is
+    "prefix called last". The issue and Rakudo both say "postcircumfix
+    called last".
+  - No callable: `&postfix:<i>`, `&postfix:<ⁿ>`, `&prefix:<let>`,
+    `&prefix:<temp>`, `&prefix:<^>`, `&prefix:<|>`, `&prefix:<−>`,
+    `&postcircumfix:<[; ]>` and `&postcircumfix:<{; }>`.
+  - `::("&infix:«<»")`, a symbolic lookup of a «»-spelled name, finds nothing.
+- **rakudo#6873 — done (ea466f67).** `⚛−=` with U+2212, and the callables
+  `&prefix:<⚛>`, `&prefix:<++⚛>`, `&prefix:<--⚛>`, `&postfix:<⚛++>` and
+  `&postfix:<⚛-->`. Rakudo reads `$x ⚛== 1` as a write; the issue calls
+  that a bug, with no consensus on comparing or refusing. Raku++ keeps
+  refusing it, now with a message that says to write `⚛$x == 1`.
+- **rakudo#5358, #5359 — done (9a6eeb85).** `IO::Socket::Async.listen-path`
+  and `.connect-path`, UNIX-domain sockets, with Rakudo's names, ports and
+  error words. Both issues' own subjects are Rakudo's: `throttle`'s
+  `:vent-at(0)`, and a buffer overflow on close. Neither is reproduced here.
+- **rakudo#1879 — done (a247fad2).** IO::Socket::INET over IPv6:
+  `:family(PF_INET6)`, or an IPv6 literal address; `.family`, `.host` and
+  `.port`.
+- **rakudo#4361 — done (112a0cdb).** `role A[::T] does array[T] { }`
+  declares. Left for R10: composing it is not refused, where Rakudo says
+  "array[int] is not composable".
+- **rakudo#4517 — not done.** None of the nested coercion types works.
+  `Array[Int]()` as a term dies "No such method 'CALL-ME'". A value coerced
+  into `Array[Int]` (`my Array[Int]() $x = (1, 2)`) is "Impossible
+  coercion". `Array[Int()]` loses its `()`, so its elements are not coerced
+  (`my Int() @a` is). The term's arm is in InterpreterCore.cpp, at its
+  ceiling, so this needs room made there first.
+- **rakudo#2165 — done (2eafbb23).** `E.HOW.add_enum_value`, `enum_values`,
+  `enum_value_list` and `enum_from_value`. `.pick` and `.roll` of an enum
+  type answer its members, so a Str-valued one keeps its `.value` (it was
+  0). `.^enum_values` is a Hash. Left: `E.HOW.elems(E)` answers 1, because a
+  type object's `.elems` arm answers first.
+- **rakudo#2275 — done (41150ad1).** `Parameter.twigil`; `.sigil` of `\g`
+  is `\`, of `|c` `|`. Left: a method with a capture parameter still lists
+  an implicit `*%_`, which Rakudo leaves out.
+- **rakudo#5546 — done (3a3fc21e).** `use trace`, numbered and worded as
+  Rakudo's, statement for statement on the programs compared. The issue's
+  own `my %a{Str}` is Rakudo's bug ("Invalid hash shape") and runs here.
+- **Found by the gates — done (62ada605).** Under `--exe`, a program
+  reading a calling routine's `$_` through CALLERS got Any: the routine was
+  compiled natively, and its `$_` was a native local. Such a program now
+  keeps its routines interpreted.
+- **Found beside them — done (251842c2).** R8's leftover:
+  X::Method::NotFound and X::Numeric::DivideByZero made with `.new` have
+  Rakudo's `.message`. Their composed `message` was passed positionally, so
+  a second `.new` died.
+- **Found beside them — open.** `dd $x` prints the value without Rakudo's
+  `$x = ` prefix. It goes to stderr, so the snippet harness never compared
+  it.
 
 ### R10 — strictness: code we run and Rakudo refuses
 
@@ -567,6 +628,7 @@ Each is answered when its batch starts, not before.
 | R6, 2026-11-13 | named items done; regex and grammar remainders open | 6b709af5, 31206e76, a2fcf5bb, e9aaf6b3, 9e693ab0, edc8bf39, 1ea5c984, 2137a05d, d45f616e | 1,302 | 1,425/1,425 | 2302/2302 |
 | R7, 2026-11-13 | R7.0 and the named items done; syntax PPBUG remainders open | 9e12d938, 70ee4e8b, 6fcd9181, f102e0f5, b1040540, d77e1185, 953adf0a, 73357985, 9badbec4, b590c1ec, f9028851, fdaa60ec, f8b5555c, ce72763f | 1,318 | 1,425/1,425 | 2313/2313 |
 | R8, 2026-11-13 | named items done; strings, numeric and datetime remainders open | bfd530f9, eb482a9f, 7e5a643e, 6b8c1d1a | 1,324 | 1,425/1,425 | 2317/2317 |
+| R9, 2026-11-13 | done but rakudo#4517 (nested coercion types) | 41150ad1 … 62ada605 | 1,329 | 1,425/1,425 | 2329/2329 |
 
 R1's per-file changes against the baseline:
 - **3686 and 5835:** TIMEOUT to MATCH.
@@ -669,3 +731,14 @@ R8's per-file changes against R7:
 
 The full t/exe/parity.raku ran too (dd, exceptions and interpolation are
 shared with compiled programs): 1,642 agree, 0 differ.
+
+R9's per-file changes against R8:
+- **1879/0, 2275/0, 2639/0, 4361/1:** to MATCH.
+- **4780/0:** MATCH to DIFF-BOTH. Rakudo dies on its own `.prec('prec')`,
+  which is the issue's bug. Raku++ prints the output the issue wants.
+- **2181/0, 5329/0:** noise. 5329 prints from two `hyper` threads.
+
+The full t/exe/parity.raku agreed on 1,653 programs and differed on one:
+callers-call-form.raku, whose compiled routines kept `$_` where CALLERS
+could not see it. 62ada605 keeps such a program interpreted, and the 21
+programs that mention CALLER, with the new tests, agree.

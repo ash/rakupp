@@ -20,7 +20,9 @@ ad10ad81, 3db5cae5, c109e8ec, c47aa1ea, cfbda86a, ccda30e9, 1c4da191,
 6b709af5, 31206e76, a2fcf5bb, e9aaf6b3, 9e693ab0, edc8bf39, 1ea5c984,
 2137a05d, d45f616e, 9e12d938, 70ee4e8b, 6fcd9181, f102e0f5, b1040540,
 d77e1185, 953adf0a, 73357985, 9badbec4, b590c1ec, f9028851, fdaa60ec,
-f8b5555c, ce72763f, bfd530f9, eb482a9f, 7e5a643e, 6b8c1d1a.*
+f8b5555c, ce72763f, bfd530f9, eb482a9f, 7e5a643e, 6b8c1d1a, 41150ad1,
+2eafbb23, bec86076, ea466f67, ef2e778b, 112a0cdb, a247fad2, 9a6eeb85,
+251842c2, fcc6d577, 3a3fc21e, 62ada605.*
 
 ---
 
@@ -36,6 +38,27 @@ f8b5555c, ce72763f, bfd530f9, eb482a9f, 7e5a643e, 6b8c1d1a.*
   beside its source and run with `RAKUPP_EXE_INTERPRETER`, which a compiled
   binary's `$*EXECUTABLE` answers, so the 284 programs that spawn "the
   interpreter" compare too. `t/exe/parity-known.txt` lists what is left: empty.
+
+- **`use Telemetry`** (fcc6d577) (rakudo#1513, #3844, #5144): Rakudo's core
+  module for measuring a program, ported to plain Raku and carried by the
+  binary. `T<max-rss>`, `snap`, `snapper`, `periods` and `report` give
+  Rakudo's columns and report. It was "Could not find Telemetry".
+  `t/regression/telemetry-module.raku`.
+- **`use trace`** (3a3fc21e) (rakudo#5546): each statement is announced on
+  $*ERR as it runs, numbered and placed as Rakudo announces it.
+  `t/regression/use-trace-pragma.raku`.
+- **`Routine.prec`, `.precedence`, `.associative`, `.thunky`, `.iffy`**
+  (bec86076) (rakudo#4780): an operator's precedence properties, Rakudo's
+  for the built-ins and as `is equiv`/`tighter`/`looser`/`assoc`/`prec`
+  make them for a declared one. `t/regression/routine-prec.raku`.
+- **`IO::Socket::Async.listen-path` and `.connect-path`** (9a6eeb85)
+  (rakudo#5358, #5359): UNIX-domain sockets.
+  `t/regression/async-socket-unix-path.raku`.
+- **IO::Socket::INET over IPv6** (a247fad2) (rakudo#1879): `:family(PF_INET6)`
+  died "only PF_INET". `t/regression/socket-inet-ipv6.raku`.
+- **The EnumHOW protocol** (2eafbb23) (rakudo#2165): `E.HOW.add_enum_value(E,
+  key => value)`, `enum_values`, `enum_value_list`, `enum_from_value`.
+  `t/regression/enum-how-add-enum-value.raku`.
 
 ### Faster
 
@@ -295,6 +318,17 @@ f8b5555c, ce72763f, bfd530f9, eb482a9f, 7e5a643e, 6b8c1d1a.*
   showed a `message => …` attribute, which is a method in Rakudo, and
   X::Numeric::DivideByZero's attributes in the order they were thrown.
   `t/regression/dd-failure-not-sunk-and-exception-raku.raku`.
+- **`CALLERS::<$_>` reads a calling routine's `$_` under `--exe` too**
+  (62ada605): a compiled program answered Any, where the interpreted one
+  answered the routine's `$_`. A program that reads its callers' lexicals
+  keeps its routines interpreted. `t/regression/callers-call-form.raku`.
+- **A picked member of a Str-valued enum keeps its value** (2eafbb23)
+  (rakudo#2165): `enum Chain (A => "T", …); Chain.pick.value` was 0, as was
+  every `.roll`. `t/regression/enum-how-add-enum-value.raku`.
+- **X::Method::NotFound and X::Numeric::DivideByZero made with `.new` have
+  their message** (251842c2): `.message` was Any, and a second `.new` of one
+  died "Default constructor … only takes named arguments".
+  `t/regression/exception-new-message.raku`.
 ### Fixed: crashes
 
 - **A long run of a quantified group no longer overflows the stack**
@@ -518,6 +552,23 @@ f8b5555c, ce72763f, bfd530f9, eb482a9f, 7e5a643e, 6b8c1d1a.*
 - **`dd` answers Nil** (eb482a9f) (rakudo#2434): `dd $x % 0e0` printed the
   Failure and then threw it, because dd handed its argument back to be sunk.
   `t/regression/dd-failure-not-sunk-and-exception-raku.raku`.
+- **`Parameter.twigil`** (41150ad1) (rakudo#2275), and `.sigil` of a sigilless
+  `\g` is `\` and of a capture `|c` is `|` (they were `g` and `c`).
+  `t/regression/parameter-twigil-and-sigil.raku`.
+- **The atomic family is complete** (ea466f67) (rakudo#6873): `⚛−=` with a
+  Unicode minus parsed as nothing, and `&prefix:<⚛>`, `&prefix:<++⚛>`,
+  `&postfix:<⚛++>` and their kin were Any. `$x ⚛== 1`, which Rakudo reads as
+  a write, is refused with a pointer to `⚛$x == 1`.
+  `t/regression/atomic-callables-and-unicode-minus.raku`.
+- **`CALLERS::('$_')`, `CALLER::(…)`, `M::(…)`** (ef2e778b) (rakudo#2639):
+  they called a sub named `CALLERS::`. CALLERS reaches a routine's own `$_`,
+  not a `given` or `for` topic, as in Rakudo.
+  `t/regression/callers-call-form.raku`.
+- **`role A[::T] does array[T]` declares** (112a0cdb) (rakudo#4361): it died
+  "Invalid typename 'array'". `t/regression/role-does-native-array-generic.raku`.
+- **`name{…}` subscripts what the call answers** (fcc6d577): `T{"max-rss"}`
+  passed the block to T. `name {…}`, with a space, still passes it.
+  `t/regression/brace-subscript-after-routine-call.raku`.
 ### Platforms and packaging
 
 ### Tools
