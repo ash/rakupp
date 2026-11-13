@@ -5616,8 +5616,12 @@ static void refuseRoleClashes(Interpreter& I, const std::string& clsName, const 
             code.code()->ciM().isRegexRoutine = true;   // `&R.^name` is Regex, not Sub
             // (the regex's own code blocks see it as `&?ROUTINE`: it is handed in)
             Callable* selfW = code.code();   // not owned: see PRef::fromObject
+            code.code()->closure = tctx().cur;   // its code blocks read the declaring frame's lexicals, returned too (rakudo#6810)
             code.code()->ciM().builtin = [pat, kind, selfW](Interpreter& I, ValueList& a) -> Value {
                 if (a.empty()) return Value::nil();
+                std::shared_ptr<Env> home = selfW ? selfW->closure : nullptr, saved = I.tctx().cur;
+                if (home && home != saved) { auto sc = makeSlabShared<Env>(); sc->parent = home; I.tctx().cur = sc; }
+                struct Back { Interpreter& I; std::shared_ptr<Env> s; ~Back() { I.tctx().cur = s; } } back{I, saved};
                 Value selfV;
                 // the routine is running, so its caller holds it alive: take a
                 // count for `&?ROUTINE` from the object (owning it in the

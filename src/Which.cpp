@@ -163,6 +163,12 @@ std::string whichOf(const Value& v) {
         // lived only in the `.WHICH` arm, so `.WHICH` said they differed while
         // baggyKeyStr (which keys on the RENDERING, `A<obj>` for every instance
         // of A) merged them: `set($x, $y).elems` was 1.
+        // …and so is a ROUTINE: two closures of one `sub { … }` or `my token` are two
+        // (Rakudo's `Sub|<serial>`), where the rendering made every `sub { ... }` one.
+        // A named built-in operator stays its name: `&infix:<+>` is one routine (===).
+        case VT::Code:    if (v.code() && !(v.code()->ci().builtin && !v.code()->ci().isRegexRoutine && !v.code()->ci().name.empty()))
+                              return serialWhich(v.typeName(), bodySerial(v.p_.get()));
+                          return v.typeName() + "|" + v.toStr();
         case VT::Object:  if (v.obj()) {
                               std::string w; bool isV = false;
                               if (g_userWhich && g_userWhich(v, w, isV)) return w;
@@ -282,8 +288,9 @@ std::string baggyKeyStr(const Value& v) {
     // …and an OBJECT, whose rendering is `Class<obj>` for every instance, so two
     // distinct objects collapsed into one Set element.
     if (v.t == VT::Object) return whichOf(v);
-    // …and a MATCH: two matches of the same text are two elements
-    if (v.t == VT::Match) return whichOf(v);
+    // …and a MATCH: two matches of the same text are two elements, and a ROUTINE:
+    // two closures of one `sub { … }` render alike
+    if (v.t == VT::Match || v.t == VT::Code) return whichOf(v);
     // …and a Dateish, whose rendering a `:formatter` rewrites: two Dates of the
     // same day are ONE set element however either of them prints (whichOf keys a
     // Date on its daycount, a DateTime on its rendering — both as Rakudo does).

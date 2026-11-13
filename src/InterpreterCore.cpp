@@ -785,7 +785,7 @@ static int stmtsEntryWork(const std::vector<StmtPtr>& stmts) {
             if (!sd->isMethod && !sd->name.empty()) m |= 8;
             if (!sd->name.empty()) m |= 32;
         }
-        else if (hoistableTypeDecl(s.get())) m |= 8;
+        else if (hoistableTypeDecl(s.get()) || s->kind == NK::NamedRegexDecl) m |= 8;   // (a `my token`'s &name closes over the frame, as a nested sub does)
     }
     // 64: a phaser in TERM position (`my $v = ENTER …`), which runEnterPhasers runs at entry too
     { std::vector<BlockExpr*> vp; valuePhasersIn(stmts, vp, 'E'); if (!vp.empty()) m |= 2 | 64; }
@@ -826,22 +826,22 @@ bool Interpreter::hoistSubs(const std::vector<StmtPtr>& stmts) {
     // Fast path first: most bodies (every loop body, most blocks) have nothing
     // to hoist, and the thread_local flag save/restore is a TLV access on
     // macOS — don't touch it unless a hoistable declaration actually exists.
-    bool anyDecl = false, anyType = false;
+    bool anyDecl = false, anyType = false, anyRx = false;   // anyRx: a `my regex`, whose &name closes over this frame (rakudo#6810)
     for (auto& s : stmts) {
         if (s->kind == NK::SubDecl) {
             auto* sd = static_cast<SubDecl*>(s.get());
             if (!sd->isMethod && !sd->name.empty()) { anyDecl = true; }
         }
-        else if (hoistableTypeDecl(s.get())) anyType = true;
+        else if (hoistableTypeDecl(s.get())) anyType = true; else if (s->kind == NK::NamedRegexDecl) anyRx = true;
     }
-    if (!anyDecl && !anyType) return false;
+    if (!anyDecl && !anyType) return anyRx;
     if (!anyDecl) { // only pending types to record — no sub to run, no flag to flip
         for (auto& s : stmts)
             if (hoistableTypeDecl(s.get())) {
                 auto* cd = static_cast<ClassDecl*>(s.get());
                 notePendingType(cd);
             }
-        return false;
+        return anyRx;
     }
     bool any = false;
     // restored however the pass ends: a hoisted declaration that THROWS (a
@@ -869,7 +869,7 @@ bool Interpreter::hoistSubs(const std::vector<StmtPtr>& stmts) {
             auto* cd = static_cast<ClassDecl*>(s.get());
             notePendingType(cd);
         }
-    return any;
+    return any || anyRx;
 }
 
 // ----------------- statements -----------------
@@ -20036,8 +20036,8 @@ static Value applyArithGeneral(const std::string& op, const Value& l, const Valu
         // name ARE the same operator; user routines keep pointer identity.
         else if (l.t == VT::Code)
             same = (l.code() == r.code()) ||
-                   (l.code() && r.code() && l.code()->ci().builtin && r.code()->ci().builtin &&
-                    !l.code()->ci().name.empty() && l.code()->ci().name == r.code()->ci().name);
+                   (l.code() && r.code() && l.code()->ci().builtin && r.code()->ci().builtin && !l.code()->ci().isRegexRoutine &&
+                    !l.code()->ci().name.empty() && l.code()->ci().name == r.code()->ci().name);   // (a `my token`'s &name is a closure of its frame)
         // Lists/Arrays are reference identity — except a CAPTURE, which is the one
         // Array-shaped VALUE type: `\(1,2) === \(1,2)` is True. Its parts carry
         // their own identity, so `\(1)` stays apart from `\("1")`.
