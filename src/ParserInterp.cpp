@@ -471,6 +471,12 @@ ExprPtr Parser::parseInterpString(const std::string& rawIn) {
                 int d = 1; var += raw[j++];
                 while (j < n && d > 0) { if (raw[j]==open) d++; else if (raw[j]==close) d--; var += raw[j++]; }
                 commit();
+            } else if (j + 2 < n && raw[j + 2] == '.' && committedLen == var.size() &&
+                       (((unsigned char)raw[j] == 0xC2 && (unsigned char)raw[j + 1] == 0xBB) || (raw[j] == '>' && raw[j + 1] == '>'))) {
+                // a HYPER method call, `"@a».uc()"` / `"%h>>.sort.map(…)"`: the marker joins the
+                // chain and the `.name` link after it decides, as any (rakudo#1460). Not after a
+                // bare `.name` still pending: Rakudo leaves `"@a.sort».uc()"` literal.
+                var.append(raw, j, 2); j += 2;
             } else if (j + 1 < n && raw[j] == '.' &&
                        // a method or routine name may be UNICODE: `"$n.&mööse()"`
                        // truncated at the ö, left the call uncommitted, and the
