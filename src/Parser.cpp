@@ -602,8 +602,8 @@ static InfixInfo classifyInfixUncached(const Token& t) {
                 if (it != kRBase.end()) { in.valid = true; in.lbp = it->second; return in; }
                 // …and a SYMBOLIC base (`RR-`, `RRR+`) takes that operator's own
                 // precedence; only the ONE-R symbolic form has its own reader.
-                if (i >= 1 && i < o.size() && !ascii::isalnum((unsigned char)o[i])) {
-                    Token t2 = t; t2.text = o.substr(i); t2.kind = Tok::Op;
+                if (i >= 1 && i < o.size() && (!ascii::isalnum((unsigned char)o[i]) || o[i] == 'Z' || o[i] == 'X')) {   // (and `RZ`, `RX+`: rakudo#6128)
+                    Token t2 = t; t2.text = o.substr(i); t2.kind = o[i] == 'Z' || o[i] == 'X' ? Tok::Ident : Tok::Op;
                     InfixInfo f = classifyInfix(t2);
                     if (f.valid && !f.isAssign) { f.op = o; return f; }
                 }
@@ -8386,7 +8386,7 @@ ExprPtr Parser::parsePrimary() {
                 "div", "mod", "gcd", "lcm", "min", "max", "minmax", "but", "does", "o",
             };
             bool identReduce = peek(1).kind == Tok::Ident && !peek(1).text.empty() &&
-                (peek(1).text == "Z" || peek(1).text == "X" ||
+                ((peek(1).text.find_first_not_of("RZX") == std::string::npos && peek(1).text.find_first_of("ZX") != std::string::npos) ||   // Z, X, [RZ] (rakudo#6128)
                  kReduceWordOps.count(peek(1).text) ||
                  userInfix_.count(peek(1).text) ||
                  // Z/X/R fused with a word op lex as one ident: [Zand] [Xor] [Rmax]

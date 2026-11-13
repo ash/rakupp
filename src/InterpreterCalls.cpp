@@ -4921,6 +4921,11 @@ bool reverseWordOp(const std::string& op) {
     // too; the one-R symbolic form is recognised by its own test at each call
     // site, which looks only at the character after the R.
     if (!ascii::isalnum((unsigned char)op[i])) return i >= 2;
+    // …and the R over a zip or a cross (rakudo#6128): `RZ`, `RX~`, `RZ+`, `RZcmp`
+    if (op[i] == 'Z' || op[i] == 'X') {
+        size_t j = i; while (j < op.size() && (op[j] == 'Z' || op[j] == 'X')) j++;
+        return j == op.size() || !ascii::isalnum((unsigned char)op[j]) || bases.count(op.substr(j)) > 0;
+    }
     return bases.count(op.substr(i)) > 0;
 }
 
