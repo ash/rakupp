@@ -571,9 +571,9 @@ static InfixInfo classifyInfixUncached(const Token& t) {
                 if (classifyInfix(inner).valid) { in.valid = true; in.lbp = BP_ZIP; return in; }
             }
         }
-        {   // stacked zip/cross metaops: XZ / ZZ / XX (optionally with a tight op after)
-            bool allZX = o.size() > 1;
-            for (char c : o) if (c != 'Z' && c != 'X') { allZX = false; break; }
+        {   // stacked zip/cross metaops: XZ / ZZ / XX, and over R: ZR (optionally with a tight op after)
+            const size_t zr = o.find_first_not_of("ZX");
+            bool allZX = o.size() > 1 && zr != 0 && (zr == std::string::npos || o.find_first_not_of('R', zr) == std::string::npos);
             if (allZX) { in.valid = true; in.lbp = BP_ZIP; return in; }
         }
         {   // Reverse metaop over a WORD-op base, which lexes as ONE identifier:
@@ -3254,9 +3254,9 @@ ExprPtr Parser::parseExpr(int minbp) {
             continue;
         }
 
-        // zip/cross metaoperator with a trailing tight op: Z=> Z+ X* Zeq XZ+ ...
-        bool zxStack = !in.op.empty();
-        for (char c : in.op) if (c != 'Z' && c != 'X') { zxStack = false; break; }
+        // zip/cross metaoperator with a trailing tight op: Z=> Z+ X* Zeq XZ+ ..., under R or over it: RZ+ ZR- (rakudo#6128)
+        const size_t zx0 = in.op.find_first_not_of('R'), zx1 = in.op.find_first_not_of("ZX", zx0 == std::string::npos ? 0 : zx0);
+        bool zxStack = zx0 != std::string::npos && zx1 != zx0 && (zx1 == std::string::npos || (zx0 == 0 && in.op.find_first_not_of('R', zx1) == std::string::npos));
         if (zxStack) {
             std::string meta;
             int metaToks = 2; // Z/X + the trailing op
