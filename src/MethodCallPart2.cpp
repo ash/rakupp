@@ -5164,7 +5164,7 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
             long long days = lt >= 0 ? lt / 86400 : -((-lt + 86399) / 86400);
             long long rem = lt - days * 86400;
             long long y, mo, d; daysToCivil(days, y, mo, d);
-            long long outSec = rem % 60 + leap;
+            long long outSec = leap ? sInt : rem % 60;   // a leap second stays one: the shift moves its minute (rakudo#2097)
             Value v = Value::makeHash(); v.hashKind = "DateTime";
             // a conversion keeps the formatter: `$dt.utc`, `.local`, `.clone`,
             // `.in-timezone`, `.later`, `.earlier` all stay formatted, as in Rakudo
