@@ -30,6 +30,30 @@ const host = {
     handleLines(h) { this.shut(h, 'lines'); if (h.kind === 'in') return this.stdinLines(); const rest = h.buf.slice(h.pos); h.pos = h.buf.length; return lines(rest); },
     handleSlurp(h) { this.shut(h, 'slurp'); if (h.kind === 'in') return this.stdinSlurp(); const rest = h.buf.slice(h.pos); h.pos = h.buf.length; return rest; },
     handleGetc(h) { this.shut(h, 'getc'); const inp = h.kind === 'in', t = inp ? this.stdinAll() : h.buf, i = inp ? this.stdinPos : h.pos; if (i >= t.length) return Nil; const g = firstGrapheme(t, i); if (inp) this.stdinPos += g.length; else h.pos += g.length; return g; },   // a grapheme, not a UTF-16 unit
+    // .read(n): bytes, from a byte cursor kept beside the text one. The raw
+    // bytes are the file's or stdin's own (a host that has none encodes the
+    // text), so input that is not UTF-8 survives; a text read in between moves
+    // the byte cursor to match. It read the whole rest as text, whatever n
+    // asked (Codex review 2026-11-14, finding 07).
+    stdinRaw() { return new TextEncoder().encode(this.stdinAll()); },
+    fileBytes(h) { return new TextEncoder().encode(h.buf || ''); },
+    handleRead(h, n) {
+        this.shut(h, 'read');
+        const inp = h.kind === 'in', text = inp ? this.stdinAll() : (h.buf || ''), tpos = inp ? this.stdinPos : (h.pos || 0);
+        if (!h.bytes) h.bytes = inp ? this.stdinRaw() : this.fileBytes(h);
+        if (h.bpos === undefined || h.tpos !== tpos) {   // the last byte offset whose decoding is tpos long (raw bytes, so not text re-encoded)
+            const dec = new TextDecoder(), len = b => dec.decode(h.bytes.subarray(0, b)).length;
+            let lo = 0, hi = h.bytes.length;
+            while (lo < hi) { const mid = (lo + hi + 1) >> 1; if (len(mid) <= tpos) lo = mid; else hi = mid - 1; }
+            h.bpos = lo;
+        }
+        const k = n === undefined ? h.bytes.length : Math.max(0, Number(toInt(n)));
+        const out = Array.from(h.bytes.subarray(h.bpos, h.bpos + k));
+        h.bpos += out.length;
+        h.tpos = new TextDecoder().decode(h.bytes.subarray(0, h.bpos)).length;
+        if (inp) this.stdinPos = h.tpos; else h.pos = h.tpos;
+        return mkList(out);
+    },
     handleEof(h) { if (h.kind === 'in') return this.stdinPos >= this.stdinAll().length; return h.pos >= h.buf.length; },
     handlePrint(h, s) { this.shut(h, 'print'); if (h.kind === 'out') { this.stdout(s); if (h.outBuffer === 0) this.flush(); return true; } if (h.kind === 'err') { this.stderr(s); return true; } h.out = (h.out || '') + s; if (h.out.length >= (h.outBuffer === undefined ? 65536 : h.outBuffer)) { this.appendFile(h.path, h.out); h.out = ''; } return true; },   // out-buffer: the size at which writes land; 0 is every write
     handleFlush(h) { if (h && h.kind !== 'out' && h.kind !== 'err' && h.out) { this.appendFile(h.path, h.out); h.out = ''; } if (h && h.kind === 'out') this.flush(); },
@@ -56,7 +80,10 @@ if (IS_NODE && nodeRequire) {
     const writeAll = (fd, s) => { const b = Buffer.from(s, 'utf8'); let off = 0; while (off < b.length) { try { off += fs.writeSync(fd, b, off, b.length - off); } catch (e) { if (e.code === 'EAGAIN') Atomics.wait(pause, 0, 0, 1); else if (e.code === 'EPIPE') return; else throw e; } } };
     host.writeOut = s => writeAll(1, s);
     host.writeErr = s => writeAll(2, s);
-    host.readStdin = () => { try { return fs.readFileSync(0, 'utf8'); } catch (e) { return ''; } };
+    let stdinBytes = null;   // read once, raw: .read hands out these bytes, text readers their decoding
+    host.stdinRaw = () => { if (stdinBytes === null) { try { stdinBytes = fs.readFileSync(0); } catch (e) { stdinBytes = Buffer.alloc(0); } } return stdinBytes; };
+    host.readStdin = () => host.stdinRaw().toString('utf8');
+    host.fileBytes = h => { if (h.kind === 'file-r' && h.path) { try { return fs.readFileSync(h.path); } catch (e) { } } return new TextEncoder().encode(h.buf || ''); };
     host.exit = code => { host.flush(); process.exit(code); };   // the program is over: a live interval or a poll must not keep the process alive
     // errno text the way strerror spells it, so a JS-hosted program's message is
     // the interpreter's message. Anything unmapped keeps node's own wording.
@@ -109,7 +136,9 @@ if (IS_NODE && nodeRequire) {
     const writeAll = (f, b) => { for (let o = 0; o < b.length; ) o += f.writeSync(b.subarray(o)); };   // (a short write, as node's)
     host.writeOut = s => writeAll(Deno.stdout, enc.encode(s));
     host.writeErr = s => writeAll(Deno.stderr, enc.encode(s));
-    host.readStdin = () => { const chunks = []; const buf = new Uint8Array(65536); for (;;) { const n = Deno.stdin.readSync(buf); if (n === null) break; chunks.push(buf.slice(0, n)); } return new TextDecoder().decode(concatBytes(chunks)); };
+    let stdinBytes = null;   // (raw, as node's: .read hands out these bytes)
+    host.stdinRaw = () => { if (stdinBytes === null) { const chunks = []; const buf = new Uint8Array(65536); for (;;) { const n = Deno.stdin.readSync(buf); if (n === null) break; chunks.push(buf.slice(0, n)); } stdinBytes = concatBytes(chunks); } return stdinBytes; };
+    host.readStdin = () => new TextDecoder().decode(host.stdinRaw());
     host.exit = code => { host.flush(); if (code) Deno.exit(code); };
     host.slurp = p => Deno.readTextFileSync(str(p));
     host.spurt = (p, c, ...a) => { const named = nm(a); Deno.writeTextFileSync(str(p), str(c), { append: truthy(named.get('append')) }); return true; };

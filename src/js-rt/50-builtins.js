@@ -204,20 +204,22 @@ function infix(op) { return OPS[op]; }
 function chrsOf(...v) { return chrs(mkList(v)); }
 function ordsOf(v) { return ords(v); }
 function ucfirst(s) { return tc(s); }
-function slurpB(...args) { return host.slurp(...args); }
-function spurtB(...args) { return host.spurt(...args); }
+// (an IO::Path argument made before a chdir names what it named then: ioFull)
+const atPath = ([p, ...r]) => [p instanceof RIOPath ? ioFull(p) : p, ...r];
+function slurpB(...args) { return host.slurp(...atPath(args)); }
+function spurtB(...args) { return host.spurt(...atPath(args)); }
 function linesB(...args) { return args.length === 0 || args[0] instanceof RNamed ? host.stdinLines() : lines(args[0]); }
 function get() { return host.stdinGet(); }
 function prompt(msg) { if (msg !== undefined) host.stdout(str(msg)); host.flush(); return host.stdinGet(); }
 function sleep(s) { host.sleep(toFloat(s === undefined ? Infinity : s)); return true; }
 function now() { return numResult(host.now()); }
 function time() { return Math.floor(host.now()); }
-function open(...args) { return host.open(...args); }
+function open(...args) { return host.open(...atPath(args)); }
 function close(h) { return host.close(h); }
-function mkdir(...a) { return host.mkdir(...a); }
-function rmdir(...a) { return host.rmdir(...a); }
-function unlink(...a) { return host.unlink(...a); }
-function dir(...a) { return host.dir(...a); }
+function mkdir(...a) { return host.mkdir(...atPath(a)); }
+function rmdir(...a) { return host.rmdir(...atPath(a)); }
+function unlink(...a) { return host.unlink(...atPath(a)); }
+function dir(...a) { return host.dir(...atPath(a)); }
 function chdir(...a) { return host.chdir(...a); }
 function shell(...a) { return host.shell(...a); }
 function run(...a) { return host.run(...a); }

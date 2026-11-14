@@ -3048,7 +3048,9 @@ function dateNew(ty, args) {
     return new RDate(ty, new Date(Date.UTC(g('year'), (named.has('month') ? g('month') : 1) - 1, named.has('day') ? g('day') : 1, g('hour'), g('minute'), g('second'))), fmt);
 }
 // --- IO shells; the host adapter (70-host.js) does the work ---------------------------
-class RIOPath { constructor(path, cwd) { this.path = path; this.cwd = cwd; } }
+// cwd: the $*CWD the path was made under, which a relative one keeps meaning
+// after a chdir, as in Rakudo (Codex review 2026-11-14, finding 09)
+class RIOPath { constructor(path, cwd) { this.path = path; this.cwd = cwd !== undefined ? cwd : (typeof host === 'object' && host ? host.cwd : undefined); } }
 class RIOHandle { constructor(kind, path) { this.kind = kind; this.path = path; this.buf = ''; this.pos = 0; this.eof = false; this.lines = null; } }
 
 Object.assign(R, {
@@ -3144,13 +3146,13 @@ function expmod(b, e, m) {
         if (r0 !== 1n) throw new RakuError('expmod: ' + big(b) + ' has no inverse modulo ' + mod);
         base = md(s0); ex = -ex;
     }
-    while (ex > 0n) { if (ex & 1n) res = res * base % mod; base = base * base % mod; ex >>= 1n; }
+)RKJS",
+R"RKJS(    while (ex > 0n) { if (ex & 1n) res = res * base % mod; base = base * base % mod; ex >>= 1n; }
     return normBig(res);
 }
 // Rat.base-repeating: (the digits up to the cycle, the cycle), as the
 // interpreter's: an integral value has no point, and past a million digits the
-)RKJS",
-R"RKJS(// call fails rather than cut the cycle short.
+// call fails rather than cut the cycle short.
 function baseRepeating(v, radix = 10) {
     const x = toNumeric(v);
     if (!(x instanceof RRat)) throw new RakuError(`No such method 'base-repeating' for invocant of type '${typeName(x)}'`, 'X::Method::NotFound');
@@ -3266,20 +3268,22 @@ function infix(op) { return OPS[op]; }
 function chrsOf(...v) { return chrs(mkList(v)); }
 function ordsOf(v) { return ords(v); }
 function ucfirst(s) { return tc(s); }
-function slurpB(...args) { return host.slurp(...args); }
-function spurtB(...args) { return host.spurt(...args); }
+// (an IO::Path argument made before a chdir names what it named then: ioFull)
+const atPath = ([p, ...r]) => [p instanceof RIOPath ? ioFull(p) : p, ...r];
+function slurpB(...args) { return host.slurp(...atPath(args)); }
+function spurtB(...args) { return host.spurt(...atPath(args)); }
 function linesB(...args) { return args.length === 0 || args[0] instanceof RNamed ? host.stdinLines() : lines(args[0]); }
 function get() { return host.stdinGet(); }
 function prompt(msg) { if (msg !== undefined) host.stdout(str(msg)); host.flush(); return host.stdinGet(); }
 function sleep(s) { host.sleep(toFloat(s === undefined ? Infinity : s)); return true; }
 function now() { return numResult(host.now()); }
 function time() { return Math.floor(host.now()); }
-function open(...args) { return host.open(...args); }
+function open(...args) { return host.open(...atPath(args)); }
 function close(h) { return host.close(h); }
-function mkdir(...a) { return host.mkdir(...a); }
-function rmdir(...a) { return host.rmdir(...a); }
-function unlink(...a) { return host.unlink(...a); }
-function dir(...a) { return host.dir(...a); }
+function mkdir(...a) { return host.mkdir(...atPath(a)); }
+function rmdir(...a) { return host.rmdir(...atPath(a)); }
+function unlink(...a) { return host.unlink(...atPath(a)); }
+function dir(...a) { return host.dir(...atPath(a)); }
 function chdir(...a) { return host.chdir(...a); }
 function shell(...a) { return host.shell(...a); }
 function run(...a) { return host.run(...a); }
@@ -3335,10 +3339,10 @@ function opRef(op) {
     return g;
 }
 function strBitOp(a, b, f) { const x = str(a), y = str(b); const n = Math.max(x.length, y.length); let o = ''; for (let i = 0; i < n; i++) o += String.fromCharCode(f(x.charCodeAt(i) || 0, y.charCodeAt(i) || 0)); return o; }
-const OP_IDENTITY = { '+': 0, '-': 0, '*': 1, '~': '', '&&': true, '||': false, 'and': true, 'or': false, 'min': Infinity, 'max': -Infinity, '+|': 0, '+&': -1, '+^': 0, 'gcd': 0, 'lcm': 1, '?|': false, '?&': true, '?^': false, 'xor': false, '**': 1, '(|)': undefined };
-function opFn(op) { let f = OPS[op]; if (!f && op[0] === '!' && OPS[op.slice(1)]) { const g = OPS[op.slice(1)]; f = (a, b) => !truthy(g(a, b)); }   // [!after]: the negated operator
 )RKJS",
-R"RKJS(    if (!f && op[0] === 'R' && OPS[op.slice(1)]) { const g = OPS[op.slice(1)]; f = (a, b) => g(b, a); }   // [R//]: the reversed operator
+R"RKJS(const OP_IDENTITY = { '+': 0, '-': 0, '*': 1, '~': '', '&&': true, '||': false, 'and': true, 'or': false, 'min': Infinity, 'max': -Infinity, '+|': 0, '+&': -1, '+^': 0, 'gcd': 0, 'lcm': 1, '?|': false, '?&': true, '?^': false, 'xor': false, '**': 1, '(|)': undefined };
+function opFn(op) { let f = OPS[op]; if (!f && op[0] === '!' && OPS[op.slice(1)]) { const g = OPS[op.slice(1)]; f = (a, b) => !truthy(g(a, b)); }   // [!after]: the negated operator
+    if (!f && op[0] === 'R' && OPS[op.slice(1)]) { const g = OPS[op.slice(1)]; f = (a, b) => g(b, a); }   // [R//]: the reversed operator
     if (!f) throw new RakuError(`operator ${op} is not in the JS core yet`); f.opName = op; f.rightAssoc = RIGHT_OPS.has(op); return f; }
 // [op] LIST — the reduce metaoperator, with chaining for comparison ops
 const CHAIN_OPS = new Set(['==', '!=', '<', '<=', '>', '>=', 'eq', 'ne', 'lt', 'le', 'gt', 'ge', '===', 'eqv', '=:=', '~~', 'before', 'after']);
@@ -3492,10 +3496,10 @@ M(T.Mu, {
     'is-lazy': (s) => s instanceof RSeq && s.lazy, iterator: (s) => iter(s)[Symbol.iterator](), hash: (s) => newHash(s), Hash: (s) => newHash(s), Map: (s) => newMap(s),
     map: (s, f) => mapList(s, f), flatmap: (s, f) => flatmapList(s, f), grep: (s, f) => grepList(s, f), first: (s, ...a) => firstOf(s, posArgs(a)[0], nm(a)), join: (s, sep) => joinList(s, sep), sort: (s, f) => sortList(s, f), reverse: (s) => reverseList(s),
     sum: (s) => sumList(s), min: (s, ...a) => nm(a).size ? minMaxAdv(s, posArgs(a)[0], false, nm(a)) : minOf(s, posArgs(a)[0]), max: (s, ...a) => nm(a).size ? minMaxAdv(s, posArgs(a)[0], true, nm(a)) : maxOf(s, posArgs(a)[0]), minmax: (s, ...a) => { const f = posArgs(a)[0] ?? nm(a).get('by'); return f ? range(minOf(s, f), maxOf(s, f)) : minmax(s); }, unique: (s, ...a) => uniqueList(s, nm(a).get('as') || nm(a).get('with')), squish: (s) => squishList(s),
-    head: (s, n) => headOf(s, n), tail: (s, n) => tailOf(s, n), keys: (s) => keysOf(s), values: (s) => valuesOf(s), kv: (s) => kvOf(s), pairs: (s) => pairsOf(s), antipairs: (s) => antipairsOf(s), invert: (s) => invertOf(s),
-    pick: (s, n) => pickFrom(s, n), roll: (s, n) => rollFrom(s, n), reduce: (s, f) => reduceList(f, s), produce: (s, f) => produceList(f, s), classify: (s, ...a) => classifyList(s, posArgs(a)[0], nm(a).get('as')), categorize: (s, ...a) => categorizeList(s, posArgs(a)[0], nm(a).get('as')), repeated: (s, ...a) => repeatedList(s, nm(a).get('as') || nm(a).get('with')),
 )RKJS",
-R"RKJS(    combinations: (s, n) => combinations(s, n), permutations: (s) => permutations(s), rotate: (s, n) => rotateList(s, n), rotor: (s, ...sp) => rotorList(s, ...sp), batch: (s, n) => batchList(s, n),
+R"RKJS(    head: (s, n) => headOf(s, n), tail: (s, n) => tailOf(s, n), keys: (s) => keysOf(s), values: (s) => valuesOf(s), kv: (s) => kvOf(s), pairs: (s) => pairsOf(s), antipairs: (s) => antipairsOf(s), invert: (s) => invertOf(s),
+    pick: (s, n) => pickFrom(s, n), roll: (s, n) => rollFrom(s, n), reduce: (s, f) => reduceList(f, s), produce: (s, f) => produceList(f, s), classify: (s, ...a) => classifyList(s, posArgs(a)[0], nm(a).get('as')), categorize: (s, ...a) => categorizeList(s, posArgs(a)[0], nm(a).get('as')), repeated: (s, ...a) => repeatedList(s, nm(a).get('as') || nm(a).get('with')),
+    combinations: (s, n) => combinations(s, n), permutations: (s) => permutations(s), rotate: (s, n) => rotateList(s, n), rotor: (s, ...sp) => rotorList(s, ...sp), batch: (s, n) => batchList(s, n),
     any: (s) => junction('any', s), all: (s) => junction('all', s), none: (s) => junction('none', s), one: (s) => junction('one', s),
     Set: (s) => toSetty(s, T.Set), SetHash: (s) => toSetty(s, T.SetHash), Bag: (s) => toSetty(s, T.Bag), BagHash: (s) => toSetty(s, T.BagHash), Mix: (s) => toSetty(s, T.Mix), MixHash: (s) => toSetty(s, T.MixHash),
     Numeric: (s) => toNumeric(s), Int: (s) => toInt(toNumeric(s)), Num: (s) => mkNum(toFloat(s)), Rat: (s) => { const n = toNumeric(s); return n instanceof RRat ? n : isIntVal(n) ? mkRat(big(n), 1n) : floatToRat(toFloat(n)); }, Real: (s) => toNumeric(s),
@@ -3566,10 +3570,10 @@ M(T.Rat, { Int: (s) => s.d === 0n ? failure(new RakuError('Attempt to divide by 
 M(T.List, {
     elems: (s) => s.a.length, end: (s) => s.a.length - 1, Str: (s) => str(s), gist: (s) => s.gist(), raku: (s) => s.raku(), Bool: (s) => s.a.length > 0, Int: (s) => s.a.length, Numeric: (s) => s.a.length, list: (s) => s, List: (s) => s.ty === T.List ? s : mkList(s.a.slice()),
     Array: (s) => s.ty === T.Array ? s : mkArray(s.a.slice()), 'is-lazy': (s) => false, 'push': (s, ...i) => pushTo(s, ...i), 'append': (s, ...i) => appendTo(s, ...i), 'pop': (s) => popFrom(s), 'shift': (s) => shiftFrom(s), 'unshift': (s, ...i) => unshiftTo(s, ...i), 'prepend': (s, ...i) => prependTo(s, ...i), 'splice': (s, ...a) => spliceArr(s, ...a),
-    'AT-POS': (s, i) => aget(s, i), 'ASSIGN-POS': (s, i, v) => aset(s, i, v), 'EXISTS-POS': (s, i) => aexists(s, i), 'DELETE-POS': (s, i) => adelete(s, i), 'Slip': (s) => mkSlip(s.a.slice()), 'Seq': (s) => mkSeq(s.a.slice()), 'flat': (s, ...a) => flat(s, truthy(nm(a).get('hammer'))), 'eager': (s) => s, 'sort': (s, f) => sortList(s, f), 'join': (s, sep) => joinList(s, sep),
-    'Hash': (s) => newHash(s), 'hash': (s) => newHash(s), 'Bag': (s) => toSetty(s, T.Bag), 'Set': (s) => toSetty(s, T.Set), 'Mix': (s) => toSetty(s, T.Mix), 'BagHash': (s) => toSetty(s, T.BagHash), 'SetHash': (s) => toSetty(s, T.SetHash), 'MixHash': (s) => toSetty(s, T.MixHash),
 )RKJS",
-R"RKJS(    'clone': (s) => new RList(s.a.slice(), s.ty), 'iterator': (s) => s.a[Symbol.iterator](), 'of': (s) => s.of || T.Mu, 'default': (s) => s.dflt === undefined ? Any : s.dflt, 'is-lazy': (s) => !!s.src, 'Capture': (s) => new RCapture(s.a.slice()), 'shape': (s) => mkList([s.a.length]), 'keys': (s) => keysOf(s), 'sum': (s) => sumList(s), 'map': (s, f) => mapList(s, f),
+R"RKJS(    'AT-POS': (s, i) => aget(s, i), 'ASSIGN-POS': (s, i, v) => aset(s, i, v), 'EXISTS-POS': (s, i) => aexists(s, i), 'DELETE-POS': (s, i) => adelete(s, i), 'Slip': (s) => mkSlip(s.a.slice()), 'Seq': (s) => mkSeq(s.a.slice()), 'flat': (s, ...a) => flat(s, truthy(nm(a).get('hammer'))), 'eager': (s) => s, 'sort': (s, f) => sortList(s, f), 'join': (s, sep) => joinList(s, sep),
+    'Hash': (s) => newHash(s), 'hash': (s) => newHash(s), 'Bag': (s) => toSetty(s, T.Bag), 'Set': (s) => toSetty(s, T.Set), 'Mix': (s) => toSetty(s, T.Mix), 'BagHash': (s) => toSetty(s, T.BagHash), 'SetHash': (s) => toSetty(s, T.SetHash), 'MixHash': (s) => toSetty(s, T.MixHash),
+    'clone': (s) => new RList(s.a.slice(), s.ty), 'iterator': (s) => s.a[Symbol.iterator](), 'of': (s) => s.of || T.Mu, 'default': (s) => s.dflt === undefined ? Any : s.dflt, 'is-lazy': (s) => !!s.src, 'Capture': (s) => new RCapture(s.a.slice()), 'shape': (s) => mkList([s.a.length]), 'keys': (s) => keysOf(s), 'sum': (s) => sumList(s), 'map': (s, f) => mapList(s, f),
 });
 M(T.Seq, { elems: (s) => s.elems(), Bool: (s) => !s.isEmpty(), gist: (s) => s.gist(), raku: (s) => s.raku(), 'is-lazy': (s) => s.lazy, list: (s) => s.list(), List: (s) => s.list(), cache: (s) => s instanceof RSeq ? s.list() : mkList(s.arr()), eager: (s) => s instanceof RSeq ? s.cache() : s, Array: (s) => newArray(s), 'lazy': (s) => lazyOf(s), 'Str': (s) => str(s), 'Seq': (s) => s, 'iterator': (s) => s[Symbol.iterator](), 'Slip': (s) => mkSlip(s.arr().slice()), 'clone': (s) => s });
 M(T.Range, { elems: (s) => s.elemsOrInf(),
@@ -3596,11 +3600,15 @@ M(T.Setty, { elems: (s) => s.m.size, total: (s) => s.total(), keys: (s) => mkSeq
 M(T.Version, { Str: (s) => s.Str(), gist: (s) => 'v' + s.Str(), raku: (s) => /^\d/.test(s.Str()) ? 'v' + s.Str() : "Version.new('" + s.Str() + "')", parts: (s) => mkList(s.parts), 'ACCEPTS': (s, v) => v instanceof RVersion && v.accepts(s), 'Bool': (s) => true });
 M(T.Capture, { list: (s) => mkList(s.pos), hash: (s) => namedHash(s.named), elems: (s) => s.pos.length, gist: (s) => s.gist(), raku: (s) => s.raku(), Str: (s) => s.Str(), 'AT-POS': (s, i) => aget(s, i), 'AT-KEY': (s, k) => hget(s, k), 'keys': (s) => mkList(Array.from({ length: s.pos.length }, (_, i) => i).concat(Array.from(s.named.keys()))), 'Capture': (s) => s, 'Bool': (s) => s.pos.length > 0 || s.named.size > 0 });
 M(T.Complex, { re: (s) => mkNum(s.re), im: (s) => mkNum(s.im), Str: (s) => s.Str(), gist: (s) => s.Str(), raku: (s) => '<' + s.Str() + '>', abs: (s) => numResult(Math.hypot(s.re, s.im)), 'polar': (s) => mkList([numResult(Math.hypot(s.re, s.im)), numResult(Math.atan2(s.im, s.re))]), 'conj': (s) => new RComplex(s.re, -s.im), 'Complex': (s) => s, 'Bool': (s) => s.re !== 0 || s.im !== 0, 'sqrt': (s) => { const r = Math.hypot(s.re, s.im); const re = Math.sqrt((r + s.re) / 2), im = Math.sign(s.im || 1) * Math.sqrt((r - s.re) / 2); return new RComplex(re, im); }, 'reals': (s) => mkList([mkNum(s.re), mkNum(s.im)]), 'Numeric': (s) => s, 'narrow': (s) => s.im === 0 ? mkNum(s.re) : s });
-M(T.Date, { Str: (s) => s.Str(), gist: (s) => s.Str(), raku: (s) => s.raku(), Int: (s) => s.ty === T.Date ? s.daycount() : Math.floor(s.d.getTime() / 1000), year: (s) => s.d.getUTCFullYear(), month: (s) => s.d.getUTCMonth() + 1, day: (s) => s.d.getUTCDate(), 'day-of-month': (s) => s.d.getUTCDate(), 'day-of-week': (s) => (s.d.getUTCDay() + 6) % 7 + 1, 'day-of-year': (s) => Math.floor((s.d - Date.UTC(s.d.getUTCFullYear(), 0, 1)) / 86400000) + 1, 'days-in-month': (s) => new Date(Date.UTC(s.d.getUTCFullYear(), s.d.getUTCMonth() + 1, 0)).getUTCDate(), 'is-leap-year': (s) => { const y = s.d.getUTCFullYear(); return (y % 4 === 0 && y % 100 !== 0) || y % 400 === 0; }, later: (s, ...a) => { const n = nm(a); const d = new Date(s.d); if (n.has('days') || n.has('day')) d.setUTCDate(d.getUTCDate() + Number(toInt(n.get('days') ?? n.get('day')))); if (n.has('months') || n.has('month')) d.setUTCMonth(d.getUTCMonth() + Number(toInt(n.get('months') ?? n.get('month')))); if (n.has('years') || n.has('year')) d.setUTCFullYear(d.getUTCFullYear() + Number(toInt(n.get('years') ?? n.get('year')))); if (n.has('hours') || n.has('hour')) d.setUTCHours(d.getUTCHours() + Number(toInt(n.get('hours') ?? n.get('hour')))); if (n.has('minutes') || n.has('minute')) d.setUTCMinutes(d.getUTCMinutes() + Number(toInt(n.get('minutes') ?? n.get('minute')))); if (n.has('seconds') || n.has('second')) d.setUTCSeconds(d.getUTCSeconds() + Number(toInt(n.get('seconds') ?? n.get('second')))); return new RDate(s.ty, d, s.fmt); }, earlier: (s, ...a) => { const n = nm(a); const m2 = new Map(); for (const [k, v] of n) m2.set(k, neg(v)); return mc(s, 'later', new RNamed(m2)); }, 'succ': (s) => { const d = new Date(s.d); d.setUTCDate(d.getUTCDate() + 1); return new RDate(s.ty, d, s.fmt); }, 'pred': (s) => { const d = new Date(s.d); d.setUTCDate(d.getUTCDate() - 1); return new RDate(s.ty, d, s.fmt); }, 'daycount': (s) => Math.floor(s.d.getTime() / 86400000) + 40587, 'Date': (s) => new RDate(T.Date, new Date(Date.UTC(s.d.getUTCFullYear(), s.d.getUTCMonth(), s.d.getUTCDate())), s.ty === T.Date ? s.fmt : undefined), 'DateTime': (s) => new RDate(T.DateTime, new Date(s.d)), hour: (s) => s.d.getUTCHours(), minute: (s) => s.d.getUTCMinutes(), second: (s) => s.d.getUTCSeconds(), 'posix': (s) => Math.floor(s.d.getTime() / 1000), 'Instant': (s) => numResult(s.d.getTime() / 1000), 'yyyy-mm-dd': (s) => new RDate(T.Date, new Date(Date.UTC(s.d.getUTCFullYear(), s.d.getUTCMonth(), s.d.getUTCDate()))).iso(), 'hh-mm-ss': (s) => s.iso().slice(11, 19), 'Numeric': (s) => s.numeric(), 'truncated-to': (s, u) => { const d = new Date(s.d); const un = str(u); if (un === 'month') d.setUTCDate(1); if (un === 'year') { d.setUTCMonth(0); d.setUTCDate(1); } if (un === 'day' || un === 'month' || un === 'year') d.setUTCHours(0, 0, 0, 0); return new RDate(s.ty, d, s.fmt); }, 'in-timezone': (s) => s, 'utc': (s) => s, 'local': (s) => s, 'timezone': (s) => 0, 'offset': (s) => 0, 'week-number': (s) => { const d = new Date(Date.UTC(s.d.getUTCFullYear(), s.d.getUTCMonth(), s.d.getUTCDate())); const day = d.getUTCDay() || 7; d.setUTCDate(d.getUTCDate() + 4 - day); const y0 = new Date(Date.UTC(d.getUTCFullYear(), 0, 1)); return Math.ceil(((d - y0) / 86400000 + 1) / 7); }, 'weekday-of-month': (s) => Math.floor((s.d.getUTCDate() - 1) / 7) + 1, 'clone': (s, ...a) => { const n = nm(a); const d = new Date(s.d); if (n.has('year')) d.setUTCFullYear(Number(toInt(n.get('year')))); if (n.has('month')) d.setUTCMonth(Number(toInt(n.get('month'))) - 1); if (n.has('day')) d.setUTCDate(Number(toInt(n.get('day')))); return new RDate(s.ty, d, n.has('formatter') ? n.get('formatter') : s.fmt); }, 'Bool': (s) => true, 'ACCEPTS': (s, v) => v instanceof RDate && v.d.getTime() === s.d.getTime() });
-Object.assign(T.DateTime.methods, T.Date.methods);
 )RKJS",
-R"RKJS(M(T['IO::Path'], { Str: (s) => s.path, gist: (s) => strLit(s.path) + '.IO', raku: (s) => 'IO::Path.new(' + strLit(s.path) + ')', IO: (s) => s, 'Bool': (s) => true, absolute: (s) => host.absolute(s.path), relative: (s, ...a) => { const base = posArgs(a).length ? str(posArgs(a)[0]) : host.cwd; const abs = host.absolute(s.path); const b = host.absolute(base).replace(/\/+$/, '') + '/'; return abs.startsWith(b) ? abs.slice(b.length) : s.path; }, basename: (s) => s.path.replace(/\/+$/, '').split('/').pop(), extension: (s) => { const b = s.path.split('/').pop(); const i = b.lastIndexOf('.'); return i > 0 ? b.slice(i + 1) : ''; }, parent: (s) => { const p = s.path.replace(/\/+$/, ''); const i = p.lastIndexOf('/'); return new RIOPath(i < 0 ? '.' : i === 0 ? '/' : p.slice(0, i)); }, dirname: (s) => { const p = s.path.replace(/\/+$/, ''); const i = p.lastIndexOf('/'); return i < 0 ? '.' : i === 0 ? '/' : p.slice(0, i); }, add: (s, p) => new RIOPath(s.path.replace(/\/+$/, '') + '/' + str(p)), child: (s, p) => new RIOPath(s.path.replace(/\/+$/, '') + '/' + str(p)), 'e': (s) => host.exists(s.path), 'f': (s) => host.isFile(s.path), 'd': (s) => host.isDir(s.path), 'r': (s) => host.exists(s.path), 'w': (s) => host.exists(s.path), 'x': (s) => host.exists(s.path), 's': (s) => host.size(s.path), 'z': (s) => host.size(s.path) === 0, 'slurp': (s, ...a) => host.slurp(s.path, ...a), 'spurt': (s, ...a) => host.spurt(s.path, ...a), 'lines': (s, ...a) => lines(host.slurp(s.path)), 'words': (s) => words(host.slurp(s.path)), 'open': (s, ...a) => host.open(s.path, ...a), 'dir': (s, ...a) => host.dir(s.path, ...a), 'mkdir': (s) => host.mkdir(s.path), 'rmdir': (s) => host.rmdir(s.path), 'unlink': (s) => host.unlink(s.path), 'copy': (s, t) => host.copy(s.path, str(t)), 'rename': (s, t) => host.rename(s.path, str(t)), 'move': (s, t) => host.rename(s.path, str(t)), 'modified': (s) => host.modified(s.path), 'resolve': (s) => new RIOPath(host.absolute(s.path)), 'is-absolute': (s) => s.path.startsWith('/'), 'is-relative': (s) => !s.path.startsWith('/'), 'chars': (s) => chars(s.path), 'parts': (s) => hashFrom([['basename', s.path.split('/').pop()], ['dirname', s.path.includes('/') ? s.path.slice(0, s.path.lastIndexOf('/')) : '.'], ['volume', '']]), 'SPEC': (s) => T.IO, 'path': (s) => s.path, 'touch': (s) => host.spurt(s.path, '', new RNamed(new Map([['append', true]]))), 'ACCEPTS': (s, v) => str(v) === s.path, 'succ': (s) => { const i = s.path.lastIndexOf('/') + 1, dir = s.path.slice(0, i), base = s.path.slice(i), d = base.lastIndexOf('.'); return new RIOPath(dir + (d > 0 ? strSucc(base.slice(0, d)) + base.slice(d) : strSucc(base)), s.cwd); }, 'comb': (s, ...a) => comb(host.slurp(s.path), ...a), 'split': (s, ...a) => strSplit(host.slurp(s.path), ...a) });
-M(T['IO::Handle'], { Str: (s) => s.path || '', gist: (s) => 'IO::Handle<' + (s.path || '') + '>', get: (s) => host.handleGet(s), lines: (s) => host.handleLines(s), slurp: (s) => host.handleSlurp(s), 'slurp-rest': (s) => host.handleSlurp(s), print: (s, ...a) => host.handlePrint(s, a.map(str).join('')), say: (s, ...a) => host.handlePrint(s, a.map(gist).join('') + '\n'), put: (s, ...a) => host.handlePrint(s, a.map(str).join('') + '\n'), printf: (s, f, ...a) => host.handlePrint(s, sprintf(f, ...a)), 'print-nl': (s) => host.handlePrint(s, '\n'), 'close': (s) => host.close(s), 'eof': (s) => host.handleEof(s), 'flush': (s) => { host.handleFlush(s); host.flush(); return true; }, 'opened': (s) => !s.closed, 'words': (s) => words(host.handleSlurp(s)), 'comb': (s, ...a) => comb(host.handleSlurp(s), ...a), 'getc': (s) => host.handleGetc(s), 'read': (s, n) => strEncode(host.handleSlurp(s)), 'write': (s, b) => host.handlePrint(s, chrs(b)), 'nl-in': (s) => '\n', 'nl-out': (s) => '\n', 'path': (s) => new RIOPath(s.path || ''), 'IO': (s) => new RIOPath(s.path || ''), 't': (s) => host.isTTY(s), 'encoding': (s) => 'utf8', 'Bool': (s) => true, 'Supply': (s) => mkList(arr(host.handleLines(s))), 'seek': (s, p) => { s.pos = Number(toInt(p)); return true; }, 'tell': (s) => s.pos, 'lock': (s) => true, 'unlock': (s) => true, 'spurt': (s, ...a) => { host.handlePrint(s, str(posArgs(a)[0])); if (truthy(nm(a).get('close'))) host.close(s); return true; } });
+R"RKJS(M(T.Date, { Str: (s) => s.Str(), gist: (s) => s.Str(), raku: (s) => s.raku(), Int: (s) => s.ty === T.Date ? s.daycount() : Math.floor(s.d.getTime() / 1000), year: (s) => s.d.getUTCFullYear(), month: (s) => s.d.getUTCMonth() + 1, day: (s) => s.d.getUTCDate(), 'day-of-month': (s) => s.d.getUTCDate(), 'day-of-week': (s) => (s.d.getUTCDay() + 6) % 7 + 1, 'day-of-year': (s) => Math.floor((s.d - Date.UTC(s.d.getUTCFullYear(), 0, 1)) / 86400000) + 1, 'days-in-month': (s) => new Date(Date.UTC(s.d.getUTCFullYear(), s.d.getUTCMonth() + 1, 0)).getUTCDate(), 'is-leap-year': (s) => { const y = s.d.getUTCFullYear(); return (y % 4 === 0 && y % 100 !== 0) || y % 400 === 0; }, later: (s, ...a) => { const n = nm(a); const d = new Date(s.d); if (n.has('days') || n.has('day')) d.setUTCDate(d.getUTCDate() + Number(toInt(n.get('days') ?? n.get('day')))); if (n.has('months') || n.has('month')) d.setUTCMonth(d.getUTCMonth() + Number(toInt(n.get('months') ?? n.get('month')))); if (n.has('years') || n.has('year')) d.setUTCFullYear(d.getUTCFullYear() + Number(toInt(n.get('years') ?? n.get('year')))); if (n.has('hours') || n.has('hour')) d.setUTCHours(d.getUTCHours() + Number(toInt(n.get('hours') ?? n.get('hour')))); if (n.has('minutes') || n.has('minute')) d.setUTCMinutes(d.getUTCMinutes() + Number(toInt(n.get('minutes') ?? n.get('minute')))); if (n.has('seconds') || n.has('second')) d.setUTCSeconds(d.getUTCSeconds() + Number(toInt(n.get('seconds') ?? n.get('second')))); return new RDate(s.ty, d, s.fmt); }, earlier: (s, ...a) => { const n = nm(a); const m2 = new Map(); for (const [k, v] of n) m2.set(k, neg(v)); return mc(s, 'later', new RNamed(m2)); }, 'succ': (s) => { const d = new Date(s.d); d.setUTCDate(d.getUTCDate() + 1); return new RDate(s.ty, d, s.fmt); }, 'pred': (s) => { const d = new Date(s.d); d.setUTCDate(d.getUTCDate() - 1); return new RDate(s.ty, d, s.fmt); }, 'daycount': (s) => Math.floor(s.d.getTime() / 86400000) + 40587, 'Date': (s) => new RDate(T.Date, new Date(Date.UTC(s.d.getUTCFullYear(), s.d.getUTCMonth(), s.d.getUTCDate())), s.ty === T.Date ? s.fmt : undefined), 'DateTime': (s) => new RDate(T.DateTime, new Date(s.d)), hour: (s) => s.d.getUTCHours(), minute: (s) => s.d.getUTCMinutes(), second: (s) => s.d.getUTCSeconds(), 'posix': (s) => Math.floor(s.d.getTime() / 1000), 'Instant': (s) => numResult(s.d.getTime() / 1000), 'yyyy-mm-dd': (s) => new RDate(T.Date, new Date(Date.UTC(s.d.getUTCFullYear(), s.d.getUTCMonth(), s.d.getUTCDate()))).iso(), 'hh-mm-ss': (s) => s.iso().slice(11, 19), 'Numeric': (s) => s.numeric(), 'truncated-to': (s, u) => { const d = new Date(s.d); const un = str(u); if (un === 'month') d.setUTCDate(1); if (un === 'year') { d.setUTCMonth(0); d.setUTCDate(1); } if (un === 'day' || un === 'month' || un === 'year') d.setUTCHours(0, 0, 0, 0); return new RDate(s.ty, d, s.fmt); }, 'in-timezone': (s) => s, 'utc': (s) => s, 'local': (s) => s, 'timezone': (s) => 0, 'offset': (s) => 0, 'week-number': (s) => { const d = new Date(Date.UTC(s.d.getUTCFullYear(), s.d.getUTCMonth(), s.d.getUTCDate())); const day = d.getUTCDay() || 7; d.setUTCDate(d.getUTCDate() + 4 - day); const y0 = new Date(Date.UTC(d.getUTCFullYear(), 0, 1)); return Math.ceil(((d - y0) / 86400000 + 1) / 7); }, 'weekday-of-month': (s) => Math.floor((s.d.getUTCDate() - 1) / 7) + 1, 'clone': (s, ...a) => { const n = nm(a); const d = new Date(s.d); if (n.has('year')) d.setUTCFullYear(Number(toInt(n.get('year')))); if (n.has('month')) d.setUTCMonth(Number(toInt(n.get('month'))) - 1); if (n.has('day')) d.setUTCDate(Number(toInt(n.get('day')))); return new RDate(s.ty, d, n.has('formatter') ? n.get('formatter') : s.fmt); }, 'Bool': (s) => true, 'ACCEPTS': (s, v) => v instanceof RDate && v.d.getTime() === s.d.getTime() });
+Object.assign(T.DateTime.methods, T.Date.methods);
+// A relative path made before a chdir still names what it named then: resolved
+// against the cwd it was made under, and only then, so every other path (and the
+// handle opened from it) keeps its spelling.
+const ioFull = s => s.cwd && s.cwd !== host.cwd && !s.path.startsWith('/') ? s.cwd.replace(/\/+$/, '') + '/' + s.path : s.path;
+M(T['IO::Path'], { Str: (s) => s.path, gist: (s) => strLit(s.path) + '.IO', raku: (s) => 'IO::Path.new(' + strLit(s.path) + ')', IO: (s) => s, 'Bool': (s) => true, absolute: (s) => host.absolute(ioFull(s)), relative: (s, ...a) => { const base = posArgs(a).length ? str(posArgs(a)[0]) : (s.cwd || host.cwd); const abs = host.absolute(ioFull(s)); const b = host.absolute(base).replace(/\/+$/, '') + '/'; return abs.startsWith(b) ? abs.slice(b.length) : s.path; }, basename: (s) => s.path.replace(/\/+$/, '').split('/').pop(), extension: (s) => { const b = s.path.split('/').pop(); const i = b.lastIndexOf('.'); return i > 0 ? b.slice(i + 1) : ''; }, parent: (s) => { const p = s.path.replace(/\/+$/, ''); const i = p.lastIndexOf('/'); return new RIOPath(i < 0 ? '.' : i === 0 ? '/' : p.slice(0, i), s.cwd); }, dirname: (s) => { const p = s.path.replace(/\/+$/, ''); const i = p.lastIndexOf('/'); return i < 0 ? '.' : i === 0 ? '/' : p.slice(0, i); }, add: (s, p) => new RIOPath(s.path.replace(/\/+$/, '') + '/' + str(p), s.cwd), child: (s, p) => new RIOPath(s.path.replace(/\/+$/, '') + '/' + str(p), s.cwd), 'e': (s) => host.exists(ioFull(s)), 'f': (s) => host.isFile(ioFull(s)), 'd': (s) => host.isDir(ioFull(s)), 'r': (s) => host.exists(ioFull(s)), 'w': (s) => host.exists(ioFull(s)), 'x': (s) => host.exists(ioFull(s)), 's': (s) => host.size(ioFull(s)), 'z': (s) => host.size(ioFull(s)) === 0, 'slurp': (s, ...a) => host.slurp(ioFull(s), ...a), 'spurt': (s, ...a) => host.spurt(ioFull(s), ...a), 'lines': (s, ...a) => lines(host.slurp(ioFull(s))), 'words': (s) => words(host.slurp(ioFull(s))), 'open': (s, ...a) => host.open(ioFull(s), ...a), 'dir': (s, ...a) => host.dir(ioFull(s), ...a), 'mkdir': (s) => host.mkdir(ioFull(s)), 'rmdir': (s) => host.rmdir(ioFull(s)), 'unlink': (s) => host.unlink(ioFull(s)), 'copy': (s, t) => host.copy(ioFull(s), str(t)), 'rename': (s, t) => host.rename(ioFull(s), str(t)), 'move': (s, t) => host.rename(ioFull(s), str(t)), 'modified': (s) => host.modified(ioFull(s)), 'resolve': (s) => new RIOPath(host.absolute(ioFull(s))), 'is-absolute': (s) => s.path.startsWith('/'), 'is-relative': (s) => !s.path.startsWith('/'), 'chars': (s) => chars(s.path), 'parts': (s) => hashFrom([['basename', s.path.split('/').pop()], ['dirname', s.path.includes('/') ? s.path.slice(0, s.path.lastIndexOf('/')) : '.'], ['volume', '']]), 'SPEC': (s) => T.IO, 'path': (s) => s.path, 'touch': (s) => host.spurt(ioFull(s), '', new RNamed(new Map([['append', true]]))), 'ACCEPTS': (s, v) => str(v) === s.path, 'succ': (s) => { const i = s.path.lastIndexOf('/') + 1, dir = s.path.slice(0, i), base = s.path.slice(i), d = base.lastIndexOf('.'); return new RIOPath(dir + (d > 0 ? strSucc(base.slice(0, d)) + base.slice(d) : strSucc(base)), s.cwd); }, 'comb': (s, ...a) => comb(host.slurp(ioFull(s)), ...a), 'split': (s, ...a) => strSplit(host.slurp(ioFull(s)), ...a) });
+M(T['IO::Handle'], { Str: (s) => s.path || '', gist: (s) => 'IO::Handle<' + (s.path || '') + '>', get: (s) => host.handleGet(s), lines: (s) => host.handleLines(s), slurp: (s) => host.handleSlurp(s), 'slurp-rest': (s) => host.handleSlurp(s), print: (s, ...a) => host.handlePrint(s, a.map(str).join('')), say: (s, ...a) => host.handlePrint(s, a.map(gist).join('') + '\n'), put: (s, ...a) => host.handlePrint(s, a.map(str).join('') + '\n'), printf: (s, f, ...a) => host.handlePrint(s, sprintf(f, ...a)), 'print-nl': (s) => host.handlePrint(s, '\n'), 'close': (s) => host.close(s), 'eof': (s) => host.handleEof(s), 'flush': (s) => { host.handleFlush(s); host.flush(); return true; }, 'opened': (s) => !s.closed, 'words': (s) => words(host.handleSlurp(s)), 'comb': (s, ...a) => comb(host.handleSlurp(s), ...a), 'getc': (s) => host.handleGetc(s), 'read': (s, n) => host.handleRead(s, n), 'write': (s, b) => host.handlePrint(s, chrs(b)), 'nl-in': (s) => '\n', 'nl-out': (s) => '\n', 'path': (s) => new RIOPath(s.path || ''), 'IO': (s) => new RIOPath(s.path || ''), 't': (s) => host.isTTY(s), 'encoding': (s) => 'utf8', 'Bool': (s) => true, 'Supply': (s) => mkList(arr(host.handleLines(s))), 'seek': (s, p) => { s.pos = Number(toInt(p)); return true; }, 'tell': (s) => s.pos, 'lock': (s) => true, 'unlock': (s) => true, 'spurt': (s, ...a) => { host.handlePrint(s, str(posArgs(a)[0])); if (truthy(nm(a).get('close'))) host.close(s); return true; } });
 
 // type-object methods (Int.new, Str.new, Date.today, ...)
 const TYPE_METHODS = {
@@ -3670,7 +3678,8 @@ function mc(inv, name, ...args) {
     if (inv instanceof REnum) { const em = ENUM_METHODS[name]; if (em) return em(inv, ...args); const um = ty.findUser(name); if (um) return um(inv, ...args); return mc(inv.val, name, ...args); }
     if (inv instanceof RObj && (name === 'parse' || name === 'subparse') && inv.ty.mro.some(t => t.rules)) return grammarParse(inv.ty, args[0], args, name === 'subparse');   // Grammar.new.parse
     if (inv instanceof RakuError && inv.payload && Object.prototype.hasOwnProperty.call(inv.payload, name)) return inv.payload[name];   // an exception's own fields (.method, .typename, …)
-    // $*VM / $*KERNEL / $*DISTRO carry their fields in a Hash here, as they do in
+)RKJS",
+R"RKJS(    // $*VM / $*KERNEL / $*DISTRO carry their fields in a Hash here, as they do in
     // the interpreter, so a method call on one had nothing to resolve against and
     // `$*VM.name` — the spelling every program uses, and the only one Rakudo
     // accepts — died with "No such method 'name' for invocant of type 'Hash'".
@@ -3711,8 +3720,7 @@ function hyperMethod(inv, name, ...args) {
 const CODE_METHODS = {
     arity: (f) => f.arity !== undefined ? f.arity : f.length, count: (f) => f.count !== undefined ? f.count : (f.arity !== undefined ? f.arity : f.length),
     name: (f) => f.rname || '', signature: (f) => new RSig(f), assuming: (f, ...pre) => assumingCall(f, ...pre), 'WHAT': (f) => f.rtype || T.Block, 'gist': (f) => gist(f), 'raku': (f) => raku(f), 'Str': (f) => str(f),
-)RKJS",
-R"RKJS(    'Bool': () => true, 'defined': () => true, 'so': () => true, 'not': () => false, 'call': (f, ...a) => f(...a), 'CALL-ME': (f, ...a) => f(...a), 'clone': (f) => f, 'candidates': (f) => mkList(f.candidates || [f]), 'cando': (f) => mkList([f]), 'of': (f) => T.Mu, 'returns': (f) => T.Mu, 'is-lazy': () => false, 'elems': () => 1, 'list': (f) => mkList([f]), 'item': (f) => f, 'WHICH': (f) => 'Code|' + objId(f), 'ACCEPTS': (f, v) => truthy(f(v)), 'package': (f) => T.Any, 'file': (f) => '', 'line': (f) => 0, 'multi': (f) => !!f.candidates, 'WHY': () => Nil, 'map': (f, g) => mapList(mkList([f]), g), 'flatmap': (f, g) => flatmapList(mkList([f]), g), 'join': (f, s) => str(f), 'wrap': (f, w) => { const orig = f; const wrapped = (...a) => w(...a); return wrapped; },
+    'Bool': () => true, 'defined': () => true, 'so': () => true, 'not': () => false, 'call': (f, ...a) => f(...a), 'CALL-ME': (f, ...a) => f(...a), 'clone': (f) => f, 'candidates': (f) => mkList(f.candidates || [f]), 'cando': (f) => mkList([f]), 'of': (f) => T.Mu, 'returns': (f) => T.Mu, 'is-lazy': () => false, 'elems': () => 1, 'list': (f) => mkList([f]), 'item': (f) => f, 'WHICH': (f) => 'Code|' + objId(f), 'ACCEPTS': (f, v) => truthy(f(v)), 'package': (f) => T.Any, 'file': (f) => '', 'line': (f) => 0, 'multi': (f) => !!f.candidates, 'WHY': () => Nil, 'map': (f, g) => mapList(mkList([f]), g), 'flatmap': (f, g) => flatmapList(mkList([f]), g), 'join': (f, s) => str(f), 'wrap': (f, w) => { const orig = f; const wrapped = (...a) => w(...a); return wrapped; },
 };
 const ENUM_METHODS = {
     key: (e) => e.key, value: (e) => e.val, kv: (e) => mkList([e.key, e.val]), pair: (e) => pair(e.key, e.val), Str: (e) => str(e), gist: (e) => e.key, raku: (e) => raku(e), Int: (e) => toInt(e.val), Numeric: (e) => e.val, 'enums': (e) => { const h = new RHash(); for (const x of e.ty.enumValues) h.m.set(x.key, x.val); return h; },
@@ -3797,7 +3805,8 @@ function rangeRand(s) {
 }
 M(T['IO::Handle'], { 'out-buffer': (s) => s.outBuffer === undefined ? (s.kind === 'out' || s.kind === 'err' ? 0 : 8192) : s.outBuffer });   // a file is buffered by default; the standard streams are not
 // a Hash's min/max go by value: the pair, or with :v the value, :k the key, :kv both, :p the pair
-function minMaxHash(h, isMax, named) {
+)RKJS",
+R"RKJS(function minMaxHash(h, isMax, named) {
     const ps = arr(pairsOf(h)); let best = null, ties = [];
     const byValue = named && named.size;   // the adverbs compare values; the bare form compares whole pairs
     for (const p of ps) { const c = best ? (byValue ? (isMax ? cmpNum(p.v, best.v) : -cmpNum(p.v, best.v)) : (isMax ? cmpNum(p, best) : -cmpNum(p, best))) : 1; if (c > 0) { best = p; ties = [p]; } else if (c === 0) ties.push(p); }
@@ -3837,12 +3846,35 @@ const host = {
     slurp(p, ...a) { return this.noFs('slurp'); }, spurt() { return this.noFs('spurt'); }, exists() { return false; }, isFile() { return false; }, isDir() { return false; }, size() { return 0; },
     open() { return this.noFs('open'); }, close(h) { return true; }, dir() { return this.noFs('dir'); }, mkdir() { return this.noFs('mkdir'); }, rmdir() { return this.noFs('rmdir'); }, unlink() { return this.noFs('unlink'); }, copy() { return this.noFs('copy'); }, rename() { return this.noFs('rename'); }, modified() { return 0; }, absolute(p) { return p; }, chdir() { return this.noFs('chdir'); },
     shell() { return this.noFs('shell'); }, run() { return this.noFs('run'); },
-)RKJS",
-R"RKJS(    shut(h, op) { if (h.closed) throw new RakuError(`Cannot do '${op}' on a closed handle`, 'X::IO::Closed'); },   // every read and write asks first
+    shut(h, op) { if (h.closed) throw new RakuError(`Cannot do '${op}' on a closed handle`, 'X::IO::Closed'); },   // every read and write asks first
     handleGet(h) { this.shut(h, 'get'); if (h.kind === 'in') return this.stdinGet(); if (h.pos >= h.buf.length) return Nil; let e = h.buf.indexOf('\n', h.pos); if (e < 0) e = h.buf.length; const line = h.buf.slice(h.pos, e); h.pos = e + 1; return line; },
     handleLines(h) { this.shut(h, 'lines'); if (h.kind === 'in') return this.stdinLines(); const rest = h.buf.slice(h.pos); h.pos = h.buf.length; return lines(rest); },
     handleSlurp(h) { this.shut(h, 'slurp'); if (h.kind === 'in') return this.stdinSlurp(); const rest = h.buf.slice(h.pos); h.pos = h.buf.length; return rest; },
     handleGetc(h) { this.shut(h, 'getc'); const inp = h.kind === 'in', t = inp ? this.stdinAll() : h.buf, i = inp ? this.stdinPos : h.pos; if (i >= t.length) return Nil; const g = firstGrapheme(t, i); if (inp) this.stdinPos += g.length; else h.pos += g.length; return g; },   // a grapheme, not a UTF-16 unit
+    // .read(n): bytes, from a byte cursor kept beside the text one. The raw
+    // bytes are the file's or stdin's own (a host that has none encodes the
+    // text), so input that is not UTF-8 survives; a text read in between moves
+    // the byte cursor to match. It read the whole rest as text, whatever n
+    // asked (Codex review 2026-11-14, finding 07).
+    stdinRaw() { return new TextEncoder().encode(this.stdinAll()); },
+    fileBytes(h) { return new TextEncoder().encode(h.buf || ''); },
+    handleRead(h, n) {
+        this.shut(h, 'read');
+        const inp = h.kind === 'in', text = inp ? this.stdinAll() : (h.buf || ''), tpos = inp ? this.stdinPos : (h.pos || 0);
+        if (!h.bytes) h.bytes = inp ? this.stdinRaw() : this.fileBytes(h);
+        if (h.bpos === undefined || h.tpos !== tpos) {   // the last byte offset whose decoding is tpos long (raw bytes, so not text re-encoded)
+            const dec = new TextDecoder(), len = b => dec.decode(h.bytes.subarray(0, b)).length;
+            let lo = 0, hi = h.bytes.length;
+            while (lo < hi) { const mid = (lo + hi + 1) >> 1; if (len(mid) <= tpos) lo = mid; else hi = mid - 1; }
+            h.bpos = lo;
+        }
+        const k = n === undefined ? h.bytes.length : Math.max(0, Number(toInt(n)));
+        const out = Array.from(h.bytes.subarray(h.bpos, h.bpos + k));
+        h.bpos += out.length;
+        h.tpos = new TextDecoder().decode(h.bytes.subarray(0, h.bpos)).length;
+        if (inp) this.stdinPos = h.tpos; else h.pos = h.tpos;
+        return mkList(out);
+    },
     handleEof(h) { if (h.kind === 'in') return this.stdinPos >= this.stdinAll().length; return h.pos >= h.buf.length; },
     handlePrint(h, s) { this.shut(h, 'print'); if (h.kind === 'out') { this.stdout(s); if (h.outBuffer === 0) this.flush(); return true; } if (h.kind === 'err') { this.stderr(s); return true; } h.out = (h.out || '') + s; if (h.out.length >= (h.outBuffer === undefined ? 65536 : h.outBuffer)) { this.appendFile(h.path, h.out); h.out = ''; } return true; },   // out-buffer: the size at which writes land; 0 is every write
     handleFlush(h) { if (h && h.kind !== 'out' && h.kind !== 'err' && h.out) { this.appendFile(h.path, h.out); h.out = ''; } if (h && h.kind === 'out') this.flush(); },
@@ -3869,7 +3901,10 @@ if (IS_NODE && nodeRequire) {
     const writeAll = (fd, s) => { const b = Buffer.from(s, 'utf8'); let off = 0; while (off < b.length) { try { off += fs.writeSync(fd, b, off, b.length - off); } catch (e) { if (e.code === 'EAGAIN') Atomics.wait(pause, 0, 0, 1); else if (e.code === 'EPIPE') return; else throw e; } } };
     host.writeOut = s => writeAll(1, s);
     host.writeErr = s => writeAll(2, s);
-    host.readStdin = () => { try { return fs.readFileSync(0, 'utf8'); } catch (e) { return ''; } };
+    let stdinBytes = null;   // read once, raw: .read hands out these bytes, text readers their decoding
+    host.stdinRaw = () => { if (stdinBytes === null) { try { stdinBytes = fs.readFileSync(0); } catch (e) { stdinBytes = Buffer.alloc(0); } } return stdinBytes; };
+    host.readStdin = () => host.stdinRaw().toString('utf8');
+    host.fileBytes = h => { if (h.kind === 'file-r' && h.path) { try { return fs.readFileSync(h.path); } catch (e) { } } return new TextEncoder().encode(h.buf || ''); };
     host.exit = code => { host.flush(); process.exit(code); };   // the program is over: a live interval or a poll must not keep the process alive
     // errno text the way strerror spells it, so a JS-hosted program's message is
     // the interpreter's message. Anything unmapped keeps node's own wording.
@@ -3912,7 +3947,8 @@ if (IS_NODE && nodeRequire) {
     host.isTTY = h => h.kind === 'in' ? !!process.stdin.isTTY : h.kind === 'out' ? !!process.stdout.isTTY : h.kind === 'err' ? !!process.stderr.isTTY : false;
     const sigNum = name => name ? (nodeRequire('os').constants.signals[name] || 0) : 0;   // spawnSync names the signal
     host.shell = (cmd, ...a) => { const cp = nodeRequire('child_process'); host.flush(); const r = cp.spawnSync('/bin/sh', ['-c', str(cmd)], { stdio: 'inherit' }); return mkProc(r.status, str(cmd), sigNum(r.signal)); };
-    host.run = (...args) => { const cp = nodeRequire('child_process'); const [pos, named] = splitArgs(args); host.flush(); const r = cp.spawnSync(str(pos[0]), pos.slice(1).map(str), { stdio: [truthy(named.get('in')) ? 'pipe' : 'inherit', truthy(named.get('out')) ? 'pipe' : 'inherit', truthy(named.get('err')) ? 'pipe' : 'inherit'], encoding: 'utf8' }); const p = mkProc(r.status, str(pos[0]), sigNum(r.signal)); p.a_out = new RIOHandle('str'); p.a_out.buf = r.stdout || ''; p.a_err = new RIOHandle('str'); p.a_err.buf = r.stderr || ''; return p; };
+)RKJS",
+R"RKJS(    host.run = (...args) => { const cp = nodeRequire('child_process'); const [pos, named] = splitArgs(args); host.flush(); const r = cp.spawnSync(str(pos[0]), pos.slice(1).map(str), { stdio: [truthy(named.get('in')) ? 'pipe' : 'inherit', truthy(named.get('out')) ? 'pipe' : 'inherit', truthy(named.get('err')) ? 'pipe' : 'inherit'], encoding: 'utf8' }); const p = mkProc(r.status, str(pos[0]), sigNum(r.signal)); p.a_out = new RIOHandle('str'); p.a_out.buf = r.stdout || ''; p.a_err = new RIOHandle('str'); p.a_err.buf = r.stderr || ''; return p; };
 } else if (IS_DENO) {
     host.name = 'deno';
     host.argv = Deno.args.slice();
@@ -3922,7 +3958,9 @@ if (IS_NODE && nodeRequire) {
     const writeAll = (f, b) => { for (let o = 0; o < b.length; ) o += f.writeSync(b.subarray(o)); };   // (a short write, as node's)
     host.writeOut = s => writeAll(Deno.stdout, enc.encode(s));
     host.writeErr = s => writeAll(Deno.stderr, enc.encode(s));
-    host.readStdin = () => { const chunks = []; const buf = new Uint8Array(65536); for (;;) { const n = Deno.stdin.readSync(buf); if (n === null) break; chunks.push(buf.slice(0, n)); } return new TextDecoder().decode(concatBytes(chunks)); };
+    let stdinBytes = null;   // (raw, as node's: .read hands out these bytes)
+    host.stdinRaw = () => { if (stdinBytes === null) { const chunks = []; const buf = new Uint8Array(65536); for (;;) { const n = Deno.stdin.readSync(buf); if (n === null) break; chunks.push(buf.slice(0, n)); } stdinBytes = concatBytes(chunks); } return stdinBytes; };
+    host.readStdin = () => new TextDecoder().decode(host.stdinRaw());
     host.exit = code => { host.flush(); if (code) Deno.exit(code); };
     host.slurp = p => Deno.readTextFileSync(str(p));
     host.spurt = (p, c, ...a) => { const named = nm(a); Deno.writeTextFileSync(str(p), str(c), { append: truthy(named.get('append')) }); return true; };
@@ -3994,8 +4032,7 @@ ProcT.methods.exitcode = s => s.a_exitcode; ProcT.methods.out = s => s.a_out; Pr
 // Proc, which is what makes `run @cmd` as a program's last act exit non-zero
 // (issue #73). A Proc the caller DOES keep is never sunk, so `my $p = run …;
 // $p.exitcode` still reads the code back.
-)RKJS",
-R"RKJS(ProcT.methods.sink = s => { if (s.a_exitcode === 0 && !s.a_signal) return Nil; throw new RakuError(`The spawned command '${s.procCmd}' exited unsuccessfully (exit code: ${s.a_exitcode}, signal: ${s.a_signal})`, 'X::Proc::Unsuccessful'); };
+ProcT.methods.sink = s => { if (s.a_exitcode === 0 && !s.a_signal) return Nil; throw new RakuError(`The spawned command '${s.procCmd}' exited unsuccessfully (exit code: ${s.a_exitcode}, signal: ${s.a_signal})`, 'X::Proc::Unsuccessful'); };
 function mkProc(code, cmd, sig = 0) { const p = new RObj(ProcT); p.a_signal = sig; p.a_exitcode = code === null ? (sig ? 0 : 1) : code; p.a_out = Nil; p.a_err = Nil; p.procCmd = cmd === undefined ? '' : cmd; return p; }
 const STDIN = new RIOHandle('in', ''), STDOUT = new RIOHandle('out', ''), STDERR = new RIOHandle('err', '');
 
@@ -4150,7 +4187,8 @@ function bindMain(c, pos, named) {
             // the `--tls=True` / `--tls=False` spellings argValue already turned
             // into one. Anything else — `--tls=yes`, or the list a repeated
             // `--tls=…` collects — does not bind, and the usage message is printed.
-            // The mirror of that is a `Str` named refusing the Bool those two
+)RKJS",
+R"RKJS(            // The mirror of that is a `Str` named refusing the Bool those two
             // words became: `--a=True` does not bind a `Str :$a`.
             // …under any of its names: `:f(:$file)` answers `-f` and `--file`
             const key = (p.aliases || [p.name]).find(k => named.has(k));
@@ -4248,8 +4286,7 @@ const unwrapped = new WeakMap();
 function exportVal(v) {
     if (v instanceof RObj || v instanceof RMatch) return wrapObj(v);
     if (v instanceof RList || v instanceof RSeq) return arr(v).map(exportVal);
-)RKJS",
-R"RKJS(    if (v instanceof RHash) { const o = {}; for (const [k, x] of v.m) o[k] = exportVal(x); return o; }
+    if (v instanceof RHash) { const o = {}; for (const [k, x] of v.m) o[k] = exportVal(x); return o; }
     if (v instanceof RPair) { const o = {}; o[str(v.k)] = exportVal(v.v); return o; }
     if (v instanceof RSlip) return v.a.map(exportVal);
     return toJs(v);
@@ -4381,7 +4418,8 @@ function mcSet(inv, name, v) {
 }
 // $obj.^name / Foo.^methods
 function meta(inv, name, ...args) { const t = inv instanceof RType ? inv : typeOf(inv); return mc(t, name, ...args); }
-// Int($x) / Str(…) / a subset or class coercion
+)RKJS",
+R"RKJS(// Int($x) / Str(…) / a subset or class coercion
 function coerce(ty, v) {
     if (ty === T.Promise) { if (v instanceof RSupply) return supplyPromise(v); if (v instanceof RPromise) return v; }   // Promise(supply { … })
     if (ty === T.Int) return toInt(toNumeric(v));
@@ -4477,8 +4515,7 @@ T.Signature.methods.params = s => mkList([]);
 T.Signature.methods.gist = s => '(' + Array.from({ length: T.Signature.methods.arity(s) }, (_, i) => '$' + String.fromCharCode(97 + i)).join(', ') + ')';
 T.Signature.methods.Str = T.Signature.methods.gist;
 T.Signature.methods.returns = s => T.Mu;
-)RKJS",
-R"RKJS(// The program's own operator where an emitted one reaches it (Js.cpp
+// The program's own operator where an emitted one reaches it (Js.cpp
 // userInfix, userUnary): the interpreter's decisions. A plain routine answers
 // for every operand but a Whatever, which still curries the built-in; a multi
 // only for an object or an enum it may have a candidate for, and what none of
@@ -4608,7 +4645,8 @@ M(JsObjectT, {
     'Numeric': (s) => fromJs(Number(s.v)), 'Int': (s) => toInt(fromJs(Number(s.v))), 'Num': (s) => mkNum(Number(s.v)), 'WHAT': (s) => JsObjectT, 'js': (s) => s, 'typeof': (s) => typeof s.v, 'instanceof': (s, c) => s.v instanceof (c instanceof RJsObj ? c.v : c),
     'invoke': (s, ...a) => fromJs(s.v(...a.map(toJs))), 'call': (s, ...a) => fromJs(s.v(...a.map(toJs))),
 });
-Object.assign(R, { RJsObj, JsObjectT, toJs, fromJs, jsCall, jsGet, jsSet, jsNew, jsEval, JS });
+)RKJS",
+R"RKJS(Object.assign(R, { RJsObj, JsObjectT, toJs, fromJs, jsCall, jsGet, jsSet, jsNew, jsEval, JS });
 
 // ---- 86-async.js ----
 // `start`, `await` and Promise (TRANSPILE-PLAN P4): concurrency, not
@@ -4694,8 +4732,7 @@ const pendingWork = () => activeStarts + activeTimers > 0;
 
 class RTap { constructor(closeFn) { this.closeFn = closeFn; this.closed = false; } close() { if (!this.closed) { this.closed = true; if (this.closeFn) this.closeFn(); } return true; } }
 class RSupply {
-)RKJS",
-R"RKJS(    constructor(producer, derive) { this.producer = producer || null; this.derive = derive || null; this.taps = []; this.doneFlag = false; this.quitErr = null; this.replay = null; this.preserving = false; }
+    constructor(producer, derive) { this.producer = producer || null; this.derive = derive || null; this.taps = []; this.doneFlag = false; this.quitErr = null; this.replay = null; this.preserving = false; }
     tap(emitFn, doneFn, quitFn) {
         const t = { emit: emitFn || (() => { }), done: doneFn || null, quit: quitFn || null, tap: null, closed: false, cleanup: null };
         const rt = new RTap(() => { t.closed = true; const i = this.taps.indexOf(t); if (i >= 0) this.taps.splice(i, 1); if (t.cleanup) { const c = t.cleanup; t.cleanup = null; c(); } });
@@ -4828,7 +4865,8 @@ function derived(src, onEmit, onDone) {
     });
 }
 const finishTap = (t) => { if (!t.closed) { if (t.done) t.done(); t.tap.close(); } };
-function supplyHead(src, n) { const k = n === undefined ? 1 : Number(toInt(n)); return new RSupply(null, (t) => { let c = 0; if (k <= 0) { finishTap(t); return; } const inner = src.tap(v => { if (t.closed) return; c++; safeEmit(t, v); if (c >= k) { finishTap(t); } }, () => finishTap(t), e => { if (!t.closed) { if (t.quit) t.quit(e); t.tap.close(); } }); t.cleanup = () => inner.close(); }); }
+)RKJS",
+R"RKJS(function supplyHead(src, n) { const k = n === undefined ? 1 : Number(toInt(n)); return new RSupply(null, (t) => { let c = 0; if (k <= 0) { finishTap(t); return; } const inner = src.tap(v => { if (t.closed) return; c++; safeEmit(t, v); if (c >= k) { finishTap(t); } }, () => finishTap(t), e => { if (!t.closed) { if (t.quit) t.quit(e); t.tap.close(); } }); t.cleanup = () => inner.close(); }); }
 function supplyLines(src, chomp) {
     return new RSupply(null, (t) => {
         let buf = '';
@@ -4905,8 +4943,7 @@ const startCounted = (fn) => { activeStarts++; const p = start(fn); p.p.then(() 
 M(SupplyT, {
     tap: (s, ...a) => { const [pos, named] = splitArgs(a); const dn = named.get('done'), qt = named.get('quit'); return s.tap(pos[0] || (() => { }), dn ? () => dn() : null, qt ? (e) => qt(e) : null); },
     act: (s, f) => s.tap(f), emit: (s, v) => { s.emit(v); return v; }, done: (s) => { s.done(); return true; }, quit: (s, e) => { s.quit(e instanceof RakuError ? e : new RakuError(str(e))); return true; },
-)RKJS",
-R"RKJS(    map: (s, f) => derived(s, (v, t) => safeEmit(t, f(v))), grep: (s, f) => derived(s, (v, t) => { if (truthy(matcherOf(f)(v))) safeEmit(t, v); }),
+    map: (s, f) => derived(s, (v, t) => safeEmit(t, f(v))), grep: (s, f) => derived(s, (v, t) => { if (truthy(matcherOf(f)(v))) safeEmit(t, v); }),
     'do': (s, f) => derived(s, (v, t) => { f(v); safeEmit(t, v); }), head: (s, n) => supplyHead(s, n), first: (s) => supplyHead(s, 1),
     skip: (s, n) => { let k = n === undefined ? 1 : Number(toInt(n)); return derived(s, (v, t) => { if (k > 0) k--; else safeEmit(t, v); }); },
     unique: (s) => { const seen = new Set(); return derived(s, (v, t) => { const k = whichKey(v); if (!seen.has(k)) { seen.add(k); safeEmit(t, v); } }); },
@@ -5015,7 +5052,8 @@ function classFlagsMatch(flags, cp, ch) {
 }
 // the grapheme that starts at i: [i, end)
 function clusterEnd(s, i) {
-    const cp = s.codePointAt(i);
+)RKJS",
+R"RKJS(    const cp = s.codePointAt(i);
     let j = i + (cp > 0xFFFF ? 2 : 1);
     if (cp === 0x0D && s.charCodeAt(j) === 0x0A) return j + 1;
     if (cp < 0x300 && (j >= s.length || s.charCodeAt(j) < 0x300)) return j;   // the ASCII fast path
@@ -5095,8 +5133,7 @@ function ltmReach(n, from, ctx, depth) {
             for (const kid of n.kids || []) { const r = ltmReach(kid, cur, ctx, depth); cur = r.pos; if (r.gap) return { pos: cur, gap: true }; if (!cur.size) return { pos: cur, gap: false }; }
             return { pos: cur, gap: false };
         }
-)RKJS",
-R"RKJS(        case 'Alt': { let gap = false; for (const kid of n.kids || []) { const r = ltmReach(kid, from, ctx, depth); for (const [p, l] of r.pos) add(p, l); if (r.gap) gap = true; } return { pos: out, gap }; }
+        case 'Alt': { let gap = false; for (const kid of n.kids || []) { const r = ltmReach(kid, from, ctx, depth); for (const [p, l] of r.pos) add(p, l); if (r.gap) gap = true; } return { pos: out, gap }; }
         case 'Group': return ltmReach(n.kids[0], from, ctx, depth);
         case 'Rep': {
             if (n.repCode) return gapAt();
@@ -5249,7 +5286,8 @@ function m(n, st, pos, k) {
         case 'VarMatch': return varMatch(n, st, pos, k);
         case 'CapStart': { const saved = st.capFrom; st.capFrom = pos; if (k(pos)) return true; st.capFrom = saved; return false; }
         case 'CapEnd': { const saved = st.capTo; st.capTo = pos; if (k(pos)) return true; st.capTo = saved; return false; }
-        case 'CondRef': throw new RakuError('a Perl 5 conditional group is not in the JS core');
+)RKJS",
+R"RKJS(        case 'CondRef': throw new RakuError('a Perl 5 conditional group is not in the JS core');
         default: throw new RakuError('unknown regex node ' + n.k);
     }
 }
@@ -5375,8 +5413,7 @@ function protoCandidates(ty, name) {
     for (const t of ty.mro) {
         if (!t.rules) continue;
         for (const key of Object.keys(t.rules)) {
-)RKJS",
-R"RKJS(            if (!key.startsWith(name + ':') || seen.has(key)) continue;
+            if (!key.startsWith(name + ':') || seen.has(key)) continue;
             seen.add(key);
             let sym = key.slice(name.length + 1);
             const mm = /^sym<(.*)>$/.exec(sym) || /^sym«(.*)»$/.exec(sym);
@@ -5530,7 +5567,8 @@ function namedFromFrame(frame, tree) {
     for (const [name, list] of frame) {
         if (hashNames.includes(name)) { const h = new RHash(); for (const x of list) h.m.set(x.Str(), x.Str()); named.set(name, h); }
         else if (list.length > 1 || listNames.includes(name)) named.set(name, mkList(list.slice()));
-        else named.set(name, list[0]);
+)RKJS",
+R"RKJS(        else named.set(name, list[0]);
     }
     for (const name of listNames) if (!named.has(name)) named.set(name, mkList([]));
     return named;
@@ -5621,8 +5659,7 @@ function parseRxString(src, ic) {
             return lit(e);
         }
         if (c === '.') { i++; return { k: 'Any' }; }
-)RKJS",
-R"RKJS(        if (c === '^') { i++; if (src[i] === '^') { i++; return { k: 'AnchorStart', multiline: 1 }; } return { k: 'AnchorStart' }; }
+        if (c === '^') { i++; if (src[i] === '^') { i++; return { k: 'AnchorStart', multiline: 1 }; } return { k: 'AnchorStart' }; }
         if (c === '$') { i++; if (src[i] === '$') { i++; return { k: 'AnchorEnd', multiline: 1 }; } if (/[\w<]/.test(src[i] || '')) bad('a variable'); return { k: 'AnchorEnd' }; }
         if (src.startsWith('>>', i)) { i += 2; return { k: 'WBRight' }; }
         if (c === '«') { i++; return { k: 'WBLeft' }; }
@@ -5762,7 +5799,8 @@ function matchGist(mt, depth) {
     return out;
 }
 function matchRaku(mt) {
-    const list = mt.caps.map(c => c instanceof RMatch ? matchRaku(c) : raku(c)).join(', ');
+)RKJS",
+R"RKJS(    const list = mt.caps.map(c => c instanceof RMatch ? matchRaku(c) : raku(c)).join(', ');
     const hash = Array.from(mt.named, ([k, v]) => strLit(k) + ' => ' + (v instanceof RMatch ? matchRaku(v) : raku(v))).join(', ');
     return 'Match.new(:orig(' + strLit(mt.orig) + '), :from(' + gOff(mt.orig, mt.from) + '), :pos(' + gOff(mt.orig, mt.to) + ')' + (list ? ', :list((' + list + '))' : '') + (hash ? ', :hash(Map.new((' + hash + ')))' : '') + ')';
 }
