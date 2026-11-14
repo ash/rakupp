@@ -4076,4 +4076,15 @@ struct NodeCountReport {
 }  // namespace
 #endif
 
+// A type parameterized at run time, `CArray[$T]` / `Array[$T]` / `Buf[$U]`:
+// the base type with the parameter appended to the ones it has. The
+// interpreter's Index and the compiled rtIndexGet both answer it here; the
+// compiled one subscripted the type object instead — Nil, and a NULL handed
+// to C when the type was a CArray (#261).
+Value rtParameterizeType(const Value& type, const Value& param) {
+    Value ty = Value::typeObj(type.s);
+    ty.ofTypeM() = type.ofType().empty() ? param.s.copyText() : type.ofType() + "," + param.s;
+    return ty;
+}
+
 } // namespace rakupp

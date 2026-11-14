@@ -6350,6 +6350,7 @@ std::string doSprintf(const std::string& fmt, const ValueList& args, int langRev
 // indexing helpers used by native codegen (value-level, with autovivification on write)
 Value  rtIndexGet(const Value& base, const Value& key, bool isHash);
 void   detonateFailureKey(const Value& key);   // a Failure used as a subscript throws (rtIndexGet)
+Value  rtParameterizeType(const Value& type, const Value& param);   // `Type[$T]` at run time: Type[param]
 // `$l ~~ $r` / `$l !~~ $r` once BOTH sides are values. A Callable matcher is
 // INVOKED with the topic — the arm that lives in evalBinary, which emitted code
 // never runs — and everything else goes to the interpreter's own smartmatch,

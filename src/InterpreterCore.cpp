@@ -27863,11 +27863,7 @@ Value Interpreter::evalIndex(Index* idx) {
     // parameterizing a type at runtime: array[$T] / Hash[$K] — yields Type[param]
     if (base.t == VT::Type && !idx->isHash && idx->index) {
         Value p = subscriptKey(idx->index.get());
-        if (p.t == VT::Type) {
-            Value ty = Value::typeObj(base.s);
-            ty.ofTypeM() = base.ofType().empty() ? p.s.copyText() : base.ofType() + "," + p.s;
-            return ty;
-        }
+        if (p.t == VT::Type) return rtParameterizeType(base, p);
     }
     // An object that implements or delegates (`handles`) AT-KEY/AT-POS is
     // subscripted through it: `$obj<k>` == `$obj.AT-KEY("k")`, `$obj[i]` ==

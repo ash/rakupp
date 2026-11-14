@@ -10003,11 +10003,9 @@ ExprPtr Parser::parsePrimary() {
             if (!name.empty() && (typeLikeName(name) || name == "array") &&
                 isKind(Tok::LBracket) && !cur().spaceBefore && !valueArgFollows() &&
                 peek().kind == Tok::Ident && !peek().text.empty() &&
-                (typeLikeName(peek().text) ||
-                 [&]{ static const std::set<std::string> nat = {
-                          "int","int8","int16","int32","int64","uint","uint8","uint16",
-                          "uint32","uint64","byte","atomicint","num","num32","num64","str"};
-                      return nat.count(peek().text) > 0; }())) {
+                // …or a native, NativeCall's C spellings too: `CArray[size_t]` was an
+                // Index, which --exe compiled to a subscript of the type: Nil (#261)
+                (typeLikeName(peek().text) || isNativeTypeName(peek().text))) {
                 advance(); // [
                 std::string params;
                 bool atArgStart = true;   // a colonpair is a NAMED argument only here
