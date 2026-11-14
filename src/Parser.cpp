@@ -13966,7 +13966,7 @@ StmtPtr Parser::parseClass(bool isRole, bool isGrammar, bool isPackage, bool isU
     // `unit class Foo;` — the remainder of the compilation unit is the class body.
     std::vector<StmtPtr> classBodyLeave;   // `will leave` phasers of the body, run at its end
     if (braced) advance();          // {
-    else matchKind(Tok::Semicolon); // unit form
+    else { matchKind(Tok::Semicolon); cd->unitForm = true; } // unit form
     typeStack_.push_back(cd->name); // enclosing type for ::?CLASS in the body
     typeIsRole_.push_back(cd->isRole);
     classPrivCalls_.emplace_back();
