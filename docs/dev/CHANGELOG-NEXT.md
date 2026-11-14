@@ -22,7 +22,7 @@ f8b5555c, ce72763f, bfd530f9, eb482a9f, 7e5a643e, 6b8c1d1a, 41150ad1,
 251842c2, fcc6d577, 3a3fc21e, 62ada605, 9f94cac7, 2fe0aeeb, 1f3377ea,
 8f7ac1df, 6de9d27b, ce54f928, d3059bf5, f1491b3e, 06212d97, e89cc6a7,
 a213ccad, 02b24803, 9e948ff3, e60a6163, 657626c7, 13902c52, a397987e,
-e2981dc5, c5273f1e, 7df13701.*
+e2981dc5, c5273f1e, 7df13701, 901a4cca.*
 
 ---
 
@@ -92,6 +92,12 @@ e2981dc5, c5273f1e, 7df13701.*
     its trailing zeroes (rakudo#1872).
 
   `t/regression/unclear-reread-fixes.raku`.
+- **`--exe`: `CArray[size_t].new(5, 6)` is a CArray** (901a4cca), where a
+  natively compiled binary answered Nil and passed NULL to the C function,
+  which then segfaulted (#261). NativeCall's C type names (`size_t`, `ssize_t`,
+  `long`, `ulong`, `bool`, …) were read as a subscript of `CArray`, not as its
+  type parameter. A type parameter that arrives at run time (`CArray[$T]`,
+  `Array[$T]`, `Buf[$U]`) was Nil compiled too. `t/regression/exe-carray-c-int-param.raku`.
 - **`--exe`: `(1, 2) X~~ *.so` matches each element** (7df13701), as the
   interpreter does, where compiled code curried the whole expression into one
   WhateverCode. The codegen's smartmatch rule named only `~~` and `!~~`.
