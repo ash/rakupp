@@ -530,30 +530,80 @@ numeric and datetime sections is not started.*
 
 ### R10 — strictness: code we run and Rakudo refuses
 
-Each item can stop code that runs here today, so each lands only with a clean
-battery scan, and some need the decisions below first.
+*2026-11-14. The named items are done; the rest of the LAX list is not.
+Both decisions are answered (below). The battery scan against v5.8.0 is
+green: 2,775 module files, 0 regressions.*
 
-- **Test's and NativeCall's exports visible without `use`** (✓ `is-deeply`,
-  ✓ `CArray`; also `ok`, `lives-ok`, `cglobal`, `Pointer`).
-- **`use v6.e` without `.PREVIEW` ✓**, and **`is cached` without
-  `use experimental :cached` ✓**.
-- **Declarations Rakudo refuses**, all ✓: `has Int $.count!`, `sub ($!x) {}`
-  outside a class, and `-> < 1/2> {…}`.
-- **Calls Rakudo refuses**, all ✓:
-  - `'x'.substr(/x/, 'x')` (Rakudo suggests `subst`);
-  - `self."!$name"()`;
-  - `await start { return }`.
-- The rest of the LAX list: 95 cases, mostly in oo, syntax and dispatch.
-- **Unquoted symbols in a regex are matched literally** (moved here from
-  R1's rakudo#3775, ✓). Raku++ accepts `, = - / ` … → € © ¿` unquoted; Rakudo
-  refuses each ("Unrecognized regex metacharacter … (must be quoted to match
-  literally)"). Raku++ already refuses `;` and `!`.
-- **A phaser called like a routine** (found by R2). Raku++ runs
-  `FIRST($_ * 10)` as the phaser; Rakudo refuses it as an undeclared
-  routine, as it does `ENTER(…)` and `INIT(…)`.
-- **Not here:** a missing `;` between statements on separate lines. That is
-  TODO's open decision on EVAL's strict statement separation. The tracker
-  adds five issues whose snippets run only because of it.
+- **Test's and NativeCall's exports — done for their routines (1f3377ea).**
+  `ok`, `is-deeply`, `lives-ok`, `plan`, `done-testing` and the rest, and
+  `nativecast`, `cglobal`, `nativesizeof`, `explicitly-manage` and
+  `refresh`, are "Undeclared routine" without a `use` of the module
+  (rakudo#1631, #3607, #4967, #1612, #2191). The call check reports them.
+  A routine the code declares, a sigilless name, or a `use`d module that
+  may re-export the name keeps the call. EVAL'd code sees its caller's
+  `use`. Left: NativeCall's TYPES (`CArray`, `Pointer`, `long`), which a
+  declaration's check passes as parameterized shapes (rakudo#1778, #1767).
+- **`use v6.e` without `.PREVIEW` — done (9f94cac7)** (rakudo#2783), with
+  X::Language::Unsupported for a revision or modifier no compiler has.
+- **`is cached` without `use experimental :cached` — done (2fe0aeeb).**
+- **Declarations — done (8f7ac1df).**
+  - `has Int $.count!` (rakudo#1427);
+  - `sub ($!x)` and `-> $!x` outside a method;
+  - `-> < 1/2> {…}` (rakudo#1828);
+  - a default on a required positional (rakudo#1426). A required NAMED
+    parameter with a default is left: GLib in the battery writes one;
+  - a placeholder in a method (rakudo#2320);
+  - a CStruct with no attributes (rakudo#2673).
+- **Calls — done (6de9d27b, ce54f928).**
+  - `'x'.substr(/x/, 'x')`;
+  - `self."!$name"()` (rakudo#3802);
+  - `Lock.new.protect({})` (rakudo#1644);
+  - `(0...∞).chrs` (rakudo#2742);
+  - `await start { return }`, which breaks its Promise (rakudo#2753).
+    A `start` block inside a routine is unchanged: Rakudo panics there.
+- **Unquoted symbols in a regex — done (d3059bf5)** (rakudo#3775, #4927).
+  `,`, `=`, `-`, a backtick and symbols beyond ASCII are refused at the
+  pattern's own level. Not inside assertions, quotes (nested where Raku
+  nests them), code, comments or `\c[…]`/`\x[…]`. An `=` after a capture
+  name or variable is an alias.
+- **A phaser called like a routine — done (f1491b3e):** `FIRST($_ * 10)`
+  and the other phaser names with a tight paren. Left: `CATCH(1)`, which an
+  earlier arm reports as "Missing block".
+- **From the LAX list — done (06212d97):** `42:foo` and `False:so`
+  (rakudo#1476, #3426), and `say 1, 2, and 3` (rakudo#4107).
+- **Kept: `m:P5`, `rx:P5`, `s:P5`** (rakudo#2624). Rakudo 2026.09 refuses
+  the Perl 5 adverb everywhere. Raku++'s Perl 5 regexes are a deliberate
+  extra, and two battery modules use them (HTTP::Tinyish, Net::Ethereum).
+- **Found beside them — done:**
+  - `method !q { … }` lexed `q {…}` as a quote, and the method vanished
+    (6de9d27b);
+  - battery-scan and two other tools passed `:env` a List, which no longer
+    binds (a213ccad). The scan could not run until this.
+- **Decision 2's re-measure — done (e89cc6a7).** It fixed the false
+  positives of the strict separation that are valid Raku:
+  - `return not …`, which also returned Nil in files, an R7 regression;
+  - `GLOBAL::<x>:delete`, which parsed as two statements;
+  - `!!! ::?CLASS.^name ~ …`;
+  - `… or last LABEL`, whose label was dropped.
+
+  With the battery's libraries on the path, whole-file strictness would
+  now refuse 31 of 8,169 files that compile today:
+  - 17 in Qwiratry, all under its slang: `X and return Y` and its `σ`
+    operator;
+  - 7 using units a module's EXPORT sub makes (`2.5nm`, Physics::Measure
+    and ::Constants);
+  - 7 single cases (Temp::Path's `make-temp-path :content<…>`, a Red
+    `model` as a term, Mi6::Helper's `++$n` that opens a line, and four
+    more).
+
+  Each is valid Raku that Rakudo compiles. So the file decision stays open:
+  turning it on needs the parser to see operators and terms that a module
+  makes at EXPORT time, and slangs.
+- The rest of the LAX list (about 80 cases): not started.
+  - `has $.foo is rw := …` with an undeclared type (rakudo#1288);
+  - the `where` subtype instantiation cases (rakudo#1556, #1557);
+  - the ambiguous-multi cases (rakudo#1286), with R4;
+  - and the rest of FIX-LIST.md's LAX section.
 
 ### R11 — speed, handed to SPEED-BACKLOG.md
 
@@ -596,8 +646,23 @@ Each is answered when its batch starts, not before.
    - `is cached` without its pragma.
 
    Refuse them as Rakudo does, or warn for one release first?
+
+   *Answered 2026-11-13: refuse now,* as Rakudo does, with a message that
+   names the `use` to add, re-exports honored, behind a clean battery scan.
+   No battery file relies on any of them. The few hits get Test or
+   NativeCall through a re-export (HTTP::Tiny::Test, NativeLibs).
 2. **(R10) A missing `;` across lines.** This is already in TODO's decisions;
    the tracker data is new evidence for it.
+
+   *Answered 2026-11-13: fix the checker first, then re-measure.* A probe
+   that gave whole files EVAL's strict statement separation refused 106 of
+   the 8,208 battery files that compile today. Every one was valid Raku
+   that Rakudo compiles: slang declarators (`model M {`, Red's 71 files),
+   unit postfixes (`10pt`), `return not (…)`, `GLOBAL::<x>:delete`,
+   `!!! ::?CLASS.^name`, `or last LOOP`, and a `++$n` that opens a line.
+   Three of those make EVAL refuse valid code today. R10 fixes the false
+   positives, reruns the probe, and brings the file decision back with the
+   new numbers.
 3. **(R3) Order of R3 and R4.** The read-only attribute (R3) and the ambiguity
    check (R4) are the two fixes most likely to turn up breakage in the
    battery. Doing them together, behind one battery scan, saves a scan.
@@ -629,6 +694,7 @@ Each is answered when its batch starts, not before.
 | R7, 2026-11-13 | R7.0 and the named items done; syntax PPBUG remainders open | 9e12d938, 70ee4e8b, 6fcd9181, f102e0f5, b1040540, d77e1185, 953adf0a, 73357985, 9badbec4, b590c1ec, f9028851, fdaa60ec, f8b5555c, ce72763f | 1,318 | 1,425/1,425 | 2313/2313 |
 | R8, 2026-11-13 | named items done; strings, numeric and datetime remainders open | bfd530f9, eb482a9f, 7e5a643e, 6b8c1d1a | 1,324 | 1,425/1,425 | 2317/2317 |
 | R9, 2026-11-13 | done but rakudo#4517 (nested coercion types) | 41150ad1 … 62ada605 | 1,329 | 1,425/1,425 | 2329/2329 |
+| R10, 2026-11-14 | named items done; NativeCall types, `CATCH(1)` and the rest of LAX open; whole-file strictness still open (decision 2) | 9f94cac7 … a213ccad | 1,358 | 1,425/1,425 | 2339/2339 |
 
 R1's per-file changes against the baseline:
 - **3686 and 5835:** TIMEOUT to MATCH.
@@ -742,3 +808,24 @@ The full t/exe/parity.raku agreed on 1,653 programs and differed on one:
 callers-call-form.raku, whose compiled routines kept `$_` where CALLERS
 could not see it. 62ada605 keeps such a program interpreted, and the 21
 programs that mention CALLER, with the new tests, agree.
+
+R10's per-file changes against R9 (29 files, all to MATCH, none away from it):
+- **Test or NativeCall routines without their `use`** (1f3377ea), now
+  undeclared as in Rakudo: 2191/0, 2402/0 (was TIMEOUT), 3316/0, 3607/0,
+  1612/2, 1631/2, 4967/0.
+- **Refused declarations** (8f7ac1df): 1426/0 and /1, 1427/2, 1828/1,
+  2320/0, 2673/0 and 4961/0 (CStruct with no attributes).
+- **Refused calls** (6de9d27b): 1314/0, 1644/1, 2742/1, 3802/0.
+- **Regex symbols that must be quoted** (d3059bf5): 3775/2, 4927/2.
+- **Adverb on a literal, word infix after a comma** (06212d97): 1476/0,
+  3426/0 and /1, 4107/0.
+- **`use v6.e` without PREVIEW** (9f94cac7): 2783/1. **`use v6` with no `;`**
+  now stops at the end of the line: 2516/0.
+- **`return` in a mainline `start` block** (ce54f928): 2753/1.
+- **Pasted chat transcripts** that Rakudo refuses at the same line:
+  1237/0, 1815/0.
+
+The battery scan against the v5.8.0 release build was GREEN: 2,775 files,
+2,744 compile under both, 31 fail under both, 0 regressions. Parser,
+regex checker and interpreter changed, so the full t/exe/parity.raku ran:
+1,664 agree, 0 differ, 11 skipped.

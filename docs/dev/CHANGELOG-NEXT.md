@@ -22,7 +22,9 @@ ad10ad81, 3db5cae5, c109e8ec, c47aa1ea, cfbda86a, ccda30e9, 1c4da191,
 d77e1185, 953adf0a, 73357985, 9badbec4, b590c1ec, f9028851, fdaa60ec,
 f8b5555c, ce72763f, bfd530f9, eb482a9f, 7e5a643e, 6b8c1d1a, 41150ad1,
 2eafbb23, bec86076, ea466f67, ef2e778b, 112a0cdb, a247fad2, 9a6eeb85,
-251842c2, fcc6d577, 3a3fc21e, 62ada605.*
+251842c2, fcc6d577, 3a3fc21e, 62ada605, 9f94cac7, 2fe0aeeb, 1f3377ea,
+8f7ac1df, 6de9d27b, ce54f928, d3059bf5, f1491b3e, 06212d97, e89cc6a7,
+a213ccad.*
 
 ---
 
@@ -322,6 +324,11 @@ f8b5555c, ce72763f, bfd530f9, eb482a9f, 7e5a643e, 6b8c1d1a, 41150ad1,
   (62ada605): a compiled program answered Any, where the interpreted one
   answered the routine's `$_`. A program that reads its callers' lexicals
   keeps its routines interpreted. `t/regression/callers-call-form.raku`.
+- **`return not $x` returns the negation** (e89cc6a7): it returned Nil since
+  f9028851, with `not $x` left as a statement of its own. Found with
+  `GLOBAL::<x>:delete`, whose `:delete` was a sunk Pair that deleted nothing,
+  and `$x or last LOOP`, which left the innermost loop instead of LOOP.
+  `t/regression/strict-separation-false-positives.raku`.
 - **A picked member of a Str-valued enum keeps its value** (2eafbb23)
   (rakudo#2165): `enum Chain (A => "T", …); Chain.pick.value` was 0, as was
   every `.roll`. `t/regression/enum-how-add-enum-value.raku`.
@@ -569,9 +576,42 @@ f8b5555c, ce72763f, bfd530f9, eb482a9f, 7e5a643e, 6b8c1d1a, 41150ad1,
 - **`name{…}` subscripts what the call answers** (fcc6d577): `T{"max-rss"}`
   passed the block to T. `name {…}`, with a space, still passes it.
   `t/regression/brace-subscript-after-routine-call.raku`.
+- **Code Rakudo refuses is refused** (R10; the battery scan against v5.8.0 is
+  green, 2,775 module files):
+  - Test's and NativeCall's routines with no `use` of the module (1f3377ea)
+    (rakudo#1631, #3607, #4967, #1612, #2191). A module the program `use`s
+    that may re-export them keeps them, and so does a caller's `use` for an
+    EVAL.
+  - `use v6.e` without `.PREVIEW` (9f94cac7) (rakudo#2783).
+  - `is cached` without `use experimental :cached` (2fe0aeeb).
+  - `has $.x!`, `sub ($!x)` outside a method, `-> < 1/2>`, a default on a
+    required positional, a placeholder in a method, and a CStruct with no
+    attributes (8f7ac1df) (rakudo#1427, #1828, #1426, #2320, #2673).
+  - A Regex given to `substr`, `self."!$name"()`, `Lock.new.protect({})`,
+    `(0...∞).chrs` (6de9d27b) (rakudo#3802, #1644, #2742), and a `return` in
+    a mainline `start` block (ce54f928) (rakudo#2753).
+  - An unquoted `,`, `=`, `-`, backtick or non-word symbol in a regex
+    (d3059bf5) (rakudo#3775, #4927).
+  - A phaser's name called like a routine, `FIRST($x)` (f1491b3e).
+  - `42:foo` and `say 1, 2, and 3` (06212d97) (rakudo#1476, #3426, #4107).
+
+  The tests are `t/regression/use-v6e-needs-preview.raku`,
+  `is-cached-needs-experimental.raku`,
+  `test-and-nativecall-routines-need-use.raku`,
+  `declarations-rakudo-refuses.raku`, `calls-rakudo-refuses.raku`,
+  `return-in-mainline-start-block.raku`,
+  `regex-unquoted-symbols-refused.raku`,
+  `phaser-name-called-like-routine.raku` and
+  `adverb-on-literal-and-word-infix-after-comma.raku`.
+- **`method !q { … }` declares `!q`** (6de9d27b): the `q {…}` lexed as a
+  quote, so the method never existed.
 ### Platforms and packaging
 
 ### Tools
+
+- **battery-scan, battery-use-smoke and cpp-build-check run again**
+  (a213ccad): each passed `:env` a List of Pairs, which no longer binds to
+  `:%env`, so the battery scan died on its first file.
 
 ### Left open
 

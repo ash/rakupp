@@ -252,8 +252,16 @@ The same items grouped by theme, with a complexity estimate for each:
   done but rakudo#4517, nested coercion types (41150ad1 … 62ada605,
   2026-11-13): `use Telemetry`, `use trace`, `Routine.prec`, `CALLERS::(…)`,
   UNIX-domain and IPv6 sockets, the EnumHOW protocol, the atomic callables,
-  `.twigil` and `does array[T]`. Next step: R10, strictness. Its decisions
-  for the maintainer (the plan's 1 and 2) come first.
+  `.twigil` and `does array[T]`. R10 is done for its named items
+  (9f94cac7 … a213ccad, 2026-11-14): Test's and NativeCall's routines need
+  their `use`, `use v6.e` needs PREVIEW, `is cached` needs its pragma, and
+  declarations, calls, regex symbols and phaser calls Rakudo refuses are
+  refused. Behind them is a battery scan green against v5.8.0. Decision 2's
+  re-measure fixed four strict-separation false positives, among them
+  `return not`, which returned Nil. Whole-file strictness still waits on 31
+  battery files that need EXPORT-made operators and slangs. Next step: R11,
+  speed, handed to SPEED-BACKLOG.md, then R12; the rest of R10's LAX list
+  stays open.
 - [ ] **A native array's derived lists hand out boxed elements**, found
   2026-11-06 beside the native-element work: `.head`, `.tail`, `.list`, a
   slice `@a[1..2]`, `.reverse`, `.sort`, `.kv`, `.values`, `.pairs` and a
@@ -992,7 +1000,11 @@ Nothing open (2026-11-01).
   2b9494ae (issue #206); two terms in a row are not: `say 1 1` prints 1,
   `%h<a> say 2` prints 2 and `say @a [0]` prints `[]` in a file, where Rakudo
   refuses each and an EVAL here does too (`enforceStmtSep`). Files that rely
-  on the leniency would stop compiling.
+  on the leniency would stop compiling. R10 measured it on 2026-11-14 (see
+  RAKUDO-ISSUES-PLAN.md, decision 2). With the battery's libraries on the
+  path, it would refuse 31 of 8,169 files that compile today, every one
+  valid Raku: operators and terms a module makes at EXPORT time, and
+  Qwiratry's slang.
 - `temp` against LEAVE: since 2026-10-11 a `temp` is restored BEFORE the
   block's LEAVE phasers run (runLeavePhasers' drainTempRestores), following
   Rakudo 2026.09; Rakudo 2026.08 and Raku++ before then restored it after, so
