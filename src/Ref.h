@@ -68,7 +68,7 @@ public:
         return *this;
     }
     Ref& operator=(Ref&& o) noexcept {
-        if (this != &o) { release(); p_ = o.p_; o.p_ = nullptr; }
+        if (this != &o) { auto* n = o.p_; o.p_ = nullptr; release(); p_ = n; }   // (o first: as copy's)
         return *this;
     }
     Ref& operator=(std::nullptr_t) noexcept { reset(); return *this; }
@@ -136,7 +136,7 @@ public:
         return *this;
     }
     HRef& operator=(HRef&& o) noexcept {
-        if (this != &o) { release(); s_ = o.s_; o.s_ = {}; }
+        if (this != &o) { auto n = o.s_; o.s_ = {}; release(); s_ = n; }   // (as Ref's)
         return *this;
     }
     HRef& operator=(std::nullptr_t) noexcept { reset(); return *this; }
@@ -302,7 +302,7 @@ public:
         return *this;
     }
     PayRef& operator=(PayRef&& o) noexcept {
-        if (this != &o) { release(); s_ = o.s_; o.s_ = {}; }
+        if (this != &o) { auto n = o.s_; o.s_ = {}; release(); s_ = n; }   // (as Ref's)
         return *this;
     }
     PayRef& operator=(std::nullptr_t) noexcept { reset(); return *this; }
@@ -350,7 +350,7 @@ public:
         return *this;
     }
     PRef& operator=(PRef&& o) noexcept {
-        if (this != &o) { release(); b_ = o.b_; o.b_ = nullptr; }
+        if (this != &o) { auto* n = o.b_; o.b_ = nullptr; release(); b_ = n; }   // (as Ref's)
         return *this;
     }
     PRef& operator=(std::nullptr_t) noexcept { reset(); return *this; }
