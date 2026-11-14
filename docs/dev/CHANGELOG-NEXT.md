@@ -23,7 +23,8 @@ f8b5555c, ce72763f, bfd530f9, eb482a9f, 7e5a643e, 6b8c1d1a, 41150ad1,
 8f7ac1df, 6de9d27b, ce54f928, d3059bf5, f1491b3e, 06212d97, e89cc6a7,
 a213ccad, 02b24803, 9e948ff3, e60a6163, 657626c7, 13902c52, a397987e,
 e2981dc5, c5273f1e, 7df13701, 901a4cca, 2529675a, 0ab4bfc7, 4a2e4fec,
-43509bec, e374baff, 7f8773e2, 222424a1.*
+43509bec, e374baff, 7f8773e2, 222424a1, 912cf744,
+d4a3b66c.*
 
 ---
 
@@ -323,6 +324,18 @@ e2981dc5, c5273f1e, 7df13701, 901a4cca, 2529675a, 0ab4bfc7, 4a2e4fec,
   `t/regression/exception-new-message.raku`.
 ### Fixed: crashes
 
+- **An object released on two threads at once is no longer read after it is
+  freed** (912cf744). A release that left a tracked object alive dropped its count
+  and then handed the object to the cycle collector's candidate buffer, so a
+  last release on another thread in between freed it first. It is now noted
+  before the count goes. Instructions retired move by under half a percent.
+  From the Codex review of 2026-11-14 (01). `t/stress/tracked-release-race.raku`.
+- **`rk_free` no longer frees an interpreter its workers still run on** (d4a3b66c).
+  It waited for pooled workers only and freed the interpreter after two
+  seconds, so a `start` still running wrote into freed memory while the host
+  went on. It now stops and joins every worker, as a program's end does, and
+  keeps the interpreter if one will not stop. From the Codex review of
+  2026-11-14 (02). `tools/embed/embed-host.c`.
 - **An extension's element handle survives the array growing** (0ab4bfc7).
   `rk_at_pos` returned the element's own address, so an `rk_push` that grew
   the array left the handle pointing at freed storage within the same call,
