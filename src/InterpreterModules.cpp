@@ -7242,7 +7242,7 @@ static void refuseRoleClashes(Interpreter& I, const std::string& clsName, const 
                 // inherit from … because it is unknown" for a name that
                 // resolves fine one line earlier.
                 const std::shared_ptr<ClassInfo>* rakuAstParent =
-                    (it == classes_.end() && rakuAstVisible() && isRakuAstName(cd->parent))
+                    (it == classes_.end() && isRakuAstName(cd->parent))
                         ? rakuAstClass(cd->parent) : nullptr;
                 // `my package A { }; my class B is A { }` — the latest A is a
                 // package, whatever class an earlier A was
@@ -7314,7 +7314,7 @@ static void refuseRoleClashes(Interpreter& I, const std::string& clsName, const 
                     it = classes_.find(tctx().pkgPrefix + pn);
                 if (it == classes_.end()) it = classes_.find(resolveClassAlias(pn));
                 const std::shared_ptr<ClassInfo>* rakuAstExtra =
-                    (it == classes_.end() && rakuAstVisible() && isRakuAstName(pn))
+                    (it == classes_.end() && isRakuAstName(pn))
                         ? rakuAstClass(pn) : nullptr;
                 if (it != classes_.end()) ci->extraParents.push_back(it->second);
                 else if (rakuAstExtra) ci->extraParents.push_back(*rakuAstExtra);

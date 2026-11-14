@@ -4900,17 +4900,9 @@ public:
     // resolves a builtin name unless this revision is not supposed to see it.
     bool builtinVisible(const std::string& n) const { return sixE() || !sixEOnlySub(n); }
     int langRev_ = 1; // language revision: 0=6.c, 1=6.d (default, matches Rakudo), 2=6.e (via `use v6.e.PREVIEW`). Affects e.g. sqrt/roots of negatives -> Complex
-    // Rakudo 2026.08, measured: the pragma is the gate under 6.d, and 6.e sees
-    // the namespace without it. Both spellings are honoured here.
-    bool rakuAstVisible() const { return rakuAstPragma_ || sixE(); }
-    // The refusal, pinned to that same measurement: class X::Experimental, the
-    // message verbatim. Rakudo refuses at COMPILE time (===SORRY!===) and we
-    // refuse at first mention during the walk — the same timing divergence
-    // every evalString-shaped check here has.
-    [[noreturn]] void refuseRakuAst() const {
-        throw RakuError{Value::typeObj("X::Experimental"),
-                        "Use of RakuAST is experimental; please 'use experimental :rakuast;'"};
-    }
+    // (The RakuAST:: names need no pragma: Rakudo 2026.08 refused them under
+    // 6.d without `use experimental :rakuast`, and 2026.09 does not, rakudo#6134
+    // and #6137. The pragma is still read, and still a no-op.)
     // Redispatch chain for callsame/callwith/nextsame/nextwith: each entry knows how to
     // invoke the NEXT candidate (e.g. a built-in shadowed by a user method) and the
     // current routine's args (for the *same variants).

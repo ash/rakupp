@@ -29981,34 +29981,11 @@ struct RatLitParts {
                 if (!known && materializePendingType(rn)) known = true;
                 // The RakuAST:: namespace, after every ordinary way of knowing
                 // the name has failed — so a user's own `class RakuAST::Mine`
-                // is never gated, whether it was declared above this line
-                // (`classes_`) or below it (the pending-type build just above,
-                // which reads the unit's statements and therefore answers the
-                // same from the AST cache as from a fresh parse). What is left
-                // is Rakudo's own tree classes.
-                //
-                // The gate runs BEFORE the registry is consulted, on both the
-                // plain and the symbolic path, so the refusal never depends on
-                // whether the table happens to carry the name.
-                if (!known && isRakuAstName(rn)) {
-                    if (!rakuAstVisible()) {
-                        // …and the symbolic form answers a Failure carrying the
-                        // same exception, exactly as Rakudo's does — `try
-                        // ::('RakuAST::Node')` is how a module asks whether the
-                        // namespace is there at all, and a control jump would
-                        // break the probe it is written as.
-                        if (nt->symbolicStrict) {
-                            Value f = rakuppNewFailure();
-                            (*f.hash())["exception"] = Value::typeObj("X::Experimental");
-                            (*f.hash())["message"] =
-                                Value::str("Use of RakuAST is experimental; "
-                                           "please 'use experimental :rakuast;'");
-                            return f;
-                        }
-                        refuseRakuAst();
-                    }
-                    if (rakuAstClass(rn)) return Value::typeObj(rn);
-                }
+                // wins, whether it was declared above this line (`classes_`) or
+                // below it (the pending-type build just above). What is left is
+                // Rakudo's own tree classes, which need no pragma since Rakudo
+                // 2026.09 (rakudo#6134, #6137).
+                if (!known && isRakuAstName(rn) && rakuAstClass(rn)) return Value::typeObj(rn);
                 if (!known && nt->symbolicStrict) {
                     // …and the refusal is a Failure, not a throw: Rakudo's
                     // ::('NoSuch') hands back a broken Failure whose
