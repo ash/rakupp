@@ -278,6 +278,25 @@ int main(void) {
         }
     }
 
+    /* --- rk_free while `start` workers still run ------------------------ */
+    /* A worker holds a raw pointer to its interpreter. rk_free used to wait
+     * two seconds for pooled ones only and then free the interpreter under
+     * them, so a worker that went on running wrote into freed memory while
+     * the host carried on. It now ends them first, as a program's end does. */
+    {
+        RkInterp w = rk_new(0);
+        RkValue wv;
+        check(w && rk_eval(w, "my $n = 0; start { loop { $n++ } }; "
+                              "start { my @a; loop { @a.push(1); @a.shift } }; 1", 0) == RK_OK,
+              "workers are running when rk_free is called");
+        rk_free(w);
+        w = rk_new(0);
+        check(w && rk_eval(w, "my $t = now; my $s = 0; while now - $t < 0.5 { $s += $_ for ^1000 }; $s",
+                           &wv) == RK_OK && rk_int_get(rk_ctx(w), wv) > 0,
+              "the host runs on after rk_free stopped them");
+        rk_free(w);
+    }
+
     if (failures) { printf("embed host: %d FAILED\n", failures); return 1; }
     printf("embed host: ok\n");
     return 0;

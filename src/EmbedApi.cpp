@@ -292,9 +292,20 @@ RkInterp rk_new(const RkConfig* cfg) {
     return reinterpret_cast<RkInterp>(p);
 }
 
+// A worker still running when the interpreter goes holds a raw pointer to it,
+// and resumes into freed memory if it is deleted (Codex review 2026-11-14,
+// finding 02). So rk_free ends the workers as a program's end does — asks them
+// to unwind, waits up to two seconds, joins the ones that finished, idle
+// pooled ones included — and frees the interpreter only when none is left.
+// One that is not (blocked in a call nothing interrupts) keeps it: leaked, it
+// is memory; freed, it is a crash in the host.
 void rk_free(RkInterp rk) {
     if (!rk) return;
-    delete I(rk);
+    Interp* p = I(rk);
+    const bool outermost = p->interp.gilMainlineEnter();   // (drainWorkers hands over the GIL)
+    p->interp.drainWorkers();
+    p->interp.gilMainlineLeave(outermost);
+    if (!p->interp.abandonedWorkers_) delete p;
     g_live = false;
 }
 
