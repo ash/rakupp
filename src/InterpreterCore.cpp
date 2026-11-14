@@ -13430,7 +13430,7 @@ Value Interpreter::evalAssign(Assign* a, bool sink) {
                 // (null: nothing was evaluated, and the full path below decides)
                 if (Value* slot = attrAssignLane(static_cast<VarExpr*>(a->target.get()), a->value.get())) {
                     if (anyRwLinks_) rwWriteThrough(a->target.get());
-                    return sink ? Value::any() : *slot;
+                    return slotOut(slot, sink);
                 }
             }
             else if (sv == 6) {
@@ -13498,12 +13498,12 @@ Value Interpreter::evalAssign(Assign* a, bool sink) {
                                   fusedIntAssign(static_cast<Binary*>(a->value.get()), slot)) ||
                                  fusedTypedAssign(static_cast<Binary*>(a->value.get()), slot))) {
                                 if (anyRwLinks_) rwWriteThrough(a->target.get());
-                                return sink ? Value::any() : *slot;
+                                return slotOut(slot, sink);
                             }
                             if (!nb && slot->t == VT::Str && a->value->kind == NK::Binary &&
                                 selfCatAssign(static_cast<Binary*>(a->value.get()), slot, cur)) {
                                 if (anyRwLinks_) rwWriteThrough(a->target.get());
-                                return sink ? Value::any() : *slot;
+                                return slotOut(slot, sink);
                             }
                             Value rv = evalValueOf(a->value.get());
                             if (rv.t == VT::Nil || rv.t == VT::Type || rv.t == VT::Any) nativeUndefCheck(rv, a->target.get(), slot);
@@ -13526,7 +13526,7 @@ Value Interpreter::evalAssign(Assign* a, bool sink) {
                             }
                             if (nb) wrapNative(*slot, nb, nsg, nfl);
                             if (anyRwLinks_) rwWriteThrough(a->target.get());
-                            return sink ? Value::any() : *slot;
+                            return slotOut(slot, sink);
                         }
                         // compound: mirror the full path's tail for the
                         // whitelisted ops — neutral autoviv, the in-place
@@ -13579,7 +13579,7 @@ Value Interpreter::evalAssign(Assign* a, bool sink) {
                             if (nb) nativeCompoundStore(*slot, before, nb, nsg, nfl,   // WRAPS an Int, refuses another kind
                                                         compoundSrcNative(bop, rhs, a->value.get(), nfl));
                             if (anyRwLinks_) rwWriteThrough(a->target.get());
-                            return sink ? Value::any() : *slot;
+                            return slotOut(slot, sink);
                         }
                         // rhs is an Object — a bail here would re-evaluate a
                         // side-effecting rhs, so mirror the full tail inline:
@@ -13610,7 +13610,7 @@ Value Interpreter::evalAssign(Assign* a, bool sink) {
                         if (nb) nativeCompoundStore(*slot, before, nb, nsg, nfl,   // WRAPS an Int, refuses another kind
                                                     compoundSrcNative(bop2, rhs, a->value.get(), nfl));
                         if (anyRwLinks_) rwWriteThrough(a->target.get());
-                        return sink ? Value::any() : *slot;
+                        return slotOut(slot, sink);
                     }
                 }
             }
