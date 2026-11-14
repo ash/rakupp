@@ -79,6 +79,20 @@ function react(body) {
 }
 function supplyBlock(body) { return new RSupply(body); }
 function currentCtx() { return ctxStack.length ? ctxStack[ctxStack.length - 1] : null; }
+// An await suspends an async body, and the stack entry withCtx pushed for it is
+// gone by the time it resumes (withCtx's finally ran when the body first
+// suspended). Every await the codegen emits is `R.rs(R.cc(), await X)`: cc reads
+// the context before the suspension, rs pushes it again on resumption and pops
+// it once the synchronous run that follows is over. Overlapping bodies each put
+// back their own, which one global entry kept until a Promise settled could not.
+const cc = currentCtx;
+function rs(ctx, v) {
+    if (ctx && currentCtx() !== ctx) {
+        ctxStack.push(ctx);
+        queueMicrotask(() => { const i = ctxStack.lastIndexOf(ctx); if (i >= 0) ctxStack.splice(i, 1); });
+    }
+    return v;
+}
 function emitVal(v) { const ctx = currentCtx(); if (!ctx) throw new RakuError('emit without a supply block'); if (ctx.kind === 'supply' && !ctx.t.closed) safeEmit(ctx.t, v); return v; }
 function done() { const ctx = currentCtx(); if (!ctx) throw new RakuError('done without a react or supply block'); throw new DoneCtl(); }
 
@@ -93,7 +107,9 @@ function whenever(src, fn, phasers) {
     const leave = () => { if (left) return; left = true; ctx.pending--; if (tap) { const i = ctx.subs.indexOf(tap); if (i >= 0) ctx.subs.splice(i, 1); } maybeDone(ctx); };
     const run = (cb, v) => {
         ctxStack.push(ctx);
-        try { const r = cb(v); if (r && typeof r.then === 'function') r.catch(e => { if (e instanceof DoneCtl) finishCtx(ctx); else if (e instanceof LastCtl) { if (tap) tap.close(); leave(); } else if (!(e instanceof NextCtl)) failCtx(ctx, e); }); }
+        // (a body that awaits is still running: the react or supply waits for it
+        // as for a subscription, where it used to end at the source's done)
+        try { const r = cb(v); if (r && typeof r.then === 'function') { ctx.pending++; r.catch(e => { if (e instanceof DoneCtl) finishCtx(ctx); else if (e instanceof LastCtl) { if (tap) tap.close(); leave(); } else if (!(e instanceof NextCtl)) failCtx(ctx, e); }).finally(() => { ctx.pending--; maybeDone(ctx); }); } }
         catch (e) { if (e instanceof DoneCtl) { finishCtx(ctx); return; } if (e instanceof LastCtl) { if (tap) tap.close(); leave(); return; } if (e instanceof NextCtl) return; if (isControl(e)) throw e; failCtx(ctx, e); }
         finally { ctxStack.pop(); }
     };
@@ -157,11 +173,11 @@ function supplyWords(src) {
 // collect a supply: synchronously for an on-demand one, as a Promise kept on done for a live one
 function supplyList(s) {
     const out = []; let finished = false, err = null;
-    const tap = s.tap(v => out.push(v), () => { finished = true; }, e => { err = e; finished = true; });
+    s.tap(v => out.push(v), () => { finished = true; }, e => { err = e; finished = true; });
     if (finished) { if (err) throw err; return mkList(out); }
+    // (one tap only: a second, even with empty callbacks, ran an on-demand
+    // supply's producer again — its side effects twice; Codex review finding 06)
     const p = new RPromise();
-    tap.closeFn2 = null;
-    s.tap(v => { }, () => { }, () => { });   // (no-op: the first tap already collects)
     const check = () => { if (finished) { if (err) p.break_(err); else p.keep(mkList(out)); return; } setTimeout(check, 5); };
     check();
     return p;
@@ -233,7 +249,7 @@ M(VowT, { keep: (s, v) => s.p.keep(v === undefined ? true : v), 'break': (s, e) 
 M(T.Promise, { vow: (s) => new RVow(s) });
 M(T.Any, { emit: (s) => emitVal(s) });
 Object.assign(TYPE_METHODS, {
-    'from-list': (t, ...a) => t === SupplyT ? supplyFromList(spliceSlips(a.filter(x => !(x instanceof RNamed)))) : Nil,
+    'from-list': (t, ...a) => t === SupplyT ? supplyFromList(slurpyOne(spliceSlips(a.filter(x => !(x instanceof RNamed))))) : Nil,   // (+@values: one array is its elements)
     'interval': (t, secs, delay) => t === SupplyT ? supplyInterval(secs, delay) : Nil,
 });
 // Lock. The host runs one piece of code at a time — a callback never preempts
@@ -244,5 +260,5 @@ Object.assign(TYPE_METHODS, {
 const LockT = mkType('Lock', [T.Any]);
 class RLock { }
 M(LockT, { protect: (s, f) => callCode(f), lock: (s) => true, unlock: (s) => true, gist: (s) => 'Lock.new', Str: (s) => 'Lock', raku: (s) => 'Lock.new', WHAT: (s) => LockT, defined: (s) => true, Bool: (s) => true });
-Object.assign(R, { RSupply, RSupplier, RChannel, RTap, DoneCtl, SupplyT, SupplierT, ChannelT, RLock, LockT, react, supplyBlock, whenever, emit: emitVal, done, sleepP, startCounted, toSupply, supplyFromList });
+Object.assign(R, { cc, rs, RSupply, RSupplier, RChannel, RTap, DoneCtl, SupplyT, SupplierT, ChannelT, RLock, LockT, react, supplyBlock, whenever, emit: emitVal, done, sleepP, startCounted, toSupply, supplyFromList });
 R.start = startCounted; TYPE_METHODS.start = (t, fn) => startCounted(fn);   // a start block counts as pending work while it runs

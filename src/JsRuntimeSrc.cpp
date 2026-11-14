@@ -4756,6 +4756,20 @@ function react(body) {
 }
 function supplyBlock(body) { return new RSupply(body); }
 function currentCtx() { return ctxStack.length ? ctxStack[ctxStack.length - 1] : null; }
+// An await suspends an async body, and the stack entry withCtx pushed for it is
+// gone by the time it resumes (withCtx's finally ran when the body first
+// suspended). Every await the codegen emits is `R.rs(R.cc(), await X)`: cc reads
+// the context before the suspension, rs pushes it again on resumption and pops
+// it once the synchronous run that follows is over. Overlapping bodies each put
+// back their own, which one global entry kept until a Promise settled could not.
+const cc = currentCtx;
+function rs(ctx, v) {
+    if (ctx && currentCtx() !== ctx) {
+        ctxStack.push(ctx);
+        queueMicrotask(() => { const i = ctxStack.lastIndexOf(ctx); if (i >= 0) ctxStack.splice(i, 1); });
+    }
+    return v;
+}
 function emitVal(v) { const ctx = currentCtx(); if (!ctx) throw new RakuError('emit without a supply block'); if (ctx.kind === 'supply' && !ctx.t.closed) safeEmit(ctx.t, v); return v; }
 function done() { const ctx = currentCtx(); if (!ctx) throw new RakuError('done without a react or supply block'); throw new DoneCtl(); }
 
@@ -4770,7 +4784,9 @@ function whenever(src, fn, phasers) {
     const leave = () => { if (left) return; left = true; ctx.pending--; if (tap) { const i = ctx.subs.indexOf(tap); if (i >= 0) ctx.subs.splice(i, 1); } maybeDone(ctx); };
     const run = (cb, v) => {
         ctxStack.push(ctx);
-        try { const r = cb(v); if (r && typeof r.then === 'function') r.catch(e => { if (e instanceof DoneCtl) finishCtx(ctx); else if (e instanceof LastCtl) { if (tap) tap.close(); leave(); } else if (!(e instanceof NextCtl)) failCtx(ctx, e); }); }
+        // (a body that awaits is still running: the react or supply waits for it
+        // as for a subscription, where it used to end at the source's done)
+        try { const r = cb(v); if (r && typeof r.then === 'function') { ctx.pending++; r.catch(e => { if (e instanceof DoneCtl) finishCtx(ctx); else if (e instanceof LastCtl) { if (tap) tap.close(); leave(); } else if (!(e instanceof NextCtl)) failCtx(ctx, e); }).finally(() => { ctx.pending--; maybeDone(ctx); }); } }
         catch (e) { if (e instanceof DoneCtl) { finishCtx(ctx); return; } if (e instanceof LastCtl) { if (tap) tap.close(); leave(); return; } if (e instanceof NextCtl) return; if (isControl(e)) throw e; failCtx(ctx, e); }
         finally { ctxStack.pop(); }
     };
@@ -4834,11 +4850,11 @@ function supplyWords(src) {
 // collect a supply: synchronously for an on-demand one, as a Promise kept on done for a live one
 function supplyList(s) {
     const out = []; let finished = false, err = null;
-    const tap = s.tap(v => out.push(v), () => { finished = true; }, e => { err = e; finished = true; });
+    s.tap(v => out.push(v), () => { finished = true; }, e => { err = e; finished = true; });
     if (finished) { if (err) throw err; return mkList(out); }
+    // (one tap only: a second, even with empty callbacks, ran an on-demand
+    // supply's producer again — its side effects twice; Codex review finding 06)
     const p = new RPromise();
-    tap.closeFn2 = null;
-    s.tap(v => { }, () => { }, () => { });   // (no-op: the first tap already collects)
     const check = () => { if (finished) { if (err) p.break_(err); else p.keep(mkList(out)); return; } setTimeout(check, 5); };
     check();
     return p;
@@ -4889,14 +4905,14 @@ const startCounted = (fn) => { activeStarts++; const p = start(fn); p.p.then(() 
 M(SupplyT, {
     tap: (s, ...a) => { const [pos, named] = splitArgs(a); const dn = named.get('done'), qt = named.get('quit'); return s.tap(pos[0] || (() => { }), dn ? () => dn() : null, qt ? (e) => qt(e) : null); },
     act: (s, f) => s.tap(f), emit: (s, v) => { s.emit(v); return v; }, done: (s) => { s.done(); return true; }, quit: (s, e) => { s.quit(e instanceof RakuError ? e : new RakuError(str(e))); return true; },
-    map: (s, f) => derived(s, (v, t) => safeEmit(t, f(v))), grep: (s, f) => derived(s, (v, t) => { if (truthy(matcherOf(f)(v))) safeEmit(t, v); }),
+)RKJS",
+R"RKJS(    map: (s, f) => derived(s, (v, t) => safeEmit(t, f(v))), grep: (s, f) => derived(s, (v, t) => { if (truthy(matcherOf(f)(v))) safeEmit(t, v); }),
     'do': (s, f) => derived(s, (v, t) => { f(v); safeEmit(t, v); }), head: (s, n) => supplyHead(s, n), first: (s) => supplyHead(s, 1),
     skip: (s, n) => { let k = n === undefined ? 1 : Number(toInt(n)); return derived(s, (v, t) => { if (k > 0) k--; else safeEmit(t, v); }); },
     unique: (s) => { const seen = new Set(); return derived(s, (v, t) => { const k = whichKey(v); if (!seen.has(k)) { seen.add(k); safeEmit(t, v); } }); },
     squish: (s) => { let last, has = false; return derived(s, (v, t) => { if (!has || !eqv(v, last)) safeEmit(t, v); last = v; has = true; }); },
     lines: (s, ...a) => supplyLines(s, !(nm(a).has('chomp') && !truthy(nm(a).get('chomp')))), words: (s) => supplyWords(s),
-)RKJS",
-R"RKJS(    batch: (s, ...a) => { const n = Number(toInt(nm(a).get('elems') ?? posArgs(a)[0] ?? 1)); let buf = []; return derived(s, (v, t) => { buf.push(v); if (buf.length >= n) { safeEmit(t, mkArray(buf)); buf = []; } }, (t) => { if (buf.length) safeEmit(t, mkArray(buf)); buf = []; }); },
+    batch: (s, ...a) => { const n = Number(toInt(nm(a).get('elems') ?? posArgs(a)[0] ?? 1)); let buf = []; return derived(s, (v, t) => { buf.push(v); if (buf.length >= n) { safeEmit(t, mkArray(buf)); buf = []; } }, (t) => { if (buf.length) safeEmit(t, mkArray(buf)); buf = []; }); },
     'on-close': (s, f) => derived(s, (v, t) => safeEmit(t, v), (t) => f()),
     list: (s) => supplyList(s), List: (s) => supplyList(s), Promise: (s) => supplyPromise(s), wait: (s) => supplyPromise(s), Channel: (s) => supplyChannel(s), Supply: (s) => s,
     gist: (s) => 'Supply.new', Str: (s) => 'Supply', raku: (s) => 'Supply.new', WHAT: (s) => SupplyT, defined: (s) => true, Bool: (s) => true, live: (s) => !s.producer && !s.derive,
@@ -4911,7 +4927,7 @@ M(VowT, { keep: (s, v) => s.p.keep(v === undefined ? true : v), 'break': (s, e) 
 M(T.Promise, { vow: (s) => new RVow(s) });
 M(T.Any, { emit: (s) => emitVal(s) });
 Object.assign(TYPE_METHODS, {
-    'from-list': (t, ...a) => t === SupplyT ? supplyFromList(spliceSlips(a.filter(x => !(x instanceof RNamed)))) : Nil,
+    'from-list': (t, ...a) => t === SupplyT ? supplyFromList(slurpyOne(spliceSlips(a.filter(x => !(x instanceof RNamed))))) : Nil,   // (+@values: one array is its elements)
     'interval': (t, secs, delay) => t === SupplyT ? supplyInterval(secs, delay) : Nil,
 });
 // Lock. The host runs one piece of code at a time — a callback never preempts
@@ -4922,7 +4938,7 @@ Object.assign(TYPE_METHODS, {
 const LockT = mkType('Lock', [T.Any]);
 class RLock { }
 M(LockT, { protect: (s, f) => callCode(f), lock: (s) => true, unlock: (s) => true, gist: (s) => 'Lock.new', Str: (s) => 'Lock', raku: (s) => 'Lock.new', WHAT: (s) => LockT, defined: (s) => true, Bool: (s) => true });
-Object.assign(R, { RSupply, RSupplier, RChannel, RTap, DoneCtl, SupplyT, SupplierT, ChannelT, RLock, LockT, react, supplyBlock, whenever, emit: emitVal, done, sleepP, startCounted, toSupply, supplyFromList });
+Object.assign(R, { cc, rs, RSupply, RSupplier, RChannel, RTap, DoneCtl, SupplyT, SupplierT, ChannelT, RLock, LockT, react, supplyBlock, whenever, emit: emitVal, done, sleepP, startCounted, toSupply, supplyFromList });
 R.start = startCounted; TYPE_METHODS.start = (t, fn) => startCounted(fn);   // a start block counts as pending work while it runs
 
 // ---- 90-regex.js ----
@@ -5079,7 +5095,8 @@ function ltmReach(n, from, ctx, depth) {
             for (const kid of n.kids || []) { const r = ltmReach(kid, cur, ctx, depth); cur = r.pos; if (r.gap) return { pos: cur, gap: true }; if (!cur.size) return { pos: cur, gap: false }; }
             return { pos: cur, gap: false };
         }
-        case 'Alt': { let gap = false; for (const kid of n.kids || []) { const r = ltmReach(kid, from, ctx, depth); for (const [p, l] of r.pos) add(p, l); if (r.gap) gap = true; } return { pos: out, gap }; }
+)RKJS",
+R"RKJS(        case 'Alt': { let gap = false; for (const kid of n.kids || []) { const r = ltmReach(kid, from, ctx, depth); for (const [p, l] of r.pos) add(p, l); if (r.gap) gap = true; } return { pos: out, gap }; }
         case 'Group': return ltmReach(n.kids[0], from, ctx, depth);
         case 'Rep': {
             if (n.repCode) return gapAt();
@@ -5093,8 +5110,7 @@ function ltmReach(n, from, ctx, depth) {
                 if (!r.pos.size) break;
                 if (i + 1 >= min) for (const [p, l] of r.pos) add(p, l);
                 let next = r.pos;
-)RKJS",
-R"RKJS(                if (n.sep) { const rs = ltmReach(n.sep, next, ctx, depth + 1); if (rs.gap) { gap = true; break; } next = rs.pos; }
+                if (n.sep) { const rs = ltmReach(n.sep, next, ctx, depth + 1); if (rs.gap) { gap = true; break; } next = rs.pos; }
                 let grew = false; for (const [p, l] of next) { const c = cur.get(p); if (c === undefined || l > c) grew = true; }
                 if (!grew && i + 1 >= min) break;
                 cur = next;
@@ -5359,7 +5375,8 @@ function protoCandidates(ty, name) {
     for (const t of ty.mro) {
         if (!t.rules) continue;
         for (const key of Object.keys(t.rules)) {
-            if (!key.startsWith(name + ':') || seen.has(key)) continue;
+)RKJS",
+R"RKJS(            if (!key.startsWith(name + ':') || seen.has(key)) continue;
             seen.add(key);
             let sym = key.slice(name.length + 1);
             const mm = /^sym<(.*)>$/.exec(sym) || /^sym«(.*)»$/.exec(sym);
@@ -5383,8 +5400,7 @@ function subrule(n, st, pos, k) {
         undo(); if (undo2) undo2();
         return false;
     };
-)RKJS",
-R"RKJS(    if (n.dyn || name[0] === '$' || name[0] === '@') {   // <$var> / <@var> / <{ code }>: the value is the pattern — a Regex, or a string parsed as one
+    if (n.dyn || name[0] === '$' || name[0] === '@') {   // <$var> / <@var> / <{ code }>: the value is the pattern — a Regex, or a string parsed as one
         const v = n.dyn ? n.fn(cursorMatch(st, pos)) : n.fn ? n.fn() : Nil;   // a `<{ … }>` block runs NOW and sees the match so far as `$/`
         const rec = n.alias ? record : (sub, q) => k(q);
         const one = (x, cont) => { const rx = x instanceof RRegex ? x : rxFromString(str(x), !!(n.icase || st.rx.tree.icase)); return callRule({ rx, kind: rx.tree.ratchet ? 'token' : 'regex' }, capKey, { k: 'Subrule', name: capKey }, st, pos, cont); };
@@ -5605,7 +5621,8 @@ function parseRxString(src, ic) {
             return lit(e);
         }
         if (c === '.') { i++; return { k: 'Any' }; }
-        if (c === '^') { i++; if (src[i] === '^') { i++; return { k: 'AnchorStart', multiline: 1 }; } return { k: 'AnchorStart' }; }
+)RKJS",
+R"RKJS(        if (c === '^') { i++; if (src[i] === '^') { i++; return { k: 'AnchorStart', multiline: 1 }; } return { k: 'AnchorStart' }; }
         if (c === '$') { i++; if (src[i] === '$') { i++; return { k: 'AnchorEnd', multiline: 1 }; } if (/[\w<]/.test(src[i] || '')) bad('a variable'); return { k: 'AnchorEnd' }; }
         if (src.startsWith('>>', i)) { i += 2; return { k: 'WBRight' }; }
         if (c === '«') { i++; return { k: 'WBLeft' }; }
@@ -5620,8 +5637,7 @@ function parseRxString(src, ic) {
         let node = null;
         if (src.startsWith('**', i)) {
             i += 2; ws();
-)RKJS",
-R"RKJS(            const mm = /^(\d+)(?:\s*(\.\.)\s*(\d+|\*))?/.exec(src.slice(i)); if (!mm) bad('a ** quantifier of this form'); i += mm[0].length;
+            const mm = /^(\d+)(?:\s*(\.\.)\s*(\d+|\*))?/.exec(src.slice(i)); if (!mm) bad('a ** quantifier of this form'); i += mm[0].length;
             node = { k: 'Rep', min: Number(mm[1]), max: mm[2] ? (mm[3] === '*' ? -1 : Number(mm[3])) : Number(mm[1]), kids: [a] };
         } else if (c === '*' || c === '+' || c === '?') { i++; node = { k: 'Rep', min: c === '+' ? 1 : 0, max: c === '?' ? 1 : -1, kids: [a] }; }
         if (!node) return a;
