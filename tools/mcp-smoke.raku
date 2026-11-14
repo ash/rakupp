@@ -119,6 +119,36 @@ check reply(16).contains(Q{=> 41}), 'the session SURVIVES the exit attempt', rep
 check reply(17).contains(Q{\"made\":\"2026-08-10\"}),
     'a made Date crosses as its Str, not as the hash of its fields', reply(17);
 
+# ---- JSON at the edges ------------------------------------------------------
+# A number off JSON's grammar is a parse error, not a request: strtod alone
+# read `1e+` as 1 and ran the ping under a different id. An unpaired surrogate
+# escape has no UTF-8, so it comes back as U+FFFD, never as the bytes ED A0 80
+# that a strict client cannot decode; a real pair still makes its character.
+
+my @edge =
+    Q<{"jsonrpc":"2.0","id":1e+,"method":"ping"}>,
+    Q<{"jsonrpc":"2.0","id":1.2.3,"method":"ping"}>,
+    Q<{"jsonrpc":"2.0","id":01,"method":"ping"}>,
+    Q<{"jsonrpc":"2.0","id":1e999,"method":"ping"}>,
+    Q<{"jsonrpc":"2.0","id":-0.5e-3,"method":"ping"}>,
+    Q<{"jsonrpc":"2.0","id":"\ud800A","method":"ping"}>,
+    Q<{"jsonrpc":"2.0","id":"😀","method":"ping"}>,
+    ;
+my $e = run $rakupp.Str, '--mcp', '--timeout=60', :in, :out, :err, :bin;
+$e.in.write(@edge.join("\n").encode ~ "\n".encode);
+$e.in.close;
+my $ebytes = $e.out.slurp(:close);
+$e.err.slurp(:close);
+my @elines = (try $ebytes.decode('utf8-c8')).lines // ();
+check @elines.elems == 7 && @elines[^4].grep(*.contains('-32700')) == 4,
+    'a number off JSON\'s grammar is a parse error', @elines[^4].join("\n");
+check @elines[4].contains(Q{"id":-0.0005,}), 'a well-formed exponent still parses', @elines[4] // '';
+check !$ebytes.list.rotor(2 => -1).first({ .[0] == 0xED && 0xA0 <= .[1] <= 0xBF }),
+    'no surrogate is ever written as UTF-8';
+check @elines[5].contains("\"id\":\"\x[FFFD]A\"") && @elines[6].contains("\"id\":\"\x[1F600]\""),
+    'an unpaired surrogate becomes U+FFFD; a pair its character',
+    @elines[5..6].join("\n");
+
 # ---- the watchdog -----------------------------------------------------------
 # `loop {}` cannot be interrupted, so the contract is: answer the request
 # (isError), then EXIT so the client can restart a fresh session. Both halves

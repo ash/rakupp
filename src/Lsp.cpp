@@ -205,8 +205,9 @@ struct JsonParser {
                             if (cp >= 0xD800 && cp <= 0xDBFF && i + 6 <= s.size()
                                 && s[i] == '\\' && s[i + 1] == 'u') {
                                 unsigned lo = 0;
-                                if (hex4(s, i + 2, lo)) { i += 6; cp = 0x10000 + ((cp - 0xD800) << 10) + (lo - 0xDC00); }
+                                if (hex4(s, i + 2, lo) && lo >= 0xDC00 && lo <= 0xDFFF) { i += 6; cp = 0x10000 + ((cp - 0xD800) << 10) + (lo - 0xDC00); }
                             }
+                            if (cp >= 0xD800 && cp <= 0xDFFF) cp = 0xFFFD;   // unpaired: no UTF-8 for it (as JsonLite)
                             appendUtf8(cp, out);
                         }
                         break;
