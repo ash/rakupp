@@ -5347,8 +5347,8 @@ static inline void detonateFailureKeyAt(const Value& key) {
 }
 Value rtIndexGet(const Value& base, const Value& key, bool isHash) {
     detonateFailureKeyAt(key);
-    // a packed array's element from its word, a self-packed one's too
-    // (rtIndexGetP's test): arr() below would unpack it for good
+    if (base.t == VT::Type && key.t == VT::Type && !isHash) return rtParameterizeType(base, key);   // `CArray[$T]` (#261)
+    // a packed array's element from its word, a self-packed one's too (rtIndexGetP's test): arr() below would unpack it for good
     if (!isHash && base.pk_ == PK::Packed && key.t == VT::Int && base.t == VT::Array && base.packedLive() &&
         !key.big() && key.hashKind.empty() && key.enumName().empty() && base.hashKind.empty() && !base.elemDefault()) {
         const PackedArr* pa = base.packed();
