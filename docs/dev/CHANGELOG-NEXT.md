@@ -24,7 +24,7 @@ f8b5555c, ce72763f, bfd530f9, eb482a9f, 7e5a643e, 6b8c1d1a, 41150ad1,
 2eafbb23, bec86076, ea466f67, ef2e778b, 112a0cdb, a247fad2, 9a6eeb85,
 251842c2, fcc6d577, 3a3fc21e, 62ada605, 9f94cac7, 2fe0aeeb, 1f3377ea,
 8f7ac1df, 6de9d27b, ce54f928, d3059bf5, f1491b3e, 06212d97, e89cc6a7,
-a213ccad.*
+a213ccad, 02b24803, 9e948ff3.*
 
 ---
 
@@ -63,6 +63,20 @@ a213ccad.*
   `t/regression/enum-how-add-enum-value.raku`.
 
 ### Faster
+
+- **A sequence whose generator outgrows a double, and big-Int addition**
+  (02b24803) (rakudo#2844). `1, 1, * + * ... *` to 40k terms took 0.92 s,
+  against Rakudo's 0.07. Each step numified the last element for a step the
+  closure does not use, through the decimal string, and an Int past 1e315 is
+  now ±Inf without one. BigInt addition carries with a compare and allocates
+  once: 40k terms 0.03 s, and 200k Fibonacci steps in a loop 2.46 → 0.71 s
+  (Rakudo 0.79). `t/regression/sequence-generator-over-huge-ints.raku`.
+- **`my $ = …` and a ternary on the right of a declaration** (9e948ff3)
+  (rakudo#1416). An anonymous `my $` missed the declaration lane and the loop
+  kernel a named one takes. `for ^3_000_000 { my $ = 1 }` went from 0.48 s to
+  0.003 s. `my $x = COND ?? A !! B` over variables and literals takes the
+  lane: `my $ = $n ?? 1 !! Nil` 0.54 → 0.21 s (Rakudo 0.22).
+  `t/regression/anonymous-my-and-ternary-on-declaration-lane.raku`.
 
 ### Fixed: silent wrong answers
 

@@ -18,6 +18,14 @@ sitting, plus whatever tail is cheapest, so that no front falls behind.
 The same items grouped by theme, with a complexity estimate for each:
 [SPEED-BACKLOG.md](SPEED-BACKLOG.md).
 
+- [ ] **A declaration whose right side the lane cannot compute** (2026-11-14,
+  SPEED-BACKLOG row 56, from RAKUDO-ISSUES-PLAN R11): `my $x = f()`,
+  `my $ = nqp::if($n, 1)` and other right sides with effects pay the full
+  declaration path, evalAssignInner. rakudo#1416's `nqp::` loops are 2.5–9×
+  Rakudo. Literals, plain variables, the typed operators and a ternary over
+  them take the lane. Next: let evalAssignInner take a right side already
+  evaluated, after moving the declaration arm out of InterpreterCore.cpp,
+  which is at its ceiling.
 - [ ] **What a thrown exception costs** (2026-11-06, SPEED-BACKLOG row 55):
   libc++abi scans each frame's call-site table up to its call, in both unwind
   passes, so a throw costs more the larger the frames it crosses. A method
@@ -259,9 +267,11 @@ The same items grouped by theme, with a complexity estimate for each:
   refused. Behind them is a battery scan green against v5.8.0. Decision 2's
   re-measure fixed four strict-separation false positives, among them
   `return not`, which returned Nil. Whole-file strictness still waits on 31
-  battery files that need EXPORT-made operators and slangs. Next step: R11,
-  speed, handed to SPEED-BACKLOG.md, then R12; the rest of R10's LAX list
-  stays open.
+  battery files that need EXPORT-made operators and slangs. R11 is done
+  (02b24803, 9e948ff3, 2026-11-14): rakudo#2844's sequence and big-Int
+  addition, and rakudo#1416's anonymous `my $` and ternary declarations. The
+  issue's `nqp::` forms are SPEED-BACKLOG row 56, in §1. Next step: R12; the
+  rest of R10's LAX list stays open.
 - [ ] **A native array's derived lists hand out boxed elements**, found
   2026-11-06 beside the native-element work: `.head`, `.tail`, `.list`, a
   slice `@a[1..2]`, `.reverse`, `.sort`, `.kv`, `.values`, `.pairs` and a

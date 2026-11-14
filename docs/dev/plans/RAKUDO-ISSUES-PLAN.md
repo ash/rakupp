@@ -607,15 +607,39 @@ green: 2,775 module files, 0 regressions.*
 
 ### R11 — speed, handed to SPEED-BACKLOG.md
 
-- **rakudo#2844 ✓:** `1,1,*+*...*` to 40k terms takes 1.5 s here and 0.28 s
-  in Rakudo. The time grows quadratically, and lives in the sequence
-  operator's two-argument generator path; the same numbers from a `gather`
-  loop take 0.23 s.
-- **rakudo#1416 ✓:** a hot loop of `my $ = …` is about 3.4× slower than in
-  Rakudo.
+Done 2026-11-14 (02b24803, 9e948ff3), but for the `nqp::` forms of rakudo#1416,
+which are SPEED-BACKLOG row 56.
 
-These are scheduled by the speed track (one speed item per sitting), not
-here.
+- **rakudo#2844, done:** `1, 1, * + * ... *` to 40k terms took 0.92 s here and
+  0.07 s in Rakudo, and our own `gather` 0.30 s. Both engines grow
+  quadratically here, as the terms do; the factor was in two places.
+  - Each lazy step numified the last element for a numeric step a generator
+    closure does not use. An Int of thousands of digits numified through its
+    decimal string and strtod: 51 µs at 9,500 digits, against 4.5 µs for the
+    addition. An Int of 36 limbs or more (at least 1e315) is now ±Inf without
+    the string, and the closure path reads no number.
+  - BigInt addition carried with a division and grew its result a limb at a
+    time. It now carries with a compare, into one allocation.
+  - 40k terms: 0.92 → 0.03 s. 200k Fibonacci steps in a plain loop: 2.46 →
+    0.71 s (Rakudo 0.79).
+  - `t/regression/sequence-generator-over-huge-ints.raku`, with 300 random sums
+    against a schoolbook addition.
+- **rakudo#1416, its Raku shapes done:** a loop of `my $ = …` was slow in two
+  ways.
+  - An anonymous `my $` is named `$` + "\x01anonN", which failed the name test
+    of the declaration lane and of the loop kernel. `for ^3_000_000 { my $ = 1 }`
+    took 0.48 s against 0.003 s for `my $x = 1`; both now take 0.003 s.
+  - A ternary on the right, the Raku shape of the issue's `nqp::if`, took the
+    full path. A ternary whose condition the lane computes, and whose picked
+    branch it can give, now takes the lane. `my $ = $n ?? 1 !! Nil` went from
+    0.54 to 0.21 s (Rakudo 0.22).
+  - `t/regression/anonymous-my-and-ternary-on-declaration-lane.raku`.
+  - **Left, SPEED-BACKLOG row 56:** a right side the lane cannot compute
+    without effects (a call, a method, an `nqp::` op) pays the full declaration
+    path. The issue's `my $ = nqp::if($n, 1)` over 30M takes 5.4 s against
+    Rakudo's 1.4, and with `nqp::isne_i` 6.9 s against 0.77. The fix lets
+    evalAssignInner take a right side already evaluated. It lives in
+    InterpreterCore.cpp, which is at its line ceiling.
 
 ### R12 — last
 
@@ -695,6 +719,7 @@ Each is answered when its batch starts, not before.
 | R8, 2026-11-13 | named items done; strings, numeric and datetime remainders open | bfd530f9, eb482a9f, 7e5a643e, 6b8c1d1a | 1,324 | 1,425/1,425 | 2317/2317 |
 | R9, 2026-11-13 | done but rakudo#4517 (nested coercion types) | 41150ad1 … 62ada605 | 1,329 | 1,425/1,425 | 2329/2329 |
 | R10, 2026-11-14 | named items done; NativeCall types, `CATCH(1)` and the rest of LAX open; whole-file strictness still open (decision 2) | 9f94cac7 … a213ccad | 1,358 | 1,425/1,425 | 2339/2339 |
+| R11, 2026-11-14 | done but rakudo#1416's `nqp::` forms (SPEED-BACKLOG row 56) | 02b24803, 9e948ff3 | 1,357 | 1,425/1,425 | 2341/2341 |
 
 R1's per-file changes against the baseline:
 - **3686 and 5835:** TIMEOUT to MATCH.
@@ -829,3 +854,15 @@ The battery scan against the v5.8.0 release build was GREEN: 2,775 files,
 2,744 compile under both, 31 fail under both, 0 regressions. Parser,
 regex checker and interpreter changed, so the full t/exe/parity.raku ran:
 1,664 agree, 0 differ, 11 skipped.
+
+R11's per-file changes against R10:
+- **5329/0:** MATCH to DIFF-OUT. This is noise, as in R9: its output differs
+  between runs of one binary. No other snippet changed. The two issues'
+  snippets print their own timings, so they are compared by hand above.
+
+The kernel and interpreter changed, so the full t/exe/parity.raku ran: 1,665
+agree, 0 differ, 12 skipped. t/scaling's run domain had 76 shapes linear and
+the 2 known ones superlinear. perf-guard flagged junctionwide at +52%
+against its recorded baseline. It takes 24–25 ms on this batch and on v5.8.0
+alike (an A/B with the order swapped), so the baseline is stale, and the
+batch did not cause it.

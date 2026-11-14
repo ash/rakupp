@@ -33,6 +33,7 @@ theme the rows are sorted by complexity, largest first.
 | 5 | Pass the thread context down instead of reading `tctx_` (20% of a walking `loopsum`) | XL | runLoopBody, execPlainBlock, exec, evalAssign — INTERP-SPEED-PLAN task 4 |
 | 6 | A dispatch table and type-keyed inline caches for built-in methods | XL | Design first: hashing the method chain alone measured slower — V6 P2, [DISPATCH-PERF-PLAN.md](DISPATCH-PERF-PLAN.md) |
 | 55 | A thrown exception pays for every large frame it crosses: libc++abi's personality routine scans a frame's call-site table linearly up to its call, in both unwind passes, and a frame's cleanup resumes the unwind from its landing pad, usually at the frame's end, scanning again. Since 2026-11-06 a method nothing takes, `.throw` and the built-in `die` are raised where the frames are small, and a user object's own method no longer runs under methodCallInner: `.throw` 4.0M → 0.6M instructions, a `die` in a method 1.5M → 0.96M, at the mainline 359K → 243K (below). Left: a `die` in a sub is 763K (about five times what Rakudo takes), most of it callCallableRaw's catch-and-rethrow through the caller's evalCall, whose cleanups are real (its `args`, a TranspCall) and sit at the end of a 3 KB table | M | A routine's error leaves callCallableRaw without the rethrow, or the caller's frames hold nothing to clean. Calling a program's routine from a helper outside evalCall cost the call kernels up to 1.6% and saved nothing |
+| 56 | A `my $x = EXPR` whose right side the declaration lane cannot compute without effects (a call, a method, an `nqp::` op) pays the full declaration path: evalAssignInner, lvalue, declInitial. rakudo#1416's `my $ = nqp::if($n, 1)` in a loop of 30M is 5.4 s against Rakudo's 1.4, and with `nqp::isne_i` 6.9 against 0.77. Literals, plain variables and the typed operators took the lane before; since 2026-11-14 a ternary over them does, and an anonymous `my $` takes the lane and the loop kernel as a named one does | M | Let the full path take a right side already evaluated, so the lane can evaluate any EXPR once and hand over a value it cannot store itself. evalAssignInner is in InterpreterCore.cpp, at its line ceiling, so the declaration arm moves out first — RAKUDO-ISSUES-PLAN R11 |
 | 16 | Graph #47: a lean `invokeMethod` path, then one for closures | M | A method or closure call is ~0.2 µs against Rakudo's ~0.08 — TODO.md |
 | 19 | Operator names as integers (the Int fast path for `div mod %% ** gcd lcm min max` is done, 2026-10-21) | M | V6 P2 |
 | 20 | The call-path cost shipped in v5.3.0 (`privmeth` +9.5%, `method` +8.6%) | M | `setupRwLinks` on calls with no rw parameter, SlotStripe single-threaded; A/B against v5.2.1 — TODO.md |
@@ -107,6 +108,25 @@ theme the rows are sorted by complexity, largest first.
 ---
 
 ## Closed since the first list (2026-10-14)
+
+- **rakudo#2844, a generator sequence over growing Ints** (02b24803,
+  2026-11-14; not a row before, RAKUDO-ISSUES-PLAN R11). Each step of `1, 1,
+  * + * ... *` numified the last element for a numeric step the generator
+  does not use, and an Int of thousands of digits numified through its
+  decimal string and strtod. An Int of 36 limbs or more is now ±Inf without
+  the string, and the lazy step reads no number when a closure makes the
+  next element. BigInt addition then carried by a division and grew its
+  result a limb at a time; it carries by a compare into one allocation.
+  40k terms 0.92 → 0.03 s (Rakudo 0.06–0.07); 200k Fibonacci steps in a
+  loop 2.46 → 0.71 s (Rakudo 0.79).
+
+- **rakudo#1416's Raku shapes: an anonymous `my $`, a ternary right side**
+  (9e948ff3, 2026-11-14; not a row before, RAKUDO-ISSUES-PLAN R11). The
+  anonymous slot's name, `$` + "\x01anonN", failed the declaration lane's and
+  the loop kernel's name test: `for ^3_000_000 { my $ = 1 }` 0.48 s →
+  0.003 s, as `my $x = 1`. A ternary whose condition the lane computes,
+  and whose picked branch it can give, takes the lane: `my $ = $n ?? 1 !!
+  Nil` 0.54 → 0.21 s (Rakudo 0.22). The `nqp::` forms are row 56.
 
 - **51, `--cnp` slowing a loop of multi-method calls** (2026-11-06). A call
   inside a kernel boxed each argument plain, where the interpreter's value
