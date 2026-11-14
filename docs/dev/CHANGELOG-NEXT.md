@@ -24,11 +24,27 @@ f8b5555c, ce72763f, bfd530f9, eb482a9f, 7e5a643e, 6b8c1d1a, 41150ad1,
 2eafbb23, bec86076, ea466f67, ef2e778b, 112a0cdb, a247fad2, 9a6eeb85,
 251842c2, fcc6d577, 3a3fc21e, 62ada605, 9f94cac7, 2fe0aeeb, 1f3377ea,
 8f7ac1df, 6de9d27b, ce54f928, d3059bf5, f1491b3e, 06212d97, e89cc6a7,
-a213ccad, 02b24803, 9e948ff3.*
+a213ccad, 02b24803, 9e948ff3, e60a6163, 657626c7, 13902c52, a397987e,
+e2981dc5, c5273f1e, 7df13701.*
 
 ---
 
 ### New
+
+- **`.AST` of a grammar rule, and DEPARSE of it as Rakudo renders it**
+  (657626c7) (rakudo#5479, #5978, #5991). It said "`.AST` does not yet build
+  a view for a grammar rule", unless the rule's whole body was one quoted
+  literal. The view now parses the rule's text into Rakudo's `Regex::`
+  nodes: literals and quotes, character classes, anchors, groups and
+  captures, named and look-around assertions, enumerated classes, `:my`,
+  code blocks, modifiers, quantifiers with their backtrack suffixes and
+  separators, and the four branchings. Anything else is refused by name.
+  DEPARSE gives Rakudo 2026.09's text for 33 probe bodies. A `unit` package
+  deparses as one, a package's parts come back in source order, and a
+  rule's `#|`/`#=` docs are its WHY. `t/regression/rakuast-grammar-rule-view.raku`.
+- **`nqp::time_n`** (a397987e): the seconds since the epoch as a Num, which
+  GLib::Timeout reads; it died "Undefined routine 'nqp::time_n'".
+  `t/regression/nqp-time-n.raku`.
 
 - **`t/exe/parity.raku`: a compiled program behaves as the interpreted one, or
   the gate fails** (5f0da948, a7fab7cb). Every program in `examples/` and
@@ -79,6 +95,20 @@ a213ccad, 02b24803, 9e948ff3.*
   `t/regression/anonymous-my-and-ternary-on-declaration-lane.raku`.
 
 ### Fixed: silent wrong answers
+
+- **Three from re-reading the UNCLEAR issue threads** (e2981dc5):
+  - `(1, 2) X~~ -> $ { True }`, `Z~~`, `»~~»`, `[~~]` and `infix:<~~>`
+    called never called a Callable matcher, and answered False
+    (rakudo#6793).
+  - `"中".encode("gbk")` handed back UTF-8 bytes for any name it did not
+    know. It dies X::Encoding::Unknown, as Rakudo does (rakudo#4102).
+  - `.base(10, 20, :no-trailing-zeroes)` ignored the flag; a Rat now drops
+    its trailing zeroes (rakudo#1872).
+
+  `t/regression/unclear-reread-fixes.raku`.
+- **`--exe`: `(1, 2) X~~ *.so` matches each element** (7df13701), as the
+  interpreter does, where compiled code curried the whole expression into one
+  WhateverCode. The codegen's smartmatch rule named only `~~` and `!~~`.
 
 - **`--exe` gives the program the interpreter gives** (the `--exe` parity
   round: 75425e0a … 00938a8e, four merged branches). From 160 divergences to
@@ -421,6 +451,25 @@ a213ccad, 02b24803, 9e948ff3.*
   `t/regression/sequence-generator-exclusive-endpoint.raku`.
 
 ### Behaves like Rakudo
+
+- **The `RakuAST::` names need no pragma** (e60a6163) (rakudo#6134, #6137).
+  Rakudo 2026.08 refused them under 6.d without `use experimental
+  :rakuast`, and Raku++ followed; 2026.09 refuses nothing. `RakuAST::Sub.new(…).EVAL`
+  runs, and `::('RakuAST::Node')` is the type where it was a Failure. The
+  pragma is accepted and changes nothing. `t/regression/rakuast-needs-no-pragma.raku`.
+- **Error wording the closed issues settled** (13902c52):
+  - `42.abs += 42` says "Cannot modify an immutable Int (42)", naming the
+    method's answer, where it said "Target is not assignable" (rakudo#1987).
+  - `MixHash.grab` answers a Failure, ".grab is not supported on a MixHash"
+    (rakudo#2109).
+  - A subset return type names the value it refuses: "got Rat (1.8)"
+    (rakudo#2595).
+  - `(Inf .. 5) / 0` says "divide Inf by zero"; the empty Range printed as
+    nothing (rakudo#3598).
+  - A busy port says "address already in use (address: localhost:11111)",
+    an X::AdHoc (rakudo#1266).
+
+  `t/regression/error-messages-rakudo-settled.raku`.
 
 - **A `<<` word boundary followed by a space opens no word list** (15997e10)
   (#239): `/ (<< [unit\s+]? [class|role] \s+) (Test) >> /` died "couldn't

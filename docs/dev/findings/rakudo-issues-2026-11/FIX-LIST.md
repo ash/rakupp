@@ -489,3 +489,94 @@ Every case where Raku++ crashes or hangs (PPCRASH), lacks something Rakudo has (
 
 
 (KNOWN-PHASER-VALUE, 42 cases in 23 issues: [#1323](https://github.com/rakudo/rakudo/issues/1323), [#1329](https://github.com/rakudo/rakudo/issues/1329), [#1368](https://github.com/rakudo/rakudo/issues/1368), [#1385](https://github.com/rakudo/rakudo/issues/1385), [#1415](https://github.com/rakudo/rakudo/issues/1415), [#1416](https://github.com/rakudo/rakudo/issues/1416), [#1491](https://github.com/rakudo/rakudo/issues/1491), [#1656](https://github.com/rakudo/rakudo/issues/1656), [#1668](https://github.com/rakudo/rakudo/issues/1668), [#1681](https://github.com/rakudo/rakudo/issues/1681), [#1740](https://github.com/rakudo/rakudo/issues/1740), [#1741](https://github.com/rakudo/rakudo/issues/1741), [#1973](https://github.com/rakudo/rakudo/issues/1973), [#2002](https://github.com/rakudo/rakudo/issues/2002), [#2387](https://github.com/rakudo/rakudo/issues/2387), [#2537](https://github.com/rakudo/rakudo/issues/2537), [#2925](https://github.com/rakudo/rakudo/issues/2925), [#2988](https://github.com/rakudo/rakudo/issues/2988), [#3185](https://github.com/rakudo/rakudo/issues/3185), [#3560](https://github.com/rakudo/rakudo/issues/3560), [#3620](https://github.com/rakudo/rakudo/issues/3620), [#4504](https://github.com/rakudo/rakudo/issues/4504), [#5919](https://github.com/rakudo/rakudo/issues/5919))
+
+## From the UNCLEAR re-read (2026-11-14)
+
+The 43 UNCLEAR cases were re-read with their issue threads, which the sweep had
+not downloaded, and every snippet was run again on both engines
+([unclear-reread.tsv](unclear-reread.tsv); review.tsv and
+harness/overrides.tsv carry the new verdicts). The tally: 16 PPBUG, 11 LAX,
+5 PPWIN, 3 BOTHOK, 3 NOISE, 1 SHARED, 1 INTERNAL, and 3 still UNCLEAR
+(2804.1, 4562.0, 6880.0), whose threads leave the answer open. The
+new PPBUG and LAX cases:
+
+### PPBUG, re-read (16)
+
+**control** (3)
+
+- [#1704](https://github.com/rakudo/rakudo/issues/1704) *(open)* — re-read 2026-11-14: Open; zoffix 2018-04-07 links #1571. Rakudo covers 5 of 8 sink cases, Raku++ none; it also skips sinking `1 but S;` and sub return values; `1 for 0` warns at line 0.
+- [#5528](https://github.com/rakudo/rakudo/issues/5528) *(open)* — re-read 2026-11-14: vrurg 2024-02-19: PHASER <statement> nesting is legit, the inner phaser attaches to the innermost loop block; lizmat 2024-10-20 agrees. Raku++ never runs the inner LAST.
+- [#5528](https://github.com/rakudo/rakudo/issues/5528) *(open)* — re-read 2026-11-14: Same ruling (vrurg 2024-02-19, lizmat 2024-10-20). Raku++ runs the inner FIRST only when the outer LAST fires.
+
+**nativecall** (2)
+
+- [#1767](https://github.com/rakudo/rakudo/issues/1767) *(open)* — re-read 2026-11-14: lizmat 2018-04-24 suggests a compose-time complaint (not done). Raku++ fails sooner: `my p_timespec $t` drops a lowercase type name (type Any); CPointer attrs are accepted too.
+- [#3173](https://github.com/rakudo/rakudo/issues/3173) — re-read 2026-11-14: irced 2019-09-11 (closing reply, NativeCall docs): members aren't containers, bind in TWEAK (works on both). Raku++ stores junk for HAS init and lets RO accessors assign.
+
+**numeric** (2)
+
+- [#1596](https://github.com/rakudo/rakudo/issues/1596) — re-read 2026-11-14: ab5tract 2024-05-20 closed: nothing leaks; his variants print <1/2> and Rational.new(1, 2). Raku++ prints 0.5 for all: .raku of a Rat subclass must not use the decimal form.
+- [#1872](https://github.com/rakudo/rakudo/issues/1872) — re-read 2026-11-14: lizmat 2020-01-10: DIHWIDT as documented, added :no-trailing-zeroes (97e7cdbd54). Raku++ lacks it: <1/2>.base(10, 20, :no-trailing-zeroes) gives 0.5000... not 0.5. (fixed e2981dc5)
+
+**syntax** (2)
+
+- [#1234](https://github.com/rakudo/rakudo/issues/1234) *(open)* — re-read 2026-11-14: jnthn 2017-11-05 agrees «a\ b» is one word keeping the space; lizmat 2024-10-01: needs a language bump. Raku++'s "ab" fits neither reading.
+- [#2467](https://github.com/rakudo/rakudo/issues/2467) *(open)* — re-read 2026-11-14: lizmat 2024-10-08: make sub postfix:<ⁿ> a full citizen with docs and tests. Rakudo exposes it (&postfix:<ⁿ>(2, 3) is 8); Raku++ has no such symbol.
+
+**dispatch** (1)
+
+- [#5717](https://github.com/rakudo/rakudo/issues/5717) *(open)* — re-read 2026-11-14: No comments; the title calls the hang a bug. Raku++ drops a lazy Seq slipped into a capture (*@a gets 0 elems) though |(^Inf) binds lazily.
+
+**exceptions** (1)
+
+- [#3580](https://github.com/rakudo/rakudo/issues/3580) *(open)* — re-read 2026-11-14: Open; users only (2023-08/09). Raku++ blames the if line; Rakudo has a similar off-line bug in variants. Also Raku++ throws at Str < Int where Rakudo returns a Failure.
+
+**lists** (1)
+
+- [#2033](https://github.com/rakudo/rakudo/issues/2033) *(open)* — re-read 2026-11-14: zoffix 2018-07-22 leaves &by vs :&by open. The diff is Code.Str: documented as the name plus a warning; Raku++ gives sub { ... } or &foo silently, so cmp flips.
+
+**oo** (1)
+
+- [#6793](https://github.com/rakudo/rakudo/issues/6793) *(open)* — re-read 2026-11-14: lizmat 2026-11-11 golfed Rakudo's bug to `BEGIN my @` (fine on Raku++). Raku++'s False: infix:<~~> in X~~, Z~~, »~~», [~~] never calls a Callable RHS. (fixed e2981dc5)
+
+**pod** (1)
+
+- [#1244](https://github.com/rakudo/rakudo/issues/1244) — re-read 2026-11-14: Topic (C<> in cells) left open: tbrowder 2019-08-21 not fixed, doable; closed by reporter 2021-09-08; both keep raw text. Diff: Raku++ keeps the trailing row separator.
+
+**regex** (1)
+
+- [#2608](https://github.com/rakudo/rakudo/issues/2608) — re-read 2026-11-14: jnthn 2019-01-25/28 (da6d40adab, 3d581c8d23): a regex value in Bool context matches the $_ captured at closure clone; 6.c stays dynamic. Raku++ uses the caller's $_.
+
+**test** (1)
+
+- [#2258](https://github.com/rakudo/rakudo/issues/2258) — re-read 2026-11-14: lizmat 2024-10-06 closed (open a problem-solving issue if wanted); Rakudo unchanged: istype($var, $type.WHAT). Raku++ autothreads .isa over the Junction.
+
+
+### LAX, re-read (11)
+
+**syntax** (5)
+
+- [#1234](https://github.com/rakudo/rakudo/issues/1234) *(open)* — re-read 2026-11-14: Lines lack ;: Rakudo refuses, Raku++'s deliberate tolerant split accepts (as #4429.0). Topic is SHARED: jnthn 2017-11-05 wants one word, both engines split.
+- [#1503](https://github.com/rakudo/rakudo/issues/1503) — re-read 2026-11-14: jnthn 2018-02-09: `constant Int $foo` is the wrong (ambiguous) syntax; write `my Int constant $foo`, done by zoffix 2018-06-28. Raku++ accepts the wrong form.
+- [#1504](https://github.com/rakudo/rakudo/issues/1504) — re-read 2026-11-14: Per #1503 (jnthn 2018-02-09) the type precedes constant; ab5tract 2024-05-16 closed once the `my Foo::Bar constant` form worked (it does on both). Raku++ also takes this order.
+- [#1504](https://github.com/rakudo/rakudo/issues/1504) — re-read 2026-11-14: Same as 1504.0 (jnthn 2018-02-09, ab5tract 2024-05-16). The right form works on both engines.
+- [#1942](https://github.com/rakudo/rakudo/issues/1942) *(open)* — re-read 2026-11-14: lizmat 2024-10-04 calls RakuAST's map(Seq:D) error an improvement. Raku++ binds a Seq or List to an &-sigil parameter without the Callable check.
+
+**regex** (3)
+
+- [#1894](https://github.com/rakudo/rakudo/issues/1894) — re-read 2026-11-14: jnthn 2018-06-01: <.foo> is always a non-capturing method call, <&foo> the lexical call; moved to doc issue. Raku++ resolves <.t> to the lexical token.
+- [#1894](https://github.com/rakudo/rakudo/issues/1894) — re-read 2026-11-14: Same ruling (jnthn 2018-06-01). The grammar parts print the same on both engines.
+- [#3119](https://github.com/rakudo/rakudo/issues/3119) — re-read 2026-11-14: jnthn 2020-02-05: to spec; regexes are code objects and are invoked; smartmatch &P::r instead (both give ｢match｣). Raku++ calls r with no args.
+
+**dispatch** (1)
+
+- [#3503](https://github.com/rakudo/rakudo/issues/3503) — re-read 2026-11-14: vrurg 2020-02-21 (reporter): intended behaviour. Raku++ prefers the subclass candidate instead of reporting the ambiguity.
+
+**lists** (1)
+
+- [#6075](https://github.com/rakudo/rakudo/issues/6075) — re-read 2026-11-14: lizmat 2026-05-25 fixed Seq cmp (ee30c34fff); with ; added both print More x4. As written the lines lack ;, which Raku++'s tolerant split accepts (#4429.0).
+
+**strings** (1)
+
+- [#4102](https://github.com/rakudo/rakudo/issues/4102) *(open)* — re-read 2026-11-14: Open feature request (only melezhik 2020-12-10). Raku++ .encode falls back to UTF-8 for any unknown name ("x".encode("nonsense")); .decode refuses. (fixed e2981dc5)
+

@@ -270,8 +270,30 @@ The same items grouped by theme, with a complexity estimate for each:
   battery files that need EXPORT-made operators and slangs. R11 is done
   (02b24803, 9e948ff3, 2026-11-14): rakudo#2844's sequence and big-Int
   addition, and rakudo#1416's anonymous `my $` and ternary declarations. The
-  issue's `nqp::` forms are SPEED-BACKLOG row 56, in §1. Next step: R12; the
-  rest of R10's LAX list stays open.
+  issue's `nqp::` forms are SPEED-BACKLOG row 56, in §1. R12's first pass is
+  done (e60a6163 … 7df13701, 2026-11-14):
+  - the RakuAST pragma gate is gone, as in Rakudo 2026.09;
+  - `.AST` builds a grammar rule's regex tree;
+  - five settled error wordings;
+  - `nqp::time_n`;
+  - the 43 UNCLEAR cases re-read with their threads, and three of the fixes
+    found there.
+  Left in R12: `.raku` of a RakuAST node (a port of Raku.rakumod, its own
+  task), the re-read's 13 PPBUG and 11 LAX cases (FIX-LIST.md's last
+  section), and the SHARED threads, still to download. The rest of R10's
+  LAX list stays open.
+- [ ] **Five suspected bugs the UNCLEAR re-read runs turned up**
+  (2026-11-14, not yet reproduced by hand):
+  - a `react` over `IO::Socket::Async.listen("localhost", 111390)`, a port
+    past 65535, ends the program with exit 0 and no output; `listen` does
+    not range-check the port;
+  - `my &g = sub {}; &g does R; say &g.does(R)` gives False, while
+    `&g ~~ R` gives True;
+  - `say (all(1,2) X+ 1)` gives `(2 3)`, where Rakudo gives `(all(2, 3))`;
+  - `my constant DR = role R does Numeric {}; role R[::T1,::T2] {}` fails to
+    parse with "illegal post-declaration";
+  - the runtime "Undefined routine" error reports line 0, for example for
+    `dd &postfix:<foo>`.
 - [ ] **A native array's derived lists hand out boxed elements**, found
   2026-11-06 beside the native-element work: `.head`, `.tail`, `.list`, a
   slice `@a[1..2]`, `.reverse`, `.sort`, `.kv`, `.values`, `.pairs` and a

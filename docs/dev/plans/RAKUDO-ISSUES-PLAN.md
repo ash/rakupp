@@ -643,22 +643,65 @@ which are SPEED-BACKLOG row 56.
 
 ### R12 — last
 
-- **The RakuAST API's extras:**
-  - `.AST` of a grammar rule (rakudo#5479, #5978, #5991);
-  - RakuDoc `.AST` trees (rakudo#5798, #5721);
-  - `RakuAST::Deparse::Highlight` (rakudo#5628);
-  - our demand for `use experimental :rakuast` where Rakudo makes none
-    (rakudo#6134, #6137);
-  - the 4 rakuast PPBUG cases.
-- **INTERNAL (29 cases):** `nqp::` ops, CompUnit and precomp internals,
-  `--ll-exception`. No shared expectation; fix only if a real module needs one.
-- **ERRMSG (41 cases):** error wording. Fix when a batch is already in the
-  code.
-- **SHARED (72 cases, 63 issues):** open Rakudo bugs we reproduce. Each waits
-  for the issue thread to agree on the answer, and is a chance to be right
-  first.
-- **UNCLEAR (43 cases):** re-read with the issue's comments, which the sweep
-  did not download.
+Started 2026-11-14 (e60a6163 … 7df13701). Done:
+
+- **The RakuAST pragma, rakudo#6134, #6137:** the `RakuAST::` names need no
+  `use experimental :rakuast`, as in Rakudo 2026.09. The gate copied
+  2026.08, which refused them under 6.d (e60a6163).
+- **`.AST` of a grammar rule, rakudo#5479, #5978, #5991:** the view parses a
+  rule's text into Rakudo's `Regex::` nodes, and DEPARSE renders them as
+  Deparse.rakumod does. It matches Rakudo on 33 probe bodies and all three
+  issues. A `unit` package deparses as one, a package's parts come back in
+  source order, and a rule's `#|`/`#=` docs are its WHY (657626c7).
+- **ERRMSG:** the five closed issues with a settled wording, rakudo#1266,
+  #1987, #2109, #2595, #3598 (13902c52). The other 36 are open issues whose
+  only difference is wording, mostly where Raku++'s is no worse; they stay
+  as recorded.
+- **INTERNAL:** only `nqp::time_n` is used by a battery module (GLib::Timeout),
+  and it is added (a397987e). 5723.1 runs, now that the gate is gone. The
+  other ops either have no battery user or already work: `nqp::istype`,
+  `getattr`, `bindattr`, `create` of a class, `sha1`, `getcomp`,
+  `istype_nd`. `nqp::backtrace` has one user, on an error path
+  (AttrX::Mooish).
+- **UNCLEAR, re-read with the threads (now downloaded):** 16 PPBUG, 11 LAX,
+  5 PPWIN, 3 BOTHOK, 3 NOISE, 1 SHARED, 1 INTERNAL, and 3 still unclear.
+  They are in FIX-LIST.md's last section and
+  `findings/rakudo-issues-2026-11/unclear-reread.tsv`. Three were fixed at
+  once (e2981dc5): `X~~`, `[~~]`, `»~~»` and `infix:<~~>` now call a Callable
+  matcher (rakudo#6793); `.encode` refuses an unknown encoding
+  (rakudo#4102); `.base` takes `:no-trailing-zeroes` (rakudo#1872).
+
+Left:
+
+- **`.raku` of a RakuAST node:** rakudo#5798, #5721, #5724 and the rest of
+  #5589. It prints only `RakuAST::Foo.new`, with no children. Rakudo's form
+  is Raku.rakumod: 225 per-class methods, about 40 special attributes, and
+  key padding over the names a class lists. It is a port of its own, and
+  every `.say` of a tree waits on it. #5724 also needs a Doc::Block's config
+  (`:lang<RakuDoc>`) kept, and #5589 the `:(…)` signature literal in the view.
+- **`RakuAST::Deparse::Highlight`, rakudo#5628:** Rakudo's module is built on
+  `nqp::gethllsym('Raku', …)` and on roles mixed into a Raku-level deparser
+  class; ours is C++. It needs a Raku-level deparser with `hsyn` hooks: XL,
+  and not scheduled.
+- **The re-read's PPBUG and LAX cases**, in FIX-LIST.md:
+  - Small ones: 1234.0 (`«a\ b»`, whose `\ ` the word lexer reads as
+    unspace), 1596.0, 1767.1 (a lowercase type name is dropped), 2033.2,
+    2258.0, 2467.2, 3580.0, 5717.0.
+  - The rest are M.
+  - LAX: 1503.0, 1504.0 and .1, 1894.0 and .1, 1942.0, 3119.0, 3503.0. Each
+    tightens what runs today, so each goes behind a battery scan.
+  - 1234.1 and 6075.0 are whole-file strictness (decision 2).
+- **SHARED (72 cases, 63 issues):** not re-read. The tokenless API allows 60
+  requests an hour, so the threads take two windows. They still wait for
+  their threads by definition.
+- **The re-read runs turned up five more suspected Raku++ bugs**, listed in
+  TODO.md §2 and not yet reproduced by hand:
+  - a `react` over a port past 65535 ends the program silently;
+  - `&g does R` and then `.does(R)` gives False;
+  - `all(1,2) X+ 1` loses its junction;
+  - "illegal post-declaration" for a role used in a constant before its
+    parameterized candidate;
+  - an "Undefined routine" error reports line 0.
 
 ## Decisions for the maintainer
 
@@ -720,6 +763,7 @@ Each is answered when its batch starts, not before.
 | R9, 2026-11-13 | done but rakudo#4517 (nested coercion types) | 41150ad1 … 62ada605 | 1,329 | 1,425/1,425 | 2329/2329 |
 | R10, 2026-11-14 | named items done; NativeCall types, `CATCH(1)` and the rest of LAX open; whole-file strictness still open (decision 2) | 9f94cac7 … a213ccad | 1,358 | 1,425/1,425 | 2339/2339 |
 | R11, 2026-11-14 | done but rakudo#1416's `nqp::` forms (SPEED-BACKLOG row 56) | 02b24803, 9e948ff3 | 1,357 | 1,425/1,425 | 2341/2341 |
+| R12, 2026-11-14 | first pass: RakuAST pragma and grammar-rule view, settled ERRMSG, `nqp::time_n`, UNCLEAR re-read; `.raku` of nodes, the re-read's PPBUG/LAX and SHARED open | e60a6163 … 7df13701 | 1,368 | 1,425/1,425 | 2346/2346 |
 
 R1's per-file changes against the baseline:
 - **3686 and 5835:** TIMEOUT to MATCH.
@@ -866,3 +910,16 @@ the 2 known ones superlinear. perf-guard flagged junctionwide at +52%
 against its recorded baseline. It takes 24–25 ms on this batch and on v5.8.0
 alike (an A/B with the order swapped), so the baseline is stale, and the
 batch did not cause it.
+
+R12's per-file changes against R11 (11 files, all to MATCH, none away from it):
+- **The RakuAST pragma** (e60a6163): 6134/0, 6137/0, 5723/1.
+- **The grammar-rule view** (657626c7): 5479/0, 5978/0, 5991/0.
+- **Settled error wording** (13902c52): 1266/0, 1987/0, 2109/1, 2595/2.
+- **The UNCLEAR re-read's fixes** (e2981dc5): 4102/0.
+
+The battery scan against v5.8.0 was GREEN: 2,775 files, 2,744 compile, 31
+fail under both, 0 regressions. The full t/exe/parity.raku found one
+divergence, which the new test exposed and is older than this batch:
+compiled, `(1, 2) X~~ *.so` curried the whole expression, because the
+codegen's smartmatch rule named only `~~` and `!~~`. 7df13701 applies it
+to `X~~` and `Z~~` too; then 1,671 agree, 0 differ, 11 skipped.

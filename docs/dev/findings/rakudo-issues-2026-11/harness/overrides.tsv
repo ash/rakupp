@@ -1,4 +1,45 @@
 1427.2	LAX	oo	`has Int $.count!` is accepted; Rakudo refuses it ("Negation metaoperator not followed by valid infix")
-3119.0	UNCLEAR	regex	`'match' ~~ P::r` for an `our regex` in a package: Raku++ False, Rakudo dies "Too few positionals"; neither obviously right
-2608.0	UNCLEAR	regex	`so $rr` (a Regex in Bool context inside .map) matches $_ in Raku++, Rakudo 2026.09 gives all False; closed Blin regression, intended answer unclear
 1631.0	NOISE	concurrency	`.throttle` event interleaving differs run to run
+1234.0	PPBUG	syntax	re-read 2026-11-14: jnthn 2017-11-05 agrees «a\ b» is one word keeping the space; lizmat 2024-10-01: needs a language bump. Raku++'s "ab" fits neither reading.
+1234.1	LAX	syntax	re-read 2026-11-14: Lines lack ;: Rakudo refuses, Raku++'s deliberate tolerant split accepts (as #4429.0). Topic is SHARED: jnthn 2017-11-05 wants one word, both engines split.
+1244.0	PPBUG	pod	re-read 2026-11-14: Topic (C<> in cells) left open: tbrowder 2019-08-21 not fixed, doable; closed by reporter 2021-09-08; both keep raw text. Diff: Raku++ keeps the trailing row separator.
+1503.0	LAX	syntax	re-read 2026-11-14: jnthn 2018-02-09: `constant Int $foo` is the wrong (ambiguous) syntax; write `my Int constant $foo`, done by zoffix 2018-06-28. Raku++ accepts the wrong form.
+1504.0	LAX	syntax	re-read 2026-11-14: Per #1503 (jnthn 2018-02-09) the type precedes constant; ab5tract 2024-05-16 closed once the `my Foo::Bar constant` form worked (it does on both). Raku++ also takes this order.
+1504.1	LAX	syntax	re-read 2026-11-14: Same as 1504.0 (jnthn 2018-02-09, ab5tract 2024-05-16). The right form works on both engines.
+1504.2	PPWIN	syntax	re-read 2026-11-14: Reporter (zoffix) listed this refusal as a defect; nobody defended it; ab5tract 2024-05-16 closed on the typed cases only. Rakudo takes the same adverb on a variable.
+1596.0	PPBUG	numeric	re-read 2026-11-14: ab5tract 2024-05-20 closed: nothing leaks; his variants print <1/2> and Rational.new(1, 2). Raku++ prints 0.5 for all: .raku of a Rat subclass must not use the decimal form.
+1704.1	PPBUG	control	re-read 2026-11-14: Open; zoffix 2018-04-07 links #1571. Rakudo covers 5 of 8 sink cases, Raku++ none; it also skips sinking `1 but S;` and sub return values; `1 for 0` warns at line 0.
+1767.1	PPBUG	nativecall	re-read 2026-11-14: lizmat 2018-04-24 suggests a compose-time complaint (not done). Raku++ fails sooner: `my p_timespec $t` drops a lowercase type name (type Any); CPointer attrs are accepted too.
+1872.0	PPBUG	numeric	re-read 2026-11-14: lizmat 2020-01-10: DIHWIDT as documented, added :no-trailing-zeroes (97e7cdbd54). Raku++ lacks it: <1/2>.base(10, 20, :no-trailing-zeroes) gives 0.5000... not 0.5.
+1894.0	LAX	regex	re-read 2026-11-14: jnthn 2018-06-01: <.foo> is always a non-capturing method call, <&foo> the lexical call; moved to doc issue. Raku++ resolves <.t> to the lexical token.
+1894.1	LAX	regex	re-read 2026-11-14: Same ruling (jnthn 2018-06-01). The grammar parts print the same on both engines.
+1942.0	LAX	syntax	re-read 2026-11-14: lizmat 2024-10-04 calls RakuAST's map(Seq:D) error an improvement. Raku++ binds a Seq or List to an &-sigil parameter without the Callable check.
+2033.2	PPBUG	lists	re-read 2026-11-14: zoffix 2018-07-22 leaves &by vs :&by open. The diff is Code.Str: documented as the name plus a warning; Raku++ gives sub { ... } or &foo silently, so cmp flips.
+2075.0	BOTHOK	lists	re-read 2026-11-14: lizmat and zoffix 2018-09-08..11: calls after IterationEnd violate the Iterator protocol; zoffix 2018-10-19 removed the roast check. Any answer is fine.
+2119.1	INTERNAL	strings	re-read 2026-11-14: No comments. :cc is the grammar's internal char-class quote role (Grammar.nqp tweak_cc), not a user quote adverb; the issue is about dead code in it.
+2258.0	PPBUG	test	re-read 2026-11-14: lizmat 2024-10-06 closed (open a problem-solving issue if wanted); Rakudo unchanged: istype($var, $type.WHAT). Raku++ autothreads .isa over the Junction.
+2402.0	NOISE	concurrency	re-read 2026-11-14: No comments; a test-file fragment. With use Test added Raku++ exits 0 silently inside react (no TAP); Rakudo reports X::React::Died for port 111390.
+2467.2	PPBUG	syntax	re-read 2026-11-14: lizmat 2024-10-08: make sub postfix:<ⁿ> a full citizen with docs and tests. Rakudo exposes it (&postfix:<ⁿ>(2, 3) is 8); Raku++ has no such symbol.
+2608.0	PPBUG	regex	re-read 2026-11-14: jnthn 2019-01-25/28 (da6d40adab, 3d581c8d23): a regex value in Bool context matches the $_ captured at closure clone; 6.c stays dynamic. Raku++ uses the caller's $_.
+2742.2	PPWIN	lists	re-read 2026-11-14: lizmat 2024-11-03 shows Sequence::Generator (the planned sequence engine) making (0...-∞).is-lazy True. Raku++ already does; Rakudo core hangs.
+2804.0	PPWIN	syntax	re-read 2026-11-14: No comments; the title calls the empty-name error LTA. Raku++ DWIMs here and names the symbol in its errors ('$bar'); every Rakudo $::() failure says ''.
+2804.1	UNCLEAR	syntax	re-read 2026-11-14: No comments. qq makes it $::("1"); Raku++ returns $1, while Rakudo's own ::('$1') says No such symbol '$1'. Open: is $1 a symbol ::() should find?
+3119.0	LAX	regex	re-read 2026-11-14: jnthn 2020-02-05: to spec; regexes are code objects and are invoked; smartmatch &P::r instead (both give ｢match｣). Raku++ calls r with no args.
+3173.0	PPBUG	nativecall	re-read 2026-11-14: irced 2019-09-11 (closing reply, NativeCall docs): members aren't containers, bind in TWEAK (works on both). Raku++ stores junk for HAS init and lets RO accessors assign.
+3503.0	LAX	dispatch	re-read 2026-11-14: vrurg 2020-02-21 (reporter): intended behaviour. Raku++ prefers the subclass candidate instead of reporting the ambiguity.
+3580.0	PPBUG	exceptions	re-read 2026-11-14: Open; users only (2023-08/09). Raku++ blames the if line; Rakudo has a similar off-line bug in variants. Also Raku++ throws at Str < Int where Rakudo returns a Failure.
+4102.0	LAX	strings	re-read 2026-11-14: Open feature request (only melezhik 2020-12-10). Raku++ .encode falls back to UTF-8 for any unknown name ("x".encode("nonsense")); .decode refuses.
+4562.0	UNCLEAR	dispatch	re-read 2026-11-14: Only CIAvash 2021-10-28 (golf), no ruling. Separate Raku++ bug: `my &g = sub {}; &g does R; &g.does(R)` is False while &g ~~ R is True.
+4752.1	BOTHOK	regex	re-read 2026-11-14: vrurg 2022-02-01: ** binds to the atom <same>, repeating a zero-width match; documented. lizmat 2024-05-04 cites that as the close reason. Raku++ now matches.
+4752.2	BOTHOK	regex	re-read 2026-11-14: Same ruling (vrurg 2022-02-01, lizmat 2024-05-04). Raku++ output now identical.
+4833.0	NOISE	modules	re-read 2026-11-14: Output depends on installed modules. lizmat 2022-03-29 fixed the dot-file crash (07b4422bf0). Raku++'s gist of .installed items differs.
+4935.0	SHARED	oo	re-read 2026-11-14: vrurg 2022-05-24 traced the leak to the group's default candidate; ab5tract 2026-10-03: not fixed. Snippet: Rakudo dies (#6793), Raku++ all(False...) per 6793.1.
+5528.0	PPBUG	control	re-read 2026-11-14: vrurg 2024-02-19: PHASER <statement> nesting is legit, the inner phaser attaches to the innermost loop block; lizmat 2024-10-20 agrees. Raku++ never runs the inner LAST.
+5528.1	PPBUG	control	re-read 2026-11-14: Same ruling (vrurg 2024-02-19, lizmat 2024-10-20). Raku++ runs the inner FIRST only when the outer LAST fires.
+5717.0	PPBUG	dispatch	re-read 2026-11-14: No comments; the title calls the hang a bug. Raku++ drops a lazy Seq slipped into a capture (*@a gets 0 elems) though |(^Inf) binds lazily.
+5778.1	PPWIN	lists	re-read 2026-11-14: lizmat 2025-02-16 (roast 30dc6a2995): a hyper result keeps the typed array only if the constraint allows, else a List. Rakudo 2026.09 still dies for <<~~<<.
+5854.0	PPWIN	oo	re-read 2026-11-14: ab5tract and MasterDuke17 2025-06-29: the class must nest. Rakudo keeps the replacement under 6.d on purpose and warns; Raku++ nests in 6.d too.
+6041.0	NOISE	perf	re-read 2026-11-14: Output includes elapsed time. ugexe 2026-06-08: Rakudo's / does not inline. Raku++ is about 5.7x slower on this native num loop: a perf lead.
+6075.0	LAX	lists	re-read 2026-11-14: lizmat 2026-05-25 fixed Seq cmp (ee30c34fff); with ; added both print More x4. As written the lines lack ;, which Raku++'s tolerant split accepts (#4429.0).
+6793.1	PPBUG	oo	re-read 2026-11-14: lizmat 2026-11-11 golfed Rakudo's bug to `BEGIN my @` (fine on Raku++). Raku++'s False: infix:<~~> in X~~, Z~~, »~~», [~~] never calls a Callable RHS.
+6880.0	UNCLEAR	syntax	re-read 2026-11-14: lizmat 2026-10-25 only thanked. Open: which of the 2026.08 and 2026.09 results is intended. Raku++ matches 2026.09 on line 1; lines 2-3 differ only in gist.
