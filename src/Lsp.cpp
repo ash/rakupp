@@ -9,14 +9,15 @@
 // it decoupled from grammar/runtime churn — every parser improvement simply
 // makes the diagnostics sharper for free.
 //
-// The JSON here is hand-rolled (the project has no JSON dependency and LSP
-// traffic is small and regular). It handles exactly the message shapes the
-// protocol uses: framed `Content-Length` headers wrapping a JSON body.
+// The JSON value and its writer are this file's own; the parser is JsonLite's,
+// shared with --mcp and --jupyter. Messages are framed `Content-Length`
+// headers wrapping a JSON body.
 
 #include "Lsp.h"
 #include "CallCheck.h"
 #include "DeclCheck.h"
 #include "Lexer.h"
+#include "JsonLite.h"
 #include "Lint.h"
 #include "LspIndex.h"
 #include "Parser.h"
@@ -133,158 +134,32 @@ void dump(const Json& j, std::string& out) {
 std::string dump(const Json& j) { std::string s; dump(j, s); return s; }
 
 // -- parse ------------------------------------------------------------------
-// Four hex digits at `at`, or false — std::stoul threw std::invalid_argument on
-// `\uZZZZ` and nothing caught it (the MCP/Jupyter servers' JsonLite already
-// answers false here).
-static bool hex4(const std::string& s, size_t at, unsigned& out) {
-    if (at + 4 > s.size()) return false;
-    out = 0;
-    for (size_t k = 0; k < 4; k++) {
-        char c = s[at + k]; unsigned d;
-        if (c >= '0' && c <= '9') d = (unsigned)(c - '0');
-        else if (c >= 'a' && c <= 'f') d = (unsigned)(c - 'a' + 10);
-        else if (c >= 'A' && c <= 'F') d = (unsigned)(c - 'A' + 10);
-        else return false;
-        out = out * 16 + d;
+// JsonLite's parser, the one --mcp and --jupyter read with, converted to this
+// file's Json. This file had its own, which took a document with no closing
+// brace, trailing junk, a missing `:` or an unknown escape as a request, and
+// read a malformed number as 0 (Codex review 2026-11-14, finding 15). Two
+// parsers had two sets of such defects; one strict parser has none twice.
+// (A duplicate key keeps its last value, as the map always did.)
+Json fromLite(const json::Json& j) {
+    switch (j.t) {
+        case json::Json::T::Null: return Json();
+        case json::Json::T::Bool: return Json::B(j.b);
+        case json::Json::T::Int:  return Json::N((double)j.i);
+        case json::Json::T::Num:  return Json::N(j.n);
+        case json::Json::T::Str:  return Json::S(j.s);
+        case json::Json::T::Arr: {
+            Json a = Json::makeArr();
+            for (auto& e : j.arr) a.arr.push_back(fromLite(e));
+            return a;
+        }
+        case json::Json::T::Obj: {
+            Json o = Json::makeObj();
+            for (auto& kv : j.obj) o.obj[kv.first] = fromLite(kv.second);
+            return o;
+        }
     }
-    return true;
+    return Json();
 }
-
-struct JsonParser {
-    const std::string& s;
-    size_t i = 0;
-    int depth = 0; // nesting, capped as JsonLite caps it — 200k `[` was a stack overflow
-    explicit JsonParser(const std::string& src) : s(src) {}
-
-    void ws() { while (i < s.size() && (s[i] == ' ' || s[i] == '\t' || s[i] == '\n' || s[i] == '\r')) i++; }
-
-    Json parse() { ws(); return value(); }
-
-    Json value() {
-        ws();
-        if (i >= s.size()) return Json();
-        char c = s[i];
-        if (c == '{' || c == '[') {
-            if (++depth > 128) throw std::runtime_error("JSON nested too deeply");
-            Json r = c == '{' ? object() : array();
-            depth--;
-            return r;
-        }
-        if (c == '"') { Json j; j.type = Json::Str; j.str = string(); return j; }
-        // (the WORD, not its first letter: `tru` at the end of a message stepped
-        // past the end, and `nope` was a null followed by an `e`)
-        if (s.compare(i, 4, "true") == 0)  { i += 4; return Json::B(true); }
-        if (s.compare(i, 5, "false") == 0) { i += 5; return Json::B(false); }
-        if (s.compare(i, 4, "null") == 0)  { i += 4; return Json(); }
-        if (c == 't' || c == 'f' || c == 'n') { i = s.size(); return Json(); }   // no JSON: nothing more is read
-        return number();
-    }
-
-    std::string string() {
-        std::string out;
-        i++; // opening quote
-        while (i < s.size() && s[i] != '"') {
-            char c = s[i++];
-            if (c == '\\' && i < s.size()) {
-                char e = s[i++];
-                switch (e) {
-                    case 'n': out += '\n'; break;
-                    case 'r': out += '\r'; break;
-                    case 't': out += '\t'; break;
-                    case 'b': out += '\b'; break;
-                    case 'f': out += '\f'; break;
-                    case '/': out += '/'; break;
-                    case '"': out += '"'; break;
-                    case '\\': out += '\\'; break;
-                    case 'u': {
-                        if (i + 4 <= s.size()) {
-                            unsigned cp = 0;
-                            if (!hex4(s, i, cp)) { i += 4; break; } // not hex: drop the escape, keep parsing
-                            i += 4;
-                            // Surrogate pair -> astral code point.
-                            if (cp >= 0xD800 && cp <= 0xDBFF && i + 6 <= s.size()
-                                && s[i] == '\\' && s[i + 1] == 'u') {
-                                unsigned lo = 0;
-                                if (hex4(s, i + 2, lo) && lo >= 0xDC00 && lo <= 0xDFFF) { i += 6; cp = 0x10000 + ((cp - 0xD800) << 10) + (lo - 0xDC00); }
-                            }
-                            if (cp >= 0xD800 && cp <= 0xDFFF) cp = 0xFFFD;   // unpaired: no UTF-8 for it (as JsonLite)
-                            appendUtf8(cp, out);
-                        }
-                        break;
-                    }
-                    default: out += e;
-                }
-            } else {
-                out += c;
-            }
-        }
-        if (i < s.size()) i++; // closing quote
-        return out;
-    }
-
-    static void appendUtf8(unsigned cp, std::string& out) {
-        if (cp < 0x80) {
-            out += static_cast<char>(cp);
-        } else if (cp < 0x800) {
-            out += static_cast<char>(0xC0 | (cp >> 6));
-            out += static_cast<char>(0x80 | (cp & 0x3F));
-        } else if (cp < 0x10000) {
-            out += static_cast<char>(0xE0 | (cp >> 12));
-            out += static_cast<char>(0x80 | ((cp >> 6) & 0x3F));
-            out += static_cast<char>(0x80 | (cp & 0x3F));
-        } else {
-            out += static_cast<char>(0xF0 | (cp >> 18));
-            out += static_cast<char>(0x80 | ((cp >> 12) & 0x3F));
-            out += static_cast<char>(0x80 | ((cp >> 6) & 0x3F));
-            out += static_cast<char>(0x80 | (cp & 0x3F));
-        }
-    }
-
-    Json number() {
-        size_t start = i;
-        while (i < s.size() && (isdigit((unsigned char)s[i]) || s[i] == '-' || s[i] == '+'
-               || s[i] == '.' || s[i] == 'e' || s[i] == 'E')) i++;
-        Json j; j.type = Json::Num;
-        try { j.num = std::stod(s.substr(start, i - start)); } catch (...) { j.num = 0; }
-        return j;
-    }
-
-    Json array() {
-        Json j = Json::makeArr();
-        i++; // '['
-        ws();
-        if (i < s.size() && s[i] == ']') { i++; return j; }
-        while (i < s.size()) {
-            j.arr.push_back(value());
-            ws();
-            if (i < s.size() && s[i] == ',') { i++; continue; }
-            break;
-        }
-        ws();
-        if (i < s.size() && s[i] == ']') i++;
-        return j;
-    }
-
-    Json object() {
-        Json j = Json::makeObj();
-        i++; // '{'
-        ws();
-        if (i < s.size() && s[i] == '}') { i++; return j; }
-        while (i < s.size()) {
-            ws();
-            std::string key = string();
-            ws();
-            if (i < s.size() && s[i] == ':') i++;
-            j.obj[key] = value();
-            ws();
-            if (i < s.size() && s[i] == ',') { i++; continue; }
-            break;
-        }
-        ws();
-        if (i < s.size() && s[i] == '}') i++;
-        return j;
-    }
-};
 
 // ---------------------------------------------------------------------------
 // Positions: LSP speaks (0-based line, UTF-16 column); LspIndex speaks byte
@@ -428,9 +303,18 @@ public:
 private:
     // One message. Returns the exit code after `exit`, otherwise -1.
     int handle(const std::string& body) {
-        Json msg;
-        try { JsonParser p(body); msg = p.parse(); }
-        catch (std::exception&) { return -1; } // hostile input is dropped, never a crash
+        json::Json lite;
+        if (!json::parse(body, lite)) {
+            // JSON-RPC's answer to a body that is not JSON: a parse error with
+            // a null id, since no id could be read. Never a crash, never a guess.
+            Json err = Json::makeObj();
+            err.set("code", Json::N(-32700)).set("message", Json::S("parse error: the message body is not one JSON value"));
+            Json resp = Json::makeObj();
+            resp.set("jsonrpc", Json::S("2.0")).set("id", Json()).set("error", std::move(err));
+            write(resp);
+            return -1;
+        }
+        Json msg = fromLite(lite);
         if (!msg.isObj()) return -1;
         const Json& method = msg["method"];
         bool hasId = msg.obj.count("id") != 0;
