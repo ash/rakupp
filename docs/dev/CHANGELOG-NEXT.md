@@ -23,7 +23,7 @@ f8b5555c, ce72763f, bfd530f9, eb482a9f, 7e5a643e, 6b8c1d1a, 41150ad1,
 8f7ac1df, 6de9d27b, ce54f928, d3059bf5, f1491b3e, 06212d97, e89cc6a7,
 a213ccad, 02b24803, 9e948ff3, e60a6163, 657626c7, 13902c52, a397987e,
 e2981dc5, c5273f1e, 7df13701, 901a4cca, 2529675a, 0ab4bfc7, 4a2e4fec,
-43509bec, e374baff, 7f8773e2.*
+43509bec, e374baff, 7f8773e2, 222424a1.*
 
 ---
 
@@ -90,6 +90,12 @@ e2981dc5, c5273f1e, 7df13701, 901a4cca, 2529675a, 0ab4bfc7, 4a2e4fec,
   cannot decode; it is U+FFFD there and in `--lsp`, whose parser also turned
   `"\ud800A"` into U+2441. From the Codex review of 2026-11-14 (13, 14).
   `tools/mcp-smoke.raku`.
+- **`--lsp` refuses a body that is not JSON** (222424a1). A message missing its
+  closing brace was answered as an `initialize`, one with trailing junk as a
+  `shutdown`, and a missing `:`, an unknown escape or a malformed number was
+  read past. The server now parses with JsonLite, as `--mcp` and `--jupyter`
+  do, and answers -32700 with a null id. From the Codex review of 2026-11-14
+  (15). `t/regression/lsp-rejects-malformed-json.raku`.
 - **`--target=js` handles answer as the interpreter's do** (7f8773e2): `.getc`
   is a grapheme, where an emoji came out as half a surrogate pair; a closed
   handle throws X::IO::Closed, where `.get` read on; a Proc killed by a signal
