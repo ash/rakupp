@@ -4002,12 +4002,8 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
             if (inv.hashKind == "Set" || inv.hashKind == "Bag" || inv.hashKind == "Mix")
                 throw RakuError{Value::typeObj("X::Immutable"),
                     "Cannot call 'grab' on an immutable '" + inv.hashKind + "'"};
-            if (inv.hashKind == "MixHash") {   // a Failure, as Rakudo's (rakudo#2109)
-                Value f = rakuppNewFailure();
-                (*f.hash())["exception"] = Value::typeObj("X::AdHoc");
-                (*f.hash())["message"] = Value::str(".grab is not supported on a MixHash");
-                return f;
-            }
+            if (inv.hashKind == "MixHash")   // a Failure, as Rakudo's (rakudo#2109)
+                return armedFailure("X::AdHoc", ".grab is not supported on a MixHash");
             bool one = args.empty();
             bool all = !args.empty() && (args[0].t == VT::Whatever ||
                                          (args[0].t == VT::Num && std::isinf(args[0].n)));

@@ -4343,13 +4343,9 @@ Value& Interpreter::accessorRef(Value& base, const std::string& name) {
                 }
         return base.obj()->attrs[acc ? *slot : name];
     }
-    // `42.abs += 42`, `"ab".uc = 1`: the method's answer is a value, and the
-    // refusal names it, as Rakudo's does (rakudo#1987) — which means asking
-    if (base.t == VT::Int || base.t == VT::Num || base.t == VT::Rat || base.t == VT::Str ||
-        base.t == VT::Bool || (base.t == VT::Array && base.isList)) {
-        ValueList none;
-        throwImmutable(methodCall(base, name, none));
-    }
+    // `42.abs = 1` compiled: the refusal names the method's answer (rakudo#1987)
+    if (base.t == VT::Int || base.t == VT::Num || base.t == VT::Rat || base.t == VT::Str || base.t == VT::Bool ||
+        (base.t == VT::Array && base.isList)) { ValueList none; throwImmutable(methodCall(base, name, none)); }
     throw RakuError{Value::typeObj("X::Assignment::RO"), "Target is not assignable"};
 }
 
@@ -8954,7 +8950,6 @@ Value Interpreter::cglobal(const std::string& lib, const std::string& sym, const
     return ncReadElem((long long)(uintptr_t)addr, type, 0);
 }
 
-
 // A literal parameter — `sub f("a")`, `multi m(0)`, `-> 'about' { }` — takes
 // exactly that value. It is `Int $ where 0`: TYPED by the literal, so "0", 0.0
 // and 0e0 do not match `f(0)` (Rakudo), and NaN is its own literal (`multi
@@ -9256,7 +9251,6 @@ Value Interpreter::lazyTailOver(const ValueList& prefix, const Value& src) {
     return out;
 }
 
-
 // `$<p>:exists`, `$/[1]:!exists`, `$<a>:kv` / `:k` / `:v` / `:p` on a Match:
 // whether the capture is there, and the forms over that one capture (nothing
 // when it is absent). `done` says whether the adverb was one of these.
@@ -9310,7 +9304,6 @@ bool Interpreter::cmpEndlessLazy(const Value& l, const Value& r, Value& out) {
     }
     return false;
 }
-
 
 // A role seen from its own body (rolePackageValue), or as one of its group's
 // `.^candidates`, is made by ParametricRoleHOW; the bare role name answers
