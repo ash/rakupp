@@ -175,9 +175,8 @@ class RVec {
                 p.head[i] = b->next;
                 ::operator delete(static_cast<void*>(b));
             }
-            p.n[i] = 0;
+            p.n[i] = kPoolMax;   // full: a later block is freed, not kept (as SlabPool::drain)
         }
-        p.armed = false;   // a later block (another destructor's) re-arms
     }
     RAKUPP_NOINLINE static void armPool() {
         struct Reaper { ~Reaper() { drainPool(); } };
