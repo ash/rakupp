@@ -66,6 +66,18 @@ int main(void) {
           rk_type(c, v) == RK_ARRAY && rk_elems(c, v) == 3 &&
           rk_int_get(c, rk_at_pos(c, v, 1)) == 2, "an Array is walkable");
 
+    /* An element handle outlives growth of its array: rk_at_pos hands out an
+     * arena copy, not the address of a slot rk_push may move. */
+    {
+        RkValue a = rk_array(c), first;
+        int k;
+        rk_push(c, a, rk_str(c, "kept across growth", 18));
+        first = rk_at_pos(c, a, 0);
+        for (k = 0; k < 1000; k++) rk_push(c, a, rk_int(c, k));
+        check(strcmp(rk_str_get(c, first, 0), "kept across growth") == 0,
+              "an element handle survives its array growing");
+    }
+
     check(rk_eval(rk, "{ a => 1, b => 2 }", &v) == RK_OK &&
           rk_type(c, v) == RK_HASH && rk_elems(c, v) == 2 &&
           strcmp(rk_key_at(c, v, 0, 0), "a") == 0, "a Hash is walkable");

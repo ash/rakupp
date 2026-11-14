@@ -282,11 +282,10 @@ used on the next call is dangling.** There is no reference counting to save you.
 State that must persist across calls belongs in C, not in handles.
 
 Borrowed pointers from `rk_str_get` and `rk_key_at` are valid until the call
-returns, which is long enough to copy out of them and no longer. `rk_at_pos` is
-sharper than that: its handle points into the array's own storage, so a later
-`rk_push` on the same array can move it *within a single call*. Read it before
-you grow the array, or copy the value out. (`rk_val_at`'s handle is stable,
-because the hash keeps node addresses.)
+returns, which is long enough to copy out of them and no longer. The handles
+from `rk_at_pos` and `rk_val_at` are not borrowed: each is an arena copy of the
+element, so a later `rk_push` on the same array, or a change to the hash, leaves
+it intact for the rest of the call.
 
 The arena is what makes the boundary safe in both directions: the host cannot be
 made to leak by a careless extension, and an extension cannot hold a reference
