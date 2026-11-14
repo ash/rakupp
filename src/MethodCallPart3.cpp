@@ -1234,6 +1234,23 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
     // rounded either way.
     if (m == "base" && !args.empty() &&
         (inv.t == VT::Int || inv.t == VT::Bool || inv.t == VT::Num || inv.t == VT::Rat)) {
+        // `:no-trailing-zeroes` (rakudo#1872, which closed by adding it): a
+        // Rat's digits stop at its last non-zero one, and the point goes too
+        // when none is left. An Int or a Num keeps its zeroes, as in Rakudo.
+        for (size_t k = 0; k < args.size(); k++)
+            if (args[k].t == VT::Pair && args[k].s == "no-trailing-zeroes") {
+                const bool on = !args[k].pairVal() || args[k].pairVal()->truthy();
+                ValueList rest(args);
+                rest.erase(rest.begin() + (long)k);
+                Value out = methodCall(inv, "base", rest);
+                if (!on || inv.t != VT::Rat || out.t != VT::Str) return out;
+                std::string t = out.toStr();
+                if (t.find('.') != std::string::npos) {
+                    while (t.back() == '0') t.pop_back();
+                    if (t.back() == '.') t.pop_back();
+                }
+                return Value::str(t);
+            }
         Value bv = args[0];
         // `"camel"` and `"beer"` are base 2 written in emoji — Rakudo's joke,
         // and the only two non-numeric base names it accepts.
@@ -5084,6 +5101,14 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
                 "gb2312", "gb18030", "utf16", "utf16le", "utf16be", "utf32", "utf32le", "utf32be"};
             if (!kDecodes.count(norm))
                 throwTyped("X::AdHoc", {}, "Unknown string encoding: '" + enc + "'");
+        }
+        // …and `.encode("gbk")` dies too, where it handed back UTF-8 bytes for
+        // any name it did not know (rakudo#4102): the names encodings answer to
+        if (m == "encode" && !norm.empty()) {
+            bool knownEnc = true;
+            canonEncodingName(enc, &knownEnc);
+            if (!knownEnc)
+                throwTyped("X::Encoding::Unknown", {{"name", enc}}, "Unknown string encoding '" + enc + "'");
         }
         // windows-1252 is latin-1 except across 0x80..0x9F, where it carries
         // printable characters instead of C1 controls; Rakudo leaves the five

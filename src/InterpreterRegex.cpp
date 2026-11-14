@@ -4384,6 +4384,19 @@ Value Interpreter::smartmatchValue(const std::string& op, const Value& l, const 
 // benchmark — the checks never even run there (Int ~~ Int returns earlier),
 // so it was pure code layout. Gated by a cheap type test at the call site.
 bool valueSmartmatchHook(const std::string& op, const Value& l, const Value& r, Value& out) {
+    // `(1, 2) X~~ -> $ { True }`, `[~~]`, `»~~»`, `infix:<~~>(1, &c)`: a
+    // Callable matcher is CALLED with the topic, as evalBinary's own arm calls
+    // it, since every form that holds VALUES reaches this bottom (rakudo#6793).
+    // A Whatever topic is left to curry.
+    if (r.t == VT::Code && g_cbInterp && (op == "~~" || op == "!~~")) {
+        if (l.t == VT::Whatever || (l.t == VT::Code && l.code() && l.code()->ci().isWhateverCode)) return false;
+        Value m = g_cbInterp->callCallable(r, r.code() ? smartmatchCallArgs(r, l) : ValueList{l},
+                                           nullptr, false, /*arityCheck=*/true);
+        if (op == "~~" && m.t == VT::Match) { out = m; return true; }
+        const bool ok = g_cbInterp->boolify(m);
+        out = Value::boolean(op == "~~" ? ok : !ok);
+        return true;
+    }
     // `$x ~~ $obj` where $obj's class defines ACCEPTS — the general hook every
     // matcher type in Raku is built on. It lives HERE, at the bottom that every
     // smartmatch path converges on, and not in evalBinary or applyBinOp: the

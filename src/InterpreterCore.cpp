@@ -18730,7 +18730,7 @@ static Value applyArithGeneral(const std::string& op, const Value& l, const Valu
                           g_cbInterp->methodCall(rp, "absolute", ValueList{}).toStr();
         return Value::boolean(opEq(op, "~~") ? same : !same);
     }
-    if ((r.t == VT::Object || r.t == VT::Hash || l.t == VT::Object) && g_cbInterp &&
+    if ((r.t == VT::Object || r.t == VT::Hash || l.t == VT::Object || r.t == VT::Code) && g_cbInterp &&
         (opEq(op, "~~") || opEq(op, "!~~"))) {
         Value hooked;
         if (valueSmartmatchHook(op, l, r, hooked)) return hooked;
