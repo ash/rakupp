@@ -24,7 +24,7 @@ f8b5555c, ce72763f, bfd530f9, eb482a9f, 7e5a643e, 6b8c1d1a, 41150ad1,
 a213ccad, 02b24803, 9e948ff3, e60a6163, 657626c7, 13902c52, a397987e,
 e2981dc5, c5273f1e, 7df13701, 901a4cca, 2529675a, 0ab4bfc7, 4a2e4fec,
 43509bec, e374baff, 7f8773e2, 222424a1, 912cf744,
-d4a3b66c.*
+d4a3b66c, 7386791f, fa8d1ea7.*
 
 ---
 
@@ -104,6 +104,19 @@ d4a3b66c.*
   stdout or stderr is finished, where the rest of the buffer was dropped. From
   the Codex review of 2026-11-14 (08, 10, 11, 12).
   `t/regression/handle-closed-getc-astral-proc-signal.raku`.
+- **`--target=js` keeps a react or supply block working past an `await`**
+  (7386791f): a `whenever`, `emit` or `done` after `await` died "outside the
+  lexical scope of a react/supply block", and a `whenever` body that awaited
+  was cut off when its source finished. `.list` on a supply that finishes
+  later ran the supply's body twice, and came back as an unawaited Promise
+  unless the program mentioned a Channel. `Supply.from-list([42])` emits 42.
+  From the Codex review of 2026-11-14 (05, 06).
+- **`--target=js` reads bytes and keeps paths across `chdir`** (fa8d1ea7):
+  `.read(n)` returned the whole rest of the input, decoded as text, whatever n
+  was; it now hands out n raw bytes. A relative `IO::Path` made before a
+  `chdir` resolved against the new directory; it keeps the one it was made
+  in, as in Rakudo. From the Codex review of 2026-11-14 (07, 09).
+  `t/regression/supply-await-list-read-chdir-path.raku`.
 
 - **Three from re-reading the UNCLEAR issue threads** (e2981dc5):
   - `(1, 2) X~~ -> $ { True }`, `Z~~`, `»~~»`, `[~~]` and `infix:<~~>`
