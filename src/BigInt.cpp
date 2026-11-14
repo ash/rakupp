@@ -99,16 +99,23 @@ int BigInt::cmp(const BigInt& a, const BigInt& b) {
 }
 
 BigInt BigInt::addMag(const BigInt& a, const BigInt& b) {
+    // Sized once, the shorter one's limbs added into the longer one's. Two
+    // limbs and a carry stay under 2·BASE, so the carry is a compare where it
+    // was a division and a growing push_back per limb: a Fibonacci step at
+    // 4,000 digits was most of rakudo#2844's remaining time.
+    const BigInt& lo = a.mag.size() >= b.mag.size() ? a : b;
+    const BigInt& sh = &lo == &a ? b : a;
+    const size_t n = lo.mag.size(), m = sh.mag.size();
     BigInt r;
-    uint64_t carry = 0;
-    size_t n = std::max(a.mag.size(), b.mag.size());
-    for (size_t i = 0; i < n || carry; i++) {
-        uint64_t cur = carry;
-        if (i < a.mag.size()) cur += a.mag[i];
-        if (i < b.mag.size()) cur += b.mag[i];
-        r.mag.push_back((uint32_t)(cur % BASE));
-        carry = cur / BASE;
-    }
+    r.mag.resize(n + 1);
+    uint32_t* o = r.mag.data();
+    const uint32_t* x = lo.mag.data();
+    const uint32_t* y = sh.mag.data();
+    uint32_t carry = 0;
+    size_t i = 0;
+    for (; i < m; i++) { const uint32_t c = x[i] + y[i] + carry; carry = c >= BASE; o[i] = carry ? c - BASE : c; }
+    for (; i < n; i++) { const uint32_t c = x[i] + carry; carry = c >= BASE; o[i] = carry ? c - BASE : c; }
+    o[n] = carry;
     r.sign = 1;
     r.trim();
     return r;
@@ -1252,6 +1259,9 @@ double BigInt::toDouble() const {
         for (int i = (int)mag.size() - 1; i >= 0; i--) r = r * (double)BASE + mag[i];
         return sign < 0 ? -r : r;
     }
+    // 36 limbs is at least 1e315, past the largest double: ±Inf without the
+    // string, which cost a Fibonacci sequence 15 µs a term (rakudo#2844)
+    if (mag.size() >= 36) return sign < 0 ? -HUGE_VAL : HUGE_VAL;
     return cnum::strtod(toString().c_str(), nullptr);
 }
 

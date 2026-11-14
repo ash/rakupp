@@ -2779,7 +2779,7 @@ Value Interpreter::seqOp(Value l, Value r, bool exclusive) {
                 if (boundedGen && !cache.empty() && atEnd(cache.back(), endValue))
                     return false; // endpoint reached
                 if (boundedGen && cache.size() >= 1000000) return false; // runaway cap (endpoint never matched)
-                double lastV = cache.empty() ? 0 : cache.back().toNum();
+                double lastV = cache.empty() || hasGen || succSeed ? 0 : cache.back().toNum();
                 Value next;
                 if (hasGen) {
                     ValueList args; size_t n = cache.size();
