@@ -1397,7 +1397,7 @@ struct Codegen {
                 // the curried method about $x. Currying the whole expression
                 // answered a closure to both. This is the rule evalBinary
                 // applies, spelled syntactically.
-                if (b->op == "~~" || b->op == "!~~") return b->lhs->kind == NK::Whatever;
+                if (b->op.size() >= 2 && b->op.compare(b->op.size() - 2, 2, "~~") == 0) return b->lhs->kind == NK::Whatever;   // (`X~~`, `Z!~~` too)
                 return hasWhatever(b->lhs.get()) || hasWhatever(b->rhs.get()); }
             case NK::Unary:  return hasWhatever(static_cast<Unary*>(e)->operand.get());
             case NK::Ternary: { auto* t = static_cast<Ternary*>(e); return hasWhatever(t->cond.get()) || hasWhatever(t->then.get()) || hasWhatever(t->els.get()); }
