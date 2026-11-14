@@ -67,6 +67,20 @@ Next up:
   `tctx_`, frame size and calls to closure compilation, fused integer leaves and
   a `--cnp` tier-up for loops. Schedules V6's P2, P3 and P6 items for the
   interpreter.
+- **[plans/RAKUDO-ISSUES-PLAN.md](plans/RAKUDO-ISSUES-PLAN.md)** — **fixing what
+  Rakudo's issue tracker found** (planned 2026-11-12, from
+  [findings/RAKUDO-ISSUES-2026-11.md](findings/RAKUDO-ISSUES-2026-11.md)).
+  Twelve batches, in this order:
+  - crashes and hangs;
+  - a phaser used as a value runs late (one fix, 42 cases);
+  - objects, dispatch, operators and lists, regexes;
+  - valid code we refuse;
+  - missing features by usefulness (Telemetry first);
+  - strictness;
+  - speed;
+  - last, Rakudo internals and RakuAST extras.
+
+  Progress is measured by the MATCH count over raku-corpus-snippets.
 - **[plans/OBJECT-SLOTS-PLAN.md](plans/OBJECT-SLOTS-PLAN.md)** — **an object's
   attributes in an array its class lays out** (planned 2026-11-05, V6 P3.11
   phase 1): two-attribute objects 512 → ~350 bytes, the 397 uses of the

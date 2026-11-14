@@ -210,6 +210,7 @@ add_custom_command(
           "${CMAKE_CURRENT_SOURCE_DIR}/rakulib/Arduino.rakumod"
           "${CMAKE_CURRENT_SOURCE_DIR}/rakulib/Arduino/LEDMatrix.rakumod"
           "${CMAKE_CURRENT_SOURCE_DIR}/rakulib/Arduino/WiFi.rakumod"
+          "${CMAKE_CURRENT_SOURCE_DIR}/rakulib/Telemetry.rakumod"
           "${CMAKE_CURRENT_SOURCE_DIR}/src/codegen/ArduinoSim.h"
           "${CMAKE_CURRENT_SOURCE_DIR}/cmake/EmbedTools.cmake"
   COMMENT "Embedding the install, doc and upgrade tools"
@@ -244,6 +245,7 @@ set(RAKUPP_PARSE_SOURCES     "${CMAKE_CURRENT_SOURCE_DIR}/src/Lexer.cpp"
                              "${CMAKE_CURRENT_SOURCE_DIR}/src/ParserRegexCheck.cpp"
                              "${CMAKE_CURRENT_SOURCE_DIR}/src/ParserPackages.cpp"
                              "${CMAKE_CURRENT_SOURCE_DIR}/src/ParserWordPairs.cpp"
+                             "${CMAKE_CURRENT_SOURCE_DIR}/src/ParserInterp.cpp"
                              # `.AST` IS the parser, so the RakuAST:: registry
                              # rides the same archive and the same stub seam.
                              "${CMAKE_CURRENT_SOURCE_DIR}/src/RakuAstClasses.cpp"

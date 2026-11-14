@@ -767,6 +767,7 @@ bool Interpreter::assignMultiDimSlice(Expr* target, const Value& rhs) {
                 if (node->t != VT::Array) *node = Value::array();
                 long long i = tup[d2].toInt();
                 if (i < 0) negIndexThrow(i);
+                if (i >= (1LL << 20)) growToIndexCheck(i);   // (an index past the machine's memory)
                 while ((long long)node->arr()->size() <= i) node->arr()->push_back(Value::any());
                 node = &(*node->arr())[i];
             }
@@ -2973,6 +2974,7 @@ static Value keptWrite(Interpreter& I, const Value& proxy, Value nv) {
             Interpreter::ParStripe ps(I, in);
             if (at >= in->size()) {
                 if (!grow) return;
+                if (at >= ((size_t)1 << 20)) growToIndexCheck((long long)at);   // (an index past the machine's memory)
                 while (in->size() <= at) in->push_back(Value::any());   // (a slice's place past the end)
             }
             Value& slot = (*in)[at];
@@ -3667,6 +3669,7 @@ static Value slotProxyWriteRef(Interpreter& I, const Value& proxy, const Value& 
     Interpreter::ParStripe ps(I, arr);
     if (Value* last = proxy.hash()->findPre(kSlotLast().s, kSlotLast().h)) *last = nv;
     if (slotProxyDetached(ref, arr)) return nv;  // written to the detached element
+    if (idx >= ((size_t)1 << 20)) growToIndexCheck((long long)idx);   // (an index past the machine's memory)
     while (arr->size() <= idx) arr->push_back(ref.ofType().empty() ? Value::any() : nativeFill(ref.ofType()));
     (*arr)[idx] = nv;
     return nv;
@@ -4198,6 +4201,7 @@ void Interpreter::assignListTarget(ListExpr* lst, const Value& rhs, bool isBindi
                         else {
                             long long i = k.toInt();
                             if (i < 0) continue;
+                            if (i >= (1LL << 20)) growToIndexCheck(i);   // (an index past the machine's memory)
                             if ((size_t)i >= bp->arr()->size()) bp->arrRef().resize((size_t)i + 1, Value::any());
                             bp->arrRef()[(size_t)i] = v;
                         }
@@ -4286,6 +4290,10 @@ void Interpreter::assignListTarget(ListExpr* lst, const Value& rhs, bool isBindi
                     : slotDefault      ? eval(const_cast<Expr*>(slotDefault))
                                        : Value::any();
             vi++;
+            // a SIGILLESS name has no container, so it holds the list as it is: `my (\a, \b) = (1, 2), 3`
+            // makes a the List (1, 2), not $(1, 2) (rakudo#5027's `my (Map \labels, \_) = reduce(…)`)
+            if (tgt->kind == NK::VarExpr && !static_cast<VarExpr*>(tgt)->name.empty() &&
+                !std::strchr("$@%&", static_cast<VarExpr*>(tgt)->name[0])) v.itemized = false;
             // a TYPED slot the list does not reach holds its type object:
             // `my Str ($a) = ()` leaves $a as (Str)
             if (noValue && !isBinding && tgt->kind == NK::VarExpr) {
@@ -4555,30 +4563,6 @@ Value setOp(const std::string& op, const Value& l, const Value& r) {
     setOpCheckFailure(l); setOpCheckFailure(r);
     // membership against a RANGE is an arithmetic bounds check — no
     // materialization, so 0..10**42 (and open-ended ranges) work
-    auto rangeHas = [](const Value& rng, const Value& x) -> bool {
-        if (rng.ofType() == "Str") { // Str range: string ordering between endpoints
-            const std::string v = x.toStr();
-            const RangeEnds* sre = rangeEnds(rng);
-            const std::string lo = sre ? sre->from.toStr() : cpToU8((uint32_t)rng.rFrom());
-            const std::string hi = sre ? sre->to.toStr() : cpToU8((uint32_t)rng.rTo());
-            return (rng.rExFrom() ? v > lo : v >= lo) &&
-                   (rng.rExTo() ? v < hi : v <= hi);
-        }
-        // A BIGINT endpoint does not fit `i`, which saturates to the sentinel the
-        // endless test uses — so `0 .. 10**42` read as unbounded above and held
-        // every larger number. The carried endpoint objects answer exactly.
-        if (const RangeEnds* re = rangeEnds(rng)) {
-            if (x.isNumeric() && re->from.isNumeric() && re->to.isNumeric()) {
-                if (!applyArith(rng.rExFrom() ? ">" : ">=", x, re->from).truthy()) return false;
-                return applyArith(rng.rExTo() ? "<" : "<=", x, re->to).truthy();
-            }
-        }
-        double v = x.toNum();
-        double lo = (double)rng.rFrom() + (rng.rExFrom() ? 1 : 0);
-        if (rng.rTo() >= 9000000000000000000LL) return v >= lo; // huge/unbounded top
-        double hi = (double)rng.rTo() - (rng.rExTo() ? 1 : 0);
-        return v >= lo && v <= hi;
-    };
     // MEMBERSHIP is an IDENTITY question — `'123' (elem) [123]` is False, the
     // Str and the Int are different elements — while the quanthash STORAGE keys
     // stay renderings (changing those was tried and costs ~700 roast assertions
@@ -4645,6 +4629,22 @@ Value setOp(const std::string& op, const Value& l, const Value& r) {
             return hay.pairVal() && hay.pairVal()->truthy() &&
                    elemMatches(hay.pairKeyV());
         return elemMatches(hay); // a scalar is a one-element set
+    };
+    // A RANGE is the Set of what it iterates, as Rakudo coerces it (rakudo#2217):
+    // an Int range holds what is an Int between its ends — `½ ∈ ^2` and `1.0 ∈ ^2`
+    // are False, `"1" ∈ ^2` too, `True` and `<1>` are in — and any other range the
+    // values it steps through, matched by identity (`"aa" ∈ "a".."c"` is False).
+    // An endless one is lazy, refused as Rakudo words it.
+    auto rangeHas = [&](const Value& rng, const Value& x) -> bool {
+        const RangeEnds* re = rangeEnds(rng);
+        if (rng.rTo() >= 9000000000000000000LL && !(re && re->to.t == VT::Int))
+            throw RakuError{Value::typeObj("X::Cannot::Lazy"), "Cannot (elem) a lazy list"};   // (`∋` too, in Rakudo's words)
+        if (rng.ofType() != "Str" && (!re || (re->from.t == VT::Int && re->to.t == VT::Int))) {
+            if (x.t != VT::Int && x.t != VT::Bool) return false;   // (an IntStr, a Bool, an Int enum: each is an Int)
+            const Value lo = re ? re->from : Value::integer(rng.rFrom()), hi = re ? re->to : Value::integer(rng.rTo());
+            return applyArith(rng.rExFrom() ? ">" : ">=", x, lo).truthy() && applyArith(rng.rExTo() ? "<" : "<=", x, hi).truthy();
+        }
+        return hasElem(rng, x);
     };
     if (op == "(elem)" || op == "∈" || op == "(!elem)" || op == "∉") {
         bool neg = (op == "(!elem)" || op == "∉");
@@ -4925,6 +4925,11 @@ bool reverseWordOp(const std::string& op) {
     // too; the one-R symbolic form is recognised by its own test at each call
     // site, which looks only at the character after the R.
     if (!ascii::isalnum((unsigned char)op[i])) return i >= 2;
+    // …and the R over a zip or a cross (rakudo#6128): `RZ`, `RX~`, `RZ+`, `RZcmp`
+    if (op[i] == 'Z' || op[i] == 'X') {
+        size_t j = i; while (j < op.size() && (op[j] == 'Z' || op[j] == 'X')) j++;
+        return j == op.size() || !ascii::isalnum((unsigned char)op[j]) || bases.count(op.substr(j)) > 0;
+    }
     return bases.count(op.substr(i)) > 0;
 }
 
@@ -5655,21 +5660,11 @@ bool Interpreter::runsInPlace(BlockExpr* be) {
 }
 
 
-// The declaration lane's target (Assign::simpleSlot 6): `my $name` with
-// nothing on it that lvalue's declaration arm or the full path's store would
-// act on — no type, coercion, default, `where`, smiley, trait, shape or
-// container type — and a right side declLaneRhs can evaluate.
-bool Interpreter::plainDeclLane(const VarExpr* v, const Expr* rhs) {
-    // (`$` and a letter or underscore: no twigil, no special variable)
-    if (!v->declare || v->d().declScope != "my" || v->name.size() < 2 || v->name[0] != '$' ||
-        !(nameLetterAt(v->name, 1) || v->name[1] == '_') || v->name == "$_" || v->synthTopic || v->heredocOuter || v->d().stateInParens ||
-        !v->d().declStubType.empty() || !v->d().declType.empty() || !v->d().declCoerce.empty() ||
-        v->d().declDefault || v->d().declDynamic || v->d().declExport || v->d().declSmiley || v->d().declWhereExpr ||
-        v->d().declHasWhere || v->d().declMyConstant || v->pkgSymbol || !v->d().containerIs.empty() ||
-        v->d().declShape || v->d().declTypeExpr || v->d().namedBind || v->viaPseudoPkg || v->processScoped ||
-        v->nativeStrRead || v->nativeIntRead || v->nativeNumRead)
-        return false;
-    if (!rhs) return false;
+// A right side declLaneRhs can evaluate: a literal, a plain `$` lexical, an
+// operator it computes, or a ternary over those whose condition it computes
+// and of whose branches at least one it can give (`$n ?? 1 !! Nil`, the
+// shape of rakudo#1416's `nqp::if`: the other branch takes the full path)
+static bool declLaneRhsShape(const Expr* rhs) {
     switch (rhs->kind) {
         case NK::IntLit: return static_cast<const IntLit*>(rhs)->big.empty();
         case NK::NumLit: { auto* n = static_cast<const NumLit*>(rhs);
@@ -5684,8 +5679,41 @@ bool Interpreter::plainDeclLane(const VarExpr* v, const Expr* rhs) {
             if (op.size() == 1) return std::strchr("+-*/%<>", op[0]) != nullptr;
             return op.size() == 2 && op[1] == '=' && std::strchr("<>=!", op[0]) != nullptr;
         }
+        case NK::Ternary: { auto* t = static_cast<const Ternary*>(rhs);
+            return t->cond && t->then && t->els && declLaneRhsShape(t->cond.get()) &&
+                   (declLaneRhsShape(t->then.get()) || declLaneRhsShape(t->els.get())); }
         default: return false;
     }
+}
+
+// `COND ?? A !! B` on the declaration lane: the condition, then the branch it
+// picks, each as declLaneRhs computes them, so false still means nothing ran
+// that the full path's second look would notice (the condition reads only).
+// The picked branch is shape-checked here, as plainDeclLane checks a whole
+// right side: declLaneRhs would read a Rat literal (`?? 2.5 !! 3`) as a Num.
+bool Interpreter::declLaneTernary(Ternary* t, Value& out) {
+    const int fb = tryCondBool(t->cond.get());
+    Value c;
+    if (fb < 0 && !declLaneRhs(t->cond.get(), c)) return false;
+    Expr* pick = (fb >= 0 ? fb != 0 : boolify(c)) ? t->then.get() : t->els.get();
+    return declLaneRhsShape(pick) && declLaneRhs(pick, out);
+}
+
+// The declaration lane's target (Assign::simpleSlot 6): `my $name` with
+// nothing on it that lvalue's declaration arm or the full path's store would
+// act on — no type, coercion, default, `where`, smiley, trait, shape or
+// container type — and a right side declLaneRhs can evaluate.
+bool Interpreter::plainDeclLane(const VarExpr* v, const Expr* rhs) {
+    // (`$` and a letter or underscore: no twigil, no special variable)
+    if (!v->declare || v->d().declScope != "my" || v->name.size() < 2 || v->name[0] != '$' ||
+        !(nameLetterAt(v->name, 1) || v->name[1] == '_' || anonScalarSlot(v->name)) || v->name == "$_" || v->synthTopic || v->heredocOuter || v->d().stateInParens ||
+        !v->d().declStubType.empty() || !v->d().declType.empty() || !v->d().declCoerce.empty() ||
+        v->d().declDefault || v->d().declDynamic || v->d().declExport || v->d().declSmiley || v->d().declWhereExpr ||
+        v->d().declHasWhere || v->d().declMyConstant || v->pkgSymbol || !v->d().containerIs.empty() ||
+        v->d().declShape || v->d().declTypeExpr || v->d().namedBind || v->viaPseudoPkg || v->processScoped ||
+        v->nativeStrRead || v->nativeIntRead || v->nativeNumRead)
+        return false;
+    return rhs && declLaneRhsShape(rhs);
 }
 
 
@@ -6118,6 +6146,7 @@ bool Interpreter::packedElemStore(Assign* a, Value& out) {
     if (!plainWordValue(v, pa->isNum)) return false;
     // past the end (an `=` only): the gap holds the native default, 0 or 0e0,
     // whose bits are all zero — as `my int @a; @a[3] = 7` is (0, 0, 0, 7)
+    if (i >= ((size_t)1 << 20)) growToIndexCheck((long long)i);   // (an index past the machine's memory)
     if (i >= pa->w.size()) pa->w.resize(i + 1, 0);
     if (op != '=') {
         if (pa->isNum) {
@@ -6932,6 +6961,55 @@ void slurpyLoneElements(const Value& only, ValueList& out) {
     else if (only.t == VT::Array && only.arr() && !isMultiDimShaped(only))
         out.insert(out.end(), only.arr()->begin(), only.arr()->end());
     else for (auto& x : only.flatten()) out.push_back(x);
+}
+
+// `is cached`, as Rakudo's experimental trait does it: a call whose Capture has
+// the GIST of one already made answers that call's value, without running the
+// routine (`sub pow2($a) is cached`, recursing twice per level, runs once per
+// level). The gist is Rakudo's key too, so what it tells apart is what Rakudo
+// tells apart: `f(1)` from `f("1")`, and an Array by its elements at the time.
+struct CachedCalls {
+    std::mutex mu;
+    std::unordered_map<std::string, Value> byGist;
+};
+thread_local const Callable* t_cachedBypass = nullptr;
+// Rakudo applies the trait once, to the routine its declaration compiles to, so
+// every closure of that declaration shares one cache: a `sub inner … is cached`
+// inside another routine keeps its answers from one call of that routine to the next.
+static std::mutex g_cachedMu;
+static std::unordered_map<const void*, std::shared_ptr<CachedCalls>> g_cachedByDecl;
+void Interpreter::markCached(Value& code, const void* decl) {
+    if (code.t != VT::Code || !code.code() || code.code()->ci().isMultiDispatcher) return;
+    if (code.code()->ci().isCached && code.code()->cold().cache) return;
+    std::shared_ptr<CachedCalls> c;
+    {
+        std::lock_guard<std::mutex> g(g_cachedMu);
+        auto& slot = g_cachedByDecl[decl];
+        if (!slot) slot = std::make_shared<CachedCalls>();
+        c = slot;
+    }
+    code.code()->ciM().isCached = true;
+    code.code()->coldM().cache = std::move(c);
+}
+Value Interpreter::callCached(const Value& codeVal, ValueList args, const std::vector<ExprPtr>* rwArgs, bool ownFrame,
+                              bool arityCheck, bool whereVerified) {
+    std::shared_ptr<CachedCalls> cache = codeVal.code()->cold().cache;
+    Value cap = Value::array();
+    *cap.arr() = args;
+    cap.hashKind = "Capture";
+    const std::string key = methodCall(cap, "gist", ValueList{}).toStr();
+    if (cache) {
+        std::lock_guard<std::mutex> g(cache->mu);
+        auto it = cache->byGist.find(key);
+        if (it != cache->byGist.end()) return it->second;
+    }
+    t_cachedBypass = codeVal.code();
+    Value r = callCallable(codeVal, std::move(args), rwArgs, ownFrame, arityCheck, whereVerified);
+    if (cache) {
+        std::lock_guard<std::mutex> g(cache->mu);
+        cache->byGist.insert_or_assign(key, r);
+    }
+    return r;
 }
 
 } // namespace rakupp

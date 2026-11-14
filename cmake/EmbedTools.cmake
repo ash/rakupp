@@ -63,6 +63,10 @@ embed_file(BLOB_SH_ARDUINO kShArduino "${SRC_DIR}/rakulib/Arduino.rakumod")
 embed_file(BLOB_SH_ARDUINO_MATRIX kShArduinoMatrix "${SRC_DIR}/rakulib/Arduino/LEDMatrix.rakumod")
 embed_file(BLOB_SH_ARDUINO_WIFI kShArduinoWiFi "${SRC_DIR}/rakulib/Arduino/WiFi.rakumod")
 embed_file(BLOB_ARDUINO_SIM kArduinoSim "${SRC_DIR}/src/codegen/ArduinoSim.h")
+# `use Telemetry` is the engine's too: Rakudo's core module, ported to plain Raku
+# over the engine's getrusage probe, so Rakudo's own copy (nqp throughout) can
+# never stand in for it.
+embed_file(BLOB_SH_TELEMETRY kShTelemetry "${SRC_DIR}/rakulib/Telemetry.rakumod")
 
 # The fixed half of the output. docToolSource() splices the two guides into
 # doc.raku's `my %DOCS;` declaration, so `rakupp doc` answers from a lone
@@ -125,6 +129,8 @@ void registerShadowModules() {
         reinterpret_cast<const char*>(kShArduinoMatrix), kShArduinoMatrixLen);
     rakuppRegisterShadowModule(\"Arduino::WiFi\",
         reinterpret_cast<const char*>(kShArduinoWiFi), kShArduinoWiFiLen);
+    rakuppRegisterShadowModule(\"Telemetry\",
+        reinterpret_cast<const char*>(kShTelemetry), kShTelemetryLen);
 }
 
 std::string arduinoSimCore() {
@@ -156,6 +162,7 @@ ${BLOB_SH_ARDUINO}
 ${BLOB_SH_ARDUINO_MATRIX}
 ${BLOB_SH_ARDUINO_WIFI}
 ${BLOB_ARDUINO_SIM}
+${BLOB_SH_TELEMETRY}
 ${EPILOGUE}")
 
 # copy_if_different, like BuildInfo.cmake: touching a guide without changing it

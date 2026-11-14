@@ -197,8 +197,23 @@ static inline bool isAnyTypeObject(const Value& v) {
 
 int ncScalarWidth(const std::string& t, bool& sign, bool& isFloat);
 bool valueEqv(const Value& a, const Value& b);
+// The private method `self!name` reaches from the package the call is written
+// in (rakudo#2663), or null for the ordinary lookup (InterpreterCore.cpp)
+Value* privateInCallerPackage(Interpreter& I, const Value& inv, const std::string& name);
+// A type object of one of the program's own classes (`A`, not `Int`): the
+// program's `multi infix:<op>` is asked about it before anything treats it as an
+// undefined operand (rakudo#6860: `"A: " ~ A` with `multi infix:<~>(Str() $a, A $b)`)
+inline bool userClassTypeObj(const Interpreter& I, const Value& v) {
+    return v.t == VT::Type && I.classes_.count(std::string(v.s.c_str())) != 0;
+}
 bool isSetOpStr(const std::string& o);
 bool reduceKeepsOperands(const std::string& op);   // [Z]/[X]/minmax/set-op reduce: operands stay whole
+void reduceArrayElems(const std::string& op, const Value& arr, ValueList& items);   // ONE Array operand's elements (InterpreterOperators.cpp)
+std::vector<std::string> opPropsFromTraits(Interpreter& I, const std::string& name, const std::vector<std::string>& traits);   // an operator's `.prec`, as its traits set it (OperatorProps.cpp)
+std::vector<std::string> opPropsOfHash(const Value& h);   // …as `is prec(%p)` sets it
+std::optional<Value> codePrecMethod(Interpreter& I, const Value& inv, const std::string& m, const ValueList& args);   // …and `.prec`, `.precedence`, `.associative`, `.thunky`, `.iffy`
+const std::vector<std::string>* builtinExAttrOrder(const std::string& t);   // Rakudo's attribute order for a built-in exception (InterpreterOperators.cpp)
+Value typedHyperResult(Interpreter& I, const Value& l, const Value& r, Value res);   // a hyper's answer: its operands' type and container (InterpreterOperators.cpp)
 static bool boxedIteration(const Value& v);
 void spDeclaredInRaw(const std::vector<StmtPtr>& body, std::vector<const VarExpr*>& out);
 bool pureSubscriptBase(const Expr* b);
@@ -1331,6 +1346,8 @@ static inline Value* dynInFrame(Env* e, const std::string& name, const Env* stop
     }
     return nullptr;
 }
+void dropGatedInScope(Interpreter& I, std::vector<struct DoomedCall>& dc);   // an EVAL sees its caller's `use Test` (InterpreterOperators.cpp)
+bool callersSees(Interpreter& I, Env* frame, const std::string& name);   // a caller's `$_` CALLERS:: reaches (InterpreterOperators.cpp)
 Env* gatherDynBoundary(GatherCoro* g);
 size_t gatherDynBase(GatherCoro* g);
 
@@ -1360,9 +1377,11 @@ Value containerFill(const Value& base);
 // stripe: two workers auto-extending one array each realloc'd its buffer at
 // once (t/stress/ub-indexed-grow). `named`, when this grew it, is what slot `i`
 // starts as (`is default`). One compare and nothing else when `i` is there.
+void growToIndexCheck(long long i);   // InterpreterCore.cpp: an index past the machine's memory is refused
 template <class F>
 inline void growToIndex(const Interpreter& I, ValueList& a, long long i, F fill, const Value* named = nullptr) {
     if ((long long)a.size() > i) return;
+    if (i >= (1LL << 20)) growToIndexCheck(i);
     Interpreter::ParStripe gs(I, &a); raceLen(&a, RaceAcc::Write);   // (--race: a store past the end grows it)
     while ((long long)a.size() <= i) a.push_back(fill());
     if (named) a[(size_t)i] = *named;

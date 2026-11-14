@@ -31,6 +31,10 @@
 #include "Pod.h"      // parsePod — the raw material for the `Doc::` view (P5)
 #include "Value.h"
 
+#include <algorithm>
+#include <cstring>
+#include <set>
+
 namespace rakupp {
 
 namespace {
@@ -840,6 +844,382 @@ struct Builder {
         return n;
     }
 
+    // ---- grammar rules: the `Regex::` subtree ------------------------------
+    // Our parser keeps a rule's body as TEXT, so the view parses that text
+    // here, at the surface, because Rakudo's tree records what was written: a
+    // quote is a Regex::Quote and a bare word a Regex::Literal, `\d` is a
+    // CharClass::Digit, and whitespace after an atom is a Regex::WithWhitespace
+    // around it, while leading whitespace and a leading `|` or `||` leave
+    // nothing. The matcher's own tree has normalized all of that away. Each
+    // shape was read off 2026.09's `.AST`; anything else refuses by name, as a
+    // partial tree would be a wrong one (rakudo#5479, #5978, #5991).
+    Value fragment(const std::string& code, bool block) {
+        Program p;
+        try {
+            Lexer lexer(code);
+            Parser parser(lexer.tokenize());
+            p = parser.parseProgram();
+        } catch (ParseError&) { unmapped("a grammar rule whose code does not parse alone"); }
+        if (block) return node("Block", {{"body", blockoid(p.stmts)}});
+        if (p.stmts.size() != 1) unmapped("a grammar rule with a `:my` of this form");
+        return buildStmt(p.stmts[0].get());
+    }
+    struct RxView {
+        Builder& B;
+        const std::string& s;
+        size_t i = 0;
+        int parens = 0;
+        bool tookWs = false;   // the atom just built took the whitespace after it
+        [[noreturn]] void no(const std::string& what) {
+            const std::string m = "a grammar rule with " + what;
+            B.unmapped(m.c_str());
+        }
+        bool at(const char* t) const { return s.compare(i, std::strlen(t), t) == 0; }
+        bool word(size_t k) const { return k < s.size() && (ascii::isalnum((unsigned char)s[k]) || s[k] == '_'); }
+        Value with(Value v, const char* k, Value x) { v.obj()->attrs[k] = std::move(x); return v; }
+        Value wrap(Value v) { return B.node("Regex::WithWhitespace", {{"regex", std::move(v)}}); }
+        bool ws() {   // whitespace and `#` comments, which the tree treats alike
+            const size_t from = i;
+            while (i < s.size()) {
+                if (ascii::isspace((unsigned char)s[i])) i++;
+                else if (s[i] == '#') { while (i < s.size() && s[i] != '\n') i++; }
+                else break;
+            }
+            return i > from;
+        }
+        void leading() { ws(); if (at("||")) i += 2; else if (at("|")) i++; ws(); }
+        Value top() {
+            leading();
+            Value r = branches(0);
+            if (i < s.size()) no(std::string("the regex syntax `") + s[i] + "`");
+            return r;
+        }
+        // `||` loosest, then `&&`, `|`, `&`
+        Value branches(int level) {
+            static const char* const ops[] = {"||", "&&", "|", "&"};
+            static const char* const cls[] = {"Regex::SequentialAlternation", "Regex::SequentialConjunction",
+                                              "Regex::Alternation", "Regex::Conjunction"};
+            if (level == 4) return sequence();
+            auto atOp = [&] { return at(ops[level]) && (level < 2 || !at(level == 2 ? "||" : "&&")); };
+            ValueList br{branches(level + 1)};
+            while (atOp()) { i += std::strlen(ops[level]); ws(); br.push_back(branches(level + 1)); }
+            return br.size() == 1 ? br[0] : B.node(cls[level], {{"branches", B.list(br)}});
+        }
+        bool ends() const {
+            if (i >= s.size()) return true;
+            const char c = s[i];
+            if (c == ']' || c == '|' || c == '&') return true;
+            if (c == ')') return parens > 0 || !at(")>");
+            return c == '>' && !at(">>");
+        }
+        Value sequence() {
+            ValueList terms;
+            while (!ends()) {
+                tookWs = false;
+                Value t = quantified();
+                if (!tookWs && ws()) t = wrap(t);
+                terms.push_back(t);
+            }
+            if (terms.empty()) no("an empty regex");
+            return terms.size() == 1 ? terms[0] : B.node("Regex::Sequence", {{"terms", B.list(terms)}});
+        }
+        Value quantified() {
+            Value a = atom();
+            if (tookWs) return a;
+            const size_t pre = i;
+            if (ws() && at("**")) a = wrap(a);   // `x ** 2`: the space is the atom's
+            else i = pre;
+            Value q;
+            if (!quantifier(q)) { i = pre; return a; }
+            Value qa = B.node("Regex::QuantifiedAtom", {{"atom", a}, {"quantifier", q}});
+            const size_t back = i;
+            const bool w1 = ws();
+            if (!at("%")) { i = back; return qa; }
+            const bool trail = at("%%");
+            i += trail ? 2 : 1;
+            ws();
+            Value sep = atom();
+            if (tookWs) no("a separator of this form");
+            if (ws()) sep = wrap(sep);
+            qa = with(qa, "separator", sep);
+            if (trail) qa = with(qa, "trailing-separator", Value::boolean(true));
+            tookWs = true;
+            return w1 ? wrap(qa) : qa;
+        }
+        long long number() {
+            const size_t a = i;
+            while (i < s.size() && ascii::isdigit((unsigned char)s[i])) i++;
+            if (a == i || i - a > 18) no("a `**` quantifier of this form");
+            return std::stoll(s.substr(a, i - a));
+        }
+        bool quantifier(Value& q) {
+            if (at("**")) {
+                i += 2; ws();
+                const long long mn = number();
+                q = B.node("Regex::Quantifier::Range", {{"min", Value::integer(mn)}});
+                if (!at("..")) return q = with(q, "max", Value::integer(mn)), true;
+                i += 2;
+                if (at("*")) { i++; return true; }
+                q = with(q, "max", Value::integer(number()));
+                return true;
+            }
+            const char* cls = at("?") ? "Regex::Quantifier::ZeroOrOne" : at("*") ? "Regex::Quantifier::ZeroOrMore"
+                            : at("+") ? "Regex::Quantifier::OneOrMore" : nullptr;
+            if (!cls) return false;
+            i++;
+            q = B.node(cls);
+            const bool colon = at(":") && !(i + 1 < s.size() && (ascii::isalpha((unsigned char)s[i + 1]) || s[i + 1] == '!'));
+            const char* bt = at("?") ? "Frugal" : at("!") ? "Greedy" : colon ? "Ratchet" : nullptr;
+            if (bt) { i++; q = with(q, "backtrack", Value::typeObj(std::string("RakuAST::Regex::Backtrack::") + bt)); }
+            return true;
+        }
+        Value atom() {
+            const char c = s[i];
+            if (word(i)) {
+                const size_t a = i;
+                while (word(i)) i++;
+                if (i - a > 1 && (at("?") || at("*") || at("+"))) i--;   // the quantifier takes the last letter
+                return B.node("Regex::Literal", {{"text", Value::str(s.substr(a, i - a))}});
+            }
+            if (c == '\'' || c == '"') return quote();
+            if (c == '.') { i++; return B.node("Regex::CharClass::Any"); }
+            if (c == '\\') return escape();
+            if (at("^^")) { i += 2; return B.node("Regex::Anchor::BeginningOfLine"); }
+            if (c == '^') { i++; return B.node("Regex::Anchor::BeginningOfString"); }
+            if (at("$$")) { i += 2; return B.node("Regex::Anchor::EndOfLine"); }
+            if (at("$<") || (c == '$' && i + 1 < s.size() && ascii::isdigit((unsigned char)s[i + 1]))) return capture();
+            if (c == '$') {
+                if (word(i + 1) || (i + 1 < s.size() && std::strchr("!*?.", s[i + 1]))) no("a variable");
+                i++;
+                return B.node("Regex::Anchor::EndOfString");
+            }
+            if (at("<<") || at("\xC2\xAB")) { i += 2; return B.node("Regex::Anchor::LeftWordBoundary"); }
+            if (at(">>") || at("\xC2\xBB")) { i += 2; return B.node("Regex::Anchor::RightWordBoundary"); }
+            if (c == '[' || c == '(') {
+                i++;
+                if (c == '(') parens++;
+                leading();
+                Value r = branches(0);
+                if (c == '(') parens--;
+                if (!at(c == '[' ? "]" : ")")) no(std::string("an unclosed `") + c + "`");
+                i++;
+                return B.node(c == '[' ? "Regex::Group" : "Regex::CapturingGroup", {{"regex", r}});
+            }
+            if (at(")>")) { i += 2; return B.node("Regex::MatchTo"); }
+            if (c == '<') return assertion();
+            if (c == ':') return modifier();
+            if (c == '{') {
+                const size_t a = i;
+                int depth = 0;
+                for (; i < s.size(); i++) {
+                    if (s[i] == '{') depth++;
+                    else if (s[i] == '}' && --depth == 0) break;
+                    else if (s[i] == '\'' || s[i] == '"') no("a code block with a quote in it");
+                }
+                if (i >= s.size()) no("an unclosed `{`");
+                i++;
+                return B.node("Regex::Block", {{"block", B.fragment(s.substr(a + 1, i - a - 2), true)}});
+            }
+            no(std::string("the regex syntax `") + c + "`");
+        }
+        Value quote() {
+            const char q = s[i++];
+            std::string text;
+            for (; i < s.size() && s[i] != q; i++) {
+                if (s[i] == '\\') {
+                    if (q == '\'' && i + 1 < s.size() && (s[i + 1] == '\\' || s[i + 1] == '\'')) { text += s[++i]; continue; }
+                    no("an escape in a quote");
+                }
+                if (q == '"' && std::strchr("$@{&", s[i])) no("an interpolating quote");
+                text += s[i];
+            }
+            if (i >= s.size()) no("an unclosed quote");
+            i++;
+            return B.node("Regex::Quote", {{"quoted", B.node("QuotedString", {{"segments",
+                B.list({B.node("StrLiteral", {{"value", Value::str(text)}})})}})}});
+        }
+        Value escape() {
+            const char e = i + 1 < s.size() ? s[i + 1] : '\0';
+            static const struct { char lc; const char* cls; } kinds[] = {
+                {'d', "Digit"}, {'w', "Word"}, {'s', "Space"}, {'n', "Newline"}, {'t', "Tab"},
+                {'h', "HorizontalSpace"}, {'v', "VerticalSpace"}, {'e', "Escape"}, {'f', "FormFeed"},
+                {'r', "CarriageReturn"}};
+            for (auto& k : kinds)
+                if (ascii::tolower((unsigned char)e) == k.lc) {
+                    i += 2;
+                    Value n = B.node((std::string("Regex::CharClass::") + k.cls).c_str());
+                    return ascii::isupper((unsigned char)e) ? with(n, "negated", Value::boolean(true)) : n;
+                }
+            if (e && !ascii::isalnum((unsigned char)e) && !ascii::isspace((unsigned char)e) && (unsigned char)e < 0x80) {
+                i += 2;
+                return B.node("Regex::Literal", {{"text", Value::str(std::string(1, e))}});
+            }
+            no(std::string("the escape `\\") + e + "`");
+        }
+        Value capture() {   // `$<name>=…` and `$0=…`
+            std::string nm;
+            if (at("$<")) {
+                const size_t e = s.find('>', i);
+                if (e == std::string::npos) no("an unclosed `$<`");
+                nm = s.substr(i + 2, e - i - 2);
+                i = e + 1;
+                for (char ch : nm) if (!ascii::isalnum((unsigned char)ch) && ch != '_' && ch != '-') no("a capture name of this form");
+            } else {
+                i++;
+                while (i < s.size() && ascii::isdigit((unsigned char)s[i])) nm += s[i++];
+            }
+            if (!at("=")) no("a backreference");
+            i++;
+            Value r = quantified();
+            if (tookWs) no("a capture of this form");
+            return B.node("Regex::NamedCapture", {{"name", Value::str(nm)}, {"regex", r}});
+        }
+        std::string ident(size_t& k) const {
+            const size_t a = k;
+            if (k < s.size() && (ascii::isalpha((unsigned char)s[k]) || s[k] == '_')) {
+                while (k < s.size()) {
+                    if (word(k)) k++;
+                    else if ((s[k] == '-' || s[k] == '\'') && k + 1 < s.size() && ascii::isalpha((unsigned char)s[k + 1])) k++;
+                    else if (s.compare(k, 2, "::") == 0 && k + 2 < s.size() && ascii::isalpha((unsigned char)s[k + 2])) k += 2;
+                    else break;
+                }
+            }
+            return s.substr(a, k - a);
+        }
+        Value assertion() {
+            if (at("<(")) { i += 2; return B.node("Regex::MatchFrom"); }
+            if (at("<?>")) { i += 3; return B.node("Regex::Assertion::Pass"); }
+            if (at("<!>")) { i += 3; return B.node("Regex::Assertion::Fail"); }
+            if (at("<[") || at("<-[") || at("<+[")) return charClass();
+            size_t k = i + 1;
+            const bool look = k < s.size() && (s[k] == '?' || s[k] == '!');
+            const bool neg = look && s[k] == '!';
+            if (look) k++;
+            const bool dot = !look && k < s.size() && s[k] == '.';
+            if (dot) k++;
+            const std::string nm = ident(k);
+            if (nm.empty() || nm == "sym") no("the assertion `" + s.substr(i, std::min<size_t>(12, s.size() - i)) + "`");
+            if (look) {
+                if ((nm != "before" && nm != "after") || k >= s.size() || !ascii::isspace((unsigned char)s[k]))
+                    no("a `<?…>` or `<!…>` assertion of this form");
+                i = k;
+                leading();
+                const int savedParens = parens;
+                parens = 0;
+                Value inner = branches(0);
+                parens = savedParens;
+                if (!at(">")) no("an unclosed assertion");
+                i++;
+                Value arg = B.node("Regex::Assertion::Named::RegexArg", {{"name", B.name(nm)}, {"regex-arg", inner}});
+                Value la = B.node("Regex::Assertion::Lookahead", {{"assertion", arg}});
+                return neg ? with(la, "negated", Value::boolean(true)) : la;
+            }
+            if (k >= s.size() || s[k] != '>') no("an assertion with arguments or an alias");
+            i = k + 1;
+            Value n = B.node("Regex::Assertion::Named", {{"name", B.name(nm)}});
+            return dot ? n : with(n, "capturing", Value::boolean(true));
+        }
+        uint32_t classChar() {
+            if (s[i] == '\\') {
+                const char e = i + 1 < s.size() ? s[i + 1] : '\0';
+                if (!e || ascii::isalnum((unsigned char)e) || (unsigned char)e >= 0x80) no("an escape in a character class");
+                i += 2;
+                return (unsigned char)e;
+            }
+            const unsigned char c0 = (unsigned char)s[i];
+            if (c0 < 0x80) { i++; return c0; }
+            const int n = c0 >= 0xF0 ? 4 : c0 >= 0xE0 ? 3 : 2;
+            uint32_t cp = c0 & (n == 2 ? 0x1F : n == 3 ? 0x0F : 0x07);
+            for (int k = 1; k < n; k++) cp = (cp << 6) | ((unsigned char)s[i + k] & 0x3F);
+            i += n;
+            return cp;
+        }
+        Value charClass() {
+            i++;
+            const bool neg = s[i] == '-';
+            if (s[i] == '-' || s[i] == '+') i++;
+            i++;   // `[`
+            ValueList els;
+            auto spaces = [&] { while (i < s.size() && ascii::isspace((unsigned char)s[i])) i++; };
+            for (;;) {
+                spaces();
+                if (i >= s.size()) no("an unclosed character class");
+                if (s[i] == ']') { i++; break; }
+                const size_t from = i;
+                const uint32_t a = classChar();
+                const size_t after = i;
+                spaces();
+                if (at("..")) {
+                    i += 2;
+                    spaces();
+                    const uint32_t b = classChar();
+                    els.push_back(B.node("Regex::CharClassEnumerationElement::Range",
+                        {{"from", Value::integer(a)}, {"to", Value::integer(b)}}));
+                } else {
+                    i = after;
+                    els.push_back(B.node("Regex::CharClassEnumerationElement::Character",
+                        {{"character", Value::str(s.substr(from, after - from).front() == '\\'
+                                                      ? s.substr(from + 1, after - from - 1)
+                                                      : s.substr(from, after - from))}}));
+                }
+            }
+            spaces();
+            if (!at(">")) no("a combined character class");
+            i++;
+            Value en = B.node("Regex::CharClassElement::Enumeration", {{"elements", B.list(els)}});
+            if (neg) en = with(en, "negated", Value::boolean(true));
+            return B.node("Regex::Assertion::CharClass", {{"elements", B.list({en})}});
+        }
+        Value modifier() {
+            if (at(":my ") || at(":our ") || at(":state ")) {
+                size_t e = s.find(';', i);
+                if (e == std::string::npos || s.find_first_of("'\"{", i) < e) no("a `:my` of this form");
+                Value st = B.fragment(s.substr(i + 1, e - i), false);
+                i = e + 1;
+                return B.node("Regex::Statement", {{"statement", st}});
+            }
+            size_t k = i + 1;
+            const bool neg = k < s.size() && s[k] == '!';
+            if (neg) k++;
+            const size_t a = k;
+            while (k < s.size() && ascii::isalpha((unsigned char)s[k])) k++;
+            const std::string m = s.substr(a, k - a);
+            static const struct { const char* sp; const char* cls; } mods[] = {
+                {"i", "IgnoreCase"}, {"ignorecase", "IgnoreCase"}, {"m", "IgnoreMark"}, {"ignoremark", "IgnoreMark"},
+                {"r", "Ratchet"}, {"ratchet", "Ratchet"}, {"s", "Sigspace"}, {"sigspace", "Sigspace"}};
+            for (auto& md : mods)
+                if (m == md.sp && !(k < s.size() && (word(k) || s[k] == '('))) {
+                    i = k;
+                    ws();
+                    tookWs = true;
+                    Value n = B.node((std::string("Regex::InternalModifier::") + md.cls).c_str());
+                    if (m.size() > 1) n = with(n, "modifier", Value::str(m));
+                    return neg ? with(n, "negated", Value::boolean(true)) : n;
+                }
+            no("the modifier `:" + m + "`");
+        }
+    };
+    // A rule's `#|` and `#=` docs, as the WHY Rakudo attaches to it
+    // (`.declarator-docs(leading => …, trailing => …)`). The pod splice below
+    // then leaves out the declarator block it would otherwise append.
+    std::set<std::string> attachedDocs;
+    Value ruleDecl(const GrammarRuleDecl& r) {
+        const char* rcls = r.kind == "token" ? "TokenDeclaration" : r.kind == "regex" ? "RegexDeclaration"
+                                                                                        : "RuleDeclaration";
+        RxView rx{*this, r.pattern};
+        Value n = node(rcls, {{"name", name(r.name)}, {"body", rx.top()}});
+        if (!r.pod.empty()) {
+            const std::string lead = r.podTrail.empty() ? r.pod
+                                   : r.pod == r.podTrail ? std::string()
+                                   : r.pod.substr(0, r.pod.size() - r.podTrail.size() - 1);
+            auto one = [](const std::string& t) { return t.empty() ? ValueList{} : ValueList{Value::str(t)}; };
+            n.obj()->attrs["WHY"] = node("Doc::Declarator", {{"leading", list(one(lead))},
+                                                             {"trailing", list(one(r.podTrail))}});
+            attachedDocs.insert(r.pod);
+        }
+        return n;
+    }
+
     // ---- statements ------------------------------------------------------
     Value buildStmt(Stmt* s) {
         if (!s) return Value::any();
@@ -1049,44 +1429,27 @@ struct Builder {
                 // is not allowed to produce, and the tree oracle is what found
                 // it. Rules have no view at all yet (the whole `Regex::*`
                 // subtree), so a grammar with any is refused by name.
-                // GRAMMAR RULES. The whole `Regex::*` subtree has no view, and
-                // our parser keeps a rule's pattern as raw TEXT rather than a
-                // tree, so there is nothing to walk. One shape is safe to build
-                // anyway: a rule whose body is a single quoted literal, which
-                // is `Regex::WithWhitespace` over a `Regex::Quote` upstream.
-                // Everything else still refuses by name — a partial regex view
-                // would be a wrong tree, which is the one thing this builder
-                // must not produce.
+                // GRAMMAR RULES, each body parsed from its text (RxView).
                 ValueList ruleNodes;
                 for (auto& r : cd->rules) {
-                    std::string pat = r.pattern;
-                    size_t b = pat.find_first_not_of(" \t\n");
-                    size_t e = pat.find_last_not_of(" \t\n");
-                    pat = b == std::string::npos ? std::string() : pat.substr(b, e - b + 1);
-                    bool literal = pat.size() >= 2 &&
-                                   (pat.front() == '\'' || pat.front() == '"') &&
-                                   pat.back() == pat.front() &&
-                                   pat.find(pat.front(), 1) == pat.size() - 1;
-                    if (!literal || !r.params.empty())
-                        unmapped("a grammar rule (the regex tree)");
-                    const std::string text = pat.substr(1, pat.size() - 2);
-                    const char* rcls = r.kind == "token" ? "TokenDeclaration"
-                                     : r.kind == "regex" ? "RegexDeclaration"
-                                                         : "RuleDeclaration";
-                    Value body = node("Regex::WithWhitespace", {{"regex",
-                        node("Regex::Quote", {{"quoted",
-                            node("QuotedString", {{"segments", list({
-                                node("StrLiteral", {{"value", Value::str(text)}})})}})}})}});
-                    ruleNodes.push_back(node("Statement::Expression", {{"expression",
-                        node(rcls, {{"name", name(r.name)}, {"body", body}})}}));
+                    if (!r.params.empty()) unmapped("a grammar rule with a signature");
+                    ruleNodes.push_back(node("Statement::Expression", {{"expression", ruleDecl(r)}}));
                 }
-                ValueList body;
+                // In SOURCE order, as Rakudo keeps them: the parse files them by
+                // kind, and each kind keeps its line. (A part with no line, one
+                // the parser made, leaves the order by kind.)
+                std::vector<std::pair<int, Value>> parts;
                 for (auto& a : cd->attrs)
-                    body.push_back(node("Statement::Expression", {{"expression", attribute(a)}}));
+                    parts.push_back({a.declLine, node("Statement::Expression", {{"expression", attribute(a)}})});
                 for (auto& m : cd->methods)
-                    body.push_back(node("Statement::Expression", {{"expression", routine(m.get())}}));
-                for (auto& st : cd->body) body.push_back(buildStmt(st.get()));
-                for (auto& rn : ruleNodes) body.push_back(rn);
+                    parts.push_back({m->line, node("Statement::Expression", {{"expression", routine(m.get())}})});
+                for (auto& st : cd->body) parts.push_back({st->line, buildStmt(st.get())});
+                for (size_t k = 0; k < ruleNodes.size(); k++) parts.push_back({cd->rules[k].declLine, ruleNodes[k]});
+                if (std::all_of(parts.begin(), parts.end(), [](const std::pair<int, Value>& p) { return p.first > 0; }))
+                    std::stable_sort(parts.begin(), parts.end(),
+                                     [](const std::pair<int, Value>& x, const std::pair<int, Value>& y) { return x.first < y.first; });
+                ValueList body;
+                for (auto& p : parts) body.push_back(p.second);
                 // `is Parent` and `does Role`, each a trait upstream. The parse
                 // keeps the first of them apart and the rest by kind, so they
                 // come back as the first, then the `is`, then the `does` —
@@ -1115,7 +1478,7 @@ struct Builder {
                 if (cd->classRw) traits.push_back(traitIs("rw"));
                 if (cd->isExport) traits.push_back(exportTrait(cd->exportTags));
                 Value pkg = node(cls, {{"name", name(cd->name)},
-                                       {"scope", Value::str(cd->isMy ? "my" : "our")},
+                                       {"scope", Value::str(cd->unitForm ? "unit" : cd->isMy ? "my" : "our")},
                                        {"traits", list(traits)},
                                        {"body", node("Block", {{"body",
                                            node("Blockoid", {{"statement-list",
@@ -1273,6 +1636,8 @@ Value rakuAstView(Interpreter& I, const std::string& source, bool compUnit,
         // German, and by here they are ordinary identifier tokens.
         if (xform) (*xform)(toks);
         Parser parser(std::move(toks));
+        parser.declPod_ = lexer.declPod_;   // `#=` and `#|`, for the WHY of a rule
+        parser.leadPod_ = lexer.leadPod_;
         prog = parser.parseProgram();
     } catch (ParseError& e) {
         throw RakuError{Value::typeObj("X::Syntax::Confused"),
@@ -1293,6 +1658,11 @@ Value rakuAstView(Interpreter& I, const std::string& source, bool compUnit,
             return it == sl.obj()->attrs.end() ? nullptr : &it->second;
         }()) {
         for (auto& pod : parsePod(source)) {
+            if (b.podClass(pod) == "Pod::Block::Declarator" && !b.attachedDocs.empty()) {
+                std::string text;
+                for (auto& a : b.docParagraphs(pod, true)) if (a.t == VT::Str) text += (text.empty() ? "" : "\n") + a.toStr();
+                if (b.attachedDocs.count(text)) continue;   // attached to its rule as WHY
+            }
             Value d = b.docBlock(pod);
             if (d.t == VT::Object && ss->arr()) ss->arr()->push_back(d);
         }

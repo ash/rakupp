@@ -302,6 +302,8 @@ Value Interpreter::makeClosure(BlockExpr* be) {
     // belongs to its class (above).
     if (!be->termName.empty() && !be->isMethodTerm && !be->anonTerm)
         tctx().cur->define("&" + be->termName, code);
+    for (auto& st : be->userTraits)   // `sub ($x) is cached {…}`
+        if (st.name == "cached" && !st.arg && !be->isMethodTerm) markCached(code, be);
     // a USER trait on the anonymous routine (`sub (…) is memoized(%c) {…}`)
     if (!be->userTraits.empty())
         if (Value* tm = tctx().cur->find("&trait_mod:<is>"))
@@ -376,8 +378,7 @@ std::pair<long, long> Interpreter::dynQuantLimits(const Value& v, bool unbounded
 Value Interpreter::makeTypedEx(const std::string& type,
                                std::vector<std::pair<std::string, Value>> attrs,
                                const std::string& message) {
-    // While workers are live, other threads read classes_ and every ClassInfo
-    // without a lock (the symbol-table freeze, see symbolsFrozen_), so a throw
+    // While workers are live, other threads read classes_ and every ClassInfo without a lock (the symbol-table freeze, see symbolsFrozen_), so a throw
     // then neither registers a class nor extends one: it carries a class of
     // its own. Four workers failing one bind at once inserted the same name
     // into classes_ concurrently and died (t/race/evalcall.raku).
@@ -386,9 +387,11 @@ Value Interpreter::makeTypedEx(const std::string& type,
     auto it = classes_.find(type);
     if (it == classes_.end()) {
         auto ci = std::make_shared<ClassInfo>();
-        ci->name = type;
-        for (auto& kv : attrs) { ClassAttr a; a.name = kv.first; a.sigil = '$'; a.pub = true; ci->attrs.push_back(a); }
-        { ClassAttr a; a.name = "message"; a.sigil = '$'; a.pub = true; ci->attrs.push_back(a); }
+        ci->name = type; ci->synthEx = true;
+        if (auto* o = builtinExAttrOrder(type))   // Rakudo's own attribute order, as its `.raku` shows (rakudo#2434)
+            for (auto& n : *o) { ClassAttr a; a.name = n; a.sigil = '$'; a.pub = true; ci->attrs.push_back(a); }
+        for (auto& kv : attrs) { if (ci->findAttr(kv.first)) continue; ClassAttr a; a.name = kv.first; a.sigil = '$'; a.pub = true; ci->attrs.push_back(a); }
+        { ClassAttr a; a.name = "message"; a.sigil = '$'; a.pub = true; ci->attrs.push_back(a); }   // (its slot; no attribute: synthEx)
         if (!shared) classes_[type] = ci;
         cls = ci;
     }
@@ -2271,6 +2274,7 @@ bool Interpreter::bindElemMethodAlias(Assign* a, Value& out) {
         auto arr = base->arrS();
         const size_t at = (size_t)kv.i;
         Value fill = containerFill(*base);
+        if (at >= ((size_t)1 << 20)) growToIndexCheck((long long)at);   // (an index past the machine's memory)
         while (arr->size() <= at) arr->push_back(fill);   // (as `$x := @a[5]` grows it)
         const Value guard = elemAliasGuard(*base, false, vn);
         proxy = (*arr)[at].t == VT::Hash && (*arr)[at].hashKind == "Proxy" && (*arr)[at].hash()
@@ -2519,7 +2523,7 @@ bool Interpreter::multiTie(const Value& a, const Value& b) {
             if (p.named) return false;
             if (p.pastDoubleSemi) break;
             if (p.slurpy || p.optional || p.defaultVal || p.whereExpr || p.hadWhere || p.litVal ||
-                p.subSig || p.coerce || p.typeCapture || p.sigil != '$') return false;
+                p.subSig || p.coerce || p.typeCapture || (p.sigil != '$' && p.sigil != '\\')) return false;   // (`\a` dispatches as `$a`)
             out.push_back(&p);
         }
         return true;
@@ -2552,8 +2556,9 @@ bool Interpreter::multiTie(const Value& a, const Value& b) {
         const Param& x = *pa[i];
         const Param& y = *pb[i];
         if (x.defConstraint != y.defConstraint) return false;
-        // `is rw` / `is copy` / `is raw` decide by what the argument is
-        if (x.isRw != y.isRw || x.isCopy != y.isCopy || x.isRaw != y.isRaw) return false;
+        // `is rw` decides by what the argument is; `is copy`, `is raw` and a
+        // sigilless `\a` do not (Rakudo 2026.09: `(Int \a)` beside `(Int $a)` is ambiguous)
+        if (x.isRw != y.isRw) return false;
         // (an untyped parameter is Any)
         const std::string xt = x.type.empty() ? "Any" : x.type, yt = y.type.empty() ? "Any" : y.type;
         if (xt == yt) continue;
@@ -3364,6 +3369,7 @@ Value Interpreter::callBuiltin(const std::string& name, ValueList args) {
             if (!p && global_) { auto g = global_->vars.find("&" + name); if (g != global_->vars.end()) p = &g->second; }
             if (p && p->t == VT::Code) return callCallable(*p, std::move(args));
         }
+        if (name.rfind("infix:<", 0) == 0 && name.back() == '>') return callCallable(infixCallable(name), std::move(args));   // native `infix:<~>(…)`: `&infix:<~>(…)`
         undeclaredRoutine(name);
     }
     return it->second(*this, args);
@@ -3754,6 +3760,8 @@ Value Interpreter::assignChecked(Expr* target, Value v, const Value* invVal) {
         // flatten its rows: `my @c[2;2] .= new(:shape(2,2), …)`)
         if (!nm.empty() && nm[0] == '@' && !(v.t == VT::Array && v.shape())) v = coerceArray(v);
         else if (!nm.empty() && nm[0] == '%') v = coerceHash(v);
+        // …and a `$` ITEMIZES it, as `=` does: `$x .= split(',')` is `$(…)` (rakudo#3621)
+        else if (!nm.empty() && nm[0] == '$' && (v.t == VT::Array || v.t == VT::Hash || v.t == VT::Range)) v.itemized = true;
     }
     if (target && target->kind == NK::Index) tctx().lastLvalueElemType.clear();
     if (Value* lv = lvalue(target)) {
@@ -3779,7 +3787,7 @@ Value Interpreter::assignChecked(Expr* target, Value v, const Value* invVal) {
             Env* own = nullptr;
             tctx().cur->findRaw("$_", &own);
             if (own && own->ex && own->ex->topicBindsArray) {
-                Value arr = coerceArray(v);
+                v.itemized = false; Value arr = coerceArray(v);   // (the `$_` itemizing above is a scalar's)
                 ValueList elems = arr.t == VT::Array && arr.arr() ? *arr.arr() : ValueList{v};
                 keptEndsRefill(lv->arr());
                 lv->arr()->swap(elems);
@@ -4329,11 +4337,15 @@ Value& Interpreter::accessorRef(Value& base, const std::string& name) {
             for (auto& at : ci->attrs)
                 // public @./%. attrs assign through the accessor without `is rw`
                 if (at.name == name && (!acc || &at == acc) &&
-                    !(at.pub && (at.rw || at.sigil == '@' || at.sigil == '%')))
-                    throw RakuError{Value::typeObj("X::Assignment::RO"),
-                        "Cannot modify an immutable '" + name + "'"};
+                    !(at.pub && (at.rw || at.sigil == '@' || at.sigil == '%'))) {
+                    const Value* cur = base.obj()->attrs[acc ? *slot : name].deref();   // "…an immutable Int (42)", as Rakudo names it
+                    throwImmutable(cur ? *cur : Value::any());
+                }
         return base.obj()->attrs[acc ? *slot : name];
     }
+    // `42.abs = 1` compiled: the refusal names the method's answer (rakudo#1987)
+    if (base.t == VT::Int || base.t == VT::Num || base.t == VT::Rat || base.t == VT::Str || base.t == VT::Bool ||
+        (base.t == VT::Array && base.isList)) { ValueList none; throwImmutable(methodCall(base, name, none)); }
     throw RakuError{Value::typeObj("X::Assignment::RO"), "Target is not assignable"};
 }
 
@@ -5829,6 +5841,19 @@ static const PRef<Callable>& btInPlaceBlockCode() {
     return code;
 }
 
+// …and what a `try EXPR`'s thunk names: Rakudo's frame for it is `code`, printed
+// by `.full` as "in code" (btFrameName) and left out of the short form as an
+// in-place block's is
+static const PRef<Callable>& btThunkCode() {
+    static const PRef<Callable> code = [] {
+        auto c = makePayload<Callable>();
+        c->ciM().isBlock = true;
+        c->ciM().langRev = 0;
+        return c;
+    }();
+    return code;
+}
+
 static std::shared_ptr<BtRecord> btCaptureNow() {
     auto& fr = Interpreter::tctx().callFrames;
     auto out = std::make_shared<BtRecord>();
@@ -5854,7 +5879,7 @@ static std::shared_ptr<BtRecord> btCaptureNow() {
         int bl = line, at = line;
         for (Env* e = scope; e && !e->callEnv && !e->routineFrame && !e->unitFrame; e = e->parent.get())
             if (e->btBlock) {
-                if (e->btCalled) { out->frames.push_back(BtFrame{btInPlaceBlockCode(), at}); at = e->btLine; }
+                if (e->btCalled) { out->frames.push_back(BtFrame{e->btThunk ? btThunkCode() : btInPlaceBlockCode(), at}); at = e->btLine; }
                 else out->frames.push_back(BtFrame{nullptr, bl, 1});
                 bl = e->btLine;
             }
@@ -5932,6 +5957,7 @@ std::string btDisplayPath(const std::string& file, const std::string& srcAbs,
 // `block ` (two spaces before `at`) for an anonymous one.
 static std::string btFrameName(const Callable* c, bool outermost) {
     if (!c) return outermost ? "block <unit>" : "block ";
+    if (c == btThunkCode().get()) return "code ";
     std::string kind = c->ci().isSubmethod    ? "submethod"
                      : c->ci().isMethod       ? "method"
                      : c->ci().isRegexRoutine ? "regex"
@@ -5996,6 +6022,9 @@ std::string Interpreter::renderFrames(const BtRecord& rec, const BtStyle& st) {
         if (fr[i].kind) continue;   // bare-block and setting frames are the list's, not the printout's
         const Callable* c = fr[i].code.get();
         if (!st.full && btFrameHidden(c)) continue;
+        // a `try`, `do` or `quietly` run in place, and a `try EXPR`'s thunk, is a
+        // frame of the LIST (as Rakudo's is) that Rakudo's printout leaves out
+        if (!st.full && !st.inPlace && c && (c == btInPlaceBlockCode().get() || c == btThunkCode().get())) continue;
         std::string file = c && !c->ci().declFile.empty() ? c->ci().declFile
                          : (!originFile.empty() ? originFile : srcFileAbs_);
         out.push_back({btFrameName(c, i + 1 == n),
@@ -6080,6 +6109,7 @@ std::string Interpreter::renderError(const RakuError& e, const BtStyle& st) {
 std::string Interpreter::warnFrame() {
     BtStyle st = btStyleForStderr();
     st.excerpt = st.typeLine = st.colour = false;   // it goes through $*ERR, which may be a file
+    st.inPlace = true;   // `try { warn … }` names the block, in Rakudo too
     if (st.cap == 0 && !st.full) return "";
     auto rec = btCaptureNow();
     if (rec) rec->frames.erase(std::remove_if(rec->frames.begin(), rec->frames.end(),
@@ -6544,6 +6574,7 @@ Value rtReduce(Interpreter& I, const std::string& op, const Value& list, bool op
             else items.push_back(v);
         }
     }
+    else if (list.t == VT::Array && list.arr() && !list.itemized && !list.ext()) reduceArrayElems(op, list, items);   // ONE operand: its elements, one level, as the interpreter's (`[+] [[1,2],[3,4]]` is 4)
     else items = list.flatten();
     return I.applyReduce(op, items); // empty-list identities live there too
 }
@@ -7076,6 +7107,7 @@ Value& rtIndexRef(Value& base, const Value& key, bool isHash, const char* stepOp
     if (base.t != VT::Array || !base.arr()) { base = Value::array(); base.itemized = true; }
     long long i = writeIndexInt(key);
     if (i < 0) negIndexThrow(i);
+    if (i >= (1LL << 20)) growToIndexCheck(i);   // (an index past the machine's memory)
     if (i >= (long long)base.arr()->size())
         // the gaps read as the container's own default — `is default(v)` first,
         // then the element type's object (sheet LA-21)
@@ -7248,10 +7280,10 @@ void Interpreter::checkUndeclaredCalls(const std::vector<StmtPtr>& stmts, bool u
         if (st && st->kind == NK::ExprStmt) {
             const Expr* e = static_cast<const ExprStmt*>(st.get())->e.get();
             if (e && e->kind == NK::Assign) e = static_cast<const Assign*>(e)->target.get();
-            if (e && e->kind == NK::VarExpr) {
-                auto* ve = static_cast<const VarExpr*>(e);
-                if (ve->declare && ve->name.size() > 1 && ve->name[0] == '&') declared.insert(ve->name.substr(1));
-            }
+            auto noteAmp = [&](const Expr* x) { auto* ve = x && x->kind == NK::VarExpr ? static_cast<const VarExpr*>(x) : nullptr;
+                if (ve && ve->declare && ve->name.size() > 1 && ve->name[0] == '&') declared.insert(ve->name.substr(1)); };
+            if (e && e->kind == NK::ListExpr) for (auto& it : static_cast<const ListExpr*>(e)->items) noteAmp(it->kind == NK::Assign ? static_cast<const Assign*>(it.get())->target.get() : it.get());   // …and a list's: `my (&op) = …`
+            else noteAmp(e);
         }
     }
     if (calls.count("\x01other")) return;
@@ -8918,7 +8950,6 @@ Value Interpreter::cglobal(const std::string& lib, const std::string& sym, const
     return ncReadElem((long long)(uintptr_t)addr, type, 0);
 }
 
-
 // A literal parameter — `sub f("a")`, `multi m(0)`, `-> 'about' { }` — takes
 // exactly that value. It is `Int $ where 0`: TYPED by the literal, so "0", 0.0
 // and 0e0 do not match `f(0)` (Rakudo), and NaN is its own literal (`multi
@@ -9220,7 +9251,6 @@ Value Interpreter::lazyTailOver(const ValueList& prefix, const Value& src) {
     return out;
 }
 
-
 // `$<p>:exists`, `$/[1]:!exists`, `$<a>:kv` / `:k` / `:v` / `:p` on a Match:
 // whether the capture is there, and the forms over that one capture (nothing
 // when it is absent). `done` says whether the adverb was one of these.
@@ -9274,7 +9304,6 @@ bool Interpreter::cmpEndlessLazy(const Value& l, const Value& r, Value& out) {
     }
     return false;
 }
-
 
 // A role seen from its own body (rolePackageValue), or as one of its group's
 // `.^candidates`, is made by ParametricRoleHOW; the bare role name answers

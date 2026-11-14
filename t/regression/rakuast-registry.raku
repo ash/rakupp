@@ -37,11 +37,12 @@ sub exe-out(Str $code) {
     ($p.out.slurp(:close) ~ $p.err.slurp(:close)).chomp
 }
 
-# ---- the gate ----------------------------------------------------------
-my $REFUSAL = "Use of RakuAST is experimental; please 'use experimental :rakuast;'";
-
-like-check out('say RakuAST::IntLiteral.^name'), $REFUSAL,
-    'a bare 6.d program is refused, with Rakudo verbatim';
+# ---- no gate -----------------------------------------------------------
+# Rakudo 2026.08 refused a RakuAST:: name under 6.d without the pragma, and
+# 2026.09 does not (rakudo#6134, #6137): the pragma is accepted and changes
+# nothing.
+check out('say RakuAST::IntLiteral.^name'), 'RakuAST::IntLiteral',
+    'a bare 6.d program sees the namespace, as Rakudo 2026.09 does';
 check out('use experimental :rakuast; say RakuAST::IntLiteral.^name'),
     'RakuAST::IntLiteral', 'the pragma opens the namespace (spaced spelling)';
 check out('use experimental:rakuast; say RakuAST::IntLiteral.^name'),
@@ -49,15 +50,14 @@ check out('use experimental:rakuast; say RakuAST::IntLiteral.^name'),
 check out('use v6.e.PREVIEW; say RakuAST::IntLiteral.^name'),
     'RakuAST::IntLiteral', '6.e sees the namespace without the pragma';
 
-# The symbolic form answers a FAILURE carrying the same exception, never a
-# throw: `try ::('RakuAST::Node')` is how a module asks whether the namespace
-# is there at all, and a control jump would break the probe it is written as.
-check out('my $x = ::("RakuAST::Node"); say $x.^name'), 'Failure',
-    '::("RakuAST::…") under 6.d answers a Failure, not a throw';
-like-check out('my $x = ::("RakuAST::Node"); try { $x.gist }; say $!.^name'),
-    'X::Experimental', 'and that Failure carries X::Experimental';
+# The symbolic form resolves too: `try ::('RakuAST::Node')` is how a module
+# asks whether the namespace is there at all.
+check out('my $x = ::("RakuAST::Node"); say $x.^name'), 'RakuAST::Node',
+    '::("RakuAST::…") under 6.d resolves';
 check out('use experimental :rakuast; my $x = ::("RakuAST::Node"); say $x.^name'),
-    'RakuAST::Node', '…and resolves once the pragma is on';
+    'RakuAST::Node', '…and with the pragma';
+check out('say ::("RakuAST::NoSuchNode").^name'), 'Failure',
+    'a name the namespace does not have is still a Failure';
 
 # A user's own class in the namespace is THEIRS: it lives in the ordinary class
 # table, is found before the registry is ever consulted, and is never gated.
@@ -162,8 +162,8 @@ check out('use experimental :rakuast; sub f(RakuAST::Node $n) { $n.^name }; '
     # refused its own names from the second run on, while run 1 stayed green.
     check out("use lib '$dir'; use AstUser; say kind()"),
         'RakuAST::IntLiteral', '…and still does when it comes from the precomp cache';
-    like-check out("use lib '$dir'; use AstUser; say kind(); say RakuAST::IntLiteral.^name"),
-        $REFUSAL, '…without opening it for its importer';
+    check out("use lib '$dir'; use AstUser; say kind(); say RakuAST::IntLiteral.^name"),
+        "RakuAST::IntLiteral\nRakuAST::IntLiteral", '…and its importer sees it too, pragma or not';
     # …including when the module is required from a worker rather than the
     # mainline: the registry is built there and published with one atomic
     # compare-exchange, so the thread that gets there first is as safe as the
@@ -186,20 +186,15 @@ check out('use v6.e.PREVIEW; my @p = (^8).map({ start { RakuAST::IntLiteral.^mro
 # ---- --exe parity ------------------------------------------------------
 check exe-out('use experimental :rakuast; say RakuAST::IntLiteral.^mro.elems'), '13',
     '--exe resolves the namespace identically';
-# The REFUSAL is where the two backends part, and not because of RakuAST: the
-# native codegen runs no undeclared-name check at all, so `say Nonexistent`
-# prints `(Nonexistent)` there too. The pair below pins both halves, so the day
-# the native backend grows that check this case says so instead of going quietly
-# green on a changed answer.
+# Without the pragma the two backends answer alike now (rakudo#6134): the
+# native codegen mints the name, and the interpreter finds it.
 check exe-out('say Nonexistent.^name'), 'Nonexistent',
     '--exe mints an undeclared name (pre-existing: no declaration check there)';
 check exe-out('say RakuAST::IntLiteral.^name'), 'RakuAST::IntLiteral',
-    '…so an un-pragma\'d RakuAST name is minted too, not refused';
-# What a module's feature probe actually asks, though, IS identical: `::(…)`
-# is not something codegen compiles, so the unit falls back to the interpreter
-# and answers the same Failure. That is the shape the release-train rule cares
-# about — a probe must never decide the namespace is there when it is not.
-check exe-out('my $x = ::("RakuAST::Node"); say $x.^name'), 'Failure',
+    '…and an un-pragma\'d RakuAST name';
+# `::(…)` is not something codegen compiles, so the unit falls back to the
+# interpreter and answers as it does.
+check exe-out('my $x = ::("RakuAST::Node"); say $x.^name'), 'RakuAST::Node',
     '--exe answers the symbolic probe identically';
 
 if @fail {

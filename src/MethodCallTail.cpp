@@ -739,10 +739,65 @@ static bool lazyReadOut(const Value& lst) {
     return st && st->exhausted && !st->infinite;
 }
 
+// The operator a BUILT-IN chaining comparison's Code stands for (`&[>]` is
+// `infix:«>»`), or "" for any other callable: `reduce &[>], 6, 5, 4` chains
+// as `[>]` does, 6 > 5 > 4, not (6 > 5) > 4 (rakudo#4128)
+static std::string builtinChainOp(const Value& f) {
+    if (f.t != VT::Code || !f.code() || !f.code()->ci().builtin) return "";
+    const std::string& rn = f.code()->ci().name;
+    std::string cop = rn.rfind("infix:<", 0) == 0 && rn.back() == '>' ? rn.substr(7, rn.size() - 8)
+                    : rn.rfind("infix:\u00AB", 0) == 0 && rn.size() > 10 ? rn.substr(8, rn.size() - 10) : std::string();
+    static const std::set<std::string> chainOps = {"<", "<=", ">", ">=", "==", "!=", "eq", "ne", "lt", "le",
+        "gt", "ge", "=:=", "===", "eqv", "before", "after", "~~"};
+    return chainOps.count(cop) ? cop : std::string();
+}
+
+// `.combinations` over a NON-Int Range of sizes, as Rakudo reads it (rakudo#1629):
+// from `(min + excludes-min).Int`, to `(max - excludes-max).Int`, or every size
+// when max is past the list's — `2.3..^3.6` over three elements is sizes 2 and 3
+static bool ratSizeRange(const Value& k, size_t n, long long& lo, long long& hi) {
+    const RangeEnds* re = k.t == VT::Range ? rangeEnds(k) : nullptr;
+    if (!re || !re->from.isNumeric() || !re->to.isNumeric() || (re->from.t == VT::Int && re->to.t == VT::Int)) return false;
+    const double mn = re->from.toNum(), mx = re->to.toNum();
+    lo = mn < 0 ? 0 : (long long)std::trunc(mn + (k.rExFrom() ? 1 : 0));
+    hi = mx > (double)n ? (long long)n : (long long)std::trunc(mx - (k.rExTo() ? 1 : 0));
+    return true;
+}
+
+// The EnumHOW protocol, called on the HOW with the enum first (rakudo#2165):
+// `E.HOW.add_enum_value(E, key => value)` adds a member after the
+// declaration, and the readers are the `.^` forms of the same names
+std::optional<Value> Interpreter::enumHowMethod(const MName& m, ValueList& args) {
+    if (!args.empty() && args[0].t == VT::Array && !args[0].enumType().empty() && args[0].enumName().empty()) {
+        const std::string tn(args[0].enumType().str());
+        if (m == "add_enum_value" && args.size() == 2 && args[1].t == VT::Pair) {
+            auto ep = enumPairs_.find(tn);
+            Value pairs = ep != enumPairs_.end() ? ep->second : args[0];
+            const std::string key = args[1].s.copyText();
+            const long long ord = (long long)pairs.arr()->size();
+            const Value val = args[1].pairVal() ? *args[1].pairVal() : Value::integer(ord);
+            Value ev = Value::enumVal(key, val.t == VT::Int ? val.toInt() : ord);
+            if (val.t != VT::Int) ev.setPairVal(makePayload<Value>(val));
+            ev.setEnumType(tn);
+            global_->define(tn + "::" + key, ev);   // (where `.pick`, `.succ` and `.^enum_value_list` find a member)
+            pairs.arr()->push_back(Value::pair(key, val));
+            return ev;
+        }
+        if (m == "enum_values" || m == "enum_value_list") return methodCall(args[0], "^" + m, ValueList{});
+        if (m == "enum_from_value" && args.size() == 2) {   // the member whose value it is, else Mu
+            for (auto& ev : toList(methodCall(args[0], "^enum_value_list", ValueList{})))
+                if (valueEqv(methodCall(ev, "value", ValueList{}), args[1])) return ev;
+            return Value::typeObj("Mu");
+        }
+    }
+    return std::nullopt;
+}
+
 std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& m,
                                                  ValueList& args,
                                                  const std::vector<ExprPtr>* rwArgs) {
     auto a0 = [&]() -> Value { return args.empty() ? Value::any() : args[0]; };
+    if (auto r = inv.t == VT::Code ? codePrecMethod(*this, inv, m, args) : inv.t == VT::Type && inv.s == "Metamodel::EnumHOW" ? enumHowMethod(m, args) : std::nullopt) return r;   // `&infix:<+>.prec` (OperatorProps.cpp), `E.HOW.add_enum_value`
     if (m == "fmt" && inv.t == VT::Pair)
         return Value::str(doSprintf(args.empty() ? "%s\t%s" : a0().toStr(),
                                     {inv.pairKeyV(),
@@ -1149,6 +1204,7 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
         long long i = writeIndexInt(args[0]);
         if (i < 0) i += (long long)inv.arr()->size();
         if (i < 0) i = 0;
+        if (i >= (1LL << 20)) growToIndexCheck(i);   // (an index past the machine's memory)
         while ((long long)inv.arr()->size() <= i) inv.arr()->push_back(Value::any());
         (*inv.arr())[(size_t)i] = args[1];
         return args[1];
@@ -1339,8 +1395,8 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
         bool infinite = lst->infinite;
         // a list DECLARED lazy (`lazy gather {…}`) has no count to give
         // until it is made eager: Rakudo refuses rather than reifying it
-        if (m == "elems" && lst->declaredLazy && !lst->exhausted)
-            throwTypedV("X::Cannot::Lazy", {{"action", Value::str(".elems")}}, "Cannot .elems a lazy list");
+        if (m == "elems" && lst->declaredLazy && !lst->exhausted) throwTypedV("X::Cannot::Lazy", {{"action", Value::str(".elems")}}, "Cannot .elems a lazy list");
+        if (m == "chrs" && infinite) throwTypedV("X::Cannot::Lazy", {{"action", Value::str(".chrs")}, {"what", Value::str("List")}}, "Cannot .chrs a lazy list onto a List");   // (rakudo#2742)
         // a sequence whose length is KNOWN (`permutations(30)`, `42 xx 2**62`)
         // answers its count without building anything
         if (lst->hasCount && (m == "elems" || m == "Numeric" || m == "Int" || m == "Bool") &&
@@ -1482,7 +1538,7 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
             // …except a `.map` over one, which may yet END — its block can say
             // `last` — so `.eager` runs it to that point, as Rakudo does:
             // `(^Inf).map({ last if $_ > 6; $_ }).eager` is (0 … 6)
-            if (m == "eager" && lst->mapView && lst->appendNext && !lst->exhausted) {
+            if (m == "eager" && (lst->mapView || lst->mayEnd) && lst->appendNext && !lst->exhausted) {   // (…and a from-loop)
                 ValueList& buf = *inv.arr();
                 while (lst->appendNext(buf)) {}
                 lst->exhausted = true;
@@ -2875,8 +2931,9 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
                 // `1^..3` is sizes 2 through 3, `0^..0` none at all. The low
                 // `^` was ignored, so every such call also produced the sizes
                 // below it (roast S32-list/combinations.t).
-                if (k.t == VT::Range) { lo = k.rFrom() + (k.rExFrom() ? 1 : 0);
-                                        hi = k.rExTo() ? k.rTo() - 1 : k.rTo(); }
+                if (ratSizeRange(k, items.size(), lo, hi)) {}   // (a non-Int range of sizes, rakudo#1629)
+                else if (k.t == VT::Range) { lo = k.rFrom() + (k.rExFrom() ? 1 : 0);
+                                             hi = k.rExTo() ? k.rTo() - 1 : k.rTo(); }
                 else { lo = hi = k.toInt(); }
             }
             if (hi > (long long)items.size()) hi = (long long)items.size();
@@ -3065,7 +3122,7 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
         }
         if (m == "enums" || ((m == "^enum_values" || m == "enum_values") && !inv.enumType().empty())) { // enum type (a pair-list) -> Map of name => value
             Value h = Value::makeHash();
-            h.hashKind = "Map";
+            if (m == "enums") h.hashKind = "Map";   // (`.^enum_values` is a Hash in Rakudo)
             for (auto& v : items) if (v.t == VT::Pair) (*h.hash())[v.s] = v.pairVal() ? *v.pairVal() : Value::any();
             return h;
         }
@@ -3142,6 +3199,8 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
                     return acc;
                 }
             }
+            // …and so does a BUILT-IN chaining comparison, as under `[op]` (rakudo#4128)
+            if (std::string cop = builtinChainOp(args[0]); !cop.empty()) return applyReduce(cop, items);
             // an `is assoc<chain>` operator tests each ADJACENT pair, as a chained
             // comparison does: `(5,4,3,2,1).reduce(&infix:<eog>)` is
             // 5 eog 4 && 4 eog 3 && …, False at the first pair that fails
@@ -3767,9 +3826,10 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
         auto resolveCount = [&](Value a, long long sz) -> long long {
             if (a.t == VT::Whatever) return sz;
             if (a.isNumeric() && std::isinf(a.toNum())) return sz; // head(Inf) / tail(Inf) = all
-            // ANY Callable count is called with the element count — `*-2` and the
-            // spelled-out `{ $_ - 2 }` mean the same thing to .head/.tail/.skip
-            if (a.t == VT::Code) { ValueList one{Value::integer(sz)}; return callCallable(a, one).toInt(); }
+            // ANY Callable count is an offset from the END, as Rakudo reads it: called
+            // with 0, and added to the element count — `*-2` is all but two, and
+            // `*.elems - 1` (0.elems - 1, so 0) is all of it (rakudo#2485)
+            if (a.t == VT::Code) { ValueList one{Value::integer(0)}; return sz + callCallable(a, one).toInt(); }
             if (a.t == VT::Str) { // a non-numeric string count is an error (.skip("foo"))
                 const std::string_view s = a.s; bool num = !s.empty();
                 for (char c : s) if (!ascii::isdigit((unsigned char)c) && c != '-' && c != '+' && c != '.' && c != ' ') { num = false; break; }
@@ -3942,9 +4002,8 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
             if (inv.hashKind == "Set" || inv.hashKind == "Bag" || inv.hashKind == "Mix")
                 throw RakuError{Value::typeObj("X::Immutable"),
                     "Cannot call 'grab' on an immutable '" + inv.hashKind + "'"};
-            if (inv.hashKind == "MixHash")
-                throw RakuError{Value::typeObj("X::AdHoc"),
-                    "Cannot .grab from a MixHash; weights aren't multiplicities"};
+            if (inv.hashKind == "MixHash")   // a Failure, as Rakudo's (rakudo#2109)
+                return armedFailure("X::AdHoc", ".grab is not supported on a MixHash");
             bool one = args.empty();
             bool all = !args.empty() && (args[0].t == VT::Whatever ||
                                          (args[0].t == VT::Num && std::isinf(args[0].n)));
@@ -4007,9 +4066,10 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
             return out;
         }
         if (m == "pick" || m == "roll") { // random element(s); pick = without replacement
-            // an enum type picks from its VALUES (red/green/blue), not its (key=>val) pairs
+            // an enum type picks from its VALUES (red/green/blue), not its (key=>val) pairs: the members, so a Str-valued one keeps its `.value` (rakudo#2165)
             ValueList enumVals;
             for (auto& pr : items) if (!inv.enumType().empty() && pr.t == VT::Pair) {
+                if (Value* f = tctx().cur->find(std::string(inv.enumType().c_str()) + "::" + pr.s)) { enumVals.push_back(*f); continue; }
                 Value ev = Value::enumVal(pr.s, pr.pairVal() ? pr.pairVal()->toInt() : 0);
                 ev.setEnumType(inv.enumType()); enumVals.push_back(ev);
             }

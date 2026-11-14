@@ -36,6 +36,11 @@ Open:
   (`%known-flaky` in `t/stress/run.raku`, 2026-10-24).
 - `S17-promise/nonblocking-await.t`, ledgered at the flip, still crashes about
   1 run in 10, because `classes_` is written without a lock (TODO.md §2).
+  rakudo#5868 is the same race on nearly every run. A `.race` over
+  `Foo.new but role :: { … }` declares a role and a mixin class per call,
+  and writes `classes_` and `lastDecl_` while other workers read them
+  ([RAKUDO-ISSUES-PLAN.md](RAKUDO-ISSUES-PLAN.md) R1, decision 4). Its
+  snippet is the reproducer for the lock.
 
 One of the three **v3.0.0** pillars
 ([VERSIONS.md](VERSIONS.md); the others are [CLI-PLAN.md](CLI-PLAN.md) and

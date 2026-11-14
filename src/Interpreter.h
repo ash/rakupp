@@ -934,6 +934,7 @@ struct Env {
     // a `try`, `do` or `quietly` block run in place (runBlockInPlace): a
     // printed frame of its own, "in block", as the closure it stands in for was.
     bool btCalled = false;
+    bool btThunk = false;   // …and one that is a `try EXPR`'s thunk: Rakudo's `code`, not a block
     int btLine = 0;
     uint64_t routineFrameId = 0; // …and its frame number, what a lexical `return` targets
     // A `strict` pragma ran HERE: 1 = `no strict` (undeclared variables
@@ -1708,12 +1709,14 @@ struct ExecContext {
     //   pendingArgWriter  a composed curry's argument writer, re-indexed
     //   noAutothread      do NOT autothread junction args (Junction.THREAD)
     //   loopPhaserCtl     FIRST/NEXT/LAST control from an iterating driver
-    //   forceRoutineFrame a worker's starting block owns its `$/`, as a routine
+    //   forceRoutineFrame a worker's starting block owns its `$/`, as a routine;
+    //                     2: and is no routine to `return` from (a `start` made
+    //                     outside every routine: `await start { return }`)
     Value* topicWriteback = nullptr;
     const std::vector<Value*>* pendingRwSlots = nullptr;
     const CallArgWriter* pendingArgWriter = nullptr;
     bool noAutothread = false;
-    bool forceRoutineFrame = false;
+    char forceRoutineFrame = 0;
     int loopPhaserCtl = 0;
     int subSigBind = 0; // > 0 while a sub-signature destructures (bindParams' lax-overflow rule is off)
     // The invocant EXPRESSION of the method call currently being set up, for a
@@ -1960,6 +1963,13 @@ struct ExecContext {
     // to the body block, so a loop nested in it collects its own way.
     const void* collectTailBody = nullptr;
     const struct Expr* collectTail = nullptr;
+    // A `for` statement whose value its block wants (its last statement):
+    // its body is not sunk, nor kept (Rakudo answers Nil). Keyed to the body block,
+    // so a loop nested in it sinks its own way (rakudo#1360: `{ Failure.new for ^5 }()`).
+    const void* unsunkBody = nullptr;
+    // …and the one CALLABLE whose last statement is sunk all the same: a gather's block,
+    // whose value nobody reads (`gather for ^5 { Sinker.new }` takes five times)
+    const void* sinkTailCallable = nullptr;
     // mirror of protoStack_.size(), kept here so the per-block-statement
     // "inside a proto body?" probe reads the ALREADY-LOADED tctx() instead of
     // paying a second TLS wrapper call + init guard for the stack itself
@@ -2056,6 +2066,7 @@ struct LazySeqState {
     // a `.map` that runs its block as it is read: sinking it runs the block too
     // (Rakudo iterates a sunk Seq), however the source is made
     bool mapView = false;
+    bool mayEnd = false;   // endless, but its body can say `last` (Seq.from-loop): `.eager` runs it to there
     // a LIST over a finished stream (`Supply.list`): read like a handle's lines,
     // but sinking a List reads nothing, so a sunk `.list` raises no quit error
     bool listView = false;
@@ -2833,6 +2844,7 @@ public:
                                          const std::vector<ExprPtr>* rwArgs);
     std::optional<Value> methodCallPart3(const Value& inv, const struct MName& m, ValueList& args,
                                          const std::vector<ExprPtr>* rwArgs);
+    std::optional<Value> enumHowMethod(const MName& m, ValueList& args);   // `E.HOW.add_enum_value(E, …)` (MethodCallTail.cpp)
     std::optional<Value> methodCallTail(const Value& inv, const struct MName& m, ValueList& args,
                                         const std::vector<ExprPtr>* rwArgs);
     // `.^nominalize`: the nominal type a coercion, definite type or subset
@@ -3692,7 +3704,12 @@ public:
     void runProcPromise(Value& promise, double timeoutSec); // run a Proc::Async .start promise (with optional timeout)
     // ENTER/FIRST at block entry (source order). `firstOnce` is the closure being
     // called, whose FIRST runs on its first call only; a block run in place has none.
-    void runEnterPhasers(const std::vector<StmtPtr>& stmts, Callable* firstOnce = nullptr);
+    void runEnterPhasers(const std::vector<StmtPtr>& stmts, Callable* firstOnce = nullptr, bool valuePh = false);   // (valuePh: entryWork bit 64)
+    void runUnitEntryPhasers(const std::vector<StmtPtr>& stmts, Value* tail = nullptr);   // a program's or an EVAL's FIRST and ENTER
+    Value callCached(const Value& codeVal, ValueList args, const std::vector<ExprPtr>* rwArgs, bool ownFrame,
+                     bool arityCheck, bool whereVerified);   // `is cached` (InterpreterCalls.cpp)
+    void markCached(Value& code, const void* decl);   // one cache per DECLARATION, shared by its clones
+    Value valuePhaser(BlockExpr* be);   // a phaser in TERM position: its value, from its phase
     void runFirstPhasers(const std::vector<StmtPtr>& stmts); // FIRST once before a loop's first iteration
     void runLastPhasers(const std::vector<StmtPtr>& stmts);  // LAST once after a loop's last iteration
     // LEAVE/KEEP/UNDO at block exit (reverse order). `ok` selects which conditional
@@ -4029,6 +4046,7 @@ public:
     // native-codegen entry point. Mutates *target unless nonMut; returns what the
     // interpreted form returns (Match/List for s///, count for tr///, Str for S///).
     Value substApply(Value* target, const std::string& pattern, const std::string& repl, bool nonMut);
+    Value grammarParseConfused(const std::string& input);   // 6.e's failed .parse: a Failure of X::Syntax::Confused
     Value grammarParse(ClassInfo* g, const std::string& input, bool subparse, const std::string& startRule, Value actions,
                        const ValueList* ruleArgs = nullptr, long startPos = 0,
                        long* consumedEnd = nullptr); // consumedEnd: where matching stopped (differs from .to under `<( )>`)
@@ -4882,17 +4900,9 @@ public:
     // resolves a builtin name unless this revision is not supposed to see it.
     bool builtinVisible(const std::string& n) const { return sixE() || !sixEOnlySub(n); }
     int langRev_ = 1; // language revision: 0=6.c, 1=6.d (default, matches Rakudo), 2=6.e (via `use v6.e.PREVIEW`). Affects e.g. sqrt/roots of negatives -> Complex
-    // Rakudo 2026.08, measured: the pragma is the gate under 6.d, and 6.e sees
-    // the namespace without it. Both spellings are honoured here.
-    bool rakuAstVisible() const { return rakuAstPragma_ || sixE(); }
-    // The refusal, pinned to that same measurement: class X::Experimental, the
-    // message verbatim. Rakudo refuses at COMPILE time (===SORRY!===) and we
-    // refuse at first mention during the walk — the same timing divergence
-    // every evalString-shaped check here has.
-    [[noreturn]] void refuseRakuAst() const {
-        throw RakuError{Value::typeObj("X::Experimental"),
-                        "Use of RakuAST is experimental; please 'use experimental :rakuast;'"};
-    }
+    // (The RakuAST:: names need no pragma: Rakudo 2026.08 refused them under
+    // 6.d without `use experimental :rakuast`, and 2026.09 does not, rakudo#6134
+    // and #6137. The pragma is still read, and still a no-op.)
     // Redispatch chain for callsame/callwith/nextsame/nextwith: each entry knows how to
     // invoke the NEXT candidate (e.g. a built-in shadowed by a user method) and the
     // current routine's args (for the *same variants).
@@ -5041,6 +5051,7 @@ public:
         bool colour   = false;  // ANSI, only for a terminal
         bool collapse = true;   // fold runs of identical frames, cap the total
         bool full     = false;  // --ll-exception: hidden frames too, no cap
+        bool inPlace  = false;  // print an in-place try/do/quietly block's frame (a warning's position does)
         int  cap      = 40;
     };
     bool llException_ = false;        // --ll-exception: every frame, uncollapsed, uncapped
@@ -5316,6 +5327,8 @@ private:
     const Value* shapedLeafRow(Index* ix, size_t& at, bool forWrite);   // …the innermost row it names, or null
     bool shapedElemRead(Index* ix, Value& out);    // …and its element, read without the general walk
     bool declLaneRhs(Expr* e, Value& out);         // that EXPR's value, side-effect free, or false
+    bool declLaneTernary(Ternary* t, Value& out);
+    void immutableCallTarget(MethodCall* mc, const std::string& name, const Value& inv);   // rakudo#1987  // `COND ?? A !! B` the same way (rakudo#1416)
     Value* declLane(Assign* a);                    // the declaration lane: the new slot, or null
     static bool nativeDeclShape(const VarExpr* v, const Expr* rhs);   // `my int $x = EXPR` takes the native declaration lane
     Value* nativeDeclLane(Assign* a);              // …which answers the new slot, or null before anything ran

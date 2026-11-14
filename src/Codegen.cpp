@@ -34,7 +34,7 @@ std::string introspectionRefusal(const Program&, bool evalCut); bool introspecti
 const char* routineIntrospectionRefusal(const Program&);
 bool exprMayUseTopic(const Expr* e);   // Interpreter.cpp: may `e` read or write `$_`?
 const char* builtinRefusal(const std::string& name, bool inTopic);   // codegen/Refusals.cpp, as are:
-const char* methodRefusal(const MethodCall* m, bool& routineWide); bool fatalCallSite(const Expr* e); bool isLeaveBlock(const Stmt* s);
+const char* methodRefusal(const MethodCall* m, bool& routineWide); bool fatalCallSite(const Expr* e); bool isLeaveBlock(const Stmt* s); const char* routineRefusal(const std::vector<SubTraitSpec>& traits, const std::vector<Param>& ps, const std::string& srcText);
 bool leaveReadsEarlier(const std::vector<StmtPtr>& body, size_t j); bool pairHoldsVariable(const std::vector<ExprPtr>& args);
 bool nestedSubUnsafe(const std::vector<StmtPtr>&, const SubDecl*, const std::set<std::string>&, const SubDecl*);
 std::string autothreadMask(const std::vector<Param>& ps, bool block);   // codegen/Autothread.cpp
@@ -504,8 +504,8 @@ struct Codegen {
     };
     std::set<std::string> keptNames_, writtenNames_;
     const std::vector<Param>* curParams_ = nullptr;   // the routine bodyDef is emitting
-    // A kept list literal's `$name` (or `my $name = …`) and `@a[k]` / `%h{k}`
-    // items: what keeping it shares. Records them; true when there was one.
+    const Stmt* unsunkStmt_ = nullptr;   // the last statement of a routine's trailing `for` body: its value is not sunk (rakudo#1360)
+    // A kept list literal's `$name` (or `my $name = …`) and `@a[k]` / `%h{k}` items: what keeping it shares. Records them; true when there was one.
     bool noteKeptItems(const Expr* e) {
         if (!e || e->kind != NK::ListExpr) return false;
         bool any = false;
@@ -787,6 +787,7 @@ struct Codegen {
         unsupported("prefix operator '" + u->op + "'");
     }
     std::string self_;                   // C++ expr for `self` inside a method ("" outside)
+    std::string curClass_;   // the class whose method is being emitted: its `self!p` is `!Class::p` (rakudo#2663)
     std::vector<std::string> topics;  // stack of C++ var names bound to $_
     int tmp = 0;
     std::string gensym(const char* p) { return std::string(p) + std::to_string(tmp++); }
@@ -1396,7 +1397,7 @@ struct Codegen {
                 // the curried method about $x. Currying the whole expression
                 // answered a closure to both. This is the rule evalBinary
                 // applies, spelled syntactically.
-                if (b->op == "~~" || b->op == "!~~") return b->lhs->kind == NK::Whatever;
+                if (b->op.size() >= 2 && b->op.compare(b->op.size() - 2, 2, "~~") == 0) return b->lhs->kind == NK::Whatever;   // (`X~~`, `Z!~~` too)
                 return hasWhatever(b->lhs.get()) || hasWhatever(b->rhs.get()); }
             case NK::Unary:  return hasWhatever(static_cast<Unary*>(e)->operand.get());
             case NK::Ternary: { auto* t = static_cast<Ternary*>(e); return hasWhatever(t->cond.get()) || hasWhatever(t->then.get()) || hasWhatever(t->els.get()); }
@@ -2451,6 +2452,7 @@ struct Codegen {
     // A block `{ ... }` / pointy `-> $x { ... }` becomes a native closure.
     std::string emitBlockClosure(BlockExpr* be) {
         Nest __nest{this, be->isSub ? 's' : 'b'};
+        if (const char* why = be->isSub ? routineRefusal(be->userTraits, be->params, srcText_) : nullptr) throw CodegenError{why, true};
         BodyScope __bs{this, /*closure=*/true};
         // an anonymous `sub` is a routine of its own; a plain block is not
         std::unique_ptr<RoutineScope> __rs;
@@ -2942,6 +2944,7 @@ struct Codegen {
                                 ? ", true)" : ")");
                 }
                 if (u->op == "do" || u->op == "try") { // do { } / try { }  (value = last statement)
+                    if (u->operand->kind == NK::BlockExpr && !static_cast<BlockExpr*>(u->operand.get())->phaser.empty()) throw CodegenError{"a phaser used as a value (" + static_cast<BlockExpr*>(u->operand.get())->phaser + ")", /*routineWide=*/true};   // `now - ENTER now`: at its phase
                     std::string body;
                     // a Failure the block returns is consumed (rtTryFailure),
                     // unless the block says `no fatal`: then it is the value
@@ -3529,7 +3532,7 @@ struct Codegen {
                     if (m->mutate) unsupported(">>.= hyper-mutate");
                     return "rtHyperMethod(RT, " + ex(m->inv.get()) + ", " + cesc(m->method) + ", " + argsVL(m->args) + ")";
                 }
-                std::string name = pfx + m->method;
+                std::string name = pfx + (m->bang && !curClass_.empty() && m->method.find("::") == std::string::npos ? curClass_ + "::" : std::string()) + m->method;   // (`self!p` names its class)
                 if (m->mutate) { // $x .= meth : rebind the invocant to the result
                     if (m->inv->kind != NK::VarExpr && m->inv->kind != NK::Index) unsupported(".= on this invocant");
                     checkWritable(m->inv.get());
@@ -4657,6 +4660,7 @@ struct Codegen {
                         return;
                     }
                 }
+                if (s == unsunkStmt_) { line(ind, "(void)(" + ex(e) + ");"); return; }   // (see unsunkStmt_)
                 if (e->kind == NK::MethodCall || e->kind == NK::Call ||
                     (e->kind == NK::Unary && static_cast<Unary*>(e)->op == "gather")) {
                     const bool m = e->kind == NK::MethodCall && !static_cast<MethodCall*>(e)->mutate;   // (rtSinkCallStmt)
@@ -7548,7 +7552,7 @@ struct Codegen {
         if (moduleMode_) return;
         if (const char* nk = std::getenv("RAKUPP_NO_KERNELS")) if (*nk && *nk != '0') return;
         // a wrapper must see every call, and these name a routine's lexicals at run time
-        for (const char* w : {".wrap", "EVAL", "::(", "CALLER::", "OUTER::", "MY::", "LEXICAL::", "callframe"})
+        for (const char* w : {".wrap", "EVAL", "::(", "CALLER::", "CALLERS::", "OUTER::", "MY::", "LEXICAL::", "callframe"})
             if (srcText.find(w) != std::string::npos) return;
         nrSixE_ = srcText.find("v6.e") != std::string::npos;
         nrOn_ = true;
@@ -9546,7 +9550,7 @@ struct Codegen {
             lexDirect_.clear();   // a C++ function of its own: no enclosing handle is in reach
             RoutineScope __rs{this, ""};   // (a routine: its `fail` returns from it)
             FrameScope __fs{this};
-            std::string saved = self_;
+            std::string saved = self_; struct CurC { std::string& c; std::string s; ~CurC() { c = s; } } __cc{curClass_, std::exchange(curClass_, cd->isRole ? std::string() : cd->name)};
             std::string mbody = capture([&]() {
                 line(1, "Value __self = __a.size() > 0 ? __a[0] : Value::any();");
                 self_ = "__self";   // (before the binding: a default may read `$!a` or `self`)
@@ -9764,7 +9768,7 @@ struct Codegen {
                 stmtValue(s, 1, rv);
                 line(1, "return " + rv + ";");
             }
-            else stmt(s, 1);
+            else { if (i + 1 == body.size() && s->kind == NK::ForStmt && !static_cast<ForStmt*>(s)->asExpr && static_cast<ForStmt*>(s)->body && !static_cast<ForStmt*>(s)->body->stmts.empty()) unsunkStmt_ = static_cast<ForStmt*>(s)->body->stmts.back().get(); stmt(s, 1); }
         }
         line(1, std::string("return ") + tailFallback(body) + ";");
     }
@@ -9776,8 +9780,7 @@ struct Codegen {
         const std::string nrw = nrSub.empty() ? std::string() : nrWrapper(nrSub, ps);
         BodyScope __bs{this, /*closure=*/false};
         lexDirect_.clear();   // a C++ function of its own: no enclosing handle is in reach
-        struct CurParams { Codegen* g; const std::vector<Param>* saved; ~CurParams() { g->curParams_ = saved; } }
-            __cp{this, std::exchange(curParams_, &ps)};
+        struct CurParams { Codegen* g; const std::vector<Param>* saved; ~CurParams() { g->curParams_ = saved; } } __cp{this, std::exchange(curParams_, &ps)};
         std::set<std::string> params;
         for (auto& p : ps) if (!p.name.empty()) insertName(params, p.name);
         analyzeCells(body, params);
@@ -9874,8 +9877,8 @@ struct Codegen {
     }
     void subDef(SubDecl* d) {
         if (d->isNative) { nativeSubDef(d); return; }
-        RoutineScope __rs{this, subRefSig("Value::closure([](ValueList& __a)->Value{ return " +
-                                          mangleSub(d->name) + "(__a); })", d->name)};
+        if (const char* why = routineRefusal(d->traits, d->params, srcText_)) throw CodegenError{why, true};   // (Refusals.cpp)
+        RoutineScope __rs{this, subRefSig("Value::closure([](ValueList& __a)->Value{ return " + mangleSub(d->name) + "(__a); })", d->name)};
         nrWrapFor_ = d->name;   // a native routine's Value function calls its native function
         rwDirect_ = !moduleMode_ && srcText_.find("&" + d->name) == std::string::npos;
         struct OuterR { const SubDecl*& r; const SubDecl* s; ~OuterR() { r = s; } } __or{outerRoutine_, std::exchange(outerRoutine_, d)};

@@ -45,6 +45,7 @@ static bool hashTypeParam(const Value& inv, bool key, Value& out) {
 bool isP5Pattern(std::string_view pat);   // InterpreterRegex.cpp: a `:P5`/`:Perl5` regex
 std::string sameCase(const std::string& s, const std::string& pat);   // Builtins.cpp: `.samecase`, by grapheme
 std::shared_ptr<const Regex> compileRegexCached(const std::string& pat, const std::string& flags);   // InterpreterCore.cpp
+void growToIndexCheck(long long i);   // InterpreterCore.cpp: an index past the machine's memory is refused
 // A pattern for one `.contains` / `.comb` / `.split` call: the per-thread
 // cache's compiled form (these compiled it afresh on every call, half of a
 // `.split(/\s+/)` loop's time), or, when a `<?{…}>` needs this call's hooks on
@@ -1233,6 +1234,23 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
     // rounded either way.
     if (m == "base" && !args.empty() &&
         (inv.t == VT::Int || inv.t == VT::Bool || inv.t == VT::Num || inv.t == VT::Rat)) {
+        // `:no-trailing-zeroes` (rakudo#1872, which closed by adding it): a
+        // Rat's digits stop at its last non-zero one, and the point goes too
+        // when none is left. An Int or a Num keeps its zeroes, as in Rakudo.
+        for (size_t k = 0; k < args.size(); k++)
+            if (args[k].t == VT::Pair && args[k].s == "no-trailing-zeroes") {
+                const bool on = !args[k].pairVal() || args[k].pairVal()->truthy();
+                ValueList rest(args);
+                rest.erase(rest.begin() + (long)k);
+                Value out = methodCall(inv, "base", rest);
+                if (!on || inv.t != VT::Rat || out.t != VT::Str) return out;
+                std::string t = out.toStr();
+                if (t.find('.') != std::string::npos) {
+                    while (t.back() == '0') t.pop_back();
+                    if (t.back() == '.') t.pop_back();
+                }
+                return Value::str(t);
+            }
         Value bv = args[0];
         // `"camel"` and `"beer"` are base 2 written in emoji — Rakudo's joke,
         // and the only two non-numeric base names it accepts.
@@ -1734,6 +1752,7 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
                     }
                     // an unshaped structure autovivifies on a write, like `@a[1][2] = 9`
                     if (!(cur->t == VT::Array && cur->arr())) *cur = Value::array({});
+                    if (ix >= (1LL << 20)) growToIndexCheck(ix);   // (an index past the machine's memory)
                     while ((long long)cur->arr()->size() <= ix) cur->arr()->push_back(Value::any());
                 }
                 if (leaf) {
@@ -1783,6 +1802,7 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
         if (m == "AT-POS") return in ? (*inv.arr())[i] : inv.isList ? Value::nil() : Value::any();
         if (m == "ASSIGN-POS") {
             Value v = args.size() > 1 ? args[1] : Value::any();
+            if (i >= (1LL << 20)) growToIndexCheck(i);   // (an index past the machine's memory)
             if (i >= 0) { while ((long long)inv.arr()->size() <= i) inv.arr()->push_back(Value::any());
                           (*inv.arr())[i] = rtElementItem(v); }
             return v;
@@ -5082,6 +5102,14 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
             if (!kDecodes.count(norm))
                 throwTyped("X::AdHoc", {}, "Unknown string encoding: '" + enc + "'");
         }
+        // …and `.encode("gbk")` dies too, where it handed back UTF-8 bytes for
+        // any name it did not know (rakudo#4102): the names encodings answer to
+        if (m == "encode" && !norm.empty()) {
+            bool knownEnc = true;
+            canonEncodingName(enc, &knownEnc);
+            if (!knownEnc)
+                throwTyped("X::Encoding::Unknown", {{"name", enc}}, "Unknown string encoding '" + enc + "'");
+        }
         // windows-1252 is latin-1 except across 0x80..0x9F, where it carries
         // printable characters instead of C1 controls; Rakudo leaves the five
         // unassigned slots (0x81/0x8D/0x8F/0x90/0x9D) as the C1 codepoint of the
@@ -5913,6 +5941,9 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
         return Value::str(s.substr(a, b - a));
     }
     if (m == "substr" || m == "substr-rw") {
+        // a Regex is no position: Rakudo's own hint (it took it as 0)
+        if (!args.empty() && args[0].typeName() == "Regex")
+            throw RakuError{Value::typeObj("X::AdHoc"), "You cannot use a Regex on '" + m + "', did you mean 'subst'?"};
         // Raku indexes by GRAPHEME, so `n` counts clusters and every cut lands on a
         // cluster boundary. Indexing codepoints directly splits "ŕ̥" into its base
         // and its combining ring, which is how `substr` and `chars` came to

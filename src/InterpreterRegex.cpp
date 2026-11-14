@@ -293,6 +293,41 @@ static Value rxLiteralAlternatives(const Value& v) {
 static std::string rxKindAdverbs(const Value& v) {
     return v.t != VT::Regex ? "" : v.hashKind == "rule" ? ":r :s " : v.hashKind == "token" ? ":r " : "";
 }
+
+// A regex VALUE that names itself — `my $r; $r = / a <$r>? /`, or two that
+// name each other. Expanding `<$r>` pasted $r's source, its own `<$r>` pasted
+// it again, and the C++ stack ran out before one character was matched
+// (SIGBUS, rakudo#3775). Rakudo resolves `<$r>` when the match reaches it. So
+// while a value is being expanded (t_rxExpanding: its scope and source), its
+// reappearance becomes a `<{…}>` call that fetches the value back at match
+// time: `\x01Q<n>` names slot n of g_rxSelf, which keeps the value — and the
+// scope its variables read from — alive. Every dynRule hook answers the mark.
+static std::mutex g_rxSelfMu;
+static std::vector<Value> g_rxSelf;
+static thread_local std::vector<std::pair<const void*, std::string>> t_rxExpanding;
+static bool rxBeingExpanded(const Value& v) {
+    if (v.t != VT::Regex || !v.ext() || t_rxExpanding.empty()) return false;
+    const std::string src = v.s.copyText();
+    for (auto& e : t_rxExpanding)
+        if (e.first == v.ext().get() && e.second == src) return true;
+    return false;
+}
+static std::string rxSelfCallMark(const Value& v) {
+    const std::string src = v.s.copyText();
+    std::lock_guard<std::mutex> lock(g_rxSelfMu);
+    size_t n = 0;
+    while (n < g_rxSelf.size() && !(g_rxSelf[n].ext() == v.ext() && g_rxSelf[n].hashKind == v.hashKind &&
+                                    g_rxSelf[n].s.copyText() == src)) n++;
+    if (n == g_rxSelf.size()) g_rxSelf.push_back(v);
+    return "<{\x01" "Q" + std::to_string(n) + "}>";
+}
+bool isRxSelfCall(const std::string& code) { return code.size() > 2 && code[0] == '\x01' && code[1] == 'Q'; }
+Value rxSelfCallee(const std::string& code) {
+    const size_t n = std::strtoul(code.c_str() + 2, nullptr, 10);
+    std::lock_guard<std::mutex> lock(g_rxSelfMu);
+    return n < g_rxSelf.size() ? g_rxSelf[n] : Value();
+}
+
 std::string Interpreter::closedRegexSource(const Value& v) {
     std::string src = v.s.copyText();
     if (isP5Pattern(src)) return src;
@@ -303,12 +338,14 @@ std::string Interpreter::closedRegexSource(const Value& v) {
     if (!arr && !sc) return rxKindAdverbs(v) + src;
     auto savedOuter = tctx().cur;
     tctx().cur = std::static_pointer_cast<Env>(v.ext());
+    t_rxExpanding.emplace_back(v.ext().get(), src);
     try {
         if (sc) src = interpRegexPattern(src);
         if (arr) src = rxInterpArrays(src);
     }
-    catch (...) { tctx().cur = savedOuter; throw; }
+    catch (...) { tctx().cur = savedOuter; t_rxExpanding.pop_back(); throw; }
     tctx().cur = savedOuter;
+    t_rxExpanding.pop_back();
     return rxKindAdverbs(v) + src;
 }
 
@@ -964,7 +1001,8 @@ std::string Interpreter::interpRegexPattern(const std::string& in) {
                 }
                 if (depth == 0) {
                     Value v = evalString(pat.substr(i, j - i));   // the whole `$( … )`
-                    out += v.t == VT::Regex ? spliceRegexValue(closedRegexSource(v)) : quoteMetaRx(v.toStr());
+                    out += v.t != VT::Regex ? quoteMetaRx(v.toStr())
+                         : rxBeingExpanded(v) ? rxSelfCallMark(v) : spliceRegexValue(closedRegexSource(v));
                     i = j - 1;
                     continue;
                 }
@@ -1006,6 +1044,8 @@ std::string Interpreter::interpRegexPattern(const std::string& in) {
                     // frame, so an inner `(…)` stays the callee's `$0` and never
                     // renumbers onto the host's — Rakudo discards it entirely for
                     // the unaliased form, since nothing names the sub-match.
+                    // (A value already being expanded is called at match time.)
+                    if (rxBeingExpanded(*v)) { out += rxSelfCallMark(*v); i = j; continue; }
                     bool vp5 = false;
                     std::string vsrc = calleeSource(*v, vp5);
                     if (v->t == VT::Str && !vp5 && rxRestricted()) rxRestrictedCheck(vsrc);
@@ -1055,6 +1095,7 @@ std::string Interpreter::interpRegexPattern(const std::string& in) {
                         // grouped: the callee's `(\S+)` became the host's `$0` and
                         // `$<alias>` reported the whole span, so Sparrow6 read
                         // "ABCDCBA" where Rakudo reads "BCDCB".
+                        if (rxBeingExpanded(*v)) { out += "[ $<" + alias + ">=" + rxSelfCallMark(*v) + " ]"; i = j; continue; }
                         bool vp5 = false;
                         std::string vsrc = calleeSource(*v, vp5);
                         out += Regex::subSpliceOf(alias, vsrc, vp5);
@@ -1067,7 +1108,7 @@ std::string Interpreter::interpRegexPattern(const std::string& in) {
                 // how IO::Glob assembles a glob out of per-term matchers. Only a
                 // Str value keeps the quote-it-literally reading.
                 if (v && v->t == VT::Regex) {
-                    out += spliceRegexValue(closedRegexSource(*v));
+                    out += rxBeingExpanded(*v) ? rxSelfCallMark(*v) : spliceRegexValue(closedRegexSource(*v));
                     i = j - 1;
                     continue;
                 }
@@ -1139,8 +1180,8 @@ std::string Interpreter::spliceRegexVars(const std::string& pat) {
                     // Path::Finder's `{a,b}` and `[a-z]` matchers, built as
                     // `/@list/` inside a grammar action and then folded
                     // together by a `reduce`, came out matching nothing.
-                    std::string src = closedRegexSource(*v);
-                    out += spliceRegexValue(src); sawRegex = true;
+                    out += rxBeingExpanded(*v) ? rxSelfCallMark(*v) : spliceRegexValue(closedRegexSource(*v));
+                    sawRegex = true;
                 }
                 else out += quoteMetaRx(v->toStr());
                 i = j - 1;
@@ -1514,7 +1555,7 @@ GrammarHooks Interpreter::codeAssertHooks() {
     h.dynRule = [this](const std::string& code, long, long, const GrammarHooks::NamedMap&,
                        const std::vector<std::pair<long, long>>&, const GrammarHooks::ParamMap&,
                        const std::string& flags) -> const Regex* {
-        return dynRegexFor(evalString(code), flags);
+        return dynRegexFor(isRxSelfCall(code) ? rxSelfCallee(code) : evalString(code), flags);
     };
     return h;
 }
@@ -2456,6 +2497,40 @@ struct RuleHomeSwap {
     }
 };
 
+// From 6.e a FAILED .parse is a Failure carrying X::Syntax::Confused, not a bare
+// Nil — 6.e gives grammars a base class whose parse reports where it stopped.
+// .subparse keeps answering with what it managed to match.
+Value Interpreter::grammarParseConfused(const std::string& input) {
+    Value f = rakuppNewFailure();
+    // where it stopped: the parse's high-water mark, as a
+    // line, a position, and the text either side of it
+    auto& d = grammarParseDiag();
+    std::vector<std::string> cps;
+    for (size_t i = 0; i < input.size();) {
+        unsigned char c0 = (unsigned char)input[i];
+        size_t l = c0 < 0x80 ? 1 : (c0 >> 5) == 6 ? 2 : (c0 >> 4) == 14 ? 3 : 4;
+        cps.push_back(input.substr(i, l)); i += l;
+    }
+    long pos = d.valid ? d.pos : 0;
+    if (pos > (long)cps.size()) pos = (long)cps.size();
+    // a failure at the START of a line is reported at the end of the
+    // line before it (the newline was what the grammar could not use)
+    if (pos > 0 && pos <= (long)cps.size() && cps[pos - 1] == "\n") pos--;
+    long line = 1, ls = 0;
+    for (long i = 0; i < pos; i++) if (cps[i] == "\n") { line++; ls = i + 1; }
+    std::string pre, post;
+    for (long i = ls; i < pos; i++) pre += cps[i];
+    for (long i = pos; i < (long)cps.size() && cps[i] != "\n"; i++) post += cps[i];
+    if (post.empty()) post = "<EOL>";
+    Value ex = makeTypedEx("X::Syntax::Confused",
+        {{"line", Value::integer(line)}, {"pos", Value::integer(pos)},
+         {"pre", Value::str(pre)}, {"post", Value::str(post)},
+         {"reason", Value::str("unknown")}}, "Confused");
+    (*f.hash())["exception"] = ex;
+    (*f.hash())["message"]   = Value::str("Confused");
+    return f;
+}
+
 Value Interpreter::grammarParse(ClassInfo* g, const std::string& input, bool subparse,
                                 const std::string& startRule, Value actions,
                                 const ValueList* ruleArgs, long startPos, long* consumedEnd) {
@@ -2486,13 +2561,16 @@ Value Interpreter::grammarParse(ClassInfo* g, const std::string& input, bool sub
     };
 
     // run the actions method for `name` (if any) on a freshly built Match, setting .made
+    // An actions class with a FALLBACK has an action for every rule: FALLBACK(name, $/),
+    // as Rakudo calls it (rakudo#2059)
+    Value* fallbackAct = actCls ? actCls->findMethod("FALLBACK") : nullptr;
     auto runAction = [&](const std::string& name, Value& mv) -> bool {
         if (!haveActions || !actCls) return false;
         Value* method = resolveAction(name);
-        if (!method) return false;
+        if (!method && !fallbackAct) return false;
         if (g) stampMatchGrammar(mv, g->name);   // an action's $/ is a G too
         tctx().makeTargets.push_back(&mv);
-        try { invokeMethod(*method, actions, {mv}); }
+        try { if (method) invokeMethod(*method, actions, {mv}); else invokeMethod(*fallbackAct, actions, {Value::str(name), mv}); }
         catch (RakuError& e) { if (std::getenv("RAKUPP_ACTTRACE")) std::cerr << "[ACT] " << name << " threw: " << e.message << "\n"; tctx().makeTargets.pop_back(); throw; }
         catch (...) { tctx().makeTargets.pop_back(); throw; }
         tctx().makeTargets.pop_back();
@@ -2882,6 +2960,7 @@ Value Interpreter::grammarParse(ClassInfo* g, const std::string& input, bool sub
                                        const std::string& flags) -> const Regex* {
         if (code.size() > 2 && code[0] == '\x01' && code[1] == 'L')   // grammarArrayAtoms' mark
             return dynRegexFor(rxLiteralAlternatives(runCode(code.substr(2), from, to, nm, pm, &caps)), flags);
+        if (isRxSelfCall(code)) return dynRegexFor(rxSelfCallee(code), flags);   // a regex value naming itself
         return dynRegexFor(runCode(code, from, to, nm, pm, &caps), flags);
     };
     gm.hooks.range = [this, runCode](const std::string& code, const NamedMap& nm, const ParamMap& pm) -> std::pair<long, long> {
@@ -3314,8 +3393,8 @@ Value Interpreter::grammarParse(ClassInfo* g, const std::string& input, bool sub
     // A completed subrule that HAS an action method is built, and fired, at
     // once (see `fired` above).
     if (haveActions && actCls) {
-        gm.hooks.hasAction = [resolveAction](const std::string& nm) -> bool {
-            if (resolveAction(nm)) return true; // cached; guillemet form included
+        gm.hooks.hasAction = [resolveAction, fallbackAct](const std::string& nm) -> bool {
+            if (fallbackAct || resolveAction(nm)) return true; // cached; guillemet form included
             size_t c = nm.find(':'); // proto candidate falls back to the base name
             if (c != std::string::npos && c > 0 && resolveAction(nm.substr(0, c))) return true;
             return false;
@@ -4153,6 +4232,7 @@ Value Interpreter::containerOfExpr(Expr* e) {
                     long long i = kv.toInt();
                     if (i < 0) negIndexThrow(i);
                     if (i >= 0) {
+                        if (i >= (1LL << 20)) growToIndexCheck(i);   // (an index past the machine's memory)
                         while ((long long)arr->size() <= i) arr->push_back(Value::any());
                         size_t at = (size_t)i;
                         // the slot may itself hold an alias — pass that one along
@@ -4304,6 +4384,19 @@ Value Interpreter::smartmatchValue(const std::string& op, const Value& l, const 
 // benchmark — the checks never even run there (Int ~~ Int returns earlier),
 // so it was pure code layout. Gated by a cheap type test at the call site.
 bool valueSmartmatchHook(const std::string& op, const Value& l, const Value& r, Value& out) {
+    // `(1, 2) X~~ -> $ { True }`, `[~~]`, `»~~»`, `infix:<~~>(1, &c)`: a
+    // Callable matcher is CALLED with the topic, as evalBinary's own arm calls
+    // it, since every form that holds VALUES reaches this bottom (rakudo#6793).
+    // A Whatever topic is left to curry.
+    if (r.t == VT::Code && g_cbInterp && (op == "~~" || op == "!~~")) {
+        if (l.t == VT::Whatever || (l.t == VT::Code && l.code() && l.code()->ci().isWhateverCode)) return false;
+        Value m = g_cbInterp->callCallable(r, r.code() ? smartmatchCallArgs(r, l) : ValueList{l},
+                                           nullptr, false, /*arityCheck=*/true);
+        if (op == "~~" && m.t == VT::Match) { out = m; return true; }
+        const bool ok = g_cbInterp->boolify(m);
+        out = Value::boolean(op == "~~" ? ok : !ok);
+        return true;
+    }
     // `$x ~~ $obj` where $obj's class defines ACCEPTS — the general hook every
     // matcher type in Raku is built on. It lives HERE, at the bottom that every
     // smartmatch path converges on, and not in evalBinary or applyBinOp: the

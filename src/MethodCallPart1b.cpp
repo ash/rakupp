@@ -785,9 +785,10 @@ std::optional<Value> Interpreter::methodCallPart1b(const Value& inv, const MName
             st->fd = fd;
             return s;
         }
-        if (m == "listen") {
+        if (m == "listen" || m == "listen-path") {   // (`listen-path`: a UNIX-domain socket, rakudo#5358, #5359)
             Value s = Value::makeHash(); s.hashKind = "Supply";
             (*s.hash())["kind"] = Value::str("async-listen");
+            if (m == "listen-path") (*s.hash())["path"] = Value::str(args.size() > 0 ? args[0].toStr() : std::string());
             (*s.hash())["host"] = args.size() > 0 ? Value::str(args[0].toStr()) : Value::str("localhost");
             (*s.hash())["port"] = args.size() > 1 ? Value::integer(args[1].toInt()) : Value::integer(0);
             // `:enc` is the encoding every socket it accepts reads and writes in
@@ -795,11 +796,12 @@ std::optional<Value> Interpreter::methodCallPart1b(const Value& inv, const MName
                 if (a.t == VT::Pair && a.s == "enc" && a.pairVal()) (*s.hash())["enc"] = Value::str(canonEncodingName(a.pairVal()->toStr()));
             return s;
         }
-        if (m == "connect") {
+        if (m == "connect" || m == "connect-path") {   // (`connect-path`: to a UNIX-domain socket)
+            const bool unixPath = m == "connect-path";
             std::string host = args.size() > 0 ? args[0].toStr() : "localhost";
-            int port = args.size() > 1 ? (int)args[1].toInt() : 0;
+            int port = args.size() > 1 && !unixPath ? (int)args[1].toInt() : 0;
             sockaddr_storage addr{}; socklen_t addrLen = 0;
-            bool okAddr = asyncSockAddrFwd(host, port, addr, addrLen);
+            bool okAddr = unixPath ? unixSockAddr(host, addr, addrLen) : asyncSockAddrFwd(host, port, addr, addrLen);
             int fd = okAddr ? ::socket(addr.ss_family, SOCK_STREAM, 0) : -1;
             auto ps = std::make_shared<PromiseState>();
             Value p = Value::makeHash(); p.hashKind = "Promise"; p.extM() = ps;
@@ -811,11 +813,14 @@ std::optional<Value> Interpreter::methodCallPart1b(const Value& inv, const MName
             }
             bool parked = gilPark();
             int rc = ::connect(fd, (sockaddr*)&addr, addrLen);
+            const int err = errno;
             gilUnpark(parked);
             if (rc < 0) {
                 ::close(fd);
                 ps->done = true; ps->broken = true;
                 ps->cause = Value::typeObj("X::IO"); ps->causeMsg = "Cannot connect to " + host + ":" + std::to_string(port);
+                // …a path's, as Rakudo's: X::AdHoc with libuv's lower-case words
+                if (unixPath) { ps->cause = Value::typeObj("X::AdHoc"); ps->causeMsg = std::strerror(err); ps->causeMsg[0] = (char)std::tolower((unsigned char)ps->causeMsg[0]); }
                 (*p.hash())["status"] = Value::str("Broken");
                 return p;
             }
@@ -1299,7 +1304,8 @@ std::optional<Value> Interpreter::methodCallPart1b(const Value& inv, const MName
     if (inv.t == VT::Hash && inv.hashKind == "StrDistance") {
         auto fld = [&](const char* k) { auto it = inv.hash()->find(k); return it != inv.hash()->end() ? it->second : Value::str(""); };
         if (m == "before" || m == "after") return fld(m.c_str());
-        if (m == "Str" || m == "gist") return fld("after"); // "$dist" interpolates the resulting string
+        if (m == "Str") return fld("after"); // "$dist" interpolates the resulting string
+        if (m == "gist" || m == "raku") return Value::str(inv.gist());   // StrDistance.new(before => …, after => …)
         if (m == "Bool") return Value::boolean(fld("before").toStr() != fld("after").toStr());
         if (m == "Rat" || m == "FatRat" || m == "Numeric" || m == "Int" || m == "Num" || m == "chars") {
             // a tr/// result carries the substitution count; .new-built ones numify to .after.chars

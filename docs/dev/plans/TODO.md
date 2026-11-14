@@ -1,6 +1,6 @@
 # What is open
 
-*Started 2026-10-03. Last updated 2026-11-01.*
+*Started 2026-10-03. Last updated 2026-11-12.*
 
 This is the one list of work that has been started and is not finished, across
 every plan in this directory. Each line gives the plan that owns the details
@@ -18,6 +18,14 @@ sitting, plus whatever tail is cheapest, so that no front falls behind.
 The same items grouped by theme, with a complexity estimate for each:
 [SPEED-BACKLOG.md](SPEED-BACKLOG.md).
 
+- [ ] **A declaration whose right side the lane cannot compute** (2026-11-14,
+  SPEED-BACKLOG row 56, from RAKUDO-ISSUES-PLAN R11): `my $x = f()`,
+  `my $ = nqp::if($n, 1)` and other right sides with effects pay the full
+  declaration path, evalAssignInner. rakudo#1416's `nqp::` loops are 2.5–9×
+  Rakudo. Literals, plain variables, the typed operators and a ternary over
+  them take the lane. Next: let evalAssignInner take a right side already
+  evaluated, after moving the declaration arm out of InterpreterCore.cpp,
+  which is at its ceiling.
 - [ ] **What a thrown exception costs** (2026-11-06, SPEED-BACKLOG row 55):
   libc++abi scans each frame's call-site table up to its call, in both unwind
   passes, so a throw costs more the larger the frames it crosses. A method
@@ -222,6 +230,70 @@ The same items grouped by theme, with a complexity estimate for each:
 
 ## 2. Correctness (v5 error batches)
 
+- [ ] **What Rakudo's issue tracker found**
+  ([RAKUDO-ISSUES-PLAN.md](RAKUDO-ISSUES-PLAN.md), from
+  findings/RAKUDO-ISSUES-2026-11.md, 2026-11-12): 8 crashes or hangs, 160
+  issues with a wrong answer, 82 strictness gaps and 25 missing features, in
+  twelve batches. R1 is done (041789fd … b4f6e472, 2026-11-12): a regex
+  naming itself, a huge index, a class named `Rat`, and two `react` hangs.
+  Its sixth crash, rakudo#5868 (a `.race` over `but role` mixins), is
+  deferred to PARALLEL-PLAN by the plan's decision 4: it is the unlocked
+  `classes_` write of the `nonblocking-await.t` item below. R2 is done
+  (00c30ed1, b980a365, 2026-11-13): a phaser used as a value runs at its
+  phase, and a set op-assigned to an undefined target starts empty. R3 and
+  R4 ran together (4f507a0f … b66ccda3, 2026-11-13): read-only `$.x`,
+  ambiguity with sigilless parameters, `is cached`, private calls in
+  mixins, and six smaller fixes. Their coercion items (rakudo#1285, #6031),
+  four narrow ones and the rest of the oo and dispatch PPBUG sections are
+  open. R5 is done but rakudo#5138 (521d34ae … 1f205847, 2026-11-13): R's
+  associativity and its composition with Z and X, chaining reductions, a
+  Range as a Set, the subscripts as routines, ten smaller fixes, and three
+  `--exe` gaps found beside them. R6 is done (6b709af5 … d45f616e,
+  2026-11-13): TR/// under `~~`, `.subparse(:pos)`, zero-width quantified
+  items, `my token` closures, `self` in tokens, `<&?BLOCK>`, actions'
+  FALLBACK and `ws`, and `\c[name]` in any case. R7 is done (9e12d938 …
+  ce72763f, 2026-11-13): Parser.cpp's interpolation moved out (R7.0), and
+  eleven refusals and wrong parses fixed, with two regressions full Roast
+  caught on the way. R8 is done (bfd530f9 … 6b8c1d1a, 2026-11-13): hyper
+  calls in interpolation, anonymous state in string blocks, `dd` and a
+  built-in exception's `.raku`, and a leap second in an odd timezone. R9 is
+  done but rakudo#4517, nested coercion types (41150ad1 … 62ada605,
+  2026-11-13): `use Telemetry`, `use trace`, `Routine.prec`, `CALLERS::(…)`,
+  UNIX-domain and IPv6 sockets, the EnumHOW protocol, the atomic callables,
+  `.twigil` and `does array[T]`. R10 is done for its named items
+  (9f94cac7 … a213ccad, 2026-11-14): Test's and NativeCall's routines need
+  their `use`, `use v6.e` needs PREVIEW, `is cached` needs its pragma, and
+  declarations, calls, regex symbols and phaser calls Rakudo refuses are
+  refused. Behind them is a battery scan green against v5.8.0. Decision 2's
+  re-measure fixed four strict-separation false positives, among them
+  `return not`, which returned Nil. Whole-file strictness still waits on 31
+  battery files that need EXPORT-made operators and slangs. R11 is done
+  (02b24803, 9e948ff3, 2026-11-14): rakudo#2844's sequence and big-Int
+  addition, and rakudo#1416's anonymous `my $` and ternary declarations. The
+  issue's `nqp::` forms are SPEED-BACKLOG row 56, in §1. R12's first pass is
+  done (e60a6163 … 7df13701, 2026-11-14):
+  - the RakuAST pragma gate is gone, as in Rakudo 2026.09;
+  - `.AST` builds a grammar rule's regex tree;
+  - five settled error wordings;
+  - `nqp::time_n`;
+  - the 43 UNCLEAR cases re-read with their threads, and three of the fixes
+    found there.
+  Left in R12: `.raku` of a RakuAST node (a port of Raku.rakumod, its own
+  task), the re-read's 13 PPBUG and 11 LAX cases (FIX-LIST.md's last
+  section), and the SHARED threads, still to download. The rest of R10's
+  LAX list stays open.
+- [ ] **Five suspected bugs the UNCLEAR re-read runs turned up**
+  (2026-11-14, not yet reproduced by hand):
+  - a `react` over `IO::Socket::Async.listen("localhost", 111390)`, a port
+    past 65535, ends the program with exit 0 and no output; `listen` does
+    not range-check the port;
+  - `my &g = sub {}; &g does R; say &g.does(R)` gives False, while
+    `&g ~~ R` gives True;
+  - `say (all(1,2) X+ 1)` gives `(2 3)`, where Rakudo gives `(all(2, 3))`;
+  - `my constant DR = role R does Numeric {}; role R[::T1,::T2] {}` fails to
+    parse with "illegal post-declaration";
+  - the runtime "Undefined routine" error reports line 0, for example for
+    `dd &postfix:<foo>`.
 - [ ] **A native array's derived lists hand out boxed elements**, found
   2026-11-06 beside the native-element work: `.head`, `.tail`, `.list`, a
   slice `@a[1..2]`, `.reverse`, `.sort`, `.kv`, `.values`, `.pairs` and a
@@ -340,6 +412,13 @@ The same items grouped by theme, with a complexity estimate for each:
   once, each mixing into its exception and writing `classes_[nc->name] = nc`
   (InterpreterOperators.cpp) with no lock, so one replaces and frees the
   class another is using. 6 of 60 at 49c98013. Found 2026-10-15; not started.
+  A faster reproducer, found 2026-11-12, is rakudo#5868 (raku-corpus-snippets
+  `rakudo-issues/open/5868/0.raku`): `(^100_000).race.map` over
+  `Foo.new but role :: { … }` crashes in parallel mode on nearly every run.
+  Each call declares a new anonymous role and mixin class, and ThreadSanitizer
+  shows `lastDecl_` (execDeclStmt) and `classes_` written while other
+  workers read them. Kept as it is, per-call roles and all, by
+  RAKUDO-ISSUES-PLAN decision 4: the fix is this lock.
 - [ ] **`t/race/varcell.raku` fails again**: 4–17 wrong answers in 200 runs at
   `e4ee17cd`, where the 2026-10-03 fix measured 0 in 200. Something since then
   reopened the first-wave promotion race (`g(:v($named))`, `a => $paired`,
@@ -380,8 +459,6 @@ The same items grouped by theme, with a complexity estimate for each:
     right-hand side.
   - `for $l.list` over a quit Supply's list raises before the values;
     `for $l` and `for @$l` read them first, as Rakudo does.
-  - An INIT default that reads an earlier parameter (`$y = INIT { $x }`)
-    still runs per call.
   - `Int:D()` given a Str type object dies at bind; Rakudo is not consistent
     there (it dies, or returns an undefined value).
   Also a `my class` used earlier in its OWN block is no longer reported as a
@@ -955,7 +1032,11 @@ Nothing open (2026-11-01).
   2b9494ae (issue #206); two terms in a row are not: `say 1 1` prints 1,
   `%h<a> say 2` prints 2 and `say @a [0]` prints `[]` in a file, where Rakudo
   refuses each and an EVAL here does too (`enforceStmtSep`). Files that rely
-  on the leniency would stop compiling.
+  on the leniency would stop compiling. R10 measured it on 2026-11-14 (see
+  RAKUDO-ISSUES-PLAN.md, decision 2). With the battery's libraries on the
+  path, it would refuse 31 of 8,169 files that compile today, every one
+  valid Raku: operators and terms a module makes at EXPORT time, and
+  Qwiratry's slang.
 - `temp` against LEAVE: since 2026-10-11 a `temp` is restored BEFORE the
   block's LEAVE phasers run (runLeavePhasers' drainTempRestores), following
   Rakudo 2026.09; Rakudo 2026.08 and Raku++ before then restored it after, so

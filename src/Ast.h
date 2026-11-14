@@ -299,6 +299,10 @@ inline bool nameLetterAt(const std::string& n, size_t i) {
 // letter beyond ASCII (`Еоо`, `Éa`, `甲`, `𝐀`) always names a type; under
 // `ascii::isupper` alone, `my Еоо $x` declared an untyped `$x`.
 inline bool typeNameLead(unsigned char c) { return ascii::isupper(c) || c >= 0x80; }
+// An anonymous `my $`'s slot, `$` + "\x01anonN" (Parser's freshAnonSlot): a
+// plain scalar no source text can name, so the lanes and kernels that take a
+// `my $x` take it too (rakudo#1416)
+inline bool anonScalarSlot(const std::string& n) { return n.size() > 6 && n.compare(0, 6, "$\x01" "anon") == 0; }
 
 struct VarExpr : Expr {
     std::string name; // includes sigil
@@ -806,6 +810,7 @@ enum class NqpOpc : uint16_t {
     // `GetMessage`: <windows.h> makes that a macro, and BuiltinsNqp.cpp sees
     // it after this header, so `O::GetMessage` named nothing on Windows
     NewException, SetExMessage, SetExType, SetPayload, GetExMessage, GetExType, GetPayload, ThrowOp, Where,
+    TimeN,                                     // nqp::time_n — seconds as a Num (GLib::Timeout)
 };
 struct NqpOp : Expr {
     NqpOpc op;
@@ -868,6 +873,7 @@ struct Param {
     ExprPtr litVal;     // literal parameter, e.g. MAIN('population') — arg must equal this
     ExprPtr defaultVal; // may be null
     std::string defaultRaku; // pre-rendered default, for a .assuming residual signature
+    const Expr* defaultFrom = nullptr; // …and the default itself, borrowed from the AST, for its `.default`
                              // (priming a named param turns it into `:$a = <primed value>`)
     bool hadWhere = false;   // residual-signature copies can't own whereExpr; remember it was there
     bool typeCapture = false; // `::T $x` — `type` names a type variable, not a real type
@@ -1111,6 +1117,9 @@ struct SubDecl : Stmt {
     bool assocRight = false; // `is assoc<right>` on an operator: `[op]` reduces from the right
     bool assocNon = false;   // `is assoc<non>`: the operator does not chain
     bool assocChain = false; // `is assoc<chain>`: `[op] a, b, c` is `a op b && b op c`
+    // its precedence and associativity traits, for `.prec`, as flat (trait, argument)
+    // pairs: `equiv`/`tighter`/`looser` and the operator named, or `assoc` and its word
+    std::vector<std::string> precTraits;
     bool isMulti = false;
     bool isProto = false; // `proto` — defines the dispatch group; not a candidate itself
     bool hadSig = false;  // explicit `(...)` signature (even empty) — placeholders then illegal
@@ -1212,6 +1221,7 @@ struct ClassDecl : Stmt {
     std::vector<std::string> roles; // additional `does Role` (methods composed in)
     std::vector<std::string> hidesNames; // `hides Parent` — an unknown one is X::InvalidType
     bool isHidden = false;       // `is hidden`
+    bool unitForm = false;       // `unit class C;` — the rest of the file is its body (the `.AST` view)
     bool isExport = false;       // `is export` — `import` of its package binds the short name
     std::vector<std::string> exportTags; // …`is export(:a :b)`: its tags (none = DEFAULT)
     std::vector<std::string> trustsNames; // `trusts Foo` — an unknown one is X::Undeclared

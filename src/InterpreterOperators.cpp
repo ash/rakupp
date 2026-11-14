@@ -2,6 +2,7 @@
 //
 // One of the parts InterpreterParts.h lists; what they share is declared there.
 #include "InterpreterParts.h"
+#include "CallCheck.h"
 
 namespace rakupp {
 
@@ -480,8 +481,8 @@ bool Interpreter::chainLinkUser(const std::string& op, const Value& l, const Val
         if (Value* f = lexShadowedInfix(op, l, r)) { out = callCallable(*f, ValueList{l, r}); return true; }
         if (userInfixOverCore(op, l, r, out)) return true;
     }
-    if ((l.t == VT::Object || r.t == VT::Object || !l.enumType().empty() || !r.enumType().empty()) &&
-        boundInfixPossible(op))
+    if ((l.t == VT::Object || r.t == VT::Object || userClassTypeObj(*this, l) || userClassTypeObj(*this, r) ||
+         !l.enumType().empty() || !r.enumType().empty()) && boundInfixPossible(op))
         if (Value* f = tctx().cur->find("&infix:<" + op + ">"))
             try { out = callCallable(*f, ValueList{l, r}); return true; }
             catch (RakuError& e) {
@@ -824,6 +825,10 @@ Value Interpreter::prefixNumeric(const std::string& op, const Value& v) {
 // exist at that moment — declared, not yet initialized — so each enclosing scope
 // gets a STATIC environment, and that scope's first real run starts from it
 // (`{ my $s; BEGIN { $s = 3 }; say $s }` says 3: `my $s;` does not reset it).
+// A walked routine body's parameters, by the body (spWalkStmt fills it, runStaticPhasers
+// reads it): a phaser in a default (`$y = INIT { $x }`) runs at program start, before
+// any call has bound $x, so $x is declared there and still undefined, as in Rakudo.
+static thread_local std::unordered_map<const void*, std::vector<const Param*>> t_spParams;
 struct StaticPhaserRec {
     std::string kind;
     Block* blk = nullptr;          // statement form
@@ -845,8 +850,11 @@ static void spWalkExpr(Expr* e, std::vector<const std::vector<StmtPtr>*>& chain,
             auto* u = static_cast<Unary*>(e);
             if (u->op == "do" && u->operand && u->operand->kind == NK::BlockExpr) {
                 auto* be = static_cast<BlockExpr*>(u->operand.get());
+                if (be->phaser == "ENTER" || be->phaser == "FIRST") { spWalkBody(be->body, chain, out, true); return; }
                 if (!be->phaser.empty()) {
-                    if (!chain.empty()) out.push_back({be->phaser, nullptr, be, chain});
+                    // (a TERM at the top level too: nothing else runs it before the
+                    // mainline, where `say "x"; my $v = INIT …` printed x first)
+                    out.push_back({be->phaser, nullptr, be, chain});
                     return;   // its own body belongs to that one run
                 }
             }
@@ -906,6 +914,7 @@ static void spWalkStmt(Stmt* s, std::vector<const std::vector<StmtPtr>*>& chain,
             // …and its parameter defaults, which are in the routine's scope:
             // `:$language = INIT { user-language }` is computed once
             chain.push_back(&sd->body);
+            for (auto& p : sd->params) if (!p.name.empty()) t_spParams[&sd->body].push_back(&p);
             for (auto& p : sd->params) spWalkExpr(p.defaultVal.get(), chain, out);
             chain.pop_back();
             spWalkBody(sd->body, chain, out, true); return; }
@@ -993,10 +1002,94 @@ bool unitHasNestedPhasers(const std::vector<StmtPtr>& stmts) {
     return false;
 }
 
+// The phasers in TERM position that a scope's own statements hold — `my $v =
+// ENTER …`, `say FIRST $_` — not a nested block's, which does its own entry
+// work. `want` 'E': ENTER and FIRST; 'F': FIRST alone (a loop's first
+// iteration). See Interpreter::valuePhaser.
+static void vpWalkExpr(Expr* e, std::vector<BlockExpr*>& out, char want) {
+    if (!e) return;
+    switch (e->kind) {
+        case NK::Unary: {
+            auto* u = static_cast<Unary*>(e);
+            if (u->op == "do" && u->operand && u->operand->kind == NK::BlockExpr) {
+                auto* be = static_cast<BlockExpr*>(u->operand.get());
+                if (be->phaser == "FIRST" || (want == 'E' && be->phaser == "ENTER")) out.push_back(be);
+                return;   // any other block is a scope of its own
+            }
+            vpWalkExpr(u->operand.get(), out, want); return;
+        }
+        case NK::Assign: { auto* a = static_cast<Assign*>(e); vpWalkExpr(a->target.get(), out, want); vpWalkExpr(a->value.get(), out, want); return; }
+        case NK::Binary: { auto* b = static_cast<Binary*>(e); vpWalkExpr(b->lhs.get(), out, want); vpWalkExpr(b->rhs.get(), out, want); return; }
+        case NK::Call: { auto* c = static_cast<Call*>(e); vpWalkExpr(c->callee.get(), out, want); for (auto& a : c->args) vpWalkExpr(a.get(), out, want); return; }
+        case NK::MethodCall: { auto* m = static_cast<MethodCall*>(e); vpWalkExpr(m->inv.get(), out, want); for (auto& a : m->args) vpWalkExpr(a.get(), out, want); return; }
+        case NK::Index: { auto* x = static_cast<Index*>(e); vpWalkExpr(x->base.get(), out, want); vpWalkExpr(x->index.get(), out, want); return; }
+        case NK::Ternary: { auto* t = static_cast<Ternary*>(e); vpWalkExpr(t->cond.get(), out, want); vpWalkExpr(t->then.get(), out, want); vpWalkExpr(t->els.get(), out, want); return; }
+        case NK::Range: { auto* r = static_cast<RangeExpr*>(e); vpWalkExpr(r->from.get(), out, want); vpWalkExpr(r->to.get(), out, want); return; }
+        case NK::Pair: { auto* p = static_cast<PairExpr*>(e); vpWalkExpr(p->keyExpr.get(), out, want); vpWalkExpr(p->value.get(), out, want); return; }
+        case NK::ListExpr: for (auto& i : static_cast<ListExpr*>(e)->items) vpWalkExpr(i.get(), out, want); return;
+        case NK::ArrayLit: for (auto& i : static_cast<ArrayLit*>(e)->items) vpWalkExpr(i.get(), out, want); return;
+        case NK::ChainExpr: for (auto& i : static_cast<ChainExpr*>(e)->operands) vpWalkExpr(i.get(), out, want); return;
+        case NK::InterpStr: for (auto& p : static_cast<InterpStr*>(e)->parts) vpWalkExpr(p.get(), out, want); return;
+        default: return;
+    }
+}
+void valuePhasersInStmt(Stmt* s, std::vector<BlockExpr*>& out, char want) {
+    if (!s) return;
+    switch (s->kind) {
+        case NK::ExprStmt: vpWalkExpr(static_cast<ExprStmt*>(s)->e.get(), out, want); break;
+        case NK::ReturnStmt: vpWalkExpr(static_cast<ReturnStmt*>(s)->value.get(), out, want); break;
+        case NK::IfStmt: for (auto& br : static_cast<IfStmt*>(s)->branches) vpWalkExpr(br.first.get(), out, want); break;
+        case NK::ForStmt: vpWalkExpr(static_cast<ForStmt*>(s)->list.get(), out, want); break;
+        case NK::WhileStmt: vpWalkExpr(static_cast<WhileStmt*>(s)->cond.get(), out, want); break;
+        default: break;
+    }
+}
+void valuePhasersIn(const std::vector<StmtPtr>& stmts, std::vector<BlockExpr*>& out, char want) {
+    for (auto& st : stmts) valuePhasersInStmt(st.get(), out, want);
+}
+// Where an ENTER or FIRST term keeps its value: the scope it was run for.
+std::string valuePhaserSlot(const BlockExpr* be) { return "\x01phv" + std::to_string((uintptr_t)be); }
+
+// A phaser in TERM position — `my $v = INIT now`, `say FIRST 2`, `ENTER $x`,
+// `(BEGIN …)[$i]` — is its value as computed at ITS phase, not where the
+// expression stands: `say "body"; my $x = INIT say "init"` says init first.
+// - BEGIN, CHECK and INIT run before the code around them (runStaticPhasers)
+//   and are read from staticPhaserVal_. One that pass could not model runs
+//   once, here, and is kept: Digest::SHA2 indexes `(BEGIN blob64.new: map {
+//   frac 3√$_, 64 }, @primes[^80])[$t]` in its round loop, and running it per
+//   round recomputed 6,400 FatRat square roots per block.
+// - ENTER and FIRST run at their block's entry (runEnterPhasers) and at a
+//   loop's first iteration (runFirstPhasers), which keep the value under
+//   valuePhaserSlot; one they did not reach runs here.
+Value Interpreter::valuePhaser(BlockExpr* be) {
+    auto run = [&]() { return runsInPlace(be) ? runBlockInPlace(be) : callCallable(makeClosure(be), {}); };
+    const std::string& ph = be->phaser;
+    if (ph == "ENTER" || ph == "FIRST") {
+        const std::string slot = valuePhaserSlot(be);
+        if (tctx().cur) if (const Value* v = tctx().cur->find(slot)) return *v;
+        Value v = run();
+        if (ph == "FIRST" && tctx().cur) tctx().cur->define(slot, v);
+        return v;
+    }
+    if (!staticPhaserVal_.empty()) {
+        auto sv = staticPhaserVal_.find(be);
+        if (sv != staticPhaserVal_.end()) return sv->second;
+    }
+    {
+        std::lock_guard<std::mutex> lk(beginCacheMu_);
+        auto it = beginCache_.find(be);
+        if (it != beginCache_.end()) return it->second;
+    }
+    Value v = run();
+    std::lock_guard<std::mutex> lk(beginCacheMu_);
+    return beginCache_.emplace(be, v).first->second;
+}
+
 void Interpreter::runStaticPhasers(const std::vector<StmtPtr>& stmts, const std::shared_ptr<Env>& unitEnv,
                                    bool unitIsLive) {
     std::vector<StaticPhaserRec> recs;
     std::vector<const std::vector<StmtPtr>*> chain;
+    t_spParams.clear();
     for (auto& s : stmts) spWalkStmt(s.get(), chain, recs);
     if (recs.empty()) return;
     // A MAINLINE variable declared bare (`my $hist;`) is pre-declared before
@@ -1032,6 +1125,7 @@ void Interpreter::runStaticPhasers(const std::vector<StmtPtr>& stmts, const std:
             std::vector<const VarExpr*> decls;
             spDeclaredIn(*scope, decls);
             for (auto* v : decls) declared.insert(v->name);
+            if (auto pi = t_spParams.find(scope); pi != t_spParams.end()) for (auto* p : pi->second) declared.insert(p->name);
             // a variable its scope INITIALIZES (`my $foo = 42`) keeps the phaser
             // in place: what reads it later (a `constant`, evaluated at compile
             // time in Rakudo) would see the initializer where it should see the
@@ -1075,6 +1169,14 @@ void Interpreter::runStaticPhasers(const std::vector<StmtPtr>& stmts, const std:
         for (auto* scope : r.chain) {
             auto it = staticEnvs_.find(scope);
             if (it == staticEnvs_.end()) {
+                // a routine's parameters, unbound at that phase, get a layer of
+                // their own UNDER the scope's: seedStaticScope hands the scope's
+                // own lexicals to its first call, and must not hand it these
+                if (auto pi = t_spParams.find(scope); pi != t_spParams.end()) {
+                    auto pe = makeSlabShared<Env>(); pe->parent = parent;
+                    for (auto* p : pi->second) pe->define(p->name, typedDefault(p->type, p->sigil));
+                    parent = pe;
+                }
                 auto env = makeSlabShared<Env>(); env->parent = parent;
                 std::vector<const VarExpr*> decls;
                 spDeclaredIn(*scope, decls);
@@ -1368,7 +1470,7 @@ static void swapExecContext(ExecContext& a, ExecContext& b) {
     swap(a.wantTailContainer, b.wantTailContainer); swap(a.catchFrames, b.catchFrames); swap(a.transpFrames, b.transpFrames); swap(a.ctxId, b.ctxId);
     swap(a.bindRawTails, b.bindRawTails); swap(a.tailVarSlot, b.tailVarSlot); swap(a.rwMirror, b.rwMirror); swap(a.rwMirrorFrames, b.rwMirrorFrames); swap(a.rwMirrorSigil, b.rwMirrorSigil); swap(a.lvalueImmutable, b.lvalueImmutable);
     swap(a.lvalueImmutableGist, b.lvalueImmutableGist); swap(a.lvalueImmutableVal, b.lvalueImmutableVal); swap(a.lvalueOutLocal, b.lvalueOutLocal); swap(a.lvalueOut, b.lvalueOut);
-    swap(a.lvalueOutCell, b.lvalueOutCell); swap(a.collectTailBody, b.collectTailBody); swap(a.collectTail, b.collectTail); swap(a.protoDepth, b.protoDepth);
+    swap(a.lvalueOutCell, b.lvalueOutCell); swap(a.collectTailBody, b.collectTailBody); swap(a.collectTail, b.collectTail); swap(a.unsunkBody, b.unsunkBody); swap(a.sinkTailCallable, b.sinkTailCallable); swap(a.protoDepth, b.protoDepth);
     swap(a.lastLvalueAttrType, b.lastLvalueAttrType); swap(a.lastLvalueAttrWhere, b.lastLvalueAttrWhere); swap(a.lastLvalueAttrDefault, b.lastLvalueAttrDefault); swap(a.lastLvalueAttrCls, b.lastLvalueAttrCls); swap(a.lastLvalueAttr, b.lastLvalueAttr); swap(a.lastLvalueElemType, b.lastLvalueElemType); swap(a.lastLvalueGrowBase, b.lastLvalueGrowBase); swap(a.lastLvalueGrowSize, b.lastLvalueGrowSize); swap(a.lastLvalueElemIdx, b.lastLvalueElemIdx); swap(a.viewMirrorArr, b.viewMirrorArr); swap(a.viewMirrorIdx, b.viewMirrorIdx);
     swap(a.dynMethodNode, b.dynMethodNode); swap(a.dynMethodName, b.dynMethodName); swap(a.curGather, b.curGather); swap(a.lazyChainNode, b.lazyChainNode);
     swap(a.ctorCatchSkip, b.ctorCatchSkip); swap(a.ctorCatchDepth, b.ctorCatchDepth);
@@ -1382,7 +1484,7 @@ static void swapExecContext(ExecContext& a, ExecContext& b) {
     // a free list of unused frames — and either side may use it)
 }
 #if defined(__APPLE__) && defined(__aarch64__) && defined(_LIBCPP_VERSION) && !defined(RAKUPP_IN_AUDIT) && !defined(RAKUPP_STR_CENSUS)
-static_assert(sizeof(ExecContext) == (RAKUPP_BODY_HANDLES ? 1376 : 1440),
+static_assert(sizeof(ExecContext) == (RAKUPP_BODY_HANDLES ? 1392 : 1456),
               "ExecContext changed: list the new member in swapExecContext (Interpreter.cpp), "
               "then update this size");
 #endif
@@ -1508,7 +1610,12 @@ void GatherCoro::entry(void* p) {
     t.endCurTopStmt = g->endCurTopStmt;
     I.pushGatherFrame(g->buf, 0, 0);
     try {
-        if (g->block.t == VT::Code) { ValueList none; I.callCallable(g->block, none); }
+        if (g->block.t == VT::Code) {   // (its last statement sinks: see ExecContext::sinkTailCallable)
+            ValueList none; ExecContext& gt = Interpreter::tctx();
+            const void* savedST = std::exchange(gt.sinkTailCallable, (const void*)g->block.code());
+            try { I.callCallable(g->block, none); } catch (...) { Interpreter::tctx().sinkTailCallable = savedST; throw; }
+            Interpreter::tctx().sinkTailCallable = savedST;
+        }
         else I.eval(g->gu->operand.get());
         // a `return` in the block has no routine to return from: the gather
         // runs lazily, after (or apart from) whatever routine wrote it
@@ -1891,6 +1998,16 @@ static void attachFrames(Value& ex, const RakuError& e) {
     ex.obj()->attrs["__bt"] = std::move(h);
 }
 
+// A built-in exception's attributes in Rakudo's own order, where a class made by
+// its first throw or `.new` would take them in the caller's (rakudo#2434):
+// `.raku` shows them so. Null for a type with no entry.
+const std::vector<std::string>* builtinExAttrOrder(const std::string& t) {
+    static const std::map<std::string, std::vector<std::string>> kOrder = {
+        {"X::Numeric::DivideByZero", {"using", "details", "numerator"}}};
+    auto o = kOrder.find(t);
+    return o == kOrder.end() ? nullptr : &o->second;
+}
+
 Value Interpreter::exceptionFor(const RakuError& e) {
     // A Str payload NAMING an exception type ("X::Recursion", "X::Multi::NoMatch")
     // builds a real exception object like a type payload would — otherwise the
@@ -1907,7 +2024,7 @@ Value Interpreter::exceptionFor(const RakuError& e) {
     if (it != classes_.end()) ci = it->second;
     else {
         ci = std::make_shared<ClassInfo>();
-        ci->name = tn;
+        ci->name = tn; ci->synthEx = true;
         ci->nativeParent = "Exception";   // as the registered ones are
         ClassAttr a; a.name = "message"; a.sigil = '$'; a.pub = true;
         ci->attrs.push_back(a);
@@ -3189,8 +3306,8 @@ Value whateverInfixCurry(const std::string& name, const std::string& op, const V
 Value Interpreter::applyUniOp(const std::string& name, const char* builtin, const Value& l, const Value& r) {
     if (whateverish(l) || whateverish(r)) return whateverInfixCurry(name, builtin, l, r);
     if (Value* f = lexShadowedInfix(name, l, r)) return callCallable(*f, ValueList{l, r});
-    if ((l.t == VT::Object || r.t == VT::Object || !l.enumType().empty() || !r.enumType().empty()) &&
-        boundInfixPossible(name) && tctx().cur)
+    if ((l.t == VT::Object || r.t == VT::Object || userClassTypeObj(*this, l) || userClassTypeObj(*this, r) ||
+         !l.enumType().empty() || !r.enumType().empty()) && boundInfixPossible(name) && tctx().cur)
         if (Value* f = tctx().cur->find("&infix:<" + name + ">"))
             try { return callCallable(*f, ValueList{l, r}); }
             catch (RakuError& e) { // only "no candidate took these operands" falls back
@@ -3338,7 +3455,8 @@ Value Interpreter::applyReduce(std::string op, ValueList& items) {
         "=:=", "===", "eqv", "before", "after", "~~"};
     bool neg = op.size() > 1 && op[0] == '!' && op != "!=" && op != "!==";
     std::string base = neg ? op.substr(1) : op;
-    const bool chains = chainOps.count(chainRule.empty() ? base : chainRule) != 0;
+    // (the set relations chain too: `[⊆] ()` is vacuously True, `[∈] (1,)` True)
+    const bool chains = chainOps.count(chainRule.empty() ? base : chainRule) != 0 || isSetPredicateStr(base);
     // the program's own operator, which every step below meets as `a op b` would
     Value* uf = metaInfixUser(op);
     Value* ufBase = neg ? metaInfixUser(base) : uf;
@@ -3439,7 +3557,7 @@ Value Interpreter::applyReduce(std::string op, ValueList& items) {
         if (op == "lcm") return Value::integer(1);
         if (op == "gcd" || op == "x" || op == "xx")
             return armedFailure("X::NoZeroArgMeaning", "No zero-arg meaning for infix:<" + op + ">");
-        if (op == "(^)" || op == "\xE2\x8A\x96") return setWrap({}, setOpMinTier(op)); // [⊖] () is set()
+        if (isSetOpStr(op) && !isSetPredicateStr(op)) return setWrap({}, setOpMinTier(op)); // [∪] () is set(), [⊎] () bag()
         // list-building ops over nothing build nothing: [Z] () / [Z~] () / [X] () are ()
         if (op == "," ) { Value o = Value::array(); o.isList = true; return o; }
         if (op == "Z" || op == "X" ||
@@ -3448,6 +3566,11 @@ Value Interpreter::applyReduce(std::string op, ValueList& items) {
         if (chains) return Value::boolean(true); // [<] () is vacuously True
         return Value::any();
     }
+    // a HYPER op over ONE operand is its inner op's one-argument form: `[»+«]
+    // [[1,2],]` numifies the list, 2 (rakudo#5951)
+    if (items.size() == 1 && op.size() >= 5 && (op.compare(0, 2, ">>") == 0 || op.compare(0, 2, "<<") == 0) &&
+        (op.compare(op.size() - 2, 2, ">>") == 0 || op.compare(op.size() - 2, 2, "<<") == 0))
+        return applyReduce(op.substr(2, op.size() - 4), items);
     // the one-argument arithmetic candidates NUMIFY: `[+] "2"` is 2, `[*] $obj`
     // is `$obj.Numeric`, and `[-] 'hello'` throws X::Str::Numeric
     if (items.size() == 1 && (op == "+" || op == "-" || op == "*" || op == "/")) {
@@ -3456,8 +3579,14 @@ Value Interpreter::applyReduce(std::string op, ValueList& items) {
     }
     // …and the one-argument `~` STRINGIFIES: `[~] 1` and `&[~](1)` are "1"
     // (S32-list/unique.t maps with `&[~]`)
-    if (items.size() == 1 && op == "~" && items[0].t != VT::Str && !isJunction(items[0]))
+    // (a LIST joins its elements, as Rakudo's one-argument candidate does: `ab`)
+    if (items.size() == 1 && op == "~" && items[0].t != VT::Str && !isJunction(items[0])) {
+        if ((items[0].t == VT::Array && items[0].arr() && items[0].hashKind.empty()) || items[0].t == VT::Range) {
+            std::string out; for (auto& e : toList(items[0])) out += strOf(e);
+            return Value::str(out);
+        }
         return Value::str(strOf(items[0]));
+    }
     if (chains) {
         for (size_t k = 1; k < items.size(); k++) {
             bool ok = metaInfixStep(ufBase, base, items[k - 1], items[k]).truthy();
@@ -3797,6 +3926,60 @@ static const std::set<std::string> kCorePostfixOps = {
     "++", "--", "i", "\xE2\x81\xBF", "\xE2\x9A\x9B++", "\xE2\x9A\x9B--"};
 static const std::set<std::string> kCoreCircumfixOps = {":{ }", "[ ]", "{ }"};
 static const std::set<std::string> kCorePostcircumfixOps = {"[ ]", "[; ]", "{ }", "{; }"};
+// A TYPED Array operand of a hyper keeps its type on the result when every element still fits it
+// (`my Int @a; @a >>*>> 4` is an Array[Int]), and the answer is a plain List when one does not (`@a >>/>> 4`) — S03-metaops/hyper.t
+Value typedHyperResult(Interpreter& I, const Value& l, const Value& r, Value res) {   // (…and its LEFT operand's container: `$[1,2] »+« $[3,4]` is `$[4, 6]`)
+    if (l.itemized && (res.t == VT::Array || res.t == VT::Hash)) res.itemized = true;
+    const Value* typed = (l.t == VT::Array && !l.isList && !l.ofType().empty()) ? &l
+                       : (r.t == VT::Array && !r.isList && !r.ofType().empty()) ? &r : nullptr;
+    if (!typed || res.t != VT::Array || !res.arr() || isNativeTypeName(typed->ofType())) return res;
+    bool fits = true;
+    for (auto& e : *res.arr()) if (!I.typeOrSubsetMatches(e, typed->ofType())) { fits = false; break; }
+    if (fits) { res.isList = false; res.ofTypeM() = typed->ofType(); }
+    else { res.isList = true; res.ofTypeM() = ""; }
+    return res;
+}
+
+// The operands a reduction takes from ONE Array: its elements, which an Array
+// holds in containers. Under a hyper operator, whose answer takes its left
+// operand's container, that is what makes `[»+«] @a` one item, `$[…]`, as in
+// Rakudo (rakudo#5951); a List's elements and every other operator are as they were.
+void reduceArrayElems(const std::string& op, const Value& arr, ValueList& items) {
+    const std::string o = !op.empty() && op[0] == '\\' ? op.substr(1) : op;
+    auto marker = [&](size_t at) { return o.compare(at, 2, ">>") == 0 || o.compare(at, 2, "<<") == 0 ||
+                                          o.compare(at, 2, "\xC2\xBB") == 0 || o.compare(at, 2, "\xC2\xAB") == 0; };
+    const bool items_ = o.size() > 4 && marker(0) && marker(o.size() - 2) && !arr.isList && arr.s != "Seq";
+    for (auto& x : *arr.arr()) {
+        items.push_back(x);
+        if (items_ && (x.t == VT::Array || x.t == VT::Hash)) items.back().itemized = true;
+    }
+}
+// `CALLERS::<$_>` reaches a routine's own `$_`, or the mainline's, which are
+// dynamic, but not the topic a `given`, a `for` or any block binds, which is
+// a parameter of that block (rakudo#2639: `given 'foo' { f() }` with
+// `CALLERS::('$_')` in f answers the mainline's Any). Every other name as before.
+// EVAL'd code is judged alone, but it sees its caller's imports, as in Rakudo:
+// `use Test; EVAL 'ok 1'` calls Test's `ok`. So a Test or NativeCall routine
+// the check found undeclared is no finding when the calling scope has the
+// module: Test by the marker its `use` leaves in that scope, NativeCall by the
+// names it installs.
+void dropGatedInScope(Interpreter& I, std::vector<DoomedCall>& dc) {
+    dc.erase(std::remove_if(dc.begin(), dc.end(), [&](const DoomedCall& d) {
+        const char* mod = d.undeclared ? gatedModuleOf(d.name) : nullptr;
+        if (!mod) return false;
+        if (!std::strcmp(mod, "Test")) return I.tctx().cur && I.tctx().cur->find("\x01import:Test") != nullptr;
+        return I.global_ && I.global_->find("NativeCall") != nullptr;
+    }), dc.end());
+}
+bool callersSees(Interpreter& I, Env* frame, const std::string& name) {
+    if (name != "$_" || I.langRev_ < 1) return true;   // (6.c's `$_` is dynamic everywhere)
+    for (Env* e = frame; e; e = e->parent.get()) {
+        const bool here = (!e->vars.empty() && e->vars.find(name) != e->vars.end()) || (e->layout && e->padFind(name));
+        if (here) return e->routineFrame || !e->parent || e == I.global_.get();
+        if (e->routineFrame || e->callEnv) return false;
+    }
+    return false;
+}
 bool corePrefixName(const std::string& n) { return n.size() > 10 && kCorePrefixOps.count(n.substr(9, n.size() - 10)); }
 static const std::set<std::string>* coreOpsOf(const std::string& cat) {
     return cat == "infix" ? &kCoreInfixOps : cat == "prefix" ? &kCorePrefixOps

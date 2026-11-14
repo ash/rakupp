@@ -716,8 +716,10 @@ struct ClassInfo;   // (checkRetType's shortcut below names one)
 // DEPRECATED`, a declared return type, an `.assuming` residual signature —
 // behind one pointer, so a closure does not carry ~330 bytes of them
 // (SPEED-BACKLOG 8, step 1; Callable 704 -> ~390 bytes).
+struct CachedCalls;   // `is cached`: what each call answered, by the gist of its Capture (InterpreterCalls.cpp)
 struct CallableCold {
     ValueList candidates;                          // multi-dispatch candidates
+    std::shared_ptr<CachedCalls> cache;            // `is cached` (null = not)
     std::shared_ptr<std::string> deprecated;        // `is DEPRECATED`: what to use instead (null = not)
     // Declared return type (`of`/`returns`/`-->`), "" = none. A COERCING one
     // keeps its parens — `Map()` — because that is the whole difference between
@@ -747,6 +749,8 @@ struct CallableCold {
     mutable CifSlot nativeCifCache;
     std::string pod;                                  // `#|` leading declarator pod (.WHY)
     std::string podTrail;                             // …its `#=` part alone
+    std::vector<std::string> opProps;                 // an operator's properties as its traits set them, flat
+                                                      // (key, value) pairs (`.prec`); empty = its category's
     bool hasPrimed = false;                           // .assuming wrapper: primedParams is the residual signature
     std::vector<std::shared_ptr<Param>> primedParams; // the residual signature (copies: a primed named param
                                                       // survives with the primed value as its default)
@@ -936,6 +940,7 @@ struct CodeInfo : RefCounted {
     CallableCold& coldM();
     bool isStub = false;                              // body is a bare `...`/`!!!` stub (role requirement)
     bool testAssertion = false; // `is test-assertion` (see Interpreter::testAssertLine_)
+    bool isCached = false;      // `is cached`: a call it has seen answers from cold().cache (Interpreter::callCached)
     bool isNodal = false;       // `is nodal` (see the hyper callable path)
     bool hiddenBt = false;      // `is hidden-from-backtrace` (btFrameHidden)
     bool usesArgs = false;                            // body references @_ / %_ (implicit slurpy signature)
@@ -1172,6 +1177,9 @@ struct MatchData {
     // of that grammar — `.^name`, `~~ G`, and G's own methods (#153). Empty on
     // every ordinary Match.
     std::string grammar;
+    // A FAILED match, as a failed `.subparse` answers (rakudo#1243): false, and
+    // `#<failed match>` as its gist. Rakudo's has a pos (`.to`) of -3, before its `.from`.
+    bool failed = false;
 };
 
 // What the payload slot holds. Distinct from VT on purpose — see MatchData.
@@ -2012,6 +2020,7 @@ inline Value hashEntryPair(const Value& h, const std::string& key, Value& entry)
     if (h.t == VT::Hash && h.hashKind.empty() && h.hash()) {
         p.setPairVal(h.hash()->aliasOf(entry));
         p.setPairLive();
+        if (!h.ofType().empty()) p.ofTypeM() = h.ofType();   // `my Int %h`: `.value = "x"` refuses (rakudo#2068)
     }
     else {
         p.setPairVal(makePayload<Value>(entry));
@@ -2307,6 +2316,9 @@ struct ClassAttr {
 // The Attribute meta-object for one declared attribute, built once and cached on
 // the ClassAttr (MethodCallPart2.cpp) — user `is` traits mix roles into it.
 Value attributeMetaObject(ClassAttr& a, const std::string& ownerName);
+// …and the slot such an attribute keeps in an Attribute or Parameter meta-object
+// a role was MIXED INTO (its `.get_value($attr)`), or null for any other object
+Value* mixinAttrSlot(const Value& attrMeta, Value& obj);   // Builtins.cpp
 // …and the key an object's attribute map keeps the attribute that meta-object
 // describes under (bare name `an`, sigil `sigil`): ClassInfo::attrSlot, from
 // the class the meta-object names as its package.
@@ -2388,6 +2400,7 @@ struct ClassInfo {
     bool isRole = false;
     signed char langRev = -1; // the language revision it was declared under (`.^language-revision`)
     bool isMonitor = false; // `monitor Foo {…}` — per-instance lock around every method call
+    bool synthEx = false;   // a built-in exception class made by its first throw (makeTypedEx): its `message` slot is no attribute
     // A `POPULATE` method — Rakudo's name for the routine that runs an object's
     // build plan, and the one a metaclass wraps or supplies to get at every
     // construction (OO::Monitors makes the instance's lock there). Flagged so

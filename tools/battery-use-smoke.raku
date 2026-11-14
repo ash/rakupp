@@ -69,7 +69,7 @@ for @jobs.kv -> $i, %j {
     $PROBE.spurt: "use {%j<module>};\nprint '$MARK';\n";
     my %r = run-capped([$ENGINE, '-I', %j<dist>.add('lib').absolute, $PROBE.absolute],
         :$cap, :work($WORK), :sandbox($SANDBOX),
-        :env(HOME => $HOME.absolute, RAKULIB => $RAKULIB, TZ => 'UTC'));
+        :env(%( HOME => $HOME.absolute, RAKULIB => $RAKULIB, TZ => 'UTC' )));
     my ($verdict, $note) =
         %r<hung>             ?? ('HANG',   "no answer in {$cap} s") !!
         %r<signal>           ?? ('SIGNAL', signal-name(%r<signal>)) !!

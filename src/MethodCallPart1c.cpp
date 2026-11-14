@@ -586,6 +586,7 @@ std::optional<Value> Interpreter::methodCallPart1c(const Value& inv, const MName
         // all one bug. Blocking waits happen OUTSIDE the stripe, or no producer
         // could ever get in to send.
         std::recursive_mutex& chm = atomicStripe(inv.hash());
+        ThensAfter closedThens;   // `.closed`'s continuations, run once no lock is held
         PRef<ValueList> qp;
         { std::lock_guard<std::recursive_mutex> lk(chm); qp = (*inv.hash())["queue"].arrS(); }
         auto& q = *qp;
@@ -600,6 +601,7 @@ std::optional<Value> Interpreter::methodCallPart1c(const Value& inv, const MName
                     else ps->result = Value::boolean(true);
                     ps->done = true;
                 }
+                closedThens.take(ps->thens);
                 ps->cv.notify_all();
                 if (inv.hash()->count("closedPromise")) (*(*inv.hash())["closedPromise"].hash())["status"] = Value::str(failed ? "Broken" : "Kept");
             }
@@ -717,6 +719,7 @@ std::optional<Value> Interpreter::methodCallPart1c(const Value& inv, const MName
                 auto ps = std::static_pointer_cast<PromiseState>(inv.ext());
                 std::lock_guard<std::mutex> lk(ps->m);
                 if (!ps->done.v) { ps->broken = true; ps->cause = cause; ps->causeMsg = cause.toStr(); ps->done = true; }
+                closedThens.take(ps->thens);
                 ps->cv.notify_all();
                 if (inv.hash()->count("closedPromise")) (*(*inv.hash())["closedPromise"].hash())["status"] = Value::str("Broken");
             }

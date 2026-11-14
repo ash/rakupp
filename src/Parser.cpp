@@ -30,6 +30,7 @@ bool uniTypeLikeName(const std::string& n);   // Unicode.cpp: `Foo`, `Éx`, `万
 size_t readOpNameInAngles(const std::string& src, size_t open, std::string& name);   // Lexer.cpp: `<(\<&)>` is `(<&)`
 bool lexesSplitUnlessNoted(const std::string& name, bool term);   // Lexer.cpp: `(<&)` and `⨁⨁` are, `⨁` is not
 std::vector<std::pair<std::string, std::string>> infixTraitsIn(const std::string& decl);   // Lexer.cpp: `is assoc<right>`, …
+std::vector<std::string> precTraitsOfTokens(const std::vector<Token>& t, size_t from, size_t to);   // …and off a declaration's tokens
 static bool typeLikeName(const std::string& n) { return uniTypeLikeName(n); }
 
 // A routine's or a closure's VALUE that is a plain one-argument map or grep is
@@ -99,7 +100,7 @@ size_t interpChainEnd(const std::string& src, size_t p, const std::string& stopA
 static bool interpStaticText(const Expr* e, std::string& out);
 static void pointyIntoFor(ForStmt& fs, BlockExpr& be);   // `-> $x {…} for LIST` (below)
 static ExprPtr qqwwStaticWord(const std::string& w, bool val);
-static std::string scanInterpBlock(const std::string& raw, size_t& j, char open, char close);
+std::string scanInterpBlock(const std::string& raw, size_t& j, char open, char close);   // (ParserInterp.cpp)
 
 // Past the CODE that starts at raw[i] in an interpolating qqww word, or i when
 // none does. Code is one unit, blanks and quotes and all: a closure
@@ -571,9 +572,9 @@ static InfixInfo classifyInfixUncached(const Token& t) {
                 if (classifyInfix(inner).valid) { in.valid = true; in.lbp = BP_ZIP; return in; }
             }
         }
-        {   // stacked zip/cross metaops: XZ / ZZ / XX (optionally with a tight op after)
-            bool allZX = o.size() > 1;
-            for (char c : o) if (c != 'Z' && c != 'X') { allZX = false; break; }
+        {   // stacked zip/cross metaops: XZ / ZZ / XX, and over R: ZR (optionally with a tight op after)
+            const size_t zr = o.find_first_not_of("ZX");
+            bool allZX = o.size() > 1 && zr != 0 && (zr == std::string::npos || o.find_first_not_of('R', zr) == std::string::npos);
             if (allZX) { in.valid = true; in.lbp = BP_ZIP; return in; }
         }
         {   // Reverse metaop over a WORD-op base, which lexes as ONE identifier:
@@ -602,8 +603,8 @@ static InfixInfo classifyInfixUncached(const Token& t) {
                 if (it != kRBase.end()) { in.valid = true; in.lbp = it->second; return in; }
                 // …and a SYMBOLIC base (`RR-`, `RRR+`) takes that operator's own
                 // precedence; only the ONE-R symbolic form has its own reader.
-                if (i >= 1 && i < o.size() && !ascii::isalnum((unsigned char)o[i])) {
-                    Token t2 = t; t2.text = o.substr(i); t2.kind = Tok::Op;
+                if (i >= 1 && i < o.size() && (!ascii::isalnum((unsigned char)o[i]) || o[i] == 'Z' || o[i] == 'X')) {   // (and `RZ`, `RX+`: rakudo#6128)
+                    Token t2 = t; t2.text = o.substr(i); t2.kind = o[i] == 'Z' || o[i] == 'X' ? Tok::Ident : Tok::Op;
                     InfixInfo f = classifyInfix(t2);
                     if (f.valid && !f.isAssign) { f.op = o; return f; }
                 }
@@ -1593,6 +1594,9 @@ bool Parser::startsListopArg(const Token& t, const std::string& lhsName) const {
                    // `isa-ok *[0], …` — a TIGHT subscript on `*` curries too
                    (t.text == "*" && &t == &cur() && !peek().spaceBefore &&
                     (peek().kind == Tok::LBracket || peek().kind == Tok::LBrace)) ||
+                   // …and so does a tight HYPER method call: `say *>>.fmt("%02x")` (rakudo#5901)
+                   (t.text == "*" && &t == &cur() && !peek().spaceBefore && peek().kind == Tok::Op &&
+                    (peek().text == ">>" || peek().text == "\xC2\xBB") && peek(2).kind == Tok::Op && peek(2).text == ".") ||
                    (t.text == "*" && &t == &cur() &&
                     ((peek().kind == Tok::Op &&
                       (peek().text == ".." || peek().text == "..^" || peek().text == "..." ||
@@ -2555,7 +2559,7 @@ ExprPtr Parser::parseExpr(int minbp) {
                 auto bin = std::make_unique<Binary>();
                 bin->op = "R" + baseOp;
                 bin->lhs = std::move(lhs);
-                bin->rhs = parseExpr(base.lbp + 1);
+                bin->rhs = parseExpr(base.rightAssoc || base.lbp == BP_COMPARE ? base.lbp + 1 : base.lbp);   // R flips the associativity too (rakudo#4757): `2 R- 3 R- 4` is -1
                 lhs = std::move(bin);
                 continue;
             }
@@ -3213,6 +3217,13 @@ ExprPtr Parser::parseExpr(int minbp) {
                     throw ParseError("Preceding context expects a term, but found infix "
                                      + nx.op + " instead",
                                      cur().line, "X::Syntax::InfixInTermPosition", {{"infix", nx.op}});
+                // `say 1, 2, and 3` — a loose word infix where a term belongs is a NAME
+                // there, and nothing declares a routine of it (Rakudo; it was `(say 1, 2) and 3`)
+                if (cur().kind == Tok::Ident && (cur().text == "and" || cur().text == "or" || cur().text == "xor" ||
+                    cur().text == "andthen" || cur().text == "orelse" || cur().text == "notandthen") &&
+                    !declaredSubNames_.count(cur().text) && !importsModules_)
+                    throw ParseError("Undeclared routine:\n    " + cur().text + " used at line " + std::to_string(cur().line),
+                                     cur().line, "X::Undeclared::Symbols", {});
             }
             // `1, 2, ... 3` — after a comma, `...` stands in TERM position: it is
             // the yada stub (dying with its argument), not the sequence operator
@@ -3254,9 +3265,9 @@ ExprPtr Parser::parseExpr(int minbp) {
             continue;
         }
 
-        // zip/cross metaoperator with a trailing tight op: Z=> Z+ X* Zeq XZ+ ...
-        bool zxStack = !in.op.empty();
-        for (char c : in.op) if (c != 'Z' && c != 'X') { zxStack = false; break; }
+        // zip/cross metaoperator with a trailing tight op: Z=> Z+ X* Zeq XZ+ ..., under R or over it: RZ+ ZR- (rakudo#6128)
+        const size_t zx0 = in.op.find_first_not_of('R'), zx1 = in.op.find_first_not_of("ZX", zx0 == std::string::npos ? 0 : zx0);
+        bool zxStack = zx0 != std::string::npos && zx1 != zx0 && (zx1 == std::string::npos || (zx0 == 0 && in.op.find_first_not_of('R', zx1) == std::string::npos));
         if (zxStack) {
             std::string meta;
             int metaToks = 2; // Z/X + the trailing op
@@ -3413,7 +3424,7 @@ ExprPtr Parser::parseExpr(int minbp) {
             c->name = "__assign-immutable";
             c->line = cur().line;
             c->args.push_back(std::move(lhs));
-            (void)parseExpr(in.rightAssoc ? in.lbp : in.lbp + 1);
+            c->args.push_back(parseExpr(in.rightAssoc ? in.lbp : in.lbp + 1));   // (an object's STORE takes it, rakudo#3292)
             lhs = std::move(c);
             continue;
         }
@@ -4095,6 +4106,10 @@ bool Parser::prefixOpCallAt(size_t i) const {
 // A declaration leaves it alone: Rakudo's declarator has a $*LEFTSIGIL of its own.
 ExprPtr Parser::parsePostfix(ExprPtr base, bool stopAtSpaceDot) {
     const Expr* b0 = base.get();
+    // `42:foo`, `False:so` — an adverb glued to a LITERAL modifies nothing (Rakudo: X::Syntax::Adverb)
+    if (b0 && (b0->kind == NK::IntLit || b0->kind == NK::NumLit || b0->kind == NK::BoolLit) && pos_ > 0 && isOp(":") &&
+        !cur().spaceBefore && peek().kind == Tok::Ident && !peek().spaceBefore)
+        throw ParseError("You can't adverb " + toks_[pos_ - 1].text, cur().line, "X::Syntax::Adverb", {{"what", toks_[pos_ - 1].text}});
     const bool decl = b0 && b0->kind == NK::VarExpr && static_cast<const VarExpr*>(b0)->declare;
     if (b0 && !decl && !leftSigil_ && !parenned_.count(b0)) {   // (`($x)` was an expression of its own)
         if (b0->kind == NK::VarExpr && !static_cast<const VarExpr*>(b0)->name.empty())
@@ -5910,6 +5925,12 @@ ExprPtr Parser::parseDeclarator(const std::string& scope) {
             // ("expected )"), which took all fifteen tests of
             // S02-names-vars/signature.t with it.
             if (isOp("?") || isOp("!")) advance();
+            // `my (&op:(Int, Int --> Int)) = …` — a signature on a `&` item, which Rakudo
+            // accepts and does not check (rakudo#2336): read past it
+            if (dnm[0] == '&' && isOp(":") && peek().kind == Tok::LParen && !peek().spaceBefore) {
+                advance(); int d = 0;
+                do { if (isKind(Tok::LParen)) d++; else if (isKind(Tok::RParen)) d--; advance(); } while (d > 0 && !isKind(Tok::End));
+            }
             // `my ($a, @b is copy) := …` — a parameter trait; the item is a
             // fresh container either way
             while (isIdent("is") && (peek().text == "copy" || peek().text == "rw" || peek().text == "raw")) { advance(); advance(); }
@@ -7297,6 +7318,9 @@ ExprPtr Parser::parsePrimary() {
         sr->nameExpr = std::make_unique<StrLit>(name);
         return sr;
     }
+    // …and with no `::` in front: `CALLERS::('$_')`, `M::('$q')` (ParserPackages.cpp)
+    if (cur().kind == Tok::Ident && cur().text.size() > 2 && cur().text.compare(cur().text.size() - 2, 2, "::") == 0 &&
+        peek().kind == Tok::LParen && !peek().spaceBefore) return parsePkgNameLookup();
     const Token& t = cur();
     switch (t.kind) {
         case Tok::FatArrow:
@@ -8137,7 +8161,7 @@ ExprPtr Parser::parsePrimary() {
                 while (matchKind(Tok::Semicolon)) {
                     if (isKind(Tok::RParen)) break;
                     if (isKind(Tok::Semicolon)) { lst->items.push_back(std::make_unique<NameTerm>("Nil")); continue; }
-                    lst->items.push_back(parseExpression());
+                    lst->items.push_back(applyExprModifiers(parseExpression()));   // (a segment takes a modifier: see below)
                 }
                 expectKind(Tok::RParen, ")");
                 if (lst->items.size() == 1) return std::move(lst->items[0]);
@@ -8337,7 +8361,9 @@ ExprPtr Parser::parsePrimary() {
                 lst->items.push_back(std::move(e));
                 while (matchKind(Tok::Semicolon)) {
                     if (isKind(Tok::RParen)) break; // trailing ;
-                    lst->items.push_back(parseExpression());
+                    // every segment takes a statement modifier, as the first does:
+                    // `($n++; last if $n > 3) for 1..*` was "Two terms in a row"
+                    lst->items.push_back(applyExprModifiers(parseExpression()));
                 }
                 expectKind(Tok::RParen, ")");
                 // a lone segment with a TRAILING `;` (`( expr; )`) is just the
@@ -8386,7 +8412,7 @@ ExprPtr Parser::parsePrimary() {
                 "div", "mod", "gcd", "lcm", "min", "max", "minmax", "but", "does", "o",
             };
             bool identReduce = peek(1).kind == Tok::Ident && !peek(1).text.empty() &&
-                (peek(1).text == "Z" || peek(1).text == "X" ||
+                ((peek(1).text.find_first_not_of("RZX") == std::string::npos && peek(1).text.find_first_of("ZX") != std::string::npos) ||   // Z, X, [RZ] (rakudo#6128)
                  kReduceWordOps.count(peek(1).text) ||
                  userInfix_.count(peek(1).text) ||
                  // Z/X/R fused with a word op lex as one ident: [Zand] [Xor] [Rmax]
@@ -8711,8 +8737,8 @@ ExprPtr Parser::parsePrimary() {
                 auto c = std::make_unique<Call>(); c->name = advance().text;
                 // `!!! 42` / `... "not yet"` — the stub's message follows it
                 switch (cur().kind) {
-                    case Tok::IntLit: case Tok::NumLit: case Tok::StrLit: case Tok::StrInterp: case Tok::Var:
-                        if (cur().line == t.line) c->args.push_back(parseExpr(BP_COMMA + 1));
+                    case Tok::IntLit: case Tok::NumLit: case Tok::StrLit: case Tok::StrInterp: case Tok::Var: case Tok::Op:   // (Op: `!!! ::?CLASS.^name ~ '…'`, Testo's)
+                        if (cur().line == t.line && (cur().kind != Tok::Op || cur().text == "::")) c->args.push_back(parseExpr(BP_COMMA + 1));
                         break;
                     default: break;
                 }
@@ -9169,14 +9195,14 @@ ExprPtr Parser::parsePrimary() {
                 // the op's (cooperative) result (zef: `next() R, DEBUG(...)`).
                 if (name != "return" && name != "return-rw" &&
                     isKind(Tok::LParen) && peek().kind == Tok::RParen) { advance(); advance(); }
+                if (name != "return" && name != "return-rw" && cur().kind == Tok::Ident && labelNames_.count(cur().text) && cur().line == toks_[pos_ - 1].line) u->operand = std::make_unique<StrLit>(advance().text);   // `… or last LOOP`: its label
                 // (a keyword only as a WORD: a literal's text is its contents, so
                 // `f($i) or return "no"` lost its "no" to the keyword `no` and
                 // returned Nil; and `not` is a prefix like any other term)
                 bool retTerm = startsTermToken(cur()) &&
                                (cur().kind != Tok::Ident || !kBlockKeywords.count(cur().text) ||
                                 cur().text == "not" || kwCallHere(cur().text));
-                // sub/method/do/start blocks are valid expression operands too, as is
-                // an anonymous type literal (`return role {…}`)
+                // sub/method/do/start blocks are valid expression operands too, as is an anonymous type literal (`return role {…}`)
                 if (isIdent("sub") || isIdent("method") || isIdent("do") || isIdent("start")) retTerm = true;
                 if ((isIdent("role") || isIdent("class") || isIdent("grammar")) &&
                     (peek().kind == Tok::LBrace || (peek().kind == Tok::Op && peek().text == "::"))) retTerm = true;
@@ -9192,8 +9218,9 @@ ExprPtr Parser::parsePrimary() {
                     u->operand = parseExpr(BP_COMMA);
                 return u;
             }
-            if (name == "INIT" && peek().kind != Tok::LBrace &&
-                peek().kind != Tok::Semicolon && peek().kind != Tok::End) { // INIT <expr> — a value phaser
+            refusePhaserCall(name);   // `FIRST($_ * 10)` is a call (ParserPackages.cpp)
+            if ((name == "INIT" || ((name == "BEGIN" || name == "CHECK" || name == "ENTER" || name == "FIRST") && !kwCallHere(name))) &&
+                peek().kind != Tok::LBrace && peek().kind != Tok::Semicolon && peek().kind != Tok::End) { // INIT <expr> — a value phaser
                 advance(); // consume INIT
                 // …and the operand may be a whole STATEMENT rather than an
                 // expression, exactly as `do`'s is: `state $ = INIT given try
@@ -9203,10 +9230,12 @@ ExprPtr Parser::parsePrimary() {
                 // undefined routine of that name.
                 // Either way it is the same once-only phaser as `INIT { … }`:
                 // `my $fh = INIT open(…)` inside a sub opens at program start,
-                // and every call reads that one value (advent2012-day15.t)
+                // and every call reads that one value (advent2012-day15.t).
+                // BEGIN, CHECK, ENTER and FIRST are the same shape: Interpreter::
+                // valuePhaser runs each at its phase and answers the value kept.
                 auto u = std::make_unique<Unary>(); u->op = "do";
                 auto be = std::make_unique<BlockExpr>();
-                be->phaser = "INIT";
+                be->phaser = name;
                 if (isIdent("given") || isIdent("with") || isIdent("without") ||
                     isIdent("if") || isIdent("unless") || isIdent("for") ||
                     isIdent("while") || isIdent("until") || isIdent("loop") ||
@@ -9251,7 +9280,7 @@ ExprPtr Parser::parsePrimary() {
                 if (isKind(Tok::LParen)) {
                     advance(); sigRetType_.clear(); sigRetLiteral_.reset();
                     be->sigParens = true;
-                    be->params = parseSignature();
+                    be->params = parseSignature(); if (name == "sub") refuseAttrParamsWithoutSelf(be->params);
                     be->retType = sigRetType_;   // `sub (--> Int) { … }`
                     subRetLit = std::move(sigRetLiteral_);
                     expectKind(Tok::RParen, ")");
@@ -9329,7 +9358,7 @@ ExprPtr Parser::parsePrimary() {
                 be->body = std::move(blk->stmts);
                 // BEGIN/CHECK/INIT run ONCE, before the code around them; their
                 // value is what the expression yields every time after
-                if (name == "BEGIN" || name == "CHECK" || name == "INIT") be->phaser = name;
+                if (name != "END" && name != "LEAVE") be->phaser = name;   // (ENTER and FIRST too: valuePhaser)
                 // an END term registers for program exit and is Nil where it
                 // stands: its block becomes an END statement of the do-block
                 if (name == "END") {
@@ -9405,20 +9434,14 @@ ExprPtr Parser::parsePrimary() {
                                (peek().kind == Tok::Ident && peek(2).kind == Tok::Op &&
                                 peek(2).text == ":" && !peek(2).spaceBefore && loopWord(peek(3))));
             if ((name == "do" || name == "try" || name == "gather" || name == "quietly" ||
-                 name == "once" || loopPrefix || name == "BEGIN" || name == "ENTER") && !kwCallHere(name)) {
+                 name == "once" || loopPrefix) && !kwCallHere(name)) {
                 advance();
                 auto u = std::make_unique<Unary>();
-                // BEGIN/ENTER in value position evaluate their block/expr and yield it
-                // (a tree-walker has no separate compile phase, so `do` semantics suffice).
                 // hyper/race/eager/lazy collect the loop's values like `do` does.
                 // A `hyper for`/`race for` also marks its ForStmt, whose
                 // iterations then run over worker threads (runHyperLoop).
-                // BEGIN keeps its own op: it evaluates ONCE (per node, the
-                // tree-walker's compile-once) — Digest::SHA2 indexes
-                // `(BEGIN blob64.new: map { frac 3√$_, 64 }, @primes[^80])[$t]`
-                // inside its round loop, and do-semantics recomputed the whole
-                // 80-root table per round: 6,400 FatRat square roots per block.
-                u->op = (name == "ENTER" || loopPrefix) ? "do" : name;
+                // (BEGIN and ENTER in value position are value phasers, above.)
+                u->op = loopPrefix ? "do" : name;
                 // `lazy for …` is a Seq the loop fills on its first pull, not
                 // a List run on the spot (S32-list/seq.t)
                 if (loopPrefix && name == "lazy") u->op = "lazydo";
@@ -9578,7 +9601,9 @@ ExprPtr Parser::parsePrimary() {
                      (peek().kind == Tok::Op && peek().text == "::"))) {
                     auto u = std::make_unique<Unary>(); u->op = "do";
                     auto be = std::make_unique<BlockExpr>();
+                    termDecl_ = true;   // (its postfix chain is the term: see the class statement)
                     be->body.push_back(parseStatement());
+                    termDecl_ = false;
                     u->operand = std::move(be);
                     return u;
                 }
@@ -9816,6 +9841,7 @@ ExprPtr Parser::parsePrimary() {
                         }
                         return c;
                     }
+                    if (pseudoPkg == "GLOBAL" && !keyExpr) if (ExprPtr st = pkgStashSubscript("GLOBAL", {sym})) return st;   // `GLOBAL::<Build>:delete`: the Stash's, as `Foo::<…>:delete` (a Pair of its own)
                     long long outerHops = 0;
                     for (size_t k = 0; k + 7 <= name.size(); k++)
                         if (name.compare(k, 7, "OUTER::") == 0) outerHops++;
@@ -9894,8 +9920,7 @@ ExprPtr Parser::parsePrimary() {
                 bool sigilled = !key.empty() &&
                     (key[0] == '$' || key[0] == '@' || key[0] == '%' || key[0] == '&');
                 std::string qual = sigilled ? key.substr(0, 1) + pkg + "::" + key.substr(1) : pkg + "::" + key;
-                if (ExprPtr st = pkgStashSubscript(pkg, words)) return st;   // `Foo::<$x>:p`, `Foo::<$x $y>`
-                if (ExprPtr ex = pkgExistsAdverb(qual)) return ex;   // `Foo::<$x>:exists`
+                if (ExprPtr st = pkgStashSubscript(pkg, words)) return st; else if (ExprPtr ex = pkgExistsAdverb(qual)) return ex;   // `Foo::<$x>:p`, `Foo::<$x $y>`; `Foo::<$x>:exists`
                 auto ve = std::make_unique<VarExpr>(qual);
                 ve->pkgSymbol = true; // assignment autovivifies the slot
                 return ve;
@@ -10166,6 +10191,7 @@ ExprPtr Parser::parsePrimary() {
             bool listopOk = startsListopArg(cur(), name);
             // `now` and `time` are TERMS, never listops: `now +300` is now + 300
             if (listopOk && (name == "now" || name == "time") && cur().kind != Tok::LParen) listopOk = false;
+            if (listopOk && isKind(Tok::LBrace) && !cur().spaceBefore && (declaredSubNames_.count(name) || capSubNames_.count(name))) listopOk = false;   // `T{"max-rss"}`: a TIGHT brace subscripts the call's answer (rakudo#5144)
             // …and so, before a block or a pointy, are `rand`, `i`, `Empty` and a TYPE: the
             // block is the statement's (`if rand { … }`, `for buf8 -> \bt { }`), as in Rakudo
             if (listopOk && (isKind(Tok::LBrace) || isOp("->") || isOp("<->")) && (name == "rand" || name == "i" ||
@@ -10724,695 +10750,6 @@ std::vector<std::string> Parser::readAngleWords(const std::string& close, std::v
     matchOp(close);
     return words;
 }
-// Call from inside a `catch (...)` around an interpolation's sub-parse.
-//
-// An interpolated expression that does not parse is not an error, it is just
-// text — `"@foo["` in a mail address, a stray brace in a CSS snippet — so every
-// such catch degrades to the literal characters. An OBSOLESCENCE diagnostic is
-// the opposite case: the text parsed perfectly well and is being refused on
-// purpose. Swallowing that would quietly turn `"@a[-1]"` from a compile error
-// into the literal string `@a[-1]`, which is worse than either answer.
-static void rethrowIfObsolete() {
-    try { throw; }
-    catch (ParseError& pe) { if (pe.exType == "X::Obsolete") throw; }
-    catch (...) {}
-}
-// Scan a balanced `{ … }` code block inside an interpolated string, RESPECTING
-// quoted spans: a brace inside '…' or "…" is text, not nesting — `{sym('{')}`
-// must not swallow the rest of the string. Returns the inner text and leaves
-// `j` on the closing brace (or n).
-static std::string scanInterpBlock(const std::string& raw, size_t& j,
-                                   char open = '{', char close = '}') {
-    size_t n = raw.size();
-    int depth = 1; std::string inner;
-    char q = 0;                    // active quote char inside the block, if any
-    while (j < n && depth > 0) {
-        char c = raw[j];
-        if (q) {
-            // `\'` inside '…' is an escape too, not its closer: `"a {'it\'s'} z"`
-            // ended the quote there, ran to the end of the string looking for
-            // the `}`, and the whole rest of the string vanished (issue #137)
-            if (c == '\\' && j + 1 < n) { inner += c; inner += raw[j+1]; j += 2; continue; }
-            if (c == q) q = 0;
-        }
-        // a “…” / ‘…’ / ｢…｣ string is the code's too: `{ $x ?? “doesn't” !! '' }`
-        else if (size_t e = uniQuoteSpanEnd(raw, j)) { inner.append(raw, j, e - j); j = e; continue; }
-        // …and an apostrophe inside a NAME (`don't`) opens no string
-        else if (c == '\'' && !inner.empty() && (ascii::isalnum((unsigned char)inner.back()) || inner.back() == '_') &&
-                 j + 1 < n && rakuIdentStart(raw[j + 1])) {}
-        else if (c == '\'' || c == '"') q = c;
-        else if (c == open) depth++;
-        else if (c == close) { depth--; if (depth == 0) break; }
-        inner += c; j++;
-    }
-    return inner;
-}
-
-
-// The argument list of a call inside an interpolated string, from just past
-// its `(` (depth `d` already 1): copied into `var` up to and including the
-// matching `)`. A quoted argument is CODE, so a `)` inside one closes nothing —
-// `"$s.subst(")", "-")"` (the lexer reads the same group the same way). A
-// quote that never closes falls back to the plain paren count.
-static size_t interpCallArgsEnd(const std::string& raw, size_t j, int& d, std::string& var) {
-    const size_t n = raw.size();
-    size_t k = j; int dd = d;
-    while (k < n && dd > 0) {
-        const char ch = raw[k];
-        if (ch == '\\' && k + 1 < n) { k += 2; continue; }
-        if (ch == '"' || ch == '\'') {
-            size_t e = k + 1;
-            while (e < n && raw[e] != ch) e += raw[e] == '\\' ? 2 : 1;
-            if (e >= n) { k = std::string::npos; break; }
-            k = e + 1;
-            continue;
-        }
-        if (ch == '(') dd++;
-        else if (ch == ')') dd--;
-        k++;
-    }
-    if (k != std::string::npos && dd == 0) { var.append(raw, j, k - j); d = 0; return k; }
-    while (j < n && d > 0) { if (raw[j]=='(') d++; else if (raw[j]==')') d--; var += raw[j++]; }
-    return j;
-}
-
-ExprPtr Parser::parseInterpString(const std::string& rawIn) {
-    // interpolation-feature prefix from quoting adverbs (q:c / Q:s / qq:!s):
-    // "\x02feats\x02" — s=scalars a=arrays h=hashes f=&calls c={blocks} b=backslashes
-    std::string raw = rawIn;
-    bool fS = true, fA = true, fH = true, fC = true, fB = true, fF = true;
-    if (!raw.empty() && raw[0] == '\x02') {
-        size_t fend = raw.find('\x02', 1);
-        if (fend != std::string::npos) {
-            std::string feats = raw.substr(1, fend - 1);
-            raw = raw.substr(fend + 1);
-            fS = feats.find('s') != std::string::npos;
-            fA = feats.find('a') != std::string::npos;
-            fH = feats.find('h') != std::string::npos;
-            fC = feats.find('c') != std::string::npos;
-            fB = feats.find('b') != std::string::npos;
-            fF = feats.find('f') != std::string::npos;
-        }
-    }
-    // An embedded expression is parsed by a parser of its own, whose tokens are
-    // numbered from the string's line, the newlines before it counted: `"$nope"`
-    // on line 301 is reported there, where it was line 1 (DeclCheck then looked
-    // only 200 lines on) and a `{…}` block's runtime errors named its own line 1
-    // (a string token records the line it ENDS on, a heredoc's its marker's)
-    auto lineAt = [&](size_t at) {
-        const Token& st = pos_ > 0 ? toks_[pos_ - 1] : cur();
-        const int start = st.heredoc ? st.line + 1 : st.line - (int)std::count(st.text.begin(), st.text.end(), '\n');
-        return start + (int)std::count(raw.begin(), raw.begin() + (long)std::min(at, raw.size()), '\n');
-    };
-    auto embedAt = [&](size_t at, const std::string& src, bool own = false) {
-        embedLineBase_ = lineAt(at);
-        struct Reset { int& b; ~Reset() { b = 0; } } reset{embedLineBase_};
-        return parseEmbeddedExpr(src, own);
-    };
-    // A `$` that starts no variable must be backslashed: `"$"`, `"a $, b"`;
-    // and `"${۳}"` is Perl 5's capture spelling. Top-level text only — a
-    // `{ … }` closure in the string is code.
-    if (fS) {
-        int depth = 0;
-        for (size_t i = 0; i < raw.size(); i++) {
-            char c = raw[i];
-            if (c == '\\' && fB) { i++; continue; }
-            if (fC && c == '{') { depth++; continue; }
-            if (fC && c == '}' && depth > 0) { depth--; continue; }
-            if (depth || c != '$') continue;
-            char d = i + 1 < raw.size() ? raw[i + 1] : '\0';
-            if (d == '\0' || d == ' ' || d == '\t' || d == '\n' || d == ',')
-                throw ParseError("Non-variable $ must be backslashed", cur().line,
-                                 "X::Backslash::NonVariableDollar", {});
-            if (d == '{') {
-                size_t q = i + 2; long long val = 0; int nd = 0;
-                while (q < raw.size()) {
-                    unsigned char b = (unsigned char)raw[q];
-                    int l = b < 0x80 ? 1 : (b >> 5) == 0x6 ? 2 : (b >> 4) == 0xE ? 3 : (b >> 3) == 0x1E ? 4 : 1;
-                    if (q + l > raw.size()) l = 1;
-                    uint32_t cp = l == 1 ? b : (uint32_t)(b & (0xFF >> (l + 1)));
-                    for (int k = 1; k < l; k++) cp = (cp << 6) | ((unsigned char)raw[q + k] & 0x3F);
-                    int dv = uniDigitValue(cp);
-                    if (dv < 0) break;
-                    val = val * 10 + dv; nd++; q += l;
-                }
-                if (nd && q < raw.size() && raw[q] == '}') {
-                    std::string old = raw.substr(i, q + 1 - i);
-                    std::string repl = "{$" + std::to_string(val > 0 ? val - 1 : 0) + "}";
-                    throw ParseError("Unsupported use of " + old + ". In Raku please use: " + repl + ".",
-                                     cur().line, "X::Obsolete", {{"old", old}, {"replacement", repl}});
-                }
-            }
-        }
-    }
-    auto result = std::make_unique<InterpStr>();
-    std::string lit;
-    auto flush = [&]() {
-        if (!lit.empty()) { result->parts.push_back(std::make_unique<StrLit>(lit)); lit.clear(); }
-    };
-    auto isIdentCont = [](char c) { return rakuIdentCont(c); };
-    (void)fF;
-    // How many bytes the UTF-8 sequence at `p` occupies, and its codepoint.
-    auto cpAtRaw = [&](size_t p, size_t& len) -> uint32_t {
-        unsigned char b = (unsigned char)raw[p];
-        len = b < 0x80 ? 1 : (b >> 5) == 0x6 ? 2 : (b >> 4) == 0xE ? 3 : (b >> 3) == 0x1E ? 4 : 1;
-        if (p + len > raw.size()) len = 1;
-        if (len == 1) return b;
-        uint32_t cp = (uint32_t)(b & (0xFF >> (len + 1)));
-        for (size_t k = 1; k < len; k++) cp = (cp << 6) | ((unsigned char)raw[p + k] & 0x3F);
-        return cp;
-    };
-    // Does the character at `p` continue an interpolated variable's name?
-    // Raku identifiers really do take Unicode letters — "$vкнига" is ONE name in
-    // both engines — but treating every non-ASCII BYTE as a name character swept up
-    // punctuation and emoji too, so `"$v…"` printed its own source and `"$v🙂"`
-    // reported an undeclared variable. ID_Continue is the actual rule; U+2026 (Po),
-    // the guillemets (Pi/Pf), U+2013 (Pd) and emoji (So) are none of them.
-    auto identContAt = [&](size_t p, size_t& len) -> bool {
-        if ((unsigned char)raw[p] < 0x80) { len = 1; return isIdentCont(raw[p]); }
-        uint32_t cp = cpAtRaw(p, len);
-        return uniIdContinue(cp);   // rt's own copy: EVAL needs no unicode-props for it
-    };
-    // The `-`/`'` join, with a possibly NON-ASCII letter after it.
-    // `rakuIdentJoins` is a byte test, so it answers no for `markup-Δ` — and
-    // this scanner has to agree with the LEXER about where a name ends or
-    // `"$markup-Δ"` interpolates differently from the bare name, which is the
-    // exact failure the rule's own comment in Lexer.h records.
-    auto identJoinsAt = [&](size_t p) -> bool {
-        if (p + 1 >= raw.size() || (raw[p] != '-' && raw[p] != '\'')) return false;
-        if ((unsigned char)raw[p + 1] < 0x80) return rakuIdentStart(raw[p + 1]);
-        size_t l; return identContAt(p + 1, l);
-    };
-
-    size_t i = 0, n = raw.size();
-    while (i < n) {
-        char c = raw[i];
-        if (fB && c == '\\' && i + 1 < n) {
-            char e = raw[i + 1];
-            // \x41 \x[263a] hex, \o77 \o[..] octal
-            // \c65 is the DECIMAL codepoint form (\c[…] is handled below)
-            if (e == 'x' || e == 'o' || (e == 'c' && i + 2 < n && ascii::isdigit((unsigned char)raw[i + 2]))) {
-                int base = e == 'x' ? 16 : e == 'o' ? 8 : 10;
-                size_t j = i + 2;
-                auto emitCp = [&](long cp) { escapeCodepointCheck(cp, cur().line);
-                    if (cp < 0x80) lit += (char)cp;
-                    else if (cp < 0x800) { lit += (char)(0xC0 | (cp >> 6)); lit += (char)(0x80 | (cp & 0x3F)); }
-                    else if (cp < 0x10000) { lit += (char)(0xE0 | (cp >> 12)); lit += (char)(0x80 | ((cp >> 6) & 0x3F)); lit += (char)(0x80 | (cp & 0x3F)); }
-                    else { lit += (char)(0xF0 | (cp >> 18)); lit += (char)(0x80 | ((cp >> 12) & 0x3F)); lit += (char)(0x80 | ((cp >> 6) & 0x3F)); lit += (char)(0x80 | (cp & 0x3F)); }
-                };
-                if (j < n && raw[j] == '[') {
-                    j++; std::string body;
-                    while (j < n && raw[j] != ']') body += raw[j++];
-                    if (j >= n)   // `"\x[6211"` — the bracket never closes
-                        throw ParseError(std::string("Unable to parse expression in ") +
-                                         (e == 'x' ? "hex" : e == 'o' ? "octal" : "decimal") +
-                                         " character; couldn't find final ']'", cur().line,
-                                         "X::Comp::AdHoc", {});
-                    if (j < n) j++; // ]
-                    // comma-separated list of codepoints:  \x[0042,0323]
-                    size_t p = 0;
-                    while (p < body.size()) {
-                        size_t comma = body.find(',', p);
-                        std::string tok = body.substr(p, comma == std::string::npos ? std::string::npos : comma - p);
-                        size_t a = tok.find_first_not_of(" \t_"), b = tok.find_last_not_of(" \t");
-                        if (a != std::string::npos) { tok = tok.substr(a, b - a + 1); emitCp(strtol(tok.c_str(), nullptr, base)); }
-                        if (comma == std::string::npos) break;
-                        p = comma + 1;
-                    }
-                } else {
-                    std::string digits;
-                    auto isd = [&](char ch) { return base == 16 ? ascii::isxdigit((unsigned char)ch)
-                                                  : base == 8 ? (ch >= '0' && ch <= '7')
-                                                  : ascii::isdigit((unsigned char)ch); };
-                    while (j < n && isd(raw[j])) digits += raw[j++];
-                    // `"\xZZ"` used to emit a silent NUL (strtol of "" is 0)
-                    if (digits.empty())
-                        throw ParseError("Unrecognized backslash sequence: '\\" + std::string(1, e) + "'",
-                                         cur().line, "X::Backslash::UnrecognizedSequence",
-                                         {{"sequence", std::string(1, e)}});
-                    emitCp(strtol(digits.c_str(), nullptr, base));
-                }
-                i = j;
-                continue;
-            }
-            // \c[NAME] / \c[65] / \c[NAME1, NAME2] — named or numeric codepoints
-            if (e == 'c' && i + 2 < n && raw[i + 2] != '[' && !ascii::isdigit((unsigned char)raw[i + 2])) {
-                unsigned char cc = (unsigned char)raw[i + 2];
-                if ((cc >= '@' && cc <= '_') || cc == '?') { lit += (char)(cc == '?' ? 127 : cc - 0x40); i += 3; continue; }
-                throw ParseError(std::string("Unrecognized \\c character '") + (char)cc + "'", cur().line);
-            }
-            if (e == 'c' && i + 2 < n && raw[i + 2] == '[') {
-                size_t j = i + 3; std::string body;
-                while (j < n && raw[j] != ']') body += raw[j++];
-                if (j >= n)   // `"\c[6211"` — the bracket never closes
-                    throw ParseError("Unable to parse expression in character name; couldn't find final ']'",
-                                     cur().line, "X::Comp::AdHoc", {});
-                if (j < n) j++; // ]
-                auto emitCp = [&](long cp) { escapeCodepointCheck(cp, cur().line);
-                    if (cp < 0x80) lit += (char)cp;
-                    else if (cp < 0x800) { lit += (char)(0xC0 | (cp >> 6)); lit += (char)(0x80 | (cp & 0x3F)); }
-                    else if (cp < 0x10000) { lit += (char)(0xE0 | (cp >> 12)); lit += (char)(0x80 | ((cp >> 6) & 0x3F)); lit += (char)(0x80 | (cp & 0x3F)); }
-                    else { lit += (char)(0xF0 | (cp >> 18)); lit += (char)(0x80 | ((cp >> 12) & 0x3F)); lit += (char)(0x80 | ((cp >> 6) & 0x3F)); lit += (char)(0x80 | (cp & 0x3F)); }
-                };
-                size_t p = 0;
-                while (p < body.size()) {
-                    size_t comma = body.find(',', p);
-                    std::string tok = body.substr(p, comma == std::string::npos ? std::string::npos : comma - p);
-                    // A character name may be WRAPPED across lines in the source
-                    // (MIME::Base64's test writes `\c[\nNEITHER LESS-THAN …]`), so a
-                    // newline counts as whitespace: trim the ends, collapse the rest.
-                    size_t a = tok.find_first_not_of(" \t\r\n"), b = tok.find_last_not_of(" \t\r\n");
-                    if (a != std::string::npos) tok = tok.substr(a, b - a + 1);
-                    { std::string flat; bool sp = false;
-                      for (char ch : tok) {
-                          if (ch == ' ' || ch == '\t' || ch == '\r' || ch == '\n') { sp = true; continue; }
-                          if (sp && !flat.empty()) flat += ' ';
-                          sp = false; flat += ch;
-                      }
-                      tok = flat; }
-                    if (!tok.empty()) {
-                        if (ascii::isdigit((unsigned char)tok[0])) emitCp(strtol(tok.c_str(), nullptr, 10));
-                        else {
-                            int32_t cp = uniCharByName(tok);
-                            if (cp < 0) { // names are case-insensitive: "\c[arabic number sign]"
-                                std::string up = tok;
-                                for (auto& ch : up) ch = (char)ascii::toupper((unsigned char)ch);
-                                cp = uniCharByName(up);
-                            }
-                            if (cp < 0) {
-                                // a NAMED SEQUENCE: several codepoints under one
-                                // name — `\c[woman facepalming]`, `\c[united states]`
-                                std::string seq = uniSeqByName(tok);
-                                if (seq.empty())
-                                    throw ParseError("Unrecognized character name [" + tok + "]", cur().line);
-                                lit += seq;
-                            }
-                            else emitCp(cp);
-                        }
-                    }
-                    if (comma == std::string::npos) break;
-                    p = comma + 1;
-                }
-                i = j;
-                continue;
-            }
-            switch (e) {
-                // (`\r\n` written out is a literal CRLF whatever `use newline` says)
-                case 'n': lit += (i >= 2 && raw[i - 2] == '\\' && raw[i - 1] == 'r' && !(i >= 3 && raw[i - 3] == '\\')) ? std::string("\n") : newlineSeq_; break;
-                case 't': lit += '\t'; break;
-                case 'r': lit += '\r'; break;
-                case '0': lit += '\0'; break;
-                case 'e': lit += '\x1b'; break;
-                case 'a': lit += '\a'; break;
-                case 'b': lit += '\b'; break;
-                case 'f': lit += '\f'; break;
-                case '"': lit += '"'; break;
-                case '\'': lit += '\''; break;
-                case '\\': lit += '\\'; break;
-                case '$': lit += '$'; break;
-                case '@': lit += '@'; break;
-                case '%': lit += '%'; break;
-                case '{': lit += '{'; break;
-                default:
-                    // every unassigned alphabetic escape is reserved: `"\u"`.
-                    // (\x \o \c with digits or brackets were handled above; a
-                    // bare `\c` with nothing usable after it is reserved too)
-                    if (ascii::isalpha((unsigned char)e))
-                        throw ParseError("Unrecognized backslash sequence: '\\" +
-                                         std::string(1, e) + "'", cur().line,
-                                         "X::Backslash::UnrecognizedSequence",
-                                         {{"sequence", std::string(1, e)}});
-                    // Perl's octal `"\123"` / `"\10"` (a lone `\0` is still NUL)
-                    if ((e >= '1' && e <= '9') ||
-                        (e == '0' && i + 2 < n && ascii::isdigit((unsigned char)raw[i + 2]))) {
-                        size_t q = i + 1; std::string ds;
-                        while (q < n && ascii::isdigit((unsigned char)raw[q])) ds += raw[q++];
-                        throw ParseError("Unrecognized backslash sequence: '\\" + ds + "'", cur().line,
-                                         "X::Backslash::UnrecognizedSequence", {{"sequence", ds}});
-                    }
-                    lit += e;
-                    break;
-            }
-            i += 2;
-            continue;
-        }
-        if (fC && c == '{') {
-            // balanced code block (quote-aware: a brace inside '…'/"…" is text)
-            size_t j = i + 1;
-            std::string inner = scanInterpBlock(raw, j);
-            flush();
-            // a declarator WORD (`my`, `our`, `state`, `constant`) followed by space
-            auto declares = [&]() {
-                for (const char* kw : {"my", "our", "state", "constant"}) {
-                    size_t L = strlen(kw);
-                    for (size_t at = inner.find(kw); at != std::string::npos; at = inner.find(kw, at + 1)) {
-                        bool startOk = at == 0 || !(ascii::isalnum((unsigned char)inner[at - 1]) ||
-                                                    strchr("_$@%&-", inner[at - 1]));
-                        bool endOk = at + L < inner.size() && ascii::isspace((unsigned char)inner[at + L]);
-                        if (startOk && endOk) return true;
-                    }
-                }
-                return false;
-            };
-            // A block is CODE, as it is anywhere else: code that does not parse
-            // is a compile error, as in Rakudo (`"a {1 +} z"`: Missing required
-            // term after infix). It was dropped without a word, and the string
-            // read on as if the block had been empty. The error names the line
-            // the block is on, not its line within the block's own text.
-            try { auto& bp = result->parts.emplace_back(embedAt(i, inner, declares())); bp->blockPart = true; if (!bp->line) bp->line = lineAt(i); }
-            catch (ParseError& pe) {
-                if (pe.line <= 0) pe.line = lineAt(i);   // (a line of its own tokens is the file's now)
-                throw;
-            }
-            catch (...) { rethrowIfObsolete(); }
-            i = j + 1;
-            continue;
-        }
-        // The postfix chain after an interpolated variable — ONE scanner for every
-        // sigil branch below (`$/`, `$!`, `$0`, `$<name>`, `$var`, `@arr`, `%h`);
-        // three private copies used to disagree on when a bare `.name` commits.
-        // Links: [..] {..} <..> (..) .name .[..] .{..} .(..)
-        // A method call interpolates only if it — or a later link in the
-        // chain — has parens: "$x.ord" stays literal, but "$x.ord.fmt('%d')"
-        // interpolates the whole chain up to the last parenthesised call
-        // ("$x.ord.fmt('%d').flip" leaves the trailing bare .flip literal).
-        // Subscripts always interpolate. Bare .method links are appended
-        // tentatively and only "committed" once a parenthesised call or a
-        // subscript follows; any uncommitted tail is dropped back to literal.
-        auto scanChain = [&](size_t& j, std::string& var) -> bool {
-        bool hadPostfix = false;
-        size_t committedLen = var.size();   // var length confirmed for interpolation
-        size_t committedJ = j;              // matching raw index
-        auto commit = [&]() { hadPostfix = true; committedLen = var.size(); committedJ = j; };
-        for (;;) {
-            // A subscript or call marker after an UNCOMMITTED bare `.name` does not
-            // commit it — only a parenthesised call does: "$s.uc().chars[0]" prints
-            // ABC.chars[0] and "$s.uc.chars()" prints 3 (Rakudo's rule, probed).
-            if (committedLen < var.size() && j < n &&
-                (raw[j] == '[' || raw[j] == '{' || raw[j] == '<' || raw[j] == '(' ||
-                 ((unsigned char)raw[j] == 0xC2 && j + 1 < n && (unsigned char)raw[j + 1] == 0xAB) ||
-                 (raw[j] == '.' && j + 1 < n && (raw[j + 1] == '[' || raw[j + 1] == '{' || raw[j + 1] == '('))))
-                break;
-            if (j < n && raw[j] == '[') {
-                int d = 1; var += raw[j++];
-                while (j < n && d > 0) { if (raw[j]=='[') d++; else if (raw[j]==']') d--; var += raw[j++]; }
-                commit();
-            } else if (j < n && raw[j] == '(') {
-                // postcircumfix call: `"$c(3)"` invokes the Callable, the same
-                // postfix as `.( )`. Rakudo applies it to every sigil — `"@a(0)"`
-                // and `"%h(0)"` reach CALL-ME on an Array/Hash and die there — so
-                // this commits like any other subscript. Content that is not an
-                // argument list still fails to parse and falls back to literal
-                // text, which is what keeps `"$name(see note)"` printing.
-                int d = 1; var += raw[j++];
-                j = interpCallArgsEnd(raw, j, d, var);
-                commit();
-            } else if (j + 1 < n && ((raw[j] == '<' && raw[j + 1] == '<') ||
-                                     ((unsigned char)raw[j] == 0xC2 && (unsigned char)raw[j + 1] == 0xAB))) {
-                // interpolating word subscript: "%h<<a $x>>" / "%h«a»"
-                const char* close = raw[j] == '<' ? ">>" : "\xC2\xBB";
-                size_t e = raw.find(close, j + 2);
-                if (e == std::string::npos) break;
-                var += raw.substr(j, e + 2 - j);
-                j = e + 2;
-                commit();
-            } else if (j < n && raw[j] == '<') {
-                // angle-bracket hash subscript: %h<key>  @a<...>
-                var += raw[j++];
-                while (j < n && raw[j] != '>') var += raw[j++];
-                if (j < n) var += raw[j++]; // closing >
-                commit();
-            } else if (j < n && raw[j] == '{') {
-                int d = 1; var += raw[j++];
-                while (j < n && d > 0) { if (raw[j]=='{') d++; else if (raw[j]=='}') d--; var += raw[j++]; }
-                commit();
-            } else if (j + 1 < n && raw[j] == '.' && (raw[j+1] == '\'' || raw[j+1] == '"') &&
-                       raw.find(raw[j+1], j + 2) != std::string::npos &&
-                       raw.find(raw[j+1], j + 2) + 1 < n && raw[raw.find(raw[j+1], j + 2) + 1] == '(') {
-                // indirect method name: `"$x.'f'()"` / `"$x."f"()"` — parens required
-                size_t qe = raw.find(raw[j+1], j + 2);
-                var += raw.substr(j, qe + 1 - j);
-                j = qe + 1;
-                int d = 1; var += raw[j++];
-                j = interpCallArgsEnd(raw, j, d, var);
-                commit();
-            } else if (j + 1 < n && raw[j] == '.' && (raw[j+1] == '[' || raw[j+1] == '{' || raw[j+1] == '(')) {
-                var += raw[j++]; // .
-                char open = raw[j], close = open == '[' ? ']' : open == '{' ? '}' : ')';
-                int d = 1; var += raw[j++];
-                while (j < n && d > 0) { if (raw[j]==open) d++; else if (raw[j]==close) d--; var += raw[j++]; }
-                commit();
-            } else if (j + 1 < n && raw[j] == '.' &&
-                       // a method or routine name may be UNICODE: `"$n.&mööse()"`
-                       // truncated at the ö, left the call uncommitted, and the
-                       // `&name(` branch then compiled `mööse()` with NO invocant
-                       (ascii::isalpha((unsigned char)raw[j+1]) || raw[j+1] == '_' ||
-                        (unsigned char)raw[j+1] >= 0x80 ||
-                        ((raw[j+1] == '^' || raw[j+1] == '?' || raw[j+1] == '&') && j + 2 < n &&
-                         (ascii::isalpha((unsigned char)raw[j+2]) || raw[j+2] == '_' ||
-                          (unsigned char)raw[j+2] >= 0x80)))) {
-                // bare .method — tentative; consume its name, commit only if parens follow.
-                // One META-SIGIL may sit between the dot and the name: `"$x.^name()"`
-                // is a meta-method call, `.?meth()` a maybe-call, `.&f()` a sub call.
-                // Without this the chain ended at `$x` and `.^name()` was literal text.
-                var += raw[j++]; // .
-                if (raw[j] == '^' || raw[j] == '?' || raw[j] == '&') var += raw[j++];
-                for (size_t l; j < n && identContAt(j, l); ) { var.append(raw, j, l); j += l; }
-                // a method name joins on `-`/`'` exactly as a variable name does:
-                // "$n.is-prime()" — stopping at the hyphen left `.is` uncommitted
-                // and printed `7.is-prime()` (Gnome::Gtk4, Pakku, REPL, Air…)
-                while (identJoinsAt(j)) {
-                    var += raw[j++];
-                    for (size_t l; j < n && identContAt(j, l); ) { var.append(raw, j, l); j += l; }
-                }
-                if (j < n && raw[j] == '(') {
-                    int d = 1; var += raw[j++];
-                    j = interpCallArgsEnd(raw, j, d, var);
-                    commit();
-                }
-                // else: leave uncommitted; a later link in the chain may still commit it
-            } else break;
-        }
-        // drop any uncommitted trailing bare-method links back to literal text
-        if (committedLen < var.size()) { var.resize(committedLen); j = committedJ; }
-        return hadPostfix;
-        };
-        // `$/` (match) and `$!` (error) as standalone interpolated vars
-        if (fS && c == '$' && (i + 1 < n) && (raw[i + 1] == '/' || raw[i + 1] == '!') &&
-            !(i + 2 < n && (ascii::isalnum((unsigned char)raw[i + 2]) || raw[i + 2] == '_'))) {
-            // …and it takes a postfix like any other variable: `$/[0]`, `$/<k>`,
-            // `$/.Str`. Stopping at the sigil left the subscript as literal text,
-            // so HTTP::Tinyish's `s/…/$/[0]/` replaced the match with the seven
-            // characters `$/[0]`.
-            std::string var = std::string("$") + raw[i + 1];
-            size_t j = i + 2;
-            scanChain(j, var); // a bare `.message` stays literal, as after any variable
-            flush();
-            if (var.size() == 2) result->parts.push_back(std::make_unique<VarExpr>(var));
-            else try { result->parts.push_back(embedAt(i, var)); } catch (...) { rethrowIfObsolete(); lit += var; }
-            i = j;
-            continue;
-        }
-        // numbered regex captures `$0` `$1` … and named captures `$<name>`
-        if (fS && c == '$' && (i + 1 < n) && (ascii::isdigit((unsigned char)raw[i + 1]) || raw[i + 1] == '<')) {
-            size_t j = i + 1;
-            std::string var("$");
-            if (raw[j] == '<') {
-                var += raw[j++];
-                while (j < n && raw[j] != '>') var += raw[j++];
-                if (j < n) var += raw[j++]; // closing >
-            } else {
-                while (j < n && ascii::isdigit((unsigned char)raw[j])) var += raw[j++];
-            }
-            scanChain(j, var); // postfix chain on the capture: $0[1] $<k>{...} $0.uc()
-            flush();
-            try { result->parts.push_back(embedAt(i, var)); } catch (...) { rethrowIfObsolete(); lit += var; }
-            i = j;
-            continue;
-        }
-        // `&name(args)` — a routine CALL interpolates (only with the parens):
-        // Cro's route compiler builds "'&encode(@constraints[0])'" strings
-        if (fF && c == '&' && i + 1 < n &&
-            (ascii::isalpha((unsigned char)raw[i + 1]) || raw[i + 1] == '_')) {
-            size_t j = i + 1;
-            std::string fname;
-            for (size_t l; j < n && identContAt(j, l); ) { fname.append(raw, j, l); j += l; }
-            while (identJoinsAt(j)) {
-                fname += raw[j++];
-                for (size_t l; j < n && identContAt(j, l); ) { fname.append(raw, j, l); j += l; }
-            }
-            if (j < n && raw[j] == '(') {
-                int depth = 1; size_t k2 = j + 1; std::string argsrc;
-                while (k2 < n && depth > 0) {
-                    if (raw[k2] == '(') depth++;
-                    else if (raw[k2] == ')') { depth--; if (depth == 0) break; }
-                    argsrc += raw[k2]; k2++;
-                }
-                flush();
-                // The `&` goes back in. Re-parsing the call WITHOUT it made the
-                // interpolated spelling mean something else than the same text
-                // in code: `&` says "the routine of this name", and dropping it
-                // let a TYPE of that name answer instead once a bare `Bar(…)`
-                // started resolving to the type's coercion.
-                try { result->parts.push_back(embedAt(i, "&" + fname + "(" + argsrc + ")")); }
-                catch (...) { rethrowIfObsolete(); }
-                i = k2 + 1;
-                continue;
-            }
-            // `"@&code[]"` / `"%&code{}"` — a SIGIL contextualizer on the routine,
-            // subscripted: `@(&code)[]` (S02-literals/string-interpolation.t)
-            if (j < n && (raw[j] == '[' || raw[j] == '{') && !lit.empty() &&
-                (lit.back() == '@' || lit.back() == '%') && (lit.back() == '@' ? fA : fH)) {
-                char sig = lit.back();
-                std::string var = std::string(1, sig) + "(&" + fname + ")";
-                size_t k2 = j;
-                if (scanChain(k2, var)) {
-                    lit.pop_back();
-                    flush();
-                    try { result->parts.push_back(embedAt(i, var)); }
-                    catch (...) { rethrowIfObsolete(); throw; }
-                    i = k2;
-                    continue;
-                }
-            }
-            // bare &name without parens: stays literal text
-        }
-        // `"$( expr )"` — the item contextualizer interpolates its expression
-        // (and a `my` inside it declares into the enclosing scope). Only `$`:
-        // Rakudo leaves `@(…)`, `%(…)` and `&(…)` as literal text.
-        if (c == '$' && fS && i + 1 < n && raw[i + 1] == '(') {
-            size_t j = i + 2;
-            std::string inner = scanInterpBlock(raw, j, '(', ')');
-            if (j < n) {
-                flush();
-                try { result->parts.push_back(embedAt(i, "$(" + inner + ")")); }
-                catch (...) { rethrowIfObsolete(); lit += raw.substr(i, j + 1 - i); }
-                i = j + 1;
-                continue;
-            }
-        }
-        // `$:name` is the implicit NAMED placeholder parameter; it interpolates like
-        // any other twigilled variable. (A bare `$:` is a compile error in Rakudo,
-        // so requiring a name after the colon costs nothing.)
-        bool colonPh = (i + 2 < n) && raw[i + 1] == ':' &&
-                       (ascii::isalpha((unsigned char)raw[i + 2]) || raw[i + 2] == '_');
-        if (((c == '$' && fS) || (c == '@' && fA) || (c == '%' && fH)) &&
-            (i + 1 < n) && (ascii::isalpha((unsigned char)raw[i + 1]) || raw[i + 1] == '_' ||
-                            // `%{…}` is NOT a hash interpolation: Rakudo leaves the
-                            // '%' as text and interpolates the block, which is what
-                            // makes "%{$width}s" a printf format rather than "s".
-                            (raw[i + 1] == '{' && c != '%') ||
-                            raw[i + 1] == '*' || raw[i + 1] == '!' ||
-                            // `.` is the PUBLIC-ATTRIBUTE twigil, so an attribute
-                            // NAME has to follow it. Accepting a bare `.` made
-                            // `"%.{$n}g"` — the way a printf precision is built —
-                            // parse as a hash subscript on an unnamed attribute,
-                            // and the format string came back as just `"g"`:
-                            // Astro::Sunrise's convergence test compared "g" with
-                            // "g", declared success on the first pass, and its
-                            // `:iter` mode returned midnight for every location.
-                            (raw[i + 1] == '.' && i + 2 < n &&
-                             (ascii::isalpha((unsigned char)raw[i + 2]) || raw[i + 2] == '_' ||
-                              (unsigned char)raw[i + 2] >= 0x80)) ||
-                            raw[i + 1] == '^' || colonPh ||
-                            (raw[i + 1] == '?' && i + 2 < n &&
-                             (ascii::isalpha((unsigned char)raw[i + 2]) || raw[i + 2] == '_')) ||
-                            ((unsigned char)raw[i + 1] >= 0x80 &&
-                             [&]{ size_t l; return identContAt(i + 1, l); }()))) {
-            char sig = c;
-            size_t j = i + 1;
-            std::string var(1, sig);
-            if (raw[j] == '{') {
-                // ${ ... } (same quote-aware scan)
-                j++;
-                std::string inner = scanInterpBlock(raw, j);
-                // …but `"${…}"` and `"@{…}"` are Perl 5 — a dereference, or a
-                // variable name in braces — and Raku refuses both by name wherever
-                // they are written, inside a string as much as outside one. A
-                // bare name is `{$name}` in Raku; anything else `$(…)` or `$::(…)`.
-                if (sig == '$' || sig == '@') {
-                    std::string t = inner;
-                    while (!t.empty() && (t.front() == ' ' || t.front() == '\t')) t.erase(t.begin());
-                    while (!t.empty() && (t.back() == ' ' || t.back() == '\t')) t.pop_back();
-                    bool word = !t.empty() && (ascii::isalpha((unsigned char)t[0]) || t[0] == '_');
-                    for (char ch : t)
-                        if (!(ascii::isalnum((unsigned char)ch) || ch == '_' || ch == '-')) { word = false; break; }
-                    const std::string s1(1, sig);
-                    const std::string old = s1 + "{" + (word ? t : inner) + "}";
-                    const std::string repl = word ? "{" + s1 + t + "}"
-                                                  : s1 + "(" + inner + ") for hard ref or " + s1 + "::(" + inner + ") for symbolic ref";
-                    throw ParseError("Unsupported use of " + old + ". In Raku please use: " + repl + ".",
-                                     pos_ > 0 ? toks_[pos_ - 1].line : cur().line, "X::Obsolete",
-                                     {{"old", old}, {"replacement", repl}});
-                }
-                flush();
-                try { result->parts.push_back(embedAt(i, std::string(1, sig) + "(" + inner + ")")); }
-                catch (...) { rethrowIfObsolete(); }
-                i = j + 1;
-                continue;
-            }
-            // twigil ($*dyn, $!attr, $.attr, $^placeholder, $?LINE)
-            if (raw[j] == '*' || raw[j] == '!' || raw[j] == '.' || raw[j] == '^' ||
-                raw[j] == '?' || (raw[j] == ':' && colonPh)) var += raw[j++];
-            for (size_t l; j < n && identContAt(j, l); ) { var.append(raw, j, l); j += l; }
-            // hyphen/apostrophe continue the name when followed by an alphanumeric ($foo-bar)
-            while (identJoinsAt(j)) {
-                var += raw[j++];
-                for (size_t l; j < n && identContAt(j, l); ) { var.append(raw, j, l); j += l; }
-            }
-            bool hadPostfix = scanChain(j, var);
-            // @arr/%hash only interpolate when followed by a postcircumfix/method
-            if ((sig == '@' || sig == '%') && !hadPostfix) { lit += var; i = j; continue; }
-            const int strLine = pos_ > 0 ? toks_[pos_ - 1].line : cur().line;
-            // `"$a->$b"` is Perl's arrow, refused in a string as anywhere (#109)
-            if (j + 1 < n && raw[j] == '-' && raw[j + 1] == '>') {
-                const std::string old = j + 2 < n && raw[j + 2] == '[' ? "->[]"
-                                      : j + 2 < n && raw[j + 2] == '{' ? "->{}" : "->";
-                const std::string repl = old == "->" ? "either . to call a method, or whitespace to have a pointy block"
-                                                     : old == "->[]" ? "[] for array subscripting" : "{} for hash subscripting";
-                throw ParseError("The arrow after " + var + " in a string is Perl's postfix " + old +
-                                 ", which Raku does not have; use " + repl + ".",
-                                 strLine, "X::Obsolete", {{"old", old + " as postfix"}, {"replacement", repl}});
-            }
-            // `"$h:Set(1)"`: a colon and a word after a plain `$name` continue
-            // the NAME — `$h:Set<1>`, a long name with an adverb — which is no
-            // variable in scope (#109). `"$h::x"` and `"$h: x"` are other things.
-            if (sig == '$' && !hadPostfix && j + 1 < n && raw[j] == ':' &&
-                (ascii::isalpha((unsigned char)raw[j + 1]) || raw[j + 1] == '_') &&
-                var.size() > 1 && (nameLetterAt(var, 1) || var[1] == '_')) {
-                size_t k = j + 1;
-                std::string adv;
-                for (size_t l; k < n && identContAt(k, l); ) { adv.append(raw, k, l); k += l; }
-                std::string name = var + ":" + adv;
-                if (k < n && (raw[k] == '(' || raw[k] == '<')) {
-                    const char close = raw[k] == '(' ? ')' : '>';
-                    size_t e = raw.find(close, k + 1);
-                    if (e != std::string::npos) name += "<" + raw.substr(k + 1, e - k - 1) + ">";
-                }
-                throw ParseError("Variable '" + name + "' is not declared (in a string, a colon and a word "
-                                 "after a variable continue its name; write {" + var + "}:" + adv + ")",
-                                 strLine, "X::Undeclared", {{"symbol", name}, {"what", "Variable"}});
-            }
-            flush();
-            try {
-                ExprPtr part = embedAt(i, var);
-                // a compile-time magical reads its NODE's line — stamp the
-                // string's own position, not the sub-parser's line 1
-                // ("line $?LINE" — Log::Async's context test)
-                if (part && part->kind == NK::VarExpr && var.rfind("$?", 0) == 0)
-                    static_cast<VarExpr*>(part.get())->line = lineAt(i);
-                result->parts.push_back(std::move(part));
-            } catch (...) { rethrowIfObsolete(); lit += var; }
-            i = j;
-            continue;
-        }
-        lit += c;
-        i++;
-    }
-    flush();
-    return result;
-}
-
 // Record (or, for an untyped redeclaration, clear) the declared type of each
 // `$` variable a declarator introduces — see scalarDeclTypes_.
 void Parser::noteScalarDecls(const Expr* e) {
@@ -11621,10 +10958,14 @@ std::unique_ptr<Block> Parser::parseBlock() {
     // `{ constant True = 42 }` shadows the Bool literal for this block only:
     // outside it the name resolves to CORE again (constant.t)
     const bool trueWasTerm = sigilless_.count("True"), falseWasTerm = sigilless_.count("False");
+    const bool savedTrace = trace_, savedCached = experimentalCached_;   // (`use trace` and `use experimental :cached` are the block's)
     auto blk = std::make_unique<Block>();
     while (!isKind(Tok::RBrace) && !isKind(Tok::End)) {
         if (matchKind(Tok::Semicolon)) continue;
-        blk->stmts.push_back(parseStatement());
+        const int sid = ++stmtId_; const size_t sat = pos_; const bool tracing = trace_;
+        StmtPtr st = parseStatement();
+        if (tracing && trace_) blk->stmts.push_back(traceStmt(sid, sat, pos_));
+        blk->stmts.push_back(std::move(st));
         for (auto& ps : pendingStmts_) blk->stmts.push_back(std::move(ps)); // `will leave` desugars
         pendingStmts_.clear();
         if (isKind(Tok::Comma) && blk->stmts.back() && blk->stmts.back()->kind == NK::SubDecl) { advance(); continue; }
@@ -11650,6 +10991,7 @@ std::unique_ptr<Block> Parser::parseBlock() {
     dynScopeAll_ = savedDynAll;
     dynScopeNames_ = savedDynNames;
     supersedeHow_ = savedSupersede;
+    trace_ = savedTrace; experimentalCached_ = savedCached; ++stmtId_;   // (the list's end takes a number of its own)
     lastBlockClose_ = pos_; // this `}` closes a BLOCK — see the note on the field
     expectKind(Tok::RBrace, "}");
     opRollback(opMark);
@@ -12074,6 +11416,8 @@ std::vector<Param> Parser::parseSignature(Tok closeTok) {
         // words between `<` and `>` are one literal, whatever the lexer made of
         // them here
         if (isOp("<")) {
+            // …and with a space after the `<` it is none: Rakudo's signature ends there ("Missing block")
+            if (peek().spaceBefore) throw ParseError("Missing block", cur().line, "X::Syntax::Missing", {{"what", "block"}});
             size_t j = pos_ + 1;
             std::string word;
             bool ok = false;
@@ -12883,6 +12227,10 @@ std::vector<Param> Parser::parseSignature(Tok closeTok) {
         if (p.isRw && p.defaultVal)
             throw ParseError("Cannot use 'is rw' on optional parameter '" + p.name + "'.", cur().line,
                              "X::Trait::Invalid", {{"type", "is"}, {"subtype", "rw"}, {"declaring", "parameter"}, {"name", p.name}});
+        // …nor can a REQUIRED one (`$count!`, `is required`), which never goes without (rakudo#1426)
+        if (p.required && p.defaultVal && !p.named)   // (a named one is left: GLib's `:$reversed is required = False` is in the battery)
+            throw ParseError("Cannot put default on required parameter " + p.name, cur().line, "X::Parameter::Default",
+                             {{"how", "required"}, {"parameter", p.name}});
         { // trailing `#= description` on this param's line — DEFERRED. Whether
           // the doc belongs to the param or to the ROUTINE depends on where the
           // signature closes: a comment runs to end of line, so a `#=` sharing
@@ -13096,7 +12444,20 @@ std::vector<Param> Parser::parseSignature(Tok closeTok) {
 std::vector<Param> Parser::parsePointyParams() {
     // pointy blocks share the full signature grammar (types, coercions, slurpies,
     // named params, destructuring, traits) — the body brace ends the signature
-    return parseSignature(Tok::LBrace);
+    std::vector<Param> ps = parseSignature(Tok::LBrace);
+    refuseAttrParamsWithoutSelf(ps);
+    return ps;
+}
+
+// An ATTRIBUTIVE parameter (`$!x`, `$.x`) needs a `self` to bind into: a
+// pointy block or an anonymous sub outside every method has none, as in
+// Rakudo (X::Syntax::NoSelf). A named sub's check is parseSub's own.
+void Parser::refuseAttrParamsWithoutSelf(const std::vector<Param>& ps) {
+    if (selfDepth_ || evalSelfInScope_) return;
+    for (auto& ap : ps)
+        if (ap.name.size() > 2 && (ap.name[1] == '.' || ap.name[1] == '!') && std::strchr("$@%&", ap.name[0]))
+            throw ParseError("Variable " + ap.name + " used where no 'self' is available", cur().line,
+                             "X::Syntax::NoSelf", {{"variable", ap.name}});
 }
 
 // `my $m = method { $!a }` with no class around it: nothing can declare the
@@ -13284,6 +12645,8 @@ StmtPtr Parser::parseSub(bool isMulti, bool isProto, bool asMethod) {
             std::string un;
             for (size_t i = 0; i < in.size(); i++)
                 un += in[i] == '\\' && i + 1 < in.size() ? in[++i] : in[i];
+            // a QUOTED word in the list is the word: `infix:«"z"»` is `z` (rakudo#1264)
+            if (un.size() > 2 && (un[0] == '"' || un[0] == '\'') && un.back() == un[0]) un = un.substr(1, un.size() - 2);
             w.push_back(un);
             resolveConstWords(w);
         }
@@ -13485,6 +12848,7 @@ StmtPtr Parser::parseSub(bool isMulti, bool isProto, bool asMethod) {
     // (note whether an `is export` trait is present — governs module visibility;
     //  capture `of T` / `returns T` / `--> T` as the return type)
     std::set<std::string> seenIsTraits;   // `sub f is rw is rw` — Rakudo worries about the second
+    const size_t traitsAt = pos_;          // (where the traits start: precTraitsOfTokens reads them off for `.prec`)
     while (!isKind(Tok::LBrace) && !isKind(Tok::End) && !isKind(Tok::Semicolon)) {
         if (isIdent("is") && peek().kind == Tok::Ident && !strictSep_ &&
             !seenIsTraits.insert(peek().text).second)
@@ -13763,6 +13127,9 @@ StmtPtr Parser::parseSub(bool isMulti, bool isProto, bool asMethod) {
             if (!builtinTraits.count(peek().text)) {
                 advance(); // is
                 SubTraitSpec st; st.name = advance().text;
+                if (st.name == "cached" && !experimentalCached_)   // (as in Rakudo: an experiment needs asking for)
+                    throw ParseError("Use of the 'is cached' trait is experimental; please 'use experimental :cached;'",
+                                     cur().line, "X::Experimental", {{"feature", "the 'is cached' trait"}, {"use", "cached"}});
                 if (isKind(Tok::LParen)) {
                     advance();
                     st.arg = parseExpression();
@@ -13854,6 +13221,7 @@ StmtPtr Parser::parseSub(bool isMulti, bool isProto, bool asMethod) {
         }
         advance();
     }
+    s->precTraits = precTraitsOfTokens(toks_, traitsAt, pos_);
     bool hadBlock = false;
     if (isKind(Tok::LBrace)) {
         hadBlock = true;
@@ -13869,6 +13237,7 @@ StmtPtr Parser::parseSub(bool isMulti, bool isProto, bool asMethod) {
         auto blk = parseBlock();
         selfDepth_ -= hasSelf;
         checkNativeParamAssign(s->params, bodyAt);
+        if ((asMethod || s->isMethod || s->isSubmethod) && !s->hadSig) refuseMethodPlaceholders(bodyAt, s->name);
         if (asMethod) refuseFreeMethodAttrs(bodyAt);
         // `return-rw` makes the routine container-returning even with no `is rw`
         // trait, which is what Rakudo does (`method m($i) { return-rw @!a[$i] }`).
@@ -14028,7 +13397,10 @@ StmtPtr Parser::parseEnum() {
     else if (isOp("::")) advance();   // `enum :: <un>` — anonymous, spelled out
     if (!pendingEnumType_.empty()) { ed->ofType = pendingEnumType_; pendingEnumType_.clear(); }
     if (isIdent("of")) { advance(); if (isKind(Tok::Ident)) ed->ofType = advance().text; }
-    while (isIdent("is")) {
+    // (`enum E does R <a b>` — a role BEFORE the values too, read by its name alone, so the
+    // `<…>` after it stays the value list (rakudo#3376); consumed, as the one after them is)
+    while (isIdent("is") || isIdent("does")) {
+        if (isIdent("does") && peek().kind == Tok::Ident) { advance(); advance(); continue; }
         advance();
         if (isKind(Tok::Ident) || isKind(Tok::Var)) {
             const bool exp = cur().text == "export";
@@ -14594,7 +13966,7 @@ StmtPtr Parser::parseClass(bool isRole, bool isGrammar, bool isPackage, bool isU
     // `unit class Foo;` — the remainder of the compilation unit is the class body.
     std::vector<StmtPtr> classBodyLeave;   // `will leave` phasers of the body, run at its end
     if (braced) advance();          // {
-    else matchKind(Tok::Semicolon); // unit form
+    else { matchKind(Tok::Semicolon); cd->unitForm = true; } // unit form
     typeStack_.push_back(cd->name); // enclosing type for ::?CLASS in the body
     typeIsRole_.push_back(cd->isRole);
     classPrivCalls_.emplace_back();
@@ -14818,6 +14190,21 @@ StmtPtr Parser::parseClass(bool isRole, bool isGrammar, bool isPackage, bool isU
                         size_t idx = 1;
                         if (vn.size() > 1 && (vn[1] == '.' || vn[1] == '!')) { a.pub = (vn[1] == '.'); a.twigilWritten = true; idx = 2; }
                         a.name = vn.substr(idx);
+                        // …and its OWN traits, before its default: `has ($.z is rw = 42)` lost both (rakudo#2078)
+                        while (isIdent("is") && peek().kind == Tok::Ident) {
+                            advance();
+                            const std::string tn = advance().text;
+                            if (tn == "rw") a.rw = true;
+                            else if (tn == "readonly") a.readonly = true;
+                            else if (tn == "required") a.required = true;
+                            else if (tn == "built") a.built = true;
+                            if (isKind(Tok::LParen) && !cur().spaceBefore) {
+                                advance();
+                                ExprPtr arg = isKind(Tok::RParen) ? nullptr : parseExpression();
+                                expectKind(Tok::RParen, ")");
+                                if (tn == "default" && arg) a.defaultTrait = std::move(arg);
+                            }
+                        }
                         if (matchOp("=")) {
                             size_t defStart = pos_;
                             a.def = parseExpr(BP_ASSIGN);
@@ -14869,6 +14256,9 @@ StmtPtr Parser::parseClass(bool isRole, bool isGrammar, bool isPackage, bool isU
                 size_t idx = 1;
                 if (vn.size() > 1 && (vn[1] == '.' || vn[1] == '!')) { a.pub = (vn[1] == '.'); a.twigilWritten = true; idx = 2; }
                 a.name = vn.substr(idx);
+                // `has Int $.count!` is no required attribute: Rakudo reads the `!` as a negation metaop with no infix
+                if (isOp("!") && (peek().kind == Tok::Semicolon || peek().kind == Tok::RBrace || peek().kind == Tok::End))
+                    throw ParseError("Negation metaoperator not followed by valid infix", cur().line, "X::AdHoc", {});
                 // a SHAPED array attribute: `has @.a[3;3]`
                 if (a.sigil == '@' && isKind(Tok::LBracket) && !cur().spaceBefore) {
                     advance(); // '['
@@ -15554,6 +14944,9 @@ StmtPtr Parser::parseClass(bool isRole, bool isGrammar, bool isPackage, bool isU
                                          {{"method", c.first}, {"typename", cd->name}, {"private", "True"}});
         }
     }
+    // `class Foo is repr('CStruct') { }` — a struct of nothing, which Rakudo refuses (rakudo#2673)
+    if (cd->repr == "CStruct" && cd->attrs.empty() && cd->parent.empty() && cd->extraParents.empty() && cd->roles.empty() && !cd->isRole)
+        throw ParseError("Class " + cd->name + " has no attributes, which is illegal with the CStruct representation.", pos_ > 0 ? toks_[pos_ - 1].line : cur().line, "X::AdHoc", {});
     return cd;
 }
 
@@ -16799,6 +16192,8 @@ StmtPtr Parser::parseStatementImpl() {
             if (!u->isNo && isKind(Tok::Ident) && cur().text == "isms") ismsPerl5_ = true;
             // `use dynamic-scope` / `use dynamic-scope <$a $b>`: `my` variables
             // declared after it in this block are dynamic (all, or those named)
+            if (isKind(Tok::Ident) && cur().text == "trace" && (peek().kind == Tok::Semicolon || peek().kind == Tok::End || peek().kind == Tok::RBrace))
+                trace_ = !u->isNo;   // `use trace` / `no trace`, for the rest of the block
             if (!u->isNo && isKind(Tok::Ident) && cur().text == "dynamic-scope") {
                 advance();
                 if (isOp("<")) {
@@ -16825,8 +16220,9 @@ StmtPtr Parser::parseStatementImpl() {
                 }
                 { std::string ver = advance().text; // VersionLit text is like "6.e" (no leading v)
                   // swallow any dotted tail the version lexer didn't take (.PREVIEW)
-                  while (!isKind(Tok::Semicolon) && !isKind(Tok::End)) ver += advance().text;
+                  while (!isKind(Tok::Semicolon) && !isKind(Tok::End) && cur().line == toks_[pos_ - 1].line) ver += advance().text;   // (not past the line: `use v6.c` with no `;`)
                   u->module = (ver.empty() || ver[0] != 'v') ? "v" + ver : ver; // exec() reads langRev from this
+                  checkLangVersion(u->module, toks_[pos_ - 1].line);   // (6.e needs PREVIEW: rakudo#2783)
                   // …and the parser reads it now, for syntax that is 6.e-only.
                   langRev_ = langRevOfPragma(u->module); }
                 matchKind(Tok::Semicolon);
@@ -17060,6 +16456,7 @@ StmtPtr Parser::parseStatementImpl() {
             if (u->module == "experimental" && !u->isNo)
                 for (auto& tag : u->importArgs)
                     if (tag == "rakuast") usesRakuAst_ = true;
+                    else if (tag == "cached") experimentalCached_ = true;
             // SLANG-PLAN §A: the module registers a slang. Run it now, and read the
             // rest of this unit through what it registered. (`need` and `require`
             // run no EXPORT, so they activate nothing — as in Rakudo.)
@@ -17089,6 +16486,22 @@ StmtPtr Parser::parseStatementImpl() {
                     if (ip.invocant)
                         throw ParseError("Cannot use an invocant in a sub", cur().line,
                                          "X::Syntax::Signature::InvocantNotAllowed", {});
+            // `sub foo { … }().say` — a declaration called at once, then a postfix chain: the
+            // call's value is the term (rakudo#2129's snippet; `.say` read as a topic call)
+            // The declaration stands (hoisted, as any), and the call with its chain is the
+            // statement after it.
+            if (d && d->kind == NK::SubDecl && static_cast<SubDecl*>(d.get())->immediateCall &&
+                !static_cast<SubDecl*>(d.get())->name.empty() && isOp(".") && !cur().spaceBefore) {
+                auto* sd = static_cast<SubDecl*>(d.get());
+                sd->immediateCall = false;
+                auto call = std::make_unique<Call>(); call->name = sd->name; call->parenned = true; call->line = cur().line;
+                call->args = std::move(sd->immediateArgs);
+                auto es = std::make_unique<ExprStmt>(); es->line = cur().line;
+                presetLhs_ = parsePostfix(std::move(call), true);
+                es->e = parseExpression();
+                pendingStmts_.push_back(applyModifiers(std::move(es)));
+                return d;
+            }
             // A routine declaration is a TERM in Raku, so a comma strings several
             // into one statement — PDF::Content::PageTree declares the FETCH and
             // STORE of a Proxy as `sub FETCH($) {…}, sub STORE($, $_) {…}`. The
@@ -17348,9 +16761,11 @@ StmtPtr Parser::parseStatementImpl() {
                 advance(); advance();
                 return applyModifiers(std::move(r));
             }
+            // (`return` is a LIST operator, below the loose `and`/`or`: `return 0 or 5` is
+            // `(return 0) or 5`, which answers 0 and never reaches the 5 — rakudo#2129)
             if (!isKind(Tok::Semicolon) && !isKind(Tok::End) && !isKind(Tok::RBrace) &&
                 cur().kind != Tok::Ident) {
-                r->value = parseExpression();
+                r->value = parseExpr(BP_AND + 1);
             // `return without $path;` — a bare return under a MODIFIER, not a
             // return whose value is a call to `without`. `with`/`without` start
             // a term elsewhere, so they are deliberately absent from
@@ -17361,11 +16776,14 @@ StmtPtr Parser::parseStatementImpl() {
                        // `return has("a")` where this unit declares `sub has`: the
                        // call, not a bare return followed by a `has` statement
                        kwCallHere(cur().text) ||
-                       isIdent("sub") || isIdent("method") || isIdent("do") || isIdent("start") ||
+                       isIdent("sub") || isIdent("method") || isIdent("do") || isIdent("start") || isIdent("not") ||   // (`return not $x`: it returned Nil)
                        ((isIdent("role") || isIdent("class") || isIdent("grammar")) &&
                         (peek().kind == Tok::LBrace || (peek().kind == Tok::Op && peek().text == "::")))) {
-                r->value = parseExpression();
+                r->value = parseExpr(BP_AND + 1);
             }
+            // …so a loose infix after it is dead code: read and dropped
+            while (isIdent("or") || isIdent("and") || isIdent("xor") || isIdent("andthen") ||
+                   isIdent("orelse") || isIdent("notandthen")) { advance(); (void)parseExpr(BP_AND + 1); }
             markLazyTail(r->value.get());   // `return @a.map(…)` is the routine's value too
             return applyModifiers(std::move(r));
         }
@@ -17458,6 +16876,7 @@ StmtPtr Parser::parseStatementImpl() {
             (peek().kind == Tok::Ident || peek().kind == Tok::LBrace ||
              (peek().kind == Tok::Op && peek().text == "::"))) {
             advance();
+            const bool termDecl = std::exchange(termDecl_, false);   // (a term-position `my class`: its caller reads on)
             StmtPtr decl = parseClass(kw == "role", kw == "grammar",
                                       kw == "module" || kw == "package",
                                       false, kw);
@@ -17474,14 +16893,22 @@ StmtPtr Parser::parseStatementImpl() {
             // …and so is it before an infix on its line (`class A {} === A`, Roast's
             // `class {} − class {}`): the operator's left operand
             const bool infix = cur().kind == Tok::Op && cur().line == toks_[pos_ - 1].line && !(isOp(".") && !cur().spaceBefore);
-            if ((isOp(".") && !cur().spaceBefore) || infix) {
+            // …and an ANONYMOUS one before a statement modifier on its line (`class { … } for ^5`,
+            // rakudo#1360): the type is the modifier's term. (A named one is declared once, at
+            // compile time, in Rakudo; wrapping it would run its declaration per iteration.)
+            const bool modAfter = !termDecl && decl && decl->kind == NK::ClassDecl && static_cast<ClassDecl*>(decl.get())->name.empty() &&
+                                  cur().line == toks_[pos_ - 1].line && atExprModifier();
+            if ((isOp(".") && !cur().spaceBefore) || infix || modAfter) {
                 auto be = std::make_unique<BlockExpr>();
                 be->body.push_back(std::move(decl));
                 auto u = std::make_unique<Unary>(); u->op = "do"; u->operand = std::move(be);
                 auto es = std::make_unique<ExprStmt>();
-                if (infix) { presetLhs_ = std::move(u); es->e = parseExpression(); return applyModifiers(std::move(es)); }
-                es->e = parsePostfix(std::move(u), true);
-                return es;
+                // a postfix chain goes on into an infix and the modifiers: `class {…}.new.z = 42` (rakudo#2078);
+                // in TERM position the chain is the term, and the caller reads what follows (`f my class C {}.Str, 1`)
+                if (termDecl && !infix) { es->e = parsePostfix(std::move(u), true); return es; }
+                presetLhs_ = isOp(".") && !cur().spaceBefore ? parsePostfix(std::move(u), true) : std::move(u);
+                es->e = parseExpression();
+                return applyModifiers(std::move(es));
             }
             // …and `class { } but role { … }`: the type is the left operand of
             // a mixin
@@ -17555,6 +16982,14 @@ StmtPtr Parser::parseStatementImpl() {
                 }
             }
             else { b->stmts.push_back(parseStatement()); b->stmtForm = true; } // PHASER statement; — declarations belong to the enclosing scope
+            // `LEAVE { … } if False;` — a modifier on the block's line (rakudo#2243). The phaser is
+            // a declaration, there whatever the condition says; the modifier governs the
+            // statement's VALUE, Nil, and runs as a statement of its own after it
+            if (!b->stmtForm && cur().line == toks_[pos_ - 1].line && atExprModifier()) {
+                auto es = std::make_unique<ExprStmt>(); es->line = cur().line;
+                es->e = std::make_unique<NameTerm>("Nil");
+                pendingStmts_.push_back(applyModifiers(std::move(es)));
+            }
             return b;
         }
     }
@@ -17898,7 +17333,10 @@ Program Parser::parseProgram() {
     try {
         while (!isKind(Tok::End)) {
             if (matchKind(Tok::Semicolon)) continue;
-            prog.stmts.push_back(parseStatement());
+            const int sid = ++stmtId_; const size_t sat = pos_; const bool tracing = trace_;
+            StmtPtr st = parseStatement();
+            if (tracing && trace_) prog.stmts.push_back(traceStmt(sid, sat, pos_));
+            prog.stmts.push_back(std::move(st));
             for (auto& ps : pendingStmts_) prog.stmts.push_back(std::move(ps)); // `will leave` desugars
             pendingStmts_.clear();
             // `multi MAIN(…) { … }, multi MAIN() { … }` — declarations are terms,
@@ -18286,7 +17724,7 @@ ExprPtr Parser::makeNqpOp(const std::string& op, std::vector<ExprPtr>& args) {
         {"isne_I", NqpOpc::IsneBigI}, {"isfalse", NqpOpc::IsFalse},
         {"pop", NqpOpc::Pop}, {"pop_i", NqpOpc::Pop}, {"pop_n", NqpOpc::Pop},
         {"print", NqpOpc::Print}, {"say", NqpOpc::SayOp},
-        {"time", NqpOpc::TimeOp},
+        {"time", NqpOpc::TimeOp}, {"time_n", NqpOpc::TimeN},
         {"readlink", NqpOpc::ReadLink},
         {"repeat_while", NqpOpc::RepeatWhile}, {"repeat_until", NqpOpc::RepeatUntil},
         // the rest of the bignum `_I` family, and the boxing leaves beside it

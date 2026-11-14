@@ -422,15 +422,21 @@ Value Interpreter::drainSupplyBlock(const Value& s) {
 }
 
 // An address for an async socket: IPv4 or IPv6 (`::1`), numeric or by name.
-// "0.0.0.0" / "" binds every IPv4 interface, as it always has.
-static bool asyncSockAddr(const std::string& hostIn, int port, sockaddr_storage& ss, socklen_t& len) {
+// "0.0.0.0" / "" binds every IPv4 interface, as it always has. `fam` asks for
+// one family (IO::Socket::INET's `:family`): then "localhost" is that one's
+// loopback and "" or "::" every IPv6 interface.
+static bool asyncSockAddr(const std::string& hostIn, int port, sockaddr_storage& ss, socklen_t& len, int fam = AF_UNSPEC) {
     std::memset(&ss, 0, sizeof(ss));
-    std::string host = hostIn == "localhost" ? "127.0.0.1" : hostIn;
+    std::string host = hostIn == "localhost" ? (fam == AF_INET6 ? "::1" : "127.0.0.1") : hostIn;
+    if (fam == AF_INET6 && (host.empty() || host == "::" || host == "0.0.0.0")) {
+        auto* a6 = (sockaddr_in6*)&ss; a6->sin6_family = AF_INET6; a6->sin6_port = htons((uint16_t)port);
+        a6->sin6_addr = in6addr_any; len = sizeof(sockaddr_in6); return true;
+    }
     if (host.empty() || host == "0.0.0.0") {
         auto* a4 = (sockaddr_in*)&ss; a4->sin_family = AF_INET; a4->sin_port = htons((uint16_t)port);
         a4->sin_addr.s_addr = INADDR_ANY; len = sizeof(sockaddr_in); return true;
     }
-    addrinfo hints{}; hints.ai_socktype = SOCK_STREAM; hints.ai_family = AF_UNSPEC;
+    addrinfo hints{}; hints.ai_socktype = SOCK_STREAM; hints.ai_family = fam;
     addrinfo* res = nullptr;
     if (getaddrinfo(host.c_str(), nullptr, &hints, &res) != 0 || !res) return false;
     std::memcpy(&ss, res->ai_addr, res->ai_addrlen); len = (socklen_t)res->ai_addrlen;
@@ -442,9 +448,31 @@ static bool asyncSockAddr(const std::string& hostIn, int port, sockaddr_storage&
 bool asyncSockAddrFwd(const std::string& h, int p, sockaddr_storage& ss, socklen_t& len) {
     return asyncSockAddr(h, p, ss, len);
 }
+bool sockAddrOfFamily(const std::string& h, int p, int fam, sockaddr_storage& ss, socklen_t& len) {
+    return asyncSockAddr(h, p, ss, len, fam);
+}
+// A UNIX-domain address: false for a path too long for one (or on Windows,
+// whose AF_UNIX is not wired up, as for IO::Socket::INET's PF_UNIX)
+bool unixSockAddr(const std::string& path, sockaddr_storage& ss, socklen_t& len) {
+    std::memset(&ss, 0, sizeof(ss));
+#ifdef _WIN32
+    (void)path; (void)len; return false;
+#else
+    auto* un = (sockaddr_un*)&ss;
+    if (path.size() >= sizeof(un->sun_path)) return false;
+    un->sun_family = AF_UNIX;
+    std::memcpy(un->sun_path, path.data(), path.size());
+    len = (socklen_t)sizeof(sockaddr_un);
+    return true;
+#endif
+}
 // The host and port of a socket address, IPv4 or IPv6.
 static void asyncSockName(const sockaddr_storage& ss, std::string& host, long long& port) {
     char buf[INET6_ADDRSTRLEN] = {0};
+#ifndef _WIN32
+    // a UNIX-domain socket's name is its path ("" when unnamed), and it has no port
+    if (ss.ss_family == AF_UNIX) { host = ((const sockaddr_un*)&ss)->sun_path; port = 0; return; }
+#endif
     if (ss.ss_family == AF_INET6) {
         auto* a6 = (const sockaddr_in6*)&ss;
         inet_ntop(AF_INET6, &a6->sin6_addr, buf, sizeof(buf)); port = ntohs(a6->sin6_port);
@@ -793,6 +821,29 @@ void Interpreter::runLastPhasers(const ValueList& lastP, std::shared_ptr<ReactCt
     if (pushed && !reactStack_.empty()) reactStack_.pop_back();
 }
 
+// A Channel found closed and empty keeps its `.closed` (breaks it, if the
+// channel failed), whoever finds it so. `.poll`, `.receive` and `.close` did;
+// the readers a `whenever $ch` runs took the last value and did not, so once
+// one had, `await $ch.closed` and `whenever $ch.closed` waited forever
+// (rakudo#4853). Called under the channel's stripe; the promise's
+// continuations go to `after`, to run once that is let go.
+static void keepDrainedChannelClosed(const Value& chan, ThensAfter& after) {
+    if (!chan.ext() || !chan.hash()) return;
+    auto ps = std::static_pointer_cast<PromiseState>(chan.ext());
+    auto fi = chan.hash()->find("failCause");
+    const bool failed = fi != chan.hash()->end();
+    std::lock_guard<std::mutex> lk(ps->m);
+    if (!ps->done.v) {
+        if (failed) { ps->broken = true; ps->cause = fi->second; ps->causeMsg = fi->second.toStr(); }
+        else ps->result = Value::boolean(true);
+        ps->done = true;
+    }
+    after.take(ps->thens);
+    ps->cv.notify_all();
+    auto ci = chan.hash()->find("closedPromise");
+    if (ci != chan.hash()->end() && ci->second.hash())
+        (*ci->second.hash())["status"] = Value::str(failed ? "Broken" : "Kept");
+}
 Value Interpreter::spawnSupplyChannel(Value chan, Value blk, std::shared_ptr<SupplyTapCtx> ctx) {
     engageGil();
     // counted on the channel, so `.close` can let this reader drain first
@@ -849,6 +900,7 @@ Value Interpreter::spawnSupplyChannel(Value chan, Value blk, std::shared_ptr<Sup
             if (stop()) break;
             const uint64_t wakeSeen = chanWakeGen();   // (before the look: see chanWake)
             Value v; bool got = false, drained = false;
+            ThensAfter closedThens;   // (declared before the stripe: they run once it is let go)
             {   std::lock_guard<std::recursive_mutex> lk(Interpreter::atomicStripe(chan.hash()));
                 auto qi = chan.hash() ? chan.hash()->find("queue") : ValueMap::iterator{};
                 ValueList* q = chan.hash() && qi != chan.hash()->end() && qi->second.arr()
@@ -858,7 +910,7 @@ Value Interpreter::spawnSupplyChannel(Value chan, Value blk, std::shared_ptr<Sup
                 else {
                     auto ci = chan.hash()->find("closed");
                     drained = ci != chan.hash()->end() && ci->second.truthy();
-                    if (drained) raceChanSawClose(chan.hash());
+                    if (drained) { raceChanSawClose(chan.hash()); keepDrainedChannelClosed(chan, closedThens); }
                 }
             }
             if (drained) break;
@@ -1257,7 +1309,13 @@ Value Interpreter::spawnChannelWhenever(Value chan, Value blk, std::shared_ptr<R
         ExecContext wctx; self->loadCtx(wctx);
         tctx().cur = spawnScope;
         tctx().dynStack.push_back(spawnScope.get());
-        if (ctx) self->reactStack_.push_back(ctx);
+        // The react is held only while a body of this whenever runs, and taken
+        // in turn with its other bodies. Held for the whole loop, an empty
+        // channel kept the react busy forever, and a `whenever $promise` body
+        // waiting its turn never ran (rakudo#3686).
+        struct Held { Interpreter* s; bool on = false;
+            void take(const std::shared_ptr<ReactCtx>& c) { if (c) { s->reactPushInTurn(c); on = true; } }
+            ~Held() { if (on) s->reactStack_.pop_back(); } };
         for (;;) {
             if (ctx && ctx->closed) break;
             const uint64_t wakeSeen = chanWakeGen();   // (before the look: see chanWake)
@@ -1269,6 +1327,7 @@ Value Interpreter::spawnChannelWhenever(Value chan, Value blk, std::shared_ptr<R
             // downstream of the whenever (S17-supply/syntax.t's two-channel
             // react — the last isolation livelock of the P5 wall).
             Value v, failCause; bool got = false, fin = false, failed = false;
+            ThensAfter closedThens;   // (declared before the stripe: they run once it is let go)
             {   std::lock_guard<std::recursive_mutex> lk(Interpreter::atomicStripe(chan.hash()));
                 auto qi = chan.hash() ? chan.hash()->find("queue") : ValueMap::iterator{};
                 ValueList* q = chan.hash() && qi != chan.hash()->end() && qi->second.arr() ? qi->second.arr() : nullptr;
@@ -1281,6 +1340,7 @@ Value Interpreter::spawnChannelWhenever(Value chan, Value blk, std::shared_ptr<R
                     // cause reaches the whenever's QUIT phasers, or the react.
                     if (fin) {
                         raceChanSawClose(chan.hash());
+                        keepDrainedChannelClosed(chan, closedThens);
                         auto fi = chan.hash()->find("failCause");
                         if (fi != chan.hash()->end()) { failCause = fi->second; failed = true; }
                     }
@@ -1290,8 +1350,10 @@ Value Interpreter::spawnChannelWhenever(Value chan, Value blk, std::shared_ptr<R
                 Value ex = causeException(*self, failCause, failCause.toStr());
                 ValueList quitP;
                 scanSupplyPhasers(blk, nullptr, &quitP, nullptr);
-                if (!quitP.empty())
+                if (!quitP.empty()) {
+                    Held held{self}; held.take(ctx);
                     for (auto& q : quitP) { ValueList one{ex}; try { self->callCallable(q, one); } catch (...) {} }
+                }
                 else if (ctx) {
                     std::lock_guard<std::mutex> lk(ctx->m);
                     if (!ctx->quitFlag) { ctx->quitFlag = true; ctx->quitErr = ex; }
@@ -1308,6 +1370,7 @@ Value Interpreter::spawnChannelWhenever(Value chan, Value blk, std::shared_ptr<R
                 continue;
             }
             ValueList one{v};
+            Held held{self}; held.take(ctx);
             try { self->sinkDiscarded(self->callCallable(blk, one)); }
             catch (NextEx&) {} catch (LastEx&) { break; } catch (DoneEx&) { break; }
             catch (RakuError& e) {
@@ -1325,7 +1388,6 @@ Value Interpreter::spawnChannelWhenever(Value chan, Value blk, std::shared_ptr<R
             catch (...) {}
             if (ctx) { std::lock_guard<std::mutex> lk(ctx->m); if (ctx->closed) break; }
         }
-        if (ctx) self->reactStack_.pop_back();
         if (ctx) { std::lock_guard<std::mutex> lk(ctx->m); if (ctx->liveSources > 0) ctx->liveSources--; ctx->cv.notify_all(); }
         if (!self->parallelMode_) self->gilYieldNotify(); // unlocks the GIL — parallel never took it
         self->workerFinished();
@@ -2616,19 +2678,31 @@ Value Interpreter::tapSupply(const Value& s, Value emitCb, Value doneCb, Value q
         std::string host = h.count("host") ? h.at("host").toStr() : "localhost";
         int port = h.count("port") ? (int)h.at("port").toInt() : 0;
         sockaddr_storage addr{}; socklen_t addrLen = 0;
-        bool badHost = !asyncSockAddr(host, port, addr, addrLen);
+        // `listen-path`: a UNIX-domain socket at that path (rakudo#5358, #5359),
+        // whose failure says why, as libuv's lower-case words say it
+        const bool unixPath = h.count("path") > 0;
+        std::string why;
+        bool badHost = unixPath ? !unixSockAddr(host = h.at("path").toStr(), addr, addrLen) : !asyncSockAddr(host, port, addr, addrLen);
         int lfd = badHost ? -1 : ::socket(addr.ss_family, SOCK_STREAM, 0);
         if (!badHost && lfd < 0) throw RakuError{Value::typeObj("X::IO"), "Cannot create socket"};
-        if (lfd >= 0) { int yes = 1; setsockopt(lfd, SOL_SOCKET, SO_REUSEADDR, (const char*)&yes, sizeof(yes)); }
+        if (lfd >= 0 && !unixPath) { int yes = 1; setsockopt(lfd, SOL_SOCKET, SO_REUSEADDR, (const char*)&yes, sizeof(yes)); }
         if (badHost || ::bind(lfd, (sockaddr*)&addr, addrLen) < 0 || ::listen(lfd, 128) < 0) {
+            // …and a TCP one too, with the address, as Rakudo's libuv says it:
+            // "address already in use (address: localhost:11111)" (rakudo#1266)
+            if (unixPath || !badHost) {
+                why = unixPath && badHost ? "path too long" : std::strerror(errno);
+                if (!why.empty()) why[0] = (char)std::tolower((unsigned char)why[0]);
+                if (!unixPath) why += " (address: " + host + ":" + std::to_string(port) + ")";
+            }
             if (lfd >= 0) ::close(lfd);
             // a tap with a :quit hears the failure as the supply's quit
             if (quitCb.t == VT::Code) {
-                Value ex = makeTypedEx("X::AdHoc", {}, "Cannot listen on " + host + ":" + std::to_string(port));
+                Value ex = makeTypedEx("X::AdHoc", {}, !why.empty() ? why : "Cannot listen on " + host + ":" + std::to_string(port));
                 ValueList one{ex};
                 callCallable(quitCb, one);
                 Value t = Value::makeHash(); t.hashKind = "Tap"; return t;
             }
+            if (!why.empty()) throw RakuError{Value::typeObj("X::AdHoc"), why};
             throw RakuError{Value::typeObj("X::IO"), "Cannot listen on " + host + ":" + std::to_string(port)};
         }
         // the address actually bound — `.socket-port` answers the port a `0` asked the OS for
@@ -2669,7 +2743,7 @@ Value Interpreter::tapSupply(const Value& s, Value emitCb, Value doneCb, Value q
         Interpreter* self = this;
         const std::string listenEnc = h.count("enc") ? h.at("enc").toStr() : std::string();
         throttleSpawn();
-        addWorker(BigStackThread([self, lfd, emitCb, handle, fin, spawnScope, listenEnc, pending]() mutable {
+        addWorker(BigStackThread([self, lfd, emitCb, handle, fin, spawnScope, listenEnc, pending, unixPath]() mutable {
             t_hot.poll.isWorker = true;
             auto deliver = [&](int cfd) {
                 self->gilLock();
@@ -2678,6 +2752,7 @@ Value Interpreter::tapSupply(const Value& s, Value emitCb, Value doneCb, Value q
                 tctx().dynStack.push_back(spawnScope.get());
                 Value sock = makeAsyncSocket(cfd);
                 if (!listenEnc.empty()) (*sock.hash())["enc"] = Value::str(listenEnc);   // `listen(…, :enc)`
+                if (unixPath) (*sock.hash())["socket-host"] = Value::str("");   // (Rakudo's names the server end no more than the client's)
                 if (emitCb.t == VT::Code) {
                     ValueList one{sock};
                     try { self->callCallable(emitCb, one); }

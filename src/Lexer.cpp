@@ -854,6 +854,39 @@ std::vector<std::pair<std::string, std::string>> infixTraitsIn(const std::string
     return out;
 }
 
+// The same traits read off a routine declaration's own TOKENS, `from` up to
+// its body (Parser::parseSub), for `.prec` at run time: flat (trait, argument)
+// pairs, the argument the operator as written (`&infix:<+>`, `&[*]`, `*` from
+// `is tighter<*>`) or the associativity's word (`left`, from `is assoc<left>`
+// or `is assoc('left')`).
+std::vector<std::string> precTraitsOfTokens(const std::vector<Token>& t, size_t from, size_t to) {
+    std::vector<std::string> out;
+    for (size_t i = from; i + 2 < to && i + 2 < t.size(); i++) {
+        if (!(t[i].kind == Tok::Ident && t[i].text == "is" && t[i + 1].kind == Tok::Ident)) continue;
+        const std::string& tr = t[i + 1].text;
+        if (tr != "tighter" && tr != "looser" && tr != "equiv" && tr != "assoc") continue;
+        const Token& a = t[i + 2];
+        std::string arg;
+        if (a.kind == Tok::QwList) arg = a.text;
+        else if (a.kind == Tok::LParen || (a.kind == Tok::Op && a.text == "<")) {
+            const bool paren = a.kind == Tok::LParen;
+            int depth = 1;
+            for (size_t k = i + 3; k < to && k < t.size(); k++) {
+                if (paren && t[k].kind == Tok::LParen) depth++;
+                if ((paren && t[k].kind == Tok::RParen && --depth == 0) || (!paren && t[k].kind == Tok::Op && t[k].text == ">")) break;
+                // (`is equiv<+>` lexes its `+>` whole: the `>` closes it)
+                if (!paren && t[k].kind == Tok::Op && t[k].text.size() > 1 && t[k].text.back() == '>') { arg += t[k].text.substr(0, t[k].text.size() - 1); break; }
+                arg += t[k].text;
+            }
+        }
+        else continue;
+        size_t b = arg.find_first_not_of(" \t'\""), e = arg.find_last_not_of(" \t'\"");
+        out.push_back(tr);
+        out.push_back(b == std::string::npos ? std::string() : arg.substr(b, e - b + 1));
+    }
+    return out;
+}
+
 void Lexer::scanUserOps() {
     for (size_t p = src_.find("infix:<"); p != std::string::npos; p = src_.find("infix:<", p + 1)) {
         size_t b = p + 7, e = b;
@@ -3753,10 +3786,13 @@ bool Lexer::tryRuleDecl(std::vector<Token>& out, bool spaced) {
     if (!out.empty() && out.back().kind == Tok::Ident &&
         (out.back().text == "sub" || out.back().text == "method" ||
          out.back().text == "submethod")) return false;
+    // …nor a sigilless parameter's: `-> \labels, \token { … }` (rakudo#5027)
+    if (!out.empty() && out.back().kind == Tok::Op && out.back().text == "\\") return false;
     const Mark save = mark();
     std::string kw;
     while (!eof() && ascii::isalpha((unsigned char)peek())) kw += advance();
-    if (kw != "token" && kw != "rule" && kw != "regex") { rewind(save); return false; }
+    // (the keyword is a WHOLE word: `token_ {`, `rules {` and `regex-x {` name something else)
+    if ((kw != "token" && kw != "rule" && kw != "regex") || isIdentCont(peek()) || rakuIdentJoins(peek(), peek(1))) { rewind(save); return false; }
     while (!eof() && (peek() == ' ' || peek() == '\t')) advance();
     // optional rule name (ident, may include - ' :sym<...>)
     std::string name;
@@ -3958,6 +3994,9 @@ static bool quoteBlockedHere(const std::vector<Token>& out, bool spaced) {
     if (out.empty()) return false;
     const Token& pv = out.back();
     if (pv.kind == Tok::Op && (pv.text == "." || pv.text == ".&" || pv.text == "->")) return true;
+    // …and a PRIVATE method's name: `method !q { … }` declares `!q`, no `q{…}` quote
+    if (pv.kind == Tok::Op && pv.text == "!" && !spaced && out.size() >= 2 && out[out.size() - 2].kind == Tok::Ident &&
+        (out[out.size() - 2].text == "method" || out[out.size() - 2].text == "submethod")) return true;
     // …and after the dispatch-modifier forms `.*` `.+` `.?` `.^` `.=`, whose
     // name is a METHOD too: `$obj.*m;` must not open an `m;…;` match
     if (pv.kind == Tok::Op && !spaced && out.size() >= 2 &&
@@ -4595,6 +4634,12 @@ void Lexer::tokenizeImpl(std::vector<Token>& out) {
             else if (peek() == '=' && peek(1) != '=') { advance(); op += "="; }
             else if (peek() == '+' && peek(1) == '=') { advance(); advance(); op += "+="; }
             else if (peek() == '-' && peek(1) == '=') { advance(); advance(); op += "-="; }
+            // `⚛−=`, with U+2212 MINUS SIGN, is the same operator as `⚛-=`
+            else if ((unsigned char)peek() == 0xE2 && (unsigned char)peek(1) == 0x88 && (unsigned char)peek(2) == 0x92 &&
+                     peek(3) == '=') { for (int k = 0; k < 4; k++) advance(); op += "-="; }
+            // `$x ⚛== 1` is no comparison and no write (rakudo#6873, where it writes 1)
+            else if (peek() == '=' && peek(1) == '=')
+                throw ParseError("There is no ⚛== operator; to compare an atomic read, write ⚛$x == 1", ln);
             t.kind = Tok::Op; t.text = op; t.line = ln; t.spaceBefore = spaced;
             out.push_back(t);
             continue;

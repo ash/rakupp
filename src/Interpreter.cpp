@@ -109,7 +109,16 @@ static Value divByZeroEx(const Value& lhs, const char* opName, const std::string
              {"numerator", lhs}}, msg);
     return Value::typeObj("X::Numeric::DivideByZero");
 }
-Value divideByZero(const Value& lhs, const char* opName) {
+// The numerator a refusal names. A Range divides its endpoints, so its first
+// one is what met the zero: `(Inf .. 5) / 0` is "divide Inf by zero", where
+// the Range's own Str is the empty list it holds (rakudo#3598).
+static Value divNumerator(const Value& lhs) {
+    if (lhs.t != VT::Range) return lhs;
+    if (const RangeEnds* re = rangeEnds(lhs)) return re->from;
+    return lhs.rNum() ? Value::number(lhs.n) : Value::integer(lhs.rFrom());
+}
+Value divideByZero(const Value& lhs0, const char* opName) {
+    const Value lhs = divNumerator(lhs0);
     std::string msg = "Attempt to divide " + lhs.toStr() +
                       " by zero using " + divByZeroUsing(opName);
     Value f = rakuppNewFailure();
@@ -117,7 +126,8 @@ Value divideByZero(const Value& lhs, const char* opName) {
     (*f.hash())["message"] = Value::str(msg);
     return f;
 }
-[[noreturn]] void throwDivideByZero(const Value& lhs, const char* opName) {
+[[noreturn]] void throwDivideByZero(const Value& lhs0, const char* opName) {
+    const Value lhs = divNumerator(lhs0);
     std::string msg = "Attempt to divide " + lhs.toStr() +
                       " by zero using " + divByZeroUsing(opName);
     throw RakuError{divByZeroEx(lhs, opName, msg), msg};
@@ -2396,6 +2406,11 @@ Value Interpreter::seqOp(Value l, Value r, bool exclusive) {
         ValueList rl = r.flatten();
         if (rl.size() >= 2 && rl.size() < 1000000) {
             Value res = seqOp(l, rl[0], exclusive);
+            // (a generator walking to that endpoint is finite: realise it, so `{ … } ... ^21` appends 1..20 too — rakudo#3881)
+            if (res.t == VT::Array && res.arr() && res.ext() && !std::static_pointer_cast<LazySeqState>(res.ext())->infinite) {
+                materializeLazy(res, 1000000);
+                if (res.arr()->size() < 1000000) res.extM().reset();
+            }
             if (res.t == VT::Array && res.arr() && !res.ext()) {
                 for (size_t i = 1; i < rl.size(); i++) res.arr()->push_back(rl[i]);
                 return res;
@@ -2765,15 +2780,16 @@ Value Interpreter::seqOp(Value l, Value r, bool exclusive) {
             bool boundedGen = !infinite;
             st->infinite = !boundedGen; // a literal-endpoint gen seq CAN drain (stops on match)
             st->seqUserGen = infinite && hasGen;
+            auto exclHit = std::make_shared<bool>(false);   // `...^` met its endpoint: the end, however often a reader asks again (rakudo#3881)
             st->appendNext = [self, gen, hasGen, geometric, ratio, step, allInt, arity, tooFew,
                               deduceFailed, dedFrom, seqDeduceThrow,
                               succSeed, succDesc, succConst, ratioV, exactRatio, stepV, exactStep,
-                              boundedGen, endVal, endValue, atEnd, exclusive](ValueList& cache) -> bool {
-                if (cache.empty() && !hasGen) return false;
+                              boundedGen, endVal, endValue, atEnd, exclusive, exclHit](ValueList& cache) -> bool {
+                if (*exclHit || (cache.empty() && !hasGen)) return false;
                 if (boundedGen && !cache.empty() && atEnd(cache.back(), endValue))
                     return false; // endpoint reached
                 if (boundedGen && cache.size() >= 1000000) return false; // runaway cap (endpoint never matched)
-                double lastV = cache.empty() ? 0 : cache.back().toNum();
+                double lastV = cache.empty() || hasGen || succSeed ? 0 : cache.back().toNum();
                 Value next;
                 if (hasGen) {
                     ValueList args; size_t n = cache.size();
@@ -2785,7 +2801,7 @@ Value Interpreter::seqOp(Value l, Value r, bool exclusive) {
                     try { next = self->callCallable(gen, args); }
                     catch (const LastEx&) { return false; }
                     if (boundedGen && exclusive && atEnd(next, endValue))
-                        return false; // ...^ drops the endpoint element
+                        return !(*exclHit = true); // ...^ drops the endpoint element
                 } else if (succSeed) { // 'a' ... * : step by succ/pred
                     const Value& lastE = cache.back();
                     if (succConst) next = lastE;
@@ -6544,7 +6560,7 @@ bool Interpreter::routineTraitKnown(const std::string& n) {
         "readonly", "dynamic", "required", "built", "DEPRECATED", "test-assertion",
         "hidden-from-backtrace", "implementation-detail", "specialized", "context", "parsed",
         "reparsed", "controlled", "cloned", "item", "revision-gated", "tighter", "looser", "equiv",
-        "assoc", "native", "symbol", "nativeconv", "encoded", "rakudo", "repr", "box_target",
+        "assoc", "prec", "native", "symbol", "nativeconv", "encoded", "rakudo", "repr", "box_target",
         "leading_docs", "trailing_docs"};
     return kBuiltin.count(n) || classes_.count(n) || isKnownTypeName(n);
 }
@@ -6564,6 +6580,8 @@ void Interpreter::applySubTraits(SubDecl* sd) {
         fn->code()->ciM().protoDeclared = true;
     applyParamTraits(sd->params, *fn);
     if (sd->traits.empty()) return;
+    for (auto& st : sd->traits)   // `is cached`: a call seen before answers its value
+        if (st.name == "cached" && !st.arg && !sd->isMethod) markCached(*fn, sd);
     Value* tm = tctx().cur->find("&trait_mod:<is>");
     if (!tm || tm->t != VT::Code) {
         // no `trait_mod:<is>` at all: a trait that names no type is unknown
@@ -6988,8 +7006,11 @@ Value Interpreter::spawnPromise(Value code, Value threadVal) {
         workerStarting();
         auto fin = std::make_shared<std::atomic<bool>>(false);
         auto spawnScope = tctx().cur ? tctx().cur : global_;
+        // made outside every routine, its `return` has nothing to leave (as in Rakudo)
+        const Value* lexRoutine = lexicalRoutineVal();
+        const bool noRoutine = !lexRoutine || lexRoutine->t != VT::Code;
         throttleSpawn();
-        addWorker(BigStackThread([self, code, ps, fin, spawnScope, threadVal]() mutable {
+        addWorker(BigStackThread([self, code, ps, fin, spawnScope, threadVal, noRoutine]() mutable {
             t_hot.poll.isWorker = true;
             if (threadVal.t == VT::Hash) t_threadSelf = threadVal;
             tctx().cur = workerOwnScope(spawnScope);   // anchor: dynamics visible at the spawn point
@@ -7012,7 +7033,7 @@ Value Interpreter::spawnPromise(Value code, Value threadVal) {
                 // It is also what the semantics want: a thread's match is its
                 // own. Sharing one `$/` would let one worker read another's
                 // match, which no program could rely on — and Rakudo does not.
-                tctx().forceRoutineFrame = true;
+                tctx().forceRoutineFrame = noRoutine ? 2 : 1;
                 r = code.t == VT::Code ? self->callCallable(code, noargs) : code;
             }
             catch (const RakuError& e) {

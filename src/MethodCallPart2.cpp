@@ -67,6 +67,7 @@ static long long supplyByArity(const rakupp::Value& c) {
 }
 
 namespace rakupp {
+const std::vector<std::string>* builtinExAttrOrder(const std::string& t);   // a built-in exception's attribute order (InterpreterOperators.cpp)
 const std::map<std::string, int>& signalNameMapFwd();
 Value makeSignalEnumValueFwd(int sig);
 Value arrayMissingDefaultPublic(const Value& base);   // InterpreterBinding.cpp
@@ -2092,7 +2093,7 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
                 (*c.hash())["closedPromise"] = cp;
                 auto ch = c.hashS();
                 auto settle = [ch, ps](bool failed, Value cause) {
-                    std::lock_guard<std::recursive_mutex> lk(Interpreter::atomicStripe(ch.get()));
+                    ThensAfter after; std::lock_guard<std::recursive_mutex> lk(Interpreter::atomicStripe(ch.get()));   // (.closed's continuations run once this is let go)
                     raceChanClose(ch.get());
                     (*ch)["closed"] = Value::boolean(true);
                     chanWake();
@@ -2104,7 +2105,7 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
                             else ps->result = Value::boolean(true);
                             ps->done = true;
                         }
-                        ps->cv.notify_all();
+                        after.take(ps->thens); ps->cv.notify_all();
                         (*(*ch)["closedPromise"].hash())["status"] = Value::str(failed ? "Broken" : "Kept");
                     }
                 };
@@ -2539,7 +2540,7 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
             (*c.hash())["closedPromise"] = cp;
             auto ch = c.hashS();
             auto settle = [ch, ps](bool failed, Value cause) {
-                std::lock_guard<std::recursive_mutex> lk(Interpreter::atomicStripe(ch.get()));
+                ThensAfter after; std::lock_guard<std::recursive_mutex> lk(Interpreter::atomicStripe(ch.get()));   // (.closed's continuations run once this is let go)
                 raceChanClose(ch.get());
                 (*ch)["closed"] = Value::boolean(true);
                 chanWake();
@@ -2551,7 +2552,7 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
                         else ps->result = Value::boolean(true);
                         ps->done = true;
                     }
-                    ps->cv.notify_all();
+                    after.take(ps->thens); ps->cv.notify_all();
                     (*(*ch)["closedPromise"].hash())["status"] = Value::str(failed ? "Broken" : "Kept");
                 }
             };
@@ -3522,7 +3523,8 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
             std::string an = h.count("name") ? h["name"].toStr() : "";
             char sigil = an.empty() ? '$' : an[0];
             while (!an.empty() && (an[0]=='$'||an[0]=='@'||an[0]=='%'||an[0]=='&'||an[0]=='!'||an[0]=='.')) an = an.substr(1);
-            Value obj = args[0];
+            Value obj = args[0];   // (an Attribute a role was mixed into keeps that role's attributes in its own map)
+            if (Value* ms = mixinAttrSlot(inv, obj)) return m == "set_value" && args.size() > 1 ? (*ms = args[1]) : *ms;   // (a mixed-in role's)
             if (obj.t == VT::Object && obj.obj()) {
                 // (a subclass declaring the name again keeps it apart)
                 std::string slotBuf;
@@ -4682,7 +4684,8 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
         auto st = inv.ext() ? std::static_pointer_cast<LockState>(inv.ext()) : nullptr;
         const void* raceKey = st ? (const void*)st.get() : (const void*)inv.hash();   // (no mutex under the GIL: the edges all the same)
         if (m == "protect" || m == "protect-or-queue-on-recursion") {
-            if (args.empty() || args[0].t != VT::Code) return args.empty() ? Value::any() : args[0];
+            if (args.empty() || args[0].t != VT::Code)   // a Hash (`{}`) or any other non-Callable: no candidate takes it (rakudo#1644)
+                throwTypedV("X::Multi::NoMatch", {}, "Cannot resolve caller " + std::string(m) + "(Lock:D: " + (args.empty() ? std::string() : args[0].typeName() + (rtIsDefined(args[0]) ? ":D" : ":U")) + "); none of these signatures matches:\n    (Lock:D $:: &code, *%_)");
             if (st) { // real mutual exclusion, released even if the block throws
                 // Acquire with the GIL RELEASED when contended: a worker that holds
                 // the GIL and blocks here would otherwise deadlock the lock's holder
@@ -5163,7 +5166,7 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
             long long days = lt >= 0 ? lt / 86400 : -((-lt + 86399) / 86400);
             long long rem = lt - days * 86400;
             long long y, mo, d; daysToCivil(days, y, mo, d);
-            long long outSec = rem % 60 + leap;
+            long long outSec = leap ? sInt : rem % 60;   // a leap second stays one: the shift moves its minute (rakudo#2097)
             Value v = Value::makeHash(); v.hashKind = "DateTime";
             // a conversion keeps the formatter: `$dt.utc`, `.local`, `.clone`,
             // `.in-timezone`, `.later`, `.earlier` all stay formatted, as in Rakudo
@@ -5940,6 +5943,12 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
             }
             else if (t == "X::NYI" && at.count("feature"))
                 syn = at["feature"] + " not yet implemented. Sorry.";
+            else if (t == "X::Method::NotFound" && at.count("method") && at.count("typename"))
+                syn = std::string(at.count("private") && at["private"] == "True" ? "No such private method '!" : "No such method '") +
+                      at["method"] + "' for invocant of type '" + at["typename"] + "'";
+            else if (t == "X::Numeric::DivideByZero")   // (rakudo#2434's leftover: its `.message` was Any)
+                syn = "Attempt to divide" + (at.count("numerator") && at["numerator"] != "0" ? " " + at["numerator"] : "") + " by zero" +
+                      (at.count("using") ? " using " + at["using"] : "") + (at.count("details") ? " " + at["details"] : "");
             else syn = typeCheckMessageFor(std::string(t), args);   // X::TypeCheck and its family
             // The rendered message WINS over an explicit `message` argument, as
             // Rakudo's `method message` does — it is a method there, so an
@@ -5948,14 +5957,16 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
                 for (size_t i = 0; i < args.size(); )
                     if (args[i].t == VT::Pair && args[i].s == "message") args.erase(args.begin() + i);
                     else ++i;
-                args.push_back(Value::pair("message", Value::str(syn)));
+                Value mp = Value::pair("message", Value::str(syn)); mp.namedArg = true; args.push_back(mp);
             }
         }
         if ((t.rfind("X::", 0) == 0 || t.rfind("CX::", 0) == 0) && !classes_.count(t)) {
             auto ci = std::make_shared<ClassInfo>();
-            ci->name = t;
+            ci->name = t; ci->synthEx = true;
             ci->nativeParent = "Exception";
             std::set<std::string> seen;
+            if (auto* o = builtinExAttrOrder(std::string(t)))   // (Rakudo's order: builtinExAttrOrder)
+                for (auto& n : *o) { seen.insert(n); ClassAttr ca; ca.name = n; ca.sigil = '$'; ca.pub = true; ci->attrs.push_back(ca); }
             for (auto& a : args)
                 if (a.t == VT::Pair && seen.emplace(a.s).second) {
                     ClassAttr ca; ca.name = a.s; ca.sigil = '$'; ca.pub = true;
@@ -6018,13 +6029,12 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
             throw RakuError{Value::typeObj("X::Multi::NoMatch"),
                             "Cannot resolve caller from-loop(Seq: " + std::to_string(pos.size()) +
                             " positionals); none of these signatures matches"};
-        Value body = pos[0];
-        Value cond = pos.size() > 1 ? pos[1] : Value();
+        Value body = pos[0], cond = pos.size() > 1 ? pos[1] : Value();
         Value after = pos.size() > 2 ? pos[2] : Value();
         bool hasCond = pos.size() > 1, hasAfter = pos.size() > 2;
         Value a = Value::seq();
         auto st = std::make_shared<LazySeqState>();
-        st->infinite = !hasCond;
+        st->infinite = !hasCond; st->mayEnd = !hasCond;   // (rakudo#1692)
         // with a condition its end is unknown until it comes: walked live, like
         // a stream — a `for` pulls one per iteration, nothing reads ahead
         st->streaming = hasCond;
@@ -6036,7 +6046,8 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
             bool wasFirst = *first;
             *first = false;
             if (hasCond && !(repeat && wasFirst) && !callCallable(cond, {}).truthy()) { *done = true; return false; }
-            try { cache.push_back(callCallable(body, {})); }
+            try { Value r = callCallable(body, {});   // (an EMPTY Slip, a false `last if …`, adds nothing: rakudo#1692)
+                  if (!(r.t == VT::Array && r.s == "Slip" && r.arr() && r.arr()->empty())) cache.push_back(std::move(r)); }
             catch (LastEx& e) {
                 if (!e.label.empty() && e.label != label) throw;
                 *done = true; return false;
@@ -6591,11 +6602,12 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
                 bool sub = (m == "subparse");
                 // the built-in parse behavior (also the `next` candidate for a user override)
                 auto builtinParse = [this, ci, sub](ValueList a) -> Value {
-                    std::string startRule = "TOP"; Value actions;
+                    std::string startRule = "TOP"; Value actions; long startPos = 0;   // :pos, in characters
                     ValueList ruleArgs; // `args => (…)` — the start rule's parameters
                     for (auto& arg : a) {
                         if (arg.t == VT::Pair && arg.s == "rule") startRule = arg.pairVal() ? arg.pairVal()->toStr() : "TOP";
                         if (arg.t == VT::Pair && arg.s == "actions" && arg.pairVal()) actions = *arg.pairVal();
+                        if (arg.t == VT::Pair && arg.s == "pos" && arg.pairVal()) startPos = arg.pairVal()->toInt();
                         if (arg.t == VT::Pair && arg.s == "args" && arg.pairVal()) {
                             const Value& av = *arg.pairVal();
                             if (av.typeName() == "Capture") {
@@ -6615,10 +6627,13 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
                     // an undefined parse target dies (Rakudo: warns on Any-to-Str
                     // coercion, then dies calling .chars on it) instead of
                     // silently parsing "" and returning Nil
-                    if (!a.empty() && (a[0].t == VT::Any || a[0].t == VT::Nil))
+                    // (the target is the first POSITIONAL, wherever the nameds stand:
+                    // `C.subparse(:rule<k>, "C#")` parsed the Pair — rakudo#2791)
+                    const Value* tgt = nullptr; for (auto& x : a) if (!(x.t == VT::Pair && x.namedArg)) { tgt = &x; break; }
+                    if (tgt && (tgt->t == VT::Any || tgt->t == VT::Nil || (tgt->t == VT::Type && tgt->typeName() == "Any")))
                         throw RakuError{Value::typeObj("X::Method::NotFound"),
                             "No such method 'chars' for invocant of type '" +
-                            a[0].typeName() + "'"};
+                            tgt->typeName() + "'"};
                     // no start rule at all: Rakudo calls it as a method and dies
                     if (!ci->findRule(startRule) && !ci->findMethod(startRule) &&
                         startRule != "ws" && startRule != "ident" && startRule != "alpha" &&
@@ -6626,51 +6641,23 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
                         throwTyped("X::Method::NotFound",
                                    {{"method", startRule}, {"typename", ci->name}},
                                    "No such method '" + startRule + "' for invocant of type '" + ci->name + "'");
-                    std::string input = a.empty() ? "" : a[0].toStr();
-                    Value r = grammarParse(ci.get(), input, sub, startRule, actions,
-                                           ruleArgs.empty() ? nullptr : &ruleArgs);
+                    std::string input = tgt ? tgt->toStr() : "";
+                    const long posB = (long)graphemeToByte(input, startPos);   // (past the end: no match at all)
+                    const bool past = startPos > 0 && posB == (long)input.size() && graphemeToByte(input, startPos - 1) == input.size();
+                    Value r = past ? Value::nil() : grammarParse(ci.get(), input, sub, startRule, actions, ruleArgs.empty() ? nullptr : &ruleArgs, posB);
                     if (r.t == VT::Match && r.md() && actions.t != VT::Any && actions.t != VT::Nil)
                         r.mdW().actions = std::make_shared<Value>(actions);   // `$match.actions`
                     if (r.t == VT::Match) stampMatchGrammar(r, ci->name);
-                    // From 6.e a FAILED .parse is a Failure carrying
-                    // X::Syntax::Confused, not a bare Nil — 6.e gives grammars a
-                    // base class whose parse reports where it stopped. .subparse
-                    // keeps answering with what it managed to match.
-                    if (sixE() && !sub && (r.t == VT::Nil || r.t == VT::Any || r.t == VT::Type)) {
-                        Value f = rakuppNewFailure();
-                        // where it stopped: the parse's high-water mark, as a
-                        // line, a position, and the text either side of it
-                        auto& d = grammarParseDiag();
-                        std::vector<std::string> cps;
-                        for (size_t i = 0; i < input.size();) {
-                            unsigned char c0 = (unsigned char)input[i];
-                            size_t l = c0 < 0x80 ? 1 : (c0 >> 5) == 6 ? 2 : (c0 >> 4) == 14 ? 3 : 4;
-                            cps.push_back(input.substr(i, l)); i += l;
-                        }
-                        long pos = d.valid ? d.pos : 0;
-                        if (pos > (long)cps.size()) pos = (long)cps.size();
-                        // a failure at the START of a line is reported at the end of the
-                        // line before it (the newline was what the grammar could not use)
-                        if (pos > 0 && pos <= (long)cps.size() && cps[pos - 1] == "\n") pos--;
-                        long line = 1, ls = 0;
-                        for (long i = 0; i < pos; i++) if (cps[i] == "\n") { line++; ls = i + 1; }
-                        std::string pre, post;
-                        for (long i = ls; i < pos; i++) pre += cps[i];
-                        for (long i = pos; i < (long)cps.size() && cps[i] != "\n"; i++) post += cps[i];
-                        if (post.empty()) post = "<EOL>";
-                        Value ex = makeTypedEx("X::Syntax::Confused",
-                            {{"line", Value::integer(line)}, {"pos", Value::integer(pos)},
-                             {"pre", Value::str(pre)}, {"post", Value::str(post)},
-                             {"reason", Value::str("unknown")}}, "Confused");
-                        (*f.hash())["exception"] = ex;
-                        (*f.hash())["message"]   = Value::str("Confused");
-                        return f;
-                    }
+                    // From 6.e a FAILED .parse is a Failure carrying X::Syntax::Confused (grammarParseConfused)
+                    if (sixE() && !sub && (r.t == VT::Nil || r.t == VT::Any || r.t == VT::Type)) return grammarParseConfused(input);
+                    // …and a failed .subparse is a failed Match where it started, `#<failed match>`, as Rakudo's (rakudo#1243)
+                    if (sub && (r.t == VT::Nil || r.t == VT::Any)) { r = Value::matchVal("", startPos, -3); r.mdW().failed = true; stampMatchGrammar(r, ci->name); setMatchVar(r); }
                     return r;
                 };
                 if (m == "parsefile") { // slurp the file, then parse its contents
                     if (g_sandboxChecks) sandboxRefuse(*this, "Grammar.parsefile", SandboxCap::Read);
-                    std::string input = args.empty() ? "" : args[0].toStr();
+                    size_t fi = 0; while (fi < args.size() && args[fi].t == VT::Pair && args[fi].namedArg) fi++;   // (the file: the first positional)
+                    std::string input = fi < args.size() ? args[fi].toStr() : "";
                     std::ifstream in(input);
                     if (!in)
                         throwTyped("X::AdHoc", {},
@@ -6678,7 +6665,7 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
                     std::ostringstream ss; ss << in.rdbuf(); input = ss.str();
                     // Rakudo's parsefile matches the file contents verbatim,
                     // trailing newline included (rule sigspace absorbs it)
-                    ValueList a2 = args; if (!a2.empty()) a2[0] = Value::str(input); else a2.push_back(Value::str(input));
+                    ValueList a2 = args; if (fi < a2.size()) a2[fi] = Value::str(input); else a2.push_back(Value::str(input));
                     return builtinParse(a2);
                 }
                 // A user-defined `method parse`/`subparse` (e.g. YAMLish wires :actions via nextwith)
@@ -7162,13 +7149,13 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
                         (*out.hash())[kv.first.substr(1)] = kv.second;
                 return out;
             }
-            // `.^submethod_table` — name => Submethod for the type's own submethods
-            // (and those its roles composed in, which 6.e no longer does)
+            // `.^submethod_table` — name => Submethod for the type's own submethods (and those its roles composed in, which 6.e no longer does)
+            auto isSubm = [](const Value& v) { const Callable* c = v.t == VT::Code ? v.code() : nullptr;   // (and a `multi submethod`'s dispatcher, rakudo#3976)
+                return c && (c->ci().isSubmethod || (c->ci().isMultiDispatcher && std::any_of(c->cold().candidates.begin(), c->cold().candidates.end(), [](const Value& x) { return x.code() && x.code()->ci().isSubmethod; }))); };
             if (m == "submethod_table" && ci) {
                 Value out = Value::makeHash();
                 for (auto& kv : ci->methods)
-                    if (kv.second.t == VT::Code && kv.second.code() && kv.second.code()->ci().isSubmethod &&
-                        !ci->roleSubmethodsHidden.count(kv.first) && !(kv.first.size() && kv.first[0] == '!'))
+                    if (isSubm(kv.second) && !ci->roleSubmethodsHidden.count(kv.first) && !(kv.first.size() && kv.first[0] == '!'))
                         (*out.hash())[kv.first] = kv.second;
                 return out;
             }
@@ -7193,8 +7180,8 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
                 std::function<void(ClassInfo*)> walk = [&](ClassInfo* c) {
                     if (!c || !visited.insert(c).second) return;
                     for (auto& kv : c->methods) {
-                        // private (!p) methods stay out, as in Rakudo
-                        if (!kv.first.empty() && kv.first[0] == '!') continue;
+                        // private (!p) methods stay out, as in Rakudo, and a submethod out of the TABLE (rakudo#3976)
+                        if ((!kv.first.empty() && kv.first[0] == '!') || (table && isSubm(kv.second))) continue;
                         if (local && !seen.insert(kv.first).second) continue;
                         // a composed ROLE's method was flattened into the class
                         // that does it: the class's entry (a multi's one
@@ -7813,7 +7800,7 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
                         for (ClassInfo* c = ci.get(); c && !rational; c = c->parent.get())
                             for (auto& r : c->doneRoles)
                                 if (r == "Rational" || r.rfind("Rational[", 0) == 0) { rational = true; break; }
-                        if (!rational) rational = typeOrSubsetMatches(Value::typeObj(ci->name), "Rational");
+                        if (!rational && ci->name != "Rat" && ci->name != "FatRat" && ci->name != "Rational") rational = typeOrSubsetMatches(Value::typeObj(ci->name), "Rational");   // (never by a core rational's NAME: a user `class Rat` boxed a `Rat.new` that was itself, rakudo#5537)
                         ci->rationalNew = rational;
                     }
                     ValueList pos;
@@ -9066,19 +9053,22 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
                 auto given = inv.hash()->find(m.s);
                 return given != inv.hash()->end() ? given->second : Value::str("");
             }
-            sockaddr_in sa{};
+            sockaddr_storage sa{};
             socklen_t sl = sizeof(sa);
             bool peer = m[0] == 'p';
             int rc = peer ? ::getpeername(fd, (sockaddr*)&sa, &sl)
                           : ::getsockname(fd, (sockaddr*)&sa, &sl);
             if (rc < 0) return Value::nil();
-            if (m == "localport" || m == "peerport") return Value::integer(ntohs(sa.sin_port));
+            if (m == "localport" || m == "peerport") return Value::integer(ntohs(((sockaddr_in*)&sa)->sin_port));   // (an IPv6 port sits there too)
             auto given = inv.hash()->find(m.s);   // the name as the caller wrote it
             if (given != inv.hash()->end()) return given->second;
-            char buf[INET_ADDRSTRLEN] = {0};
-            inet_ntop(AF_INET, &sa.sin_addr, buf, sizeof(buf));
+            char buf[INET6_ADDRSTRLEN] = {0};
+            if (sa.ss_family == AF_INET6) inet_ntop(AF_INET6, &((sockaddr_in6*)&sa)->sin6_addr, buf, sizeof(buf));
+            else inet_ntop(AF_INET, &((sockaddr_in*)&sa)->sin_addr, buf, sizeof(buf));
             return Value::str(buf);
         }
+        if (m == "host" || m == "port") return methodCall(inv, m == "host" ? "peerhost" : "peerport", ValueList{});   // a client's, as asked
+        if (m == "family") { Value f; coreEnumValue(inv.hash()->count("family") ? (*inv.hash())["family"].toStr() : "PF_UNSPEC", f); return f; }
         // characters for text, bytes for `.read` and `:bin`, one buffer with `.get`
         if (m == "recv" || m == "read") return inetSocketRead(*this, inv, m, args);
         // `.get` — one line, buffered: bytes are pulled as they arrive, and the
@@ -9693,8 +9683,10 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
                 Value a = Value::makeHash(); a.hashKind = "Archetypes";
                 const bool role = howObjName->find("Role") != std::string::npos;
                 const bool concrete = *howObjName == "Metamodel::ConcreteRoleHOW";
+                const bool en = howObjName->find("EnumHOW") != std::string::npos;   // (an enum composes into a role: `does E`)
                 (*a.hash())["nominal"]         = Value::boolean(true);
-                (*a.hash())["inheritable"]     = Value::boolean(!role);
+                (*a.hash())["inheritable"]     = Value::boolean(!role && !en);
+                (*a.hash())["composalizable"]  = Value::boolean(en);
                 (*a.hash())["composable"]      = Value::boolean(role);
                 (*a.hash())["parametric"]      = Value::boolean(role && !concrete);
                 (*a.hash())["inheritalizable"] = Value::boolean(role && !concrete);
@@ -9717,6 +9709,7 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
                 (*a.hash())["coercive"]      = Value::boolean(coercion);
                 (*a.hash())["definite"]      = Value::boolean(definite);
                 (*a.hash())["augmentable"]   = Value::boolean(!role);
+                (*a.hash())["composalizable"] = Value::boolean(inv.t == VT::Type && inv.s.find("EnumHOW") != std::string::npos);   // (an enum: `does E`)
                 return a;
             }
             if ((m == "can" || m == "^can") && !args.empty()) {
@@ -9727,10 +9720,10 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
             }
         }
     }
-    // the Archetypes value itself: every query is a stored boolean (absent = False)
+    // the Archetypes value itself: every query answers 1 or 0, as Rakudo's native ints do (absent = 0)
     if (inv.t == VT::Hash && inv.hashKind == "Archetypes") {
         auto it = inv.hash()->find(m.s);
-        return it != inv.hash()->end() ? it->second : Value::boolean(false);
+        return Value::integer(it != inv.hash()->end() && it->second.truthy() ? 1 : 0);
     }
     if (m == "can") { // Mu.can($name): list of matching methods ([] if none)
         std::string mn = args.empty() ? "" : args[0].toStr();
@@ -10221,6 +10214,8 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
         const Value& end = m == "from" ? inv.arr()->front() : inv.arr()->back();
         if (end.t == VT::Match) return graphemeOff(end, m == "from" ? end.rFrom() : end.rTo());
     }
+    if (inv.t == VT::Match && inv.md() && inv.md()->failed && (m == "from" || m == "to" || m == "pos"))
+        return Value::integer(m == "from" ? inv.rFrom() : -3);   // a failed .subparse: where it started (in characters), and Rakudo's -3
     if (inv.t == VT::Match && (m == "from")) return graphemeOff(inv, inv.rFrom());
     if (inv.t == VT::Match && (m == "to")) return graphemeOff(inv, inv.rTo());
     // `.pos` is where the engine has got to — meaningful on a match IN PROGRESS

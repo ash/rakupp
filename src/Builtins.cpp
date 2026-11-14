@@ -7,6 +7,7 @@
 
 namespace rakupp {
 void refuseNonBlobWrite(Interpreter& I, const ValueList& args, const char* param, bool concrete);   // (MethodCallPart1b.cpp)
+void growToIndexCheck(long long i);   // (InterpreterCore.cpp) an index past the machine's memory is refused
 
 // One mutex PER SUPPLIER, not a slot from the shared 64-stripe pool. The
 // serialization contract (emissions are serialized per supplier, and done/quit
@@ -2167,6 +2168,11 @@ std::string rakuReprImpl(const Value& v, int depth, std::set<const void*>& seen)
         try { return g_cbInterp->methodCall(v, "raku", ValueList{}).toStr(); }
         catch (RakuError&) {}
     }
+    // a tr/// StrDistance renders as its constructor, as Rakudo's `.raku` and `.gist` do
+    if (v.t == VT::Hash && v.hashKind == "StrDistance" && v.hash()) {
+        auto fld = [&](const char* k) { auto it = v.hash()->find(k); return it != v.hash()->end() ? rakuRepr(it->second, depth + 1, seen) : std::string("\"\""); };
+        return "StrDistance.new(before => " + fld("before") + ", after => " + fld("after") + ")";
+    }
     // a FAILURE renders as the constructor call that rebuilds it, `handled`
     // flag included: `.raku.EVAL` round-trips it
     if (v.t == VT::Hash && v.hashKind == "Failure" && v.hash()) {
@@ -2683,7 +2689,7 @@ std::string rakuReprImpl(const Value& v, int depth, std::set<const void*>& seen)
             // An exception's `message` is a METHOD in Rakudo, not an attribute
             // it was built with: `X::AdHoc.new(payload => "…")` is the whole of
             // its .raku (ours keeps the text in a slot so .message can answer)
-            const bool isEx = v.obj()->cls->isException();
+            const bool isEx = v.obj()->cls->isException() || v.obj()->cls->synthEx;
             // A native struct's fields live in ITS memory, not in attrs — the
             // accessor reads them there, so `.raku` shows what C put in them
             const std::string& repr = v.obj()->cls->repr;
@@ -2701,7 +2707,7 @@ std::string rakuReprImpl(const Value& v, int depth, std::set<const void*>& seen)
                 if (isEx && at->name == "message") {
                     bool own = false;   // …unless the class declares one itself
                     for (auto& a2 : v.obj()->cls->attrs) if (&a2 == at) own = true;
-                    if (!own || v.obj()->cls->name == "X::AdHoc" || v.obj()->cls->name == "Exception") continue;
+                    if (!own || v.obj()->cls->synthEx || v.obj()->cls->name == "X::AdHoc" || v.obj()->cls->name == "Exception") continue;
                 }
                 // (a parent's attribute that a subclass declares again keeps a
                 // slot of its own: ClassInfo::attrSlot)
@@ -4463,6 +4469,7 @@ std::shared_ptr<Param> signatureParamCopy(const Param& p) {
     q->isRw = p.isRw; q->isCopy = p.isCopy; q->typeIsSetting = p.typeIsSetting;
     q->hadWhere = p.whereExpr != nullptr || p.hadWhere;
     q->defaultRaku = renderDefault(p);
+    q->defaultFrom = p.defaultVal ? p.defaultVal.get() : p.defaultFrom;
     return q;
 }
 
@@ -4956,8 +4963,7 @@ Value makeSignature(const Callable* c) {
         }
         // `.default` is a Callable producing the default — undefined when the
         // parameter has none
-        if (p.defaultVal) {
-            const Expr* de = p.defaultVal.get();
+        if (const Expr* de = p.defaultVal ? p.defaultVal.get() : p.defaultFrom) {   // (a .assuming residual's: rakudo#4553)
             Value dc; dc.t = VT::Code; dc.setCode(makePayload<Callable>());
             dc.code()->ciM().builtin = [de](Interpreter& I, ValueList&) -> Value {
                 return I.eval(const_cast<Expr*>(de));
@@ -6168,8 +6174,49 @@ static bool junctionInvocantThreads(const Value& inv, const std::string& m) {
     return m != "defined" && !junctionOwn.count(m) && !(inv.s == "slice" && sliceResizers.count(m));
 }
 
+// The slot a role MIXED INTO an Attribute (or Parameter) keeps one of its
+// attributes in: the meta-object's own map, a private one under the key
+// privMixinKey spells, made on first use with its sigil's empty value. What
+// that attribute's `.get_value($attr)` reads and writes — AttrX::Mooish sets
+// every option of its trait through `….get_value(self) = $value`.
+Value* mixinAttrSlot(const Value& attrMeta, Value& obj) {
+    if (obj.t != VT::Hash || !obj.hash() || (obj.hashKind != "Attribute" && obj.hashKind != "Parameter") ||
+        attrMeta.t != VT::Hash || !attrMeta.hash())
+        return nullptr;
+    auto nit = attrMeta.hash()->find("name");
+    std::string an = nit != attrMeta.hash()->end() ? nit->second.toStr() : "";
+    const char sigil = an.empty() ? '$' : an[0];
+    while (!an.empty() && std::strchr("$@%&!.", an[0])) an.erase(0, 1);
+    auto& oh = *obj.hash();
+    const std::string key = oh.count(an) ? an : "\x01" "p" + an;   // (privMixinKey)
+    if (!oh.count(key)) oh[key] = sigil == '@' ? Value::array() : sigil == '%' ? Value::makeHash() : Value::any();
+    return &oh[key];
+}
+Value* privateInCallerPackage(Interpreter& I, const Value& inv, const std::string& name);   // MethodCallEntry.cpp
 Value Interpreter::methodCall(const Value& inv, const std::string& m, ValueList args, const std::vector<ExprPtr>* rwArgs,
                               bool skipOwn, bool noMethodBack) {
+    // A private call: a plain `self!name` is resolved in the package the call is
+    // written in (privateInCallerPackage, rakudo#2663); `!Pkg::name` is the private
+    // method OF THAT PACKAGE — what compiled code calls for `$o!Pkg::name`, and
+    // for a plain `self!name` in a class's method, which names its class
+    // (Codegen). An object that is no Pkg, or a Pkg without one, gets the
+    // ordinary lookup of `!name`.
+    if (RAKUPP_UNLIKELY(m.size() > 1 && m[0] == '!') && inv.t == VT::Object && inv.obj() && inv.obj()->cls) {
+        const size_t q = m.rfind("::");
+        if (q == std::string::npos) {
+            if (Value* um = privateInCallerPackage(*this, inv, m.substr(1))) return invokeMethod(*um, inv, std::move(args), rwArgs);
+        }
+        else {
+            const std::string bare = "!" + m.substr(q + 2);
+            auto ci = classes_.find(m.substr(1, q - 1));
+            if (ci != classes_.end() && ci->second) {
+                bool isa = false;
+                for (ClassInfo* c = inv.obj()->cls.get(); c && !isa; c = c->parent.get()) isa = c == ci->second.get();
+                if (isa) if (Value* um = ci->second->findMethod(bare)) return invokeMethod(*um, inv, std::move(args), rwArgs);
+            }
+            return methodCall(inv, bare, std::move(args), rwArgs, skipOwn, noMethodBack);
+        }
+    }
     // A PLAIN class's default constructor (plainNewClass): straight to the
     // build, past the general path's special cases, which it cannot meet. The
     // build's own Failure (BuildFailureEx) is caught here as the general path
@@ -6949,6 +6996,7 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
                 {{"what", Value::str("Index")}, {"got", args[0]}, {"range", Value::str("0..^Inf")}},
                 "Index out of range. Is: " + args[0].toStr() + ", should be in 0..^Inf");
         // a LAZY array reifies up to the position first, so the bind lands there
+        if (i >= (1LL << 20)) growToIndexCheck(i);
         if (inv.ext()) materializeLazy(inv, (size_t)i + 1);
         if (i >= 0) {
             while ((long long)inv.arr()->size() <= i) inv.arr()->push_back(Value::any());
@@ -8456,6 +8504,24 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
     }
     if (!m.empty() && m[0] == '^') {
         std::string mm = m.substr(1);
+        // `.^get_attribute_for_usage('$!lazy')` — an attribute of a role MIXED INTO
+        // this Attribute: AttrX::Mooish sets every option of its trait through
+        // `self.^get_attribute_for_usage('$!' ~ $name).get_value(self) = $value`
+        if (mm == "get_attribute_for_usage" && !args.empty() && inv.t == VT::Hash && inv.hash() &&
+            (inv.hashKind == "Attribute" || inv.hashKind == "Parameter")) {
+            auto& h = *inv.hash();
+            std::string want = args[0].toStr(), bare = want;
+            while (!bare.empty() && std::strchr("$@%&!.", bare[0])) bare.erase(0, 1);
+            if (auto rit = h.find(ATTR_ROLES_KEY); rit != h.end() && rit->second.t == VT::Array && rit->second.arr())
+                for (auto ri = rit->second.arr()->rbegin(); ri != rit->second.arr()->rend(); ++ri)
+                    if (auto cit = classes_.find(ri->s); cit != classes_.end() && cit->second)
+                        if (const ClassAttr* a = cit->second->findAttr(bare))
+                            return attributeMetaObject(const_cast<ClassAttr&>(*a), cit->second->name);
+            std::string mixed;   // Rakudo names the mixin type: "No $!nope attribute in Attribute+{O}"
+            if (auto rit = h.find(ATTR_ROLES_KEY); rit != h.end() && rit->second.t == VT::Array && rit->second.arr())
+                for (auto& r : *rit->second.arr()) mixed += "+{" + r.s.copyText() + "}";
+            throw RakuError{Value::typeObj("X::AdHoc"), "No " + want + " attribute in " + inv.hashKind.str() + mixed};
+        }
         // what a SUBSET refines and how: Red's sub-models read both
         // (`model.^refinee.^all(|c).grep: model.^refinement`)
         if ((mm == "refinee" || mm == "refinement") && inv.t == VT::Type &&
@@ -9291,7 +9357,11 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
         if (m == "type" && inv.hash()->count("type-obj")) return (*inv.hash())["type-obj"];
         if (m == "type" && inv.hash()->count(m.s)) return (*inv.hash())[m.s];
         if (m == "positional") return Value::boolean(!(*inv.hash())["named"].truthy() && !(*inv.hash())["slurpy"].truthy());
-        if (m == "sigil") { const std::string_view n = (*inv.hash())["name"].s; return Value::str(n.empty() ? "$" : n.substr(0, 1)); }
+        // a sigilless `\g` answers `\`, a capture `|c` `|`; `.twigil` is the `!`, `.` or `*` after the sigil (rakudo#2275)
+        if (m == "sigil" || m == "twigil") { const std::string_view n = (*inv.hash())["name"].s;
+            const bool sig = !n.empty() && std::strchr("$@%&", n[0]);
+            if (m == "twigil") return Value::str(sig && n.size() > 1 && std::strchr("!.*", n[1]) ? n.substr(1, 1) : "");
+            return Value::str(inv.hash()->count("capture") && (*inv.hash())["capture"].truthy() ? "|" : n.empty() ? "$" : sig ? n.substr(0, 1) : "\\"); }
         // An accessor of a role a parameter trait mixed in (`$param does
         // Formatted::Named(:$argument)` put the role's attributes into this same
         // map): `$param.argument`. Last, so it can never shadow a real
@@ -9683,7 +9753,7 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
         auto ce = kCoreEnums.find(std::string(inv.s.c_str()));
         if (ce != kCoreEnums.end()) {
             Value out = Value::array(); out.isList = true;
-            Value mp = Value::makeHash(); mp.hashKind = "Map";
+            Value mp = Value::makeHash();   // (a Hash, as Rakudo's `.^enum_values`; `.enums` is the Map)
             for (const char* nm : ce->second) {
                 Value ev;
                 if (!coreEnumValue(nm, ev)) continue;
@@ -9977,41 +10047,35 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
         long usePort = listen ? localport : port;
         if (usePort < 0 || usePort > 65535)
             throw RakuError{Value::typeObj("X::AdHoc"), "Invalid port: " + std::to_string(usePort)};
-        if (family != -2 && family != 0 && family != PF_INET) // validated, then IGNORED before: AF_INET was opened for :family(PF_INET6)
-            throw RakuError{Value::typeObj("X::AdHoc"), "Socket family " + std::to_string(family) + " is not supported: only PF_INET (" + std::to_string(PF_INET) + ")"};
-        auto resolve = [](const std::string& h, sockaddr_in& addr) {
-            addr.sin_addr.s_addr = inet_addr(h.c_str());
-            if (addr.sin_addr.s_addr == INADDR_NONE) {
-                if (hostent* he = gethostbyname(h.c_str())) memcpy(&addr.sin_addr, he->h_addr, he->h_length);
-            }
-        };
-        int fd = socket(AF_INET, SOCK_STREAM, 0);
+        if (family != -2 && family != 0 && family != PF_INET && family != PF_INET6)
+            throw RakuError{Value::typeObj("X::AdHoc"), "Socket family " + std::to_string(family) + " is not supported: only PF_INET (" +
+                            std::to_string(PF_INET) + ") and PF_INET6 (" + std::to_string(PF_INET6) + ")"};
+        // IPv6 when `:family(PF_INET6)` asks for it, or the address is one (`::1`) (rakudo#1879)
+        const bool v6 = family == PF_INET6 || (family != PF_INET && (listen ? localhost : host).find(':') != std::string::npos);
+        // A NAME is as valid here as a dotted quad — `:localhost<localhost>` is
+        // how a test spins up a server on the loopback.
+        sockaddr_storage addr{}; socklen_t addrLen = 0;
+        if (!sockAddrOfFamily(listen ? localhost : host, (int)(listen ? localport : port), v6 ? AF_INET6 : AF_INET, addr, addrLen))
+            throw RakuError{Value::typeObj("X::AdHoc"), std::string(listen ? "Cannot listen on " : "Cannot connect to ") +
+                            (listen ? localhost : host) + ":" + std::to_string(listen ? localport : port) + ": no such address"};
+        int fd = socket(addr.ss_family, SOCK_STREAM, 0);
         if (fd < 0) throw RakuError{Value::typeObj("X::AdHoc"), "Cannot create a socket: " + std::string(std::strerror(errno))};
-        sockaddr_in addr{}; addr.sin_family = AF_INET;
         if (listen) {
             int yes = 1; setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, (const char*)&yes, sizeof(yes));
-            addr.sin_port = htons((uint16_t)localport);
-            // A NAME is as valid here as a dotted quad — `:localhost<localhost>`
-            // is how a test spins up a server on the loopback. Only the client
-            // path resolved, so the listener bound to INADDR_NONE and failed,
-            // handing back Nil with nothing to say why.
-            if (localhost.empty() || localhost == "0.0.0.0") addr.sin_addr.s_addr = INADDR_ANY;
-            else resolve(localhost, addr);
-            if (::bind(fd, (sockaddr*)&addr, sizeof(addr)) < 0 || ::listen(fd, 128) < 0) { // a Nil here let the program run on with nobody listening
+            if (::bind(fd, (sockaddr*)&addr, addrLen) < 0 || ::listen(fd, 128) < 0) { // a Nil here let the program run on with nobody listening
                 int err = errno; ::close(fd);
                 throw RakuError{Value::typeObj("X::AdHoc"), "Cannot listen on " + (localhost.empty() ? std::string("0.0.0.0") : localhost) +
                                 ":" + std::to_string(localport) + ": " + std::strerror(err)};
             }
         } else {
-            addr.sin_port = htons((uint16_t)port);
-            resolve(host, addr);
-            bool p = gilPark(); int rc = ::connect(fd, (sockaddr*)&addr, sizeof(addr)); gilUnpark(p);
+            bool p = gilPark(); int rc = ::connect(fd, (sockaddr*)&addr, addrLen); gilUnpark(p);
             if (rc < 0) { // a Nil here let `$s.print` on Any pass silently
                 int err = errno; ::close(fd);
                 throw RakuError{Value::typeObj("X::AdHoc"), "Cannot connect to " + host + ":" + std::to_string(port) + ": " + std::strerror(err)};
             }
         }
         Value s = Value::makeHash(); s.hashKind = "Socket"; (*s.hash())["fd"] = Value::integer(fd);
+        (*s.hash())["family"] = Value::str(family == PF_INET6 ? "PF_INET6" : family == PF_INET ? "PF_INET" : "PF_UNSPEC");
         // Keep the name as GIVEN: `.localhost` answers what was asked for, not
         // what it resolved to, which is what Rakudo reports.
         if (listen) { if (!localhost.empty()) (*s.hash())["localhost"] = Value::str(localhost); }

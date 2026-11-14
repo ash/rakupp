@@ -474,6 +474,7 @@ template <class IO> void visit(IO& io, SubDecl& n)  {
     // nodal routine would descend into every node
     F(io, n.isNodal);
     F(io, n.hiddenBt);
+    ioVec(io, n.precTraits);   // `is equiv(…)`, `is assoc<…>`: parser-consumed too, read by `.prec`
 }
 template <class IO> void visit(IO& io, ClassDecl& n) {
     F(io, n.name); F(io, n.parent); ioVec(io, n.extraParents); ioVec(io, n.roles);

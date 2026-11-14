@@ -1,9 +1,8 @@
 # Regression: `TR///` — the non-mutating transliteration, as `S///` is to
 # `s///`. It was not recognised at all: `TR/a..j/0..9/` parsed as a call to an
 # undeclared routine `a`. It ANSWERS the transliterated string and leaves the
-# target alone; the smartmatch form `$x ~~ TR///` transliterates $x and matches
-# the result against it (so `1 ~~ TR/\#//` is True, nothing having been
-# deleted, while `"ab" ~~ TR/ab/01/` is False).
+# target alone; the smartmatch form `$x ~~ TR///` answers the transliterated
+# $x too, as Rakudo 2026.09 does (rakudo#1551: `"ab" ~~ TR/ab/01/` is "01").
 #
 # And the bare `tr///` against `$_` answers a StrDistance, like the `~~` form
 # already did — it stringifies to the RESULT and numifies to the COUNT, where
@@ -22,8 +21,8 @@ check $s, 'ab',                      '…and does not touch the target';
 $_ = "cd";
 check TR/a..j/0..9/, '23', 'TR/// against the topic';
 check $_, 'cd',            '…leaves it alone too';
-check (1 ~~ TR/\#//), True,  'the smartmatch form matches when nothing changed';
-check ("ab" ~~ TR/ab/01/), False, '…and does not when it did';
+check (1 ~~ TR/\#//), '1',  'the smartmatch form answers the string';
+check ("ab" ~~ TR/ab/01/), '01', '…transliterated';
 check $s, 'ab', '…still without mutating';
 
 # --- tr/// still mutates, and answers a StrDistance ---

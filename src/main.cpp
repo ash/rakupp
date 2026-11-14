@@ -1550,8 +1550,10 @@ static int compileToExe(const std::string& src, const std::string& srcName, std:
                         // interpreter's, which a native routine neither pushes nor
                         // gives a line — and one that wraps a routine needs every call
                         // to see the wrapper, where a native call goes straight to the
-                        // body: its routines all stay interpreted
-                        for (const char* w : {"callframe", ".backtrace", ".mess", ".wrap"})
+                        // body: its routines all stay interpreted. So do those of one
+                        // that reads its callers' lexicals: a native routine's `$_` is
+                        // a native local, which `CALLERS::<$_>` cannot reach
+                        for (const char* w : {"callframe", ".backtrace", ".mess", ".wrap", "CALLER"})
                             if (src.find(w) != std::string::npos) mm.interpretOnly = true;
                         fp = aotFingerprint(mm.blob);
                         aotMods.push_back(std::move(mm));

@@ -122,7 +122,7 @@ my $t0 = now;
 for @progs.kv -> $i, %p {
     $GEN.unlink if $GEN.e;
     my %t = run-capped([$ENGINE, '--cpp', '-o', $GEN.absolute, %p<path>.absolute],
-                       :cap(60), :work(%p<cwd>), :env(TZ => 'UTC'));
+                       :cap(60), :work(%p<cwd>), :env(%( TZ => 'UTC' )));
     my ($verdict, $note);
     if %t<rc> == 5 && !%t<signal> {
         ($verdict, $note) = 'refused', first-line(%t);

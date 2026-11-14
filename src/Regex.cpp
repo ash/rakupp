@@ -1666,6 +1666,7 @@ Regex::NodePtr Regex::parseQuant() {
 
 static std::string ruleFlag(const std::string& nm); // built-in rule → classMatch flags
 bool charClassMatch(char flag, uint32_t cp);        // the POSIX-named classes, over a codepoint
+void regexStackCheck();                             // InterpreterCore.cpp: X::Recursion before the stack runs out
 
 Regex::NodePtr Regex::parseAtom() {
     skipWs();
@@ -2608,9 +2609,7 @@ Regex::NodePtr Regex::parseAtom() {
                         size_t a2 = tok.find_first_not_of(" \t"), b2 = tok.find_last_not_of(" \t");
                         if (a2 != std::string::npos) {
                             tok = tok.substr(a2, b2 - a2 + 1);
-                            long cp = ascii::isdigit((unsigned char)tok[0])
-                                        ? std::strtol(tok.c_str(), nullptr, 10)
-                                        : (long)uniCharByName(tok);
+                            long cp = namedCp(tok);   // (a decimal, a name in any case, an abbreviation)
                             if (cp >= 0) lit += cpToU8((uint32_t)cp);
                         }
                         if (comma == std::string::npos) break;
@@ -4637,7 +4636,10 @@ bool Regex::matchNode(const Node* n, MState& st, long pos, const FnRef& k) const
                             matchNode(child, st, q, grab);
                         if (np < 0) break;
                         // an EMPTY item still is one — `:r [ $ || x ]` matched once —
-                        // and every further one would match empty the same way
+                        // and every further one would match empty the same way. Under
+                        // a BOUNDED quantifier Rakudo repeats it to the maximum, each
+                        // capture recorded: `<same> ** 2..4` is four (rakudo#4752)
+                        if (np == q && mx >= 0) { cnt++; continue; }
                         if (np == q) { if (!sep && cnt < mn) cnt = mn; break; }
                         q = np; cnt++;
                     }
@@ -4705,6 +4707,7 @@ bool Regex::matchNode(const Node* n, MState& st, long pos, const FnRef& k) const
                         } else
                             matchNode(child, st, q, grab);
                         if (np < 0) break;
+                        if (np == q && mx >= 0 && !p5_) { c++; continue; }   // (a bounded zero-width run repeats to its max: below)
                         if (np == q) { zeroWidth = true; break; }   // (the recursion's own rule decides)
                         q = np; c++;
                     }
@@ -4714,10 +4717,12 @@ bool Regex::matchNode(const Node* n, MState& st, long pos, const FnRef& k) const
                 if (greedy) {
                     if (mx < 0 || count < mx) {
                         auto more = [&](long np) {
-                            if (np != p) return self(self, count + 1, np);
+                            // (a zero-width iteration under a BOUNDED quantifier is one
+                            // more, as Rakudo counts them: `<same> ** 2..4`, rakudo#4752)
+                            if (np != p || (mx >= 0 && !p5_)) return self(self, count + 1, np);
                             // zero-width child match: Perl admits it as ONE final
                             // iteration — `(]*)?\1` participates with an empty
-                            // capture (re_tests 1327). Raku rejects it outright.
+                            // capture (re_tests 1327). Raku rejects it under `*` and `+`.
                             return p5_ && count + 1 >= mn && finish(np, count + 1);
                         };
                         if (matchOne(p, more)) return true;
@@ -4728,7 +4733,7 @@ bool Regex::matchNode(const Node* n, MState& st, long pos, const FnRef& k) const
                     if (count >= mn && finish(p, count)) return true;
                     if (mx < 0 || count < mx) {
                         auto more = [&](long np) {
-                            if (np != p) return self(self, count + 1, np);
+                            if (np != p || (mx >= 0 && !p5_)) return self(self, count + 1, np);
                             return p5_ && count + 1 >= mn && finish(np, count + 1);
                         };
                         return matchOne(p, more);
@@ -4888,6 +4893,7 @@ bool Regex::matchNode(const Node* n, MState& st, long pos, const FnRef& k) const
 // table: `k` is threaded through, so the caller can still backtrack into the callee.
 bool Regex::matchInlineSub(const Node* n, const Regex* re, MState& st, long pos, const FnRef& k,
                            const std::string* capKeyOverride, const std::string* alsoName) const {
+    regexStackCheck();
     MState sub{st.s, std::vector<std::pair<long, long>>(re->ncaps(), {-1, -1}), {}, {}, st.resolver, st.grammar};
     sub.hooks = st.hooks; sub.lexNames = st.lexNames; sub.curSym = st.curSym;
     sub.startPos = pos; sub.probing = st.probing; sub.steps = st.steps;
@@ -5075,6 +5081,9 @@ static int32_t namedCp(const std::string& nm) {
     if (!nm.empty() && ascii::isdigit((unsigned char)nm[0])) return (int32_t)std::strtol(nm.c_str(), nullptr, 10);
     int32_t cp = uniCharByName(nm);
     if (cp >= 0) return cp;
+    // names are case-insensitive, as in a string: `/\c[combining ring above]/` (rakudo#5799)
+    { std::string up = nm; for (auto& ch : up) ch = (char)ascii::toupper((unsigned char)ch);
+      if (up != nm && (cp = uniCharByName(up)) >= 0) return cp; }
     static const std::map<std::string, int> ab = {
         {"NUL",0},{"SOH",1},{"STX",2},{"ETX",3},{"EOT",4},{"ENQ",5},{"ACK",6},{"BEL",7},
         {"BS",8},{"HT",9},{"TAB",9},{"LF",0x0A},{"VT",0x0B},{"FF",0x0C},{"CR",0x0D},
@@ -5362,6 +5371,7 @@ const GrammarMatcher::NameMeta& GrammarMatcher::nameMeta(const std::string& name
         std::map<std::string, std::string> b;
         m.noArg = compiled(name, "", b);
         // (not when the metaclass must see every call: an inlined rule has none)
+        // (…nor when it has an ACTION: an inlined call completes no rule, and `<.q>` fired nothing)
         if (m.ratchet && m.noArg && m.noArg->rootIsSingleChar() && !hooks.viaHow) m.singleChar = m.noArg;
     }
     auto pit = protos.find(name);
@@ -5375,6 +5385,7 @@ const GrammarMatcher::NameMeta& GrammarMatcher::nameMeta(const std::string& name
     // Only fall back to the built-in <ws> when the grammar hasn't defined its own —
     // a user `token ws { … }` (e.g. to skip comments) must win over the builtin.
     m.isWs = (name == "ws" && !rule && !m.isMethod);
+    m.hasAct = hooks.hasAction && hooks.hasAction(name);
     if (!rule && !m.isMethod) { // built-in char-class fallbacks for names the grammar doesn't define
         if (name == "digit") m.builtinClass = "d"; else if (name == "alpha") m.builtinClass = "a";
         else if (name == "alnum" || name == "ident") m.builtinClass = "ad";
@@ -5495,6 +5506,7 @@ bool GrammarMatcher::matchSubMeta(const GrammarRuleMeta& meta, const std::string
                                   const std::string& args, const std::string& capKey,
                                   Regex::MState& st, long pos, const FnRef& k,
                                   bool alsoBareName) {
+    regexStackCheck();
     // `<sym>` inside a proto candidate (`token alt:sym<foo> { <sym> }`) matches that
     // candidate's sym literal ("foo"), threaded in via st.curSym.
     if (name == "sym" && args.empty()) {
@@ -5654,6 +5666,12 @@ bool GrammarMatcher::matchSubMeta(const GrammarRuleMeta& meta, const std::string
     }
     if (meta.isWs) { // built-in <ws>: \s* gated by <!ww> — same matcher as the plain-regex path
         long p = builtinRuleMatch("ws", st.s, pos, (long)st.s.size());
+        // …and its action fires as a declared rule's does: `method ws($/)`, and a
+        // FALLBACK's "ws" (rakudo#2059). Not for a probe, which only measures.
+        if (p >= 0 && meta.hasAct && !st.probing && !st.probeAbove && !noFire_ && st.hooks && st.hooks->onRule) {
+            ParseNode fp; fp.name = "ws"; fp.from = pos; fp.to = p;
+            st.hooks->onRule(std::move(fp));
+        }
         return p < 0 ? false : k(p);
     }
     // built-in rules (<.alpha> …, <ident>) when the grammar doesn't redefine them
@@ -5706,7 +5724,16 @@ bool GrammarMatcher::matchSubMeta(const GrammarRuleMeta& meta, const std::string
         // nest exactly that way.
         candDeclEnd_ = np;
         candLitPrefix_ = meta.singleChar->rootIsSingleLiteral() ? np - pos : 0;
-        if (capKey.empty()) return k(np);
+        // The call completes the rule, so its action fires now, in order with the rest, as
+        // a declared rule's does — a non-capturing one too (`<.q>`, rakudo#2059). A captured
+        // leaf is then found fired when the tree is built.
+        auto fireInline = [&]() {
+            if (meta.hasAct && !st.probing && !st.probeAbove && !noFire_ && st.hooks && st.hooks->onRule) {
+                ParseNode fp; fp.name = name; fp.from = pos; fp.to = np;
+                st.hooks->onRule(std::move(fp));
+            }
+        };
+        if (capKey.empty()) { fireInline(); return k(np); }
         // capturing <name>: record a leaf node spanning the one char, then continue
         ParseNode pn; pn.name = name; pn.from = pos; pn.to = np;
         bool hadSpan = st.named.count(capKey); auto savedSpan = hadSpan ? st.named[capKey] : std::pair<long,long>{-1,-1};
@@ -5715,6 +5742,7 @@ bool GrammarMatcher::matchSubMeta(const GrammarRuleMeta& meta, const std::string
         st.named[capKey] = {pos, np};
         if (alsoRuleName) { pn.aliasId = newAliasId(); st.named[name] = {pos, np}; st.children[name].push_back(pn); }
         st.children[capKey].push_back(std::move(pn));
+        fireInline();
         if (k(np)) return true;
         st.children[capKey].pop_back();
         if (st.children[capKey].empty()) st.children.erase(capKey);

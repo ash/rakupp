@@ -97,6 +97,7 @@ std::shared_ptr<SlangSeams> rakuppActivateSlang(const std::string& module,
 // `use v6.e.PREVIEW`, `use v6e.PREVIEW`): 0 = 6.c, 1 = 6.d, 2 = 6.e and later.
 // The dot is optional, as in Rakudo. A BARE `use v6` asks for "some Raku 6",
 // which is the current default revision — 6.d — not the newest one known.
+void checkLangVersion(const std::string& version, int line);   // a revision Rakudo has a compiler for (ParserPackages.cpp)
 inline int langRevOfPragma(const std::string& module) {
     size_t k = module.find('6');
     if (k == std::string::npos || k + 1 >= module.size()) return 1;
@@ -580,6 +581,7 @@ private:
     std::string nativeRetParam(size_t identPos) const;
     size_t lastBlockClose_ = (size_t)-1;
     ExprPtr presetLhs_;                  // parseExpr's first operand, read already (`class A {} === A`)
+    bool termDecl_ = false;              // the statement being parsed is a term-position `my class …` (parsePrimary)
     // the innermost enclosing ROLE (what ::?ROLE names), past any class or
     // grammar declared inside it — "" outside every role
     std::string enclosingRoleName() const {
@@ -650,6 +652,17 @@ private:
     std::vector<bool> attrPkgStack_;
     void refuseFreeMethodAttrs(size_t bodyAt);
     bool dynScopeAll_ = false;               // `use dynamic-scope` in force (block-scoped)
+    // `use trace` (rakudo#5546): each statement after it in its block is
+    // announced on $*ERR as it runs, as `ID (FILE line N)` and its source.
+    // `stmtId_` numbers statements as Rakudo's compiler does — one for each
+    // statement and one for the end of each block's list (traceStmt, ParserInterp.cpp)
+    bool trace_ = false;
+    int stmtId_ = 0;
+    bool experimentalCached_ = false;   // `use experimental :cached` in force (block-scoped): `is cached` is allowed
+    StmtPtr traceStmt(int id, size_t from, size_t to);
+    ExprPtr parsePkgNameLookup();   // `CALLERS::('$_')`, `M::('$q')` (ParserPackages.cpp)
+    void refusePhaserCall(const std::string& name);   // `FIRST(…)`: a call of nothing declared (ParserPackages.cpp)
+    void refuseMethodPlaceholders(size_t bodyAt, const std::string& name);   // `method z { $^a }` (ParserPackages.cpp)
     const Expr* rChainList_ = nullptr;       // the ListExpr the last `R,` built (a chain extends it)
     std::set<std::string> dynScopeNames_;    // `use dynamic-scope <$a $b>`: just these
     std::set<std::string> ourProtos_; // names with an our-scoped proto (our multi is then legal)
@@ -709,6 +722,7 @@ private:
     std::vector<Param> parseSignature(Tok closeTok = Tok::RParen); // after '(' … ')' (or '[' … ']' for a sub-signature)
     void recordParamTrait(Param& p, const std::string& name); // `is option("=s%")` — a user parameter trait
     std::vector<Param> parsePointyParams();   // -> $a, \b { ... }  (stops at '{')
+    void refuseAttrParamsWithoutSelf(const std::vector<Param>& ps);   // `-> $!x { }` outside a method
 
     // expressions
     ExprPtr parseExpression();

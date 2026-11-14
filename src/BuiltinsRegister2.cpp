@@ -757,6 +757,12 @@ void Interpreter::registerBuiltinsPart3() {
     };
     B["__assign-immutable"] = [](Interpreter& I, ValueList& a) -> Value {
         Value v = a.empty() ? Value::any() : a[0];
+        // an OBJECT with a STORE is assigned through it, as `@a = …` assigns
+        // through a Positional's: `my \foo = HistoryVar.new; foo = 1` (rakudo#3292)
+        if (v.t == VT::Object && v.obj() && v.obj()->cls && v.obj()->cls->findMethod("STORE") && a.size() > 1) {
+            I.methodCall(v, "STORE", ValueList{a[1]});
+            return v;
+        }
         if (v.t == VT::Type || v.t == VT::Any) throwImmutable(v);   // "…immutable 'Int' type object"
         throw RakuError{Value::typeObj("X::Assignment::RO"),
                         "Cannot modify an immutable " + v.typeName() + " (" + v.gist() + ")"};

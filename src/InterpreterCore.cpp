@@ -9,6 +9,11 @@
 #include <sys/syscall.h>
 #include <unistd.h>
 #endif
+#if defined(__APPLE__)
+#include <sys/sysctl.h>   // hw.memsize: an array grown past the machine's memory (growToIndexCheck)
+#elif !defined(_WIN32)
+#include <unistd.h>       // sysconf(_SC_PHYS_PAGES): the same, elsewhere
+#endif
 
 namespace rakupp {
 extern std::string g_exeInterpreterOverride;   // Runtime.cpp: a harness's $*EXECUTABLE for a compiled binary
@@ -20,6 +25,8 @@ void noteAttrInit(const ObjectData* od, const Value* slot);   // …the attribut
 Value nilResetForAttrSlot(const Value& v, const Value& self, const std::string& an);   // InterpreterBinding.cpp
 bool liftMatchVarQuiet();   // InterpreterRegex.cpp: a regex block sees its cursor as `$/`…
 void restoreMatchVarQuiet(bool quiet, bool hadSlash);   // …under a quiet match (.grep) too
+bool isRxSelfCall(const std::string& code); Value rxSelfCallee(const std::string& code);   // …and a regex value naming itself
+void valuePhasersIn(const std::vector<StmtPtr>& stmts, std::vector<BlockExpr*>& out, char want); std::string valuePhaserSlot(const BlockExpr* be);   // InterpreterOperators.cpp
 bool operatorNameDeclared(Interpreter& I, const std::string& name);   // InterpreterOperators.cpp
 bool endsElementCall(const Expr* rv);   // InterpreterCalls.cpp: `@a.first`, `.head`, `.tail`
 bool bridgedNumericInfix(Interpreter& I, const std::string& op, const Value& l, const Value& r, Value& out);   // …too
@@ -577,6 +584,7 @@ static Value iterEntryPair(const Value& h, const std::string& k, Value& stored) 
         p.t = VT::Pair; p.s = std::move(pk);
         p.setPairVal(h.hash()->aliasOf(stored));
         p.setPairLive();
+        if (!h.ofType().empty()) p.ofTypeM() = h.ofType();   // (and checks the hash's element type)
     }
     else {
         Value sv = stored;
@@ -777,8 +785,10 @@ static int stmtsEntryWork(const std::vector<StmtPtr>& stmts) {
             if (!sd->isMethod && !sd->name.empty()) m |= 8;
             if (!sd->name.empty()) m |= 32;
         }
-        else if (hoistableTypeDecl(s.get())) m |= 8;
+        else if (hoistableTypeDecl(s.get()) || s->kind == NK::NamedRegexDecl) m |= 8;   // (a `my token`'s &name closes over the frame, as a nested sub does)
     }
+    // 64: a phaser in TERM position (`my $v = ENTER …`), which runEnterPhasers runs at entry too
+    { std::vector<BlockExpr*> vp; valuePhasersIn(stmts, vp, 'E'); if (!vp.empty()) m |= 2 | 64; }
     // 16: the LAST statement might not be the block's value, so execBlock has
     // to look for it. Deliberately wider than the scan it gates — any phaser
     // block, CATCH or named sub — because isBlockPhaser's answer for an INIT
@@ -816,22 +826,22 @@ bool Interpreter::hoistSubs(const std::vector<StmtPtr>& stmts) {
     // Fast path first: most bodies (every loop body, most blocks) have nothing
     // to hoist, and the thread_local flag save/restore is a TLV access on
     // macOS — don't touch it unless a hoistable declaration actually exists.
-    bool anyDecl = false, anyType = false;
+    bool anyDecl = false, anyType = false, anyRx = false;   // anyRx: a `my regex`, whose &name closes over this frame (rakudo#6810)
     for (auto& s : stmts) {
         if (s->kind == NK::SubDecl) {
             auto* sd = static_cast<SubDecl*>(s.get());
             if (!sd->isMethod && !sd->name.empty()) { anyDecl = true; }
         }
-        else if (hoistableTypeDecl(s.get())) anyType = true;
+        else if (hoistableTypeDecl(s.get())) anyType = true; else if (s->kind == NK::NamedRegexDecl) anyRx = true;
     }
-    if (!anyDecl && !anyType) return false;
+    if (!anyDecl && !anyType) return anyRx;
     if (!anyDecl) { // only pending types to record — no sub to run, no flag to flip
         for (auto& s : stmts)
             if (hoistableTypeDecl(s.get())) {
                 auto* cd = static_cast<ClassDecl*>(s.get());
                 notePendingType(cd);
             }
-        return false;
+        return anyRx;
     }
     bool any = false;
     // restored however the pass ends: a hoisted declaration that THROWS (a
@@ -859,7 +869,7 @@ bool Interpreter::hoistSubs(const std::vector<StmtPtr>& stmts) {
             auto* cd = static_cast<ClassDecl*>(s.get());
             notePendingType(cd);
         }
-    return any;
+    return any || anyRx;
 }
 
 // ----------------- statements -----------------
@@ -889,7 +899,7 @@ static bool isBlockPhaser(const Stmt* s) {
            p == "PRE" || p == "POST" ||
            p == "NEXT" || p == "LAST" || p == "QUIT" || p == "CLOSE" || p == "TEMP";
 }
-void Interpreter::runEnterPhasers(const std::vector<StmtPtr>& stmts, Callable* firstOnce) {
+void Interpreter::runEnterPhasers(const std::vector<StmtPtr>& stmts, Callable* firstOnce, bool valuePh) {
     // PRE: a precondition, checked on entry — false is X::Phaser::PrePost. The
     // PREs all run BEFORE any ENTER, wherever they stand in the block.
     for (auto& s : stmts) if (s->kind == NK::Block) { auto* b = static_cast<Block*>(s.get());
@@ -907,7 +917,12 @@ void Interpreter::runEnterPhasers(const std::vector<StmtPtr>& stmts, Callable* f
     // every time it runs, so its FIRST runs every time (`for 1..3 { { FIRST … } }`: thrice).
     const bool runFirst = &stmts != t_hot.poll.firstBody &&
         (!firstOnce || !firstOnce->state.firstDone.exchange(true, std::memory_order_acq_rel));
-    for (int pass = runFirst ? 0 : 1; pass < 2; pass++) for (auto& s : stmts) if (s->kind == NK::Block) {
+    std::vector<BlockExpr*> vp;   // the phasers in TERM position, run with the others: a FIRST's value kept
+    if (valuePh) valuePhasersIn(stmts, vp, 'E');   // where every later entry sees it (valuePhaser)
+    for (int pass = runFirst ? 0 : 1; pass < 2; pass++) {
+    for (BlockExpr* be : vp) if (be->phaser == (pass ? "ENTER" : "FIRST"))
+        (!pass && tctx().cur->parent ? tctx().cur->parent : tctx().cur)->define(valuePhaserSlot(be), runsInPlace(be) ? runBlockInPlace(be) : callCallable(makeClosure(be), {}));
+    for (auto& s : stmts) if (s->kind == NK::Block) {
         auto* b = static_cast<Block*>(s.get());
         if (b->phaser == (pass ? "ENTER" : "FIRST")) {
             auto sc = makeSlabShared<Env>(); sc->parent = tctx().cur;
@@ -925,6 +940,7 @@ void Interpreter::runEnterPhasers(const std::vector<StmtPtr>& stmts, Callable* f
             tctx().cur->define("\x01enter-tail", b->phaser == "INIT" ? initValues_[b] :
                                firstOnce && firstOnce->state.firstValue ? *firstOnce->state.firstValue : lv ? *lv : Value::nil());
         }
+    }
     }
 }
 // Every END nested anywhere in a routine's body runs at exit in THIS call's
@@ -1255,7 +1271,7 @@ Value Interpreter::execBlockFull(Block* b, std::shared_ptr<Env> scope, bool sink
     // The ENDs this block holds bind to THIS entry — the innermost scope that
     // actually ran wins, so `for 1..3 -> $i { END say $i }` says 3.
     for (Block* e : b->endsWithin) captureEndScope(e);
-    if (entryWork & 2) runEnterPhasers(b->stmts);
+    if (entryWork & 2) runEnterPhasers(b->stmts, nullptr, entryWork & 64);
     // The unsuccessful exit: an exception leaves the block. A `take`/`emit`/
     // `done` outside its construct goes to this block's CONTROL first — true
     // when that handled it, and the block then returns Nil having left
@@ -1493,6 +1509,7 @@ signed char loopPhaserMask(Block* body) {
                 else if (b->phaser == "LAST") mask |= 2;
                 else if (b->phaser == "FIRST") mask |= 4;
             }
+        { std::vector<BlockExpr*> vp; valuePhasersIn(body->stmts, vp, 'F'); if (!vp.empty()) mask |= 4; }   // (`say FIRST $_`)
         body->loopPhasers = mask;
     }
     return body->loopPhasers;
@@ -1629,7 +1646,7 @@ bool Interpreter::runLoopBody(Block* body, const std::shared_ptr<Env>& scope, co
         runLast(); t_hot.poll.firstBody = savedSF; return true;
     }
     for (;;) {
-        try { Value v = execBlock(body, scope, /*sink=*/collect == nullptr);
+        try { Value v = execBlock(body, scope, /*sink=*/collect == nullptr && tc.unsunkBody != body);
               // cooperative return: stop looping. A `when … { return … }` in the
               // body raised the when-match flag too, and nobody past this loop
               // consumes it: left set, it rode out of the routine and cut the
@@ -1692,7 +1709,7 @@ bool Interpreter::runLoopBody(Block* body, const std::shared_ptr<Env>& scope, co
                   // the iteration's value and NEXT/LAST still run (Rakudo; `do for
                   // 1..3 { when 2 { "two" }; "other" }` used to lose the "two")
                   tc.givenCtl = 0; v = std::move(tc.givenV); whenValue = true;
-                  if (!collect) sinkDiscarded(v);   // …which a loop that keeps nothing sinks
+                  if (!collect && tc.unsunkBody != body) sinkDiscarded(v);   // …which a loop that keeps nothing sinks
               }
               if (collect) {
                   Value cont;
@@ -1913,7 +1930,7 @@ struct FramePool {
         // one must not outlive it
         e->routineFrame = e->staticSeeded = e->unitFrame = e->packageFrame = false;
         e->evalFrame = e->stateFrame = e->loopFrame = false;
-        e->btBlock = e->callEnv = e->btCalled = false;
+        e->btBlock = e->callEnv = e->btCalled = e->btThunk = false;
         e->btLine = 0;
         e->routineFrameId = 0;
         e->strictPragma = e->fatalPragma = 0;
@@ -1945,6 +1962,14 @@ struct PooledFrame {
 // Callable, binding, redispatch and dynamic-scope bookkeeping, CATCH and phaser
 // scans) was most of such a block's cost. A `return` is a ReturnEx and `next`
 // or `last` a flag either way, so both reach their routine or loop as they did.
+// Does `try EXPR`'s operand declare a name (`try my $x = f()`)? It declares
+// it in the scope around, so it is evaluated there rather than in a thunk's.
+static bool tryOperandDeclares(const Expr* e) {
+    if (!e) return false;
+    if (e->kind == NK::Assign) e = static_cast<const Assign*>(e)->target.get();
+    if (e && e->kind == NK::VarExpr) return static_cast<const VarExpr*>(e)->declare;
+    return e && (e->kind == NK::ListExpr || e->kind == NK::SubDecl);
+}
 Value Interpreter::runBlockInPlace(BlockExpr* be) {
     ExecContext& tcx = tctx();
     PooledFrame frame_{tcx};
@@ -2823,6 +2848,8 @@ Value Interpreter::execForStmt(Stmt* s, bool sink) {
         ExecContext& t; const void* b; const Expr* e;
         ~TailG() { t.collectTailBody = b; t.collectTail = e; }
     } tailG{tctx(), tctx().collectTailBody, tctx().collectTail};
+    struct UnsunkG { ExecContext& t; const void* b; ~UnsunkG() { t.unsunkBody = b; } } unsunkG{tctx(), tctx().unsunkBody};
+    if (!sink && !fs->asExpr) tctx().unsunkBody = fs->body.get();   // (the block's last statement: see unsunkBody)
     const Expr* tailVar = fs->asExpr ? forBodyTailVar(fs->body.get()) : nullptr;
     tctx().collectTailBody = tailVar ? fs->body.get() : nullptr;
     tctx().collectTail = tailVar;
@@ -3277,9 +3304,9 @@ Value Interpreter::execForStmt(Stmt* s, bool sink) {
             if (!oneItem && lv.t == VT::Range && !lv.rNum() && !lv.ext() && !lv.big() &&
                 lv.ofType() != "Str" && degenRange(lv) == DegenRange::No &&
                 !(lre && ((lre->from.t == VT::Int && lre->from.big()) || (lre->to.t == VT::Int && lre->to.big()))) &&
-                lv.rTo() < 9000000000000000000LL && lv.rFrom() > -9000000000000000000LL) {
-                const long long lo = lv.rFrom() + (lv.rExFrom() ? 1 : 0);
-                const long long hi = lv.rTo() - (lv.rExTo() ? 1 : 0);
+                lv.rFrom() > -9000000000000000000LL) {
+                const long long lo = lv.rFrom() + (lv.rExFrom() ? 1 : 0);   // (an ENDLESS one never ends: `.sink for 1..*`, rakudo#1399)
+                const long long hi = lv.rTo() >= 9000000000000000000LL ? LLONG_MAX : lv.rTo() - (lv.rExTo() ? 1 : 0);
                 const bool imm = immutableQuantSource(fs->list.get()) || immutableLoopSource(fs->list.get());
                 for (long long k = lo; k <= hi; k++) {
                     Value& tv = env->vars["$_"];
@@ -5125,7 +5152,7 @@ void Interpreter::bindParams(const std::vector<Param>& params, ValueList& args,
                 // A SLIP flattens into every slurpy, itemization notwithstanding —
                 // that is the whole of what a Slip is for, and assigning one to a
                 // scalar itemizes it. Shared by all three branches below.
-                auto isSlip = [](const Value& e) {
+                bool loneArray = false; auto isSlip = [](const Value& e) {   // (loneArray: a lone ARRAY was spread)
                     return e.t == VT::Array && e.arr() && e.s == "Slip";
                 };
                 if (p.slurpyKind == 'f') {
@@ -5206,7 +5233,7 @@ void Interpreter::bindParams(const std::vector<Param>& params, ValueList& args,
                                          positional[pi].isList && positional[pi].s == "Seq";
                     if (lazyTail) pi++;
                     else if (remaining == 1 && (loneSeq || slurpyLoneIterable(positional[pi]))) {
-                        slurpyLoneElements(positional[pi], *a.arr());   // the lone Iterable's ELEMENTS
+                        slurpyLoneElements(positional[pi], *a.arr()); loneArray = positional[pi].t == VT::Array && !positional[pi].isList && positional[pi].s != "Seq";   // the lone Iterable's ELEMENTS
                         if (loneSeq) a.isList = true;
                         pi++;
                     } else {
@@ -5220,9 +5247,9 @@ void Interpreter::bindParams(const std::vector<Param>& params, ValueList& args,
                 // a sigilless `+a` is a List, whatever it was handed (a lone
                 // Seq excepted, bound as it came above)
                 if (p.sigil == '\\' && p.slurpyKind == '1') a.isList = true;
-                // …and so is an `is raw` slurpy: `**@v is raw` / `*@v is raw`
-                // bind the List of what came, not an Array copying it
+                // …and so is an `is raw` slurpy: `**@v is raw` / `*@v is raw` bind the List of what came, not an Array copying it
                 if (p.isRaw && !capture && p.sigil == '@') a.isList = true;
+                if (a.isList && loneArray) for (auto& e : *a.arr()) if (e.t == VT::Array && !e.itemized) e.itemized = true;   // …a List of an ARRAY's elements keeps their containers: `-> +l { l }([1, (2, 3)])` is `(1, $(2, 3))` (rakudo#1355)
                 // a `|c` capture also carries the UNCLAIMED named args (as
                 // namedArg pairs), so `samewith(|c)` re-passes them — Base64's
                 // adverb multis peel one named per round and forward the rest
@@ -7285,7 +7312,9 @@ int Interpreter::scoreCandidate(const Value& cand, const ValueList& args,
                     : !p.type.empty() ? Value::typeObj(p.type) : Value::any();
             if (supplied && isSeqForAtParam(p, v)) v = seqAsBoundList(v);
             if (!supplied && p.defaultVal) {
-                auto denv = makeSlabShared<Env>(); denv->parent = tctx().cur;
+                // (in the CANDIDATE's scope, as binding is: a default may read the
+                // module's `my %defaults`, which the caller cannot see — Data::Dump)
+                auto denv = makeSlabShared<Env>(); denv->parent = whereScope;
                 defineSelf(*denv);
                 // A default may read the parameters declared BEFORE it, as binding
                 // lets it: `:$style = 'double', :$corners where … = W{$style}`. Put
@@ -7661,6 +7690,42 @@ struct DepthGuard {
     }
     ~DepthGuard() { --d; }
 };
+// The same headroom test for the regex matcher, at each subrule call: a rule or
+// `<$var>` that calls itself before consuming anything (`token t { <t> a }`)
+// recursed in C++ until the process took SIGBUS (rakudo#3775). Rakudo hangs.
+void regexStackCheck() {
+    char probe;
+    char* here = &probe;
+    if (!t_stack.top) { t_stack.top = here; t_stack.limit = currentThreadStackSize(); }
+    size_t reserve = size_t(2) << 20;
+    if (t_stack.limit < reserve * 4) reserve = t_stack.limit / 4;
+    if ((size_t)(t_stack.top - here) + reserve >= t_stack.limit)
+        throw RakuError{Value::typeObj("X::Recursion"),
+                        "Too many levels of recursion in a regex (does a rule call itself before matching anything?)"};
+}
+// An index no machine could reach: `my $b; $b[1e18] = "meow"` grew the array a
+// slot at a time until memory ran out, eight gigabytes in six seconds
+// (rakudo#5835). Refused up front, as Rakudo refuses what it cannot allocate,
+// when the slots alone outweigh the machine's memory. growToIndex asks only
+// past a million slots, so an ordinary grow pays one compare.
+static unsigned long long physicalMemoryBytes() {
+#if defined(_WIN32)
+    MEMORYSTATUSEX ms; ms.dwLength = sizeof ms;
+    return GlobalMemoryStatusEx(&ms) ? (unsigned long long)ms.ullTotalPhys : 0;
+#elif defined(__APPLE__)
+    unsigned long long mem = 0; size_t len = sizeof mem;
+    return sysctlbyname("hw.memsize", &mem, &len, nullptr, 0) == 0 ? mem : 0;
+#else
+    const long pages = sysconf(_SC_PHYS_PAGES), page = sysconf(_SC_PAGESIZE);
+    return pages > 0 && page > 0 ? (unsigned long long)pages * (unsigned long long)page : 0;
+#endif
+}
+void growToIndexCheck(long long i) {
+    static const unsigned long long mem = physicalMemoryBytes();
+    const unsigned long long slots = (unsigned long long)i + 1;
+    if (slots > (mem ? mem : 16ULL << 30) / sizeof(Value))   // a slot is one Value at the least
+        throw RakuError{Value::typeObj("X::AdHoc"), "Unable to allocate an array of " + std::to_string(slots) + " elements"};
+}
 
 bool Interpreter::boolify(const Value& v) {
     // Failure.Bool is False and HANDLES it: `$x %% 0 && …` in sink context
@@ -7795,7 +7860,12 @@ static Value dropNativeTag(Value v) {
     return v;
 }
 
+extern thread_local const Callable* t_cachedBypass;   // InterpreterCalls.cpp
 Value Interpreter::callCallable(const Value& codeVal, ValueList args, const std::vector<ExprPtr>* rwArgs, bool ownFrame, bool arityCheck, bool whereVerified) {
+    if (codeVal.t == VT::Code && codeVal.code() && codeVal.code()->ci().isCached) {   // `is cached`
+        if (t_cachedBypass != codeVal.code()) return callCached(codeVal, std::move(args), rwArgs, ownFrame, arityCheck, whereVerified);
+        t_cachedBypass = nullptr;   // (callCached's own call: the routine runs)
+    }
     // `is test-assertion`: the outermost one's call site is where a failure inside it is reported
     struct TALine { int& ref; bool set; ~TALine() { if (set) ref = 0; } }
         taLine{testAssertLine_, false};
@@ -7936,7 +8006,7 @@ static signed char plainSubShape(Callable& c) {
         return false;                                   // not settled yet
     bool plain = !c.ci().isBlock && !c.ci().isMethod && !c.ci().builtin && !c.cold().isNative && !c.ci().isMultiDispatcher &&
                  !c.ci().isMultiCandidate && !c.ci().isProto && !c.ci().isWhateverCode && !c.ci().isRegexRoutine &&
-                 !c.cold().deprecated && !c.ci().testAssertion && c.ci().hadSig && c.ci().params && c.ci().body &&
+                 !c.cold().deprecated && !c.ci().testAssertion && !c.ci().isCached && c.ci().hadSig && c.ci().params && c.ci().body &&
                  c.ci().placeholders.empty() && !c.ci().usesArgs && !c.ci().implicitArgs && !c.cold().hasPrimed &&
                  !c.ci().retLiteral && !c.ci().retRw && c.ci().padLayout &&
                  bodyEntryWork(c) == 0 && c.ci().catchScan.get() == 0 && c.ci().controlScan.get() == 0 &&
@@ -9348,10 +9418,10 @@ Value Interpreter::callCallableRaw(const Value& codeVal, ValueList args, const s
     // A bare block is not a routine — except the one a worker thread starts on,
     // which must own its `$/` rather than share the lexical scope every worker
     // closes over. One-shot, consumed here (see spawnPromise).
-    bool isRoutine = !c.ci().isBlock || tcx.forceRoutineFrame;
-    tcx.forceRoutineFrame = false;
+    bool isRoutine = !c.ci().isBlock || tcx.forceRoutineFrame; const bool noLexRoutine = tcx.forceRoutineFrame == 2;   // (a mainline `start`'s: no id, so a `return` there has nothing to leave)
+    tcx.forceRoutineFrame = 0;
     Env* const savedRoutineEnv = tcx.curRoutineEnv;
-    if (isRoutine) { tcx.curRoutineFrame = tcx.frameTop; env->routineFrame = true; env->routineFrameId = tcx.frameTop; tcx.curRoutineEnv = env.get(); } // $/ scopes here
+    if (isRoutine) { tcx.curRoutineFrame = tcx.frameTop; env->routineFrame = true; env->routineFrameId = noLexRoutine ? 0 : tcx.frameTop; tcx.curRoutineEnv = env.get(); } // $/ scopes here
     // (…and the caller's statement, which the callee's own replaced: a
     // `f($i) or next` after the call is still that statement's — ctlOnStmtPath)
     struct FrameGuard {
@@ -9418,10 +9488,10 @@ resumeBody:
             if (c.ci().body && lpc) {
                 if (lpc & 1) runFirstPhasers(*c.ci().body);   // (before ENTER, as Rakudo runs them)
                 const std::vector<StmtPtr>* savedSF = t_hot.poll.firstBody; t_hot.poll.firstBody = c.ci().body;
-                runEnterPhasers(*c.ci().body); // ENTER only; FIRST suppressed
+                runEnterPhasers(*c.ci().body, nullptr, bodyWork & 64); // ENTER only; FIRST suppressed
                 t_hot.poll.firstBody = savedSF;
             }
-            else if (c.ci().body && (bodyWork & 2)) runEnterPhasers(*c.ci().body, &c);
+            else if (c.ci().body && (bodyWork & 2)) runEnterPhasers(*c.ci().body, &c, bodyWork & 64);
         }
         if (c.ci().body) {
             // a native body (an embedded module's, AotModules.h) runs in place of the walk
@@ -9461,7 +9531,7 @@ resumeBody:
                 // the many one-line accessor/action methods a grammar parse calls).
                 // ROUTINES only: in a bare Block, `return` belongs to the enclosing
                 // routine (or is an error without one) — it must take the throw path.
-                if (i + 1 == nst && s->kind == NK::ReturnStmt && isRoutine) {
+                if (i + 1 == nst && s->kind == NK::ReturnStmt && isRoutine && !noLexRoutine) {
                     auto* r = static_cast<ReturnStmt*>(s);
                     if (g_traceStmts) traceStmt(s);   // --trace: this return never reaches exec()
                     // `return-rw` under an lvalue-mode call: surface the
@@ -9512,7 +9582,7 @@ resumeBody:
                          s->kind == NK::ExprStmt && isElementPath(static_cast<ExprStmt*>(s)->e.get()))
                     last = makePathProxy(tcx.cur, static_cast<ExprStmt*>(s)->e.get());
                 else
-                    last = exec(s, i != lastReal); // non-final statements sink
+                    last = exec(s, i != lastReal || tcx.sinkTailCallable == &c); // non-final statements sink (and a gather block's last)
                 if (tcx.returning) { // cooperative return reached this routine
                     if (isRoutine) {
                         tcx.returning = false; last = std::move(tcx.returnV); explicitTailReturn = true;
@@ -9944,7 +10014,7 @@ Value Interpreter::checkRetType(const Callable& c, Value v) {
         throwTypedV("X::TypeCheck::Return",
                     {{"got", v}, {"expected", Value::typeObj(retName)}},
                     "Type check failed for return value; expected " + retName +
-                    " but got " + v.typeName());
+                    " but got " + v.typeName() + " (" + typeCheckRepr(v) + ")");   // rakudo#2595
     // a TYPE OBJECT must still be of the type: `--> Int` refuses Cool
     if (v.t == VT::Type && v.s != "Any" && v.s != "Mu" && kRet.count(retName) && !typeOrSubsetMatches(v, retName))
         throwTypedV("X::TypeCheck::Return",
@@ -11130,7 +11200,7 @@ Value Interpreter::invokeMethod(const Value& codeVal, const Value& self, ValueLi
     }
     const bool hasPhasers = c.ci().phaserScan == 1;
     captureBodyEnds(c);   // …and a method's, which phaserScan does not cover
-    if (hasPhasers && c.ci().body) runEnterPhasers(*c.ci().body, &c);
+    if (c.ci().body && (hasPhasers || (bodyEntryWork(c) & 64))) runEnterPhasers(*c.ci().body, &c, bodyEntryWork(c) & 64);
     bool phasersDone = false;
     // …and `temp`/`let` in a method body must be undone on the way out, which is
     // the other half of what runLeavePhasers does. It ran only for a body with
@@ -11358,6 +11428,47 @@ static bool doBlockEndsInPlace(const Expr* e) {
 // `has @.a`): reset by whoever asks, set by lvalue()'s accessor arm.
 static thread_local char g_lvAttrSigil = 0;
 
+// `$.x` is `$(self.x)`: through a READ-ONLY accessor it is a copy of the
+// value, so what is written to it is lost, as Rakudo loses it (`$.n++`,
+// `$.h<k> = 1` on an undefined `$.h`), while a container inside the value is
+// still the object's own (`$.list.push`). A plain `$.x = v` refuses instead
+// (evalAssignInner, isDotAttrCopy). Writable: `is rw`, the class's `is rw`,
+// or a user method of that name that is rw (a multi is left writable).
+static thread_local Value t_dotCopy[8];
+static thread_local unsigned t_dotCopyAt = 0;
+bool isDotAttrCopy(const Value* p) { return p >= t_dotCopy && p < t_dotCopy + 8; }
+static bool dotAccessorWritable(ClassInfo* cls, const std::string& n) {
+    if (Value* m = cls->findMethod(n))
+        return m->t != VT::Code || !m->code() || m->code()->ci().isMultiDispatcher ||
+               m->code()->ci().isMultiCandidate || m->code()->ci().retRw;
+    std::string buf; const std::string* key = nullptr;
+    const ClassAttr* a = cls->findAccessorAttr(n, key, buf);
+    return !a || a->rw || a->sigil != '$';
+}
+// The copy `$.n` stands for, or null where the accessor is writable. A user
+// `method n` answers `self.n`; the generated accessor reads the slot.
+static Value* dotAttrCopy(Interpreter& I, Value& self, const std::string& n, const Value* slot) {
+    ClassInfo* cls = self.obj()->cls.get();
+    if (!cls || dotAccessorWritable(cls, n)) return nullptr;
+    Value v = cls->findMethod(n) ? I.methodCall(self, n, ValueList{}) : slot ? *slot : Value::any();
+    Value& c = t_dotCopy[t_dotCopyAt++ & 7];
+    c = std::move(v); c.readonly = c.immutableBind = false;
+    return &c;
+}
+[[noreturn]] static void throwImmutableSlot(const Value* p) {
+    throwImmutable(p ? *p : Value::any());
+}
+// `42.abs += 42`, `$n.abs = 1`, `"ab".uc = 1`: a call that answers a plain
+// value is no container, and the refusal names that value, as Rakudo's does
+// (rakudo#1987) — which means asking the method for it, as Rakudo does too.
+void Interpreter::immutableCallTarget(MethodCall* mc, const std::string& name, const Value& inv) {
+    if (mc->methodExpr || !mc->args.empty() || mc->meta || mc->hyper) return;
+    if (inv.t == VT::Int || inv.t == VT::Num || inv.t == VT::Rat || inv.t == VT::Str || inv.t == VT::Bool ||
+        (inv.t == VT::Array && inv.isList)) {
+        ValueList none;
+        throwImmutable(methodCall(inv, name, none));
+    }
+}
 Value* Interpreter::lvalue(Expr* e, bool asInvocant) {
     // set only by the arms that resolve an immutable place, which is rare —
     // test before clearing so the common lvalue() pays one length compare
@@ -11576,6 +11687,8 @@ Value* Interpreter::lvalue(Expr* e, bool asInvocant) {
                 std::string slotBuf;
                 if (!slot) slot = &selfp->obj()->attrs[ve->name[1] == '!' ? attrSlotFor(selfp->obj(), ve->attrBare, slotBuf)
                                                                           : ve->attrBare];
+                if (ve->name[0] == '$' && ve->name[1] == '.')   // through a read-only accessor: a copy
+                    if (Value* c = dotAttrCopy(*this, *selfp, ve->attrBare, slot->deref())) return c;
                 // (an object under construction notes the write for `is required`; `@!a.push` writes no slot)
                 if (!asInvocant && g_attrInitWatchers.load(std::memory_order_relaxed)) noteAttrInit(selfp->obj(), slot);
                 return raceNoteAttr(slot, selfp->obj());
@@ -12595,8 +12708,10 @@ Value* Interpreter::lvalue(Expr* e, bool asInvocant) {
         catch (RakuError&) {
             static thread_local Value invHold;
             invHold = eval(mc->inv.get());
-            if (!(invHold.t == VT::Object || (invHold.t == VT::Hash && invHold.hash())))
+            if (!(invHold.t == VT::Object || (invHold.t == VT::Hash && invHold.hash()))) {
+                immutableCallTarget(mc, mcName, invHold);
                 throw;
+            }
             base = &invHold;
         }
         // The invocant's slot may hold a PROXY rather than the value: `my $r :=
@@ -12656,6 +12771,7 @@ Value* Interpreter::lvalue(Expr* e, bool asInvocant) {
         if (base->t == VT::Hash && base->hash() && base->hashKind == "Attribute" &&
             mcName == "get_value" && mc->args.size() == 1 && !mc->meta && !mc->hyper) {
             Value obj = eval(mc->args[0].get());
+            if (Value* ms = mixinAttrSlot(*base, obj)) return ms;   // (an Attribute a role was mixed into)
             if (obj.t == VT::Object && obj.obj()) {
                 auto nit = base->hash()->find("name");
                 std::string an = nit != base->hash()->end() ? nit->second.toStr() : "";
@@ -12757,8 +12873,7 @@ Value* Interpreter::lvalue(Expr* e, bool asInvocant) {
                         // the delegate's own accessor rules still apply
                         if (!mc->bang && !asInvocant &&
                             !(target->pub && (target->rw || target->sigil == '@' || target->sigil == '%')))
-                            throw RakuError{Value::typeObj("X::Assignment::RO"),
-                                "Cannot modify an immutable '" + to + "'"};
+                            throwImmutableSlot(d->obj()->attrs[to].deref());
                         tcx.lastLvalueAttrType.clear();
                         tcx.lastLvalueAttrWhere = nullptr;
                         tcx.lastLvalueAttr = nullptr;
@@ -12806,9 +12921,8 @@ Value* Interpreter::lvalue(Expr* e, bool asInvocant) {
                         // contents — Cro: `.body-parsers = @!body-parsers`); only
                         // $-attrs need the rw trait
                         if (at.name == mcName && (!acc || &at == acc) &&
-                            !(at.pub && (at.rw || at.sigil == '@' || at.sigil == '%')))
-                            throw RakuError{Value::typeObj("X::Assignment::RO"),
-                                "Cannot modify an immutable '" + mcName + "'"};
+                            !(at.pub && (at.rw || at.sigil == '@' || at.sigil == '%')))   // "…an immutable Int (42)"
+                            throwImmutableSlot(base->obj()->attrs[acc ? *accSlot : mcName].deref());
             // record the attr's declared type so the assignment enforces it
             // (`has C $.x is rw` — `.x = 42` must throw X::TypeCheck::Assignment).
             // ALWAYS reset first: resolving the INVOCANT of a chained accessor
@@ -12848,6 +12962,7 @@ Value* Interpreter::lvalue(Expr* e, bool asInvocant) {
             }
             return raceNoteAttr(&base->obj()->attrs[acc ? *accSlot : mcName], base->obj());
         }
+        immutableCallTarget(mc, mcName, *base);
     }
     // `$(expr)` as an assignment target: the itemization wrapper is transparent
     // for the container — assign into the inner slot
@@ -13003,6 +13118,7 @@ Value* Interpreter::lvalue(Expr* e, bool asInvocant) {
                 long long n = k.toInt();
                 if (n >= 0) {
                     idxHold = b;
+                    if ((long long)n >= (1LL << 20)) growToIndexCheck((long long)n);   // (an index past the machine's memory)
                     if ((size_t)n >= idxHold.arr()->size()) idxHold.arr()->resize((size_t)n + 1, Value::any());
                     return &(*idxHold.arr())[(size_t)n];
                 }
@@ -14174,6 +14290,7 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
                             if (lazy && i >= lim) { stop = true; break; }
                             Value v = nextVal();
                             if (i >= 0) {
+                                if ((long long)i >= (1LL << 20)) growToIndexCheck((long long)i);   // (an index past the machine's memory)
                                 if ((size_t)i >= bp->arr()->size()) bp->arr()->resize((size_t)i + 1, Value::any());
                                 (*bp->arr())[(size_t)i] = v;
                             }
@@ -15026,6 +15143,7 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
                 for (size_t i = 0; i < idx.size(); i++) {
                     long long k = idx[i];
                     if (k < 0) negIndexThrow(k);
+                    if (k >= (1LL << 20)) growToIndexCheck(k);   // (an index past the machine's memory)
                     while ((long long)base->arr()->size() <= k) base->arr()->push_back(Value::any());
                     Value v = i < vs.size() ? vs[i] : Value::any();
                     v.itemized = false;
@@ -15421,6 +15539,7 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
                         else {
                             long long n = ks[i].toInt();
                             if (n < 0) continue;
+                            if ((long long)n >= (1LL << 20)) growToIndexCheck((long long)n);   // (an index past the machine's memory)
                             if ((size_t)n >= basep->arr()->size()) basep->arr()->resize((size_t)n + 1, Value::any());
                             (*basep->arr())[(size_t)n] = v;
                         }
@@ -15921,6 +16040,7 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
                             else if (bp->t == VT::Array && bp->arr()) {
                                 long long j = ks[i].toInt();
                                 if (j < 0) negIndexThrow(j); // (this skipped the key and kept the rest of the assignment)
+                                if ((long long)j >= (1LL << 20)) growToIndexCheck((long long)j);   // (an index past the machine's memory)
                                 if ((long long)bp->arr()->size() <= j) bp->arr()->resize(j + 1, Value::any());
                                 storeThrough((*bp->arr())[j], v);
                             }
@@ -16708,6 +16828,7 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
             static_cast<VarExpr*>(a->target.get())->name.size() > 2 &&
             (static_cast<VarExpr*>(a->target.get())->name[1] == '.' ||
              static_cast<VarExpr*>(a->target.get())->name[1] == '!');
+        if (selfAttrTarget && opEq(a->op, "=") && isDotAttrCopy(lv)) throwImmutable(*lv);   // `$.x = v`, read-only accessor
         // `$obj.attr = Nil` RESETS the attribute to its default — Nil is the
         // reset value, never a stored one — the rule `$x = Nil`, `@a[0] = Nil`
         // and `$!attr = Nil` already followed. A reset is not an assignment, so
@@ -17652,6 +17773,7 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
             throw RakuError{Value::typeObj("X::NoZeroArgMeaning"),
                             "No zero-argument meaning for: infix:<" + binop + ">"};
         else if (binop == "+" || binop == "-") slotStore(lv, Value::integer(0));
+        else if (isSetOpStr(binop) && !isSetPredicateStr(binop)) slotStore(lv, setWrap({}, setOpMinTier(binop)));
     }
     // `$s ~= $obj` honours a user-defined Str method, exactly like binary `~`
     // (XML::Document.Str appends its root element object this way)
@@ -18435,8 +18557,7 @@ static Value applyArithGeneral(const std::string& op, const Value& l, const Valu
     if (op.size() >= 5 && (op.substr(0, 2) == ">>" || op.substr(0, 2) == "<<") &&
         (op.substr(op.size() - 2) == ">>" || op.substr(op.size() - 2) == "<<")) {
         std::string inner = op.substr(2, op.size() - 4);
-        // the bracket-cited operator form: `(1,2) >>[+]<< (3,4)` — the citation
-        // means the bare infix, element-wise (roast issue-2353 test)
+        // the bracket-cited operator form: `(1,2) >>[+]<< (3,4)` — the citation means the bare infix, element-wise (roast issue-2353 test)
         if (inner.size() >= 3 && inner.front() == '[' && inner.back() == ']')
             inner = inner.substr(1, inner.size() - 2);
         // hyper compound assignment — the shared implementation, reached
@@ -18453,6 +18574,7 @@ static Value applyArithGeneral(const std::string& op, const Value& l, const Valu
                     (*l.arr())[i] = applyArith(base, (*l.arr())[i], rhs[i % rhs.size()]);
             return l;
         }
+        if (g_cbInterp) return g_cbInterp->applyBinOpPublic(op.substr(0, 2) + inner + op.substr(op.size() - 2), l, r);   // the interpreter's hyper: nesting, hashes, containers (a compiled `%h »+« %g` was (2,))
         ValueList a = listCtx(l), b = listCtx(r);
         Value out = Value::array(); out.isList = true;
         size_t n = a.size() > b.size() ? a.size() : b.size();
@@ -18608,7 +18730,7 @@ static Value applyArithGeneral(const std::string& op, const Value& l, const Valu
                           g_cbInterp->methodCall(rp, "absolute", ValueList{}).toStr();
         return Value::boolean(opEq(op, "~~") ? same : !same);
     }
-    if ((r.t == VT::Object || r.t == VT::Hash || l.t == VT::Object) && g_cbInterp &&
+    if ((r.t == VT::Object || r.t == VT::Hash || l.t == VT::Object || r.t == VT::Code) && g_cbInterp &&
         (opEq(op, "~~") || opEq(op, "!~~"))) {
         Value hooked;
         if (valueSmartmatchHook(op, l, r, hooked)) return hooked;
@@ -19930,8 +20052,8 @@ static Value applyArithGeneral(const std::string& op, const Value& l, const Valu
         // name ARE the same operator; user routines keep pointer identity.
         else if (l.t == VT::Code)
             same = (l.code() == r.code()) ||
-                   (l.code() && r.code() && l.code()->ci().builtin && r.code()->ci().builtin &&
-                    !l.code()->ci().name.empty() && l.code()->ci().name == r.code()->ci().name);
+                   (l.code() && r.code() && l.code()->ci().builtin && r.code()->ci().builtin && !l.code()->ci().isRegexRoutine &&
+                    !l.code()->ci().name.empty() && l.code()->ci().name == r.code()->ci().name);   // (a `my token`'s &name is a closure of its frame)
         // Lists/Arrays are reference identity — except a CAPTURE, which is the one
         // Array-shaped VALUE type: `\(1,2) === \(1,2)` is True. Its parts carry
         // their own identity, so `\(1)` stays apart from `\("1")`.
@@ -21061,7 +21183,17 @@ Value Interpreter::regexMatch(const std::string& subject, std::string_view patte
     // and answer its value, every slot restored after. Shared by the assertion
     // and by the `<{ … }>` pattern hook, which differ only in what they do with
     // the answer. A quiet error answers Nil.
-    auto evalInCursor = [this, &build](const std::string& code, long from, long to,
+    // `self` in a token's code is the cursor the token was entered with: where the rule began,
+    // and for a routine matched directly (`~~ $tok`, `~~ &tok`) where the scan began (rakudo#3410).
+    // Only where nothing else is `self`; gone again on the way out.
+    const long rxSelfFrom = (!declKind.empty() || (rxVal && rxVal->t == VT::Regex && !rxVal->hashKind.empty())) ? contStart : -1;
+    struct RxSelfG { Env* e = nullptr; ~RxSelfG() { if (e) { e->undefine("self"); e->selfSlot = nullptr; } } };
+    auto bindRxSelf = [this, &build, rxSelfFrom](RxSelfG& g, long from) {
+        if (tctx().cur->findSelf()) return;
+        RxMatch sm; sm.matched = true; sm.from = sm.to = rxSelfFrom >= 0 ? rxSelfFrom : from;
+        tctx().cur->define("self", build(sm)); g.e = tctx().cur.get();
+    };
+    auto evalInCursor = [this, &build, bindRxSelf](const std::string& code, long from, long to,
                                        const GrammarHooks::NamedMap& named,
                                        const std::vector<std::pair<long, long>>& caps,
                                        const RxCursorCaps* cc = nullptr) -> Value {
@@ -21081,6 +21213,7 @@ Value Interpreter::regexMatch(const std::string& subject, std::string_view patte
         // where a `$/` parameter stands (put back below)
         const bool quiet = liftMatchVarQuiet();
         setMatchVar(cursor, true);
+        RxSelfG selfG; bindRxSelf(selfG, from);
         Value out = Value::nil(); bool featThrow = false; FeatureNotBuilt fe; std::exception_ptr rakuErr;
         try { out = evalString(code); }
         catch (FeatureNotBuilt& e) { featThrow = true; fe = e; }
@@ -21115,7 +21248,7 @@ Value Interpreter::regexMatch(const std::string& subject, std::string_view patte
     // abandoned never fires and a branch that is retried never fires twice. Running
     // them eagerly instead is what broke subst.t and longest-alternative.t.
     if (hookScan.find('{') != std::string::npos) {
-        auto runBlock = [this, &inlineMade, &build](
+        auto runBlock = [this, &inlineMade, &build, bindRxSelf](
                               const std::string& code, long from, long to,
                               const GrammarHooks::NamedMap& named,
                               const std::vector<std::pair<long, long>>& caps,
@@ -21144,6 +21277,7 @@ Value Interpreter::regexMatch(const std::string& subject, std::string_view patte
             const bool quiet = liftMatchVarQuiet();
             setMatchVar(cursor, true);
             tctx().cur->define("$\xC2\xA2", cursor);
+            RxSelfG selfG; bindRxSelf(selfG, from);
             Value tgt; tctx().makeTargets.push_back(&tgt);
             // FeatureNotBuilt (a SLIM stub — under --slim=-eval evalString IS
             // the stub) is re-raised after the scope restores below; anything
@@ -21187,7 +21321,7 @@ Value Interpreter::regexMatch(const std::string& subject, std::string_view patte
                                                const std::vector<std::pair<long, long>>& caps,
                                                const GrammarHooks::ParamMap&,
                                                const std::string& flags) -> const Regex* {
-            return dynRegexFor(evalInCursor(code, from, to, named, caps), flags);
+            return dynRegexFor(isRxSelfCall(code) ? rxSelfCallee(code) : evalInCursor(code, from, to, named, caps), flags);
         };
         wantHooks = true;
     }
@@ -21258,7 +21392,7 @@ Value Interpreter::regexMatch(const std::string& subject, std::string_view patte
     // `rule`-kind (sigspace) declines until the builder models <.ws>. The
     // returned text doubles as the staleness stamp — registration is
     // last-wins, so LtmNfa::stillValid re-asks and rebuilds on change.
-    if (!namedRegex_.empty()) {
+    if (!namedRegex_.empty() || pat.find("<&?BLOCK") != std::string::npos) {
         rmHooks.namedRule = [this](const std::string& name, std::string& text,
                                    std::string& flags) -> bool {
             if (name == "ws") return false; // the match path hardcodes <ws>
@@ -21275,7 +21409,8 @@ Value Interpreter::regexMatch(const std::string& subject, std::string_view patte
         // …and a `regex`-kind one is called BACKTRACKABLY (GrammarHooks::lexCallee),
         // compiled exactly as the resolver compiles it; a token/rule never gives
         // back what it matched, so those stay on the resolver.
-        rmHooks.lexCallee = [this](const std::string& name) -> std::shared_ptr<const Regex> {
+        rmHooks.lexCallee = [this, reP](const std::string& name) -> std::shared_ptr<const Regex> {
+            if (name == "?BLOCK") return reP;   // `<&?BLOCK>`: the regex itself, recursing (rakudo#3775)
             auto it = namedRegex_.find(name);
             if (it == namedRegex_.end()) return nullptr;
             auto kit = namedRegexKind_.find(name);
@@ -21364,20 +21499,6 @@ struct HyperOpName {
     explicit HyperOpName(const std::string& n) : prev(g_hyperOpName) { g_hyperOpName = &n; }
     ~HyperOpName() { g_hyperOpName = prev; }
 };
-// A TYPED Array operand of a hyper keeps its type on the result when every
-// element still fits it (`my Int @a; @a >>*>> 4` is an Array[Int]), and the
-// answer is a plain List when one does not (`@a >>/>> 4`) — S03-metaops/hyper.t
-static Value typedHyperResult(Interpreter& I, const Value& l, const Value& r, Value res) {
-    const Value* typed = (l.t == VT::Array && !l.isList && !l.ofType().empty()) ? &l
-                       : (r.t == VT::Array && !r.isList && !r.ofType().empty()) ? &r : nullptr;
-    if (!typed || res.t != VT::Array || !res.arr() || isNativeTypeName(typed->ofType())) return res;
-    bool fits = true;
-    for (auto& e : *res.arr()) if (!I.typeOrSubsetMatches(e, typed->ofType())) { fits = false; break; }
-    if (fits) { res.isList = false; res.ofTypeM() = typed->ofType(); }
-    else { res.isList = true; res.ofTypeM() = ""; }
-    return res;
-}
-
 Value rtSmartmatch(Interpreter& I, const char* op, const Value& l, const Value& r) {
     const bool neg = op[0] == '!';
     if (r.t == VT::Code && r.code()) {
@@ -21726,10 +21847,10 @@ Value Interpreter::applyBinOp(const std::string& op, const Value& l, const Value
     // `[+]`): the citation means the bare operator; strip once and recurse
     if (op.size() >= 3 && op.front() == '[' && op.back() == ']' && !opEq(op, "[=]"))
         return applyBinOp(op.substr(1, op.size() - 2), l, r);
-    // A CALLABLE named as the operator — `[[&foo]] @list`, `A [&foo] B` in its
-    // reduce form. The `&` spelling cannot collide with any infix.
+    // A CALLABLE named as the operator — `[[&foo]] @list`, `A [&foo] B` in its reduce form. The `&` spelling cannot collide with any infix.
     if (op.size() > 1 && op[0] == '&' && tctx().cur)
         if (Value* f = tctx().cur->find(op)) return callCallable(*f, ValueList{l, r});
+    if (op.rfind("&infix:<", 0) == 0 && op.back() == '>') return callCallable(infixCallable(op.substr(1)), ValueList{l, r});   // …a built-in's, as `&infix:<>>` answers: `[[&infix:«>»]] 6, 5, 4` folds, False (rakudo#4128)
     // reverse metaop (`a R- b` == `b - a`) — so `[R-]`/`[R~]` reduce works like the
     // standalone `R-` binary does (evalBinary strips it; applyBinOp must too).
     if (op.size() > 1 && op[0] == 'R' && (!ascii::isalnum((unsigned char)op[1]) || reverseWordOp(op)))
@@ -22879,7 +23000,7 @@ bool Interpreter::declLaneRhs(Expr* e, Value& out) {
             out = Value::boolean(c != 0);
             return true;
         }
-        default: return false;
+        case NK::Ternary: return declLaneTernary(static_cast<Ternary*>(e), out); default: return false;
     }
 }
 
@@ -23196,7 +23317,12 @@ Value Interpreter::evalBinary(Binary* b) {
         if (whateverArrivedAsValue(b, l, r)) {   // (and a numeric operator has no Numeric of it to take)
             if (l.t == VT::Whatever || r.t == VT::Whatever) refuseWhateverNumeric(op);
             Interpreter::valueSmartmatch_ = true; return applyBinOp(op, l, r); }
-        if (RAKUPP_UNLIKELY(uninitOperand(l) || uninitOperand(r))) uninitBinaryOperands(b, op, l, r);
+        if (RAKUPP_UNLIKELY(uninitOperand(l) || uninitOperand(r))) {
+            // a user multi may take the type object (`multi infix:<+>(Int:U, Int)`) before it warns
+            if ((userClassTypeObj(*this, l) || userClassTypeObj(*this, r)) && boundInfixPossible(name))
+                if (Value res; objectOperandInfix(*this, name, l, r, res)) return res;
+            uninitBinaryOperands(b, op, l, r);
+        }
         // a DateTime or Date against a number or another (temporalArith)
         if (l.t == VT::Object || r.t == VT::Object || l.hashKind == "DateTime" || r.hashKind == "DateTime" ||
             l.hashKind == "Date" || r.hashKind == "Date")
@@ -23252,8 +23378,9 @@ Value Interpreter::evalBinary(Binary* b) {
         }
         // (an Order operand — `($a cmp $b) == Less` — asked on every evaluation,
         // so the walk waits until some scope has bound this spelling at all)
-        if ((l.t == VT::Object || r.t == VT::Object || !l.enumType().empty() || !r.enumType().empty()) &&
-            boundInfixPossible(name))
+        // (…or a user class's type object, rakudo#6860)
+        if ((l.t == VT::Object || r.t == VT::Object || userClassTypeObj(*this, l) || userClassTypeObj(*this, r) ||
+             !l.enumType().empty() || !r.enumType().empty()) && boundInfixPossible(name))
             if (Value* f = tctx().cur->find("&infix:<" + name + ">"))
                 try { return callCallable(*f, ValueList{l, r}); }
                 catch (RakuError& e) { // only "no candidate took these operands" falls back
@@ -23330,6 +23457,7 @@ Value Interpreter::evalBinary(Binary* b) {
                                     else if (bp->t == VT::Array && bp->arr()) {
                                         long long j = keys[i].toInt();
                                         if (j < 0) continue;
+                                        if ((long long)j >= (1LL << 20)) growToIndexCheck((long long)j);   // (an index past the machine's memory)
                                         if ((long long)bp->arr()->size() <= j) bp->arr()->resize(j + 1);
                                         (*bp->arr())[j] = v;
                                     }
@@ -23638,11 +23766,17 @@ Value Interpreter::evalBinary(Binary* b) {
             Value uv;
             if (userInfixOverCore(op, l, r, uv)) return uv;
         }
-        if (RAKUPP_UNLIKELY(uninitOperand(l) || uninitOperand(r))) uninitBinaryOperands(b, op, l, r);
-        // An object or enum operand meets a user `multi infix:<~>` first, as on the
-        // general path (`Rt.new ~ 1`, `Red ~ "x"`); then an operand that IS-A Str is
-        // a Str:D, concatenated by VALUE per operand: `("bb" but R) ~ Plain.new` is "bbplain".
-        if ((l.t == VT::Object || r.t == VT::Object || !l.enumType().empty() || !r.enumType().empty()) && boundInfixPossible(op))
+        if (RAKUPP_UNLIKELY(uninitOperand(l) || uninitOperand(r))) {
+            if ((userClassTypeObj(*this, l) || userClassTypeObj(*this, r)) && boundInfixPossible(op))   // `"A: " ~ A`
+                if (Value res; objectOperandInfix(*this, op, l, r, res)) return res;
+            uninitBinaryOperands(b, op, l, r);
+        }
+        // An object, a user class's type object or an enum operand meets a user `multi
+        // infix:<~>` first, as on the general path (`Rt.new ~ 1`, `Red ~ "x"`, `"A: " ~ A`);
+        // then an operand that IS-A Str is a Str:D, concatenated by VALUE per operand:
+        // `("bb" but R) ~ Plain.new` is "bbplain".
+        if ((l.t == VT::Object || r.t == VT::Object || userClassTypeObj(*this, l) || userClassTypeObj(*this, r) ||
+             !l.enumType().empty() || !r.enumType().empty()) && boundInfixPossible(op))
             if (Value res; objectOperandInfix(*this, op, l, r, res)) return res;
         if (l.t == VT::Object || r.t == VT::Object) {
             const std::string lt = strInStrContext(l);   // (composing across the join)
@@ -24055,10 +24189,9 @@ Value Interpreter::evalBinary(Binary* b) {
             if (isTrSubst(sub->pattern)) { // tr/from/to/ — transliteration, returns a StrDistance
                 std::string before = l.toStr();
                 std::string out = trApply(*this, before, sub->pattern, sub->repl);
-                // `$x ~~ TR///` does NOT mutate: it transliterates $x and then
-                // smartmatches the result against it, so `1 ~~ TR/\#//` is True
-                // (nothing to delete) while `"ab" ~~ TR/ab/01/` is False.
-                if (sub->nonMut) return applyBinOp("~~", l, Value::str(out));
+                // `$x ~~ TR///` does NOT mutate: it answers the transliterated Str, as
+                // Rakudo does (rakudo#1551: `'hello' ~~ TR/e/1/` is "h1llo", not False)
+                if (sub->nonMut) return Value::str(out);
                 // `s///` MUTATES its left side, so a readonly target is an error.
                 // This is the shape the report arrived as, and it slipped past the
                 // assignment guard because a substitution never goes through `=`.
@@ -24619,14 +24752,14 @@ Value Interpreter::evalUnary(Unary* u) {
         // nothing after it uses the Any it hands back (ctlOnStmtPath); as any
         // other operand it throws, and the loop catches the exception exactly
         // as it does from a nested block
-        if (tctx().frameTop == tctx().curLoopFrame && ctlOnStmtPath(tctx(), u)) {
+        if (tctx().frameTop == tctx().curLoopFrame && !u->operand && ctlOnStmtPath(tctx(), u)) {
             tctx().loopCtl = opEq(u->op, "next") ? 1 : opEq(u->op, "last") ? 2 : 3; // cooperative
             tctx().loopCtlLabel = nullptr;
             return Value::any();
         }
-        if (opEq(u->op, "last")) throw LastEx{};
-        if (opEq(u->op, "next")) throw NextEx{};
-        throw RedoEx{};
+        if (opEq(u->op, "last")) throw LastEx{u->operand ? static_cast<StrLit*>(u->operand.get())->v : std::string()};   // (`… or last LOOP`)
+        if (opEq(u->op, "next")) throw NextEx{u->operand ? static_cast<StrLit*>(u->operand.get())->v : std::string()};
+        throw RedoEx{u->operand ? static_cast<StrLit*>(u->operand.get())->v : std::string()};
     }
     // reduction metaoperator [op] — and its triangular/scan form [\op]
     if (u->op.size() >= 3 && u->op.front() == '[' && u->op.back() == ']') {
@@ -24885,7 +25018,7 @@ Value Interpreter::evalUnary(Unary* u) {
             if (v.t == VT::Range) { for (auto& x : v.flatten()) items.push_back(x); }
             else if (v.t == VT::Array && v.arr() && !v.itemized) {
                 if (v.ext()) drainIfFiniteLazy(v);   // (the scan form missed endlessReduce's drain)
-                for (auto& x : *v.arr()) items.push_back(x);
+                reduceArrayElems(op, v, items);
             }
             else items.push_back(std::move(v));
         }
@@ -25070,10 +25203,7 @@ Value Interpreter::evalUnary(Unary* u) {
     if (opEq(u->op, "do")) {
         if (u->operand->kind == NK::BlockExpr) {
             auto* be = static_cast<BlockExpr*>(u->operand.get());
-            if (!be->phaser.empty() && !staticPhaserVal_.empty()) {   // ran before the code around it
-                auto sv = staticPhaserVal_.find(be);
-                if (sv != staticPhaserVal_.end()) return sv->second;
-            }
+            if (!be->phaser.empty()) return valuePhaser(be);   // its value from its own phase
             // a `do { }` block takes no arguments, so a placeholder inside it is
             // a compile error (X::Placeholder::Block), like Rakudo (asked until
             // runsInPlace has decided, which a block that has one never reaches)
@@ -25232,7 +25362,19 @@ Value Interpreter::evalUnary(Unary* u) {
                 t_fatalTry = true;
                 r = runsInPlace(be) ? runBlockInPlace(be) : callCallable(makeClosure(be), {});
             }
-            else r = eval(u->operand.get());
+            else if (!tryOperandDeclares(u->operand.get())) {
+                // `try EXPR` is a thunk, a frame of its own in Rakudo's backtrace (`code`, at
+                // this line): Log::Async drops it as the exception's own and reads the caller
+                // from the next one. A scope marked as runBlockInPlace marks its (btThunk).
+                ExecContext& tcx = tctx(); PooledFrame frame_{tcx};
+                frame_.env->parent = tcx.cur;
+                frame_.env->btBlock = frame_.env->btCalled = frame_.env->btThunk = true;
+                frame_.env->btLine = curLine_;
+                struct Restore { ExecContext& t; std::shared_ptr<Env> saved; ~Restore() { t.cur = std::move(saved); } } restore{tcx, std::move(tcx.cur)};
+                tcx.cur = frame_.env;
+                r = eval(u->operand.get());
+            }
+            else r = eval(u->operand.get());   // (`try my $x = …` declares where it stands)
             // A block that RETURNS a live Failure sets `$!` too — it did not throw,
             // but the failure is still what happened (`try { 1 % 0 }` handed back
             // an undefined value with `$!` cleared, and nothing said what went
@@ -26879,7 +27021,7 @@ Value Interpreter::evalCall(Call* c) {
                 "=:=", "!=:=", "before", "after", "~~", "!~~", "=~=", "\xE2\x89\x85"};
             const std::string bop = uniOpFold(op);   // (`infix:<≤>`'s rules are `<=`'s)
             if (kChaining.count(bop)) return Value::boolean(true);
-            if (opEq(bop, "+") || opEq(bop, "-") || opEq(bop, "*") || opEq(bop, "/")) {
+            if (opEq(bop, "+") || opEq(bop, "-") || opEq(bop, "*") || opEq(bop, "/") || opEq(bop, "~")) {   // (`~` joins a list: `ab`)
                 ValueList one{args[0]};
                 return applyReduce(op, one);
             }
@@ -29336,7 +29478,7 @@ struct RatLitParts {
             // `is dynamic`/`$*` names live; anything else falls through to the
             // lexical lookup, as before
             if (callerHead && !tctx().dynStack.empty() && tctx().dynStack.back())
-                if (Value* p = dynInFrame(tctx().dynStack.back(), nm)) {
+                if (Value* p = dynInFrame(tctx().dynStack.back(), nm); p && (sr->pkg != "CALLERS" || callersSees(*this, tctx().dynStack.back(), nm))) {
                     // …and only a DYNAMIC one may be read so: a plain `my $x`
                     // of the caller is X::Caller::NotDynamic
                     // (`$_` was dynamic in 6.c only: from 6.d it is refused too)
@@ -29377,7 +29519,7 @@ struct RatLitParts {
             // learn whether the code calling it imported Red's operators
             if (callerHead && sr->pkg == "CALLERS")
                 for (auto it = tctx().dynStack.rbegin(); it != tctx().dynStack.rend(); ++it)
-                    if (*it) if (Value* p = dynInFrame(*it, nm)) {
+                    if (*it) if (Value* p = dynInFrame(*it, nm); p && callersSees(*this, *it, nm)) {
                         // from 6.e only a DYNAMIC may be reached so; a plain
                         // `my $x` of a caller answers a Failure (pseudo-6e.t)
                         if (sixE() && nm.size() > 1 && (nm[0] == '$' || nm[0] == '@' || nm[0] == '%') &&
@@ -29853,34 +29995,11 @@ struct RatLitParts {
                 if (!known && materializePendingType(rn)) known = true;
                 // The RakuAST:: namespace, after every ordinary way of knowing
                 // the name has failed — so a user's own `class RakuAST::Mine`
-                // is never gated, whether it was declared above this line
-                // (`classes_`) or below it (the pending-type build just above,
-                // which reads the unit's statements and therefore answers the
-                // same from the AST cache as from a fresh parse). What is left
-                // is Rakudo's own tree classes.
-                //
-                // The gate runs BEFORE the registry is consulted, on both the
-                // plain and the symbolic path, so the refusal never depends on
-                // whether the table happens to carry the name.
-                if (!known && isRakuAstName(rn)) {
-                    if (!rakuAstVisible()) {
-                        // …and the symbolic form answers a Failure carrying the
-                        // same exception, exactly as Rakudo's does — `try
-                        // ::('RakuAST::Node')` is how a module asks whether the
-                        // namespace is there at all, and a control jump would
-                        // break the probe it is written as.
-                        if (nt->symbolicStrict) {
-                            Value f = rakuppNewFailure();
-                            (*f.hash())["exception"] = Value::typeObj("X::Experimental");
-                            (*f.hash())["message"] =
-                                Value::str("Use of RakuAST is experimental; "
-                                           "please 'use experimental :rakuast;'");
-                            return f;
-                        }
-                        refuseRakuAst();
-                    }
-                    if (rakuAstClass(rn)) return Value::typeObj(rn);
-                }
+                // wins, whether it was declared above this line (`classes_`) or
+                // below it (the pending-type build just above). What is left is
+                // Rakudo's own tree classes, which need no pragma since Rakudo
+                // 2026.09 (rakudo#6134, #6137).
+                if (!known && isRakuAstName(rn) && rakuAstClass(rn)) return Value::typeObj(rn);
                 if (!known && nt->symbolicStrict) {
                     // …and the refusal is a Failure, not a throw: Rakudo's
                     // ::('NoSuch') hands back a broken Failure whose
@@ -31642,11 +31761,11 @@ Value Interpreter::evalVarExpr(Expr* e) {
                 return code;
             }
         }
-        // `&postfix:<++>`, `&prefix:<-->`: the step on the container it is handed,
-        // as a routine of that name (`@a.map(&postfix:<++>)`, `f($y)` steps $y)
-        if (bare == "prefix:<++>" || bare == "prefix:<-->" || bare == "postfix:<++>" || bare == "postfix:<-->") {
-            const bool post = bare[1] == 'o', inc = bare.find("++") != std::string::npos;
-            Value code = evalString(std::string("sub ($x is rw) { ") + (post ? "$x" : "") + (inc ? "++" : "--") + (post ? "" : "$x") + " }");
+        // `&postfix:<++>`, `&prefix:<-->` and the atomic `&prefix:<⚛>`, `&postfix:<⚛++>`…: the step on the container it is
+        // handed, as a routine of that name (`@a.map(&postfix:<++>)`, `f($y)` steps $y)
+        if (static const std::set<std::string> kSteps = {"prefix:<++>", "prefix:<-->", "postfix:<++>", "postfix:<-->", "prefix:<\xE2\x9A\x9B>", "prefix:<++\xE2\x9A\x9B>", "prefix:<--\xE2\x9A\x9B>", "postfix:<\xE2\x9A\x9B++>", "postfix:<\xE2\x9A\x9B-->"}; kSteps.count(bare)) {
+            const bool post = bare[1] == 'o'; const std::string op = bare.substr(post ? 9 : 8, bare.size() - (post ? 10 : 9));
+            Value code = evalString("sub ($x is rw) { " + (post ? "$x" + op : op + "$x") + " }");
             code.setCode(makePayload<Callable>(*code.code())); code.code()->ciM().name = bare;
             return code;
         }
@@ -32068,21 +32187,20 @@ Value Interpreter::evalMethodCallExpr(Expr* e, Value* handedInv) {
     tctx().rwInvocantExpr = mc->inv.get();
     if (mc->methodExpr) { // indirect ."$name"() / .$var (Callable or name)
         Value mv = eval(mc->methodExpr.get());
-        // `.$var` is an INVOCATION of what the variable holds, never a method
-        // lookup by name: a Str there is a string being called (Rakudo:
-        // "No such method 'CALL-ME' for string 'uc'"). Only `."$name"()`
-        // names a method.
+        // `.$var` INVOKES what the variable holds, never a lookup by name ("No such method 'CALL-ME' for string 'uc'")
         if (mv.t == VT::Str && mc->methodExpr->kind == NK::VarExpr && !mv.isAllomorph())
             throwTypedV("X::Method::NotFound",
                         {{"method", Value::str("CALL-ME")}, {"typename", Value::str("Str")},
                          {"private", Value::boolean(false)}},
                         "No such method 'CALL-ME' for string '" + mv.toStr() + "'");
-        // A TYPE OBJECT is invocable too: Rakudo compiles `.$foo` to
-        // `$foo($invocant)`, so `$value.$ct` with `my $ct = Rat` is the
-        // COERCION Rat($value) — which is how DBDish::SQLite types every
-        // column it reads (`($ct === Any || $value ~~ $ct) ?? $value !! $value.$ct`).
-        // Falling through to the name path below stringified the type
-        // object to nothing and reported "No such method ''".
+        // …and `."$name"()` names a public method, never a private one: `self."!$n"()` is Rakudo's X::Method::NotFound
+        if (mv.t == VT::Str && mv.s.size() > 1 && mv.s[0] == '!')
+            throwTypedV("X::Method::NotFound", {{"method", mv}, {"typename", Value::str(inv.typeName())}, {"private", Value::boolean(false)}},
+                        "No such method '" + mv.toStr() + "' for invocant of type '" + inv.typeName() + "'. Method name starts with '!', did you mean 'self!\"" + mv.toStr().substr(1) + "\"()'?");
+        // A TYPE OBJECT is invocable too: Rakudo compiles `.$foo` to `$foo($invocant)`, so `$value.$ct` with
+        // `my $ct = Rat` is the COERCION Rat($value), how DBDish::SQLite types every column it reads
+        // (`($ct === Any || $value ~~ $ct) ?? $value !! $value.$ct`). Falling through to the name path below
+        // stringified the type object to nothing and reported "No such method ''".
         if (mv.t == VT::Code || mv.t == VT::Type) { // a method object / callable: invoke with the invocant
             // `*.&sub` (or a WhateverCode invocant) curries into a WhateverCode
             // instead of calling eagerly — otherwise `sub($_)` runs on the bare

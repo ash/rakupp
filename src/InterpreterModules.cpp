@@ -2947,7 +2947,7 @@ Value Interpreter::evalString(const std::string& srcIn, bool mainlinePH, bool* i
     // snippet's own subs are judged — one the caller declared is the binder's
     // to refuse when the call runs.
     if (mainlinePH && callCheckEnabled()) {
-        auto dc = findDoomedCalls(*prog, libPaths_, [this](const std::string& n) { return builtinRef(n) != nullptr; });
+        auto dc = findDoomedCalls(*prog, libPaths_, [this](const std::string& n) { return builtinRef(n) != nullptr; }); dropGatedInScope(*this, dc);   // (the caller's `use Test` is the EVAL's)
         if (!dc.empty()) {
             const DoomedCall& d = dc.front();
             if (d.undeclared) {   // a routine run while compiling, declared further down (#196)
@@ -3122,10 +3122,17 @@ Value Interpreter::evalString(const std::string& srcIn, bool mainlinePH, bool* i
     // block's are: in the REPL, `my $x := True || (my $s := 5)` left no $s for
     // the next line (#248)
     if (mainlinePH && tctx().cur) hoistExprDecls(prog->stmts, tctx().cur.get(), nullptr);
+    Value enterTail = Value::nil();
+    if (mainlinePH && !checkOnly) runUnitEntryPhasers(prog->stmts, &enterTail);   // its FIRST and ENTER, as a program's
     for (auto& s : prog->stmts) {
         tctx().endCurTopStmt = s.get();   // for a `use` in it
         if (prog->mayHaveRoutineUse) preloadRoutineUses(s.get());
         if (s.get() == unitCatch) continue;
+        if (mainlinePH && !checkOnly && s->kind == NK::Block && (static_cast<Block*>(s.get())->phaser == "ENTER" ||
+            static_cast<Block*>(s.get())->phaser == "FIRST") && !static_cast<Block*>(s.get())->isCatch) {   // (ran above)
+            if (&s == &prog->stmts.back()) last = enterTail;
+            continue;
+        }
         // a top-level INIT just ran above; running it again here would double it
         if (s->kind == NK::Block && static_cast<Block*>(s.get())->initHoisted) continue;
         // Loop control inside the EVAL, with a loop OUTSIDE it, belongs to that
@@ -3596,7 +3603,34 @@ void Interpreter::registerEnds(const Program& prog) {
     if (!endsUnder_.empty()) endsUnderAny_.store(true, std::memory_order_relaxed);
     g_endChain.clear(); g_endBlockChain.clear(); g_endEdges.clear();
 }
+void valuePhasersIn(const std::vector<StmtPtr>& stmts, std::vector<BlockExpr*>& out, char want);   // InterpreterOperators.cpp
+void valuePhasersInStmt(Stmt* s, std::vector<BlockExpr*>& out, char want);
+std::string valuePhaserSlot(const BlockExpr* be);
+// A unit's FIRST and then its ENTER phasers, on entry, before its mainline:
+// each kind in source order, the TERM form (`say now - ENTER now`) among the
+// statements. Rakudo runs a top-level FIRST even before INIT; here it runs
+// after, beside the ENTERs. `tail` takes the value of one that ends the unit:
+// `EVAL q[ENTER 5]` is 5.
+void Interpreter::runUnitEntryPhasers(const std::vector<StmtPtr>& stmts, Value* tail) {
+    for (const char* ph : {"FIRST", "ENTER"}) for (auto& st : stmts) {
+        if (st && st->kind == NK::Block) { auto* b = static_cast<Block*>(st.get());
+            if (b->phaser != ph || b->isCatch) continue;
+            std::shared_ptr<Env> sc = tctx().cur;   // (a statement form, `ENTER my $x = …`, declares in the unit)
+            if (!b->stmtForm) { sc = makeSlabShared<Env>(); sc->parent = tctx().cur; }
+            Value v = execBlock(b, sc);
+            if (tail && &st == &stmts.back()) *tail = std::move(v);
+            continue; }
+        std::vector<BlockExpr*> vp; valuePhasersInStmt(st.get(), vp, 'E');
+        for (BlockExpr* be : vp) if (be->phaser == ph)
+            tctx().cur->define(valuePhaserSlot(be), runsInPlace(be) ? runBlockInPlace(be) : callCallable(makeClosure(be), {}));
+    }
+}
 void Interpreter::runFirstPhasers(const std::vector<StmtPtr>& stmts) {
+    // a FIRST in TERM position (`say FIRST $_`) too: its value kept around the
+    // loop, where every iteration reads it (valuePhaser), as the tail's below
+    std::vector<BlockExpr*> vp; valuePhasersIn(stmts, vp, 'F');
+    for (BlockExpr* be : vp)
+        (tctx().cur->parent ? tctx().cur->parent : tctx().cur)->define(valuePhaserSlot(be), runsInPlace(be) ? runBlockInPlace(be) : callCallable(makeClosure(be), {}));
     for (auto& s : stmts) if (s->kind == NK::Block) { auto* b = static_cast<Block*>(s.get());
         if (b->phaser != "FIRST") continue;
         auto sc = makeSlabShared<Env>(); sc->parent = tctx().cur;
@@ -5582,8 +5616,12 @@ static void refuseRoleClashes(Interpreter& I, const std::string& clsName, const 
             code.code()->ciM().isRegexRoutine = true;   // `&R.^name` is Regex, not Sub
             // (the regex's own code blocks see it as `&?ROUTINE`: it is handed in)
             Callable* selfW = code.code();   // not owned: see PRef::fromObject
+            code.code()->closure = tctx().cur;   // its code blocks read the declaring frame's lexicals, returned too (rakudo#6810)
             code.code()->ciM().builtin = [pat, kind, selfW](Interpreter& I, ValueList& a) -> Value {
                 if (a.empty()) return Value::nil();
+                std::shared_ptr<Env> home = selfW ? selfW->closure : nullptr, saved = I.tctx().cur;
+                if (home && home != saved) { auto sc = makeSlabShared<Env>(); sc->parent = home; I.tctx().cur = sc; }
+                struct Back { Interpreter& I; std::shared_ptr<Env> s; ~Back() { I.tctx().cur = s; } } back{I, saved};
                 Value selfV;
                 // the routine is running, so its caller holds it alive: take a
                 // count for `&?ROUTINE` from the object (owning it in the
@@ -6081,7 +6119,7 @@ static void refuseRoleClashes(Interpreter& I, const std::string& clsName, const 
                     rightAssocOps_.insert(sname.substr(7, sname.size() - 8));
                 c.code()->ciM().assocRight = sd->assocRight;
                 c.code()->ciM().assocNon = sd->assocNon;
-                c.code()->ciM().assocChain = sd->assocChain;
+                c.code()->ciM().assocChain = sd->assocChain; if (!sd->precTraits.empty()) c.code()->coldM().opProps = opPropsFromTraits(*this, sname, sd->precTraits);
                 c.code()->coldM().retType = qualifyDeclType(sd->retType);
                 c.code()->ciM().retRw = sd->retRw;
                 c.code()->ciM().declFile = declFileNowI();
@@ -6253,6 +6291,8 @@ static void refuseRoleClashes(Interpreter& I, const std::string& clsName, const 
             // `sub foo() is traced {…}` calls trait_mod:<is>($foo, :traced).
             // Skipped while hoisting — traits run at the declaration's textual
             // position (see the hoist-skip sites), after earlier `my`s initialized.
+            for (auto& st : sd->traits)   // `sub f($x) is cached`: a call seen before answers its value; `is prec(%p)` is `.prec`
+                if (st.name == "cached" && !st.arg && !sd->isMethod) markCached(code, sd); else if (st.name == "prec" && st.arg) code.code()->coldM().opProps = opPropsOfHash(eval(st.arg.get()));
             if (!sd->traits.empty() && !hoistingSubs_) {
                 if (Value* tm = tctx().cur->find("&trait_mod:<is>")) {
                     if (tm->t == VT::Code) for (auto& st : sd->traits) callRoutineTrait(*tm, code, st);
@@ -6605,7 +6645,7 @@ static void refuseRoleClashes(Interpreter& I, const std::string& clsName, const 
             if (!hoistingSubs_) {
                 auto unknownRole = [&](const std::string& rn) {
                     if (rn.empty() || rn.find("::") != std::string::npos || rn.find('[') != std::string::npos) return false;
-                    if (classes_.count(rn) || isKnownTypeName(rn) || subsets_.count(rn)) return false;
+                    if (classes_.count(rn) || isKnownTypeName(rn) || subsets_.count(rn) || rn == "array") return false;   // (`does array[T]`, rakudo#4361)
                     if (!tctx().pkgPrefix.empty() && classes_.count(tctx().pkgPrefix + rn)) return false;
                     if (classes_.count(resolveClassAlias(rn))) return false;
                     if (tctx().cur->find(rn)) return false;   // an enum / constant / imported symbol
@@ -7202,7 +7242,7 @@ static void refuseRoleClashes(Interpreter& I, const std::string& clsName, const 
                 // inherit from … because it is unknown" for a name that
                 // resolves fine one line earlier.
                 const std::shared_ptr<ClassInfo>* rakuAstParent =
-                    (it == classes_.end() && rakuAstVisible() && isRakuAstName(cd->parent))
+                    (it == classes_.end() && isRakuAstName(cd->parent))
                         ? rakuAstClass(cd->parent) : nullptr;
                 // `my package A { }; my class B is A { }` — the latest A is a
                 // package, whatever class an earlier A was
@@ -7274,7 +7314,7 @@ static void refuseRoleClashes(Interpreter& I, const std::string& clsName, const 
                     it = classes_.find(tctx().pkgPrefix + pn);
                 if (it == classes_.end()) it = classes_.find(resolveClassAlias(pn));
                 const std::shared_ptr<ClassInfo>* rakuAstExtra =
-                    (it == classes_.end() && rakuAstVisible() && isRakuAstName(pn))
+                    (it == classes_.end() && isRakuAstName(pn))
                         ? rakuAstClass(pn) : nullptr;
                 if (it != classes_.end()) ci->extraParents.push_back(it->second);
                 else if (rakuAstExtra) ci->extraParents.push_back(*rakuAstExtra);
@@ -7535,7 +7575,7 @@ static void refuseRoleClashes(Interpreter& I, const std::string& clsName, const 
                 {   // only a role (or an unknown/built-in role name) composes;
                     // a class or concrete core type is X::Composition::NotComposable
                     static const std::set<std::string> kConcrete = {
-                        "Int", "Str", "Num", "Rat", "Bool", "Complex", "Array", "Hash"};
+                        "Int", "Str", "Num", "Rat", "Bool", "Complex", "Array", "Hash", "array"};
                     bool bad = (it != classes_.end() && !it->second->isRole) ||
                                (it == classes_.end() && kConcrete.count(rn));
                     if (bad)
@@ -9417,7 +9457,7 @@ int Interpreter::run(Program& prog) {
             if (b->phaser == "INIT")  { continue; }  // collected by the whole-program walk below
             // END: left in the mainline. The walk below registers it like any
             // other, and reaching it only captures the mainline scope.
-            if (b->phaser == "ENTER") { enterP.push_back(b); continue; } // file scope: before the mainline body
+            if (b->phaser == "ENTER" || b->phaser == "FIRST") { enterP.push_back(b); continue; } // file scope: before the mainline body
             if (b->phaser == "LEAVE" || b->phaser == "KEEP" || b->phaser == "UNDO")
                                       { leaveP.push_back(b); continue; }
         }
@@ -9709,7 +9749,7 @@ int Interpreter::run(Program& prog) {
             // `--doc` renders the Pod and stops there, as Rakudo's does (its DOC
             // INIT exits): no mainline, no MAIN and no END. It ran the program first.
             if (docMode_) { std::cout << docModeText(); std::cout.flush(); drainWorkers(); return 0; }
-            for (auto* b : enterP) runPhaser(b);                                  // ENTER: on UNIT-block entry, before the mainline
+            runUnitEntryPhasers(prog.stmts);   // FIRST and ENTER (enterP among them): on UNIT-block entry, before the mainline
         }
         // a mainline CONTROL {} is the outermost warn handler for the run
         if (topControl) tctx().controlHandlers.push_back({topControl, tctx().cur});

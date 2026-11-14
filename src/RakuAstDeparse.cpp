@@ -343,6 +343,159 @@ struct Deparser {
         return inner.empty() ? "{ }" : "{\n" + inner + pad(indent) + "}";   // (an empty one is `{ }`, as Rakudo writes it)
     }
 
+    // ---- the `Regex::` subtree, after Rakudo 2026.09's Deparse.rakumod ----
+    static bool rxWord(const std::string& t) {
+        if (t.empty()) return false;
+        for (unsigned char ch : t) if (!(ascii::isalnum(ch) || ch == '_')) return false;
+        return true;
+    }
+    static std::string rxClassChar(uint32_t cp) {
+        if (cp >= 0x80) {
+            std::string u;
+            if (cp < 0x800) { u += char(0xC0 | (cp >> 6)); u += char(0x80 | (cp & 0x3F)); }
+            else if (cp < 0x10000) { u += char(0xE0 | (cp >> 12)); u += char(0x80 | ((cp >> 6) & 0x3F)); u += char(0x80 | (cp & 0x3F)); }
+            else { u += char(0xF0 | (cp >> 18)); u += char(0x80 | ((cp >> 12) & 0x3F)); u += char(0x80 | ((cp >> 6) & 0x3F)); u += char(0x80 | (cp & 0x3F)); }
+            return u;
+        }
+        if (ascii::isalnum((unsigned char)cp) || cp == '_') return std::string(1, (char)cp);
+        if (cp >= 0x20 && cp < 0x7F) return std::string("\\") + (char)cp;
+        static const char* hex = "0123456789ABCDEF";
+        std::string h;
+        for (uint32_t v = cp; ; v >>= 4) { h.insert(h.begin(), hex[v & 15]); if (v < 16) break; }
+        return "\\x[" + h + "]";
+    }
+    std::string regexList(const Value* v, const char* sep, int indent) {
+        std::string out;
+        if (v && v->t == VT::Array && v->arr())
+            for (size_t k = 0; k < v->arr()->size(); k++)
+                out += (k ? sep : "") + regex((*v->arr())[k], indent);
+        return out;
+    }
+    std::string regex(const Value& node, int indent, bool whitespace = false) {
+        if (!isNode(node)) return "";
+        const std::string c = shortName(node);
+        auto neg = [&] { const Value* n = attr(node, "negated"); return n && n->truthy(); };
+        auto sub = [&](const char* k) { const Value* v = attr(node, k); return v ? regex(*v, indent) : std::string(); };
+        auto chomp = [](std::string t) { while (!t.empty() && t.back() == '\n') t.pop_back(); return t; };
+        if (c == "Regex::Literal") {
+            const Value* t = attr(node, "text");
+            const std::string text = t ? t->toStr() : "";
+            return rxWord(text) ? text : quoted(text);
+        }
+        if (c == "Regex::Quote") {
+            const std::string d = opt(attr(node, "quoted"), indent);
+            const std::string un = d.size() >= 2 ? d.substr(1, d.size() - 2) : "";
+            return rxWord(un) ? un : d;
+        }
+        if (c == "Regex::Sequence") return regexList(attr(node, "terms"), "", indent);
+        if (c == "Regex::Alternation") return regexList(attr(node, "branches"), "| ", indent);
+        if (c == "Regex::SequentialAlternation") return regexList(attr(node, "branches"), "|| ", indent);
+        if (c == "Regex::Conjunction") return regexList(attr(node, "branches"), "& ", indent);
+        if (c == "Regex::SequentialConjunction") return regexList(attr(node, "branches"), "&& ", indent);
+        if (c == "Regex::WithWhitespace") {
+            const Value* r = attr(node, "regex");
+            if (r && shortName(*r) == "Regex::QuantifiedAtom" && attr(*r, "separator")) return regex(*r, indent, true);
+            const std::string d = r ? regex(*r, indent) : "";
+            return !d.empty() && d.back() == ' ' ? d : d + " ";
+        }
+        if (c == "Regex::QuantifiedAtom") {
+            std::string out = sub("atom") + sub("quantifier");
+            if (const Value* sp = attr(node, "separator")) {
+                if (whitespace) out += " ";
+                const Value* tr = attr(node, "trailing-separator");
+                out += (tr && tr->truthy()) ? "%% " : "% ";
+                out += regex(*sp, indent);
+            }
+            return out;
+        }
+        if (c.compare(0, 18, "Regex::Quantifier:") == 0) {
+            std::string bt;
+            if (const Value* b = attr(node, "backtrack")) {
+                const std::string bn = b->t == VT::Type ? b->s.copyText() : b->toStr();
+                bt = bn.size() >= 6 && bn.compare(bn.size() - 6, 6, "Frugal") == 0 ? "?"
+                   : bn.size() >= 6 && bn.compare(bn.size() - 6, 6, "Greedy") == 0 ? "!"
+                   : bn.size() >= 7 && bn.compare(bn.size() - 7, 7, "Ratchet") == 0 ? ":" : "";
+            }
+            if (c == "Regex::Quantifier::ZeroOrOne") return "?" + bt;
+            if (c == "Regex::Quantifier::ZeroOrMore") return "*" + bt;
+            if (c == "Regex::Quantifier::OneOrMore") return "+" + bt;
+            if (c == "Regex::Quantifier::Range") {
+                const Value* mn = attr(node, "min");
+                const Value* mx = attr(node, "max");
+                std::string out = "**" + bt + " " + (mn ? mn->toStr() : "");
+                if (!mx || mx->t == VT::Nil) out += "..*";
+                else if (!mn || mn->toStr() != mx->toStr()) out += ".." + mx->toStr();
+                return out;
+            }
+        }
+        if (c == "Regex::Group") return "[" + sub("regex") + "]";
+        if (c == "Regex::CapturingGroup") return "(" + chomp(sub("regex")) + ")";
+        if (c == "Regex::NamedCapture") {
+            const Value* n = attr(node, "name");
+            const std::string nm = n ? n->toStr() : "";
+            bool num = !nm.empty();
+            for (unsigned char ch : nm) if (!ascii::isdigit(ch)) num = false;
+            return (num ? "$" + nm + "=" : "$<" + nm + ">=") + sub("regex");
+        }
+        if (c == "Regex::CharClass::Any") return ".";
+        static const struct { const char* cls; char lc; } cc[] = {
+            {"Digit", 'd'}, {"Word", 'w'}, {"Space", 's'}, {"Newline", 'n'}, {"Tab", 't'},
+            {"HorizontalSpace", 'h'}, {"VerticalSpace", 'v'}, {"Escape", 'e'}, {"FormFeed", 'f'},
+            {"CarriageReturn", 'r'}};
+        for (auto& k : cc)
+            if (c == std::string("Regex::CharClass::") + k.cls)
+                return std::string("\\") + (char)(neg() ? ascii::toupper((unsigned char)k.lc) : k.lc);
+        if (c == "Regex::Anchor::BeginningOfString") return "^ ";
+        if (c == "Regex::Anchor::EndOfString") return "$ ";
+        if (c == "Regex::Anchor::BeginningOfLine") return "^^ ";
+        if (c == "Regex::Anchor::EndOfLine") return "$$ ";
+        if (c == "Regex::Anchor::LeftWordBoundary") return "<< ";
+        if (c == "Regex::Anchor::RightWordBoundary") return ">> ";
+        if (c == "Regex::Assertion::Pass") return "<?> ";
+        if (c == "Regex::Assertion::Fail") return "<!> ";
+        if (c == "Regex::MatchFrom") return "<( ";
+        if (c == "Regex::MatchTo") return ")> ";
+        if (c == "Regex::Assertion::Named") {
+            const Value* cap = attr(node, "capturing");
+            return std::string(cap && cap->truthy() ? "<" : "<.") + opt(attr(node, "name"), indent) + ">";
+        }
+        if (c == "Regex::Assertion::Named::RegexArg")
+            return "<" + opt(attr(node, "name"), indent) + " " + sub("regex-arg") + ">";
+        if (c == "Regex::Assertion::Lookahead") {
+            const std::string a = sub("assertion");
+            return (neg() ? "<!" : "<?") + (a.empty() ? a : a.substr(1));
+        }
+        if (c == "Regex::Assertion::CharClass") return "<" + regexList(attr(node, "elements"), " ", indent) + ">";
+        if (c == "Regex::CharClassElement::Enumeration")
+            return std::string(neg() ? "-" : "+") + "[" + regexList(attr(node, "elements"), " ", indent) + "]";
+        if (c == "Regex::CharClassEnumerationElement::Range") {
+            const Value* f = attr(node, "from");
+            const Value* t = attr(node, "to");
+            return rxClassChar(f ? (uint32_t)f->toInt() : 0) + ".." + rxClassChar(t ? (uint32_t)t->toInt() : 0);
+        }
+        if (c == "Regex::CharClassEnumerationElement::Character") {
+            const Value* ch = attr(node, "character");
+            const std::string t = ch ? ch->toStr() : "";
+            if (t.size() == 1) return rxClassChar((unsigned char)t[0]);
+            return t;
+        }
+        if (c.compare(0, 25, "Regex::InternalModifier::") == 0) {
+            const Value* m = attr(node, "modifier");
+            std::string md = m ? m->toStr() : "";
+            if (md.empty()) {
+                const std::string k = c.substr(25);
+                md = k == "IgnoreCase" ? "i" : k == "IgnoreMark" ? "m" : k == "Ratchet" ? "r" : "s";
+            }
+            return std::string(":") + (neg() ? "!" : "") + md + " ";
+        }
+        if (c == "Regex::Statement") {
+            const std::string d = chomp(opt(attr(node, "statement"), indent));
+            return ":" + (!d.empty() && d.back() == ';' ? d : d + "; ");
+        }
+        if (c == "Regex::Block") return chomp(opt(attr(node, "block"), indent));
+        return "";
+    }
+
     std::string render(const Value& node, int indent) {
         const std::string c = shortName(node);
         if (c.empty()) return node.toStr();
@@ -859,29 +1012,38 @@ struct Deparser {
                 return "=" + (type == "para" ? std::string("para") : type + level) + " " + body + "\n";
             return "=begin " + type + "\n\n" + body + "\n=end " + type + "\n";
         }
-        // The one regex shape the view builds — see RakuAstView.cpp. Rakudo
-        // renders the literal BARE (`rule TOP { hello }`), which matches the
-        // same text, so the quotes do not come back.
+        // Grammar rules and the `Regex::` subtree, rendered as Rakudo 2026.09's
+        // Deparse.rakumod renders them (rakudo#5479, #5978, #5991): the body
+        // after `{ ` with no space before the `}` unless the body ends in one.
         if (c == "RuleDeclaration" || c == "TokenDeclaration" || c == "RegexDeclaration") {
             const std::string kw = c == "TokenDeclaration" ? "token"
                                  : c == "RegexDeclaration" ? "regex" : "rule";
-            return xs("routine", kw) + " " + opt(attr(node, "name"), indent) + " { " +
-                   opt(attr(node, "body"), indent) + " }\n";
+            const Value* body = attr(node, "body");
+            std::string decl = xs("routine", kw) + " " + opt(attr(node, "name"), indent) + " { " +
+                               (body ? regex(*body, indent) : std::string()) + "}";
+            // its docs, as `#| …` lines before it and `#= …` after it
+            if (const Value* why = attr(node, "WHY"); why && isNode(*why)) {
+                auto lines = [](const Value* l) {
+                    std::vector<std::string> out;
+                    if (l && l->t == VT::Array && l->arr())
+                        for (auto& e : *l->arr()) {
+                            std::string t = e.toStr();
+                            size_t a = 0;
+                            for (size_t nl; (nl = t.find('\n', a)) != std::string::npos; a = nl + 1) out.push_back(t.substr(a, nl - a));
+                            out.push_back(t.substr(a));
+                        }
+                    return out;
+                };
+                std::string lead;
+                for (auto& l : lines(attr(*why, "leading"))) lead += "#| " + l + "\n" + pad(indent);
+                const auto trail = lines(attr(*why, "trailing"));
+                for (size_t k = 0; k < trail.size(); k++)
+                    decl += (k ? "\n" + pad(indent) : std::string(trail.size() > 1 ? "\n" + pad(indent) : " ")) + "#= " + trail[k];
+                decl = lead + decl;
+            }
+            return decl + "\n";
         }
-        if (c == "Regex::WithWhitespace") return opt(attr(node, "regex"), indent);
-        if (c == "Regex::Quote") {
-            const Value* q = attr(node, "quoted");
-            std::string out;
-            if (q && isNode(*q))
-                if (const Value* segs = attr(*q, "segments"))
-                    if (segs->t == VT::Array && segs->arr())
-                        for (auto& sg : *segs->arr())
-                            if (isNode(sg) && shortName(sg) == "StrLiteral") {
-                                const Value* v = attr(sg, "value");
-                                out += v ? v->toStr() : "";
-                            }
-            return out;
-        }
+        if (c.compare(0, 7, "Regex::") == 0) return regex(node, indent);
         if (c == "Statement::Whenever")
             return xs("block", "whenever") + " " + opt(attr(node, "trigger"), indent) + " " +
                    opt(attr(node, "body"), indent) + "\n";
@@ -910,8 +1072,18 @@ struct Deparser {
             std::string kw;
             for (char ch : c) kw += (char)ascii::tolower((unsigned char)ch);
             std::string sc;
-            if (const Value* s = attr(node, "scope"))
-                if (s->toStr() == "my") sc = xs("scope", "my") + " ";
+            const Value* s = attr(node, "scope");
+            if (s && s->toStr() == "my") sc = xs("scope", "my") + " ";
+            // `unit grammar G;` and the rest of the file as its body, at the
+            // file's own indent (rakudo#5978, #5991)
+            if (s && s->toStr() == "unit") {
+                std::string out = xs("scope", "unit") + " " + xs("package", kw) + " " +
+                                  opt(attr(node, "name"), indent) + traits(node, indent) + ";\n";
+                if (const Value* b = attr(node, "body"))
+                    if (const Value* bo = attr(*b, "body"))
+                        if (const Value* sl = attr(*bo, "statement-list")) out += statements(*sl, indent);
+                return out;
+            }
             return sc + xs("package", kw) + " " + opt(attr(node, "name"), indent) +
                    traits(node, indent) + " " + opt(attr(node, "body"), indent) + "\n";
         }
