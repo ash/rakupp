@@ -2687,16 +2687,22 @@ Value Interpreter::tapSupply(const Value& s, Value emitCb, Value doneCb, Value q
         if (!badHost && lfd < 0) throw RakuError{Value::typeObj("X::IO"), "Cannot create socket"};
         if (lfd >= 0 && !unixPath) { int yes = 1; setsockopt(lfd, SOL_SOCKET, SO_REUSEADDR, (const char*)&yes, sizeof(yes)); }
         if (badHost || ::bind(lfd, (sockaddr*)&addr, addrLen) < 0 || ::listen(lfd, 128) < 0) {
-            if (unixPath) { why = badHost ? "path too long" : std::strerror(errno); if (!why.empty()) why[0] = (char)std::tolower((unsigned char)why[0]); }
+            // …and a TCP one too, with the address, as Rakudo's libuv says it:
+            // "address already in use (address: localhost:11111)" (rakudo#1266)
+            if (unixPath || !badHost) {
+                why = unixPath && badHost ? "path too long" : std::strerror(errno);
+                if (!why.empty()) why[0] = (char)std::tolower((unsigned char)why[0]);
+                if (!unixPath) why += " (address: " + host + ":" + std::to_string(port) + ")";
+            }
             if (lfd >= 0) ::close(lfd);
             // a tap with a :quit hears the failure as the supply's quit
             if (quitCb.t == VT::Code) {
-                Value ex = makeTypedEx("X::AdHoc", {}, unixPath ? why : "Cannot listen on " + host + ":" + std::to_string(port));
+                Value ex = makeTypedEx("X::AdHoc", {}, !why.empty() ? why : "Cannot listen on " + host + ":" + std::to_string(port));
                 ValueList one{ex};
                 callCallable(quitCb, one);
                 Value t = Value::makeHash(); t.hashKind = "Tap"; return t;
             }
-            if (unixPath) throw RakuError{Value::typeObj("X::AdHoc"), why};
+            if (!why.empty()) throw RakuError{Value::typeObj("X::AdHoc"), why};
             throw RakuError{Value::typeObj("X::IO"), "Cannot listen on " + host + ":" + std::to_string(port)};
         }
         // the address actually bound — `.socket-port` answers the port a `0` asked the OS for

@@ -4343,6 +4343,13 @@ Value& Interpreter::accessorRef(Value& base, const std::string& name) {
                 }
         return base.obj()->attrs[acc ? *slot : name];
     }
+    // `42.abs += 42`, `"ab".uc = 1`: the method's answer is a value, and the
+    // refusal names it, as Rakudo's does (rakudo#1987) — which means asking
+    if (base.t == VT::Int || base.t == VT::Num || base.t == VT::Rat || base.t == VT::Str ||
+        base.t == VT::Bool || (base.t == VT::Array && base.isList)) {
+        ValueList none;
+        throwImmutable(methodCall(base, name, none));
+    }
     throw RakuError{Value::typeObj("X::Assignment::RO"), "Target is not assignable"};
 }
 

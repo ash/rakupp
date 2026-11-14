@@ -10014,7 +10014,7 @@ Value Interpreter::checkRetType(const Callable& c, Value v) {
         throwTypedV("X::TypeCheck::Return",
                     {{"got", v}, {"expected", Value::typeObj(retName)}},
                     "Type check failed for return value; expected " + retName +
-                    " but got " + v.typeName());
+                    " but got " + v.typeName() + " (" + typeCheckRepr(v) + ")");   // rakudo#2595
     // a TYPE OBJECT must still be of the type: `--> Int` refuses Cool
     if (v.t == VT::Type && v.s != "Any" && v.s != "Mu" && kRet.count(retName) && !typeOrSubsetMatches(v, retName))
         throwTypedV("X::TypeCheck::Return",
@@ -11458,6 +11458,17 @@ static Value* dotAttrCopy(Interpreter& I, Value& self, const std::string& n, con
 [[noreturn]] static void throwImmutableSlot(const Value* p) {
     throwImmutable(p ? *p : Value::any());
 }
+// `42.abs += 42`, `$n.abs = 1`, `"ab".uc = 1`: a call that answers a plain
+// value is no container, and the refusal names that value, as Rakudo's does
+// (rakudo#1987) — which means asking the method for it, as Rakudo does too.
+void Interpreter::immutableCallTarget(MethodCall* mc, const std::string& name, const Value& inv) {
+    if (mc->methodExpr || !mc->args.empty() || mc->meta || mc->hyper) return;
+    if (inv.t == VT::Int || inv.t == VT::Num || inv.t == VT::Rat || inv.t == VT::Str || inv.t == VT::Bool ||
+        (inv.t == VT::Array && inv.isList)) {
+        ValueList none;
+        throwImmutable(methodCall(inv, name, none));
+    }
+}
 Value* Interpreter::lvalue(Expr* e, bool asInvocant) {
     // set only by the arms that resolve an immutable place, which is rare —
     // test before clearing so the common lvalue() pays one length compare
@@ -12697,8 +12708,10 @@ Value* Interpreter::lvalue(Expr* e, bool asInvocant) {
         catch (RakuError&) {
             static thread_local Value invHold;
             invHold = eval(mc->inv.get());
-            if (!(invHold.t == VT::Object || (invHold.t == VT::Hash && invHold.hash())))
+            if (!(invHold.t == VT::Object || (invHold.t == VT::Hash && invHold.hash()))) {
+                immutableCallTarget(mc, mcName, invHold);
                 throw;
+            }
             base = &invHold;
         }
         // The invocant's slot may hold a PROXY rather than the value: `my $r :=
@@ -12949,6 +12962,7 @@ Value* Interpreter::lvalue(Expr* e, bool asInvocant) {
             }
             return raceNoteAttr(&base->obj()->attrs[acc ? *accSlot : mcName], base->obj());
         }
+        immutableCallTarget(mc, mcName, *base);
     }
     // `$(expr)` as an assignment target: the itemization wrapper is transparent
     // for the container — assign into the inner slot

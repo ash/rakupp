@@ -109,7 +109,16 @@ static Value divByZeroEx(const Value& lhs, const char* opName, const std::string
              {"numerator", lhs}}, msg);
     return Value::typeObj("X::Numeric::DivideByZero");
 }
-Value divideByZero(const Value& lhs, const char* opName) {
+// The numerator a refusal names. A Range divides its endpoints, so its first
+// one is what met the zero: `(Inf .. 5) / 0` is "divide Inf by zero", where
+// the Range's own Str is the empty list it holds (rakudo#3598).
+static Value divNumerator(const Value& lhs) {
+    if (lhs.t != VT::Range) return lhs;
+    if (const RangeEnds* re = rangeEnds(lhs)) return re->from;
+    return lhs.rNum() ? Value::number(lhs.n) : Value::integer(lhs.rFrom());
+}
+Value divideByZero(const Value& lhs0, const char* opName) {
+    const Value lhs = divNumerator(lhs0);
     std::string msg = "Attempt to divide " + lhs.toStr() +
                       " by zero using " + divByZeroUsing(opName);
     Value f = rakuppNewFailure();
@@ -117,7 +126,8 @@ Value divideByZero(const Value& lhs, const char* opName) {
     (*f.hash())["message"] = Value::str(msg);
     return f;
 }
-[[noreturn]] void throwDivideByZero(const Value& lhs, const char* opName) {
+[[noreturn]] void throwDivideByZero(const Value& lhs0, const char* opName) {
+    const Value lhs = divNumerator(lhs0);
     std::string msg = "Attempt to divide " + lhs.toStr() +
                       " by zero using " + divByZeroUsing(opName);
     throw RakuError{divByZeroEx(lhs, opName, msg), msg};
