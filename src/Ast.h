@@ -299,6 +299,10 @@ inline bool nameLetterAt(const std::string& n, size_t i) {
 // letter beyond ASCII (`Еоо`, `Éa`, `甲`, `𝐀`) always names a type; under
 // `ascii::isupper` alone, `my Еоо $x` declared an untyped `$x`.
 inline bool typeNameLead(unsigned char c) { return ascii::isupper(c) || c >= 0x80; }
+// An anonymous `my $`'s slot, `$` + "\x01anonN" (Parser's freshAnonSlot): a
+// plain scalar no source text can name, so the lanes and kernels that take a
+// `my $x` take it too (rakudo#1416)
+inline bool anonScalarSlot(const std::string& n) { return n.size() > 6 && n.compare(0, 6, "$\x01" "anon") == 0; }
 
 struct VarExpr : Expr {
     std::string name; // includes sigil

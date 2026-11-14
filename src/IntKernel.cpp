@@ -1037,7 +1037,7 @@ KNode* Compiler::expr(IKernel& k, const Callable* c, Expr* e, bool cond, KT& t) 
                     !tv->d().declCoerce.empty() || tv->d().declDefault || tv->d().declDynamic || tv->d().declExport ||
                     !tv->d().containerIs.empty() || tv->d().declShape || tv->d().declTypeExpr || tv->d().declSmiley ||
                     tv->d().declWhereExpr || tv->d().declHasWhere || !tv->d().declStubType.empty() || tv->pkgSymbol ||
-                    tv->viaPseudoPkg || !plainScalarName(tv->name) || mentions(a->value.get(), tv->name))
+                    tv->viaPseudoPkg || !(plainScalarName(tv->name) || anonScalarSlot(tv->name)) || mentions(a->value.get(), tv->name))
                     return refuse("a declaration with a type, a trait or its own name");
                 KNode* v = expr(k, c, a->value.get(), false, vt);
                 if (!v) return nullptr;

@@ -22986,7 +22986,7 @@ bool Interpreter::declLaneRhs(Expr* e, Value& out) {
             out = Value::boolean(c != 0);
             return true;
         }
-        default: return false;
+        case NK::Ternary: return declLaneTernary(static_cast<Ternary*>(e), out); default: return false;
     }
 }
 

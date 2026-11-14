@@ -5660,21 +5660,11 @@ bool Interpreter::runsInPlace(BlockExpr* be) {
 }
 
 
-// The declaration lane's target (Assign::simpleSlot 6): `my $name` with
-// nothing on it that lvalue's declaration arm or the full path's store would
-// act on — no type, coercion, default, `where`, smiley, trait, shape or
-// container type — and a right side declLaneRhs can evaluate.
-bool Interpreter::plainDeclLane(const VarExpr* v, const Expr* rhs) {
-    // (`$` and a letter or underscore: no twigil, no special variable)
-    if (!v->declare || v->d().declScope != "my" || v->name.size() < 2 || v->name[0] != '$' ||
-        !(nameLetterAt(v->name, 1) || v->name[1] == '_') || v->name == "$_" || v->synthTopic || v->heredocOuter || v->d().stateInParens ||
-        !v->d().declStubType.empty() || !v->d().declType.empty() || !v->d().declCoerce.empty() ||
-        v->d().declDefault || v->d().declDynamic || v->d().declExport || v->d().declSmiley || v->d().declWhereExpr ||
-        v->d().declHasWhere || v->d().declMyConstant || v->pkgSymbol || !v->d().containerIs.empty() ||
-        v->d().declShape || v->d().declTypeExpr || v->d().namedBind || v->viaPseudoPkg || v->processScoped ||
-        v->nativeStrRead || v->nativeIntRead || v->nativeNumRead)
-        return false;
-    if (!rhs) return false;
+// A right side declLaneRhs can evaluate: a literal, a plain `$` lexical, an
+// operator it computes, or a ternary over those whose condition it computes
+// and of whose branches at least one it can give (`$n ?? 1 !! Nil`, the
+// shape of rakudo#1416's `nqp::if`: the other branch takes the full path)
+static bool declLaneRhsShape(const Expr* rhs) {
     switch (rhs->kind) {
         case NK::IntLit: return static_cast<const IntLit*>(rhs)->big.empty();
         case NK::NumLit: { auto* n = static_cast<const NumLit*>(rhs);
@@ -5689,8 +5679,41 @@ bool Interpreter::plainDeclLane(const VarExpr* v, const Expr* rhs) {
             if (op.size() == 1) return std::strchr("+-*/%<>", op[0]) != nullptr;
             return op.size() == 2 && op[1] == '=' && std::strchr("<>=!", op[0]) != nullptr;
         }
+        case NK::Ternary: { auto* t = static_cast<const Ternary*>(rhs);
+            return t->cond && t->then && t->els && declLaneRhsShape(t->cond.get()) &&
+                   (declLaneRhsShape(t->then.get()) || declLaneRhsShape(t->els.get())); }
         default: return false;
     }
+}
+
+// `COND ?? A !! B` on the declaration lane: the condition, then the branch it
+// picks, each as declLaneRhs computes them, so false still means nothing ran
+// that the full path's second look would notice (the condition reads only).
+// The picked branch is shape-checked here, as plainDeclLane checks a whole
+// right side: declLaneRhs would read a Rat literal (`?? 2.5 !! 3`) as a Num.
+bool Interpreter::declLaneTernary(Ternary* t, Value& out) {
+    const int fb = tryCondBool(t->cond.get());
+    Value c;
+    if (fb < 0 && !declLaneRhs(t->cond.get(), c)) return false;
+    Expr* pick = (fb >= 0 ? fb != 0 : boolify(c)) ? t->then.get() : t->els.get();
+    return declLaneRhsShape(pick) && declLaneRhs(pick, out);
+}
+
+// The declaration lane's target (Assign::simpleSlot 6): `my $name` with
+// nothing on it that lvalue's declaration arm or the full path's store would
+// act on — no type, coercion, default, `where`, smiley, trait, shape or
+// container type — and a right side declLaneRhs can evaluate.
+bool Interpreter::plainDeclLane(const VarExpr* v, const Expr* rhs) {
+    // (`$` and a letter or underscore: no twigil, no special variable)
+    if (!v->declare || v->d().declScope != "my" || v->name.size() < 2 || v->name[0] != '$' ||
+        !(nameLetterAt(v->name, 1) || v->name[1] == '_' || anonScalarSlot(v->name)) || v->name == "$_" || v->synthTopic || v->heredocOuter || v->d().stateInParens ||
+        !v->d().declStubType.empty() || !v->d().declType.empty() || !v->d().declCoerce.empty() ||
+        v->d().declDefault || v->d().declDynamic || v->d().declExport || v->d().declSmiley || v->d().declWhereExpr ||
+        v->d().declHasWhere || v->d().declMyConstant || v->pkgSymbol || !v->d().containerIs.empty() ||
+        v->d().declShape || v->d().declTypeExpr || v->d().namedBind || v->viaPseudoPkg || v->processScoped ||
+        v->nativeStrRead || v->nativeIntRead || v->nativeNumRead)
+        return false;
+    return rhs && declLaneRhsShape(rhs);
 }
 
 

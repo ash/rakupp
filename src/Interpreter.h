@@ -5335,6 +5335,7 @@ private:
     const Value* shapedLeafRow(Index* ix, size_t& at, bool forWrite);   // …the innermost row it names, or null
     bool shapedElemRead(Index* ix, Value& out);    // …and its element, read without the general walk
     bool declLaneRhs(Expr* e, Value& out);         // that EXPR's value, side-effect free, or false
+    bool declLaneTernary(Ternary* t, Value& out);  // `COND ?? A !! B` the same way (rakudo#1416)
     Value* declLane(Assign* a);                    // the declaration lane: the new slot, or null
     static bool nativeDeclShape(const VarExpr* v, const Expr* rhs);   // `my int $x = EXPR` takes the native declaration lane
     Value* nativeDeclLane(Assign* a);              // …which answers the new slot, or null before anything ran
