@@ -3,7 +3,7 @@
 # catchable, named X::Feature::NotBuilt instead of crashing or quietly
 # misbehaving, that the grammar's conflicts are loud errors naming the
 # alternatives, that the embedded manifest round-trips through --exe-info,
-# that the size budgets hold (-all ≤ 13.0 MB, bare --slim ≤ 13.25 MB on hello) —
+# that the size budgets hold (-all ≤ 13.5 MB, bare --slim ≤ 13.75 MB on hello) —
 # and, since P4, that the SCAN decides right: cuts what a program provably
 # does not use, keeps what it does (uniname calls, script assertions), keeps
 # EVERYTHING when a force-full trigger fires (and says so), and that max
@@ -214,6 +214,21 @@ my $hello = probe('hello.raku', q{say 'Hello';});
 # bytes alone would not clear the old lines. 13.0 MB clears this box by
 # 211,848 bytes. The x86_64 slice, derived at the 7.8% spread, is
 # ≈14,466,000; CI measures arm64 only.
+#
+# Re-pinned 2026-11-14, to 13.5 MB and 13.75 MB, at the rakudo-issues merge
+# (677782e0): macos-universal went red on it with hello-all 74,728 bytes past
+# 13.0 MB. This box's arm64 hello-all went 13,551,480 at 53b2ccd6 (v5.8.0) to
+# 13,706,216 (+154,736, +1.14%); bare --slim is the same size, and the full
+# --exe hello grew beside it (19,004,232 → 19,276,248). rakupp_rt's __text grew
+# 164,656 bytes across 116 commits that name 94 rakudo issues, spread thin:
+# OperatorProps.cpp (new: `.prec` and the operator properties, rakudo#4780)
+# +39,244 in the object and ~23 KB of it reachable in a hello,
+# InterpreterOperators.cpp +18,752, InterpreterRegex.cpp +14,180,
+# MethodCallTail.cpp +14,152, InterpreterCore.cpp +10,472, Builtins.cpp
+# +9,072. Growth, not a leak: nm finds no Codegen, JS, MCP or Jupyter symbol in
+# the slim binary, and `.prec` is a method any program may call. 13.5 MB clears
+# this box by 449,560 bytes. The x86_64 slice, derived at the 7.8% spread, is
+# ≈14,775,000; CI measures arm64 only.
 my $full-size;
 my $all-size;
 
@@ -290,8 +305,8 @@ my $catch = probe('catch.raku', q:to/END/);
     my ($xc, $out, $) = run-bin($bin);
     check $xc == 0 && $out.trim eq 'Hello', '--slim=-all hello runs', $out;
     $all-size = $bin.IO.s;
-    check $*KERNEL.name ne 'darwin' || $all-size <= 13.0 * 1024 * 1024,
-          "--slim=-all hello is within the 13.0 MB darwin budget ($all-size bytes; darwin-only gate)";
+    check $*KERNEL.name ne 'darwin' || $all-size <= 13.5 * 1024 * 1024,
+          "--slim=-all hello is within the 13.5 MB darwin budget ($all-size bytes; darwin-only gate)";
     my $info = run $*EXECUTABLE, '--exe-info', $bin, :out, :err;
     my $line = $info.out.slurp(:close);
     $info.err.slurp(:close);
@@ -353,8 +368,8 @@ my $catch = probe('catch.raku', q:to/END/);
     check $rc == 0, 'bare --slim (= auto) compiles', $log;
     my ($xc, $out, $) = run-bin($bin);
     check $xc == 0 && $out.trim eq 'Hello', '--slim hello runs', $out;
-    check $*KERNEL.name ne 'darwin' || $bin.IO.s <= 13.25 * 1024 * 1024,
-          "--slim hello is within the 13.25 MB darwin budget ({$bin.IO.s} bytes; darwin-only gate)";
+    check $*KERNEL.name ne 'darwin' || $bin.IO.s <= 13.75 * 1024 * 1024,
+          "--slim hello is within the 13.75 MB darwin budget ({$bin.IO.s} bytes; darwin-only gate)";
     check $full-size - $bin.IO.s >= 2 * 1024 * 1024,
           "bare --slim removes >= 2 MB from hello on this platform "
           ~ "(delta {$full-size - $bin.IO.s})";
