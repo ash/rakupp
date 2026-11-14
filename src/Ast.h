@@ -810,6 +810,7 @@ enum class NqpOpc : uint16_t {
     // `GetMessage`: <windows.h> makes that a macro, and BuiltinsNqp.cpp sees
     // it after this header, so `O::GetMessage` named nothing on Windows
     NewException, SetExMessage, SetExType, SetPayload, GetExMessage, GetExType, GetPayload, ThrowOp, Where,
+    TimeN,                                     // nqp::time_n — seconds as a Num (GLib::Timeout)
 };
 struct NqpOp : Expr {
     NqpOpc op;

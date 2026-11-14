@@ -1722,6 +1722,10 @@ Value rtNqpOp(NqpOpc op, ValueList& v) {
             return Value::integer(
                 (long long)std::chrono::duration_cast<std::chrono::nanoseconds>(now).count());
         }
+        case O::TimeN: {   // POSIX seconds with the fraction, as a Num
+            auto now = std::chrono::system_clock::now().time_since_epoch();
+            return Value::number(std::chrono::duration<double>(now).count());
+        }
         case O::ReadLink: {
             if (g_sandboxChecks) sandboxRefuseBare("nqp::readlink", SandboxCap::Read);
             const std::string path = v.empty() ? std::string() : v[0].toStr();

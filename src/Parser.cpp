@@ -17724,7 +17724,7 @@ ExprPtr Parser::makeNqpOp(const std::string& op, std::vector<ExprPtr>& args) {
         {"isne_I", NqpOpc::IsneBigI}, {"isfalse", NqpOpc::IsFalse},
         {"pop", NqpOpc::Pop}, {"pop_i", NqpOpc::Pop}, {"pop_n", NqpOpc::Pop},
         {"print", NqpOpc::Print}, {"say", NqpOpc::SayOp},
-        {"time", NqpOpc::TimeOp},
+        {"time", NqpOpc::TimeOp}, {"time_n", NqpOpc::TimeN},
         {"readlink", NqpOpc::ReadLink},
         {"repeat_while", NqpOpc::RepeatWhile}, {"repeat_until", NqpOpc::RepeatUntil},
         // the rest of the bignum `_I` family, and the boxing leaves beside it
