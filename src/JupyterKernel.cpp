@@ -222,12 +222,18 @@ const char* kindName(Kind k) {
     return "ROUTER";
 }
 
+// The most one message, all its frames together, may carry. Far above any
+// notebook's traffic (a cell with a large image is a few MB), far below what a
+// peer could make the kernel hold by sending a large length and no payload.
+constexpr size_t kMaxMessage = (size_t)256 << 20;
+
 struct Peer {
     int fd = -1;
     std::atomic<bool> greeted{false};   // the peer sent its 64-byte greeting
     std::atomic<bool> dead{false};
     std::string in;                    // bytes read but not yet parsed
     std::vector<std::string> partial;  // frames of a message still MORE-chained
+    size_t partialBytes = 0;           // …and their size, held to kMaxMessage
     std::vector<std::string> subs;     // PUB only: the prefixes this peer wants
     std::mutex wmx;                    // one writer at a time down this socket
 };
@@ -504,16 +510,27 @@ private:
                 size = (uint8_t)p->in[1];
                 off = 2;
             }
-            if (p->in.size() < off + size) return;
+            // Checked before the length is added to anything: a 64-bit length
+            // near SIZE_MAX would wrap `off + size` to a small number, and the
+            // erase below would then consume nothing, forever. No signature
+            // has been checked yet, so the budget is the only guard.
+            if (size > kMaxMessage - p->partialBytes) {
+                logf("peer sent a frame past the message size limit; dropping it");
+                p->dead = true;
+                return;
+            }
+            if (p->in.size() - off < size) return;
             std::string body = p->in.substr(off, size);
             p->in.erase(0, off + size);
             if (flags & 4) { onCommand(p, body); continue; }
             if (kind_ == Kind::Pub) { onSubscriptionMessage(p, body); continue; }
+            p->partialBytes += body.size();
             p->partial.push_back(std::move(body));
             if (flags & 1) continue;  // MORE: the message is not finished
             ZMsg m;
             m.from = p;
             m.frames.swap(p->partial);
+            p->partialBytes = 0;
             {
                 std::lock_guard<std::mutex> lk(mx_);
                 queue_.push_back(std::move(m));

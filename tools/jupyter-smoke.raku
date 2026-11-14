@@ -555,6 +555,26 @@ check %ki2<parent-id> eq %good<id>,
     'a message signed with the wrong key is dropped, not answered',
     "answered {%ki2<parent-id>}, forged was {%bad<id>}";
 
+# ---- a frame length past any budget -----------------------------------------
+# 2^64 - 9 after a 9-byte header: `off + size` wraps to 0, and a parser that
+# adds before it compares consumes nothing and loops on the same header. No
+# signature is involved, so any peer that reaches the port could send it. The
+# kernel must drop that peer and go on answering the others.
+
+my %evil = zconnect(%ports<shell>, 'DEALER');
+%evil<sock>.write(Buf.new(0x02, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xF7));
+# (the kernel's own READY may still be unread ahead of the close)
+my $dropped = start { loop { my $b = %evil<sock>.read(4096); last unless $b && $b.elems }; True };
+await Promise.anyof($dropped, Promise.in(10));
+check $dropped.status ~~ Kept,
+    'a frame length that wraps closes that connection';
+my %ki3q = jframes('kernel_info_request', '{}');
+zsend(%shell, %ki3q<frames>);
+my $answered = start { jdecode(zrecv(%shell)) };
+await Promise.anyof($answered, Promise.in(10));
+check $answered.status ~~ Kept && $answered.result<parent-id> eq %ki3q<id>,
+    '…and the kernel still answers everyone else';
+
 # ---- the heartbeat ----------------------------------------------------------
 
 zsend(%hb, ['', 'ping'].map(*.encode('utf8')).Array);
