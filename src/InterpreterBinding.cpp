@@ -6310,13 +6310,13 @@ Value Interpreter::zxOp(const std::string& op, Value l, Value r) {
     };
     if (op[0] == 'Z' && endlessInt(l) && endlessInt(r)) {
         // the i-th element of a side, materialising a lazy one as it goes
-        auto nth = [this](Value src, size_t i) -> Value {
+        auto nth = [this](const Value& src, size_t i) -> Value {   // (what a side read goes: lazyViewSource)
             if (src.t == VT::Range) return Value::integer(src.rFrom() + (long long)i);
-            materializeLazy(src, i + 1);
-            return src.arr() && i < src.arr()->size() ? (*src.arr())[i] : Value::any();
+            const size_t off = lazyViewSource(*this, src, i, 1);
+            return src.arr() && i - off < src.arr()->size() ? (*src.arr())[i - off] : Value::any();
         };
         Value out = Value::array(); out.isList = true; out.s = "Seq";
-        auto st = std::make_shared<LazySeqState>(); st->infinite = true;
+        auto st = std::make_shared<LazySeqState>(); st->infinite = st->dropsRead = true;
         auto idx = std::make_shared<size_t>(0);
         Value lv = l, rv = r; std::string inner = sub;
         st->appendNext = [this, nth, idx, lv, rv, inner, uf](ValueList& cache) -> bool {
@@ -6334,13 +6334,13 @@ Value Interpreter::zxOp(const std::string& op, Value l, Value r) {
     // walks its elements against the whole right side, and an endless RIGHT
     // never gets past the first left element — which is what Rakudo yields.
     if (op[0] == 'X' && (endlessInt(l) || endlessInt(r))) {
-        auto nth = [this](Value src, size_t i) -> Value {
+        auto nth = [this](const Value& src, size_t i) -> Value {
             if (src.t == VT::Range) return Value::integer(src.rFrom() + (src.rExFrom() ? 1 : 0) + (long long)i);
-            materializeLazy(src, i + 1);
-            return src.arr() && i < src.arr()->size() ? (*src.arr())[i] : Value::any();
+            const size_t off = lazyViewSource(*this, src, i, 1);
+            return src.arr() && i - off < src.arr()->size() ? (*src.arr())[i - off] : Value::any();
         };
         Value out = Value::array(); out.isList = true; out.s = "Seq";
-        auto st = std::make_shared<LazySeqState>(); st->infinite = true;
+        auto st = std::make_shared<LazySeqState>(); st->infinite = st->dropsRead = true;
         auto idx = std::make_shared<size_t>(0);
         bool leftEndless = endlessInt(l);
         ValueList fin = leftEndless ? oneLevel(r) : oneLevel(l);
@@ -6387,16 +6387,16 @@ Value Interpreter::zxOp(const std::string& op, Value l, Value r) {
         if (!zip && rs->items.empty()) { Value e = Value::array(); e.isList = true; e.s = "Seq"; return e; }
         Value out = Value::array(); out.isList = true; out.s = "Seq";
         auto st = std::make_shared<LazySeqState>();
-        st->gatherSeq = true;
+        st->gatherSeq = st->dropsRead = true;
         st->declaredLazy = declLazy(l) || declLazy(r);
         auto idx = std::make_shared<size_t>(0);
         std::string inner = sub;
         st->appendNext = [this, ls, rs, idx, inner, zip, uf](ValueList& cache) -> bool {
             auto nth = [this](Side& s, size_t i, Value& out) -> bool {
                 if (!s.lazy) { if (i >= s.items.size()) return false; out = s.items[i]; return true; }
-                materializeLazy(s.src, i + 1);
-                if (i >= s.src.arr()->size()) return false;
-                out = (*s.src.arr())[i];
+                const size_t off = lazyViewSource(*this, s.src, i, 1);
+                if (i - off >= s.src.arr()->size()) return false;
+                out = (*s.src.arr())[i - off];
                 return true;
             };
             size_t i = *idx;

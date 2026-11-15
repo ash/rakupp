@@ -2081,6 +2081,17 @@ struct LazySeqState {
     // has read, as Rakudo's single-pass Seq keeps nothing (issue #263); the
     // other producers keep their whole buffer.
     bool dropsRead = false;
+    // …keeping its last `keepTail` elements, which a sequence's generator steps
+    // from; `dropped` counts what has gone, for a producer that counts by
+    // position (`.kv`, `.keys`): its next index is dropped + the buffer's size
+    size_t keepTail = 0, dropped = 0;
+    size_t dropFront(ValueList& buf, size_t n) {   // drops up to n read elements; answers how many
+        if (!dropsRead) return 0;
+        n = std::min(n, buf.size() > keepTail ? buf.size() - keepTail : 0);
+        buf.erase(buf.begin(), buf.begin() + (std::ptrdiff_t)n);
+        dropped += n;
+        return n;
+    }
     bool exhausted = false;
     // May not end: endless, a view over one, lazy by declaration. Reading ALL
     // of one (kDrainAll) stops at a million; any other is read to its end (a
@@ -6438,6 +6449,7 @@ Value  rtReduce(Interpreter& I, const std::string& op, const Value& list,
 // ±LLONG_MAX sentinel in its integer endpoints) or a lazy list with no end.
 bool isEndlessRange(const Value& v);
 bool isEndlessLazy(const Value& v);
+size_t lazyViewSource(Interpreter& I, const Value& src, size_t L, size_t need);   // (MethodCallTail.cpp)
 // The limit of an endless Range's arithmetic series, which is what `.sum`
 // answers: ±Inf, or NaN when the range runs from -Inf all the way to +Inf.
 Value endlessRangeSum(const Value& v);

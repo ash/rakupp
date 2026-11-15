@@ -3345,7 +3345,7 @@ std::string joinValues(const ValueList& items, const std::string& sep) {
 // A lazy @-array over the integers from `start` upward (an infinite `…..Inf` range).
 Value makeInfArray(long long start) {
     Value a = Value::array(); a.isList = true;
-    auto st = std::make_shared<LazySeqState>(); st->infinite = true;
+    auto st = std::make_shared<LazySeqState>(); st->infinite = st->dropsRead = true;
     auto next = std::make_shared<long long>(start);
     st->appendNext = [next](ValueList& cache) -> bool { cache.push_back(Value::integer((*next)++)); return true; };
     a.extM() = st;
@@ -9071,7 +9071,7 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
         if (m == "pull-one") {
             // the one holder of a Seq that only appends lets go of what it handed out (#263)
             if (lazySrc && lazySrc->dropsRead && posV.i >= 1024 && itemsV.arrS().use_count() == 2) {
-                items.erase(items.begin(), items.begin() + (std::ptrdiff_t)posV.i); n -= posV.i; posV.i = 0;
+                const size_t k = lazySrc->dropFront(items, (size_t)posV.i); n -= (long long)k; posV.i -= (long long)k;
             }
             ensure(posV.i + 1); return posV.i < n ? items[posV.i++] : iterEnd();
         }

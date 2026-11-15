@@ -3363,7 +3363,7 @@ Value Interpreter::execForStmt(Stmt* s, bool sink) {
             const bool immSrc = !oneItem && (quantSrc || immutableLoopSource(fs->list.get()));
             for (size_t i = 0; haveItem(i); i++) {
                 if (liveSt && liveSt->dropsRead && i - base >= 1024 && liveArr.use_count() == mine)
-                    { itemsR.erase(itemsR.begin(), itemsR.begin() + (std::ptrdiff_t)(i - base)); base = i; }
+                    base += liveSt->dropFront(itemsR, i - base);
                 Value& tv = env->vars["$_"];
                 tv = itemsR[i - base];
                 if (immSrc) {
@@ -4151,8 +4151,8 @@ Value Interpreter::execForStmt(Stmt* s, bool sink) {
     auto at = [&](size_t k) -> Value& { return itemsR[k - base]; };
     const long mine = liveArr ? 1 + (listv.arr() == liveArr.get()) + (listvRaw.arr() == liveArr.get()) : 0;
     auto dropRead = [&](size_t i) {   // (the loop is at element i: `haveItem(i) && dropRead(i)`)
-        if (liveSt && liveSt->dropsRead && i - base >= 1024 && liveArr.use_count() == mine) {
-            itemsR.erase(itemsR.begin(), itemsR.begin() + (std::ptrdiff_t)(i - base)); base = i; }
+        if (liveSt && liveSt->dropsRead && i - base >= 1024 && liveArr.use_count() == mine)
+            base += liveSt->dropFront(itemsR, i - base);
         return true;
     };
     auto haveItem = [&](size_t want) -> bool { // true = element `want` exists (grows a live source)
@@ -19724,7 +19724,7 @@ static Value applyArithGeneral(const std::string& op, const Value& l, const Valu
         // that never ends (repeat.t hung here on `infix:<xx>({$++}, Inf)`).
         if (r.t == VT::Whatever || (r.t == VT::Num && std::isinf(r.n))) {
             Value a = Value::seq();
-            auto st = std::make_shared<LazySeqState>(); st->infinite = true;
+            auto st = std::make_shared<LazySeqState>(); st->infinite = st->dropsRead = true;
             st->hasCount = true; st->countVal = Value::number(INFINITY);
             Value src = l;
             st->appendNext = [src, callable](ValueList& cache) -> bool {
@@ -19745,7 +19745,7 @@ static Value applyArithGeneral(const std::string& op, const Value& l, const Valu
         if (r.big() || n > kXxEagerMax) {   // too large to build — generate on demand
             Value a = Value::seq();
             auto st = std::make_shared<LazySeqState>();
-            st->infinite = true;
+            st->infinite = st->dropsRead = true;
             st->hasCount = true; st->countVal = r.big() ? r : Value::integer(n);
             Value src = l;
             auto left = std::make_shared<long long>(r.big() ? -1 : n);

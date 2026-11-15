@@ -2780,6 +2780,8 @@ Value Interpreter::seqOp(Value l, Value r, bool exclusive) {
             bool boundedGen = !infinite;
             st->infinite = !boundedGen; // a literal-endpoint gen seq CAN drain (stops on match)
             st->seqUserGen = infinite && hasGen;
+            // (it steps from its last `arity` elements: a slurpy generator, all of them)
+            st->dropsRead = !(hasGen && arity == 0); st->keepTail = hasGen ? (size_t)arity : 1;
             auto exclHit = std::make_shared<bool>(false);   // `...^` met its endpoint: the end, however often a reader asks again (rakudo#3881)
             st->appendNext = [self, gen, hasGen, geometric, ratio, step, allInt, arity, tooFew,
                               deduceFailed, dedFrom, seqDeduceThrow,
@@ -3017,8 +3019,9 @@ Value Interpreter::seqOp(Value l, Value r, bool exclusive) {
             st->gatherSeq = st->dropsRead = true;
             Interpreter* self = this;
             st->appendNext = [self, inner, pos](ValueList& cache) -> bool {
-                if (ValueList* a = inner->arr(); a && *pos >= 1024 && inner->arrS().use_count() == 2)
-                    { a->erase(a->begin(), a->begin() + (std::ptrdiff_t)*pos); *pos = 0; }   // (#263)
+                if (ValueList* a = inner->arr(); a && *pos >= 1024 && inner->arrS().use_count() == 2) {   // (#263)
+                    if (inner->ext()) *pos -= static_cast<LazySeqState*>(inner->ext().get())->dropFront(*a, *pos);
+                    else { a->erase(a->begin(), a->begin() + (std::ptrdiff_t)*pos); *pos = 0; } }
                 self->materializeLazy(*inner, *pos + 1);
                 if (*pos >= inner->arr()->size()) return false;
                 cache.push_back((*inner->arr())[(*pos)++]);
@@ -3054,7 +3057,9 @@ Value Interpreter::seqDropSeed(Value seq) {
     auto st = std::make_shared<LazySeqState>();
     st->infinite = innerSt->infinite;
     st->seqUserGen = innerSt->seqUserGen;
+    st->dropsRead = true;   // (and what it read of the sequence it alone holds goes too: #263)
     st->appendNext = [inner, innerSt, pos](ValueList& cache) -> bool {
+        if (*pos >= 1024 && inner->arrS().use_count() == 2) *pos -= innerSt->dropFront(*inner->arr(), *pos);
         while (*pos >= inner->arr()->size())
             if (!innerSt->appendNext(*inner->arr())) return false;
         cache.push_back((*inner->arr())[(*pos)++]);

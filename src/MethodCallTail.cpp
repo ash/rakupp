@@ -17,10 +17,19 @@ bool bridgedNumericInfix(Interpreter& I, const std::string& op, const Value& l, 
 // goes, and its position with it: `gather {…}.map(…)` keeps neither (#263).
 static void dropViewRead(const Value& src, size_t& spos) {
     if (spos < 1024 || !src.ext() || !std::static_pointer_cast<LazySeqState>(src.ext())->dropsRead) return;
-    if (ValueList* a = src.arr(); a && src.arrS().use_count() == 2 && spos <= a->size()) {
-        a->erase(a->begin(), a->begin() + (std::ptrdiff_t)spos);
-        spos = 0;
-    }
+    if (ValueList* a = src.arr(); a && src.arrS().use_count() == 2 && spos <= a->size())
+        spos -= static_cast<LazySeqState*>(src.ext().get())->dropFront(*a, spos);
+}
+// …and one that reads its source by its OWN count (`.kv`, `.pairs`, `.rotor`):
+// the source up to (logical) element L + need - 1, with what lies before L
+// gone the same way. The offset to take off L comes back.
+size_t lazyViewSource(Interpreter& I, const Value& src, size_t L, size_t need) {
+    auto* st = src.ext() ? static_cast<LazySeqState*>(src.ext().get()) : nullptr;
+    size_t off = st ? st->dropped : 0;
+    if (st && st->dropsRead && L >= off + 1024 && src.arr() && src.arrS().use_count() == 2)
+        off += st->dropFront(*src.arr(), L - off);
+    I.materializeLazy(src, L - off + need);
+    return off;
 }
 static size_t byArity(const Callable* c) {
     if (c->ci().params && !c->ci().params->empty()) return c->ci().params->size();
@@ -168,7 +177,7 @@ static Value lazyArrayCopy(const Value& inv) {
     Value out = Value::array(*inv.arr());
     decontCopiedElems(*out.arr());
     auto st = std::make_shared<LazySeqState>(*srcSt);
-    st->pullHint = 0;
+    st->pullHint = 0; st->dropsRead = false; st->dropped = st->keepTail = 0;   // (it reads by the copy's size)
     LazySeqState* stp = st.get();
     st->appendNext = [src, srcSt, stp](ValueList& buf) -> bool {
         ValueList& from = *src.arr();
@@ -1772,11 +1781,11 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
             st->infinite = infinite; // a view over an endless source is endless too
             st->gatherSeq = lst->gatherSeq; st->declaredLazy = lst->declaredLazy; st->finiteChain = lst->finiteChain;   // see map
             Interpreter* self = this;
-            st->appendNext = [self, src, n](ValueList& cache) -> bool {
-                size_t si = cache.size() + (size_t)n;
-                self->materializeLazy(src, si + 1);
-                if (si >= src.arr()->size()) return false;
-                cache.push_back((*src.arr())[si]);
+            LazySeqState* stp = st.get(); stp->dropsRead = true;   // (by its own count: dropped + size)
+            st->appendNext = [self, src, n, stp](ValueList& cache) -> bool {
+                const size_t si = stp->dropped + cache.size() + (size_t)n, off = lazyViewSource(*self, src, si, 1);
+                if (si - off >= src.arr()->size()) return false;
+                cache.push_back((*src.arr())[si - off]);
                 return true;
             };
             out.extM() = st;
@@ -1814,9 +1823,9 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
         // runs before this one — see MethodCallPart2's gist/raku arms)
         if (infinite && m == "keys") { // 0, 1, 2, … — as endless as the source
             Value out = Value::array(); out.isList = true;
-            auto st = std::make_shared<LazySeqState>(); st->infinite = true;
-            st->appendNext = [](ValueList& cache) -> bool {
-                cache.push_back(Value::integer((long long)cache.size()));
+            auto st = std::make_shared<LazySeqState>(); st->infinite = st->dropsRead = true; LazySeqState* stp = st.get();
+            st->appendNext = [stp](ValueList& cache) -> bool {
+                cache.push_back(Value::integer((long long)(stp->dropped + cache.size())));
                 return true;
             };
             out.extM() = st;
@@ -1827,13 +1836,12 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
             Value out = Value::array(); out.isList = true;
             auto st = std::make_shared<LazySeqState>(); st->infinite = infinite;
             st->gatherSeq = gatherLive; st->declaredLazy = lst->declaredLazy;
-            st->finiteSource = lst->finiteSource; st->streaming = lst->streaming;
-            st->appendNext = [self, src](ValueList& cache) -> bool {
-                size_t k = cache.size() / 2; // two cache entries per source element
-                self->materializeLazy(src, k + 1);
-                if (k >= src.arr()->size()) return false;
+            st->finiteSource = lst->finiteSource; st->streaming = lst->streaming; LazySeqState* stp = st.get(); stp->dropsRead = true;
+            st->appendNext = [self, src, stp](ValueList& cache) -> bool {   // (by its own count, as .skip)
+                const size_t k = (stp->dropped + cache.size()) / 2, off = lazyViewSource(*self, src, k, 1); // two per element
+                if (k - off >= src.arr()->size()) return false;
                 cache.push_back(Value::integer((long long)k));
-                cache.push_back((*src.arr())[k]);
+                cache.push_back((*src.arr())[k - off]);
                 return true;
             };
             out.extM() = st;
@@ -1846,11 +1854,11 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
             auto st = std::make_shared<LazySeqState>(); st->infinite = infinite;
             st->gatherSeq = gatherLive; st->declaredLazy = lst->declaredLazy;
             st->finiteSource = lst->finiteSource; st->streaming = lst->streaming;
-            st->appendNext = [self, src, anti](ValueList& cache) -> bool {
-                size_t k = cache.size();
-                self->materializeLazy(src, k + 1);
-                if (k >= src.arr()->size()) return false;
-                const Value& v = (*src.arr())[k];
+            LazySeqState* stp = st.get(); stp->dropsRead = true;   // (by its own count, as .skip)
+            st->appendNext = [self, src, anti, stp](ValueList& cache) -> bool {
+                const size_t k = stp->dropped + cache.size(), off = lazyViewSource(*self, src, k, 1);
+                if (k - off >= src.arr()->size()) return false;
+                const Value& v = (*src.arr())[k - off];
                 Value p;
                 if (anti) { // value => index
                     p = Value::pair(v.toStr(), Value::integer((long long)k));
@@ -1873,20 +1881,20 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
                     hammer = !a.pairVal() || a.pairVal()->truthy();
             Value src = inv; Interpreter* self = this;
             Value out = Value::array(); out.isList = true; out.s = "Seq";
-            auto st = std::make_shared<LazySeqState>(); st->infinite = true;
+            auto st = std::make_shared<LazySeqState>(); st->infinite = st->dropsRead = true;
             auto spos = std::make_shared<size_t>(0); // next source element to spread
             st->appendNext = [self, src, hammer, spos](ValueList& cache) -> bool {
-                self->materializeLazy(src, *spos + 1);
-                if (*spos >= src.arr()->size()) return false;
+                const size_t off = lazyViewSource(*self, src, *spos, 1);
+                if (*spos - off >= src.arr()->size()) return false;
                 // a Seq's element spreads by the LIST rule (ofArray = false); may
                 // add ZERO elements (an empty sublist) — callers simply re-pull
-                flatOneInto((*src.arr())[(*spos)++], false, hammer, cache);
+                flatOneInto((*src.arr())[(*spos)++ - off], false, hammer, cache);
                 return true;
             };
             out.extM() = st;
             return out;
         }
-        if (infinite && (m == "rotor" || m == "batch")) {
+        if ((infinite || gatherLive || streamLive) && (m == "rotor" || m == "batch")) {   // (…or one still read as it goes)
             std::vector<RotorSpec> specs;
             bool partial;
             // a LAZY list of sizes (`.rotor(1...*)`) is read as far as any list
@@ -1903,18 +1911,19 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
             parseRotorSpecs(rargs, m == "batch", specs, partial);
             Value src = inv; Interpreter* self = this;
             Value out = Value::array(); out.isList = true;
-            auto st = std::make_shared<LazySeqState>(); st->infinite = true;
+            auto st = std::make_shared<LazySeqState>(); st->infinite = infinite; st->dropsRead = true; st->gatherSeq = gatherLive;
+            st->streaming = lst->streaming; st->finiteSource = lst->finiteSource;
             auto pos = std::make_shared<size_t>(0); // next source index
             auto cyc = std::make_shared<size_t>(0); // spec cycle counter
             st->appendNext = [self, src, specs, partial, pos, cyc](ValueList& cache) -> bool {
                 const RotorSpec& sp = specs[*cyc % specs.size()];
-                self->materializeLazy(src, *pos + (size_t)sp.n);
-                size_t have = src.arr()->size();
+                const size_t off = lazyViewSource(*self, src, *pos, (size_t)sp.n);   // (`have` and `j` count from the start)
+                size_t have = off + src.arr()->size();
                 if (*pos >= have) return false;
                 if (*pos + (size_t)sp.n > have && !partial) return false;
                 Value chunk = Value::array(); chunk.isList = true;
                 for (size_t j = *pos; j < *pos + (size_t)sp.n && j < have; j++)
-                    chunk.arr()->push_back((*src.arr())[j]);
+                    chunk.arr()->push_back((*src.arr())[j - off]);
                 cache.push_back(std::move(chunk));
                 (*cyc)++;
                 *pos += (size_t)(sp.step < 1 ? 1 : sp.step);
