@@ -13,6 +13,7 @@
 #include "Cnp.h"
 #include "codegen/Js.h"
 #include "codegen/Arduino.h"
+#include "codegen/MicroBit.h"
 #ifdef _WIN32
 #include <io.h>         // _isatty
 #include <process.h>
@@ -1915,22 +1916,24 @@ static int compileJs(const std::string& src, const std::string& srcName, std::st
     return 0;
 }
 
-// ---- --target=arduino (ARDUINO-PLAN.md) ---------------------------------------
-// The sketch goes to stdout or -o. With --sim it is compiled for THIS computer,
-// against the host core embedded from src/codegen/ArduinoSim.h, into an
-// executable that runs the program on a simulated board and writes what the
-// interpreter's `use Arduino` writes — so a program can be tried, and its
-// sketch checked against its source, with no board attached.
+// ---- --target=arduino and --target=microbit (ARDUINO-PLAN.md, MICROBIT-PLAN.md)
+// The sketch (or the micro:bit's CODAL program) goes to stdout or -o. With
+// --sim it is compiled for THIS computer, against the host core embedded from
+// src/codegen/ArduinoSim.h (MicroBitSim.h), into an executable that runs the
+// program on a simulated board and writes what the interpreter's `use Arduino`
+// (`use MicroBit`) writes — so a program can be tried, and its C++ checked
+// against its source, with no board attached.
 static bool g_arduinoSim = false;        // --sim
-static int compileArduino(const std::string& src, const std::string& srcName, std::string outPath,
-                          const std::vector<std::string>& libPaths) {
+static int compileBoard(bool microbit, const std::string& src, const std::string& srcName, std::string outPath,
+                        const std::vector<std::string>& libPaths) {
+    const std::string target = microbit ? "rakupp --target=microbit" : "rakupp --target=arduino";
     if (!outPath.empty() && outIsDirectory(outPath)) { std::cerr << "Cannot write " << outPath << ": is a directory\n"; return 5; }
     // the declaration check, then what the program's compile-time code comes
     // to (g_ct): BEGIN and EVERY constant run here, and the board gets values
     if (int rc = declCheckGate(src, srcName, effectiveSearchPath(libPaths)); rc >= 0) return rc;
     g_ct = computeCompileTimeValues(src, srcName, libPaths, /*everyConstant=*/true);
     if (g_ct.failed) {
-        std::cerr << "rakupp --target=arduino: " << srcName << ": the program's compile-time code died (above) — "
+        std::cerr << target << ": " << srcName << ": the program's compile-time code died (above) — "
                      "the board gets only what the build computes, so there is nothing to build\n";
         return 5;
     }
@@ -1944,15 +1947,23 @@ static int compileArduino(const std::string& src, const std::string& srcName, st
         parser.srcFile_ = srcName;
         Program prog = parser.parseProgram();
         applyCompileTimeValues(prog, g_ct);
-        ArduinoOptions ao;
-        ao.srcName = srcName == "-e" ? std::string("-e") : std::filesystem::path(srcName).filename().string();
-        ao.version = RAKUPP_VERSION;
-        sketch = transpileToArduino(prog, ao);
+        std::string name = srcName == "-e" ? std::string("-e") : std::filesystem::path(srcName).filename().string();
+        if (microbit) {
+            MicroBitOptions mo;
+            mo.srcName = name;
+            mo.version = RAKUPP_VERSION;
+            sketch = transpileToMicroBit(prog, mo);
+        } else {
+            ArduinoOptions ao;
+            ao.srcName = name;
+            ao.version = RAKUPP_VERSION;
+            sketch = transpileToArduino(prog, ao);
+        }
     } catch (const ParseError& e) {
         std::cerr << "===SORRY!=== Parse error at line " << e.line << ": " << e.what() << "\n";
         return 2;
     } catch (const CodegenError& e) {
-        std::cerr << "rakupp --target=arduino: " << srcName << ", " << e.msg << "\n";
+        std::cerr << target << ": " << srcName << ", " << e.msg << "\n";
         return 5;
     }
     if (!g_arduinoSim) {
@@ -1960,7 +1971,7 @@ static int compileArduino(const std::string& src, const std::string& srcName, st
         std::ofstream f = openOut(outPath);
         if (!f) { std::cerr << "Cannot write " << outPath << "\n"; return 5; }
         f << sketch;
-        if (!g_quiet) std::cerr << "Compiled (arduino sketch) " << srcName << " -> " << outPath << "\n";
+        if (!g_quiet) std::cerr << "Compiled (" << (microbit ? "micro:bit program" : "arduino sketch") << ") " << srcName << " -> " << outPath << "\n";
         return 0;
     }
     if (outPath.empty()) outPath = defaultOut(srcName);
@@ -1970,10 +1981,10 @@ static int compileArduino(const std::string& src, const std::string& srcName, st
     fs::path dir = fs::path(outPath).parent_path() / (".rakupp-sim-" + std::to_string((long long)getpid()));
     std::error_code ec;
     fs::create_directories(dir, ec);
-    std::string h = (dir / "Arduino.h").string(), cpp = (dir / "sketch.cpp").string();
-    { std::ofstream f = openOut(h); if (!f) { std::cerr << "Cannot write " << h << "\n"; return 5; } f << arduinoSimCore(); }
+    std::string h = (dir / (microbit ? "MicroBit.h" : "Arduino.h")).string(), cpp = (dir / "sketch.cpp").string();
+    { std::ofstream f = openOut(h); if (!f) { std::cerr << "Cannot write " << h << "\n"; return 5; } f << (microbit ? microbitSimCore() : arduinoSimCore()); }
     // the Uno R4 WiFi's matrix and network libraries: their classes are in the host core above
-    for (const char* lib : {"Arduino_LED_Matrix.h", "WiFiS3.h"}) {
+    if (!microbit) for (const char* lib : {"Arduino_LED_Matrix.h", "WiFiS3.h"}) {
         std::string mh = (dir / lib).string();
         std::ofstream f = openOut(mh); if (!f) { std::cerr << "Cannot write " << mh << "\n"; return 5; }
         f << "#include \"Arduino.h\"\n";
@@ -1987,12 +1998,12 @@ static int compileArduino(const std::string& src, const std::string& srcName, st
     if (cxx == "cl") cmd = msvcEnvPrefix() + cmd;
 #endif
     if (int rc = runCommand(cmd); rc != 0) {
-        std::cerr << "rakupp --target=arduino --sim: the sketch did not compile for this computer (compiler exit "
-                  << rc << ") — that is a Raku++ bug; the sketch is kept in " << dir.string() << "\n";
+        std::cerr << target << " --sim: the program did not compile for this computer (compiler exit "
+                  << rc << ") — that is a Raku++ bug; the C++ is kept in " << dir.string() << "\n";
         return 5;
     }
     fs::remove_all(dir, ec);
-    if (!g_quiet) std::cerr << "Compiled (arduino sketch, simulated board) " << srcName << " -> " << outPath << "\n";
+    if (!g_quiet) std::cerr << "Compiled (" << (microbit ? "micro:bit program" : "arduino sketch") << ", simulated board) " << srcName << " -> " << outPath << "\n";
     return 0;
 }
 
@@ -2736,7 +2747,7 @@ static const FlagDoc kFlagDocs[] = {
     {"-c", 0, nullptr, "compile-check only"},
     {"-q", 0, nullptr, "quiet, drop what a mode says about itself"},
     {"--quiet", 0, nullptr, "quiet, drop what a mode says about itself"},
-    {"-o", 2, "FILE", "output file (compile modes, --target=js, --target=arduino, --cpp)"},
+    {"-o", 2, "FILE", "output file (compile modes, --target=js, --target=arduino, --target=microbit, --cpp)"},
     {"-O", 0, nullptr, "optimize (compile modes)"},
     {"--jit", 1, "off on sync verbose stats nocache pch threshold=", "work in progress - compile hot loops while the program runs (off by default)"},
     {"--cnp", 1, "off on verbose stats threshold=", "work in progress - copy-and-patch hot loops, no compiler and no cache (off by default)"},
@@ -2764,8 +2775,8 @@ static const FlagDoc kFlagDocs[] = {
     {"--slim", 1, "safe auto max none help list verify", "cut unused runtime subsystems from the binary"},
     {"--standalone", 0, nullptr, "a module that cannot be embedded is a build error"},
     {"--static", 0, nullptr, "link the C++ runtime into the compiled binary (Linux, MinGW)"},
-    {"--target", 1, "parse ast rakuast js arduino cpp raku", "parse, ast, rakuast, or emit JavaScript, an Arduino sketch, C++ or Raku"},
-    {"--sim", 0, nullptr, "build the Arduino sketch for this computer, on a simulated board (--target=arduino)"},
+    {"--target", 1, "parse ast rakuast js arduino microbit cpp raku", "parse, ast, rakuast, or emit JavaScript, an Arduino sketch, a micro:bit program, C++ or Raku"},
+    {"--sim", 0, nullptr, "build the board's program for this computer, on a simulated board (--target=arduino, --target=microbit)"},
     {"--verify", 0, nullptr, "emit JavaScript only if it agrees with the interpreter"},
     {"--watch", 0, nullptr, "re-run the program whenever it or a library file changes"},
     {"--module", 0, nullptr, "JavaScript export the subs, classes and MAIN"},
@@ -3298,7 +3309,7 @@ int main(int argc, char** argv) {
     // `-o out --exe src` is as good as `--exe src -o out`.
     enum class Mode { Run, Help, Version, VersionFull, FfiInfo, Highlight, Ast, RakuAst, AstRoundtrip,
                       PrecompSetting, PrecompInfo, PrecompClean, JitInfo, JitClean, Check, Lint,
-                      Cpp, Bundle, Aot, Exe, Mcp, Lsp, Jupyter, JupyterInstall, Js, Arduino, Fmt, DocLinks };
+                      Cpp, Bundle, Aot, Exe, Mcp, Lsp, Jupyter, JupyterInstall, Js, Arduino, MicroBit, Fmt, DocLinks };
     Mode mode = Mode::Run;
     // --rakuast=tree drops the source column; =attrs adds the scalar
     // attributes; =compunit wraps the tree the way `.AST(:compunit)` does.
@@ -3622,7 +3633,7 @@ int main(int argc, char** argv) {
                 if (t == "parse") { if (!setMode(Mode::Check, a)) return 4; }
                 else if (t == "ast") { if (!setMode(Mode::Ast, a)) return 4; }
                 else if (t == "js") { if (!setMode(Mode::Js, a)) return 4; }
-                else if (t == "arduino") { if (!setMode(Mode::Arduino, a)) return 4; }
+                else if (t == "arduino" || t == "microbit") { if (!setMode(t == "arduino" ? Mode::Arduino : Mode::MicroBit, a)) return 4; }
                 else if (t == "cpp" || t == "c++") { if (!setMode(Mode::Cpp, "--cpp")) return 4; }
                 // Raku out of Raku is the formatter: the same "emit source in
                 // language X" the other targets do, where X happens to be the
@@ -3632,7 +3643,7 @@ int main(int argc, char** argv) {
                 // stays on `--rakuast=`, since `--target=` has a comma meaning of
                 // its own to protect; this spelling gives the default view.
                 else if (t == "rakuast") { if (!setMode(Mode::RakuAst, "--rakuast")) return 4; }
-                else { std::cerr << "Unknown --target '" << t << "' (supported: parse, ast, rakuast, js, arduino, cpp, raku)\n"; return 4; }
+                else { std::cerr << "Unknown --target '" << t << "' (supported: parse, ast, rakuast, js, arduino, microbit, cpp, raku)\n"; return 4; }
                 continue;
             }
             // --target=js companions (TRANSPILE-PLAN): --verify runs the program under
@@ -3819,9 +3830,9 @@ int main(int argc, char** argv) {
                 return 4;
             }
         }
-        if (!outPath.empty() && !isCompileMode(mode) && mode != Mode::Js && mode != Mode::Cpp && mode != Mode::Arduino) return illegalOpt("-o");
+        if (!outPath.empty() && !isCompileMode(mode) && mode != Mode::Js && mode != Mode::Cpp && mode != Mode::Arduino && mode != Mode::MicroBit) return illegalOpt("-o");
         if (g_jsModule && mode != Mode::Js) return illegalOpt("--module");
-        if (g_arduinoSim && mode != Mode::Arduino) return illegalOpt("--sim");
+        if (g_arduinoSim && mode != Mode::Arduino && mode != Mode::MicroBit) return illegalOpt("--sim");
         if ((g_jsVerify || g_jsRuntimeOnly || !g_jsFallback.empty()) && mode != Mode::Js) return illegalOpt(g_jsVerify ? "--verify" : g_jsRuntimeOnly ? "--runtime" : "--fallback");
         if (optimize && !isCompileMode(mode) && mode != Mode::Cpp) return illegalOpt("-O");
         // --slim shapes the LINK of a compiled binary, so it means nothing to
@@ -4126,9 +4137,9 @@ int main(int argc, char** argv) {
 "                               program outside the JS core by wrapping the WASM engine;\n"
 "                               --runtime writes just the runtime module\n"
 "  rakupp --target=arduino SRC  Transpile to an Arduino sketch (to stdout; -o OUT.ino writes\n"
-"                               it); BEGIN and constants run while building. --sim builds it\n"
-"                               for this computer, on the simulated board that `rakupp SRC`\n"
-"                               runs a `use Arduino` program on\n"
+"                               it); --target=microbit, to C++ for a BBC micro:bit's CODAL.\n"
+"                               BEGIN and constants run while building; --sim builds it for\n"
+"                               this computer, on the board `rakupp SRC` simulates for it\n"
 "  rakupp --highlight [SRC]     Syntax-highlight Raku (--html [default] / --ansi;\n"
 "                               reads stdin if no SRC), e.g. as a pygmentize drop-in.\n"
 "                               Flags compose in any order; bare `rakupp --ansi SRC`\n"
@@ -4730,8 +4741,8 @@ int main(int argc, char** argv) {
         if (!haveSrc) { std::cerr << "Usage: rakupp --target=js (FILE | -e CODE) [-o OUT.js] [--standalone | --module] [--verify] [--fallback=wasm]\n       rakupp --target=js --runtime [-o rakupp-rt.js]\n"; return 4; }
         return compileJs(src, fileName, outPath, exePath, libPaths);
     }
-    if (mode == Mode::Arduino && !haveSrc) { std::cerr << "Usage: rakupp --target=arduino [--sim] (FILE | -e CODE) [-o OUT]\n"; return 4; }
-    if (mode == Mode::Arduino) return compileArduino(src, fileName, outPath, libPaths);
+    if ((mode == Mode::Arduino || mode == Mode::MicroBit) && !haveSrc) { std::cerr << "Usage: rakupp --target=" << (mode == Mode::Arduino ? "arduino" : "microbit") << " [--sim] (FILE | -e CODE) [-o OUT]\n"; return 4; }
+    if (mode == Mode::Arduino || mode == Mode::MicroBit) return compileBoard(mode == Mode::MicroBit, src, fileName, outPath, libPaths);
 
     // --cpp : print the C++ that `--exe` would transpile the program to (to stdout)
     if (mode == Mode::Cpp) {

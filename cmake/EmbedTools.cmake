@@ -63,6 +63,10 @@ embed_file(BLOB_SH_ARDUINO kShArduino "${SRC_DIR}/rakulib/Arduino.rakumod")
 embed_file(BLOB_SH_ARDUINO_MATRIX kShArduinoMatrix "${SRC_DIR}/rakulib/Arduino/LEDMatrix.rakumod")
 embed_file(BLOB_SH_ARDUINO_WIFI kShArduinoWiFi "${SRC_DIR}/rakulib/Arduino/WiFi.rakumod")
 embed_file(BLOB_ARDUINO_SIM kArduinoSim "${SRC_DIR}/src/codegen/ArduinoSim.h")
+# `use MicroBit` likewise (MICROBIT-PLAN.md), with the host core of a
+# `--target=microbit --sim` build.
+embed_file(BLOB_SH_MICROBIT kShMicroBit "${SRC_DIR}/rakulib/MicroBit.rakumod")
+embed_file(BLOB_MICROBIT_SIM kMicroBitSim "${SRC_DIR}/src/codegen/MicroBitSim.h")
 # `use Telemetry` is the engine's too: Rakudo's core module, ported to plain Raku
 # over the engine's getrusage probe, so Rakudo's own copy (nqp throughout) can
 # never stand in for it.
@@ -129,12 +133,18 @@ void registerShadowModules() {
         reinterpret_cast<const char*>(kShArduinoMatrix), kShArduinoMatrixLen);
     rakuppRegisterShadowModule(\"Arduino::WiFi\",
         reinterpret_cast<const char*>(kShArduinoWiFi), kShArduinoWiFiLen);
+    rakuppRegisterShadowModule(\"MicroBit\",
+        reinterpret_cast<const char*>(kShMicroBit), kShMicroBitLen);
     rakuppRegisterShadowModule(\"Telemetry\",
         reinterpret_cast<const char*>(kShTelemetry), kShTelemetryLen);
 }
 
 std::string arduinoSimCore() {
     return std::string(reinterpret_cast<const char*>(kArduinoSim), kArduinoSimLen);
+}
+
+std::string microbitSimCore() {
+    return std::string(reinterpret_cast<const char*>(kMicroBitSim), kMicroBitSimLen);
 }
 } // namespace rakupp
 ")
@@ -162,6 +172,8 @@ ${BLOB_SH_ARDUINO}
 ${BLOB_SH_ARDUINO_MATRIX}
 ${BLOB_SH_ARDUINO_WIFI}
 ${BLOB_ARDUINO_SIM}
+${BLOB_SH_MICROBIT}
+${BLOB_MICROBIT_SIM}
 ${BLOB_SH_TELEMETRY}
 ${EPILOGUE}")
 

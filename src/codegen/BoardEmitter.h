@@ -96,6 +96,7 @@ struct Const {
     CT et = CT::None;    // a table's element type
     long long n = 0;
     std::string c;       // a table's C name
+    std::vector<long long> ints;   // an integer table's values, for a board to check while building
 };
 struct SubSig {
     std::vector<CT> pt;
@@ -535,6 +536,7 @@ protected:
                  : lo >= 0 && hi <= 65535 ? CT::U16 : lo >= -32768 && hi <= 32767 ? CT::I16
                  : lo >= 0 && hi <= 4294967295LL ? CT::U32 : lo >= -2147483648LL && hi <= 2147483647LL ? CT::I32 : CT::I64;
         }
+        if (!anyNum) for (auto& x : vals) c.ints.push_back(x.i);
         c.c = uniqueGlobal("t_" + mangle(name));
         globals_ << "static const " << cType(c.et) << " " << c.c << "[" << c.n << "] RK_FLASH = {";
         for (size_t i = 0; i < vals.size(); i++) {

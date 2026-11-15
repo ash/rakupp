@@ -7751,7 +7751,7 @@ std::string Interpreter::retTypeAliased(const Callable& c) {
 bool Interpreter::isShadowedModule(const std::string& name) {
     return name == "NativeHelpers::Blob" || name == "NativeHelpers::CStruct" ||
            name == "NativeHelpers::Pointer" || name == "Arduino" || name == "Arduino::LEDMatrix" ||
-           name == "Arduino::WiFi";
+           name == "Arduino::WiFi" || name == "MicroBit";
 }
 
 // The library an `is native(EXPR)` names. A Str is taken as written; the

@@ -23,7 +23,8 @@ std::string installerSource();  // tools/install.raku
 std::string docToolSource();      // tools/doc.raku, with the guides spliced in
 std::string upgradeToolSource();  // tools/upgrade.raku, the ENGINE updater
 std::string referenceGuide();     // docs/guide/REFERENCE.md: `--lsp` hover and completion
-void registerShadowModules();     // rakulib/NativeHelpers/* and Arduino, the engine's shadows
+void registerShadowModules();     // rakulib/NativeHelpers/*, Arduino and MicroBit, the engine's shadows
 std::string arduinoSimCore();     // src/codegen/ArduinoSim.h: the host core of a --target=arduino --sim build
+std::string microbitSimCore();    // src/codegen/MicroBitSim.h: the host core of a --target=microbit --sim build
 
 } // namespace rakupp
