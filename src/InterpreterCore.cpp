@@ -3109,7 +3109,7 @@ Value Interpreter::execForStmt(Stmt* s, bool sink) {
             ~TailVarG() { t.bindRawTails = b; t.tailVarSlot = s; }
         } tvg{tctx(), tctx().bindRawTails, tctx().tailVarSlot};
         if (!tailVars.empty()) { tctx().bindRawTails = &tailVars; tctx().tailVarSlot = nullptr; }
-        Value lvRaw = eval(fs->list.get());
+        Value lvRaw = forListEval(fs->list.get());
         // …a slot the loop's own scope still reaches: the same variable,
         // not one the block declared and has already let go of
         Value* tailSlot = nullptr;
@@ -3377,7 +3377,7 @@ Value Interpreter::execForStmt(Stmt* s, bool sink) {
         if (hadTopic) env->vars["$_"] = savedTopic; else env->vars.erase("$_");
         return forResult();
     }
-    Value listvRaw = eval(fs->list.get());
+    Value listvRaw = forListEval(fs->list.get());
     if (!listvRaw.itemized) seqUse(listvRaw, SeqUse::Iterate);   // a Seq is read once (SeqToken)
     Value listv = iterationSourceOf(listvRaw);
     drainIfFiniteLazy(listv);

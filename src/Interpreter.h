@@ -4001,6 +4001,7 @@ public:
     // Channel, a Supply, a Match, a class's own `list`); forListOf gives it
     bool forListsValue(const Value& v, bool bare);
     Value forListOf(const Value& v);
+    Value forListEval(Expr* e);   // a `for` loop's list: `RANGE.map(…)` read as the loop goes (MethodCallTail.cpp)
     std::thread::id mainThreadId() const { return mainThread_; } // `exit` ends the process from any thread
     // The END phasers of the run() in progress, for an `exit` (or an unhandled
     // cued die) on a worker thread to run before it ends the process, as

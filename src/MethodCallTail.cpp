@@ -31,6 +31,43 @@ size_t lazyViewSource(Interpreter& I, const Value& src, size_t L, size_t need) {
     I.materializeLazy(src, L - off + need);
     return off;
 }
+// `for RANGE.map(…)` and `.grep(…)` (and `STMT for …`): the block runs as the
+// loop reads it, as Rakudo's does. An eager map over a Range ran the block for
+// every element before the body saw one (`m0 m1 m2 b0 b1 b2`), and a million
+// answers stayed until the loop was over (#263). The Range is read as a stream
+// of its Ints, which the view lets go of as it goes. Only a range written as
+// one (`a..b`, `^n`), so nothing is evaluated twice: any other list is
+// evaluated as it was.
+Value Interpreter::forListEval(Expr* e) {
+    auto* mc = e->kind == NK::MethodCall ? static_cast<MethodCall*>(e) : nullptr;
+    Expr* r = mc ? mc->inv.get() : nullptr;
+    while (r && r->kind == NK::ListExpr && static_cast<ListExpr*>(r)->items.size() == 1)
+        r = static_cast<ListExpr*>(r)->items[0].get();
+    const bool upto = r && r->kind == NK::Unary && static_cast<Unary*>(r)->op == "^" && !static_cast<Unary*>(r)->postfix;
+    if (!r || (r->kind != NK::Range && !upto) || (mc->method != "map" && mc->method != "grep") || mc->args.size() != 1 ||
+        !mc->args[0] || mc->args[0]->kind == NK::Pair || mc->meta || mc->hyper || mc->methodExpr || mc->maybe ||
+        mc->allMode || mc->bang || mc->mutate || !mc->methodQual.empty())
+        return eval(e);
+    Value range = eval(mc->inv.get());
+    Value fn = eval(mc->args[0].get());
+    if (range.t == VT::Range && !range.itemized && !range.rNum() && !range.ext() && !range.big() &&
+        range.ofType() != "Str" && range.rFrom() > -9000000000000000000LL && range.rTo() < 9000000000000000000LL &&
+        (mc->method == "grep" || (fn.t == VT::Code && codeArity(fn) == 1))) {
+        auto next = std::make_shared<long long>(range.rFrom() + (range.rExFrom() ? 1 : 0));
+        const long long hi = range.rTo() - (range.rExTo() ? 1 : 0);
+        Value src = Value::array(); src.isList = true; src.s = "Seq";
+        auto st = std::make_shared<LazySeqState>();
+        st->streaming = st->finiteSource = st->dropsRead = true;
+        st->appendNext = [next, hi](ValueList& cache) -> bool {
+            if (*next > hi) return false;
+            cache.push_back(Value::integer((*next)++));
+            return true;
+        };
+        src.extM() = st;
+        return methodCall(src, mc->method, ValueList{fn});
+    }
+    return methodCall(range, mc->method, ValueList{fn});
+}
 static size_t byArity(const Callable* c) {
     if (c->ci().params && !c->ci().params->empty()) return c->ci().params->size();
     const std::string& nm = c->ci().name;
