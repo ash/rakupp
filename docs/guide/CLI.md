@@ -969,8 +969,8 @@ deliverable exists not to need.
 
 ## Choosing a backend
 
-Five things rakupp can emit instead of running your program: an analysis, C++,
-JavaScript, an Arduino sketch, or Raku. Most answer to two spellings — a bare
+Six things rakupp can emit instead of running your program: an analysis, C++,
+JavaScript, an Arduino sketch, a micro:bit program, or Raku. Most answer to two spellings — a bare
 flag and a `--target=` key — because the two grew up apart and there was no way
 to guess which was which:
 
@@ -982,6 +982,7 @@ to guess which was which:
 | C++, what `--exe` compiles | `--cpp` | `--target=cpp` |
 | JavaScript | `--js` | `--target=js` |
 | an Arduino sketch | | `--target=arduino` |
+| C++ for a micro:bit's CODAL | | `--target=microbit` |
 | Raku, formatted | `--fmt` | `--target=raku` |
 
 The `--target=` spellings of `parse` and `ast` are there for Rakudo muscle
@@ -999,7 +1000,7 @@ rakupp --cpp prog.raku -o prog.cpp      # or --target=cpp
 rakupp --js  prog.raku -o prog.js       # or --target=js
 ```
 
-An unknown target is refused and lists the seven that exist.
+An unknown target is refused and lists the eight that exist.
 
 ## Transpiling to JavaScript
 
@@ -1024,6 +1025,17 @@ simulated board (`-o` names the executable), and `rakupp prog.raku` runs the
 same program on the same simulated board in the interpreter. A construct
 outside the board's subset is refused with its line, exit 5. See
 [ARDUINO.md](ARDUINO.md).
+
+## Transpiling for a micro:bit
+
+`--target=microbit` emits one C++ file for the BBC micro:bit V2's own
+runtime, CODAL (to stdout, or `-o main.cpp`): the mainline runs in `main()`
+after `uBit.init()`, the top-level `loop { }` is a C loop there, and `use
+MicroBit` names the board by MicroPython's names spelt as Raku. CODAL's
+build (`python3 build.py` in a checkout of microbit-v2-samples, with the
+program as its `source/main.cpp`) makes the `MICROBIT.hex` the board takes.
+`--sim` and `rakupp prog.raku` run the program on a simulated micro:bit, as
+for the Arduino. See [MICROBIT.md](MICROBIT.md).
 
 ## Compiling
 
