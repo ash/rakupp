@@ -1620,22 +1620,29 @@ bool Interpreter::atomicOn(const std::string& op, Value& lv, const ValueList& mo
     RaceHold rh(&lv, RaceEdge::Atomic); if (g_race) raceSlot(&lv, RaceAcc::Atomic);
     const long long cur = lv.toInt();
     const long long n2 = more.empty() ? 0 : more[0].toInt();
+    // A slot that already holds a plain Int takes the new one in its `i` word
+    // alone. The whole-Value store rewrote the tag bytes too, which another
+    // thread's lookup of a variable in the same pad reads with no lock to see
+    // whether the slot is a cell (Linux TSan, tracked-release-race/parallel).
+    const bool plainInt = lv.t == VT::Int && lv.pk_ == PK::None && lv.hashKind.empty();
+    auto store = [&](long long v) { if (plainInt) lv.i = v; else lv = Value::integer(v); };
     if (op == "atomic-fetch")          out = lv;
-    else if (op == "atomic-fetch-inc") { lv = Value::integer(cur + 1);  out = Value::integer(cur); }
-    else if (op == "atomic-fetch-dec") { lv = Value::integer(cur - 1);  out = Value::integer(cur); }
-    else if (op == "atomic-inc-fetch") { lv = Value::integer(cur + 1);  out = lv; }
-    else if (op == "atomic-dec-fetch") { lv = Value::integer(cur - 1);  out = lv; }
-    else if (op == "atomic-fetch-add") { lv = Value::integer(cur + n2); out = Value::integer(cur); }
-    else if (op == "atomic-fetch-sub") { lv = Value::integer(cur - n2); out = Value::integer(cur); }
-    else if (op == "atomic-add-fetch") { lv = Value::integer(cur + n2); out = lv; }
-    else if (op == "atomic-sub-fetch") { lv = Value::integer(cur - n2); out = lv; }
+    else if (op == "atomic-fetch-inc") { store(cur + 1);  out = Value::integer(cur); }
+    else if (op == "atomic-fetch-dec") { store(cur - 1);  out = Value::integer(cur); }
+    else if (op == "atomic-inc-fetch") { store(cur + 1);  out = Value::integer(cur + 1); }
+    else if (op == "atomic-dec-fetch") { store(cur - 1);  out = Value::integer(cur - 1); }
+    else if (op == "atomic-fetch-add") { store(cur + n2); out = Value::integer(cur); }
+    else if (op == "atomic-fetch-sub") { store(cur - n2); out = Value::integer(cur); }
+    else if (op == "atomic-add-fetch") { store(cur + n2); out = Value::integer(cur + n2); }
+    else if (op == "atomic-sub-fetch") { store(cur - n2); out = Value::integer(cur - n2); }
     else if (op == "atomic-assign") {
         // the same typed-assign contract as plain `=`: a declared Int/Str/...
         // rejects mismatches, atomicint coerces numerics; an undeclared Scalar
         // takes anything (⚛ on a plain container is atomic REFERENCE assignment)
         Value nv = more.empty() ? Value::any() : more[0];
         if (!varName.empty()) enforceTypedAssign(varName, nv);
-        lv = nv;
+        if (plainInt && nv.t == VT::Int && nv.pk_ == PK::None && nv.hashKind.empty()) lv.i = nv.i;
+        else lv = nv;
         out = nv;
     }
     else return false;
