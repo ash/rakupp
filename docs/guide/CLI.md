@@ -544,7 +544,7 @@ disabled hooks cost nothing measurable, so there is no separate
 
 | Flag | Meaning |
 |---|---|
-| `-c` | compile-check only, print `Syntax OK` (parse + the undeclared-variable check — BEGIN does not run, unlike Rakudo); `-q` drops the `Syntax OK` |
+| `-c` | compile-check only, print `Syntax OK` (parse + the undeclared-variable and undeclared-routine checks — BEGIN does not run, unlike Rakudo); `-q` drops the `Syntax OK` |
 | `--lint` | static analysis; `-q` drops the summary (see [LINT.md](LINT.md)) |
 | `--fmt` | format source in the house style — whitespace only, gated on parse, same-program and idempotence. `-i` rewrites in place (`-i.bak` keeps backups), `--check` names files that would change (exit 1), `--diff` shows what (see [FMT.md](FMT.md)) |
 | `--ast` | print the parsed AST (`--dump-ast`, `--target=ast` are aliases) |
@@ -571,11 +571,11 @@ $ rakupp --lint --json prog.raku
 ```
 
 `severity` is `error`, `warning` or `note`; `rule` is the stable id
-([LINT.md](LINT.md) lists them), with `parse-error` and
-`undeclared-variable` for the two compile failures; `line` is 1-based and
+([LINT.md](LINT.md) lists them), with `parse-error`,
+`undeclared-variable` and `undeclared-routine` for the compile failures; `line` is 1-based and
 there is no column — the parser records lines. A clean `-c --json` prints
 `[]` (no `Syntax OK`). Exit codes are unchanged: `-c` exits 2 on a parse
-error and 1 on an undeclared variable, `--lint` 2 / 1 / 0 for errors /
+error and 1 on an undeclared variable or routine, `--lint` 2 / 1 / 0 for errors /
 warnings / clean. The `--lint` summary line still goes to stderr, where a
 consumer reading stdout never sees it (`-q` drops it). This is the
 editor-integration surface for a tool that does not speak LSP; the one

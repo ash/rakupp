@@ -2654,6 +2654,65 @@ static void printJsonFindings(const std::vector<std::string>& items) {
     for (size_t i = 0; i < items.size(); i++) std::cout << items[i] << (i + 1 < items.size() ? ",\n" : "\n");
     std::cout << "]\n";
 }
+// "Undeclared routine": the check a run makes before its first statement
+// (Interpreter::checkUndeclaredCalls), on the same terms — plain statements
+// only. True, with the run's report and its line, when it refuses the program.
+static bool undeclaredRoutineReport(const Program& prog, const std::string& fileName, int& line, std::string& msg) {
+    if (!declCheckEnabled() || prog.stmts.empty()) return false;
+    for (auto& s : prog.stmts) if (!s || s->kind != NK::ExprStmt) return false;
+    Interpreter ci;
+    ci.srcFile_ = fileName;
+    try { ci.checkUndeclaredCalls(prog.stmts, true); return false; }
+    catch (RakuError& e) {
+        line = 0;
+        msg = e.message;
+        if (e.payload.t == VT::Object && e.payload.obj()) {
+            auto li = e.payload.obj()->attrs.find("line");
+            if (li != e.payload.obj()->attrs.end()) line = (int)li->second.toInt();
+        }
+        return true;
+    }
+}
+// -c: refuse the program as the run does (issue #264). True when it refused.
+static bool refusesUndeclaredRoutines(const Program& prog, const std::string& fileName, bool jsonOut) {
+    int line; std::string msg;
+    if (!undeclaredRoutineReport(prog, fileName, line, msg)) return false;
+    if (jsonOut) { printJsonFindings({jsonFinding(fileName, line, "error", "undeclared-routine", msg)}); return true; }
+    std::cerr << "===SORRY!=== Error while compiling " << fileName << "\n" << msg;
+    if (line) std::cerr << "\nat " << fileName << ":" << line;
+    std::cerr << "\n";
+    return true;
+}
+// --lint: the same refusal as ERROR findings, one per routine on the line it
+// is used at ("    nope used at line 2. Did you mean 'note'?" in the report)
+static void addUndeclaredRoutineFindings(const Program& prog, const std::string& fileName, const std::string& src,
+                                         std::vector<LintFinding>& out) {
+    int line; std::string msg;
+    if (!undeclaredRoutineReport(prog, fileName, line, msg)) return;
+    std::istringstream in(msg);
+    std::string l;
+    std::getline(in, l);   // "Undeclared routine:" / "Undeclared routines:"
+    bool any = false;
+    while (std::getline(in, l)) {
+        size_t b = l.find_first_not_of(' ');
+        if (b == std::string::npos) continue;
+        l = l.substr(b);
+        size_t at = l.find(" used at line ");
+        if (at == std::string::npos) { out.push_back({line, 'E', "undeclared-routine", "Undeclared routine: " + l}); any = true; continue; }
+        size_t e = l.find_first_not_of("0123456789", at + 14);
+        const int ln = std::atoi(l.c_str() + at + 14);
+        out.push_back({ln ? ln : line, 'E', "undeclared-routine",   // "Undeclared routine 'length'. Did you mean 'elems', …?"
+                       "Undeclared routine '" + l.substr(0, at) + "'" + (e == std::string::npos ? "" : l.substr(e))});
+        any = true;
+    }
+    if (any) return;
+    // an operator's name ("Undefined routine 'infix:<nosuch>'") comes with no
+    // line: the first line that spells it
+    size_t q = msg.find('\''), q2 = q == std::string::npos ? q : msg.find('\'', q + 1);
+    size_t at = q2 == std::string::npos ? q2 : src.find(msg.substr(q + 1, q2 - q - 1));
+    if (!line && at != std::string::npos) line = 1 + (int)std::count(src.begin(), src.begin() + at, '\n');
+    out.push_back({line ? line : 1, 'E', "undeclared-routine", msg});
+}
 
 // --completions=SHELL (rustup, deno, pip): a completion script for bash, zsh
 // or fish, generated from this one table so it cannot drift from the parser
@@ -4575,6 +4634,8 @@ int main(int argc, char** argv) {
                 return 1;   // the exit code reportUndeclaredVars answers
             }
         }
+        // …and so is a routine nothing declares (issue #264)
+        if (refusesUndeclaredRoutines(prog, fileName, jsonOut)) return 1;
         // …and so is a call that can never bind (Rakudo's "will never work")
         auto dc = doomedCallsOf(prog, effectiveSearchPath(libPaths));
         if (!dc.empty()) {
@@ -4621,6 +4682,7 @@ int main(int argc, char** argv) {
             for (auto& u : findUndeclaredVars(prog, src, effectiveSearchPath(libPaths)))
                 findings.push_back({u.line, 'E', "undeclared-variable",
                                     "'" + u.name + "' is not declared"});
+        addUndeclaredRoutineFindings(prog, fileName, src, findings);   // …and so does a routine nothing declares (#264)
         // A call that can never bind is the compiler's refusal too. A multi's
         // candidate list goes on the same line, as the finding format needs.
         for (auto& d : doomedCallsOf(prog, effectiveSearchPath(libPaths))) {

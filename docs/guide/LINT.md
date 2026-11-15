@@ -34,8 +34,9 @@ and a one-line summary goes to stderr. Runnable, one-rule-per-file demos are in
 
 Findings have one of three severities:
 
-- **error** — the program will not compile. Only the undeclared-variable check
-  raises one; no lint rule does.
+- **error** — the program will not compile. Only the compiler's own checks
+  (an undeclared variable, an undeclared routine, a call that can never bind)
+  raise one; no lint rule does.
 - **warning** — almost always a real defect, but the program still runs.
 - **note** — advisory; the construct is legal and often intentional, but worth a
   second look.
@@ -52,6 +53,7 @@ build on the high-confidence findings; the two failing codes let a hook tell
 | Rule | Severity | Flags |
 |------|----------|-------|
 | `undeclared-variable` | error | A variable used that nothing declares — the program will not compile. Not a lint rule: this is the compile-time check ([CLI.md](CLI.md#undeclared-variables-are-refused-before-the-program-runs)) reporting through `--lint` as well, so that analysing a file never says less than running it would. |
+| `undeclared-routine` | error | A call to a routine nothing declares (`nope(1)`), with Rakudo's suggestions (`length` → `elems`, `chars`, `codes`). Not a lint rule either: the check a run makes before its first statement, made only where the run makes it — a file of plain statements, without `sub`s or other declarations. |
 | `unused-variable` | warning | A `my`/`state` lexical that is declared and never referenced anywhere in its scope (reads, writes, and interpolation all count as a reference). |
 | `unused-routine` | warning | A lexical `sub` that is never called and never taken as a `&`-value. Skips `MAIN`/`USAGE` (the runtime calls them), `our`/`is export` routines, methods, and multis. |
 | `redeclaration` | warning | A second `my` of the same name in the same scope — the first binding becomes unreachable. |
