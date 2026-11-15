@@ -5,7 +5,7 @@ A self-contained slide deck introducing Raku++ and its ecosystem —
 in a browser, or serve the directory statically.
 
 **Just want to look?** [`rakupp-presentation.pdf`](rakupp-presentation.pdf) is a
-17-page PDF export — download it and flip through in any PDF viewer (the text
+29-page PDF export — download it and flip through in any PDF viewer (the text
 stays selectable). GitHub's inline blob viewer is unreliable with PDFs, so
 download it rather than expecting a preview. The interactive `index.html` is the
 real thing: keyboard navigation, a light/dark toggle, hover states. Regenerate
@@ -22,7 +22,7 @@ sed 's/<html lang="en">/<html lang="en" data-theme="dark">/' index.html > /tmp/d
 Chrome already emits PDF 1.4 with the text selectable, so that single step is the
 whole recipe. **Do not pipe it through Ghostscript.** A `gs -sDEVICE=pdfwrite`
 pass used to run here to shave the file from 811 KB to 604 KB, and it silently
-dropped the `fib` gradient bar on slide 7 — one shading out of eighteen, at every
+dropped the `fib` gradient bar on the native-speed slide (seventeen-slide deck) — one shading out of eighteen, at every
 `-dPDFSETTINGS` level and at both compatibility 1.4 and 1.5, while the identical
 bars above and below it survived. Check the export before committing it, since
 nothing else will:
@@ -34,16 +34,27 @@ pdftoppm -f 7 -l 7 -r 60 -png rakupp-presentation.pdf /tmp/deck-p7   # then look
 - **Navigate:** `←` / `→` (also PageUp/PageDown, Space), `Home` / `End`, the dot
   rail, or the on-screen arrows.
 - **Theme:** light/dark toggle, top-right (follows the OS setting by default).
+- **Speaker notes:** press `N` to show or hide the current slide's notes. Each
+  slide also shows its target time (`@ 17:30`) under the number, for a
+  40-minute slot. Notes never print into the PDF.
 
-Seventeen slides: title → what it is → Roast conformance → language breadth →
-the five ways to run → interpreter speed → native (`--exe`) speed →
-interpreted against compiled → the ecosystem sweep → the projects around it → showcase programs → ecosystem
-modules → dogfooding → the toolbox (RakuAST, `--fmt`, `L10N`, `--target=js`,
-MCP/Jupyter/LSP, the bindings) → roadmap (v5.x errors, v6 speed) → the work it
-stands on (Roast, Rakudo, the ecosystem) → install. Every figure is drawn from
-the docs in [`../docs`](../docs) (ROAST, BENCHMARKS, ECOSYSTEM, MODULES,
-MILESTONES) and from [`../CHANGELOG.md`](../CHANGELOG.md) — when a release moves
-a number there, move it here too.
+Twenty-nine slides, cut for a 40-minute talk (London Perl & Raku Workshop 2026):
+title → four and a half months → why a second implementation → the one
+restraint (no slangs, no macros) and what's not there yet → architecture in one
+picture → the core pieces, with a pointer to the internals book → how it is built
+→ how it is tested (the gates; the interpreter as the compiler's oracle) →
+100.00% Roast → what 100% does and doesn't say → beyond Roast (doc examples,
+course snippets, Weekly Challenge, real apps) → showcase → run modes → speed →
+the raku.online playground → the Learn Raku app → Arduino → a live Arduino
+demo (the RAKU icon on an Uno R4 WiFi's LED matrix) → the toolbox → modules →
+the ecosystem sweep → the zef/JSON chicken-and-egg → the Rakudo::Internals
+census → `nqp::` ops and "Unknown VM" → the two-name policy → JSON::Native →
+Data::Native → what's next → thanks and install. Every figure is drawn from
+the docs in [`../docs`](../docs) (ROAST, BENCHMARKS, MODULES, DATA-NATIVE,
+ecosystem/RAKUDO-INTERNALS, internals/JSON, ARDUINO) and from
+[`../CHANGELOG.md`](../CHANGELOG.md), and the two app and playground slides from
+the raku.online and Learn Raku repositories. When a release moves a number
+there, move it here too.
 
 The gutter number on each slide is **derived at load time** from the slide's
 index, so inserting a slide cannot leave a stale `07/13` behind. It used to be
@@ -55,7 +66,7 @@ hand-written, and it drifted.
 from: every feature the documentation currently claims, grouped the way a talk
 uses them, with the figure the repository records beside each one and the source
 file named per section — so a claim on a slide can be traced back to the page it
-came from. It is much longer than seventeen slides on purpose. No build step;
+came from. It is much longer than the deck on purpose. No build step;
 open it in a browser, same light/dark handling as `index.html`.
 
 It carries the limitations too — slangs, the `objects` kernel, the bindings and
