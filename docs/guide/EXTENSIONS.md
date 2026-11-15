@@ -299,11 +299,10 @@ sub returns; the single value you return is copied out first. So:
   C — not in handles.
 
 Borrowed pointers from `rk_str_get` and `rk_key_at` are valid until the call
-returns, which is long enough to copy out of them and no longer. So is the
-handle from `rk_at_pos`: it points into the array's own storage, and any
-`rk_push` on that array may move it — read it before you grow the array, or copy
-the value out. (`rk_val_at`'s handle is stable, because the hash keeps node
-addresses.)
+returns, which is long enough to copy out of them and no longer. The handles
+from `rk_at_pos` and `rk_val_at` are ordinary arena handles: each is a copy of
+the element, so growing the array or changing the hash afterwards does not
+disturb it.
 
 ## Building
 

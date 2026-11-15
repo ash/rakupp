@@ -104,6 +104,12 @@ bool jsIdent(const string& k) {
 }
 // R.name or R["na-me"]
 string rt(const string& name) { return jsIdent(name) ? "R." + name : "R[" + jsStr(name) + "]"; }
+// Every await the program makes: R.cc() reads the react/supply context before
+// the await suspends, R.rs puts it back when the code resumes. The runtime
+// keeps that context on a stack, and a stack cannot follow an async body past
+// its first await (Codex review 2026-11-14, finding 05): `whenever` after an
+// `await` in a react block died "outside the lexical scope".
+string resumed(const string& awaitable) { return "R.rs(R.cc(), await " + awaitable + ")"; }
 
 // Builtins the runtime exports by Raku name (src/js-rt/50-builtins.js). A call
 // to a name outside this table is a refusal, so the histogram names the gap.
@@ -336,7 +342,10 @@ struct JsGen {
     // or a call to a coloured sub / a coloured method name — is `async`, and every
     // call to it is awaited. Decided once in prepass, by fixpoint.
     std::set<string> asyncSubs, asyncMethods;
-    bool usesChannel = false;            // the program names Channel: `.list` may have to wait for a close
+    // The program names a Channel or a Supply (`supply`, Supplier): `.list` may
+    // have to wait for a close or a done. It was Channel alone, so a live
+    // supply's `.list` handed back its pending Promise as one element.
+    bool usesChannel = false;
     bool isAwaitMethod(const string& m) { return m == "receive" || m == "wait" || (usesChannel && m == "list"); }
     bool hasAsyncBlockArg(const std::vector<ExprPtr>& as) { for (auto& a : as) if (a->kind == NK::BlockExpr && !static_cast<BlockExpr*>(a.get())->isSub && stmtsAwait(static_cast<BlockExpr*>(a.get())->body)) return true; return false; }
     // Does this function body await? Nested closures are their own functions — a `start`
@@ -1315,11 +1324,11 @@ struct JsGen {
             body = fnBody(false, [&]() { line(2, "return " + exArg(x) + ";"); }, 2);
         }
         bool isAsync = x->kind == NK::BlockExpr ? stmtsAwait(static_cast<BlockExpr*>(x)->body) : awaitsIn(x);
-        string pre = isAsync ? "(await (async () => {" : "(() => {";
+        string pre = isAsync ? "R.rs(R.cc(), await (async () => {" : "(() => {";
         string post = isAsync ? "})())" : "})()";
         if (!isTry) return pre + "\n" + body + "    " + post;
         fn().usesBang = true;
-        string inner = (isAsync ? "await (async () => {\n" : "(() => {\n") + body + "    })()";
+        string inner = isAsync ? resumed("(async () => {\n" + body + "    })()") : "(() => {\n" + body + "    })()";
         return pre + " v__bang = R.Nil; try { const _r = " + inner + "; if (R.isFailure(_r)) { v__bang = _r.err; return R.Nil; } return _r; } catch (_e) { if (R.isControl(_e)) throw _e; v__bang = R.exc(_e); return R.Nil; } " + post;
     }
     string gatherExpr(Expr* x, int lineNo) {
@@ -1654,11 +1663,11 @@ struct JsGen {
             return "R.callCode(" + callee + (c->args.empty() ? "" : ", " + args(c->args)) + ")";
         }
         const string& name = c->name;
-        if (name == "await") { if (c->args.size() != 1) refuse("await with " + std::to_string(c->args.size()) + " arguments", c->line); return "(await R.awaitP(" + exArg(c->args[0].get()) + "))"; }
-        if (name == "sleep") return "(await R.sleepP(" + (c->args.empty() ? "undefined" : exArg(c->args[0].get())) + "))";   // the event loop runs meanwhile
+        if (name == "await") { if (c->args.size() != 1) refuse("await with " + std::to_string(c->args.size()) + " arguments", c->line); return resumed("R.awaitP(" + exArg(c->args[0].get()) + ")"); }
+        if (name == "sleep") return resumed("R.sleepP(" + (c->args.empty() ? "undefined" : exArg(c->args[0].get())) + ")");   // the event loop runs meanwhile
         if ((name == "react" || name == "supply") && c->args.size() == 1 && c->args[0]->kind == NK::BlockExpr) {
             string body = blockClosure(static_cast<BlockExpr*>(c->args[0].get()));
-            return name == "react" ? "(await R.awaitP(R.react(" + body + ")))" : "R.supplyBlock(" + body + ")";
+            return name == "react" ? resumed("R.awaitP(R.react(" + body + "))") : "R.supplyBlock(" + body + ")";
         }
         if (name == "whenever" && c->args.size() == 2 && c->args[1]->kind == NK::BlockExpr) {
             auto* be = static_cast<BlockExpr*>(c->args[1].get());
@@ -1709,9 +1718,9 @@ struct JsGen {
         auto si = subs.find(name);
         if (si != subs.end() && subVisible(name)) {
             SubInfo& info = si->second;
-            string aw = asyncSubs.count(name) ? "await " : "";
-            if (!info.isMulti && !info.rwIdx.empty()) return "(" + aw + rwCall(name, info, c) + ")";
-            return "(" + aw + mangleSub(name) + "(" + args(c->args) + "))";
+            const bool aw = asyncSubs.count(name);
+            string call = !info.isMulti && !info.rwIdx.empty() ? rwCall(name, info, c) : mangleSub(name) + "(" + args(c->args) + ")";
+            return aw ? resumed(call) : "(" + call + ")";
         }
         if (codeVars.count(name)) return "R.callCode(" + mangleVar("&" + name) + (c->args.empty() ? "" : ", " + args(c->args)) + ")";
         if (classNames.count(name) || subsetNames.count(name) || kCoreTypes.count(name)) {   // Int(…) coercion call
@@ -1801,15 +1810,15 @@ struct JsGen {
         // metamodel macro (`(*).WHAT`), which answers about the star.
         if (m->inv->kind == NK::Whatever) inv = wcArity.empty() ? "R.Whatever" : "_w" + std::to_string(++wcArity.back());
         else inv = exArg(m->inv.get());   // `(* < 1).WHAT`: the invocant composes alone
-        if (name == "result" && m->args.empty()) return "(await R.awaitP(" + inv + "))";
+        if (name == "result" && m->args.empty()) return resumed("R.awaitP(" + inv + ")");
         bool substBlock = (name == "subst" || name == "subst-mutate") && std::any_of(m->args.begin(), m->args.end(), [](const std::unique_ptr<Expr>& a) { return a->kind == NK::BlockExpr; });
         if (substBlock) { fn().usesSlash = true; substSlash = true; }
         string call = fnName + "(" + inv + ", " + jsStr(name) + (m->args.empty() ? "" : ", " + args(m->args)) + ")";
         substSlash = false;
         if (name == "parse" || name == "subparse" || name == "parsefile" || name == "match") { fn().usesSlash = true; call = slashSet(call); }
-        if (isAwaitMethod(name)) return "(await R.awaitP(" + call + "))";   // .receive / .wait / a Channel's .list
-        if (hasAsyncBlockArg(m->args)) return "(await R.awaitP(" + call + "))";   // .map({ $ch.receive }): the callback's promises, collected
-        if (asyncMethods.count(name)) return "(await " + call + ")";
+        if (isAwaitMethod(name)) return resumed("R.awaitP(" + call + ")");   // .receive / .wait / a Channel's .list
+        if (hasAsyncBlockArg(m->args)) return resumed("R.awaitP(" + call + ")");   // .map({ $ch.receive }): the callback's promises, collected
+        if (asyncMethods.count(name)) return resumed(call);
         return call;
     }
 
@@ -3198,7 +3207,7 @@ struct JsGen {
     }
     std::map<string, std::pair<string, int>> coreTypedOps;   // name → (why, line)
     string program() {
-        usesChannel = opt.srcText.find("Channel") != string::npos;
+        usesChannel = opt.srcText.find("Channel") != string::npos || opt.srcText.find("upply") != string::npos;
         scanModuleOps();
         prepareModules();
         prepass();

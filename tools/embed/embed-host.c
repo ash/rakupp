@@ -66,6 +66,18 @@ int main(void) {
           rk_type(c, v) == RK_ARRAY && rk_elems(c, v) == 3 &&
           rk_int_get(c, rk_at_pos(c, v, 1)) == 2, "an Array is walkable");
 
+    /* An element handle outlives growth of its array: rk_at_pos hands out an
+     * arena copy, not the address of a slot rk_push may move. */
+    {
+        RkValue a = rk_array(c), first;
+        int k;
+        rk_push(c, a, rk_str(c, "kept across growth", 18));
+        first = rk_at_pos(c, a, 0);
+        for (k = 0; k < 1000; k++) rk_push(c, a, rk_int(c, k));
+        check(strcmp(rk_str_get(c, first, 0), "kept across growth") == 0,
+              "an element handle survives its array growing");
+    }
+
     check(rk_eval(rk, "{ a => 1, b => 2 }", &v) == RK_OK &&
           rk_type(c, v) == RK_HASH && rk_elems(c, v) == 2 &&
           strcmp(rk_key_at(c, v, 0, 0), "a") == 0, "a Hash is walkable");
@@ -264,6 +276,25 @@ int main(void) {
             }
             rk_free(big);
         }
+    }
+
+    /* --- rk_free while `start` workers still run ------------------------ */
+    /* A worker holds a raw pointer to its interpreter. rk_free used to wait
+     * two seconds for pooled ones only and then free the interpreter under
+     * them, so a worker that went on running wrote into freed memory while
+     * the host carried on. It now ends them first, as a program's end does. */
+    {
+        RkInterp w = rk_new(0);
+        RkValue wv;
+        check(w && rk_eval(w, "my $n = 0; start { loop { $n++ } }; "
+                              "start { my @a; loop { @a.push(1); @a.shift } }; 1", 0) == RK_OK,
+              "workers are running when rk_free is called");
+        rk_free(w);
+        w = rk_new(0);
+        check(w && rk_eval(w, "my $t = now; my $s = 0; while now - $t < 0.5 { $s += $_ for ^1000 }; $s",
+                           &wv) == RK_OK && rk_int_get(rk_ctx(w), wv) > 0,
+              "the host runs on after rk_free stopped them");
+        rk_free(w);
     }
 
     if (failures) { printf("embed host: %d FAILED\n", failures); return 1; }

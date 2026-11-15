@@ -204,11 +204,18 @@ struct Parser {
                         if (!hex4(u)) return false;
                         if (u >= 0xD800 && u <= 0xDBFF && end - p >= 6 &&
                             p[0] == '\\' && p[1] == 'u') {
+                            const char* at = p;
                             p += 2;
                             unsigned lo;
-                            if (!hex4(lo) || lo < 0xDC00 || lo > 0xDFFF) return false;
-                            u = 0x10000 + ((u - 0xD800) << 10) + (lo - 0xDC00);
+                            if (!hex4(lo)) return false;
+                            if (lo >= 0xDC00 && lo <= 0xDFFF)
+                                u = 0x10000 + ((u - 0xD800) << 10) + (lo - 0xDC00);
+                            else p = at;   // not a pair: that escape stands alone
                         }
+                        // A surrogate with no partner has no UTF-8 spelling, and
+                        // a browser's JSON.stringify does send one: U+FFFD, as a
+                        // decoder of bad UTF-8 would, rather than invalid output.
+                        if (u >= 0xD800 && u <= 0xDFFF) u = 0xFFFD;
                         utf8(u, s);
                         break;
                     }
@@ -270,17 +277,17 @@ struct Parser {
         if (lit("true", 4))  { j = Json::boolean(true);  return true; }
         if (lit("false", 5)) { j = Json::boolean(false); return true; }
         if (lit("null", 4))  { j = Json::null();         return true; }
-        // number
+        // number, by JSON's grammar: -?(0|[1-9]\d*)(\.\d+)?([eE][+-]?\d+)?
+        // (strtod alone would take `1e+` as 1 and `1.2.3` as 1.2)
         const char* start = p;
-        if (p < end && (*p == '-' || *p == '+')) p++;
-        bool isNum = false, frac = false;
-        while (p < end) {
-            char d = *p;
-            if (d >= '0' && d <= '9') { isNum = true; p++; }
-            else if (d == '.' || d == 'e' || d == 'E' || d == '+' || d == '-') { frac = true; p++; }
-            else { break; }
-        }
-        if (!isNum) return false;
+        auto digits = [&] { const char* q = p; while (p < end && *p >= '0' && *p <= '9') p++; return p > q; };
+        auto at = [&](char a, char b) { return p < end && (*p == a || *p == b); };
+        if (at('-', '-')) p++;
+        if (at('0', '0')) { if (++p < end && *p >= '0' && *p <= '9') return false; }
+        else if (!digits()) return false;
+        bool frac = false;
+        if (at('.', '.')) { p++; frac = true; if (!digits()) return false; }
+        if (at('e', 'E')) { p++; frac = true; if (at('+', '-')) p++; if (!digits()) return false; }
         std::string tok(start, (size_t)(p - start));
         if (!frac) {
             errno = 0;
@@ -288,7 +295,9 @@ struct Parser {
             long long v = std::strtoll(tok.c_str(), &rest, 10);
             if (errno == 0 && rest && *rest == '\0') { j = Json::integer(v); return true; }
         }
-        j = Json::number(std::strtod(tok.c_str(), nullptr));
+        double d = std::strtod(tok.c_str(), nullptr);
+        if (!std::isfinite(d)) return false;   // 1e999: no JSON number can carry it
+        j = Json::number(d);
         return true;
     }
 };

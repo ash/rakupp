@@ -108,7 +108,7 @@ private:
     struct Lists {
         FreeBlock* head[kClasses];
         std::uint32_t count[kClasses];
-        bool armed;
+        bool armed, reaped;
     };
     RAKUPP_CONSTINIT inline static thread_local Lists tl = {};
 
@@ -220,7 +220,10 @@ private:
         Lists& l = tl;
         for (std::size_t c = 1; c < kClasses; c++)
             if (l.count[c]) flush(c, l.count[c]);
-        l.armed = false;   // (as SlabPool::drain)
+        // Full, not empty (as SlabPool::drain): a later block is flushed
+        // straight back to its span, and refill takes one block at a time.
+        l.reaped = true;
+        for (std::size_t c = 1; c < kClasses; c++) l.count[c] = keep(c);
     }
     static void arm() {
         struct Reaper {
@@ -237,7 +240,7 @@ private:
         Lists& l = tl;
         if (!l.armed) { l.armed = true; arm(); }
         const std::size_t sz = clsSize(c);
-        std::uint32_t want = keep(c) / 2;
+        std::uint32_t want = l.reaped ? 1 : keep(c) / 2;
         FreeBlock* chain = nullptr;
         std::uint32_t got = 0;
         {
@@ -270,7 +273,7 @@ private:
         FreeBlock* out = chain;
         chain = chain->next;
         l.head[c] = chain;          // (the list was empty)
-        l.count[c] = got - 1;
+        l.count[c] = l.reaped ? keep(c) : got - 1;   // (got is 1 once reaped)
         return static_cast<void*>(out);
     }
     // Hand k blocks of the thread's list for class c back to their spans.

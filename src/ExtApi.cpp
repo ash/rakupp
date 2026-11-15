@@ -162,7 +162,10 @@ size_t rk_elems(RkCtx, RkValue v) {
 RkValue rk_at_pos(RkCtx c, RkValue a, size_t i) {
     Value* x = V(a);
     if (!x || !x->arr() || i >= x->arr()->size()) return nullptr;
-    return reinterpret_cast<RkValue>(&(*x->arr())[i]);
+    // An arena copy, not the element's own address: rk_push may grow the
+    // array (and rk_set or rk_call mutate a hash) while the handle is still
+    // in use, and the header promises it lives as long as the call.
+    return C(c)->make((*x->arr())[i]);
 }
 // Index-based access keeps the C surface tiny — no cursor type, no iterator
 // lifetime for an extension to get wrong. The cost it used to carry, an
@@ -181,7 +184,7 @@ RkValue rk_val_at(RkCtx c, RkValue h, size_t i) {
     if (!x || !x->hash()) return nullptr;
     auto it = C(c)->at(x->hash(), i);
     if (it == x->hash()->end()) return nullptr;
-    return reinterpret_cast<RkValue>(const_cast<Value*>(&it->second));
+    return C(c)->make(it->second);   // (a copy, as rk_at_pos's)
 }
 
 size_t rk_argc(RkCtx c) {

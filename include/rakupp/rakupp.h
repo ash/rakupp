@@ -112,6 +112,11 @@ typedef struct {
 
 /* NULL config = every field above off, which is what most hosts want. */
 RK_API RkInterp    rk_new (const RkConfig* cfg);
+/* rk_free ends the interpreter's `start` workers first, as a program's end
+ * does: they are asked to stop, given up to two seconds, and joined. A worker
+ * still running after that (blocked in a call nothing interrupts) keeps the
+ * interpreter's memory, which is then never freed, rather than resume into
+ * freed memory. */
 RK_API void        rk_free(RkInterp rk);
 RK_API const char* rk_version(void);          /* the interpreter's version string */
 

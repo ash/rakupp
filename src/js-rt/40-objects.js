@@ -422,7 +422,9 @@ function dateNew(ty, args) {
     return new RDate(ty, new Date(Date.UTC(g('year'), (named.has('month') ? g('month') : 1) - 1, named.has('day') ? g('day') : 1, g('hour'), g('minute'), g('second'))), fmt);
 }
 // --- IO shells; the host adapter (70-host.js) does the work ---------------------------
-class RIOPath { constructor(path, cwd) { this.path = path; this.cwd = cwd; } }
+// cwd: the $*CWD the path was made under, which a relative one keeps meaning
+// after a chdir, as in Rakudo (Codex review 2026-11-14, finding 09)
+class RIOPath { constructor(path, cwd) { this.path = path; this.cwd = cwd !== undefined ? cwd : (typeof host === 'object' && host ? host.cwd : undefined); } }
 class RIOHandle { constructor(kind, path) { this.kind = kind; this.path = path; this.buf = ''; this.pos = 0; this.eof = false; this.lines = null; } }
 
 Object.assign(R, {

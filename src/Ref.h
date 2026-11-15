@@ -68,7 +68,7 @@ public:
         return *this;
     }
     Ref& operator=(Ref&& o) noexcept {
-        if (this != &o) { release(); p_ = o.p_; o.p_ = nullptr; }
+        if (this != &o) { auto* n = o.p_; o.p_ = nullptr; release(); p_ = n; }   // (o first: as copy's)
         return *this;
     }
     Ref& operator=(std::nullptr_t) noexcept { reset(); return *this; }
@@ -136,7 +136,7 @@ public:
         return *this;
     }
     HRef& operator=(HRef&& o) noexcept {
-        if (this != &o) { release(); s_ = o.s_; o.s_ = {}; }
+        if (this != &o) { auto n = o.s_; o.s_ = {}; release(); s_ = n; }   // (as Ref's)
         return *this;
     }
     HRef& operator=(std::nullptr_t) noexcept { reset(); return *this; }
@@ -226,13 +226,25 @@ constexpr std::uint32_t kRefMask = 0x7fffffffu;
 extern bool g_cycleTrack;                       // Cycle.cpp: objects are tracked
 void cycleNoteRelease(Payload* p) noexcept;     // Cycle.cpp
 [[gnu::noinline]] inline void payloadReleaseSlow(Payload* p, std::uint32_t old) noexcept {
-    if ((old & kRefMask) == 1) {
-        const std::uint32_t f = p->pflags_.load(std::memory_order_relaxed);
-        if (f & kPayCycleBuffered) cycleForget(p);
-        if (f & kPayWhichId) whichForget(p);
-        p->destroySelf();
-    }
-    else if (old & kRefTracked) cycleNoteRelease(p);
+    if ((old & kRefMask) != 1) return;   // (tracked since the caller looked: its note is skipped, never late)
+    const std::uint32_t f = p->pflags_.load(std::memory_order_relaxed);
+    if (f & kPayCycleBuffered) cycleForget(p);
+    if (f & kPayWhichId) whichForget(p);
+    p->destroySelf();
+}
+// A tracked body's release notes the candidate BEFORE giving up its count.
+// Noted after, the body could die between the two on another thread, its last
+// release seeing no buffered bit, and the note would buffer freed memory
+// (Codex review 2026-11-14, finding 01). Noted first, a last release that
+// races it finds the bit set and takes the body out again (cycleForget).
+[[gnu::noinline]] inline void payloadReleaseTracked(Payload* p) noexcept {
+    if ((p->refs_.load(std::memory_order_relaxed) & kRefMask) > 1) cycleNoteRelease(p);
+    payloadReleaseSlow(p, p->refs_.fetch_sub(1, std::memory_order_acq_rel));
+}
+inline void payloadRelease(Payload* p) noexcept {
+    if (p->refs_.load(std::memory_order_relaxed) & kRefTracked) return payloadReleaseTracked(p);
+    std::uint32_t old = p->refs_.fetch_sub(1, std::memory_order_acq_rel);
+    if ((std::int32_t)old <= 1) payloadReleaseSlow(p, old);
 }
 struct ObjectData;
 // An object's block is its body and, right behind it, the hash its attributes
@@ -283,11 +295,7 @@ class PayRef {
     BodyHandle<Payload> s_;   // (4 bytes where handles are on: BodyPool.h)
     void retain() const noexcept { if (s_) s_.raw()->refs_.fetch_add(1, std::memory_order_relaxed); }
     void release() noexcept {
-        if (s_) {
-            Payload* p = s_.raw();
-            std::uint32_t old = p->refs_.fetch_sub(1, std::memory_order_acq_rel);
-            if ((std::int32_t)old <= 1) payloadReleaseSlow(p, old);
-        }
+        if (s_) payloadRelease(s_.raw());
     }
 public:
     PayRef() noexcept = default;
@@ -302,7 +310,7 @@ public:
         return *this;
     }
     PayRef& operator=(PayRef&& o) noexcept {
-        if (this != &o) { release(); s_ = o.s_; o.s_ = {}; }
+        if (this != &o) { auto n = o.s_; o.s_ = {}; release(); s_ = n; }   // (as Ref's)
         return *this;
     }
     PayRef& operator=(std::nullptr_t) noexcept { reset(); return *this; }
@@ -327,10 +335,11 @@ class PRef {
     B* b_ = nullptr;
     void retain() const noexcept { if (b_) b_->refs_.fetch_add(1, std::memory_order_relaxed); }
     void release() noexcept {
-        if (b_) {
-            std::uint32_t old = b_->refs_.fetch_sub(1, std::memory_order_acq_rel);
-            if ((std::int32_t)old <= 1) payloadReleaseSlow(b_, old);
-        }
+        if (!b_) return;
+        // Only an object's body is ever tracked, so any other kind is known
+        // untracked here and keeps the one fetch_sub.
+        if constexpr (std::is_same<T, ObjectData>::value) payloadRelease(b_);
+        else if (std::uint32_t old = b_->refs_.fetch_sub(1, std::memory_order_acq_rel); (std::int32_t)old <= 1) payloadReleaseSlow(b_, old);
     }
     template <class U, class... A> friend PRef<U> makePayload(A&&...);
     template <class U> friend class PRef;
@@ -350,7 +359,7 @@ public:
         return *this;
     }
     PRef& operator=(PRef&& o) noexcept {
-        if (this != &o) { release(); b_ = o.b_; o.b_ = nullptr; }
+        if (this != &o) { auto* n = o.b_; o.b_ = nullptr; release(); b_ = n; }   // (as Ref's)
         return *this;
     }
     PRef& operator=(std::nullptr_t) noexcept { reset(); return *this; }

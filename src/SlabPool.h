@@ -99,6 +99,9 @@ public:
         if (!RAKUPP_POOLS || n == 0 || n > kMaxSize) { ::operator delete(v); return; }
         std::size_t c = cls(n);
         Lists& l = tl;
+        // A thread that only frees (objects another thread made) keeps blocks
+        // too, so it needs the reaper as much as one that allocates.
+        if (!l.armed) { l.armed = true; ensureReaper(); }
         if (l.count[c] < kPoolMax) {
             FreeBlock* b = static_cast<FreeBlock*>(v);
             b->next = l.head[c];
@@ -130,11 +133,11 @@ inline void SlabPool::drain() noexcept {
             l.head[i] = b->next;
             ::operator delete(static_cast<void*>(b));
         }
-        l.count[i] = 0;
+        // Full, not empty: a thread_local destructor that runs after ours
+        // frees straight to the allocator. Re-arming could not help — this
+        // function-local Reaper is never constructed a second time.
+        l.count[i] = kPoolMax;
     }
-    // A later allocation on this thread (from another thread_local destructor
-    // running after ours) must re-register, or its blocks are never drained.
-    l.armed = false;
 }
 
 // The Allocator surface `std::allocate_shared` wants.

@@ -84,6 +84,9 @@ function graphemes(s) {
     out.push(s.slice(start));
     return out;
 }
+// The grapheme starting at t[i], without segmenting all of the rest of t: a
+// window is enough once a boundary falls inside it (the rule looks one ahead).
+function firstGrapheme(t, i) { for (let w = 32; ; w *= 4) { const g = graphemes(t.slice(i, i + w))[0]; if (g.length < w || i + w >= t.length) return g; } }
 function chars(s) { s = str(s); return unitIsGrapheme(s) ? s.length : graphemes(s).length; }
 function codes(s) { let n = 0; for (const _ of str(s)) n++; return n; }
 function substr(s, from, len) {

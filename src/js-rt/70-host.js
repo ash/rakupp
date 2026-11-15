@@ -25,12 +25,44 @@ const host = {
     slurp(p, ...a) { return this.noFs('slurp'); }, spurt() { return this.noFs('spurt'); }, exists() { return false; }, isFile() { return false; }, isDir() { return false; }, size() { return 0; },
     open() { return this.noFs('open'); }, close(h) { return true; }, dir() { return this.noFs('dir'); }, mkdir() { return this.noFs('mkdir'); }, rmdir() { return this.noFs('rmdir'); }, unlink() { return this.noFs('unlink'); }, copy() { return this.noFs('copy'); }, rename() { return this.noFs('rename'); }, modified() { return 0; }, absolute(p) { return p; }, chdir() { return this.noFs('chdir'); },
     shell() { return this.noFs('shell'); }, run() { return this.noFs('run'); },
-    handleGet(h) { if (h.kind === 'in') return this.stdinGet(); if (h.pos >= h.buf.length) return Nil; let e = h.buf.indexOf('\n', h.pos); if (e < 0) e = h.buf.length; const line = h.buf.slice(h.pos, e); h.pos = e + 1; return line; },
-    handleLines(h) { if (h.kind === 'in') return this.stdinLines(); const rest = h.buf.slice(h.pos); h.pos = h.buf.length; return lines(rest); },
-    handleSlurp(h) { if (h.kind === 'in') return this.stdinSlurp(); const rest = h.buf.slice(h.pos); h.pos = h.buf.length; return rest; },
-    handleGetc(h) { if (h.kind === 'in') { const t = this.stdinAll(); if (this.stdinPos >= t.length) return Nil; return t[this.stdinPos++]; } if (h.pos >= h.buf.length) return Nil; return h.buf[h.pos++]; },
+    shut(h, op) { if (h.closed) throw new RakuError(`Cannot do '${op}' on a closed handle`, 'X::IO::Closed'); },   // every read and write asks first
+    handleGet(h) { this.shut(h, 'get'); if (h.kind === 'in') return this.stdinGet(); if (h.pos >= h.buf.length) return Nil; let e = h.buf.indexOf('\n', h.pos); if (e < 0) e = h.buf.length; const line = h.buf.slice(h.pos, e); h.pos = e + 1; return line; },
+    handleLines(h) { this.shut(h, 'lines'); if (h.kind === 'in') return this.stdinLines(); const rest = h.buf.slice(h.pos); h.pos = h.buf.length; return lines(rest); },
+    handleSlurp(h) { this.shut(h, 'slurp'); if (h.kind === 'in') return this.stdinSlurp(); const rest = h.buf.slice(h.pos); h.pos = h.buf.length; return rest; },
+    handleGetc(h) { this.shut(h, 'getc'); const inp = h.kind === 'in', t = inp ? this.stdinAll() : h.buf, i = inp ? this.stdinPos : h.pos; if (i >= t.length) return Nil; const g = firstGrapheme(t, i); if (inp) this.stdinPos += g.length; else h.pos += g.length; return g; },   // a grapheme, not a UTF-16 unit
+    // .read(n): bytes, from a byte cursor kept beside the text one. The raw
+    // bytes are the file's or stdin's own (a host that has none encodes the
+    // text), so input that is not UTF-8 survives; a text read in between moves
+    // the byte cursor to match. It read the whole rest as text, whatever n
+    // asked (Codex review 2026-11-14, finding 07).
+    stdinRaw() { return new TextEncoder().encode(this.stdinAll()); },
+    fileBytes(h) { return new TextEncoder().encode(h.buf || ''); },
+    handleRead(h, n) {
+        this.shut(h, 'read');
+        const inp = h.kind === 'in', text = inp ? this.stdinAll() : (h.buf || ''), tpos = inp ? this.stdinPos : (h.pos || 0);
+        if (!h.bytes) h.bytes = inp ? this.stdinRaw() : this.fileBytes(h);
+        if (h.bpos === undefined || h.tpos !== tpos) {   // the last byte offset whose decoding is tpos long (raw bytes, so not text re-encoded)
+            const dec = new TextDecoder(), len = b => dec.decode(h.bytes.subarray(0, b)).length;
+            let lo = 0, hi = h.bytes.length;
+            while (lo < hi) { const mid = (lo + hi + 1) >> 1; if (len(mid) <= tpos) lo = mid; else hi = mid - 1; }
+            h.bpos = lo;
+        }
+        const k = n === undefined ? h.bytes.length : Math.max(0, Number(toInt(n)));
+        const out = Array.from(h.bytes.subarray(h.bpos, h.bpos + k));
+        h.bpos += out.length;
+        h.tpos = new TextDecoder().decode(h.bytes.subarray(0, h.bpos)).length;
+        if (inp) this.stdinPos = h.tpos; else h.pos = h.tpos;
+        return mkList(out);
+    },
+    // .tell / .seek count bytes, as the byte cursor does: the text read so
+    // far, encoded, and a seek decodes the bytes before it. They counted
+    // UTF-16 units, so "héllo\n" told 6 where it is 7 bytes.
+    handleTell(h) { if (h.kind === 'in') return this.stdinPos; if (h.bpos !== undefined && h.tpos === h.pos) return h.bpos; return new TextEncoder().encode((h.buf || '').slice(0, h.pos || 0)).length; },
+    handleSeek(h, p) { if (h.kind === 'in') { this.stdinPos = p; return true; } if (!h.bytes) h.bytes = this.fileBytes(h); h.bpos = Math.max(0, p); h.pos = h.tpos = new TextDecoder().decode(h.bytes.subarray(0, h.bpos)).length; return true; },
+    // .readchars(n): n characters (graphemes), as .getc takes one
+    handleReadchars(h, n) { this.shut(h, 'readchars'); let out = '', g; for (let k = 0; k < n && (g = this.handleGetc(h)) !== Nil; k++) out += g; return out; },
     handleEof(h) { if (h.kind === 'in') return this.stdinPos >= this.stdinAll().length; return h.pos >= h.buf.length; },
-    handlePrint(h, s) { if (h.kind === 'out') { this.stdout(s); if (h.outBuffer === 0) this.flush(); return true; } if (h.kind === 'err') { this.stderr(s); return true; } h.out = (h.out || '') + s; if (h.out.length >= (h.outBuffer === undefined ? 65536 : h.outBuffer)) { this.appendFile(h.path, h.out); h.out = ''; } return true; },   // out-buffer: the size at which writes land; 0 is every write
+    handlePrint(h, s) { this.shut(h, 'print'); if (h.kind === 'out') { this.stdout(s); if (h.outBuffer === 0) this.flush(); return true; } if (h.kind === 'err') { this.stderr(s); return true; } h.out = (h.out || '') + s; if (h.out.length >= (h.outBuffer === undefined ? 65536 : h.outBuffer)) { this.appendFile(h.path, h.out); h.out = ''; } return true; },   // out-buffer: the size at which writes land; 0 is every write
     handleFlush(h) { if (h && h.kind !== 'out' && h.kind !== 'err' && h.out) { this.appendFile(h.path, h.out); h.out = ''; } if (h && h.kind === 'out') this.flush(); },
     isTTY(h) { return false; },
     appendFile() { return this.noFs('write'); },
@@ -48,9 +80,17 @@ if (IS_NODE && nodeRequire) {
     host.program = process.argv[1] || '';
     host.env = new Map(Object.entries(process.env));
     host.cwd = process.cwd();
-    host.writeOut = s => { try { fs.writeSync(1, s); } catch (e) { if (e.code === 'EAGAIN') { host.writeOut(s); } else if (e.code !== 'EPIPE') throw e; } };
-    host.writeErr = s => { try { fs.writeSync(2, s); } catch (e) { if (e.code !== 'EPIPE') throw e; } };
-    host.readStdin = () => { try { return fs.readFileSync(0, 'utf8'); } catch (e) { return ''; } };
+    // writeSync may take only part of what it is given (a pipe or a non-blocking
+    // terminal under load): loop on the byte offset until all of it is written,
+    // and wait a millisecond on EAGAIN rather than recurse or spin.
+    const pause = new Int32Array(new SharedArrayBuffer(4));
+    const writeAll = (fd, s) => { const b = Buffer.from(s, 'utf8'); let off = 0; while (off < b.length) { try { off += fs.writeSync(fd, b, off, b.length - off); } catch (e) { if (e.code === 'EAGAIN') Atomics.wait(pause, 0, 0, 1); else if (e.code === 'EPIPE') return; else throw e; } } };
+    host.writeOut = s => writeAll(1, s);
+    host.writeErr = s => writeAll(2, s);
+    let stdinBytes = null;   // read once, raw: .read hands out these bytes, text readers their decoding
+    host.stdinRaw = () => { if (stdinBytes === null) { try { stdinBytes = fs.readFileSync(0); } catch (e) { stdinBytes = Buffer.alloc(0); } } return stdinBytes; };
+    host.readStdin = () => host.stdinRaw().toString('utf8');
+    host.fileBytes = h => { if (h.kind === 'file-r' && h.path) { try { return fs.readFileSync(h.path); } catch (e) { } } return new TextEncoder().encode(h.buf || ''); };
     host.exit = code => { host.flush(); process.exit(code); };   // the program is over: a live interval or a poll must not keep the process alive
     // errno text the way strerror spells it, so a JS-hosted program's message is
     // the interpreter's message. Anything unmapped keeps node's own wording.
@@ -91,17 +131,21 @@ if (IS_NODE && nodeRequire) {
     host.open = (p, ...a) => { const named = nm(a); const path = str(p); const w = truthy(named.get('w')) || truthy(named.get('a')) || str(named.get('mode') || '') === 'wo'; const app = truthy(named.get('a')) || truthy(named.get('append')); const h = new RIOHandle(w ? 'file-w' : 'file-r', path); if (named.has('out-buffer')) { const ob = named.get('out-buffer'); h.outBuffer = ob === false ? 0 : ob === true ? 8192 : Number(toInt(ob)); } try { if (fs.statSync(path).isDirectory()) return failure(new RakuError(`'${path}' is a directory, cannot do '.open' on a directory`, 'X::IO::Directory')); } catch (e) { /* absent is not an answer yet: :w may still create it */ } if (w) { try { if (!app) fs.writeFileSync(path, ''); else fs.appendFileSync(path, ''); } catch (e) { return failure(openFailed(path, e)); } h.out = ''; } else { try { h.buf = fs.readFileSync(path, 'utf8'); } catch (e) { return failure(openFailed(path, e)); } } return h; };
     host.close = h => { if (h.kind === 'file-w' && h.out) { fs.appendFileSync(h.path, h.out); h.out = ''; } h.closed = true; return true; };
     host.isTTY = h => h.kind === 'in' ? !!process.stdin.isTTY : h.kind === 'out' ? !!process.stdout.isTTY : h.kind === 'err' ? !!process.stderr.isTTY : false;
-    host.shell = (cmd, ...a) => { const cp = nodeRequire('child_process'); host.flush(); const r = cp.spawnSync('/bin/sh', ['-c', str(cmd)], { stdio: 'inherit' }); return mkProc(r.status, str(cmd)); };
-    host.run = (...args) => { const cp = nodeRequire('child_process'); const [pos, named] = splitArgs(args); host.flush(); const r = cp.spawnSync(str(pos[0]), pos.slice(1).map(str), { stdio: [truthy(named.get('in')) ? 'pipe' : 'inherit', truthy(named.get('out')) ? 'pipe' : 'inherit', truthy(named.get('err')) ? 'pipe' : 'inherit'], encoding: 'utf8' }); const p = mkProc(r.status, str(pos[0])); p.a_out = new RIOHandle('str'); p.a_out.buf = r.stdout || ''; p.a_err = new RIOHandle('str'); p.a_err.buf = r.stderr || ''; return p; };
+    const sigNum = name => name ? (nodeRequire('os').constants.signals[name] || 0) : 0;   // spawnSync names the signal
+    host.shell = (cmd, ...a) => { const cp = nodeRequire('child_process'); host.flush(); const r = cp.spawnSync('/bin/sh', ['-c', str(cmd)], { stdio: 'inherit' }); return mkProc(r.status, str(cmd), sigNum(r.signal)); };
+    host.run = (...args) => { const cp = nodeRequire('child_process'); const [pos, named] = splitArgs(args); host.flush(); const r = cp.spawnSync(str(pos[0]), pos.slice(1).map(str), { stdio: [truthy(named.get('in')) ? 'pipe' : 'inherit', truthy(named.get('out')) ? 'pipe' : 'inherit', truthy(named.get('err')) ? 'pipe' : 'inherit'], encoding: 'utf8' }); const p = mkProc(r.status, str(pos[0]), sigNum(r.signal)); p.a_out = new RIOHandle('str'); p.a_out.buf = r.stdout || ''; p.a_err = new RIOHandle('str'); p.a_err.buf = r.stderr || ''; return p; };
 } else if (IS_DENO) {
     host.name = 'deno';
     host.argv = Deno.args.slice();
     host.env = new Map(Object.entries(Deno.env.toObject()));
     host.cwd = Deno.cwd();
     const enc = new TextEncoder();
-    host.writeOut = s => Deno.stdout.writeSync(enc.encode(s));
-    host.writeErr = s => Deno.stderr.writeSync(enc.encode(s));
-    host.readStdin = () => { const chunks = []; const buf = new Uint8Array(65536); for (;;) { const n = Deno.stdin.readSync(buf); if (n === null) break; chunks.push(buf.slice(0, n)); } return new TextDecoder().decode(concatBytes(chunks)); };
+    const writeAll = (f, b) => { for (let o = 0; o < b.length; ) o += f.writeSync(b.subarray(o)); };   // (a short write, as node's)
+    host.writeOut = s => writeAll(Deno.stdout, enc.encode(s));
+    host.writeErr = s => writeAll(Deno.stderr, enc.encode(s));
+    let stdinBytes = null;   // (raw, as node's: .read hands out these bytes)
+    host.stdinRaw = () => { if (stdinBytes === null) { const chunks = []; const buf = new Uint8Array(65536); for (;;) { const n = Deno.stdin.readSync(buf); if (n === null) break; chunks.push(buf.slice(0, n)); } stdinBytes = concatBytes(chunks); } return stdinBytes; };
+    host.readStdin = () => new TextDecoder().decode(host.stdinRaw());
     host.exit = code => { host.flush(); if (code) Deno.exit(code); };
     host.slurp = p => Deno.readTextFileSync(str(p));
     host.spurt = (p, c, ...a) => { const named = nm(a); Deno.writeTextFileSync(str(p), str(c), { append: truthy(named.get('append')) }); return true; };
@@ -168,13 +212,13 @@ function systemicMethod(h, name, args) {
 }
 function concatBytes(chunks) { let n = 0; for (const c of chunks) n += c.length; const out = new Uint8Array(n); let o = 0; for (const c of chunks) { out.set(c, o); o += c.length; } return out; }
 const ProcT = mkType('Proc', [T.Any], { isUser: true, attrs: [{ name: 'exitcode', sigil: '$', pub: true }, { name: 'out', sigil: '$', pub: true }, { name: 'err', sigil: '$', pub: true }] });
-ProcT.methods.exitcode = s => s.a_exitcode; ProcT.methods.out = s => s.a_out; ProcT.methods.err = s => s.a_err; ProcT.methods.Bool = s => s.a_exitcode === 0; ProcT.methods.so = s => s.a_exitcode === 0; ProcT.methods.signal = s => 0; ProcT.methods.pid = s => 0;
+ProcT.methods.exitcode = s => s.a_exitcode; ProcT.methods.out = s => s.a_out; ProcT.methods.err = s => s.a_err; ProcT.methods.Bool = s => s.a_exitcode === 0 && !s.a_signal; ProcT.methods.so = s => s.a_exitcode === 0 && !s.a_signal; ProcT.methods.signal = s => s.a_signal; ProcT.methods.pid = s => 0;
 // Proc.sink — a command that exited unsuccessfully throws when nobody keeps its
 // Proc, which is what makes `run @cmd` as a program's last act exit non-zero
 // (issue #73). A Proc the caller DOES keep is never sunk, so `my $p = run …;
 // $p.exitcode` still reads the code back.
-ProcT.methods.sink = s => { if (s.a_exitcode === 0) return Nil; throw new RakuError(`The spawned command '${s.procCmd}' exited unsuccessfully (exit code: ${s.a_exitcode}, signal: 0)`, 'X::Proc::Unsuccessful'); };
-function mkProc(code, cmd) { const p = new RObj(ProcT); p.a_exitcode = code === null ? 1 : code; p.a_out = Nil; p.a_err = Nil; p.procCmd = cmd === undefined ? '' : cmd; return p; }
+ProcT.methods.sink = s => { if (s.a_exitcode === 0 && !s.a_signal) return Nil; throw new RakuError(`The spawned command '${s.procCmd}' exited unsuccessfully (exit code: ${s.a_exitcode}, signal: ${s.a_signal})`, 'X::Proc::Unsuccessful'); };
+function mkProc(code, cmd, sig = 0) { const p = new RObj(ProcT); p.a_signal = sig; p.a_exitcode = code === null ? (sig ? 0 : 1) : code; p.a_out = Nil; p.a_err = Nil; p.procCmd = cmd === undefined ? '' : cmd; return p; }
 const STDIN = new RIOHandle('in', ''), STDOUT = new RIOHandle('out', ''), STDERR = new RIOHandle('err', '');
 
 // Dynamic variables the core provides

@@ -22,7 +22,9 @@ f8b5555c, ce72763f, bfd530f9, eb482a9f, 7e5a643e, 6b8c1d1a, 41150ad1,
 251842c2, fcc6d577, 3a3fc21e, 62ada605, 9f94cac7, 2fe0aeeb, 1f3377ea,
 8f7ac1df, 6de9d27b, ce54f928, d3059bf5, f1491b3e, 06212d97, e89cc6a7,
 a213ccad, 02b24803, 9e948ff3, e60a6163, 657626c7, 13902c52, a397987e,
-e2981dc5, c5273f1e, 7df13701, 901a4cca.*
+e2981dc5, c5273f1e, 7df13701, 901a4cca, 2529675a, 0ab4bfc7, 4a2e4fec,
+43509bec, e374baff, 7f8773e2, 222424a1, 912cf744,
+d4a3b66c, 7386791f, fa8d1ea7, 69e90f7a, 27e35b21.*
 
 ---
 
@@ -81,6 +83,48 @@ e2981dc5, c5273f1e, 7df13701, 901a4cca.*
   `t/regression/anonymous-my-and-ternary-on-declaration-lane.raku`.
 
 ### Fixed: silent wrong answers
+
+- **`--mcp` and `--jupyter` read JSON numbers by JSON's grammar** (e374baff).
+  `"id":1e+` was run as a request with id 1, `1.2.3` as 1.2, `-+5` as 0 and
+  `1e999` as Inf; each is now a parse error. An unpaired surrogate escape
+  (`"\ud800"`) came back as the bytes ED A0 80, which a strict UTF-8 client
+  cannot decode; it is U+FFFD there and in `--lsp`, whose parser also turned
+  `"\ud800A"` into U+2441. From the Codex review of 2026-11-14 (13, 14).
+  `tools/mcp-smoke.raku`.
+- **`--lsp` refuses a body that is not JSON** (222424a1). A message missing its
+  closing brace was answered as an `initialize`, one with trailing junk as a
+  `shutdown`, and a missing `:`, an unknown escape or a malformed number was
+  read past. The server now parses with JsonLite, as `--mcp` and `--jupyter`
+  do, and answers -32700 with a null id. From the Codex review of 2026-11-14
+  (15). `t/regression/lsp-rejects-malformed-json.raku`.
+- **`--target=js` handles answer as the interpreter's do** (7f8773e2): `.getc`
+  is a grapheme, where an emoji came out as half a surrogate pair; a closed
+  handle throws X::IO::Closed, where `.get` read on; a Proc killed by a signal
+  has that signal, where it was always 0 with exit code 1; and a short write to
+  stdout or stderr is finished, where the rest of the buffer was dropped. From
+  the Codex review of 2026-11-14 (08, 10, 11, 12).
+  `t/regression/handle-closed-getc-astral-proc-signal.raku`.
+- **`--target=js` keeps a react or supply block working past an `await`**
+  (7386791f): a `whenever`, `emit` or `done` after `await` died "outside the
+  lexical scope of a react/supply block", and a `whenever` body that awaited
+  was cut off when its source finished. `.list` on a supply that finishes
+  later ran the supply's body twice, and came back as an unawaited Promise
+  unless the program mentioned a Channel. `Supply.from-list([42])` emits 42.
+  From the Codex review of 2026-11-14 (05, 06).
+- **`--target=js` reads bytes and keeps paths across `chdir`** (fa8d1ea7):
+  `.read(n)` returned the whole rest of the input, decoded as text, whatever n
+  was; it now hands out n raw bytes. A relative `IO::Path` made before a
+  `chdir` resolved against the new directory; it keeps the one it was made
+  in, as in Rakudo. From the Codex review of 2026-11-14 (07, 09).
+  `t/regression/supply-await-list-read-chdir-path.raku`.
+- **A file handle has one position for `.read` and the text readers**
+  (27e35b21): `.get` after `.read(3)` answered the first line whole, and
+  `.read` after `.get` or `.getc` started again at the top of the file. Each
+  reader now goes on from where the other stopped, a CR LF counts both bytes
+  for `.read` and `.tell`, and `.tell` after `.getc` is a byte offset where it
+  was 0. `--target=js` counts `.tell` and `.seek` in bytes and gains
+  `.readchars`. Found while fixing the Codex review's finding 07.
+  `t/regression/handle-read-get-one-position.raku`.
 
 - **Three from re-reading the UNCLEAR issue threads** (e2981dc5):
   - `(1, 2) X~~ -> $ { True }`, `Z~~`, `»~~»`, `[~~]` and `infix:<~~>`
@@ -300,6 +344,41 @@ e2981dc5, c5273f1e, 7df13701, 901a4cca.*
   died "Default constructor … only takes named arguments".
   `t/regression/exception-new-message.raku`.
 ### Fixed: crashes
+
+- **`try $p.sink` catches a failed Proc** (69e90f7a). `.sink` handed the Proc
+  back and the statement sank it once the `try` was over, so the program died
+  with the X::Proc::Unsuccessful it meant to catch. Found while fixing the
+  Codex review's finding 11. `t/regression/proc-sink-throws-inside-try.raku`.
+- **An object released on two threads at once is no longer read after it is
+  freed** (912cf744). A release that left a tracked object alive dropped its count
+  and then handed the object to the cycle collector's candidate buffer, so a
+  last release on another thread in between freed it first. It is now noted
+  before the count goes. Instructions retired move by under half a percent.
+  From the Codex review of 2026-11-14 (01). `t/stress/tracked-release-race.raku`.
+- **`rk_free` no longer frees an interpreter its workers still run on** (d4a3b66c).
+  It waited for pooled workers only and freed the interpreter after two
+  seconds, so a `start` still running wrote into freed memory while the host
+  went on. It now stops and joins every worker, as a program's end does, and
+  keeps the interpreter if one will not stop. From the Codex review of
+  2026-11-14 (02). `tools/embed/embed-host.c`.
+- **An extension's element handle survives the array growing** (0ab4bfc7).
+  `rk_at_pos` returned the element's own address, so an `rk_push` that grew
+  the array left the handle pointing at freed storage within the same call,
+  though the ABI promises a handle for the whole call; `rk_val_at` likewise
+  across a deleted key. Both now hand out arena copies. From the Codex review
+  of 2026-11-14 (04). `tools/embed/embed-host.c`.
+- **`--jupyter` cannot be wedged by a frame length** (43509bec). A frame
+  claiming 2^64 - 9 bytes wrapped the bounds check, and the kernel looped on
+  the same header, queueing messages until memory ran out, before any
+  signature check, for any process that could reach the port. A message is
+  now held to 256 MB and an over-long frame drops that peer. From the Codex
+  review of 2026-11-14 (03). `tools/jupyter-smoke.raku`.
+- **Two latent lifetime defects closed** (2529675a, 4a2e4fec). Move
+  assignment of the reference handles released the destination before
+  reading a source it may have owned (`node = std::move(node->next)`); no
+  caller had that shape yet. A thread that only freed pool blocks never
+  registered its exit drain and leaked up to 64 blocks per size class. From
+  the Codex review of 2026-11-14 (17, 16).
 
 - **A regex value that names itself is a recursive pattern, not a crash**
   (041789fd) (rakudo#3775). `my $r; $r = / a <$r>? /` matches "aaa" in
