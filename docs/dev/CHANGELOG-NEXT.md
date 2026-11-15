@@ -25,7 +25,8 @@ a213ccad, 02b24803, 9e948ff3, e60a6163, 657626c7, 13902c52, a397987e,
 e2981dc5, c5273f1e, 7df13701, 901a4cca, 2529675a, 0ab4bfc7, 4a2e4fec,
 43509bec, e374baff, 7f8773e2, 222424a1, 912cf744,
 d4a3b66c, 7386791f, fa8d1ea7, 69e90f7a, 27e35b21, a9c5615f, 1a5145f1, 477a7194,
-9cc330f2, dbe463ff, 5ee977c9, 48c5ea64, 07e2372e, 7a94daa1, 41e0b608.*
+9cc330f2, dbe463ff, 5ee977c9, 48c5ea64, 07e2372e, 7a94daa1, 41e0b608,
+8f78649f.*
 
 ---
 
@@ -111,6 +112,13 @@ d4a3b66c, 7386791f, fa8d1ea7, 69e90f7a, 27e35b21, a9c5615f, 1a5145f1, 477a7194,
 
 ### Fixed: silent wrong answers
 
+- **An `--aot` binary's trace shows no line from a stranger's file** (8f78649f)
+  (#265). The excerpt under the origin frame was read by opening the script's
+  name against the working directory, so a binary run beside another file of
+  that name printed that file's line as its own (the reporter's was an
+  executable: kilobytes of machine code as "line 729"). The binary carries the
+  tree, not the text, and now shows no excerpt, as Rakudo shows none.
+  `t/regression/aot-excerpt-not-from-cwd.raku`.
 - **`-c` and `--lint` refuse an undeclared routine** (a9c5615f, 1a5145f1)
   (#264). `say "start"; no-such-routine(1)` passed `-c` with "Syntax OK" and
   exit 0, and `--lint` with "no issues found", and failed to compile when run.
