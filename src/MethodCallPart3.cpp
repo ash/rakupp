@@ -353,6 +353,12 @@ static void foldCrLf(std::string& text) {
 static Value charCursor(const std::string& text, bool c8) {
     Value cs = Value::array();
     auto& v = *cs.arr();
+    // one block, the same size window after window (no more characters than
+    // bytes): a list grown to a million elements leaves every block it grew
+    // through in macOS's cache of large frees, about 30 MB a window (#262)
+    size_t cap = 1;
+    while (cap < text.size()) cap <<= 1;
+    v.reserve(cap);
     if (c8) {
         for (auto cp : utf8cp(text)) v.push_back(Value::str(cpToUtf8(cp)));
         return cs;
@@ -433,6 +439,10 @@ static std::string stdinGrapheme(bool c8) {
 
 static long long textCursorBytes(Interpreter& I, const Value& inv);   // (the two cursors' hand-over, below)
 static long long byteCursorToText(const Value& inv);
+enum class TextCut { Whole, AfterSep, Char };   // (where a window of a file's text may end: textFrom)
+static void loadLineCache(Interpreter& I, const Value& inv, bool isStdin);
+static bool nextTextWindow(Interpreter& I, const Value& inv, bool lines);
+static std::string textFrom(Interpreter& I, const Value& inv, long long off, TextCut cut, const std::string& sep);
 // `.getc` / `.readchars` on a handle: $*IN off the stream as it comes, any
 // other handle through the cursor above, loaded once and kept in "cps"/"cpos".
 static Value handleReadChars(Interpreter& I, const Value& inv, const std::string& m, const ValueList& args) {
@@ -481,32 +491,30 @@ static Value handleReadChars(Interpreter& I, const Value& inv, const std::string
             inv.hash()->erase("lines"); inv.hash()->erase("line-eols"); inv.hash()->erase("line-crs"); inv.hash()->erase("pos");
         }
     }
-    if (inv.hash()->find("cps") == inv.hash()->end()) {
+    auto load = [&] {   // (a window of the file at a time: textFrom)
+        if (inv.hash()->find("cps") != inv.hash()->end()) return;
         std::string path = (*inv.hash())["path"].toStr();
         struct stat st;
         if (::stat(path.c_str(), &st) == 0 && S_ISDIR(st.st_mode))
             throw RakuError{Value::typeObj("X::IO"), "Cannot read characters from a directory: " + path};
-        std::ifstream in(path, std::ios::binary); std::ostringstream ss; ss << in.rdbuf();
-        std::string raw = ss.str();
         auto ps = inv.hash()->find("cpskip"); // bytes already read under an EARLIER encoding
         long long skip = ps != inv.hash()->end() ? ps->second.toInt() : 0;
         if (long long b = byteCursorToText(inv); b > 0) { skip = b; (*inv.hash())["cpskip"] = Value::integer(b); }
-        if (skip > 0) raw = skip <= (long long)raw.size() ? raw.substr(skip) : std::string();
-        (*inv.hash())["cps"] = charCursor(I.decodeTextEnc(raw, handleEnc(inv)), c8);
+        (*inv.hash())["cps"] = charCursor(I.decodeTextEnc(textFrom(I, inv, skip, TextCut::Char, ""), handleEnc(inv)), c8);
         (*inv.hash())["cpos"] = Value::integer(0);
-    }
-    long long pos = (*inv.hash())["cpos"].toInt();
-    auto& cps = *(*inv.hash())["cps"].arr();
-    if (m == "readchars") { // read up to N chars (default 65536), "" at EOF
-        std::string out;
-        for (long long got = 0; got < want && pos < (long long)cps.size(); got++, pos++) appendCursorChar(out, cps[pos]);
-        (*inv.hash())["cpos"] = Value::integer(pos);
-        return Value::str(out);
-    }
-    if (pos >= (long long)cps.size()) return Value::nil(); // getc at EOF → Nil
-    (*inv.hash())["cpos"] = Value::integer(pos + 1);
+    };
+    load();
+    // up to N chars (`.readchars`, 65536 by default: "" at the end), or one (`.getc`: Nil there)
     std::string out;
-    appendCursorChar(out, cps[pos]);
+    for (long long got = 0;;) {
+        long long pos = (*inv.hash())["cpos"].toInt();
+        auto& cps = *(*inv.hash())["cps"].arr();
+        for (; got < want && pos < (long long)cps.size(); got++, pos++) appendCursorChar(out, cps[pos]);
+        (*inv.hash())["cpos"] = Value::integer(pos);
+        if (got >= want || !nextTextWindow(I, inv, false)) break;
+        load();
+    }
+    if (m == "getc" && out.empty()) return Value::nil();
     return Value::str(out);
 }
 
@@ -533,6 +541,19 @@ static int plainReadFd(Interpreter& I, const Value& inv) {
 // `.read(want)` there: the bytes asked for, from the cursor, through that
 // descriptor (pread leaves its offset alone), as Rakudo reads them; the cursor
 // moves past what was read, and stays where it is past the end
+// `want` bytes from `off` (fewer at the end), through pread, which leaves the offset alone
+static std::string preadAt(int fd, long long off, long long want) {
+    std::string buf((size_t)want, '\0');
+    size_t got = 0;
+    while (got < (size_t)want) {
+        ssize_t r = ::pread(fd, &buf[got], (size_t)want - got, (off_t)(off + (long long)got));
+        if (r < 0 && errno == EINTR) continue;
+        if (r <= 0) break;
+        got += (size_t)r;
+    }
+    buf.resize(got);
+    return buf;
+}
 static Value readAtCursor(const Value& inv, int fd, long long want) {
     auto& h = *inv.hash();
     long long pos = h.count("bpos") ? h["bpos"].toInt() : 0;
@@ -542,16 +563,8 @@ static Value readAtCursor(const Value& inv, int fd, long long want) {
     // (no more than is there: `.read(1 +< 40)` allocates nothing extra)
     if (want > 65536 && ::fstat(fd, &fs) == 0 && want > (long long)fs.st_size - pos)
         want = std::max(0LL, (long long)fs.st_size - pos);
-    std::string buf((size_t)want, '\0');
-    size_t got = 0;
-    while (got < (size_t)want) {
-        ssize_t r = ::pread(fd, &buf[got], (size_t)want - got, (off_t)(pos + (long long)got));
-        if (r < 0 && errno == EINTR) continue;
-        if (r <= 0) break;
-        got += (size_t)r;
-    }
-    buf.resize(got);
-    h["bpos"] = Value::integer(pos + (long long)got);
+    std::string buf = preadAt(fd, pos, want);
+    h["bpos"] = Value::integer(pos + (long long)buf.size());
     return binBuf(buf);
 }
 #endif
@@ -620,7 +633,7 @@ static long long textCursorBytes(Interpreter& I, const Value& inv) {
 static void textCursorToBytes(Interpreter& I, const Value& inv) {
     long long off = textCursorBytes(I, inv);
     if (off < 0) return;
-    for (const char* k : {"lines", "line-eols", "line-crs", "pos", "seekbase", "fulltext", "slurped", "cps", "cpos", "cpskip"})
+    for (const char* k : {"lines", "line-eols", "line-crs", "pos", "seekbase", "fulltext", "slurped", "cps", "cpos", "cpskip", "wend"})
         inv.hash()->erase(k);
     (*inv.hash())["bpos"] = Value::integer(off);
 }
@@ -634,6 +647,231 @@ static long long byteCursorToText(const Value& inv) {
     long long off = std::max(0LL, b->second.toInt());
     h.erase("bpos"); h.erase("bytes");
     return off;
+}
+
+// A text reader over a large file holds one WINDOW of its text, not all of
+// it: `.get` and `.readchars` over 200 MB held every line, or every character,
+// for the life of the handle (issue #262). The bytes from `off`, then: at
+// least kTextWindow of them, cut where nothing straddles the cut — after a
+// separator for the line reader, and for the character reader after a LF or,
+// with none, between two ASCII characters — with "wend" on the handle the
+// byte the window ends at. The rest of the file, with no "wend", for a file
+// under one window (read exactly as before), for a reader that wants all of
+// it ("wfull": wholeText), and for anything but a plain read handle on a
+// regular file in UTF-8 or a one-byte encoding, where a LF byte is a LF.
+static constexpr long long kTextWindow = 1 << 20;
+static size_t textCutAt(const std::string& b, TextCut cut, const std::string& sep) {
+    const std::string s = cut == TextCut::AfterSep ? sep : std::string("\n");
+    for (size_t from = b.size(); from >= s.size() && !s.empty();) {
+        size_t p = b.rfind(s, from - s.size());
+        if (p == std::string::npos) break;
+        // (not before a BOM, which the next window's decoder would take for one)
+        if (size_t c = p + s.size(); b.compare(c, 3, "\xEF\xBB\xBF") != 0) return c;
+        if (p == 0) break;
+        from = p + s.size() - 1;
+    }
+    if (cut == TextCut::Char)   // (ASCII after ASCII starts a character of its own: charCursor)
+        for (size_t i = b.size() - 1; i > 0; i--)
+            if ((unsigned char)b[i - 1] < 0x80 && b[i - 1] != '\r' && (unsigned char)b[i] < 0x80) return i;
+    return 0;
+}
+static std::string textFrom(Interpreter& I, const Value& inv, long long off, TextCut cut, const std::string& sep) {
+    auto& h = *inv.hash();
+    h.erase("wend");
+    if (off < 0) off = 0;
+#ifndef _WIN32
+    static const std::set<std::string> lfIsLf = {"", "utf8", "utf8c8", "ascii", "latin1", "iso88591",
+                                                 "windows1251", "windows1252"};
+    struct stat fs{};
+    const int fd = cut == TextCut::Whole || h.count("wfull") || !lfIsLf.count(encKey(handleEnc(inv)))
+                       ? -1 : plainReadFd(I, inv);
+    if (fd >= 0 && ::fstat(fd, &fs) == 0 && (long long)fs.st_size - off > kTextWindow)
+        for (long long want = kTextWindow;; want *= 2) {   // (a window holds one cut at least)
+            std::string buf = preadAt(fd, off, want);
+            if ((long long)buf.size() < want) return buf;   // the end of the file came first
+            if (size_t c = textCutAt(buf, cut, sep)) {
+                buf.resize(c);
+                h["wend"] = Value::integer(off + (long long)c);
+                h["wbig"] = Value::boolean(true);   // (`.seek`/`.tell` by bytes from now on)
+                return buf;
+            }
+        }
+#endif
+    std::ifstream in(h["path"].toStr(), std::ios::binary);
+    if (off > 0) in.seekg((std::streamoff)off);
+    std::ostringstream ss;
+    if (in) ss << in.rdbuf();
+    return ss.str();
+}
+// Line `p` of a handle's line cache, with its terminator when `.chomp` is off
+static Value cachedLine(ValueMap& h, long long p) {
+    const Value& l = (*h["lines"].arr())[(size_t)p];
+    auto ch = h.find("chomp"), eo = h.find("line-eols");
+    if (ch != h.end() && !ch->second.truthy() && eo != h.end() && eo->second.arr() &&
+        p < (long long)eo->second.arr()->size())
+        return Value::str(l.toStr() + (*eo->second.arr())[(size_t)p].toStr());
+    return l;
+}
+// The cache read to its end takes the next window, if there is one: the line
+// cache by `.get`, `.lines` and `.eof`, the character cursor by `.getc` and
+// `.readchars`. True when it did.
+static bool nextTextWindow(Interpreter& I, const Value& inv, bool lines) {
+    auto& h = *inv.hash();
+    auto w = h.find("wend");
+    auto c = h.find(lines ? "lines" : "cps"), p = h.find(lines ? "pos" : "cpos");
+    if (w == h.end() || c == h.end() || !c->second.arr() || p == h.end() ||
+        p->second.toInt() < (long long)c->second.arr()->size()) return false;
+    const long long at = w->second.toInt();
+    for (const char* k : {"lines", "line-eols", "line-crs", "pos", "seekbase", "fulltext", "cps", "cpos", "cpskip", "wend"})
+        h.erase(k);
+    h["bpos"] = Value::integer(at);
+    if (lines) loadLineCache(I, inv, false);
+    return true;
+}
+// …and a reader that wants ALL that is left (`.words`, `.slurp-rest`,
+// `.slurp`) has it read to the end, from where the handle stands
+static void wholeText(Interpreter& I, const Value& inv) {
+    auto& h = *inv.hash();
+    h["wfull"] = Value::boolean(true);
+    if (!h.count("wend")) return;
+    const long long at = textCursorBytes(I, inv);
+    for (const char* k : {"lines", "line-eols", "line-crs", "pos", "seekbase", "fulltext", "cps", "cpos", "cpskip", "wend"})
+        h.erase(k);
+    h["bpos"] = Value::integer(at);
+}
+// The line cache of a handle, from where it stands: standard input, an
+// in-memory handle's buffer, the rest of the character cursor, or the file
+// from its byte cursor, a window of it at a time (textFrom)
+static void loadLineCache(Interpreter& I, const Value& inv, bool isStdin) {
+    // a custom line separator (`.nl-in = "+"`) splits on that instead of \n
+    std::string sep;
+    auto nit = inv.hash()->find("nl-in");
+    if (nit != inv.hash()->end()) {
+        if (nit->second.t == VT::Str) sep = nit->second.s;
+        else if (nit->second.t == VT::Array && nit->second.arr() && !nit->second.arr()->empty()) {
+            // A LIST nl-in that still offers "\r\n" alongside "\n" is
+            // the default set, however it was spelled — take the
+            // CRLF-tolerant path rather than splitting on the first
+            // entry alone and leaving a CR at the end of every line.
+            bool hasLf = false, hasCrLf = false;
+            for (auto& e : *nit->second.arr()) {
+                if (e.toStr() == "\n") hasLf = true;
+                if (e.toStr() == "\r\n") hasCrLf = true;
+            }
+            if (!(hasLf && hasCrLf)) sep = (*nit->second.arr())[0].toStr();
+        }
+    }
+    Value lines = Value::array();
+    // Each line's own terminator, kept beside it: `.chomp = False`
+    // asks for the line AS IT WAS, and the split cannot be undone
+    // afterwards (the last line may have none, and "\r\n" is not
+    // "\n"). Text::CSV reads its input that way — the CSV parser
+    // needs the line ending to diagnose an unterminated field.
+    Value eols = Value::array();
+    // …and, for a file, which lines ended in a CR LF: the terminator
+    // reads as "\n", but the byte cursor counts the CR
+    Value crs = Value::array();
+    // An EXPLICIT nl-in splits on exactly that string — including a
+    // plain "\n", which is not the default. The default (no key at
+    // all) is Rakudo's ["\n", "\r\n"], where a CR before the LF
+    // belongs to the terminator; once the program has named "\n"
+    // alone, a lone "\r" is DATA. Text::CSV sets nl-in from its
+    // `eol` option and diagnoses stray carriage returns (error 2031).
+    if (!sep.empty()) {
+        std::string content;
+        if (isStdin) content = stdinReadAll();
+        else {
+            const long long b = byteCursorToText(inv);
+            // (a window ends after a separator nothing joins onto: ASCII, ending in a control)
+            bool cuts = (unsigned char)sep.back() < 0x20;
+            for (char c : sep) cuts = cuts && (unsigned char)c < 0x80;
+            content = textFrom(I, inv, b, cuts ? TextCut::AfterSep : TextCut::Whole, sep);
+            if (b > 0) (*inv.hash())["seekbase"] = Value::integer(b);
+        }
+        content = I.decodeTextEnc(content, handleEnc(inv));
+        size_t start = 0, p;
+        while ((p = content.find(sep, start)) != std::string::npos) {
+            lines.arr()->push_back(Value::str(content.substr(start, p - start)));
+            eols.arr()->push_back(Value::str(sep));
+            start = p + sep.size();
+        }
+        if (start < content.size()) {
+            lines.arr()->push_back(Value::str(content.substr(start)));
+            eols.arr()->push_back(Value::str(""));
+        }
+    } else {
+        std::string line;
+        // an IN-MEMORY handle ($*ARGFILES, Proc.out/.err) has its
+        // whole content in "buffer" — there is no file to reopen
+        auto capIt = inv.hash()->find("captured");
+        if (capIt != inv.hash()->end() && capIt->second.truthy()) {
+            const std::string_view content = (*inv.hash())["buffer"].s;
+            size_t start = 0;
+            while (start <= content.size()) {
+                size_t nl = content.find('\n', start);
+                if (nl == std::string::npos) {
+                    if (start < content.size()) {
+                        std::string l(content.substr(start));
+                        handleNfc(inv, l);
+                        lines.arr()->push_back(Value::str(l));
+                        eols.arr()->push_back(Value::str(""));
+                    }
+                    break;
+                }
+                std::string l(content.substr(start, nl - start));
+                bool crlf = !l.empty() && l.back() == '\r';
+                if (crlf) l.pop_back();
+                handleNfc(inv, l);
+                lines.arr()->push_back(Value::str(l));
+                // Rakudo normalises: a CRLF line read back with
+                // `chomp = False` ends "\n", not "\r\n".
+                (void)crlf; eols.arr()->push_back(Value::str("\n"));
+                start = nl + 1;
+            }
+        }
+        else if (isStdin) { // $*IN — read standard input
+            while (stdinGetLine(line)) {
+                bool crlf = !line.empty() && line.back() == '\r';
+                if (crlf) line.pop_back();
+                handleNfc(inv, line);
+                lines.arr()->push_back(Value::str(line));
+                (void)crlf; eols.arr()->push_back(Value::str(std::cin.eof() ? "" : "\n"));
+            }
+        } else {
+            std::string decoded;
+            auto cit = inv.hash()->find("cps");
+            if (cit != inv.hash()->end() && cit->second.arr()) {
+                // the CHARACTER reader owned this handle so far (`.getc`
+                // then `.get`): the lines start at its cursor, not at the
+                // top of the file
+                auto& cs = *cit->second.arr();
+                long long cp0 = (*inv.hash())["cpos"].toInt();
+                for (size_t i = (size_t)(cp0 < 0 ? 0 : cp0); i < cs.size(); i++) decoded += cs[i].toStr();
+                (*inv.hash())["seekbase"] = Value::integer(textCursorBytes(I, inv));
+                inv.hash()->erase("cps"); inv.hash()->erase("cpos"); inv.hash()->erase("cpskip");
+            } else {
+                const long long b = byteCursorToText(inv);
+                decoded = I.decodeTextEnc(textFrom(I, inv, b, TextCut::AfterSep, "\n"), handleEnc(inv));
+                if (b > 0) (*inv.hash())["seekbase"] = Value::integer(b);
+            }
+            std::istringstream src(decoded);
+            // getline() cannot say whether the LAST line ended in a
+            // newline; the decoded text can.
+            bool endsNl = !decoded.empty() && decoded.back() == '\n';
+            while (std::getline(src, line)) {
+                bool crlf = !line.empty() && line.back() == '\r';
+                if (crlf) line.pop_back();
+                lines.arr()->push_back(Value::str(line));
+                bool last = src.eof();
+                eols.arr()->push_back(Value::str((last && !endsNl) ? "" : "\n"));
+                crs.arr()->push_back(Value::integer(crlf ? 1 : 0));
+            }
+        }
+    }
+    (*inv.hash())["lines"] = lines;
+    (*inv.hash())["line-eols"] = eols;
+    if (!crs.arr()->empty()) (*inv.hash())["line-crs"] = crs; else inv.hash()->erase("line-crs");
+    (*inv.hash())["pos"] = Value::integer(0);
 }
 
 // stat() for the IO methods that report a file's metadata. True (with `st`
@@ -4341,6 +4579,7 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
             // what has been READ already stays read: `.get` / `.getc` first,
             // then `.slurp` answers the rest (and `:close` closes after)
             if (inv.hash()->find("std") == inv.hash()->end()) {
+                wholeText(*this, inv);   // (a window's cache: the rest from the handle's byte, below)
                 std::string rest; bool partial = false;
                 auto lit = inv.hash()->find("lines");
                 auto cit = inv.hash()->find("cps");
@@ -4584,140 +4823,24 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
             if (m == "seek" && inv.hash()->count("slurped"))
                 for (const char* k : {"lines", "line-eols", "line-crs", "pos", "seekbase", "fulltext", "slurped"})
                     inv.hash()->erase(k);
-            if (inv.hash()->find("lines") == inv.hash()->end()) {
-                // a custom line separator (`.nl-in = "+"`) splits on that instead of \n
-                std::string sep;
-                auto nit = inv.hash()->find("nl-in");
-                if (nit != inv.hash()->end()) {
-                    if (nit->second.t == VT::Str) sep = nit->second.s;
-                    else if (nit->second.t == VT::Array && nit->second.arr() && !nit->second.arr()->empty()) {
-                        // A LIST nl-in that still offers "\r\n" alongside "\n" is
-                        // the default set, however it was spelled — take the
-                        // CRLF-tolerant path rather than splitting on the first
-                        // entry alone and leaving a CR at the end of every line.
-                        bool hasLf = false, hasCrLf = false;
-                        for (auto& e : *nit->second.arr()) {
-                            if (e.toStr() == "\n") hasLf = true;
-                            if (e.toStr() == "\r\n") hasCrLf = true;
-                        }
-                        if (!(hasLf && hasCrLf)) sep = (*nit->second.arr())[0].toStr();
-                    }
-                }
-                Value lines = Value::array();
-                // Each line's own terminator, kept beside it: `.chomp = False`
-                // asks for the line AS IT WAS, and the split cannot be undone
-                // afterwards (the last line may have none, and "\r\n" is not
-                // "\n"). Text::CSV reads its input that way — the CSV parser
-                // needs the line ending to diagnose an unterminated field.
-                Value eols = Value::array();
-                // …and, for a file, which lines ended in a CR LF: the terminator
-                // reads as "\n", but the byte cursor counts the CR
-                Value crs = Value::array();
-                // An EXPLICIT nl-in splits on exactly that string — including a
-                // plain "\n", which is not the default. The default (no key at
-                // all) is Rakudo's ["\n", "\r\n"], where a CR before the LF
-                // belongs to the terminator; once the program has named "\n"
-                // alone, a lone "\r" is DATA. Text::CSV sets nl-in from its
-                // `eol` option and diagnoses stray carriage returns (error 2031).
-                if (!sep.empty()) {
-                    std::string content;
-                    if (isStdin) content = stdinReadAll();
-                    else {
-                        std::ifstream in((*inv.hash())["path"].toStr(), std::ios::binary); std::ostringstream ss; ss << in.rdbuf(); content = ss.str();
-                        if (long long b = byteCursorToText(inv); b > 0) {
-                            content = b < (long long)content.size() ? content.substr((size_t)b) : std::string();
-                            (*inv.hash())["seekbase"] = Value::integer(b);
-                        }
-                    }
-                    content = decodeTextEnc(content, handleEnc(inv));
-                    size_t start = 0, p;
-                    while ((p = content.find(sep, start)) != std::string::npos) {
-                        lines.arr()->push_back(Value::str(content.substr(start, p - start)));
-                        eols.arr()->push_back(Value::str(sep));
-                        start = p + sep.size();
-                    }
-                    if (start < content.size()) {
-                        lines.arr()->push_back(Value::str(content.substr(start)));
-                        eols.arr()->push_back(Value::str(""));
-                    }
-                } else {
-                    std::string line;
-                    // an IN-MEMORY handle ($*ARGFILES, Proc.out/.err) has its
-                    // whole content in "buffer" — there is no file to reopen
-                    auto capIt = inv.hash()->find("captured");
-                    if (capIt != inv.hash()->end() && capIt->second.truthy()) {
-                        const std::string_view content = (*inv.hash())["buffer"].s;
-                        size_t start = 0;
-                        while (start <= content.size()) {
-                            size_t nl = content.find('\n', start);
-                            if (nl == std::string::npos) {
-                                if (start < content.size()) {
-                                    std::string l(content.substr(start));
-                                    handleNfc(inv, l);
-                                    lines.arr()->push_back(Value::str(l));
-                                    eols.arr()->push_back(Value::str(""));
-                                }
-                                break;
-                            }
-                            std::string l(content.substr(start, nl - start));
-                            bool crlf = !l.empty() && l.back() == '\r';
-                            if (crlf) l.pop_back();
-                            handleNfc(inv, l);
-                            lines.arr()->push_back(Value::str(l));
-                            // Rakudo normalises: a CRLF line read back with
-                            // `chomp = False` ends "\n", not "\r\n".
-                            (void)crlf; eols.arr()->push_back(Value::str("\n"));
-                            start = nl + 1;
-                        }
-                    }
-                    else if (isStdin) { // $*IN — read standard input
-                        while (stdinGetLine(line)) {
-                            bool crlf = !line.empty() && line.back() == '\r';
-                            if (crlf) line.pop_back();
-                            handleNfc(inv, line);
-                            lines.arr()->push_back(Value::str(line));
-                            (void)crlf; eols.arr()->push_back(Value::str(std::cin.eof() ? "" : "\n"));
-                        }
-                    } else {
-                        std::string decoded;
-                        auto cit = inv.hash()->find("cps");
-                        if (cit != inv.hash()->end() && cit->second.arr()) {
-                            // the CHARACTER reader owned this handle so far (`.getc`
-                            // then `.get`): the lines start at its cursor, not at the
-                            // top of the file
-                            auto& cs = *cit->second.arr();
-                            long long cp0 = (*inv.hash())["cpos"].toInt();
-                            for (size_t i = (size_t)(cp0 < 0 ? 0 : cp0); i < cs.size(); i++) decoded += cs[i].toStr();
-                            (*inv.hash())["seekbase"] = Value::integer(textCursorBytes(*this, inv));
-                            inv.hash()->erase("cps"); inv.hash()->erase("cpos"); inv.hash()->erase("cpskip");
-                        } else {
-                            std::ifstream in((*inv.hash())["path"].toStr(), std::ios::binary);
-                            std::ostringstream raw; raw << in.rdbuf();
-                            std::string bytes = raw.str();
-                            if (long long b = byteCursorToText(inv); b > 0) {
-                                bytes = b < (long long)bytes.size() ? bytes.substr((size_t)b) : std::string();
-                                (*inv.hash())["seekbase"] = Value::integer(b);
-                            }
-                            decoded = decodeTextEnc(bytes, handleEnc(inv));
-                        }
-                        std::istringstream src(decoded);
-                        // getline() cannot say whether the LAST line ended in a
-                        // newline; the decoded text can.
-                        bool endsNl = !decoded.empty() && decoded.back() == '\n';
-                        while (std::getline(src, line)) {
-                            bool crlf = !line.empty() && line.back() == '\r';
-                            if (crlf) line.pop_back();
-                            lines.arr()->push_back(Value::str(line));
-                            bool last = src.eof();
-                            eols.arr()->push_back(Value::str((last && !endsNl) ? "" : "\n"));
-                            crs.arr()->push_back(Value::integer(crlf ? 1 : 0));
-                        }
-                    }
-                }
-                (*inv.hash())["lines"] = lines;
-                (*inv.hash())["line-eols"] = eols;
-                if (!crs.arr()->empty()) (*inv.hash())["line-crs"] = crs; else inv.hash()->erase("line-crs");
-                (*inv.hash())["pos"] = Value::integer(0);
+            if (m == "words" || m == "slurp-rest") wholeText(*this, inv);
+            if (inv.hash()->find("lines") == inv.hash()->end()) loadLineCache(*this, inv, isStdin);
+            // a handle read a window at a time seeks by BYTES, as Rakudo's does:
+            // the next read starts from there (the byte cursor)
+            if ((m == "seek" || m == "tell") && inv.hash()->count("wbig")) {
+                const long long cur = inv.hash()->count("lines") || inv.hash()->count("cps") ? textCursorBytes(*this, inv)
+                                    : inv.hash()->count("bpos") ? (*inv.hash())["bpos"].toInt() : 0;
+                if (m == "tell") return Value::integer(cur);
+                long long want = args.empty() ? 0 : args[0].toInt(), whence = 0;
+                for (size_t i = 1; i < args.size(); i++)
+                    if (args[i].t != VT::Pair) { whence = args[i].toInt(); break; }
+                struct stat fs{};
+                if (whence == 1) want += cur;
+                else if (whence == 2 && ::stat((*inv.hash())["path"].toStr().c_str(), &fs) == 0) want += (long long)fs.st_size;
+                for (const char* k : {"lines", "line-eols", "line-crs", "pos", "seekbase", "fulltext", "slurped", "cps", "cpos", "cpskip", "wend"})
+                    inv.hash()->erase(k);
+                (*inv.hash())["bpos"] = Value::integer(std::max(0LL, want));
+                return Value::boolean(true);
             }
             // `.seek` / `.tell` — a byte offset over the same line cache the rest
             // of this block reads. Text::CSV's suite rewinds a handle between
@@ -4857,20 +4980,13 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
                 (*inv.hash())["pos"] = Value::integer((long long)ln.size());
                 return Value::str(all);
             }
+            if (m == "get" || m == "getline" || m == "eof") nextTextWindow(*this, inv, true);
             auto& lines = *(*inv.hash())["lines"].arr();
             long long pos = (*inv.hash())["pos"].toInt();
             if (m == "eof") return Value::boolean(pos >= (long long)lines.size());
             // `$fh.chomp = False` — the handle hands back each line WITH the
             // terminator it was read with. The attribute defaults to True.
-            auto chIt = inv.hash()->find("chomp");
-            bool keepEol = chIt != inv.hash()->end() && !chIt->second.truthy();
-            auto eolIt = inv.hash()->find("line-eols");
-            auto withEol = [&](long long i) {
-                if (!keepEol || eolIt == inv.hash()->end() || !eolIt->second.arr()) return lines[i];
-                auto& es = *eolIt->second.arr();
-                if (i >= (long long)es.size()) return lines[i];
-                return Value::str(lines[i].toStr() + es[i].toStr());
-            };
+            auto withEol = [&](long long i) { return cachedLine(*inv.hash(), i); };
             // `.lines` is LAZY, one line per pull from the handle's own
             // position: `for $fh.lines { …; last }` leaves the rest for the next
             // `$fh.lines`, and `$fh.lines[1,2]` reads three lines, not all.
@@ -4893,37 +5009,35 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
                     if (av.t == VT::Pair && av.namedArg && av.s == "close" && av.pairVal() && av.pairVal()->truthy())
                         closeArg = true;
                 if (limit >= 0) {
-                    for (long long i = pos; i < (long long)lines.size() && i < pos + limit; i++)
-                        out.arr()->push_back(withEol(i));
-                    (*inv.hash())["pos"] = Value::integer(std::min<long long>(pos + limit, (long long)lines.size()));
+                    for (long long got = 0; got < limit; got++) {   // (a window at a time, as `.get`)
+                        nextTextWindow(*this, inv, true);
+                        const long long p = (*inv.hash())["pos"].toInt();
+                        if (p >= (long long)(*inv.hash())["lines"].arr()->size()) break;
+                        out.arr()->push_back(withEol(p));
+                        (*inv.hash())["pos"] = Value::integer(p + 1);
+                    }
                     if (closeArg) methodCall(const_cast<Value&>(inv), "close", ValueList{});
                     return out;
                 }
                 auto hs = inv.hashS();
                 auto st = std::make_shared<LazySeqState>();
-                st->streaming = true;
-                st->finiteSource = true;
+                st->streaming = st->finiteSource = st->dropsRead = true;
                 // (`:close` closes the handle when the lines run out — not
                 // before: a slice that stops early leaves it open)
-                Value hv = closeArg ? inv : Value::nil();
+                Value hv = inv;
                 Interpreter* self = this;
                 st->appendNext = [hs, hv, closeArg, self](ValueList& cache) -> bool {
+                    // (the next window, when the cache has one: nextTextWindow)
+                    if (hs->count("wend") && !hs->count("closed")) nextTextWindow(*self, hv, true);
                     auto li = hs->find("lines"), pi = hs->find("pos");
                     if (li == hs->end() || pi == hs->end() || !li->second.arr()) return false;
-                    auto& ls = *li->second.arr();
                     long long p = pi->second.toInt();
-                    if (p >= (long long)ls.size()) {
+                    if (p >= (long long)li->second.arr()->size()) {
                         if (closeArg) { Value h = hv; self->methodCall(h, "close", ValueList{}); }
                         return false;
                     }
                     pi->second = Value::integer(p + 1);
-                    Value v = ls[(size_t)p];
-                    auto ch = hs->find("chomp");
-                    auto eo = hs->find("line-eols");
-                    if (ch != hs->end() && !ch->second.truthy() && eo != hs->end() && eo->second.arr() &&
-                        p < (long long)eo->second.arr()->size())
-                        v = Value::str(v.toStr() + (*eo->second.arr())[(size_t)p].toStr());
-                    cache.push_back(v);
+                    cache.push_back(cachedLine(*hs, p));
                     return true;
                 };
                 out.extM() = st;
