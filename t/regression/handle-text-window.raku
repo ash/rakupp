@@ -41,7 +41,8 @@ $big.unlink;
 # hand a CR LF back whole and can split a mark from its base at a buffer's end)
 my $f = $*TMPDIR.add("rakupp-window-$*PID.txt");
 my $lf = $*TMPDIR.add("rakupp-window-lf-$*PID.txt");
-my @l = (^60000).map({ ($_ %% 7 ?? "é" !! "x") ~ ("ab" x ($_ % 40)) ~ ($_ %% 11 ?? "q\x[301]" !! "") ~ " $_" });
+my $L = 15_000;   # (about three 256 KiB windows)
+my @l = (^$L).map({ ($_ %% 7 ?? "é" !! "x") ~ ("ab" x ($_ % 40)) ~ ($_ %% 11 ?? "q\x[301]" !! "") ~ " $_" });
 $f.spurt: @l.kv.map(-> $i, $s { $s ~ ($i %% 5 ?? "\r\n" !! "\n") }).join;
 my $text = @l.join("\n") ~ "\n";
 $lf.spurt: (my $plain = $text.subst("q\x[301]", "q", :g));
@@ -49,32 +50,32 @@ sub on(&c, :$file = $f, *%o) { my $h = $file.open(|%o); LEAVE $h.close; c($h) }
 
 ck on(-> $h { my @g; while $h.get -> $l { @g.push: $l }; (@g eqv @l, $h.eof) }), (True, True), '.get reads every line';
 ck on(-> $h { $h.lines.List eqv @l.List }), True, '…and so does .lines';
-ck on(-> $h { my @a = $h.lines(25000); my @b = $h.lines; (@a.elems, @b.elems, @a[*-1], @b[0]) }),
-   (25000, 35000, @l[24999], @l[25000]), '.lines(N), then the rest';
+ck on(-> $h { my @a = $h.lines(6000); my @b = $h.lines; (@a.elems, @b.elems, @a[*-1], @b[0]) }),
+   (6000, $L - 6000, @l[5999], @l[6000]), '.lines(N), then the rest';
 ck on(:file($lf), -> $h { my $t = ''; loop { my $g = $h.readchars(7777); last unless $g.chars; $t ~= $g }; $t eq $plain }),
    True, '.readchars reads every character';
 ck on(:file($lf), -> $h { my $n = 0; $n++ while $h.getc.defined; $n }), $plain.chars, '…and so does .getc';
-ck on(-> $h { $h.get for ^30000; my $t = $h.tell; my $l = $h.get; $h.seek($t); ($h.get, $l) }), (@l[30000], @l[30000]),
+ck on(-> $h { $h.get for ^7500; my $t = $h.tell; my $l = $h.get; $h.seek($t); ($h.get, $l) }), (@l[7500], @l[7500]),
    '.tell and .seek past the first window';
-ck on(-> $h { $h.get for ^30000; $h.seek(0); $h.get }), @l[0], '…back to the top';
-ck on(-> $h { $h.seek(-10, SeekFromEnd); $h.get }), 'bab 59999', '…and from the end';
+ck on(-> $h { $h.get for ^7500; $h.seek(0); $h.get }), @l[0], '…back to the top';
+ck on(-> $h { $h.seek(-10, SeekFromEnd); $h.get }), 'bab 14999', '…and from the end';
 ck on(:!chomp, -> $h { $h.lines.join.chars }), $f.slurp.chars, ':!chomp keeps each terminator';
-ck on(:file($lf), :nl-in("\n"), -> $h { my @c = $h.lines; (@c.elems, @c[59999]) }), (60000, @l[59999].subst("q\x[301]", "q")),
+ck on(:file($lf), :nl-in("\n"), -> $h { my @c = $h.lines; (@c.elems, @c[$L - 1]) }), ($L, @l[$L - 1].subst("q\x[301]", "q")),
    'a custom nl-in';
-ck on(:file($lf), -> $h { $h.get for ^40000; $h.getc ~ $h.readchars(5) ~ $h.get }), @l[40000].subst("q\x[301]", "q"),
+ck on(:file($lf), -> $h { $h.get for ^10000; $h.getc ~ $h.readchars(5) ~ $h.get }), @l[10000].subst("q\x[301]", "q"),
    '.get, .getc, .readchars, one position';
-ck on(-> $h { $h.get for ^40001; ($h.read(4).decode, $h.get) }), (@l[40001].substr(0, 4), @l[40001].substr(4)),
+ck on(-> $h { $h.get for ^10001; ($h.read(4).decode, $h.get) }), (@l[10001].substr(0, 4), @l[10001].substr(4)),
    '…and .read takes it over and hands it back';
-ck on(-> $h { $h.get for ^50000; $h.slurp.lines.List eqv @l[50000..*].List }), True, '.slurp reads the rest';
-ck on(-> $h { $h.get for ^50000; $h.words.elems }), 20000, '…and so does .words';
-ck on(:file($lf), -> $h { $h.readchars(2_000_000); $h.slurp.chars }), $plain.chars - 2_000_000, '.slurp after .readchars';
-ck on(-> $h { my $n = 0; for $h.lines.kv -> $k, $v { $n = $k }; $n }), 59999, '.lines.kv';
+ck on(-> $h { $h.get for ^12500; $h.slurp.lines.List eqv @l[12500..*].List }), True, '.slurp reads the rest';
+ck on(-> $h { $h.get for ^12500; $h.words.elems }), 2 * ($L - 12500), '…and so does .words';
+ck on(:file($lf), -> $h { $h.readchars(500_000); $h.slurp.chars }), $plain.chars - 500_000, '.slurp after .readchars';
+ck on(-> $h { my $n = 0; for $h.lines.kv -> $k, $v { $n = $k }; $n }), $L - 1, '.lines.kv';
 $lf.unlink;
 
 # a file of one line, no newline at all: a window grows to hold it
-$f.spurt: ("ab" x 1_500_000) ~ "é" ~ ("cd" x 600_000);
-ck on(-> $h { ($h.get.chars, $h.get, $h.eof) }), (4200001, Nil, True), 'one line of 4 MB';
-ck on(-> $h { my $n = 0; loop { my $g = $h.readchars(100_000); last unless $g.chars; $n += $g.chars }; $n }), 4200001,
+$f.spurt: ("ab" x 400_000) ~ "é" ~ ("cd" x 200_000);
+ck on(-> $h { ($h.get.chars, $h.get, $h.eof) }), (1200001, Nil, True), 'one line of 1.2 MB';
+ck on(-> $h { my $n = 0; loop { my $g = $h.readchars(100_000); last unless $g.chars; $n += $g.chars }; $n }), 1200001,
    '…read by characters';
 $f.unlink;
 say $fails ?? "FAIL ($fails)" !! 'PASS';
