@@ -187,5 +187,8 @@ the `MICROBIT` drive.
 
 ## Does it run under Rakudo?
 
-`use MicroBit` is built into rakupp. Rakudo has no such module and stops at
-the `use` line with `Could not find MicroBit`.
+`use MicroBit` is built into rakupp. On Rakudo a stub module of the name,
+`MicroBit` (`zef:ash`, to be published with the rakupp release that ships
+`--target=microbit`), stops the program at the `use` line and says it needs
+Raku++, with the two commands to run it; without the stub, Rakudo says
+`Could not find MicroBit`.
