@@ -24,7 +24,7 @@ f8b5555c, ce72763f, bfd530f9, eb482a9f, 7e5a643e, 6b8c1d1a, 41150ad1,
 a213ccad, 02b24803, 9e948ff3, e60a6163, 657626c7, 13902c52, a397987e,
 e2981dc5, c5273f1e, 7df13701, 901a4cca, 2529675a, 0ab4bfc7, 4a2e4fec,
 43509bec, e374baff, 7f8773e2, 222424a1, 912cf744,
-d4a3b66c, 7386791f, fa8d1ea7, 69e90f7a, 27e35b21.*
+d4a3b66c, 7386791f, fa8d1ea7, 69e90f7a, 27e35b21, 477a7194, 9cc330f2.*
 
 ---
 
@@ -68,6 +68,18 @@ d4a3b66c, 7386791f, fa8d1ea7, 69e90f7a, 27e35b21.*
 
 ### Faster
 
+- **A drained Seq and a large file's text readers hold a window, not
+  everything read** (477a7194, 9cc330f2) (issues #262, #263). A Seq drained by
+  the one thing that holds it (`for gather {…}`, `for Seq.new($iterator)`,
+  `Seq.new($iterator).iterator`, a lazy map or grep over one) drops what it
+  has handed out: 2 million Hashes peaked at 540 MB, now 14 MB, flat as
+  Rakudo. A Seq a variable still holds keeps every value. `.get`, `.lines`,
+  `.getc` and `.readchars` on a file over 1 MiB read it a window at a time
+  instead of decoding all of it into the handle: at 100 MB `.get` 634 → 19 MB
+  and `.readchars` 3.9 GB → 60 MB (Rakudo 159 and 624). Such a handle seeks
+  and tells by bytes, which also puts `.tell` right after a CR LF line.
+  `t/regression/seq-drained-keeps-nothing.raku`,
+  `t/regression/handle-text-window.raku`.
 - **A sequence whose generator outgrows a double, and big-Int addition**
   (02b24803) (rakudo#2844). `1, 1, * + * ... *` to 40k terms took 0.92 s,
   against Rakudo's 0.07. Each step numified the last element for a step the
