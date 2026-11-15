@@ -1,4 +1,4 @@
-# Regression: `-c` refuses an undeclared routine, as a run does (issue #264).
+# Regression: `-c` and `--lint` refuse an undeclared routine, as a run does (issue #264).
 #
 #     say "start";
 #     no-such-routine(1);
@@ -51,7 +51,22 @@ my %j = rakupp('-c', '--json', $f.Str);
 @fail.push("--json: exit {%j<exit>}") unless %j<exit> == 1;
 @fail.push("--json: {%j<out>.raku}") unless %j<out>.contains('undeclared-routine');
 
-# 4. what must still pass
+# 4. --lint said "no issues found" for it: now one ERROR per routine, on the
+#    line it is used at, and exit 2 (the file will not compile)
+my %l = rakupp('--lint', $f.Str);
+@fail.push("--lint: exit {%l<exit>}") unless %l<exit> == 2;
+@fail.push("--lint: {%l<out>.raku}")
+    unless %l<out>.contains("$f:2: error: Undeclared routine 'no-such-routine' [undeclared-routine]");
+my %l2 = rakupp('--lint', '-e', "say 1;\nnope();\nsay length('a')");
+@fail.push("--lint two names: {%l2<out>.raku}")
+    unless %l2<out>.contains("-e:2: error: Undeclared routine 'nope'")
+        && %l2<out>.contains("-e:3: error: Undeclared routine 'length'. Did you mean 'elems'");
+my %l3 = rakupp('--lint', '-e', "say 1;\nsay infix:<nosuch>(1, 2)");
+@fail.push("--lint operator: {%l3<out>.raku}") unless %l3<out>.contains("-e:2: error:");
+my %lj = rakupp('--lint', '--json', $f.Str);
+@fail.push("--lint --json: {%lj<out>.raku}") unless %lj<out>.contains('"rule": "undeclared-routine"');
+
+# 5. what must still pass
 for 'say 1; say "x".uc; dd 42',
     'my &f = { 42 }; say f()',
     'sub f { 1 }; say f()',
@@ -60,6 +75,8 @@ for 'say 1; say "x".uc; dd 42',
     my %ok = rakupp('-c', '-e', $code);
     @fail.push("allowed {$code.raku}: exit {%ok<exit>} err={%ok<err>.trim}")
         unless %ok<exit> == 0 && %ok<out>.contains('Syntax OK');
+    my %lo = rakupp('--lint', '-e', $code);
+    @fail.push("--lint allowed {$code.raku}: {%lo<out>.raku}") if %lo<out>.contains('undeclared-routine');
 }
 
 $f.unlink;
