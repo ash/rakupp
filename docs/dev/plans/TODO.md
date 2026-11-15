@@ -679,9 +679,9 @@ The same items grouped by theme, with a complexity estimate for each:
   MicroPython's names, pictures while building, the display's text joined at
   run time, buttons, the touch logo, gestures, the sensors, the pins and
   `randint`; the C++ and both simulated boards agree byte for byte on the
-  gate's ten programs and the seven examples. Next: a CODAL build of the
-  gate's programs (`t/microbit/run.raku --codal=DIR`) and a run on a board,
-  then the radio and `react` / `whenever` (M2).
+  gate's ten programs and the seven examples, and every one builds with
+  CODAL into a `MICROBIT.hex` (`t/microbit/run.raku --codal=DIR`). Next: a
+  run on a board, then the radio and `react` / `whenever` (M2).
 - [ ] **`--exe -O` and `--cnp` answer regressions wrongly** (the t/exe and
   `t/jit/run.raku --cnp` gates, 2026-10-15, the same on 5549bf83):
   - `-O`: t/regression/nfc-join-window.raku's "e + acute" join counts 2

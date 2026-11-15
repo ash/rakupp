@@ -14,11 +14,12 @@ MakeCode user asks first.
 
 > **Phase M0 of [MICROBIT-PLAN.md](../dev/plans/MICROBIT-PLAN.md), with parts
 > of M1.** The emitter and both simulated boards are implemented and checked
-> against each other byte for byte (`t/microbit/run.raku`). The C++ calls
-> CODAL by the names in its own headers and samples. Not yet tried: a build
-> with CODAL's toolchain (`t/microbit/run.raku --codal=DIR` does it, given a
-> checkout), and a program on real hardware. Building and flashing is done
-> with CODAL's `build.py` and a file copy; rakupp does not drive them yet.
+> against each other byte for byte (`t/microbit/run.raku`), and every
+> program in that gate and in the examples builds with CODAL into a
+> `MICROBIT.hex`, with no warning from the program (`--codal=DIR`, gcc
+> 7.2.1). Not yet tried: a program on real hardware. Building and flashing
+> is done with CODAL's `build.py` and a file copy; rakupp does not drive
+> them yet.
 
 ```raku
 use MicroBit;
@@ -276,10 +277,18 @@ cp MICROBIT.hex /Volumes/MICROBIT/
 ```
 
 CODAL's build needs the GNU Arm Embedded toolchain, CMake, Python 3 and git,
-or the repository's Dockerfile; its first run fetches CODAL. The `MICROBIT`
-drive is `/Volumes/MICROBIT` on a Mac, `/media/$USER/MICROBIT` on Linux, a
-drive letter on Windows. The board starts the program as soon as the copy
-ends.
+or the repository's Dockerfile; its first run fetches CODAL (95 MB), and
+takes under a minute. A Mac with the Arduino IDE and its Uno R4 core has the
+toolchain already, version 7-2017q4, which builds CODAL:
+
+```bash
+export PATH=~/Library/Arduino15/packages/arduino/tools/arm-none-eabi-gcc/7-2017q4/bin:$PATH
+```
+
+A program's firmware is about 100 KB of the board's flash, nearly all of it
+CODAL. The `MICROBIT` drive is `/Volumes/MICROBIT` on a Mac,
+`/media/$USER/MICROBIT` on Linux, a drive letter on Windows. The board
+starts the program as soon as the copy ends.
 
 ## Not yet
 

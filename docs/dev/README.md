@@ -131,7 +131,8 @@ Next up:
 - **[plans/MICROBIT-PLAN.md](plans/MICROBIT-PLAN.md)** — `--target=microbit`,
   **a Raku program as micro:bit firmware** (designed 2026-11-09 for #226; M0
   landed 2026-11-15, with parts of M1): where it stands — the C++ and both
-  simulated boards agreeing byte for byte, a CODAL build not yet tried — and
+  simulated boards agreeing byte for byte, every program building with CODAL,
+  real hardware not yet tried — and
   where it departed from the draft; the BBC micro:bit and how schools program
   it, the Arduino emitter given a second board and writing C++ for CODAL,
   `use MicroBit` with MicroPython's names in Raku spelling, pictures computed

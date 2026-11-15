@@ -52,8 +52,10 @@ d4a3b66c, 7386791f, fa8d1ea7, 69e90f7a, 27e35b21, a9c5615f, 1a5145f1, 477a7194,
   checks, ~7 s). It is the Arduino target's emitter, made the boards' shared
   one (25c5b064), with every Arduino sketch byte for byte what it was. A
   walkthrough of seven programs is examples/microbit/, beside a guide and a
-  FAQ (3c0f0f43). Not yet tried: a build with CODAL's toolchain, and real
-  hardware. See docs/guide/MICROBIT.md.
+  FAQ (3c0f0f43). Every gate program and example builds with CODAL into a
+  `MICROBIT.hex`, with no warning from the program (`--codal=DIR`, gcc 7.2.1,
+  the Arduino IDE's); not yet tried on real hardware. See
+  docs/guide/MICROBIT.md.
 
 - **`.AST` of a grammar rule, and DEPARSE of it as Rakudo renders it**
   (657626c7) (rakudo#5479, #5978, #5991). It said "`.AST` does not yet build

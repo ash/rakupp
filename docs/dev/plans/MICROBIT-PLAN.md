@@ -24,14 +24,15 @@ interpreter equals its golden, and its `--sim` C++ writes the same bytes on
 stdout and stderr and exits the same way; so do the seven examples. The
 C++ names CODAL by its own headers and samples (`uBit.display.print`,
 `uBit.buttonA.wasPressed`, `uBit.messageBus.listen`, `MicroBitImage(5, 5,
-bitmap)`, `target_random` through `uBit.random`). Not yet tried: a build with
-CODAL's toolchain (`--codal=DIR` in the gate does it, given a checkout of
-microbit-v2-samples; this Mac has no `arm-none-eabi-gcc` on PATH), and real
-hardware.
+bitmap)`, `target_random` through `uBit.random`), and CODAL's own build
+takes it: with `--codal=DIR` the gate builds each of its ten programs into a
+`MICROBIT.hex` in a checkout of microbit-v2-samples (55 checks), and the
+seven examples build too, each with no warning from the program and about
+100 KB of flash, nearly all CODAL's. Not yet tried: real hardware.
 
 | phase | state |
 |---|---|
-| M0 | done: the board seam (`src/codegen/BoardEmitter.h`, every Arduino sketch byte for byte what it was), `--target=microbit` and `--sim`, the display, buttons, accelerometer, temperature, pins, `running-time`, `pause`, `sleep`, pictures while building, `say`, `die`; not yet: a CODAL build of the gate's programs |
+| M0 | done: the board seam (`src/codegen/BoardEmitter.h`, every Arduino sketch byte for byte what it was), `--target=microbit` and `--sim`, the display, buttons, accelerometer, temperature, pins, `running-time`, `pause`, `sleep`, pictures while building, `say`, `die`; every gate program and example builds with CODAL |
 | M1 | the display's text joined at run time (literals, integers, Bools), `was-pressed` and `get-presses`, the compass, the light level, the touch logo, gestures (`is-gesture`, `was-gesture`), `randint`; not yet: `Str` variables, the speaker and microphone |
 | M2 | not started: `react` / `whenever`, the radio |
 | M3 | not started: `--firmware`, `--upload`, the size report |
@@ -383,8 +384,10 @@ toolchain: without them it prints the commands.
 
 **This Mac (2026-11-09).** No `arm-none-eabi-gcc` on PATH and no Docker;
 `~/Library/Arduino15` has `arm-none-eabi-gcc` 4.8.3-2014q1 (Due) and
-7-2017q4 (Renesas). CMake and Python 3 are installed. Whether CODAL builds
-with 7-2017q4 is the first thing to try. No micro:bit is attached.
+7-2017q4 (Renesas). CMake and Python 3 are installed. No micro:bit is
+attached. **2026-11-15:** CODAL builds with 7-2017q4 (gcc 7.2.1) on PATH:
+its first build fetched 95 MB of libraries and took 28 s, and a program
+after that takes a few seconds.
 
 ## How it is tested
 
@@ -425,5 +428,5 @@ with 7-2017q4 is the first thing to try. No micro:bit is attached.
   the message, or a short "line N", on the display before halting?
 - **Brightness.** MicroPython's 0–9 onto CODAL's 0–255: a linear scale, or
   MicroPython's own table.
-- **The toolchain.** Which `arm-none-eabi-gcc` CODAL v2 needs, and whether
-  the one the Arduino IDE installed is enough.
+- **The toolchain.** Answered: the Arduino IDE's `arm-none-eabi-gcc`
+  7-2017q4 builds CODAL v2 and every program of the gate.

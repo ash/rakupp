@@ -309,15 +309,22 @@ cp MICROBIT.hex /Volumes/MICROBIT/
 
 `/Volumes/MICROBIT` is the drive on a Mac; on Linux it is usually
 `/media/$USER/MICROBIT`, and on Windows a drive letter. The first build
-fetches CODAL itself and takes a few minutes; later ones take seconds.
+fetches CODAL itself (95 MB) and takes under a minute; later ones take
+seconds. If you have the Arduino IDE with its Uno R4 core, you have the
+compiler already:
+
+```bash
+export PATH=~/Library/Arduino15/packages/arduino/tools/arm-none-eabi-gcc/7-2017q4/bin:$PATH
+```
 
 `say` writes to the serial port over the same USB cable, at 115200 baud:
 `screen /dev/cu.usbmodem* 115200` on a Mac, or the serial monitor of the
 micro:bit Python editor or MakeCode.
 
-> Not yet tried: a program built with CODAL and run on a board. The C++ is
-> checked against a simulated CODAL on every change, and its calls are
-> CODAL's own; the first run on hardware will say what that missed.
+> Every program here builds with CODAL into a `MICROBIT.hex`, with no
+> warning from the program. Not yet tried: running one on a board. The C++
+> is checked against a simulated CODAL on every change, and CODAL's own
+> compiler accepts it; the first run on hardware will say what that missed.
 
 ## 9. The C++, without a board
 
