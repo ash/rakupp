@@ -2776,7 +2776,7 @@ static const FlagDoc kFlagDocs[] = {
     {"--standalone", 0, nullptr, "a module that cannot be embedded is a build error"},
     {"--static", 0, nullptr, "link the C++ runtime into the compiled binary (Linux, MinGW)"},
     {"--target", 1, "parse ast rakuast js arduino microbit cpp raku", "parse, ast, rakuast, or emit JavaScript, an Arduino sketch, a micro:bit program, C++ or Raku"},
-    {"--sim", 0, nullptr, "build the board's program for this computer, on a simulated board (--target=arduino, --target=microbit)"},
+    {"--sim", 0, nullptr, "build the program for this computer, on a simulated board (--target=arduino, --target=microbit)"},
     {"--verify", 0, nullptr, "emit JavaScript only if it agrees with the interpreter"},
     {"--watch", 0, nullptr, "re-run the program whenever it or a library file changes"},
     {"--module", 0, nullptr, "JavaScript export the subs, classes and MAIN"},
