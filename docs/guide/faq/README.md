@@ -86,6 +86,11 @@ only way these can drift.
   number, lookup tables computed while building instead of hashes, waiting
   with `millis()` and the wrap C hides from you, and what to write in place
   of each thing the board refuses.
+- **[microbit.md](microbit.md)** — writing Raku for `--target=microbit`, for
+  a MicroPython or MakeCode user: what changes from MicroPython, `pause`
+  against Raku's `sleep`, which number type to use, showing a number and text
+  with one in it, making a picture and animating, why a button press went
+  missing, reacting to a shake, and checking a program without a board.
 - **[optimizer.md](optimizer.md)** — why `-O` is not the default: what a
   default owes every program, the measured case where `-O` loses, and how a
   pass graduates into the default when it stops being speculation.

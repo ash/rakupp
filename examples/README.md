@@ -21,6 +21,10 @@ ecosystem, one directory each — see [Needs modules](#needs-modules) below.
 simulated one too: a walkthrough from a blinking LED to the Uno R4 WiFi's LED
 matrix — see its [README](arduino/README.md).
 
+[`microbit/`](microbit) holds programs for a BBC micro:bit, which run on a
+simulated one too: a walkthrough from a scrolled greeting to a die you shake,
+by MicroPython's names spelt as Raku — see its [README](microbit/README.md).
+
 [`lint/`](lint) is a different kind of gallery beside these: twelve programs
 written to trip one `rakupp --lint` diagnostic each — see
 [LINT.md](../docs/guide/LINT.md).

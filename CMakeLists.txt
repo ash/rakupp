@@ -138,9 +138,10 @@ list(REMOVE_ITEM RAKUPP_SOURCES "${RAKUPP_REPL}")
 set(RAKUPP_JS "${CMAKE_CURRENT_SOURCE_DIR}/src/codegen/Js.cpp"
               "${CMAKE_CURRENT_SOURCE_DIR}/src/JsRuntimeSrc.cpp")
 list(REMOVE_ITEM RAKUPP_SOURCES ${RAKUPP_JS})
-# The Arduino backend (--target=arduino) likewise: only the CLI transpiles.
-set(RAKUPP_ARDUINO "${CMAKE_CURRENT_SOURCE_DIR}/src/codegen/Arduino.cpp")
-list(REMOVE_ITEM RAKUPP_SOURCES "${RAKUPP_ARDUINO}")
+# The board backends (--target=arduino, --target=microbit) likewise: only the CLI transpiles.
+set(RAKUPP_ARDUINO "${CMAKE_CURRENT_SOURCE_DIR}/src/codegen/Arduino.cpp"
+                   "${CMAKE_CURRENT_SOURCE_DIR}/src/codegen/MicroBit.cpp")
+list(REMOVE_ITEM RAKUPP_SOURCES ${RAKUPP_ARDUINO})
 # The C++ backend is CLI-only on the same reasoning, and it is the one that
 # costs the most: Codegen.cpp is the biggest object in the tree (663 KB), and no
 # `--exe` binary transpiles either. It was in the runtime because the tier-up
@@ -212,6 +213,8 @@ add_custom_command(
           "${CMAKE_CURRENT_SOURCE_DIR}/rakulib/Arduino/WiFi.rakumod"
           "${CMAKE_CURRENT_SOURCE_DIR}/rakulib/Telemetry.rakumod"
           "${CMAKE_CURRENT_SOURCE_DIR}/src/codegen/ArduinoSim.h"
+          "${CMAKE_CURRENT_SOURCE_DIR}/rakulib/MicroBit.rakumod"
+          "${CMAKE_CURRENT_SOURCE_DIR}/src/codegen/MicroBitSim.h"
           "${CMAKE_CURRENT_SOURCE_DIR}/cmake/EmbedTools.cmake"
   COMMENT "Embedding the install, doc and upgrade tools"
   VERBATIM)
@@ -542,7 +545,7 @@ if(RAKUPP_BUILD_SHARED OR RAKUPP_LINK_SHARED)
   endif()
 endif()
 
-add_executable(rakupp "${RAKUPP_MAIN}" "${RAKUPP_REPL}" ${RAKUPP_JS} "${RAKUPP_ARDUINO}"
+add_executable(rakupp "${RAKUPP_MAIN}" "${RAKUPP_REPL}" ${RAKUPP_JS} ${RAKUPP_ARDUINO}
                       ${RAKUPP_CODEGEN} ${RAKUPP_DOCLINKS} ${RAKUPP_TOOLS})
 # The blob is a GENERATED source, so the generator has to have run before this
 # target compiles; nothing else links it.

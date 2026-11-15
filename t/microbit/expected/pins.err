@@ -1,0 +1,7 @@
+[0 ms] pin 8 HIGH
+[0 ms] pin 16 analog 350
+[0 ms] pin 16 analog 1023
+[0 ms] pin 12 LOW
+[300 ms] pin 12 HIGH
+[500 ms] pin 12 LOW
+[1000 ms] stop

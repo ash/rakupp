@@ -4,7 +4,74 @@
 #226 ("Micro:Bit support"). It describes the board, picks one way to program
 it in Raku — `--target=microbit`, the Arduino target's emitter writing C++ for
 the board's own runtime, CODAL — and lists what that target shares with
-[ARDUINO-PLAN.md](ARDUINO-PLAN.md) and what it adds. Nothing here is built.*
+[ARDUINO-PLAN.md](ARDUINO-PLAN.md) and what it adds. M0 landed on
+2026-11-15, with parts of M1; what landed and where it departs from this
+draft is in "Where it stands".*
+
+## Where it stands (2026-11-15)
+
+`--target=microbit` emits one C++ file for CODAL; `--target=microbit --sim`
+builds it for the host against a simulated CODAL
+(`src/codegen/MicroBitSim.h`); `rakupp prog.raku` runs a `use MicroBit`
+program on the same simulated board (`rakulib/MicroBit.rakumod`). User
+guide: [MICROBIT.md](../../guide/MICROBIT.md), with
+[a FAQ](../../guide/faq/microbit.md) and
+[a walkthrough](../../../examples/microbit/README.md). Gate:
+`t/microbit/run.raku` (45 checks, ~7 s), one check in `t/run.raku`.
+
+Measured on the gate's ten programs: each one's transcript under the
+interpreter equals its golden, and its `--sim` C++ writes the same bytes on
+stdout and stderr and exits the same way; so do the seven examples. The
+C++ names CODAL by its own headers and samples (`uBit.display.print`,
+`uBit.buttonA.wasPressed`, `uBit.messageBus.listen`, `MicroBitImage(5, 5,
+bitmap)`, `target_random` through `uBit.random`), and CODAL's own build
+takes it: with `--codal=DIR` the gate builds each of its ten programs into a
+`MICROBIT.hex` in a checkout of microbit-v2-samples (55 checks), and the
+seven examples build too, each with no warning from the program and about
+100 KB of flash, nearly all CODAL's. Not yet tried: real hardware.
+
+| phase | state |
+|---|---|
+| M0 | done: the board seam (`src/codegen/BoardEmitter.h`, every Arduino sketch byte for byte what it was), `--target=microbit` and `--sim`, the display, buttons, accelerometer, temperature, pins, `running-time`, `pause`, `sleep`, pictures while building, `say`, `die`; every gate program and example builds with CODAL |
+| M1 | the display's text joined at run time (literals, integers, Bools), `was-pressed` and `get-presses`, the compass, the light level, the touch logo, gestures (`is-gesture`, `was-gesture`), `randint`; not yet: `Str` variables, the speaker and microphone |
+| M2 | not started: `react` / `whenever`, the radio |
+| M3 | not started: `--firmware`, `--upload`, the size report |
+
+Where the implementation departs from the draft below, and why:
+
+- **The seam is a subclass.** The draft's "board description" is
+  `board::Emitter` in `BoardEmitter.h`, with hooks (`boardName`, `boardCall`,
+  `boardMethod`, `boardStmt`, `boardPrint`, `lit`, `outStream`,
+  `loopIsFunction`, `assemble`); `Arduino.cpp` and `MicroBit.cpp` are its two
+  subclasses. The runtime's arithmetic and bounds checks are shared pieces
+  (`sharedPieces`); each board lists its own among ranges of them
+  (`boardPieces`).
+- **`Image.HEART`, not `Image::HEART`** (the first open question). It is how
+  MicroPython writes it, which is where pupils come from: a method of the
+  module's `Image` class under the interpreter, a table the emitter makes on
+  first use on the board. The names are kebab-case (`Image.ARROW-NE`).
+- **`sleep` keeps Raku's meaning, and `pause` is MakeCode's** (the second).
+  The build does not warn about `sleep 100` yet.
+- **No yield in the top-level loop** (the third). What needed one was
+  `was-gesture` in a loop that never pauses: CODAL raises gestures as a
+  sample is read, and queues a listener's call for the scheduler. The
+  listener is registered with `MESSAGE_BUS_LISTENER_IMMEDIATE`, so it runs
+  as the event is raised, and `rk_was_gesture` reads a sample first.
+- **`die` on the display** (the fourth): after the message on the serial
+  port, a board shows a sad face and scrolls `line N`, over and over.
+- **MicroPython's brightness table** (the fifth): levels 0 to 9 are
+  `0, 1, 2, 4, 8, 16, 32, 64, 128, 255`, and a level read back is a value's
+  highest bit, as micropython-microbit-v2 maps them.
+- **Text is logged as text.** A scroll or a multi-character show is one line
+  with its text, and the clock moves by CODAL's own timing (`6 × (n + 1) ×
+  120` ms, `(n + 2) × 400` ms); a single character is drawn from CODAL's own
+  font, so `get-pixel` reads it.
+- **The inputs are timelines.** `RAKUPP_MICROBIT_ACCEL`, `_GESTURES`,
+  `_HEADING`, `_TEMP` and `_LIGHT` take `TIME:VALUE;…`; buttons, the logo and
+  the touch pins are presses with a start and an end
+  (`RAKUPP_MICROBIT_BUTTONS="A@1000,logo@2000-2400,0@3000"`); `randint` is
+  xorshift32 in both simulations, seeded by `RAKUPP_MICROBIT_SEED`.
+- **No stub dist yet.** Rakudo says `Could not find MicroBit`.
 
 ## The board
 
@@ -317,8 +384,10 @@ toolchain: without them it prints the commands.
 
 **This Mac (2026-11-09).** No `arm-none-eabi-gcc` on PATH and no Docker;
 `~/Library/Arduino15` has `arm-none-eabi-gcc` 4.8.3-2014q1 (Due) and
-7-2017q4 (Renesas). CMake and Python 3 are installed. Whether CODAL builds
-with 7-2017q4 is the first thing to try. No micro:bit is attached.
+7-2017q4 (Renesas). CMake and Python 3 are installed. No micro:bit is
+attached. **2026-11-15:** CODAL builds with 7-2017q4 (gcc 7.2.1) on PATH:
+its first build fetched 95 MB of libraries and took 28 s, and a program
+after that takes a few seconds.
 
 ## How it is tested
 
@@ -359,5 +428,5 @@ with 7-2017q4 is the first thing to try. No micro:bit is attached.
   the message, or a short "line N", on the display before halting?
 - **Brightness.** MicroPython's 0–9 onto CODAL's 0–255: a linear scale, or
   MicroPython's own table.
-- **The toolchain.** Which `arm-none-eabi-gcc` CODAL v2 needs, and whether
-  the one the Arduino IDE installed is enough.
+- **The toolchain.** Answered: the Arduino IDE's `arm-none-eabi-gcc`
+  7-2017q4 builds CODAL v2 and every program of the gate.

@@ -984,6 +984,23 @@ section('--target=arduino (Arduino backend and the simulated board)');
     diag($_) for @failed;
 }
 
+# ---- the micro:bit backend --------------------------------------------------
+# --target=microbit (MICROBIT-PLAN.md), the same emitter with a second board:
+# t/microbit/run.raku holds each case's run on the interpreter's simulated
+# micro:bit to its golden, and its C++, built for this computer with --sim, to
+# the interpreter byte for byte; then the refusals. Its own runner (with
+# --codal=DIR it builds every program with CODAL); here it is one check.
+section('--target=microbit (micro:bit backend and the simulated board)');
+{
+    my $p = run($*EXECUTABLE, $ROOT.add('t/microbit/run.raku').Str, :out, :err);
+    my $out = $p.out.slurp(:close);
+    $p.err.slurp(:close);
+    my @failed = $out.lines.grep(*.starts-with('not ok'));
+    my $n = +$out.lines.grep(*.starts-with('ok'));
+    ok($p.exitcode == 0 && $n > 0, "t/microbit/run.raku: all $n checks pass");
+    diag($_) for @failed;
+}
+
 # ---- compile modes carry their modules ---------------------------------
 # All three compile modes must produce a SELF-SUFFICIENT binary: it has to run
 # with its module tree gone from the machine. Each mode reached this differently
@@ -2381,9 +2398,11 @@ section('--slim: levels, features, directives');
     # of the board module (RAKUPP_ARDUINO_STOP) and the network's
     # (RAKUPP_ARDUINO_WIFI): none in fibonacci's binary at the default level,
     # the board module's alone in blink's, and both modules' in wifi's, which
-    # shows the check can see them.
+    # shows the check can see them. The micro:bit's likewise: its host core
+    # (MicroBitAccelerometer) never, its board module (RAKUPP_MICROBIT_STOP)
+    # in the binary of a program that `use`s it, and nothing of the Arduino's.
     {
-        my @markers = <rk_sim ArduinoLEDMatrix RAKUPP_ARDUINO_STOP RAKUPP_ARDUINO_WIFI>;
+        my @markers = <rk_sim ArduinoLEDMatrix RAKUPP_ARDUINO_STOP RAKUPP_ARDUINO_WIFI MicroBitAccelerometer RAKUPP_MICROBIT_STOP>;
         my $sfx = $WIN ?? '.exe' !! '';
         my sub carries(Str $src) {
             my $bin = $*TMPDIR.add("rakupp-suite-slim-ard-$*PID").Str;
@@ -2403,6 +2422,9 @@ section('--slim: levels, features, directives');
         my $w = carries($ROOT.add('t/arduino/cases/wifi.raku').Str);
         ok($w.defined && $w eq 'RAKUPP_ARDUINO_STOP,RAKUPP_ARDUINO_WIFI', 'one that uses Arduino::WiFi carries that module too');
         diag("it carries: {$w // '(no build)'}") unless $w.defined && $w eq 'RAKUPP_ARDUINO_STOP,RAKUPP_ARDUINO_WIFI';
+        my $m = carries($ROOT.add('t/microbit/cases/tilt.raku').Str);
+        ok($m.defined && $m eq 'RAKUPP_MICROBIT_STOP', 'one that uses MicroBit carries that module, and nothing of the Arduino\'s');
+        diag("it carries: {$m // '(no build)'}") unless $m.defined && $m eq 'RAKUPP_MICROBIT_STOP';
     }
 }
 
