@@ -24,7 +24,7 @@ f8b5555c, ce72763f, bfd530f9, eb482a9f, 7e5a643e, 6b8c1d1a, 41150ad1,
 a213ccad, 02b24803, 9e948ff3, e60a6163, 657626c7, 13902c52, a397987e,
 e2981dc5, c5273f1e, 7df13701, 901a4cca, 2529675a, 0ab4bfc7, 4a2e4fec,
 43509bec, e374baff, 7f8773e2, 222424a1, 912cf744,
-d4a3b66c, 7386791f, fa8d1ea7.*
+d4a3b66c, 7386791f, fa8d1ea7, 69e90f7a, 27e35b21.*
 
 ---
 
@@ -117,6 +117,14 @@ d4a3b66c, 7386791f, fa8d1ea7.*
   `chdir` resolved against the new directory; it keeps the one it was made
   in, as in Rakudo. From the Codex review of 2026-11-14 (07, 09).
   `t/regression/supply-await-list-read-chdir-path.raku`.
+- **A file handle has one position for `.read` and the text readers**
+  (27e35b21): `.get` after `.read(3)` answered the first line whole, and
+  `.read` after `.get` or `.getc` started again at the top of the file. Each
+  reader now goes on from where the other stopped, a CR LF counts both bytes
+  for `.read` and `.tell`, and `.tell` after `.getc` is a byte offset where it
+  was 0. `--target=js` counts `.tell` and `.seek` in bytes and gains
+  `.readchars`. Found while fixing the Codex review's finding 07.
+  `t/regression/handle-read-get-one-position.raku`.
 
 - **Three from re-reading the UNCLEAR issue threads** (e2981dc5):
   - `(1, 2) X~~ -> $ { True }`, `Z~~`, `»~~»`, `[~~]` and `infix:<~~>`
@@ -337,6 +345,10 @@ d4a3b66c, 7386791f, fa8d1ea7.*
   `t/regression/exception-new-message.raku`.
 ### Fixed: crashes
 
+- **`try $p.sink` catches a failed Proc** (69e90f7a). `.sink` handed the Proc
+  back and the statement sank it once the `try` was over, so the program died
+  with the X::Proc::Unsuccessful it meant to catch. Found while fixing the
+  Codex review's finding 11. `t/regression/proc-sink-throws-inside-try.raku`.
 - **An object released on two threads at once is no longer read after it is
   freed** (912cf744). A release that left a tracked object alive dropped its count
   and then handed the object to the cycle collector's candidate buffer, so a
