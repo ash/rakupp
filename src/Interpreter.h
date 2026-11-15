@@ -2676,6 +2676,7 @@ public:
     void loadIoNotification();
     Value supplyStableCode_, supplyDelayedCode_;   // Supply.stable / .delayed, compiled on first use
     Value supplyMapCode_, supplyGrepCode_, supplyDoCode_; // on-demand Supply.map / .grep / .do, likewise
+    Value handleSupplyCode_;   // $fh.Supply(:size), likewise
     Value dynVar(const std::string& name);
     Value rakuIntrospection(bool compiler); // $*RAKU / $*RAKU.compiler // $* / $? magical variables (used by codegen)
     Value& dynVarRef(const std::string& name); // assignable dynamic-var slot (used by codegen)

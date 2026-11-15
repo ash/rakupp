@@ -1402,7 +1402,7 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
     // lazy so consumers materialise only what they index.
     if (inv.t == VT::Array && inv.ext()) {
         auto lst = std::static_pointer_cast<LazySeqState>(inv.ext());
-        bool infinite = lst->infinite || lst->overEndless;   // (a grep over an endless source is lazy too)
+        bool infinite = lst->infinite || lst->overEndless;
         // a list DECLARED lazy (`lazy gather {…}`) has no count to give
         // until it is made eager: Rakudo refuses rather than reifying it
         if (m == "elems" && lst->declaredLazy && !lst->exhausted) throwTypedV("X::Cannot::Lazy", {{"action", Value::str(".elems")}}, "Cannot .elems a lazy list");
@@ -1627,7 +1627,7 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
             Value out = Value::array(); out.isList = true; out.s = "Seq"; // 1:1 map → cache index == source index
             if (inv.s == "HyperSeq" || inv.s == "RaceSeq") out.s = inv.s;   // (and a hyper one stays one)
             auto st = std::make_shared<LazySeqState>();
-            st->infinite = infinite; // a view over an endless source is endless too
+            st->infinite = infinite; st->streaming = lst->streaming; st->finiteSource = lst->finiteSource; // (its source's: endless, a handle's lines)
             // …and one over a gather is what a gather is: not reified yet, and
             // not lazy unless it was declared so (`.is-lazy`, list assignment)
             st->gatherSeq = lst->gatherSeq; st->declaredLazy = lst->declaredLazy; st->finiteChain = lst->finiteChain;
@@ -1688,7 +1688,7 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
             if (inv.s == "HyperSeq" || inv.s == "RaceSeq") out.s = inv.s;   // (and a hyper one stays one)
             auto st = std::make_shared<LazySeqState>();
             st->gatherSeq = lst->gatherSeq; st->declaredLazy = lst->declaredLazy; st->finiteChain = lst->finiteChain;   // see map
-            st->dropsRead = !lst->aliasSource; st->overEndless = infinite;   // (it appends; it may end, or not)
+            st->streaming = lst->streaming; st->finiteSource = lst->finiteSource; st->dropsRead = !lst->aliasSource; st->overEndless = infinite;
             // NOT marked infinite even over an endless source: a grep can still
             // end — `(^Inf).grep({last if $_ > 5; True}).eager` is Roast's own
             // (S32-list/grep.t) — so whether it drains is only known by trying.

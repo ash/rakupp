@@ -2545,7 +2545,7 @@ void Interpreter::registerBuiltinsPart2() {
             st->streaming = true;
             // …but it ENDS: an eager context (`my @l = lines`, `reverse lines`)
             // reads it all, as a handle's `.lines` does; only `for` walks it live
-            st->finiteSource = true;
+            st->finiteSource = st->dropsRead = true;   // (it only appends: #263)
             st->appendNext = [](ValueList& cache) -> bool {
                 std::string l;
                 if (!stdinGetLine(l)) return false;

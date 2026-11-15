@@ -6600,6 +6600,8 @@ Value Interpreter::methodCall(const Value& inv, const std::string& m, ValueList 
     if (inv.t == VT::Array && inv.ext() && inv.arr() &&
         std::static_pointer_cast<LazySeqState>(inv.ext())->finiteSource &&
         m != "kv" && m != "pairs" && m != "antipairs" &&
+        // (…nor for a lazy map or grep view, which reads it as it is read: #262)
+        !(m == "grep" && !args.empty()) && !(m == "map" && args.size() == 1 && args[0].t == VT::Code && codeArity(args[0]) == 1) &&
         // (…nor for a question about the object rather than its elements, and
         // a List view is not read by sinking it — `Supply.list.sink` taps only)
         m[0] != '^' && m != "WHAT" && m != "WHICH" &&

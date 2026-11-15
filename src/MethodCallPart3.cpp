@@ -7,6 +7,7 @@
 #include "MethodCallSegment.h"
 #include "RakuAstClasses.h"
 #include "BuiltinsShared.h"
+#include "BuiltinRakuSrc.h"
 #include "Parser.h"
 #include <fcntl.h>
 #ifndef _WIN32
@@ -652,14 +653,14 @@ static long long byteCursorToText(const Value& inv) {
 // A text reader over a large file holds one WINDOW of its text, not all of
 // it: `.get` and `.readchars` over 200 MB held every line, or every character,
 // for the life of the handle (issue #262). The bytes from `off`, then: at
-// least kTextWindow of them, cut where nothing straddles the cut — after a
+// least kTextWindow (256 KiB) of them, cut where nothing straddles the cut — after a
 // separator for the line reader, and for the character reader after a LF or,
 // with none, between two ASCII characters — with "wend" on the handle the
 // byte the window ends at. The rest of the file, with no "wend", for a file
 // under one window (read exactly as before), for a reader that wants all of
 // it ("wfull": wholeText), and for anything but a plain read handle on a
 // regular file in UTF-8 or a one-byte encoding, where a LF byte is a LF.
-static constexpr long long kTextWindow = 1 << 20;
+static constexpr long long kTextWindow = 1 << 18;
 static size_t textCutAt(const std::string& b, TextCut cut, const std::string& sep) {
     const std::string s = cut == TextCut::AfterSep ? sep : std::string("\n");
     for (size_t from = b.size(); from >= s.size() && !s.empty();) {
@@ -3811,8 +3812,7 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
         if (plain && m == "lines" && args.empty()) {
             Value out = Value::array(); out.isList = true; out.s = "Seq";
             auto st = std::make_shared<LazySeqState>();
-            st->streaming = true;
-            st->finiteSource = true;
+            st->streaming = st->finiteSource = st->dropsRead = true;   // (it only appends: #263)
             Interpreter* self = this;
             st->appendNext = [self, tok, isErr, chompIt](ValueList& cache) -> bool {
                 std::string l;
@@ -3900,22 +3900,15 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
                 if (a.t == VT::Pair && a.s == "size" && a.pairVal()) size = a.pairVal()->toInt();
             if (size < 1) size = 1;
             const bool bin = inv.hash()->count("bin") && (*inv.hash())["bin"].truthy();
-            Value content = methodCall(inv, "slurp", ValueList{});
-            Value vals = Value::array();
-            if (bin && content.t == VT::Str && !content.hashKind.empty()) {
-                // a Buf: slice it by bytes
-                long long n = methodCall(content, "bytes", ValueList{}).toInt();
-                for (long long i = 0; i < n; i += size)
-                    vals.arr()->push_back(methodCall(content, "subbuf",
-                        ValueList{Value::integer(i), Value::integer(std::min(size, n - i))}));
+            if (handleSupplyCode_.t != VT::Code) {   // (kHandleSupplySrc: a chunk at a time, on tap)
+                auto saved = tctx().cur;
+                tctx().cur = global_;
+                try { handleSupplyCode_ = evalString(kHandleSupplySrc); }
+                catch (...) { tctx().cur = saved; throw; }
+                tctx().cur = saved;
             }
-            else {
-                Value cs = methodCall(content, "comb", ValueList{Value::integer(size)});
-                for (auto& c : cs.flatten()) vals.arr()->push_back(c);
-            }
-            Value s = Value::makeHash(); s.hashKind = "Supply";
-            (*s.hash())["values"] = vals;
-            return s;
+            ValueList ca{inv, Value::integer(size), Value::boolean(bin)};
+            return callCallable(handleSupplyCode_, ca);
         }
         // …and a pipe has no path: `.IO` / `.path` are the IO::Path type
         // object, and it stringifies to nothing
@@ -4794,8 +4787,7 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
             !inv.hash()->count("enc") && !inv.hash()->count("chomp")) {
             Value out = Value::array(); out.isList = true; out.s = "Seq";
             auto st = std::make_shared<LazySeqState>();
-            st->streaming = true;
-            st->finiteSource = true;
+            st->streaming = st->finiteSource = st->dropsRead = true;   // (…and so does this)
             auto left = std::make_shared<long long>(stdinLimit);
             Value hv = stdinClose ? inv : Value::nil();
             Interpreter* self = this;
@@ -4814,6 +4806,48 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
                 return true;
             };
             out.extM() = st;
+            return out;
+        }
+        // `.words` of standard input or a file over a window reads a line at a
+        // time: split all at once, a large file held every word (#262). A
+        // smaller one is split whole, as Rakudo's buffer reads it, and so is
+        // one with a custom nl-in, whose separator need not be white space.
+        struct stat wst{};
+        if (m == "words" && !inv.hash()->count("nl-in") && !inv.hash()->count("captured") &&
+            (isStdin || (::stat((*inv.hash())["path"].toStr().c_str(), &wst) == 0 && wst.st_size > kTextWindow))) {
+            long long limit = -1;
+            bool wClose = false;
+            for (auto& a : args) {
+                if (a.t == VT::Pair && a.namedArg) { if (a.s == "close") wClose = !a.pairVal() || a.pairVal()->truthy(); }
+                else if (a.isNumeric() && !(a.t == VT::Num && std::isinf(a.toNum()))) limit = std::max(0LL, a.toInt());
+            }
+            auto words = std::make_shared<ValueList>();
+            auto at = std::make_shared<size_t>(0);
+            auto left = std::make_shared<long long>(limit);
+            auto done = std::make_shared<bool>(false);
+            auto st = std::make_shared<LazySeqState>();
+            st->streaming = st->finiteSource = st->dropsRead = true;
+            Value hv = inv;
+            Interpreter* self = this;
+            st->appendNext = [hv, self, words, at, left, done, wClose](ValueList& cache) -> bool {
+                while (!*done && *left != 0 && *at >= words->size()) {
+                    Value line = self->methodCall(hv, "get", ValueList{});
+                    if (!rtIsDefined(line)) { *done = true; break; }
+                    *words = toList(self->methodCall(line, "words", ValueList{}));
+                    *at = 0;
+                }
+                if (*done || *left == 0) {   // (`:close` closes it once its words are all read)
+                    if (wClose && !fhClosed(hv)) { Value h = hv; self->methodCall(h, "close", ValueList{}); }
+                    *done = true;
+                    return false;
+                }
+                if (*left > 0) --*left;
+                cache.push_back((*words)[(*at)++]);
+                return true;
+            };
+            Value out = Value::array(); out.isList = true; out.s = "Seq";
+            out.extM() = st;
+            if (limit >= 0) materializeLazy(out, kDrainAll);   // (a limit reads them now: Rakudo's `.words(2)`)
             return out;
         }
         if (m == "get" || m == "getline" || m == "lines" || m == "eof" || m == "words" ||
@@ -5061,54 +5095,27 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
         la.push_back(close);
         return methodCall(h, "lines", la);
     }
-    if (m == "lines" && inv.hashKind == "IO") {
-        // `:nl-in(…)` / `:chomp` shape the lines, exactly as they do on a
-        // handle — so open one with them and read through it
-        bool viaHandle = false;
-        for (auto& av : args)
-            if (av.t == VT::Pair && av.namedArg && (av.s == "nl-in" || av.s == "chomp")) viaHandle = true;
-        if (viaHandle) {
-            ValueList oa{inv};
-            ValueList la;
-            for (auto& av : args) {
-                if (av.t == VT::Pair && av.namedArg) oa.push_back(av);
-                else la.push_back(av);
-            }
-            Value h = callBuiltin("open", oa);
-            Value out = methodCall(h, "lines", la);
-            forceLazy(out);
-            Value res = Value::array(); res.isList = true; res.s = "Seq";
-            if (out.arr()) *res.arr() = *out.arr();
-            methodCall(h, "close", ValueList{});
-            return res;
-        }
-        if (isDirPath(ioFsPath(inv)))   // …and `.lines` of one is the `.open` it starts with (it read no lines)
+    // `$path.lines` reads through a handle that closes when the lines run out,
+    // as Rakudo's does: a window of the file at a time, where the whole file
+    // was split first (154 MB for 20 MB of text, #262). The named arguments
+    // (`:enc`, `:nl-in`, `:chomp`) open it, and a limit is the handle's.
+    if ((m == "lines" || m == "words") && inv.hashKind == "IO") {
+        const bool dash = inv.t == VT::Str && inv.toStr() == "-";   // (standard input: `'-'.IO.words`)
+        if (!dash && isDirPath(ioFsPath(inv)))   // …and `.lines` of one is the `.open` it starts with (it read no lines)
             throwTypedV("X::IO::Directory", {{"path", Value::str(inv.toStr())}, {"trying", Value::str("open")}},
                         "'" + inv.toStr() + "' is a directory, cannot do '.open' on a directory");
-        std::ifstream in(ioFsPath(inv), std::ios::binary); Value out = Value::array(); out.isList = true; out.s = "Seq";
-        if (!in) throwFailedOpen(ioFsPath(inv));
-        std::ostringstream raw; raw << in.rdbuf();
-        std::istringstream src(decodeTextEnc(raw.str(), encAdverb(args)));
-        std::string line;
-        // a numeric positional is the LIMIT: `$path.lines(2)` reads two
-        long long limit = -1;
-        for (auto& av : args)
-            if (!(av.t == VT::Pair && av.namedArg) &&
-                (av.t == VT::Int || av.t == VT::Num || av.t == VT::Rat || av.t == VT::Complex || av.isAllomorph())) {
-                if (av.t == VT::Num && std::isinf(av.toNum())) continue;
-                limit = (long long)(av.t == VT::Complex ? methodCall(av, "Real", {}).toNum() : av.toNum());   // (<3+0i> is 3)
-            }
-        while ((limit < 0 || (long long)out.arr()->size() < limit) && std::getline(src, line)) { // strip \r\n too (Windows/HTTP text)
-            if (!line.empty() && line.back() == '\r') line.pop_back();
-            out.arr()->push_back(Value::str(line));
-        }
-        return out;
+        if (!dash && !std::ifstream(ioFsPath(inv), std::ios::binary)) throwFailedOpen(ioFsPath(inv));
+        ValueList oa{inv}, la;
+        for (auto& av : args) (av.t == VT::Pair && av.namedArg ? oa : la).push_back(av);
+        Value close = Value::pair("close", Value::boolean(true)); close.namedArg = true;
+        la.push_back(close);
+        return methodCall(callBuiltin("open", oa), m, la);
     }
     // `.comb` / `.words` / `.split` on a PATH are questions about the FILE's
     // text, exactly as `.lines` and `.slurp` are — Rakudo's IO::Path defines all
     // five. Without them the path's own STRING was combed, so `$path.comb(/\w/)`
     // answered the letters of "/tmp/…" (roast S16-io/comb.t).
-    if (inv.hashKind == "IO" && (m == "comb" || m == "words" || m == "split")) {
+    if (inv.hashKind == "IO" && (m == "comb" || m == "split")) {
         Value text = methodCall(const_cast<Value&>(inv), "slurp", ValueList{});
         // …and '-' is standard input, which these leave closed (as `.lines` does)
         if (inv.t == VT::Str && inv.toStr() == "-") {
