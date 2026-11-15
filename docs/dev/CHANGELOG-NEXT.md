@@ -26,11 +26,34 @@ e2981dc5, c5273f1e, 7df13701, 901a4cca, 2529675a, 0ab4bfc7, 4a2e4fec,
 43509bec, e374baff, 7f8773e2, 222424a1, 912cf744,
 d4a3b66c, 7386791f, fa8d1ea7, 69e90f7a, 27e35b21, a9c5615f, 1a5145f1, 477a7194,
 9cc330f2, dbe463ff, 5ee977c9, 48c5ea64, 07e2372e, 7a94daa1, 41e0b608,
-8f78649f.*
+8f78649f, 25c5b064, 364ac7b2, 3c0f0f43, caf88236.*
 
 ---
 
 ### New
+
+- **`--target=microbit`: a Raku program on a BBC micro:bit** (364ac7b2,
+  MICROBIT-PLAN.md phase M0 with parts of M1; #226). The program becomes one
+  C++ file for the micro:bit V2's own runtime, CODAL, whose build makes the
+  `.hex` the board takes: the mainline runs in `main()` after `uBit.init()`,
+  the top-level `loop { }` is a C loop there, and `use MicroBit` names the
+  board by MicroPython's names spelt as Raku — `display.show`, `.scroll`,
+  `.set-pixel`, `button-a.was-pressed`, `pin-logo.is-touched`,
+  `accelerometer.x` and `.was-gesture('shake')`, `compass.heading`,
+  `temperature`, `pin0` to `pin20`, `pause`, `randint`, and MicroPython's 64
+  pictures as `Image.HEART`. `image` makes a picture while building, and the
+  display's text is joined as the board runs from literals, integers and
+  Bools. A program runs with no board: `rakupp prog.raku` on a simulated
+  micro:bit (the serial port on stdout; each picture, text and pin on
+  stderr; buttons, tilt, gestures and sensors from the environment, in real
+  or virtual time), and `--target=microbit --sim` compiles the C++ against a
+  simulated CODAL. t/microbit/run.raku holds ten programs to their goldens
+  and each one's C++ to the interpreter byte for byte, with 21 refusals (45
+  checks, ~7 s). It is the Arduino target's emitter, made the boards' shared
+  one (25c5b064), with every Arduino sketch byte for byte what it was. A
+  walkthrough of seven programs is examples/microbit/, beside a guide and a
+  FAQ (3c0f0f43). Not yet tried: a build with CODAL's toolchain, and real
+  hardware. See docs/guide/MICROBIT.md.
 
 - **`.AST` of a grammar rule, and DEPARSE of it as Rakudo renders it**
   (657626c7) (rakudo#5479, #5978, #5991). It said "`.AST` does not yet build
