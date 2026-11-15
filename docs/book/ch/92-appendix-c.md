@@ -57,7 +57,8 @@ own — is in Appendix D.
 | the RakuAST view | `RakuAstView.cpp`, `RakuAstClasses.cpp`, `RakuAstDeparse.cpp` | RAKUAST-PLAN.md |
 | the MCP server | `McpServer.cpp` | Chapter 39 |
 | the Jupyter kernel | `JupyterKernel.cpp`, `Digest.cpp`, `JsonLite.h` | Chapter 39 |
-| the Arduino back end | `src/codegen/Arduino.cpp`, `ArduinoSim.h` | ARDUINO-PLAN.md |
+| the Arduino back end | `src/codegen/Arduino.cpp`, `ArduinoSim.h`, `BoardEmitter.h` | ARDUINO-PLAN.md |
+| the micro:bit back end | `src/codegen/MicroBit.cpp`, `MicroBitSim.h`, `BoardEmitter.h` | MICROBIT-PLAN.md |
 
 ## Rules that are easy to break by accident
 

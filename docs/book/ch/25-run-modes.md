@@ -8,12 +8,13 @@ someone a program that needs no interpreter installed, one for cutting start-up
 time, one for throughput. They share the entire front end and diverge
 completely after it.
 
-One front end, six back ends. This chapter takes one small program through the
-four that share the runtime library — interpret, `--bundle`, `--aot` and
-`--exe` — and shows exactly what each produces. The other two give up the
+One front end, seven back ends. This chapter takes one small program through
+the four that share the runtime library — interpret, `--bundle`, `--aot` and
+`--exe` — and shows exactly what each produces. The other three give up the
 shared-runtime principle everything here rests on, because their targets have
-no room for it: `--target=js`, which has its own chapter, and
-`--target=arduino`, which has a section at the end of this one.
+no room for it: `--target=js`, which has its own chapter, and the two board
+targets, `--target=arduino` and `--target=microbit`, which have a section at
+the end of this one.
 
 ```raku
 # demo.raku
@@ -444,6 +445,17 @@ sketch itself for this computer against a host core embedded in `rakupp`. The
 gate, `t/arduino/run.raku`, holds the second to the first byte for byte, so
 the interpreter is the oracle for the generated C++. The sketches have also
 run on a real board, an Uno R4 WiFi.
+
+`--target=microbit` is the same emitter with a second board. The walk over
+the AST, the subset and its refusals live in `src/codegen/BoardEmitter.h`;
+`Arduino.cpp` and `MicroBit.cpp` are its two subclasses, each adding its
+module's names, where `say` writes, and the program's shape. For a BBC
+micro:bit V2 that is C++ for CODAL, the board's own runtime: the mainline runs
+in `main()` after `uBit.init()`, the top-level loop is a C loop there, and
+`use MicroBit` names the board by MicroPython's names spelt as Raku. CODAL's
+build turns the file into the `.hex` copied onto the board. Its gate,
+`t/microbit/run.raku`, holds the `--sim` build to the interpreter in the same
+way, and with `--codal=DIR` builds every program with CODAL's own toolchain.
 
 ## Mode 1 in a browser
 

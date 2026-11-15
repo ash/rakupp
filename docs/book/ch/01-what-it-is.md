@@ -29,7 +29,8 @@ good deal of what follows is the story of doing exactly that.
 ```
 
 A single front end feeds five back ends, and since v5.6.0 a sixth, which
-writes an Arduino sketch. The front end is a hand-written
+writes an Arduino sketch; after v5.8.0 a seventh, the same emitter with a
+second board, writes C++ for a BBC micro:bit. The front end is a hand-written
 character-level lexer and a recursive-descent parser with a precedence-climbing
 core for expressions; it produces a `Program`, which is a vector of statement
 nodes. Everything downstream consumes that one artifact.
@@ -39,7 +40,7 @@ Everything a running program needs is compiled into a static library,
 compiled binary can leave out (Chapter 29). The `rakupp` executable links
 against them, and so does every binary the compiling modes produce. What stays
 out of the library is what only the command line can reach: the driver, the
-REPL, and the C++, JavaScript and Arduino code generators. That is why a feature
+REPL, and the C++, JavaScript and board code generators. That is why a feature
 implemented once behaves identically whether a program is interpreted or
 natively compiled: there is one implementation of `Value` semantics, one set of
 built-ins, one method dispatcher, one regex engine, one Unicode subsystem.
@@ -74,12 +75,14 @@ whole program instead — so `--exe` never refuses a program.
 
 Chapter 25 works one small program through all four.
 
-Two further targets produce something other than a program for this machine.
+Three further targets produce something other than a program for this machine.
 `--target=js` transpiles to JavaScript over a runtime written in JavaScript
 (Chapter 31). `--target=arduino`, new in v5.6.0, writes a subset of Raku —
 native scalars, shaped native arrays, subs with native signatures — as one
-Arduino sketch. A board has no runtime to call, so there every construct either
-becomes plain C++ or is refused, with its line, before anything is built.
+Arduino sketch, and `--target=microbit` writes the same subset as C++ for a
+BBC micro:bit's runtime, CODAL. A board has no Raku runtime to call, so there
+every construct either becomes plain C++ or is refused, with its line, before
+anything is built.
 
 ## What the design is optimised for
 
