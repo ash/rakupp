@@ -24,7 +24,7 @@ f8b5555c, ce72763f, bfd530f9, eb482a9f, 7e5a643e, 6b8c1d1a, 41150ad1,
 a213ccad, 02b24803, 9e948ff3, e60a6163, 657626c7, 13902c52, a397987e,
 e2981dc5, c5273f1e, 7df13701, 901a4cca, 2529675a, 0ab4bfc7, 4a2e4fec,
 43509bec, e374baff, 7f8773e2, 222424a1, 912cf744,
-d4a3b66c, 7386791f, fa8d1ea7, 69e90f7a, 27e35b21, a9c5615f.*
+d4a3b66c, 7386791f, fa8d1ea7, 69e90f7a, 27e35b21, a9c5615f, 1a5145f1.*
 
 ---
 
@@ -84,11 +84,13 @@ d4a3b66c, 7386791f, fa8d1ea7, 69e90f7a, 27e35b21, a9c5615f.*
 
 ### Fixed: silent wrong answers
 
-- **`-c` refuses an undeclared routine** (a9c5615f) (#264). `say "start";
-  no-such-routine(1)` passed `-c` with "Syntax OK" and exit 0, and failed to
-  compile when run. `-c` now makes the run's pre-run check and prints its
-  report byte for byte, exit 1, as Rakudo's `-c` does; `--json` gives an
-  `undeclared-routine` finding. `t/regression/check-mode-undeclared-routine.raku`.
+- **`-c` and `--lint` refuse an undeclared routine** (a9c5615f, 1a5145f1)
+  (#264). `say "start"; no-such-routine(1)` passed `-c` with "Syntax OK" and
+  exit 0, and `--lint` with "no issues found", and failed to compile when run.
+  `-c` now makes the run's pre-run check and prints its report byte for byte,
+  exit 1, as Rakudo's `-c` does; `--lint` gives one `undeclared-routine` error
+  per routine on the line it is used at, with Rakudo's suggestions, and exits
+  2; `--json` carries the same finding from both. `t/regression/check-mode-undeclared-routine.raku`.
 - **`--mcp` and `--jupyter` read JSON numbers by JSON's grammar** (e374baff).
   `"id":1e+` was run as a request with id 1, `1.2.3` as 1.2, `-+5` as 0 and
   `1e999` as Inf; each is now a parse error. An unpaired surrogate escape
