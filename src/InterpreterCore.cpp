@@ -3292,7 +3292,7 @@ Value Interpreter::execForStmt(Stmt* s, bool sink) {
             std::shared_ptr<LazySeqState> liveSt;
             if (!oneItem && lv.t == VT::Array && lv.arr() && lv.ext() && !isMultiDimShaped(lv)) {
                 auto st = std::static_pointer_cast<LazySeqState>(lv.ext());
-                if (st->appendNext && (st->infinite || st->streaming || (st->gatherSeq && !st->exhausted)))
+                if (st->appendNext && (st->infinite || st->overEndless || st->streaming || (st->gatherSeq && !st->exhausted)))
                     { liveSt = st; liveArr = lv.arrS(); }
             }
             // an integer Range is walked by its ends, as the block form walks
@@ -3835,7 +3835,7 @@ Value Interpreter::execForStmt(Stmt* s, bool sink) {
         // loop below, which pulls one element per iteration)
         const bool liveLazy = listv.ext() && [&] {
             auto st = std::static_pointer_cast<LazySeqState>(listv.ext());
-            return st->appendNext && (st->infinite || st->streaming || (st->gatherSeq && !st->exhausted));
+            return st->appendNext && (st->infinite || st->overEndless || st->streaming || (st->gatherSeq && !st->exhausted));
         }();
         // PACKED-ARRAY-PLAN: `for @a` over a still-packed array walks the
         // words, and a write through the topic goes back as a word while it
@@ -4118,7 +4118,7 @@ Value Interpreter::execForStmt(Stmt* s, bool sink) {
     std::shared_ptr<LazySeqState> liveSt;
     if (!scalarItem && listv.t == VT::Array && listv.arr() && listv.ext()) {
         auto st = std::static_pointer_cast<LazySeqState>(listv.ext());
-        if (st->appendNext && (st->infinite || st->streaming || (st->gatherSeq && !st->exhausted)))
+        if (st->appendNext && (st->infinite || st->overEndless || st->streaming || (st->gatherSeq && !st->exhausted)))
             { liveSt = st; liveArr = listv.arrS(); }
     }
     // a Blob/Buf iterates its BYTES (as Int) — `for $data -> $b1,$b2?,$b3?`

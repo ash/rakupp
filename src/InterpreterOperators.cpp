@@ -3231,7 +3231,7 @@ bool endlessReduce(const std::string& op, const Value& v, Value& out) {
         // by trying (`.grep({last if …})` does end); one that will not drain has
         // no honest answer, so it joins the endless ones below.
         auto st = std::static_pointer_cast<LazySeqState>(v.ext());
-        const size_t CAP = 1000000; // materializeLazy's own ceiling
+        const size_t CAP = st->mayNotEnd() ? 1000000 : (size_t)-1; // materializeLazy's own ceiling
         if (st->appendNext)
             while (v.arr()->size() < CAP && st->appendNext(*v.arr())) {}
         // (a view that ran into an endless source's ceiling marks itself endless

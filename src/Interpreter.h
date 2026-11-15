@@ -2067,6 +2067,7 @@ struct LazySeqState {
     // (Rakudo iterates a sunk Seq), however the source is made
     bool mapView = false;
     bool mayEnd = false;   // endless, but its body can say `last` (Seq.from-loop): `.eager` runs it to there
+    bool overEndless = false;   // a grep (or a view of one) over an endless source: it may end, or not
     // a LIST over a finished stream (`Supply.list`): read like a handle's lines,
     // but sinking a List reads nothing, so a sunk `.list` raises no quit error
     bool listView = false;
@@ -2081,6 +2082,10 @@ struct LazySeqState {
     // other producers keep their whole buffer.
     bool dropsRead = false;
     bool exhausted = false;
+    // May not end: endless, a view over one, lazy by declaration. Reading ALL
+    // of one (kDrainAll) stops at a million; any other is read to its end (a
+    // cap on EVERY read stopped `(gather …).elems` at 1,000,000 without a word)
+    bool mayNotEnd() const { return infinite || mayEnd || overEndless || (declaredLazy && !exhausted); }
     // How many elements the NEXT appendNext call is wanted for, when the caller
     // knows (materializeLazy does); 0 means one. A gather's coroutine runs until
     // it has taken that many before it hands control back, so filling a buffer
@@ -2784,7 +2789,10 @@ public:
     // with these named keys (a compiled loop's too), and the keys a signature names
     ValueList subSigCapture(const Value& v, const std::vector<std::string>& keys, bool* list = nullptr);
     static std::vector<std::string> subSigNamedKeys(const std::vector<Param>& sig);
-    void materializeLazy(const Value& v, size_t n); // grow a lazy list's prefix to >= n elements (capped)
+    // grow a lazy list's prefix to >= n elements; kDrainAll reads it to its
+    // end, but an endless one only to a million (LazySeqState::mayNotEnd)
+    void materializeLazy(const Value& v, size_t n);
+    static constexpr size_t kDrainAll = (size_t)-1;
     void drainIfFiniteLazy(const Value& v);         // …all of it, when the list is lazy but finite
     // `@h.map({…}).grep(*.so).first` runs the block only until `first` has its
     // answer, as Rakudo's lazy Seq does (InterpreterCalls.cpp). Every method

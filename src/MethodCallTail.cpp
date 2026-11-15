@@ -1402,7 +1402,7 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
     // lazy so consumers materialise only what they index.
     if (inv.t == VT::Array && inv.ext()) {
         auto lst = std::static_pointer_cast<LazySeqState>(inv.ext());
-        bool infinite = lst->infinite;
+        bool infinite = lst->infinite || lst->overEndless;   // (a grep over an endless source is lazy too)
         // a list DECLARED lazy (`lazy gather {…}`) has no count to give
         // until it is made eager: Rakudo refuses rather than reifying it
         if (m == "elems" && lst->declaredLazy && !lst->exhausted) throwTypedV("X::Cannot::Lazy", {{"action", Value::str(".elems")}}, "Cannot .elems a lazy list");
@@ -1525,7 +1525,7 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
         // no count for it until it is made eager — but `.eager` and `.reduce`
         // run it out, which an endless one cannot do.
         const bool declLive = !infinite && lst->declaredLazy && !lst->exhausted;
-        if (declLive && (m == "eager" || m == "reduce")) materializeLazy(inv, 1000000);
+        if (declLive && (m == "eager" || m == "reduce")) materializeLazy(inv, kDrainAll);
         else if (infinite || declLive) {
             // operations that need the end of the list can't complete on an infinite
             // source (.List/.Array/.gist stay ANSWERABLE — lazy views and "(...)"
@@ -1548,7 +1548,7 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
             // …except a `.map` over one, which may yet END — its block can say
             // `last` — so `.eager` runs it to that point, as Rakudo does:
             // `(^Inf).map({ last if $_ > 6; $_ }).eager` is (0 … 6)
-            if (m == "eager" && (lst->mapView || lst->mayEnd) && lst->appendNext && !lst->exhausted) {   // (…and a from-loop)
+            if (m == "eager" && (lst->mapView || lst->mayEnd || lst->overEndless) && lst->appendNext && !lst->exhausted) {   // (…and a from-loop, a grep)
                 ValueList& buf = *inv.arr();
                 while (lst->appendNext(buf)) {}
                 lst->exhausted = true;
@@ -1616,7 +1616,7 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
             const bool gatherIndexView = (lst->gatherSeq || lst->finiteSource || lst->streaming) &&
                                          !lst->exhausted &&
                                          (m == "kv" || m == "pairs" || m == "antipairs");
-            if (forceAll.count(m) && !gatherIndexView) materializeLazy(inv, 1000000);
+            if (forceAll.count(m) && !gatherIndexView) materializeLazy(inv, kDrainAll);
         }
         // a gather still producing: lazy like an endless source, but it ends
         const bool gatherLive = !infinite && lst->gatherSeq && !lst->exhausted;
@@ -1631,7 +1631,7 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
             // …and one over a gather is what a gather is: not reified yet, and
             // not lazy unless it was declared so (`.is-lazy`, list assignment)
             st->gatherSeq = lst->gatherSeq; st->declaredLazy = lst->declaredLazy; st->finiteChain = lst->finiteChain;
-            st->mapView = true; st->dropsRead = !lst->aliasSource;   // (it appends what the block answers: #263)
+            st->mapView = true; st->dropsRead = !lst->aliasSource; st->overEndless = lst->overEndless;   // (it appends: #263)
             Interpreter* self = this;
             // (its own source position: a `next` skips an element, so the cache
             // and the source part company)
@@ -1688,7 +1688,7 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
             if (inv.s == "HyperSeq" || inv.s == "RaceSeq") out.s = inv.s;   // (and a hyper one stays one)
             auto st = std::make_shared<LazySeqState>();
             st->gatherSeq = lst->gatherSeq; st->declaredLazy = lst->declaredLazy; st->finiteChain = lst->finiteChain;   // see map
-            st->dropsRead = !lst->aliasSource; // (…and so does this one)
+            st->dropsRead = !lst->aliasSource; st->overEndless = infinite;   // (it appends; it may end, or not)
             // NOT marked infinite even over an endless source: a grep can still
             // end — `(^Inf).grep({last if $_ > 5; True}).eager` is Roast's own
             // (S32-list/grep.t) — so whether it drains is only known by trying.
@@ -5559,7 +5559,7 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
                 // a lazy array only holds a prefix — materialize enough to cover the window
                 if (inv.ext()) {
                     long s0 = args.size() > 0 ? args[0].toInt() : 0;
-                    materializeLazy(inv, args.size() > 1 ? (size_t)(std::max(0L, s0) + args[1].toInt()) : 1000000);
+                    materializeLazy(inv, args.size() > 1 ? (size_t)(std::max(0L, s0) + args[1].toInt()) : kDrainAll);
                 }
                 long n = (long)inv.arr()->size();
                 // `*-2` / `{ $_ - 2 }` resolve against the length, like .head/.tail

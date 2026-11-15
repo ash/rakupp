@@ -9905,7 +9905,7 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
     // out and says it was lazy — `(lazy 1..3).raku` is `(1, 2, 3).lazy.Seq`
     if (m == "raku" && declLazyLive(inv)) {
         if (!inv.isList) return Value::str("[...]");
-        materializeLazy(inv, 1000000);
+        materializeLazy(inv, kDrainAll);
         std::string r = rakuRepr(inv);
         if (r.size() > 4 && r.compare(r.size() - 4, 4, ".Seq") == 0) r.insert(r.size() - 4, ".lazy");
         else r += ".lazy";
