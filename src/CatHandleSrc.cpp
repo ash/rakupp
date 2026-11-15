@@ -149,22 +149,12 @@ class IO::CatHandle is IO::Handle {
         }
     }
     # User code gets the active handle: give back what we buffered, and read
-    # through the handle from now on
+    # through the handle from now on (it has one position, for bytes and
+    # characters alike, so its text readers go on from there)
     method !expose() {
         return if $!delegate;
         self!unload;
         $!delegate = True;
-        return unless $!buffered && $!encoding.defined;
-        # the handle keeps a separate position for characters; move it too
-        my $h   = $!active-handle;
-        my $pos = $h.tell;
-        if $pos > 0 {
-            $h.seek(0, SeekFromBeginning);
-            my $pre = $h.read($pos);
-            $h.readchars: self!utf8
-              ?? +$pre.grep({ $_ +& 0xC0 != 0x80 })
-              !! $pre.decode($!encoding).codes;
-        }
     }
 
     method chomp(::?CLASS:D:) is rw {

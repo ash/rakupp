@@ -431,6 +431,8 @@ static std::string stdinGrapheme(bool c8) {
     return g;
 }
 
+static long long textCursorBytes(Interpreter& I, const Value& inv);   // (the two cursors' hand-over, below)
+static long long byteCursorToText(const Value& inv);
 // `.getc` / `.readchars` on a handle: $*IN off the stream as it comes, any
 // other handle through the cursor above, loaded once and kept in "cps"/"cpos".
 static Value handleReadChars(Interpreter& I, const Value& inv, const std::string& m, const ValueList& args) {
@@ -462,16 +464,21 @@ static Value handleReadChars(Interpreter& I, const Value& inv, const std::string
         if (lit != inv.hash()->end() && lit->second.arr()) {
             auto& ls = *lit->second.arr();
             auto eit = inv.hash()->find("line-eols");
+            auto crit = inv.hash()->find("line-crs");
+            const ValueList* crs = crit != inv.hash()->end() && crit->second.arr() &&
+                                   crit->second.arr()->size() == ls.size() ? crit->second.arr() : nullptr;
             long long lp = (*inv.hash())["pos"].toInt();
             std::string rest;
             for (size_t i = (size_t)(lp < 0 ? 0 : lp); i < ls.size(); i++) {
                 rest += ls[i].toStr();
+                if (crs && (*crs)[i].toInt()) rest += '\r';   // (the cursor keeps a CR LF as it came)
                 if (eit != inv.hash()->end() && eit->second.arr() && i < eit->second.arr()->size())
                     rest += (*eit->second.arr())[i].toStr();
             }
+            (*inv.hash())["cpskip"] = Value::integer(textCursorBytes(I, inv));
             (*inv.hash())["cps"] = charCursor(rest, c8);
             (*inv.hash())["cpos"] = Value::integer(0);
-            inv.hash()->erase("lines"); inv.hash()->erase("line-eols"); inv.hash()->erase("pos");
+            inv.hash()->erase("lines"); inv.hash()->erase("line-eols"); inv.hash()->erase("line-crs"); inv.hash()->erase("pos");
         }
     }
     if (inv.hash()->find("cps") == inv.hash()->end()) {
@@ -483,6 +490,7 @@ static Value handleReadChars(Interpreter& I, const Value& inv, const std::string
         std::string raw = ss.str();
         auto ps = inv.hash()->find("cpskip"); // bytes already read under an EARLIER encoding
         long long skip = ps != inv.hash()->end() ? ps->second.toInt() : 0;
+        if (long long b = byteCursorToText(inv); b > 0) { skip = b; (*inv.hash())["cpskip"] = Value::integer(b); }
         if (skip > 0) raw = skip <= (long long)raw.size() ? raw.substr(skip) : std::string();
         (*inv.hash())["cps"] = charCursor(I.decodeTextEnc(raw, handleEnc(inv)), c8);
         (*inv.hash())["cpos"] = Value::integer(0);
@@ -576,6 +584,56 @@ static std::string restFromCursor(const Value& inv) {
     std::string rest = ss.str();
     h["bpos"] = Value::integer(h["bpos"].toInt() + (long long)rest.size());
     return rest;
+}
+// A file handle has ONE position, as Rakudo's does, but two cursors here: the
+// byte cursor `.read` moves ("bpos") and the text cache the line and
+// character readers move ("lines"/"pos", "cps"/"cpos"). Each started over
+// from the top of the file, so `.get` after `.read(3)` answered the first line
+// whole. Now they hand over: `.read` starts at the byte the text readers had
+// reached, and a text reader starts at the byte cursor.
+// Where the text cursor stands, in bytes of the file; -1 with no text cache.
+static long long textCursorBytes(Interpreter& I, const Value& inv) {
+    auto& h = *inv.hash();
+    const std::string enc = handleEnc(inv);
+    auto num = [&](const char* k) { auto it = h.find(k); return it != h.end() ? it->second.toInt() : 0LL; };
+    std::string done;
+    if (auto c = h.find("cps"); c != h.end() && c->second.arr()) {
+        auto& v = *c->second.arr();
+        for (long long i = 0, p = num("cpos"); i < p && i < (long long)v.size(); i++) done += v[(size_t)i].toStr();
+        return num("cpskip") + (long long)I.encodeTextEnc(done, enc).size();
+    }
+    auto l = h.find("lines");
+    if (l == h.end() || !l->second.arr()) return -1;
+    auto e = h.find("line-eols");
+    const ValueList* eols = e != h.end() ? e->second.arr() : nullptr;
+    auto& ls = *l->second.arr();
+    auto c = h.find("line-crs");
+    const ValueList* crs = c != h.end() && c->second.arr() && c->second.arr()->size() == ls.size() ? c->second.arr() : nullptr;
+    for (long long i = 0, p = num("pos"); i < p && i < (long long)ls.size(); i++) {
+        done += ls[(size_t)i].toStr();
+        if (crs && (*crs)[(size_t)i].toInt()) done += '\r';
+        done += eols && i < (long long)eols->size() ? (*eols)[(size_t)i].toStr() : std::string("\n");
+    }
+    return num("seekbase") + (long long)I.encodeTextEnc(done, enc).size();
+}
+// `.read` takes the position over from the text readers
+static void textCursorToBytes(Interpreter& I, const Value& inv) {
+    long long off = textCursorBytes(I, inv);
+    if (off < 0) return;
+    for (const char* k : {"lines", "line-eols", "line-crs", "pos", "seekbase", "fulltext", "slurped", "cps", "cpos", "cpskip"})
+        inv.hash()->erase(k);
+    (*inv.hash())["bpos"] = Value::integer(off);
+}
+// …and a text reader loading the file takes it from the byte cursor: the
+// bytes to skip, with the byte cursor gone (`.tell` and `.seek` go by the text
+// cache from here)
+static long long byteCursorToText(const Value& inv) {
+    auto& h = *inv.hash();
+    auto b = h.find("bpos");
+    if (b == h.end()) return 0;
+    long long off = std::max(0LL, b->second.toInt());
+    h.erase("bpos"); h.erase("bytes");
+    return off;
 }
 
 // stat() for the IO methods that report a file's metadata. True (with `st`
@@ -3835,22 +3893,10 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
             }
             auto bp = inv.hash()->find("bpos");
             if (bp != inv.hash()->end()) return Value::integer(bp->second.toInt());
-            auto lp = inv.hash()->find("pos");
-            auto li = inv.hash()->find("lines");
-            if (lp != inv.hash()->end() && li != inv.hash()->end() && li->second.arr()) {
-                // from where the cache starts (a `.seek` re-split it there; a
-                // `.slurp` left it at the end), plus each line read and the
-                // terminator it was read with
-                auto sb = inv.hash()->find("seekbase");
-                auto ei = inv.hash()->find("line-eols");
-                const ValueList* eols = ei != inv.hash()->end() ? ei->second.arr() : nullptr;
-                long long want = lp->second.toInt(), off = sb != inv.hash()->end() ? sb->second.toInt() : 0;
-                auto& ls = *li->second.arr();
-                for (long long i = 0; i < want && i < (long long)ls.size(); i++)
-                    off += (long long)ls[i].toStr().size() +
-                           (eols && i < (long long)eols->size() ? (long long)(*eols)[(size_t)i].toStr().size() : 1);
-                return Value::integer(off);
-            }
+            // from where the text cache starts (a `.seek` re-split it there; a
+            // `.slurp` left it at the end), plus each line or character read
+            // and the terminator it was read with, a CR LF's CR counted
+            if (long long off = textCursorBytes(*this, inv); off >= 0) return Value::integer(off);
             auto bufit = inv.hash()->find("buffer");
             // a WRITE handle is where the next byte lands: a `.seek`ed
             // position, else what has reached the file, plus what is pending
@@ -4056,6 +4102,7 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
         }
         if (m == "read") { // binary read: up to N bytes from a byte cursor, as a Buf
             long long want = args.empty() ? 65536 : args[0].toInt();
+            if (!inv.hash()->count("std") && !inv.hash()->count("captured")) textCursorToBytes(*this, inv);
             // $*IN has no path to slurp: read the bytes as they arrive, so a
             // terminal in raw mode delivers each keystroke instead of nothing.
             // Like Rakudo (one read(2)), it waits for the FIRST byte only and
@@ -4351,7 +4398,8 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
                         Value io = Value::str((*inv.hash())["path"].toStr()); io.hashKind = "IO";
                         return methodCall(io, "slurp", ValueList{[]{ Value p = Value::pair("bin", Value::boolean(true)); p.namedArg = true; return p; }()});
                     }
-                    std::string text = decodeTextEnc(ss.str(), handleEnc(inv));
+                    const long long skipped = std::min<long long>(byteCursorToText(inv), (long long)ss.str().size());
+                    std::string text = decodeTextEnc(ss.str().substr((size_t)skipped), handleEnc(inv));
                     foldCrLf(text);
                     return Value::str(text);
                 }
@@ -4387,9 +4435,11 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
                 return Value::str(text);
             }
             std::ifstream in((*inv.hash())["path"].toStr(), std::ios::binary); std::ostringstream ss; ss << in.rdbuf();
+            // (what follows the bytes a `.read` took, as for :bin above)
+            const long long skipped = std::min<long long>(byteCursorToText(inv), (long long)ss.str().size());
             // TEXT mode folds CRLF to LF, as IO::Path.slurp does (Rakudo's text
             // decoders translate the line separator; a Buf's .decode does not)
-            std::string text = decodeTextEnc(ss.str(), handleEnc(inv));
+            std::string text = decodeTextEnc(ss.str().substr((size_t)skipped), handleEnc(inv));
             foldCrLf(text);
             // The handle is at its end now: `.eof` is True, and `.get`, `.getc`
             // and a second `.slurp` find nothing (Rakudo; S16-io/eof.t slurps a
@@ -4532,7 +4582,7 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
             // after a `.slurp` the cache only says "at the end" (see .slurp): a
             // seek reads the file again from the top, as on a fresh handle
             if (m == "seek" && inv.hash()->count("slurped"))
-                for (const char* k : {"lines", "line-eols", "pos", "seekbase", "fulltext", "slurped"})
+                for (const char* k : {"lines", "line-eols", "line-crs", "pos", "seekbase", "fulltext", "slurped"})
                     inv.hash()->erase(k);
             if (inv.hash()->find("lines") == inv.hash()->end()) {
                 // a custom line separator (`.nl-in = "+"`) splits on that instead of \n
@@ -4560,6 +4610,9 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
                 // "\n"). Text::CSV reads its input that way — the CSV parser
                 // needs the line ending to diagnose an unterminated field.
                 Value eols = Value::array();
+                // …and, for a file, which lines ended in a CR LF: the terminator
+                // reads as "\n", but the byte cursor counts the CR
+                Value crs = Value::array();
                 // An EXPLICIT nl-in splits on exactly that string — including a
                 // plain "\n", which is not the default. The default (no key at
                 // all) is Rakudo's ["\n", "\r\n"], where a CR before the LF
@@ -4569,7 +4622,13 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
                 if (!sep.empty()) {
                     std::string content;
                     if (isStdin) content = stdinReadAll();
-                    else { std::ifstream in((*inv.hash())["path"].toStr(), std::ios::binary); std::ostringstream ss; ss << in.rdbuf(); content = ss.str(); }
+                    else {
+                        std::ifstream in((*inv.hash())["path"].toStr(), std::ios::binary); std::ostringstream ss; ss << in.rdbuf(); content = ss.str();
+                        if (long long b = byteCursorToText(inv); b > 0) {
+                            content = b < (long long)content.size() ? content.substr((size_t)b) : std::string();
+                            (*inv.hash())["seekbase"] = Value::integer(b);
+                        }
+                    }
                     content = decodeTextEnc(content, handleEnc(inv));
                     size_t start = 0, p;
                     while ((p = content.find(sep, start)) != std::string::npos) {
@@ -4629,11 +4688,17 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
                             auto& cs = *cit->second.arr();
                             long long cp0 = (*inv.hash())["cpos"].toInt();
                             for (size_t i = (size_t)(cp0 < 0 ? 0 : cp0); i < cs.size(); i++) decoded += cs[i].toStr();
-                            inv.hash()->erase("cps"); inv.hash()->erase("cpos");
+                            (*inv.hash())["seekbase"] = Value::integer(textCursorBytes(*this, inv));
+                            inv.hash()->erase("cps"); inv.hash()->erase("cpos"); inv.hash()->erase("cpskip");
                         } else {
                             std::ifstream in((*inv.hash())["path"].toStr(), std::ios::binary);
                             std::ostringstream raw; raw << in.rdbuf();
-                            decoded = decodeTextEnc(raw.str(), handleEnc(inv));
+                            std::string bytes = raw.str();
+                            if (long long b = byteCursorToText(inv); b > 0) {
+                                bytes = b < (long long)bytes.size() ? bytes.substr((size_t)b) : std::string();
+                                (*inv.hash())["seekbase"] = Value::integer(b);
+                            }
+                            decoded = decodeTextEnc(bytes, handleEnc(inv));
                         }
                         std::istringstream src(decoded);
                         // getline() cannot say whether the LAST line ended in a
@@ -4644,12 +4709,14 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
                             if (crlf) line.pop_back();
                             lines.arr()->push_back(Value::str(line));
                             bool last = src.eof();
-                            (void)crlf; eols.arr()->push_back(Value::str((last && !endsNl) ? "" : "\n"));
+                            eols.arr()->push_back(Value::str((last && !endsNl) ? "" : "\n"));
+                            crs.arr()->push_back(Value::integer(crlf ? 1 : 0));
                         }
                     }
                 }
                 (*inv.hash())["lines"] = lines;
                 (*inv.hash())["line-eols"] = eols;
+                if (!crs.arr()->empty()) (*inv.hash())["line-crs"] = crs; else inv.hash()->erase("line-crs");
                 (*inv.hash())["pos"] = Value::integer(0);
             }
             // `.seek` / `.tell` — a byte offset over the same line cache the rest
@@ -4719,6 +4786,7 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
                         start = e + 1;
                     }
                     (*inv.hash())["lines"] = nl;
+                    inv.hash()->erase("line-crs");
                     (*inv.hash())["line-eols"] = ne;
                     (*inv.hash())["pos"] = Value::integer(0);
                     (*inv.hash())["seekbase"] = Value::integer(want);

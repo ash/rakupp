@@ -3608,7 +3608,7 @@ Object.assign(T.DateTime.methods, T.Date.methods);
 // handle opened from it) keeps its spelling.
 const ioFull = s => s.cwd && s.cwd !== host.cwd && !s.path.startsWith('/') ? s.cwd.replace(/\/+$/, '') + '/' + s.path : s.path;
 M(T['IO::Path'], { Str: (s) => s.path, gist: (s) => strLit(s.path) + '.IO', raku: (s) => 'IO::Path.new(' + strLit(s.path) + ')', IO: (s) => s, 'Bool': (s) => true, absolute: (s) => host.absolute(ioFull(s)), relative: (s, ...a) => { const base = posArgs(a).length ? str(posArgs(a)[0]) : (s.cwd || host.cwd); const abs = host.absolute(ioFull(s)); const b = host.absolute(base).replace(/\/+$/, '') + '/'; return abs.startsWith(b) ? abs.slice(b.length) : s.path; }, basename: (s) => s.path.replace(/\/+$/, '').split('/').pop(), extension: (s) => { const b = s.path.split('/').pop(); const i = b.lastIndexOf('.'); return i > 0 ? b.slice(i + 1) : ''; }, parent: (s) => { const p = s.path.replace(/\/+$/, ''); const i = p.lastIndexOf('/'); return new RIOPath(i < 0 ? '.' : i === 0 ? '/' : p.slice(0, i), s.cwd); }, dirname: (s) => { const p = s.path.replace(/\/+$/, ''); const i = p.lastIndexOf('/'); return i < 0 ? '.' : i === 0 ? '/' : p.slice(0, i); }, add: (s, p) => new RIOPath(s.path.replace(/\/+$/, '') + '/' + str(p), s.cwd), child: (s, p) => new RIOPath(s.path.replace(/\/+$/, '') + '/' + str(p), s.cwd), 'e': (s) => host.exists(ioFull(s)), 'f': (s) => host.isFile(ioFull(s)), 'd': (s) => host.isDir(ioFull(s)), 'r': (s) => host.exists(ioFull(s)), 'w': (s) => host.exists(ioFull(s)), 'x': (s) => host.exists(ioFull(s)), 's': (s) => host.size(ioFull(s)), 'z': (s) => host.size(ioFull(s)) === 0, 'slurp': (s, ...a) => host.slurp(ioFull(s), ...a), 'spurt': (s, ...a) => host.spurt(ioFull(s), ...a), 'lines': (s, ...a) => lines(host.slurp(ioFull(s))), 'words': (s) => words(host.slurp(ioFull(s))), 'open': (s, ...a) => host.open(ioFull(s), ...a), 'dir': (s, ...a) => host.dir(ioFull(s), ...a), 'mkdir': (s) => host.mkdir(ioFull(s)), 'rmdir': (s) => host.rmdir(ioFull(s)), 'unlink': (s) => host.unlink(ioFull(s)), 'copy': (s, t) => host.copy(ioFull(s), str(t)), 'rename': (s, t) => host.rename(ioFull(s), str(t)), 'move': (s, t) => host.rename(ioFull(s), str(t)), 'modified': (s) => host.modified(ioFull(s)), 'resolve': (s) => new RIOPath(host.absolute(ioFull(s))), 'is-absolute': (s) => s.path.startsWith('/'), 'is-relative': (s) => !s.path.startsWith('/'), 'chars': (s) => chars(s.path), 'parts': (s) => hashFrom([['basename', s.path.split('/').pop()], ['dirname', s.path.includes('/') ? s.path.slice(0, s.path.lastIndexOf('/')) : '.'], ['volume', '']]), 'SPEC': (s) => T.IO, 'path': (s) => s.path, 'touch': (s) => host.spurt(ioFull(s), '', new RNamed(new Map([['append', true]]))), 'ACCEPTS': (s, v) => str(v) === s.path, 'succ': (s) => { const i = s.path.lastIndexOf('/') + 1, dir = s.path.slice(0, i), base = s.path.slice(i), d = base.lastIndexOf('.'); return new RIOPath(dir + (d > 0 ? strSucc(base.slice(0, d)) + base.slice(d) : strSucc(base)), s.cwd); }, 'comb': (s, ...a) => comb(host.slurp(ioFull(s)), ...a), 'split': (s, ...a) => strSplit(host.slurp(ioFull(s)), ...a) });
-M(T['IO::Handle'], { Str: (s) => s.path || '', gist: (s) => 'IO::Handle<' + (s.path || '') + '>', get: (s) => host.handleGet(s), lines: (s) => host.handleLines(s), slurp: (s) => host.handleSlurp(s), 'slurp-rest': (s) => host.handleSlurp(s), print: (s, ...a) => host.handlePrint(s, a.map(str).join('')), say: (s, ...a) => host.handlePrint(s, a.map(gist).join('') + '\n'), put: (s, ...a) => host.handlePrint(s, a.map(str).join('') + '\n'), printf: (s, f, ...a) => host.handlePrint(s, sprintf(f, ...a)), 'print-nl': (s) => host.handlePrint(s, '\n'), 'close': (s) => host.close(s), 'eof': (s) => host.handleEof(s), 'flush': (s) => { host.handleFlush(s); host.flush(); return true; }, 'opened': (s) => !s.closed, 'words': (s) => words(host.handleSlurp(s)), 'comb': (s, ...a) => comb(host.handleSlurp(s), ...a), 'getc': (s) => host.handleGetc(s), 'read': (s, n) => host.handleRead(s, n), 'write': (s, b) => host.handlePrint(s, chrs(b)), 'nl-in': (s) => '\n', 'nl-out': (s) => '\n', 'path': (s) => new RIOPath(s.path || ''), 'IO': (s) => new RIOPath(s.path || ''), 't': (s) => host.isTTY(s), 'encoding': (s) => 'utf8', 'Bool': (s) => true, 'Supply': (s) => mkList(arr(host.handleLines(s))), 'seek': (s, p) => { s.pos = Number(toInt(p)); return true; }, 'tell': (s) => s.pos, 'lock': (s) => true, 'unlock': (s) => true, 'spurt': (s, ...a) => { host.handlePrint(s, str(posArgs(a)[0])); if (truthy(nm(a).get('close'))) host.close(s); return true; } });
+M(T['IO::Handle'], { Str: (s) => s.path || '', gist: (s) => 'IO::Handle<' + (s.path || '') + '>', get: (s) => host.handleGet(s), lines: (s) => host.handleLines(s), slurp: (s) => host.handleSlurp(s), 'slurp-rest': (s) => host.handleSlurp(s), print: (s, ...a) => host.handlePrint(s, a.map(str).join('')), say: (s, ...a) => host.handlePrint(s, a.map(gist).join('') + '\n'), put: (s, ...a) => host.handlePrint(s, a.map(str).join('') + '\n'), printf: (s, f, ...a) => host.handlePrint(s, sprintf(f, ...a)), 'print-nl': (s) => host.handlePrint(s, '\n'), 'close': (s) => host.close(s), 'eof': (s) => host.handleEof(s), 'flush': (s) => { host.handleFlush(s); host.flush(); return true; }, 'opened': (s) => !s.closed, 'words': (s) => words(host.handleSlurp(s)), 'comb': (s, ...a) => comb(host.handleSlurp(s), ...a), 'getc': (s) => host.handleGetc(s), 'read': (s, n) => host.handleRead(s, n), 'write': (s, b) => host.handlePrint(s, chrs(b)), 'nl-in': (s) => '\n', 'nl-out': (s) => '\n', 'path': (s) => new RIOPath(s.path || ''), 'IO': (s) => new RIOPath(s.path || ''), 't': (s) => host.isTTY(s), 'encoding': (s) => 'utf8', 'Bool': (s) => true, 'Supply': (s) => mkList(arr(host.handleLines(s))), 'seek': (s, p) => host.handleSeek(s, Number(toInt(p))), 'tell': (s) => host.handleTell(s), 'readchars': (s, n) => host.handleReadchars(s, n === undefined ? 65536 : Number(toInt(n))), 'lock': (s) => true, 'unlock': (s) => true, 'spurt': (s, ...a) => { host.handlePrint(s, str(posArgs(a)[0])); if (truthy(nm(a).get('close'))) host.close(s); return true; } });
 
 // type-object methods (Int.new, Str.new, Date.today, ...)
 const TYPE_METHODS = {
@@ -3677,9 +3677,9 @@ function mc(inv, name, ...args) {
     }
     if (inv instanceof REnum) { const em = ENUM_METHODS[name]; if (em) return em(inv, ...args); const um = ty.findUser(name); if (um) return um(inv, ...args); return mc(inv.val, name, ...args); }
     if (inv instanceof RObj && (name === 'parse' || name === 'subparse') && inv.ty.mro.some(t => t.rules)) return grammarParse(inv.ty, args[0], args, name === 'subparse');   // Grammar.new.parse
-    if (inv instanceof RakuError && inv.payload && Object.prototype.hasOwnProperty.call(inv.payload, name)) return inv.payload[name];   // an exception's own fields (.method, .typename, …)
 )RKJS",
-R"RKJS(    // $*VM / $*KERNEL / $*DISTRO carry their fields in a Hash here, as they do in
+R"RKJS(    if (inv instanceof RakuError && inv.payload && Object.prototype.hasOwnProperty.call(inv.payload, name)) return inv.payload[name];   // an exception's own fields (.method, .typename, …)
+    // $*VM / $*KERNEL / $*DISTRO carry their fields in a Hash here, as they do in
     // the interpreter, so a method call on one had nothing to resolve against and
     // `$*VM.name` — the spelling every program uses, and the only one Rakudo
     // accepts — died with "No such method 'name' for invocant of type 'Hash'".
@@ -3803,10 +3803,10 @@ function rangeRand(s) {
     if (a > b) throw new RakuError(`Impossible to get a random number from range containing no values.\nThe sequence (...) operator supports descension between ${str(s.from)} and ${str(s.to)},\nbut for a random number between ${str(s.from)} and ${str(s.to)}, (${str(s.to)}..${str(s.from)}).rand is\nlikely to be functionally equivalent to what was meant by (${str(s.from)}..${str(s.to)}).rand`, 'X::Range::Rand::InvalidEndpoints');
     return numResult(a + rand() * (b - a));
 }
-M(T['IO::Handle'], { 'out-buffer': (s) => s.outBuffer === undefined ? (s.kind === 'out' || s.kind === 'err' ? 0 : 8192) : s.outBuffer });   // a file is buffered by default; the standard streams are not
-// a Hash's min/max go by value: the pair, or with :v the value, :k the key, :kv both, :p the pair
 )RKJS",
-R"RKJS(function minMaxHash(h, isMax, named) {
+R"RKJS(M(T['IO::Handle'], { 'out-buffer': (s) => s.outBuffer === undefined ? (s.kind === 'out' || s.kind === 'err' ? 0 : 8192) : s.outBuffer });   // a file is buffered by default; the standard streams are not
+// a Hash's min/max go by value: the pair, or with :v the value, :k the key, :kv both, :p the pair
+function minMaxHash(h, isMax, named) {
     const ps = arr(pairsOf(h)); let best = null, ties = [];
     const byValue = named && named.size;   // the adverbs compare values; the bare form compares whole pairs
     for (const p of ps) { const c = best ? (byValue ? (isMax ? cmpNum(p.v, best.v) : -cmpNum(p.v, best.v)) : (isMax ? cmpNum(p, best) : -cmpNum(p, best))) : 1; if (c > 0) { best = p; ties = [p]; } else if (c === 0) ties.push(p); }
@@ -3875,6 +3875,13 @@ const host = {
         if (inp) this.stdinPos = h.tpos; else h.pos = h.tpos;
         return mkList(out);
     },
+    // .tell / .seek count bytes, as the byte cursor does: the text read so
+    // far, encoded, and a seek decodes the bytes before it. They counted
+    // UTF-16 units, so "héllo\n" told 6 where it is 7 bytes.
+    handleTell(h) { if (h.kind === 'in') return this.stdinPos; if (h.bpos !== undefined && h.tpos === h.pos) return h.bpos; return new TextEncoder().encode((h.buf || '').slice(0, h.pos || 0)).length; },
+    handleSeek(h, p) { if (h.kind === 'in') { this.stdinPos = p; return true; } if (!h.bytes) h.bytes = this.fileBytes(h); h.bpos = Math.max(0, p); h.pos = h.tpos = new TextDecoder().decode(h.bytes.subarray(0, h.bpos)).length; return true; },
+    // .readchars(n): n characters (graphemes), as .getc takes one
+    handleReadchars(h, n) { this.shut(h, 'readchars'); let out = '', g; for (let k = 0; k < n && (g = this.handleGetc(h)) !== Nil; k++) out += g; return out; },
     handleEof(h) { if (h.kind === 'in') return this.stdinPos >= this.stdinAll().length; return h.pos >= h.buf.length; },
     handlePrint(h, s) { this.shut(h, 'print'); if (h.kind === 'out') { this.stdout(s); if (h.outBuffer === 0) this.flush(); return true; } if (h.kind === 'err') { this.stderr(s); return true; } h.out = (h.out || '') + s; if (h.out.length >= (h.outBuffer === undefined ? 65536 : h.outBuffer)) { this.appendFile(h.path, h.out); h.out = ''; } return true; },   // out-buffer: the size at which writes land; 0 is every write
     handleFlush(h) { if (h && h.kind !== 'out' && h.kind !== 'err' && h.out) { this.appendFile(h.path, h.out); h.out = ''; } if (h && h.kind === 'out') this.flush(); },
@@ -3942,13 +3949,13 @@ if (IS_NODE && nodeRequire) {
     host.copy = (a, b) => { fs.copyFileSync(a, b); return true; };
     host.rename = (a, b) => { fs.renameSync(a, b); return true; };
     host.chdir = p => { process.chdir(str(p)); host.cwd = nodeRequire('path').resolve(host.cwd, str(p)); return new RIOPath(host.cwd); };   // the logical path, not the realpath
-    host.open = (p, ...a) => { const named = nm(a); const path = str(p); const w = truthy(named.get('w')) || truthy(named.get('a')) || str(named.get('mode') || '') === 'wo'; const app = truthy(named.get('a')) || truthy(named.get('append')); const h = new RIOHandle(w ? 'file-w' : 'file-r', path); if (named.has('out-buffer')) { const ob = named.get('out-buffer'); h.outBuffer = ob === false ? 0 : ob === true ? 8192 : Number(toInt(ob)); } try { if (fs.statSync(path).isDirectory()) return failure(new RakuError(`'${path}' is a directory, cannot do '.open' on a directory`, 'X::IO::Directory')); } catch (e) { /* absent is not an answer yet: :w may still create it */ } if (w) { try { if (!app) fs.writeFileSync(path, ''); else fs.appendFileSync(path, ''); } catch (e) { return failure(openFailed(path, e)); } h.out = ''; } else { try { h.buf = fs.readFileSync(path, 'utf8'); } catch (e) { return failure(openFailed(path, e)); } } return h; };
+)RKJS",
+R"RKJS(    host.open = (p, ...a) => { const named = nm(a); const path = str(p); const w = truthy(named.get('w')) || truthy(named.get('a')) || str(named.get('mode') || '') === 'wo'; const app = truthy(named.get('a')) || truthy(named.get('append')); const h = new RIOHandle(w ? 'file-w' : 'file-r', path); if (named.has('out-buffer')) { const ob = named.get('out-buffer'); h.outBuffer = ob === false ? 0 : ob === true ? 8192 : Number(toInt(ob)); } try { if (fs.statSync(path).isDirectory()) return failure(new RakuError(`'${path}' is a directory, cannot do '.open' on a directory`, 'X::IO::Directory')); } catch (e) { /* absent is not an answer yet: :w may still create it */ } if (w) { try { if (!app) fs.writeFileSync(path, ''); else fs.appendFileSync(path, ''); } catch (e) { return failure(openFailed(path, e)); } h.out = ''; } else { try { h.buf = fs.readFileSync(path, 'utf8'); } catch (e) { return failure(openFailed(path, e)); } } return h; };
     host.close = h => { if (h.kind === 'file-w' && h.out) { fs.appendFileSync(h.path, h.out); h.out = ''; } h.closed = true; return true; };
     host.isTTY = h => h.kind === 'in' ? !!process.stdin.isTTY : h.kind === 'out' ? !!process.stdout.isTTY : h.kind === 'err' ? !!process.stderr.isTTY : false;
     const sigNum = name => name ? (nodeRequire('os').constants.signals[name] || 0) : 0;   // spawnSync names the signal
     host.shell = (cmd, ...a) => { const cp = nodeRequire('child_process'); host.flush(); const r = cp.spawnSync('/bin/sh', ['-c', str(cmd)], { stdio: 'inherit' }); return mkProc(r.status, str(cmd), sigNum(r.signal)); };
-)RKJS",
-R"RKJS(    host.run = (...args) => { const cp = nodeRequire('child_process'); const [pos, named] = splitArgs(args); host.flush(); const r = cp.spawnSync(str(pos[0]), pos.slice(1).map(str), { stdio: [truthy(named.get('in')) ? 'pipe' : 'inherit', truthy(named.get('out')) ? 'pipe' : 'inherit', truthy(named.get('err')) ? 'pipe' : 'inherit'], encoding: 'utf8' }); const p = mkProc(r.status, str(pos[0]), sigNum(r.signal)); p.a_out = new RIOHandle('str'); p.a_out.buf = r.stdout || ''; p.a_err = new RIOHandle('str'); p.a_err.buf = r.stderr || ''; return p; };
+    host.run = (...args) => { const cp = nodeRequire('child_process'); const [pos, named] = splitArgs(args); host.flush(); const r = cp.spawnSync(str(pos[0]), pos.slice(1).map(str), { stdio: [truthy(named.get('in')) ? 'pipe' : 'inherit', truthy(named.get('out')) ? 'pipe' : 'inherit', truthy(named.get('err')) ? 'pipe' : 'inherit'], encoding: 'utf8' }); const p = mkProc(r.status, str(pos[0]), sigNum(r.signal)); p.a_out = new RIOHandle('str'); p.a_out.buf = r.stdout || ''; p.a_err = new RIOHandle('str'); p.a_err.buf = r.stderr || ''; return p; };
 } else if (IS_DENO) {
     host.name = 'deno';
     host.argv = Deno.args.slice();
@@ -4153,7 +4160,8 @@ function defaultGist(thunk) { try { const d = thunk(); return typeof d === 'stri
 // JavaScript-hosted program can use in the first place. The other difference
 // from the interpreter, which resolves a NAME rather than consulting a table:
 // a constant merely HOLDING an enum value is not a member, so it is not here.
-const mainArgEnums = new Map();   // the PROGRAM's own members, registered as declared
+)RKJS",
+R"RKJS(const mainArgEnums = new Map();   // the PROGRAM's own members, registered as declared
 function registerEnumMember(name, v) { mainArgEnums.set(name, v); }
 let coreArgEnums = null;          // CORE's, built on first use
 function coreEnums() {
@@ -4187,8 +4195,7 @@ function bindMain(c, pos, named) {
             // the `--tls=True` / `--tls=False` spellings argValue already turned
             // into one. Anything else — `--tls=yes`, or the list a repeated
             // `--tls=…` collects — does not bind, and the usage message is printed.
-)RKJS",
-R"RKJS(            // The mirror of that is a `Str` named refusing the Bool those two
+            // The mirror of that is a `Str` named refusing the Bool those two
             // words became: `--a=True` does not bind a `Str :$a`.
             // …under any of its names: `:f(:$file)` answers `-f` and `--file`
             const key = (p.aliases || [p.name]).find(k => named.has(k));
@@ -4402,7 +4409,8 @@ function throwCtl(op, label) { throw op === 'next' ? new NextCtl(label) : op ===
 // EXPR xx N with the left side re-evaluated per copy
 function xxThunk(thunk, n) {
     if (n instanceof RWhatever || n === Infinity) return new RSeq((function* () { for (;;) yield thunk(); })(), true);
-    const k = Number(toInt(n)); const out = [];
+)RKJS",
+R"RKJS(    const k = Number(toInt(n)); const out = [];
     for (let i = 0; i < k; i++) { const v = thunk(); if (v instanceof RSlip) out.push(...v.a); else out.push(v); }
     return mkList(out);
 }
@@ -4418,8 +4426,7 @@ function mcSet(inv, name, v) {
 }
 // $obj.^name / Foo.^methods
 function meta(inv, name, ...args) { const t = inv instanceof RType ? inv : typeOf(inv); return mc(t, name, ...args); }
-)RKJS",
-R"RKJS(// Int($x) / Str(…) / a subset or class coercion
+// Int($x) / Str(…) / a subset or class coercion
 function coerce(ty, v) {
     if (ty === T.Promise) { if (v instanceof RSupply) return supplyPromise(v); if (v instanceof RPromise) return v; }   // Promise(supply { … })
     if (ty === T.Int) return toInt(toNumeric(v));
@@ -4630,7 +4637,8 @@ function jsCall(o, name, args) {
 function jsGet(o, k) { const target = o instanceof RJsObj ? o.v : o; return fromJs(target == null ? undefined : target[typeof k === 'number' ? k : str(k)]); }
 function jsSet(o, k, v) { const target = o instanceof RJsObj ? o.v : o; target[typeof k === 'number' ? k : str(k)] = toJs(v); return v; }
 function jsExists(o, k) { const target = o instanceof RJsObj ? o.v : o; return target != null && (str(k) in target); }
-function jsNew(ctor, args) { const C = ctor instanceof RJsObj ? ctor.v : ctor; return fromJs(new C(...args.map(toJs))); }
+)RKJS",
+R"RKJS(function jsNew(ctor, args) { const C = ctor instanceof RJsObj ? ctor.v : ctor; return fromJs(new C(...args.map(toJs))); }
 function jsTruthy(o) { return !!o.v; }
 function jsStr(o) { try { return String(o.v); } catch (e) { return '[object]'; } }
 // EVAL 'literal', :lang<JavaScript>: the emitter inlines the code; this wraps its value
@@ -4645,8 +4653,7 @@ M(JsObjectT, {
     'Numeric': (s) => fromJs(Number(s.v)), 'Int': (s) => toInt(fromJs(Number(s.v))), 'Num': (s) => mkNum(Number(s.v)), 'WHAT': (s) => JsObjectT, 'js': (s) => s, 'typeof': (s) => typeof s.v, 'instanceof': (s, c) => s.v instanceof (c instanceof RJsObj ? c.v : c),
     'invoke': (s, ...a) => fromJs(s.v(...a.map(toJs))), 'call': (s, ...a) => fromJs(s.v(...a.map(toJs))),
 });
-)RKJS",
-R"RKJS(Object.assign(R, { RJsObj, JsObjectT, toJs, fromJs, jsCall, jsGet, jsSet, jsNew, jsEval, JS });
+Object.assign(R, { RJsObj, JsObjectT, toJs, fromJs, jsCall, jsGet, jsSet, jsNew, jsEval, JS });
 
 // ---- 86-async.js ----
 // `start`, `await` and Promise (TRANSPILE-PLAN P4): concurrency, not
@@ -4839,7 +4846,8 @@ function toSupply(src) {
     if (src instanceof RSupplier) return src.supply;
     if (src instanceof RChannel) return src.Supply();
     if (src instanceof RPromise) return new RSupply(null, (t) => { src.p.then(v => { if (!t.closed) { safeEmit(t, v); if (t.done) t.done(); t.tap.close(); } }, e => { if (!t.closed) { if (t.quit) t.quit(e); t.tap.close(); } }); });
-    if (src instanceof RJsObj && src.v && typeof src.v.then === 'function') return toSupply(new RPromise()) && (() => { const p = new RPromise(); src.v.then(v => p.keep(fromJs(v)), e => p.break_(e)); return toSupply(p); })();
+)RKJS",
+R"RKJS(    if (src instanceof RJsObj && src.v && typeof src.v.then === 'function') return toSupply(new RPromise()) && (() => { const p = new RPromise(); src.v.then(v => p.keep(fromJs(v)), e => p.break_(e)); return toSupply(p); })();
     if (src instanceof RList || src instanceof RSeq || src instanceof RRange || src instanceof RSlip) return supplyFromList(arr(src));
     throw new RakuError(`Cannot whenever a ${typeName(src)}`);
 }
@@ -4865,8 +4873,7 @@ function derived(src, onEmit, onDone) {
     });
 }
 const finishTap = (t) => { if (!t.closed) { if (t.done) t.done(); t.tap.close(); } };
-)RKJS",
-R"RKJS(function supplyHead(src, n) { const k = n === undefined ? 1 : Number(toInt(n)); return new RSupply(null, (t) => { let c = 0; if (k <= 0) { finishTap(t); return; } const inner = src.tap(v => { if (t.closed) return; c++; safeEmit(t, v); if (c >= k) { finishTap(t); } }, () => finishTap(t), e => { if (!t.closed) { if (t.quit) t.quit(e); t.tap.close(); } }); t.cleanup = () => inner.close(); }); }
+function supplyHead(src, n) { const k = n === undefined ? 1 : Number(toInt(n)); return new RSupply(null, (t) => { let c = 0; if (k <= 0) { finishTap(t); return; } const inner = src.tap(v => { if (t.closed) return; c++; safeEmit(t, v); if (c >= k) { finishTap(t); } }, () => finishTap(t), e => { if (!t.closed) { if (t.quit) t.quit(e); t.tap.close(); } }); t.cleanup = () => inner.close(); }); }
 function supplyLines(src, chomp) {
     return new RSupply(null, (t) => {
         let buf = '';
@@ -5023,7 +5030,8 @@ function propRe(name) {
     return r;
 }
 const NL_CPS = new Set([0x0A, 0x0B, 0x0C, 0x0D, 0x85, 0x2028, 0x2029]);
-function isSpaceCp(cp) { return cp === 0x20 || (cp >= 9 && cp <= 13) || cp === 0x85 || cp === 0xA0 || cp === 0x1680 || (cp >= 0x2000 && cp <= 0x200A) || cp === 0x2028 || cp === 0x2029 || cp === 0x202F || cp === 0x205F || cp === 0x3000; }
+)RKJS",
+R"RKJS(function isSpaceCp(cp) { return cp === 0x20 || (cp >= 9 && cp <= 13) || cp === 0x85 || cp === 0xA0 || cp === 0x1680 || (cp >= 0x2000 && cp <= 0x200A) || cp === 0x2028 || cp === 0x2029 || cp === 0x202F || cp === 0x205F || cp === 0x3000; }
 function ccFlag(f, cp, ch) {
     switch (f) {
         case 'a': return cp === 0x5F || (cp < 128 ? ((cp | 32) >= 97 && (cp | 32) <= 122) : propRe('L').test(ch));
@@ -5052,8 +5060,7 @@ function classFlagsMatch(flags, cp, ch) {
 }
 // the grapheme that starts at i: [i, end)
 function clusterEnd(s, i) {
-)RKJS",
-R"RKJS(    const cp = s.codePointAt(i);
+    const cp = s.codePointAt(i);
     let j = i + (cp > 0xFFFF ? 2 : 1);
     if (cp === 0x0D && s.charCodeAt(j) === 0x0A) return j + 1;
     if (cp < 0x300 && (j >= s.length || s.charCodeAt(j) < 0x300)) return j;   // the ASCII fast path
@@ -5253,7 +5260,8 @@ function m(n, st, pos, k) {
         }
         case 'AnchorEnd': {
             if (n.multiline) { if (pos === s.length || s[pos] === '\n') return k(pos); return false; }
-            if (n.absEnd) return pos === s.length ? k(pos) : false;
+)RKJS",
+R"RKJS(            if (n.absEnd) return pos === s.length ? k(pos) : false;
             return (pos === s.length || (pos === s.length - 1 && s[pos] === '\n')) ? k(pos) : false;
         }
         case 'WBLeft': return (isWordAt(s, pos) && !isWordAt(s, pos - 1)) ? k(pos) : false;
@@ -5286,8 +5294,7 @@ function m(n, st, pos, k) {
         case 'VarMatch': return varMatch(n, st, pos, k);
         case 'CapStart': { const saved = st.capFrom; st.capFrom = pos; if (k(pos)) return true; st.capFrom = saved; return false; }
         case 'CapEnd': { const saved = st.capTo; st.capTo = pos; if (k(pos)) return true; st.capTo = saved; return false; }
-)RKJS",
-R"RKJS(        case 'CondRef': throw new RakuError('a Perl 5 conditional group is not in the JS core');
+        case 'CondRef': throw new RakuError('a Perl 5 conditional group is not in the JS core');
         default: throw new RakuError('unknown regex node ' + n.k);
     }
 }
@@ -5536,7 +5543,8 @@ function varMatch(n, st, pos, k) {
     const s = st.s;
     let v;
     if (n.name.startsWith('$<')) { const nm = n.name.slice(2, -1); const l = st.named.get(nm); if (!l || !l.length) return false; v = l[l.length - 1].Str(); }
-    else if (/^\$\d+$/.test(n.name)) { const c = st.caps[Number(n.name.slice(1))]; if (!c) return false; v = c.Str(); }
+)RKJS",
+R"RKJS(    else if (/^\$\d+$/.test(n.name)) { const c = st.caps[Number(n.name.slice(1))]; if (!c) return false; v = c.Str(); }
     else if (n.fn) v = n.fn();
     else return false;
     if (v instanceof RRegex) return callRule({ rx: v, kind: v.tree.ratchet ? 'token' : 'regex' }, '', { noCapture: true }, st, pos, (sub, q) => k(q));
@@ -5567,8 +5575,7 @@ function namedFromFrame(frame, tree) {
     for (const [name, list] of frame) {
         if (hashNames.includes(name)) { const h = new RHash(); for (const x of list) h.m.set(x.Str(), x.Str()); named.set(name, h); }
         else if (list.length > 1 || listNames.includes(name)) named.set(name, mkList(list.slice()));
-)RKJS",
-R"RKJS(        else named.set(name, list[0]);
+        else named.set(name, list[0]);
     }
     for (const name of listNames) if (!named.has(name)) named.set(name, mkList([]));
     return named;
@@ -5769,7 +5776,8 @@ function rxSubst(subject, rxo, replFn, opts) {
     return { s: out, m: global ? mkList(ms) : ms[0] };
 }
 function regexMatch(v, rxo) { const mt = runSearch(str(v), rxo, null, 0); return mt ? mt : Nil; }   // a failed match is Nil, as `~~` answers
-function regexComb(s, rxo, limit) { const ms = allMatches(s, rxo, null, false); const out = ms.map(mt => mt.Str()); return mkList(limit !== undefined ? out.slice(0, Number(toInt(limit))) : out); }
+)RKJS",
+R"RKJS(function regexComb(s, rxo, limit) { const ms = allMatches(s, rxo, null, false); const out = ms.map(mt => mt.Str()); return mkList(limit !== undefined ? out.slice(0, Number(toInt(limit))) : out); }
 function regexSplit(s, rxo, limit, named) {
     const ms = allMatches(s, rxo, null, false);
     const v = named && truthy(named.get('v')), kk = named && truthy(named.get('k')), kv = named && truthy(named.get('kv')), p = named && truthy(named.get('p'));
@@ -5799,8 +5807,7 @@ function matchGist(mt, depth) {
     return out;
 }
 function matchRaku(mt) {
-)RKJS",
-R"RKJS(    const list = mt.caps.map(c => c instanceof RMatch ? matchRaku(c) : raku(c)).join(', ');
+    const list = mt.caps.map(c => c instanceof RMatch ? matchRaku(c) : raku(c)).join(', ');
     const hash = Array.from(mt.named, ([k, v]) => strLit(k) + ' => ' + (v instanceof RMatch ? matchRaku(v) : raku(v))).join(', ');
     return 'Match.new(:orig(' + strLit(mt.orig) + '), :from(' + gOff(mt.orig, mt.from) + '), :pos(' + gOff(mt.orig, mt.to) + ')' + (list ? ', :list((' + list + '))' : '') + (hash ? ', :hash(Map.new((' + hash + ')))' : '') + ')';
 }

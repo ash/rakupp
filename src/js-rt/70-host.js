@@ -54,6 +54,13 @@ const host = {
         if (inp) this.stdinPos = h.tpos; else h.pos = h.tpos;
         return mkList(out);
     },
+    // .tell / .seek count bytes, as the byte cursor does: the text read so
+    // far, encoded, and a seek decodes the bytes before it. They counted
+    // UTF-16 units, so "héllo\n" told 6 where it is 7 bytes.
+    handleTell(h) { if (h.kind === 'in') return this.stdinPos; if (h.bpos !== undefined && h.tpos === h.pos) return h.bpos; return new TextEncoder().encode((h.buf || '').slice(0, h.pos || 0)).length; },
+    handleSeek(h, p) { if (h.kind === 'in') { this.stdinPos = p; return true; } if (!h.bytes) h.bytes = this.fileBytes(h); h.bpos = Math.max(0, p); h.pos = h.tpos = new TextDecoder().decode(h.bytes.subarray(0, h.bpos)).length; return true; },
+    // .readchars(n): n characters (graphemes), as .getc takes one
+    handleReadchars(h, n) { this.shut(h, 'readchars'); let out = '', g; for (let k = 0; k < n && (g = this.handleGetc(h)) !== Nil; k++) out += g; return out; },
     handleEof(h) { if (h.kind === 'in') return this.stdinPos >= this.stdinAll().length; return h.pos >= h.buf.length; },
     handlePrint(h, s) { this.shut(h, 'print'); if (h.kind === 'out') { this.stdout(s); if (h.outBuffer === 0) this.flush(); return true; } if (h.kind === 'err') { this.stderr(s); return true; } h.out = (h.out || '') + s; if (h.out.length >= (h.outBuffer === undefined ? 65536 : h.outBuffer)) { this.appendFile(h.path, h.out); h.out = ''; } return true; },   // out-buffer: the size at which writes land; 0 is every write
     handleFlush(h) { if (h && h.kind !== 'out' && h.kind !== 'err' && h.out) { this.appendFile(h.path, h.out); h.out = ''; } if (h && h.kind === 'out') this.flush(); },
