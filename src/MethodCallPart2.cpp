@@ -4050,7 +4050,10 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
             ValueList none; methodCall(pin, "close", none);
         }
         if (m == "out" || m == "err") { Value h = Value::makeHash(); h.hashKind = "FileHandle"; (*h.hash())["buffer"] = (*inv.hash())[m == "out" ? "out-str" : "err-str"]; (*h.hash())["mode"] = Value::str("r"); (*h.hash())["captured"] = Value::boolean(true); (*h.hash())["proc-owner"] = inv; if (inv.hash()->count("bin") && (*inv.hash())["bin"].truthy()) (*h.hash())["bin"] = Value::boolean(true); return h; }
-        if (m == "sink" || m == "self") return inv;
+        // `.sink` itself throws for an unsuccessful run, inside whatever `try`
+        // holds the call, rather than hand the Proc back to be sunk outside it
+        if (m == "sink") { sinkValue(inv); return Value::nil(); }
+        if (m == "self") return inv;
         if (m == "pid") { auto it = inv.hash()->find("pid"); return it != inv.hash()->end() ? it->second : Value::integer(0); } // (was a hard-coded 0)
         // `.shell(CMD)` / `.spawn(@cmd)` on a Proc built by `Proc.new` — run it
         // NOW, with the adverbs the constructor recorded, and fill this same
