@@ -306,7 +306,10 @@ git:
   Python and Git, each on the PATH.
 
 `arm-none-eabi-gcc --version` printing a version says the compiler is found.
-Then fetch the build project and build it once:
+Check it in the terminal you build in, **before** the first build: a build
+that does not find it falls back to the computer's own compiler, and keeps
+that choice (below, under "When something goes wrong"). Then fetch the build
+project and build it once:
 
 ```bash
 cd ~
@@ -390,9 +393,23 @@ way; not tried here.)
 
 ### When something goes wrong
 
-- **`arm-none-eabi-gcc` not found, or CMake says it found no C compiler:**
-  the compiler is not on this terminal's PATH. Run the `export` line again,
-  or open a terminal after adding it to your shell's profile.
+- **`clang: error: unsupported argument 'cortex-m4' to option '-mcpu='`**
+  (and `unsupported option '-mfpu='`, `ninja: build stopped`): the first
+  `build.py` ran without `arm-none-eabi-gcc` on the PATH, so CMake took the
+  Mac's own compiler, which cannot build for the board, and wrote that
+  choice into `build/`. Putting the compiler on the PATH afterwards is not
+  enough while `build/` remembers the old choice: remove it, and build again
+  in a terminal where `arm-none-eabi-gcc --version` works.
+
+  ```bash
+  export PATH=~/Library/Arduino15/packages/arduino/tools/arm-none-eabi-gcc/7-2017q4/bin:$PATH
+  cd ~/microbit-v2-samples
+  rm -rf build
+  python3 build.py
+  ```
+
+  `build/` holds only what the build made; CODAL's download stays in
+  `libraries/`, so this build takes under a minute.
 - **No `MICROBIT` drive:** try another cable; and the program is for a
   micro:bit V2 (a speaker on the back, a touch logo on the front), which an
   older V1 cannot run.

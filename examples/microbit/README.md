@@ -309,8 +309,12 @@ export PATH=~/Library/Arduino15/packages/arduino/tools/arm-none-eabi-gcc/7-2017q
 ```
 
 (On Debian or Ubuntu: `sudo apt install gcc-arm-none-eabi binutils-arm-none-eabi cmake git python3`;
-the guide has the other ways.) Then fetch the build project and build it
-once, which downloads CODAL (95 MB) and takes under a minute:
+the guide has the other ways.) Check that `arm-none-eabi-gcc --version` works
+in the terminal you build in: a first build without it picks the computer's
+own compiler and keeps it, and stops with `clang: error: unsupported argument
+'cortex-m4'` (`rm -rf build` and building again, with the compiler found,
+mends it). Then fetch the build project and build it once, which downloads
+CODAL (95 MB) and takes under a minute:
 
 ```bash
 cd ~
