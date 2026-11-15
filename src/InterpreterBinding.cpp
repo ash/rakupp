@@ -3590,7 +3590,7 @@ static void forceLazyImpl(const Value& v) {
         if (!st->exhausted) return;                         // unbounded: no "all of it"
     }
 #endif
-    g_cbInterp->materializeLazy(v, Interpreter::kDrainAll);
+    g_cbInterp->materializeLazy(v, st->gatherSeq && !st->exhausted ? 1000000 : Interpreter::kDrainAll);   // (one running may not end)
 }
 // The display name of a registry key — see ClassInfo::dispName. Reads the live
 // class registry through g_matchClasses, so a free function suffices and Value
