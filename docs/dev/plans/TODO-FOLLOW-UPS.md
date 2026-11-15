@@ -1,6 +1,6 @@
 # Follow-ups
 
-*Collected 2026-10-20; added to 2026-11-12.*
+*Collected 2026-10-20; added to 2026-11-15.*
 
 Findings that sessions on 2026-10-19 and 2026-10-20 proposed as follow-up
 work and nobody started: gaps found in passing while doing something else.
@@ -789,6 +789,26 @@ moves to [TODO.md](TODO.md).
   out not to be rakupp's.
 
 ## Backends
+
+- [ ] **`--exe`: a failed Proc returned from a `try` block is not sunk,
+  and a `die` prints no frames** (found 2026-11-15 fixing #265, 8f78649f;
+  interpreted and `--aot` both are right):
+
+  ```raku
+  sub bye() { try { run 'false' }; say 'left' }
+  bye();       # Rakudo: "The spawned command 'false' exited unsuccessfully"
+               #   from sub bye; a compiled binary says `left`, exit 0
+  sub f() { die 'boom' }; f();   # a compiled binary prints `boom` alone,
+               #   no `in sub f at … line 1` / `in block <unit>` lines
+  ```
+
+  The first is a silent wrong answer: the `try`'s value is the failed Proc,
+  and sinking it outside the `try` is what throws; native codegen drops the
+  sink. Same with `run 'false', :err if True` inside the `try`. The second
+  may be a known limit of native code (no frame list to render); check
+  before fixing. Done when the first throws as the interpreter does, with a
+  t/regression/ program compiled in a child process, and t/exe/parity.raku
+  passes.
 
 - [ ] **`--exe`: a block's `my $x` is the program's `$x` when the program
   declares one too** (found 2026-11-10 writing t/race/match-var-threads.raku;
