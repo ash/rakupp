@@ -2,6 +2,8 @@
 # Every picture: MicroPython's 64 built-in ones in turn, then two made while
 # building with `image`, one the program fills as it runs, and single LEDs.
 # The board shows the same pictures from the emitter's own copy of the list.
+# No pauses: on a real board the whole show is over in a flicker, ending
+# dark. examples/microbit/pictures.raku shows each picture for half a second.
 use MicroBit;
 
 constant SMILE = image q:to/END/;

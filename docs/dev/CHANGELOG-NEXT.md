@@ -51,7 +51,7 @@ d4a3b66c, 7386791f, fa8d1ea7, 69e90f7a, 27e35b21, a9c5615f, 1a5145f1, 477a7194,
   and each one's C++ to the interpreter byte for byte, with 21 refusals (45
   checks, ~7 s). It is the Arduino target's emitter, made the boards' shared
   one (25c5b064), with every Arduino sketch byte for byte what it was. A
-  walkthrough of seven programs is examples/microbit/, beside a guide and a
+  walkthrough of eight programs is examples/microbit/, beside a guide and a
   FAQ (3c0f0f43). Every gate program and example builds with CODAL into a
   `MICROBIT.hex`, with no warning from the program (`--codal=DIR`, gcc 7.2.1,
   the Arduino IDE's); not yet tried on real hardware. See

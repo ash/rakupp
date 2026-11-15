@@ -18,7 +18,8 @@ full reference is [docs/guide/MICROBIT.md](../../docs/guide/MICROBIT.md).
 |---|---|
 | [`hello.raku`](hello.raku) | The first program: text and a picture, on a simulated board |
 | [`heart.raku`](heart.raku) | Pictures: the built-in ones, and one made while building, with dim LEDs |
-| [`buttons.raku`](buttons.raku) | Buttons and the touch logo, and pressing them on the simulated board |
+| [`pictures.raku`](pictures.raku) | All 64 built-in pictures in turn, each with its name on the serial port |
+| [`buttons.raku`](buttons.raku) | A counter: button A up, B down, the touch logo back to 0 |
 | [`tilt.raku`](tilt.raku) | The accelerometer: a MicroPython course's first program, in Raku |
 | [`spirit-level.raku`](spirit-level.raku) | Single LEDs, moved by the tilt |
 | [`dice.raku`](dice.raku) | Gestures and random numbers: shake for a number |
@@ -91,7 +92,9 @@ loop {
 ```
 
 `Image` has MicroPython's 64 pictures, by their names spelt as Raku:
-`Image.HEART`, `Image.ARROW-NE`, `Image.MUSIC-QUAVER`. `image` makes your
+`Image.HEART`, `Image.ARROW-NE`, `Image.MUSIC-QUAVER`;
+[`pictures.raku`](pictures.raku) shows them all, half a second each, with
+each name on the serial port as it comes up. `image` makes your
 own from the same five rows of digits, or from `#` (lit) and `.` (dark). It
 runs **while building**, on your computer, so the board gets 25 bytes and
 never the text of the picture. [`heart.raku`](heart.raku) beats:
@@ -113,42 +116,58 @@ $ RAKUPP_MICROBIT_STOP=2000 rakupp heart.raku
 
 ## 3. Buttons and the logo
 
-[`buttons.raku`](buttons.raku) counts the presses of button A, scrolls the
-count when B is pressed, and starts again from 0 when the logo is touched:
+[`buttons.raku`](buttons.raku) is a counter. Press button A and it counts
+up, press B and it counts down, touch the gold logo on the front and it goes
+back to 0. One button at a time: there is nothing to press together. The
+count is on the LEDs from the start, and on the serial port each time it
+changes:
 
 ```raku
 my int $count = 0;
+display.show($count);
 loop {
+    my int $was = $count;
     $count += button-a.get-presses;
-    if button-b.was-pressed {
+    if button-b.was-pressed && $count > 0 { $count-- }
+    if pin-logo.is-touched { $count = 0 }
+    if $count != $was {
         say "count: $count";
-        display.scroll($count);
-    }
-    if pin-logo.is-touched {
-        $count = 0;
-        display.show(Image.NO);
+        display.show($count);
     }
     pause 50;
 }
 ```
 
-`is-pressed` is whether a button is down now; `was-pressed` and
-`get-presses` are about the presses that began since you last asked, so a
-quick press between two looks is not lost. On the simulated board you press
-them with `RAKUPP_MICROBIT_BUTTONS`: a name, `@`, and the time in
-milliseconds, held for a tenth of a second unless you give an end (`B@1500-2400`):
+There are three ways to ask about a button. `is-pressed` is whether it is
+down now. `get-presses` is how many presses began since you last asked, so
+two quick presses of A count two; `was-pressed` is whether there was at
+least one. The touch logo has `is-touched`, which is whether a finger is on
+it now.
+
+On the simulated board you press them with `RAKUPP_MICROBIT_BUTTONS`: a name
+(`A`, `B`, `logo`), `@`, and the time in milliseconds, held for a tenth of a
+second unless you give an end (`B@1500-2400`):
 
 ```
-$ RAKUPP_MICROBIT_STOP=3500 RAKUPP_MICROBIT_BUTTONS="A@200,A@600,A@900,B@1500,logo@3100" rakupp buttons.raku
+$ RAKUPP_MICROBIT_STOP=3000 RAKUPP_MICROBIT_BUTTONS="A@200,A@600,A@900,B@1500,logo@2500" rakupp buttons.raku
+[0 ms] show "0"
+count: 1
+[200 ms] show "1"
+count: 2
+[600 ms] show "2"
 count: 3
-[1500 ms] scroll "3"
-[3140 ms] display 90009:09090:00900:09090:90009
-[3500 ms] stop
+[900 ms] show "3"
+count: 2
+[1500 ms] show "2"
+count: 0
+[2500 ms] show "0"
+[3000 ms] stop
 ```
 
-The logo was touched at 3100 ms, and the program saw it at 3140: until then
-it was busy scrolling the count. A touch while the board scrolls is missed,
-on the board as here.
+A number of one digit is shown at once. A longer one, or text, takes time
+on the display (`show "12"` takes 1.6 s), and the program waits for it: a
+touch of the logo then is missed, on the board as here, while a press of A
+or B is still counted.
 
 Every variable in a board program has a native type: `my int $count`, not
 `my $count`. A board has no untyped variables, and rakupp tells you where it

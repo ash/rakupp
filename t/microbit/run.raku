@@ -11,9 +11,12 @@
 # virtual time, with the inputs a case's header lines give — `# stop: MS` is
 # RAKUPP_MICROBIT_STOP, `# buttons:` RAKUPP_MICROBIT_BUTTONS, and so on for
 # accel, gestures, heading, temp, light, pins and seed — so a run is exact and
-# takes milliseconds. stderr is compared without the location lines under a
-# `die` message: the interpreter prints a backtrace, a board the line. For
-# the same reason the goldens are kept without them.
+# takes milliseconds. The cases are written for that clock and those
+# inputs, to be compared rather than watched: images.raku never pauses, so
+# on a real board it is over in a flicker. The programs to watch on a board
+# are in examples/microbit. stderr is compared without the location lines
+# under a `die` message: the interpreter prints a backtrace, a board the
+# line. For the same reason the goldens are kept without them.
 #
 # Then what the board refuses: programs outside the subset must stop the build
 # with exit 5 and a message naming the construct and its line.
