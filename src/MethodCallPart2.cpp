@@ -6040,7 +6040,7 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
         st->infinite = !hasCond; st->mayEnd = !hasCond;   // (rakudo#1692)
         // with a condition its end is unknown until it comes: walked live, like
         // a stream — a `for` pulls one per iteration, nothing reads ahead
-        st->streaming = hasCond;
+        st->streaming = hasCond; st->dropsRead = true;   // (it only appends: #263)
         auto first = std::make_shared<bool>(true);
         auto done = std::make_shared<bool>(false);
         st->appendNext = [this, body, cond, after, hasCond, hasAfter, first, done, label, repeat](ValueList& cache) -> bool {
@@ -6103,7 +6103,7 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
                 Value iter = args[0];
                 Value v = Value::array(); v.isList = true; v.s = "Seq";
                 auto st = std::make_shared<LazySeqState>();
-                st->gatherSeq = true;
+                st->gatherSeq = st->dropsRead = true;   // (pull-one pushes and keeps nothing: #263)
                 st->iterObj = iter;
                 if (Value* il = iter.obj()->cls->findMethod("is-lazy")) {
                     ValueList none;
@@ -9905,7 +9905,7 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
     // out and says it was lazy — `(lazy 1..3).raku` is `(1, 2, 3).lazy.Seq`
     if (m == "raku" && declLazyLive(inv)) {
         if (!inv.isList) return Value::str("[...]");
-        materializeLazy(inv, 1000000);
+        materializeLazy(inv, kDrainAll);
         std::string r = rakuRepr(inv);
         if (r.size() > 4 && r.compare(r.size() - 4, 4, ".Seq") == 0) r.insert(r.size() - 4, ".lazy");
         else r += ".lazy";

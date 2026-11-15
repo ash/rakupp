@@ -3109,7 +3109,7 @@ Value Interpreter::execForStmt(Stmt* s, bool sink) {
             ~TailVarG() { t.bindRawTails = b; t.tailVarSlot = s; }
         } tvg{tctx(), tctx().bindRawTails, tctx().tailVarSlot};
         if (!tailVars.empty()) { tctx().bindRawTails = &tailVars; tctx().tailVarSlot = nullptr; }
-        Value lvRaw = eval(fs->list.get());
+        Value lvRaw = forListEval(fs->list.get());
         // …a slot the loop's own scope still reaches: the same variable,
         // not one the block declared and has already let go of
         Value* tailSlot = nullptr;
@@ -3292,7 +3292,7 @@ Value Interpreter::execForStmt(Stmt* s, bool sink) {
             std::shared_ptr<LazySeqState> liveSt;
             if (!oneItem && lv.t == VT::Array && lv.arr() && lv.ext() && !isMultiDimShaped(lv)) {
                 auto st = std::static_pointer_cast<LazySeqState>(lv.ext());
-                if (st->appendNext && (st->infinite || st->streaming || (st->gatherSeq && !st->exhausted)))
+                if (st->appendNext && (st->infinite || st->overEndless || st->streaming || (st->gatherSeq && !st->exhausted)))
                     { liveSt = st; liveArr = lv.arrS(); }
             }
             // an integer Range is walked by its ends, as the block form walks
@@ -3336,15 +3336,17 @@ Value Interpreter::execForStmt(Stmt* s, bool sink) {
             }
             else items.push_back(lv);
             ValueList& itemsR = liveArr ? *liveArr : items;
+            size_t base = 0;   // (what the loop read of a live source no one else holds goes, as below)
+            const long mine = liveArr ? 1 + (lv.arr() == liveArr.get()) + (lvRaw.arr() == liveArr.get()) : 0;
             auto haveItem = [&](size_t want) -> bool { // grows a live source
-                if (want < itemsR.size()) return true;
+                if (want < base + itemsR.size()) return true;
                 if (!liveSt) return false;
                 // a source that says it has no more is EXHAUSTED, as materializeLazy
                 // records it: `for @e { }` reads a lazy Array out, so it is no longer
                 // lazy afterwards (`@e.is-lazy` False, `@e.elems` answers)
-                while (itemsR.size() <= want)
+                while (base + itemsR.size() <= want)
                     if (!liveSt->appendNext(itemsR)) { liveSt->exhausted = true; break; }
-                return want < itemsR.size();
+                return want < base + itemsR.size();
             };
             // A live source only learns it is at its end by asking for one
             // more element, so only a body with a LAST phaser waiting pays
@@ -3360,8 +3362,10 @@ Value Interpreter::execForStmt(Stmt* s, bool sink) {
             const bool quantSrc = !oneItem && immutableQuantSource(fs->list.get());
             const bool immSrc = !oneItem && (quantSrc || immutableLoopSource(fs->list.get()));
             for (size_t i = 0; haveItem(i); i++) {
+                if (liveSt && liveSt->dropsRead && i - base >= 1024 && liveArr.use_count() == mine)
+                    base += liveSt->dropFront(itemsR, i - base);
                 Value& tv = env->vars["$_"];
-                tv = itemsR[i];
+                tv = itemsR[i - base];
                 if (immSrc) {
                     tv.readonly = tv.immutableBind = true;
                     if (quantSrc && tv.t == VT::Pair) tv.pairValRO = true;
@@ -3373,7 +3377,7 @@ Value Interpreter::execForStmt(Stmt* s, bool sink) {
         if (hadTopic) env->vars["$_"] = savedTopic; else env->vars.erase("$_");
         return forResult();
     }
-    Value listvRaw = eval(fs->list.get());
+    Value listvRaw = forListEval(fs->list.get());
     if (!listvRaw.itemized) seqUse(listvRaw, SeqUse::Iterate);   // a Seq is read once (SeqToken)
     Value listv = iterationSourceOf(listvRaw);
     drainIfFiniteLazy(listv);
@@ -3831,7 +3835,7 @@ Value Interpreter::execForStmt(Stmt* s, bool sink) {
         // loop below, which pulls one element per iteration)
         const bool liveLazy = listv.ext() && [&] {
             auto st = std::static_pointer_cast<LazySeqState>(listv.ext());
-            return st->appendNext && (st->infinite || st->streaming || (st->gatherSeq && !st->exhausted));
+            return st->appendNext && (st->infinite || st->overEndless || st->streaming || (st->gatherSeq && !st->exhausted));
         }();
         // PACKED-ARRAY-PLAN: `for @a` over a still-packed array walks the
         // words, and a write through the topic goes back as a word while it
@@ -4114,7 +4118,7 @@ Value Interpreter::execForStmt(Stmt* s, bool sink) {
     std::shared_ptr<LazySeqState> liveSt;
     if (!scalarItem && listv.t == VT::Array && listv.arr() && listv.ext()) {
         auto st = std::static_pointer_cast<LazySeqState>(listv.ext());
-        if (st->appendNext && (st->infinite || st->streaming || (st->gatherSeq && !st->exhausted)))
+        if (st->appendNext && (st->infinite || st->overEndless || st->streaming || (st->gatherSeq && !st->exhausted)))
             { liveSt = st; liveArr = listv.arrS(); }
     }
     // a Blob/Buf iterates its BYTES (as Int) — `for $data -> $b1,$b2?,$b3?`
@@ -4141,12 +4145,22 @@ Value Interpreter::execForStmt(Stmt* s, bool sink) {
     }
     else items.push_back(listv);
     ValueList& itemsR = liveArr ? *liveArr : items; // the list the loops walk
+    // …from element `base` on: what the loop has read of a live source that
+    // only appends goes once no one else holds it (dropRead, issue #263)
+    size_t base = 0;
+    auto at = [&](size_t k) -> Value& { return itemsR[k - base]; };
+    const long mine = liveArr ? 1 + (listv.arr() == liveArr.get()) + (listvRaw.arr() == liveArr.get()) : 0;
+    auto dropRead = [&](size_t i) {   // (the loop is at element i: `haveItem(i) && dropRead(i)`)
+        if (liveSt && liveSt->dropsRead && i - base >= 1024 && liveArr.use_count() == mine)
+            base += liveSt->dropFront(itemsR, i - base);
+        return true;
+    };
     auto haveItem = [&](size_t want) -> bool { // true = element `want` exists (grows a live source)
-        if (want < itemsR.size()) return true;
+        if (want < base + itemsR.size()) return true;
         if (!liveSt) return false;
-        while (itemsR.size() <= want)   // (an end reached is recorded, as above)
+        while (base + itemsR.size() <= want)   // (an end reached is recorded, as above)
             if (!liveSt->appendNext(itemsR)) { liveSt->exhausted = true; break; }
-        return want < itemsR.size();
+        return want < base + itemsR.size();
     };
     // A live source only learns it is at its end by asking for one more
     // element, so only a body with a LAST phaser waiting pays that
@@ -4201,13 +4215,13 @@ Value Interpreter::execForStmt(Stmt* s, bool sink) {
                 if ((*backArr)[at].t == VT::Array) (*backArr)[at].itemized = false;
             }
         };
-        for (size_t i = 0; haveItem(i); i += np) {
+        for (size_t i = 0; haveItem(i) && dropRead(i); i += np) {
             auto scope = makeSlabShared<Env>(); scope->parent = tctx().cur;
             // a short LAST chunk binds what there is: defaults fill in,
             // a required parameter left over is an arity error
             ValueList row;
             for (size_t k = 0; k < np; k++)
-                if (haveItem(i + k)) row.push_back(itemsR[i + k]);
+                if (haveItem(i + k)) row.push_back(at(i + k));
             for (auto& a : row) a.namedArg = false; // a loop topic is a VALUE, never a named arg
             // a JUNCTION bound to a parameter that is not Mu-accepting
             // (`-> Any $x`) autothreads: the body runs per eigenstate
@@ -4260,9 +4274,9 @@ Value Interpreter::execForStmt(Stmt* s, bool sink) {
     }
     // `-> ($a,$b,$c)`: each element is unpacked into the vars (one item/iteration).
     if (fs->destructure && !fs->vars.empty()) {
-        for (size_t i = 0; haveItem(i); i++) {
+        for (size_t i = 0; haveItem(i) && dropRead(i); i++) {
             auto scope = makeSlabShared<Env>(); scope->parent = tctx().cur;
-            ValueList row = itemsR[i].t == VT::Array ? *itemsR[i].arr() : itemsR[i].flatten();
+            ValueList row = at(i).t == VT::Array ? *at(i).arr() : at(i).flatten();
             for (size_t k = 0; k < fs->vars.size(); k++)
                 scope->define(fs->vars[k], k < row.size() ? row[k] : Value::any());
             if (!runLoopBody(fs->body.get(), scope, fs->label, i == 0,
@@ -4287,16 +4301,16 @@ Value Interpreter::execForStmt(Stmt* s, bool sink) {
     // closure that captured the last one bumps its use_count, and gets it to
     // keep while this takes a fresh one.
     std::shared_ptr<Env> scope;
-    for (size_t i = 0; haveItem(i); i += nvars) {
+    for (size_t i = 0; haveItem(i) && dropRead(i); i += nvars) {
         if (!scope || scope.use_count() > 1) {
             if (scope) scope->cycleNoteKeptSlots();
             scope = makeSlabShared<Env>(); scope->parent = tctx().cur;
         }
         else if (loopVars.empty()) { static const std::string kTopic = "$_"; scope->clearBindingsKeeping(&kTopic, 1); }
         else scope->clearBindingsKeeping(loopVars.data(), loopVars.size());
-        TopicAlias tback{scalarSlot, scope.get(), itemsR[i]};
+        TopicAlias tback{scalarSlot, scope.get(), at(i)};
         if (loopVars.empty()) {
-            scope->define("$_", typedTopic.t == VT::Hash ? typedTopic : asTopic(itemsR[i], "$_", 0));
+            scope->define("$_", typedTopic.t == VT::Hash ? typedTopic : asTopic(at(i), "$_", 0));
         } else {
             // a short last chunk under plain `-> $x, $y` is too few
             // positionals (Rakudo runs the full chunks, then dies)
@@ -4309,7 +4323,7 @@ Value Interpreter::execForStmt(Stmt* s, bool sink) {
             }
             for (size_t k = 0; k < loopVars.size(); k++) {
                 scope->define(loopVars[k], haveItem(i + k)
-                    ? asTopic(itemsR[i + k], loopVars[k], k) : Value::any());
+                    ? asTopic(at(i + k), loopVars[k], k) : Value::any());
             }
         }
         if (!runLoopBody(fs->body.get(), scope, fs->label, i == 0,
@@ -19710,7 +19724,7 @@ static Value applyArithGeneral(const std::string& op, const Value& l, const Valu
         // that never ends (repeat.t hung here on `infix:<xx>({$++}, Inf)`).
         if (r.t == VT::Whatever || (r.t == VT::Num && std::isinf(r.n))) {
             Value a = Value::seq();
-            auto st = std::make_shared<LazySeqState>(); st->infinite = true;
+            auto st = std::make_shared<LazySeqState>(); st->infinite = st->dropsRead = true;
             st->hasCount = true; st->countVal = Value::number(INFINITY);
             Value src = l;
             st->appendNext = [src, callable](ValueList& cache) -> bool {
@@ -19731,7 +19745,7 @@ static Value applyArithGeneral(const std::string& op, const Value& l, const Valu
         if (r.big() || n > kXxEagerMax) {   // too large to build — generate on demand
             Value a = Value::seq();
             auto st = std::make_shared<LazySeqState>();
-            st->infinite = true;
+            st->infinite = st->dropsRead = true;
             st->hasCount = true; st->countVal = r.big() ? r : Value::integer(n);
             Value src = l;
             auto left = std::make_shared<long long>(r.big() ? -1 : n);

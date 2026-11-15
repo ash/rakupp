@@ -3189,8 +3189,8 @@ Value Interpreter::seqOpGroups(Value seed, const std::vector<ValueList>& groups,
         if (seg.t == VT::Array && seg.ext() && !last) {
             auto lst = std::static_pointer_cast<LazySeqState>(seg.ext());
             if (lst && !lst->infinite) {
-                materializeLazy(seg, 1000000);
-                if (lst->exhausted || seg.arr()->size() < 1000000) seg.extM().reset();
+                materializeLazy(seg, kDrainAll);
+                if (lst->exhausted) seg.extM().reset();
             }
         }
         if (seg.t == VT::Array && seg.ext()) return withLazyTail(seg, skip);
@@ -3590,7 +3590,7 @@ static void forceLazyImpl(const Value& v) {
         if (!st->exhausted) return;                         // unbounded: no "all of it"
     }
 #endif
-    g_cbInterp->materializeLazy(v, 1000000);
+    g_cbInterp->materializeLazy(v, st->gatherSeq && !st->exhausted ? 1000000 : Interpreter::kDrainAll);   // (one running may not end)
 }
 // The display name of a registry key — see ClassInfo::dispName. Reads the live
 // class registry through g_matchClasses, so a free function suffices and Value
@@ -3692,8 +3692,9 @@ void Interpreter::materializeLazy(const Value& v, size_t n) {
     auto st = std::static_pointer_cast<LazySeqState>(v.ext());
     if (!st->appendNext) return;
     const size_t CAP = 1000000;
-    while (v.arr()->size() < n && v.arr()->size() < CAP) {
-        st->pullHint = std::min(n, CAP) - v.arr()->size();   // one switch fills a gather's share
+    if (n == kDrainAll) n = st->mayNotEnd() ? CAP : kDrainAll;
+    while (v.arr()->size() < n) {
+        st->pullHint = std::min(n - v.arr()->size(), CAP);   // one switch fills a gather's share
         if (!st->appendNext(*v.arr())) { st->exhausted = true; break; }
     }
 }
@@ -3804,7 +3805,7 @@ Value Interpreter::assignChecked(Expr* target, Value v, const Value* invVal) {
 void Interpreter::drainIfFiniteLazy(const Value& v) {
     if (!(v.t == VT::Array && v.ext() && v.arr())) return;
     auto st = std::static_pointer_cast<LazySeqState>(v.ext());
-    if (st->infinite) return;
+    if (st->infinite || st->overEndless) return;   // (a grep over an endless source may end: walk it)
     // …nor is a STREAMING source: it ends, but only when its producer says so,
     // and the producer may be waiting on what this loop is about to print.
     if (st->streaming) return;
@@ -3819,7 +3820,7 @@ void Interpreter::drainIfFiniteLazy(const Value& v) {
     // source does; a gather that reaches its end says so, and from then on
     // this drains it like any other finite lazy list.
     if (st->gatherSeq && !st->exhausted) return;
-    materializeLazy(v, 1000000);
+    materializeLazy(v, kDrainAll);
 }
 
 Value Interpreter::idxW(const Value& base, Value key, bool isHash) {
@@ -5493,9 +5494,8 @@ Value rtIndexGet(const Value& base, const Value& key, bool isHash) {
         long long i = key.toInt();
         if (i >= 0) {
             auto st = std::static_pointer_cast<LazySeqState>(base.ext());
-            const size_t CAP = 1000000;
-            if (st->appendNext)
-                while ((long long)base.arr()->size() <= i && base.arr()->size() < CAP && st->appendNext(*base.arr())) {}
+            if (st->appendNext)   // (element i is read however far it is: materializeLazy)
+                while ((long long)base.arr()->size() <= i && st->appendNext(*base.arr())) {}
         }
     }
     // IO::Path::Parts is Positional as well as Associative: `$parts[0]` is the
@@ -6310,13 +6310,13 @@ Value Interpreter::zxOp(const std::string& op, Value l, Value r) {
     };
     if (op[0] == 'Z' && endlessInt(l) && endlessInt(r)) {
         // the i-th element of a side, materialising a lazy one as it goes
-        auto nth = [this](Value src, size_t i) -> Value {
+        auto nth = [this](const Value& src, size_t i) -> Value {   // (what a side read goes: lazyViewSource)
             if (src.t == VT::Range) return Value::integer(src.rFrom() + (long long)i);
-            materializeLazy(src, i + 1);
-            return src.arr() && i < src.arr()->size() ? (*src.arr())[i] : Value::any();
+            const size_t off = lazyViewSource(*this, src, i, 1);
+            return src.arr() && i - off < src.arr()->size() ? (*src.arr())[i - off] : Value::any();
         };
         Value out = Value::array(); out.isList = true; out.s = "Seq";
-        auto st = std::make_shared<LazySeqState>(); st->infinite = true;
+        auto st = std::make_shared<LazySeqState>(); st->infinite = st->dropsRead = true;
         auto idx = std::make_shared<size_t>(0);
         Value lv = l, rv = r; std::string inner = sub;
         st->appendNext = [this, nth, idx, lv, rv, inner, uf](ValueList& cache) -> bool {
@@ -6334,13 +6334,13 @@ Value Interpreter::zxOp(const std::string& op, Value l, Value r) {
     // walks its elements against the whole right side, and an endless RIGHT
     // never gets past the first left element — which is what Rakudo yields.
     if (op[0] == 'X' && (endlessInt(l) || endlessInt(r))) {
-        auto nth = [this](Value src, size_t i) -> Value {
+        auto nth = [this](const Value& src, size_t i) -> Value {
             if (src.t == VT::Range) return Value::integer(src.rFrom() + (src.rExFrom() ? 1 : 0) + (long long)i);
-            materializeLazy(src, i + 1);
-            return src.arr() && i < src.arr()->size() ? (*src.arr())[i] : Value::any();
+            const size_t off = lazyViewSource(*this, src, i, 1);
+            return src.arr() && i - off < src.arr()->size() ? (*src.arr())[i - off] : Value::any();
         };
         Value out = Value::array(); out.isList = true; out.s = "Seq";
-        auto st = std::make_shared<LazySeqState>(); st->infinite = true;
+        auto st = std::make_shared<LazySeqState>(); st->infinite = st->dropsRead = true;
         auto idx = std::make_shared<size_t>(0);
         bool leftEndless = endlessInt(l);
         ValueList fin = leftEndless ? oneLevel(r) : oneLevel(l);
@@ -6387,16 +6387,16 @@ Value Interpreter::zxOp(const std::string& op, Value l, Value r) {
         if (!zip && rs->items.empty()) { Value e = Value::array(); e.isList = true; e.s = "Seq"; return e; }
         Value out = Value::array(); out.isList = true; out.s = "Seq";
         auto st = std::make_shared<LazySeqState>();
-        st->gatherSeq = true;
+        st->gatherSeq = st->dropsRead = true;
         st->declaredLazy = declLazy(l) || declLazy(r);
         auto idx = std::make_shared<size_t>(0);
         std::string inner = sub;
         st->appendNext = [this, ls, rs, idx, inner, zip, uf](ValueList& cache) -> bool {
             auto nth = [this](Side& s, size_t i, Value& out) -> bool {
                 if (!s.lazy) { if (i >= s.items.size()) return false; out = s.items[i]; return true; }
-                materializeLazy(s.src, i + 1);
-                if (i >= s.src.arr()->size()) return false;
-                out = (*s.src.arr())[i];
+                const size_t off = lazyViewSource(*this, s.src, i, 1);
+                if (i - off >= s.src.arr()->size()) return false;
+                out = (*s.src.arr())[i - off];
                 return true;
             };
             size_t i = *idx;

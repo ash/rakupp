@@ -12,6 +12,62 @@ bool bridgedNumericInfix(Interpreter& I, const std::string& op, const Value& l, 
 // a comparator, fewer a key mapper. An operator (`&infix:<cmp>`, `&[<=>]`) is
 // two, as Rakudo's infix protos `($, $, *%)` are, also when it is a multi
 // dispatcher some scope extended — its own signature says nothing then.
+// A lazy map/grep view reads its source by position. When it alone holds a
+// source that only appends (LazySeqState::dropsRead), what it has read there
+// goes, and its position with it: `gather {…}.map(…)` keeps neither (#263).
+static void dropViewRead(const Value& src, size_t& spos) {
+    if (spos < 1024 || !src.ext() || !std::static_pointer_cast<LazySeqState>(src.ext())->dropsRead) return;
+    if (ValueList* a = src.arr(); a && src.arrS().use_count() == 2 && spos <= a->size())
+        spos -= static_cast<LazySeqState*>(src.ext().get())->dropFront(*a, spos);
+}
+// …and one that reads its source by its OWN count (`.kv`, `.pairs`, `.rotor`):
+// the source up to (logical) element L + need - 1, with what lies before L
+// gone the same way. The offset to take off L comes back.
+size_t lazyViewSource(Interpreter& I, const Value& src, size_t L, size_t need) {
+    auto* st = src.ext() ? static_cast<LazySeqState*>(src.ext().get()) : nullptr;
+    size_t off = st ? st->dropped : 0;
+    if (st && st->dropsRead && L >= off + 1024 && src.arr() && src.arrS().use_count() == 2)
+        off += st->dropFront(*src.arr(), L - off);
+    I.materializeLazy(src, L - off + need);
+    return off;
+}
+// `for RANGE.map(…)` and `.grep(…)` (and `STMT for …`): the block runs as the
+// loop reads it, as Rakudo's does. An eager map over a Range ran the block for
+// every element before the body saw one (`m0 m1 m2 b0 b1 b2`), and a million
+// answers stayed until the loop was over (#263). The Range is read as a stream
+// of its Ints, which the view lets go of as it goes. Only a range written as
+// one (`a..b`, `^n`), so nothing is evaluated twice: any other list is
+// evaluated as it was.
+Value Interpreter::forListEval(Expr* e) {
+    auto* mc = e->kind == NK::MethodCall ? static_cast<MethodCall*>(e) : nullptr;
+    Expr* r = mc ? mc->inv.get() : nullptr;
+    while (r && r->kind == NK::ListExpr && static_cast<ListExpr*>(r)->items.size() == 1)
+        r = static_cast<ListExpr*>(r)->items[0].get();
+    const bool upto = r && r->kind == NK::Unary && static_cast<Unary*>(r)->op == "^" && !static_cast<Unary*>(r)->postfix;
+    if (!r || (r->kind != NK::Range && !upto) || (mc->method != "map" && mc->method != "grep") || mc->args.size() != 1 ||
+        !mc->args[0] || mc->args[0]->kind == NK::Pair || mc->meta || mc->hyper || mc->methodExpr || mc->maybe ||
+        mc->allMode || mc->bang || mc->mutate || !mc->methodQual.empty())
+        return eval(e);
+    Value range = eval(mc->inv.get());
+    Value fn = eval(mc->args[0].get());
+    if (range.t == VT::Range && !range.itemized && !range.rNum() && !range.ext() && !range.big() &&
+        range.ofType() != "Str" && range.rFrom() > -9000000000000000000LL && range.rTo() < 9000000000000000000LL &&
+        (mc->method == "grep" || (fn.t == VT::Code && codeArity(fn) == 1))) {
+        auto next = std::make_shared<long long>(range.rFrom() + (range.rExFrom() ? 1 : 0));
+        const long long hi = range.rTo() - (range.rExTo() ? 1 : 0);
+        Value src = Value::array(); src.isList = true; src.s = "Seq";
+        auto st = std::make_shared<LazySeqState>();
+        st->streaming = st->finiteSource = st->dropsRead = true;
+        st->appendNext = [next, hi](ValueList& cache) -> bool {
+            if (*next > hi) return false;
+            cache.push_back(Value::integer((*next)++));
+            return true;
+        };
+        src.extM() = st;
+        return methodCall(src, mc->method, ValueList{fn});
+    }
+    return methodCall(range, mc->method, ValueList{fn});
+}
 static size_t byArity(const Callable* c) {
     if (c->ci().params && !c->ci().params->empty()) return c->ci().params->size();
     const std::string& nm = c->ci().name;
@@ -158,7 +214,7 @@ static Value lazyArrayCopy(const Value& inv) {
     Value out = Value::array(*inv.arr());
     decontCopiedElems(*out.arr());
     auto st = std::make_shared<LazySeqState>(*srcSt);
-    st->pullHint = 0;
+    st->pullHint = 0; st->dropsRead = false; st->dropped = st->keepTail = 0;   // (it reads by the copy's size)
     LazySeqState* stp = st.get();
     st->appendNext = [src, srcSt, stp](ValueList& buf) -> bool {
         ValueList& from = *src.arr();
@@ -1392,7 +1448,7 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
     // lazy so consumers materialise only what they index.
     if (inv.t == VT::Array && inv.ext()) {
         auto lst = std::static_pointer_cast<LazySeqState>(inv.ext());
-        bool infinite = lst->infinite;
+        bool infinite = lst->infinite || lst->overEndless;
         // a list DECLARED lazy (`lazy gather {…}`) has no count to give
         // until it is made eager: Rakudo refuses rather than reifying it
         if (m == "elems" && lst->declaredLazy && !lst->exhausted) throwTypedV("X::Cannot::Lazy", {{"action", Value::str(".elems")}}, "Cannot .elems a lazy list");
@@ -1515,7 +1571,7 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
         // no count for it until it is made eager — but `.eager` and `.reduce`
         // run it out, which an endless one cannot do.
         const bool declLive = !infinite && lst->declaredLazy && !lst->exhausted;
-        if (declLive && (m == "eager" || m == "reduce")) materializeLazy(inv, 1000000);
+        if (declLive && (m == "eager" || m == "reduce")) materializeLazy(inv, kDrainAll);
         else if (infinite || declLive) {
             // operations that need the end of the list can't complete on an infinite
             // source (.List/.Array/.gist stay ANSWERABLE — lazy views and "(...)"
@@ -1538,7 +1594,7 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
             // …except a `.map` over one, which may yet END — its block can say
             // `last` — so `.eager` runs it to that point, as Rakudo does:
             // `(^Inf).map({ last if $_ > 6; $_ }).eager` is (0 … 6)
-            if (m == "eager" && (lst->mapView || lst->mayEnd) && lst->appendNext && !lst->exhausted) {   // (…and a from-loop)
+            if (m == "eager" && (lst->mapView || lst->mayEnd || lst->overEndless) && lst->appendNext && !lst->exhausted) {   // (…and a from-loop, a grep)
                 ValueList& buf = *inv.arr();
                 while (lst->appendNext(buf)) {}
                 lst->exhausted = true;
@@ -1606,7 +1662,7 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
             const bool gatherIndexView = (lst->gatherSeq || lst->finiteSource || lst->streaming) &&
                                          !lst->exhausted &&
                                          (m == "kv" || m == "pairs" || m == "antipairs");
-            if (forceAll.count(m) && !gatherIndexView) materializeLazy(inv, 1000000);
+            if (forceAll.count(m) && !gatherIndexView) materializeLazy(inv, kDrainAll);
         }
         // a gather still producing: lazy like an endless source, but it ends
         const bool gatherLive = !infinite && lst->gatherSeq && !lst->exhausted;
@@ -1617,11 +1673,11 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
             Value out = Value::array(); out.isList = true; out.s = "Seq"; // 1:1 map → cache index == source index
             if (inv.s == "HyperSeq" || inv.s == "RaceSeq") out.s = inv.s;   // (and a hyper one stays one)
             auto st = std::make_shared<LazySeqState>();
-            st->infinite = infinite; // a view over an endless source is endless too
+            st->infinite = infinite; st->streaming = lst->streaming; st->finiteSource = lst->finiteSource; // (its source's: endless, a handle's lines)
             // …and one over a gather is what a gather is: not reified yet, and
             // not lazy unless it was declared so (`.is-lazy`, list assignment)
             st->gatherSeq = lst->gatherSeq; st->declaredLazy = lst->declaredLazy; st->finiteChain = lst->finiteChain;
-            st->mapView = true;
+            st->mapView = true; st->dropsRead = !lst->aliasSource; st->overEndless = lst->overEndless;   // (it appends: #263)
             Interpreter* self = this;
             // (its own source position: a `next` skips an element, so the cache
             // and the source part company)
@@ -1633,7 +1689,7 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
             st->appendNext = [self, src, fn, spos, ended, stw, alias, itemSrc](ValueList& cache) -> bool {
                 for (;;) {
                     if (*ended) return false;
-                    size_t si = *spos;
+                    dropViewRead(src, *spos); size_t si = *spos;   // (an Array's own elements stay: no dropsRead)
                     self->materializeLazy(src, si + 1);
                     if (si >= src.arr()->size()) return false;
                     (*spos)++;
@@ -1678,6 +1734,7 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
             if (inv.s == "HyperSeq" || inv.s == "RaceSeq") out.s = inv.s;   // (and a hyper one stays one)
             auto st = std::make_shared<LazySeqState>();
             st->gatherSeq = lst->gatherSeq; st->declaredLazy = lst->declaredLazy; st->finiteChain = lst->finiteChain;   // see map
+            st->streaming = lst->streaming; st->finiteSource = lst->finiteSource; st->dropsRead = !lst->aliasSource; st->overEndless = infinite;
             // NOT marked infinite even over an endless source: a grep can still
             // end — `(^Inf).grep({last if $_ > 5; True}).eager` is Roast's own
             // (S32-list/grep.t) — so whether it drains is only known by trying.
@@ -1687,7 +1744,7 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
             const bool itemSrc = lst->aliasSource && !inv.isList;   // an Array's elements are items
             st->appendNext = [self, src, pred, spos, stw, itemSrc](ValueList& cache) -> bool {
                 for (long long tries = 0; tries < 1000000; tries++) { // bail on a never-matching predicate
-                    self->materializeLazy(src, *spos + 1);
+                    dropViewRead(src, *spos); self->materializeLazy(src, *spos + 1);
                     if (*spos >= src.arr()->size()) {
                         // the source stopped growing: either it truly ran out, or it
                         // is endless and hit materializeLazy's ceiling. In the second
@@ -1761,11 +1818,11 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
             st->infinite = infinite; // a view over an endless source is endless too
             st->gatherSeq = lst->gatherSeq; st->declaredLazy = lst->declaredLazy; st->finiteChain = lst->finiteChain;   // see map
             Interpreter* self = this;
-            st->appendNext = [self, src, n](ValueList& cache) -> bool {
-                size_t si = cache.size() + (size_t)n;
-                self->materializeLazy(src, si + 1);
-                if (si >= src.arr()->size()) return false;
-                cache.push_back((*src.arr())[si]);
+            LazySeqState* stp = st.get(); stp->dropsRead = true;   // (by its own count: dropped + size)
+            st->appendNext = [self, src, n, stp](ValueList& cache) -> bool {
+                const size_t si = stp->dropped + cache.size() + (size_t)n, off = lazyViewSource(*self, src, si, 1);
+                if (si - off >= src.arr()->size()) return false;
+                cache.push_back((*src.arr())[si - off]);
                 return true;
             };
             out.extM() = st;
@@ -1803,9 +1860,9 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
         // runs before this one — see MethodCallPart2's gist/raku arms)
         if (infinite && m == "keys") { // 0, 1, 2, … — as endless as the source
             Value out = Value::array(); out.isList = true;
-            auto st = std::make_shared<LazySeqState>(); st->infinite = true;
-            st->appendNext = [](ValueList& cache) -> bool {
-                cache.push_back(Value::integer((long long)cache.size()));
+            auto st = std::make_shared<LazySeqState>(); st->infinite = st->dropsRead = true; LazySeqState* stp = st.get();
+            st->appendNext = [stp](ValueList& cache) -> bool {
+                cache.push_back(Value::integer((long long)(stp->dropped + cache.size())));
                 return true;
             };
             out.extM() = st;
@@ -1816,13 +1873,12 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
             Value out = Value::array(); out.isList = true;
             auto st = std::make_shared<LazySeqState>(); st->infinite = infinite;
             st->gatherSeq = gatherLive; st->declaredLazy = lst->declaredLazy;
-            st->finiteSource = lst->finiteSource; st->streaming = lst->streaming;
-            st->appendNext = [self, src](ValueList& cache) -> bool {
-                size_t k = cache.size() / 2; // two cache entries per source element
-                self->materializeLazy(src, k + 1);
-                if (k >= src.arr()->size()) return false;
+            st->finiteSource = lst->finiteSource; st->streaming = lst->streaming; LazySeqState* stp = st.get(); stp->dropsRead = true;
+            st->appendNext = [self, src, stp](ValueList& cache) -> bool {   // (by its own count, as .skip)
+                const size_t k = (stp->dropped + cache.size()) / 2, off = lazyViewSource(*self, src, k, 1); // two per element
+                if (k - off >= src.arr()->size()) return false;
                 cache.push_back(Value::integer((long long)k));
-                cache.push_back((*src.arr())[k]);
+                cache.push_back((*src.arr())[k - off]);
                 return true;
             };
             out.extM() = st;
@@ -1835,11 +1891,11 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
             auto st = std::make_shared<LazySeqState>(); st->infinite = infinite;
             st->gatherSeq = gatherLive; st->declaredLazy = lst->declaredLazy;
             st->finiteSource = lst->finiteSource; st->streaming = lst->streaming;
-            st->appendNext = [self, src, anti](ValueList& cache) -> bool {
-                size_t k = cache.size();
-                self->materializeLazy(src, k + 1);
-                if (k >= src.arr()->size()) return false;
-                const Value& v = (*src.arr())[k];
+            LazySeqState* stp = st.get(); stp->dropsRead = true;   // (by its own count, as .skip)
+            st->appendNext = [self, src, anti, stp](ValueList& cache) -> bool {
+                const size_t k = stp->dropped + cache.size(), off = lazyViewSource(*self, src, k, 1);
+                if (k - off >= src.arr()->size()) return false;
+                const Value& v = (*src.arr())[k - off];
                 Value p;
                 if (anti) { // value => index
                     p = Value::pair(v.toStr(), Value::integer((long long)k));
@@ -1862,20 +1918,20 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
                     hammer = !a.pairVal() || a.pairVal()->truthy();
             Value src = inv; Interpreter* self = this;
             Value out = Value::array(); out.isList = true; out.s = "Seq";
-            auto st = std::make_shared<LazySeqState>(); st->infinite = true;
+            auto st = std::make_shared<LazySeqState>(); st->infinite = st->dropsRead = true;
             auto spos = std::make_shared<size_t>(0); // next source element to spread
             st->appendNext = [self, src, hammer, spos](ValueList& cache) -> bool {
-                self->materializeLazy(src, *spos + 1);
-                if (*spos >= src.arr()->size()) return false;
+                const size_t off = lazyViewSource(*self, src, *spos, 1);
+                if (*spos - off >= src.arr()->size()) return false;
                 // a Seq's element spreads by the LIST rule (ofArray = false); may
                 // add ZERO elements (an empty sublist) — callers simply re-pull
-                flatOneInto((*src.arr())[(*spos)++], false, hammer, cache);
+                flatOneInto((*src.arr())[(*spos)++ - off], false, hammer, cache);
                 return true;
             };
             out.extM() = st;
             return out;
         }
-        if (infinite && (m == "rotor" || m == "batch")) {
+        if ((infinite || gatherLive || streamLive) && (m == "rotor" || m == "batch")) {   // (…or one still read as it goes)
             std::vector<RotorSpec> specs;
             bool partial;
             // a LAZY list of sizes (`.rotor(1...*)`) is read as far as any list
@@ -1892,18 +1948,19 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
             parseRotorSpecs(rargs, m == "batch", specs, partial);
             Value src = inv; Interpreter* self = this;
             Value out = Value::array(); out.isList = true;
-            auto st = std::make_shared<LazySeqState>(); st->infinite = true;
+            auto st = std::make_shared<LazySeqState>(); st->infinite = infinite; st->dropsRead = true; st->gatherSeq = gatherLive;
+            st->streaming = lst->streaming; st->finiteSource = lst->finiteSource;
             auto pos = std::make_shared<size_t>(0); // next source index
             auto cyc = std::make_shared<size_t>(0); // spec cycle counter
             st->appendNext = [self, src, specs, partial, pos, cyc](ValueList& cache) -> bool {
                 const RotorSpec& sp = specs[*cyc % specs.size()];
-                self->materializeLazy(src, *pos + (size_t)sp.n);
-                size_t have = src.arr()->size();
+                const size_t off = lazyViewSource(*self, src, *pos, (size_t)sp.n);   // (`have` and `j` count from the start)
+                size_t have = off + src.arr()->size();
                 if (*pos >= have) return false;
                 if (*pos + (size_t)sp.n > have && !partial) return false;
                 Value chunk = Value::array(); chunk.isList = true;
                 for (size_t j = *pos; j < *pos + (size_t)sp.n && j < have; j++)
-                    chunk.arr()->push_back((*src.arr())[j]);
+                    chunk.arr()->push_back((*src.arr())[j - off]);
                 cache.push_back(std::move(chunk));
                 (*cyc)++;
                 *pos += (size_t)(sp.step < 1 ? 1 : sp.step);
@@ -5548,7 +5605,7 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
                 // a lazy array only holds a prefix — materialize enough to cover the window
                 if (inv.ext()) {
                     long s0 = args.size() > 0 ? args[0].toInt() : 0;
-                    materializeLazy(inv, args.size() > 1 ? (size_t)(std::max(0L, s0) + args[1].toInt()) : 1000000);
+                    materializeLazy(inv, args.size() > 1 ? (size_t)(std::max(0L, s0) + args[1].toInt()) : kDrainAll);
                 }
                 long n = (long)inv.arr()->size();
                 // `*-2` / `{ $_ - 2 }` resolve against the length, like .head/.tail

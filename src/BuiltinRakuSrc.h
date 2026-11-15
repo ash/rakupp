@@ -35,6 +35,7 @@ extern const char* const kSupplyDelayedSrc;    // $supply.delayed($t)
 extern const char* const kSupplyMapSrc;        // supply { … }.map(&f)
 extern const char* const kSupplyGrepSrc;       // supply { … }.grep($t)
 extern const char* const kSupplyDoSrc;         // supply { … }.do(&f)
+extern const char* const kHandleSupplySrc;     // $fh.Supply(:size)
 
 // The compiled binary's start-up registers entry `index`'s AST (an AstSerial
 // blob) — the CLI that compiled it has the same table, from the same build.

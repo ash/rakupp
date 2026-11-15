@@ -24,7 +24,8 @@ f8b5555c, ce72763f, bfd530f9, eb482a9f, 7e5a643e, 6b8c1d1a, 41150ad1,
 a213ccad, 02b24803, 9e948ff3, e60a6163, 657626c7, 13902c52, a397987e,
 e2981dc5, c5273f1e, 7df13701, 901a4cca, 2529675a, 0ab4bfc7, 4a2e4fec,
 43509bec, e374baff, 7f8773e2, 222424a1, 912cf744,
-d4a3b66c, 7386791f, fa8d1ea7, 69e90f7a, 27e35b21, a9c5615f, 1a5145f1.*
+d4a3b66c, 7386791f, fa8d1ea7, 69e90f7a, 27e35b21, a9c5615f, 1a5145f1, 477a7194,
+9cc330f2, dbe463ff, 5ee977c9, 48c5ea64, 07e2372e, 7a94daa1, 41e0b608.*
 
 ---
 
@@ -68,6 +69,32 @@ d4a3b66c, 7386791f, fa8d1ea7, 69e90f7a, 27e35b21, a9c5615f, 1a5145f1.*
 
 ### Faster
 
+- **A drained Seq and a large file's text readers hold a window, not
+  everything read** (477a7194, 9cc330f2) (issues #262, #263). A Seq drained by
+  the one thing that holds it (`for gather {…}`, `for Seq.new($iterator)`,
+  `Seq.new($iterator).iterator`, a lazy map or grep over one) drops what it
+  has handed out: 2 million Hashes peaked at 540 MB, now 14 MB, flat as
+  Rakudo. A Seq a variable still holds keeps every value. `.get`, `.lines`,
+  `.getc` and `.readchars` on a file over 256 KiB read it a window at a time
+  instead of decoding all of it into the handle: at 100 MB `.get` 634 → 14 MB
+  and `.readchars` 3.9 GB → 22 MB (Rakudo 159 and 624). Such a handle seeks
+  and tells by bytes, which also puts `.tell` right after a CR LF line.
+  `t/regression/seq-drained-keeps-nothing.raku`,
+  `t/regression/handle-text-window.raku`.
+- **The other readers and producers keep nothing they have read either**
+  (5ee977c9, 48c5ea64, 41e0b608) (issues #262, #263). `$path.lines`,
+  `lines($path)`, `$path.words`, a handle's `.words`, `$fh.lines.map(…)` and
+  `.grep(…)`, `$*IN.lines`, `lines()`, a child process's `.out.lines` and
+  `$fh.Supply(:size)` read as they go: 20 MB of text cost 154 MB through
+  `$path.lines` and 579 MB through `.Supply(:size)`, now under 25 MB. A `for`
+  that ends with `last` over `1, 2 ... *`, a closure generator, `1 xx *`,
+  `Seq.from-loop`, `.kv`, `.pairs`, `.keys`, `.skip`, `.flat`, `.rotor`,
+  `.batch`, `Z` or `X` held every value (2 million Ints, about 70 MB) and now
+  peaks near 10 MB. `for (^3).map({…})` runs the block as the loop reads, in
+  Rakudo's order (`m0 b0 m1 b1 m2 b2`, not `m0 m1 m2 b0 b1 b2`): 4 million mapped Hashes
+  1.2 GB → 13 MB, at the same speed. `t/regression/io-readers-stream.raku`,
+  `t/regression/seq-producers-keep-nothing.raku`,
+  `t/regression/for-over-range-map-streams.raku`.
 - **A sequence whose generator outgrows a double, and big-Int addition**
   (02b24803) (rakudo#2844). `1, 1, * + * ... *` to 40k terms took 0.92 s,
   against Rakudo's 0.07. Each step numified the last element for a step the
@@ -91,6 +118,18 @@ d4a3b66c, 7386791f, fa8d1ea7, 69e90f7a, 27e35b21, a9c5615f, 1a5145f1.*
   exit 1, as Rakudo's `-c` does; `--lint` gives one `undeclared-routine` error
   per routine on the line it is used at, with Rakudo's suggestions, and exits
   2; `--json` carries the same finding from both. `t/regression/check-mode-undeclared-routine.raku`.
+- **A lazy Seq is read past its millionth element** (dbe463ff, 07e2372e).
+  Every read of one stopped at 1,000,000 without a word: `(gather { take $_
+  for ^1_500_000 }).elems` was 1000000, and `.sum`, `.grep`, `.join`, `my @a
+  = gather …`, `1 ... 1_500_000`, `(^Inf).map(…)[1_500_000]` and a `for $fh.
+  lines.map(…)` over a longer file lost the rest. A `for` over `(^Inf).map(…).
+  grep(…)` ended by `last` ran 500000 times where it should run 1500000.
+  Element N is read however far it is and an eager read a program asks for
+  goes to the end; only all of a source that may not end stops at a million,
+  and `.sum` or `.elems` of an endless grep now refuse as Rakudo's do. (The
+  interpreter's own reads of a gather still running keep the million: dbe463ff
+  had dropped it there too, and `flatmap` of an endless gather grew past 70 GB
+  until 07e2372e.) `t/regression/lazy-seq-past-a-million.raku`.
 - **`--mcp` and `--jupyter` read JSON numbers by JSON's grammar** (e374baff).
   `"id":1e+` was run as a request with id 1, `1.2.3` as 1.2, `-+5` as 0 and
   `1e999` as Inf; each is now a parse error. An unpaired surrogate escape

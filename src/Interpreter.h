@@ -2067,6 +2067,7 @@ struct LazySeqState {
     // (Rakudo iterates a sunk Seq), however the source is made
     bool mapView = false;
     bool mayEnd = false;   // endless, but its body can say `last` (Seq.from-loop): `.eager` runs it to there
+    bool overEndless = false;   // a grep (or a view of one) over an endless source: it may end, or not
     // a LIST over a finished stream (`Supply.list`): read like a handle's lines,
     // but sinking a List reads nothing, so a sunk `.list` raises no quit error
     bool listView = false;
@@ -2075,7 +2076,27 @@ struct LazySeqState {
     // lands in the element, as the eager map's does
     bool aliasSource = false;
     bool finiteChain = false; // a map/grep view over a FINITE source: not lazy (`.is-lazy`), as in Rakudo
+    // The producer only appends: it never reads the buffer back, nor counts
+    // by its size. A reader that ALONE holds the buffer may then drop what it
+    // has read, as Rakudo's single-pass Seq keeps nothing (issue #263); the
+    // other producers keep their whole buffer.
+    bool dropsRead = false;
+    // …keeping its last `keepTail` elements, which a sequence's generator steps
+    // from; `dropped` counts what has gone, for a producer that counts by
+    // position (`.kv`, `.keys`): its next index is dropped + the buffer's size
+    size_t keepTail = 0, dropped = 0;
+    size_t dropFront(ValueList& buf, size_t n) {   // drops up to n read elements; answers how many
+        if (!dropsRead) return 0;
+        n = std::min(n, buf.size() > keepTail ? buf.size() - keepTail : 0);
+        buf.erase(buf.begin(), buf.begin() + (std::ptrdiff_t)n);
+        dropped += n;
+        return n;
+    }
     bool exhausted = false;
+    // May not end: endless, a view over one, lazy by declaration. Reading ALL
+    // of one (kDrainAll) stops at a million; any other is read to its end (a
+    // cap on EVERY read stopped `(gather …).elems` at 1,000,000 without a word)
+    bool mayNotEnd() const { return infinite || mayEnd || overEndless || (declaredLazy && !exhausted); }
     // How many elements the NEXT appendNext call is wanted for, when the caller
     // knows (materializeLazy does); 0 means one. A gather's coroutine runs until
     // it has taken that many before it hands control back, so filling a buffer
@@ -2666,6 +2687,7 @@ public:
     void loadIoNotification();
     Value supplyStableCode_, supplyDelayedCode_;   // Supply.stable / .delayed, compiled on first use
     Value supplyMapCode_, supplyGrepCode_, supplyDoCode_; // on-demand Supply.map / .grep / .do, likewise
+    Value handleSupplyCode_;   // $fh.Supply(:size), likewise
     Value dynVar(const std::string& name);
     Value rakuIntrospection(bool compiler); // $*RAKU / $*RAKU.compiler // $* / $? magical variables (used by codegen)
     Value& dynVarRef(const std::string& name); // assignable dynamic-var slot (used by codegen)
@@ -2779,7 +2801,10 @@ public:
     // with these named keys (a compiled loop's too), and the keys a signature names
     ValueList subSigCapture(const Value& v, const std::vector<std::string>& keys, bool* list = nullptr);
     static std::vector<std::string> subSigNamedKeys(const std::vector<Param>& sig);
-    void materializeLazy(const Value& v, size_t n); // grow a lazy list's prefix to >= n elements (capped)
+    // grow a lazy list's prefix to >= n elements; kDrainAll reads it to its
+    // end, but an endless one only to a million (LazySeqState::mayNotEnd)
+    void materializeLazy(const Value& v, size_t n);
+    static constexpr size_t kDrainAll = (size_t)-1;
     void drainIfFiniteLazy(const Value& v);         // …all of it, when the list is lazy but finite
     // `@h.map({…}).grep(*.so).first` runs the block only until `first` has its
     // answer, as Rakudo's lazy Seq does (InterpreterCalls.cpp). Every method
@@ -3976,6 +4001,7 @@ public:
     // Channel, a Supply, a Match, a class's own `list`); forListOf gives it
     bool forListsValue(const Value& v, bool bare);
     Value forListOf(const Value& v);
+    Value forListEval(Expr* e);   // a `for` loop's list: `RANGE.map(…)` read as the loop goes (MethodCallTail.cpp)
     std::thread::id mainThreadId() const { return mainThread_; } // `exit` ends the process from any thread
     // The END phasers of the run() in progress, for an `exit` (or an unhandled
     // cued die) on a worker thread to run before it ends the process, as
@@ -6424,6 +6450,7 @@ Value  rtReduce(Interpreter& I, const std::string& op, const Value& list,
 // ±LLONG_MAX sentinel in its integer endpoints) or a lazy list with no end.
 bool isEndlessRange(const Value& v);
 bool isEndlessLazy(const Value& v);
+size_t lazyViewSource(Interpreter& I, const Value& src, size_t L, size_t need);   // (MethodCallTail.cpp)
 // The limit of an endless Range's arithmetic series, which is what `.sum`
 // answers: ±Inf, or NaN when the range runs from -Inf all the way to +Inf.
 Value endlessRangeSum(const Value& v);

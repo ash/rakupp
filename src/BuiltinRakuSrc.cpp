@@ -27,6 +27,11 @@ const char* const kSupplyDelayedSrc =
 const char* const kSupplyMapSrc  = "(-> $s, &f { supply { whenever $s -> \\v { emit f(v) } } })";
 const char* const kSupplyGrepSrc = "(-> $s, Mu $t { supply { whenever $s -> \\v { emit v if v ~~ $t } } })";
 const char* const kSupplyDoSrc   = "(-> $s, &f { supply { whenever $s -> \\v { f(v); emit v } } })";
+// $fh.Supply(:size): a chunk read at a time when it is tapped, as Rakudo's
+// handle reads it (MethodCallPart3.cpp). It slurped the whole file first (#262).
+const char* const kHandleSupplySrc =
+    "(-> $h, $size, $bin { supply { loop { my \\c = $bin ?? $h.read($size) !! $h.readchars($size); "
+    "last unless $bin ?? c.elems !! c.chars; emit c } } })";
 
 const BuiltinRakuSrc kBuiltinRakuSrcs[] = {
     {"Channel.Supply",   kChannelSupplySrc,  nullptr},
@@ -35,6 +40,7 @@ const BuiltinRakuSrc kBuiltinRakuSrcs[] = {
     {"Supply.map",       kSupplyMapSrc,      nullptr},
     {"Supply.grep",      kSupplyGrepSrc,     nullptr},
     {"Supply.do",        kSupplyDoSrc,       nullptr},
+    {"IO::Handle.Supply", kHandleSupplySrc,  nullptr},
     // CompUnit::Handle.globalish-package / .unit / .export-package (Builtins.cpp)
     {"GLOBAL",           "GLOBAL",           nullptr},
     {"UNIT::",           "UNIT::",           nullptr},

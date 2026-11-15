@@ -2408,8 +2408,8 @@ Value Interpreter::seqOp(Value l, Value r, bool exclusive) {
             Value res = seqOp(l, rl[0], exclusive);
             // (a generator walking to that endpoint is finite: realise it, so `{ … } ... ^21` appends 1..20 too — rakudo#3881)
             if (res.t == VT::Array && res.arr() && res.ext() && !std::static_pointer_cast<LazySeqState>(res.ext())->infinite) {
-                materializeLazy(res, 1000000);
-                if (res.arr()->size() < 1000000) res.extM().reset();
+                materializeLazy(res, kDrainAll);
+                if (std::static_pointer_cast<LazySeqState>(res.ext())->exhausted) res.extM().reset();
             }
             if (res.t == VT::Array && res.arr() && !res.ext()) {
                 for (size_t i = 1; i < rl.size(); i++) res.arr()->push_back(rl[i]);
@@ -2780,6 +2780,8 @@ Value Interpreter::seqOp(Value l, Value r, bool exclusive) {
             bool boundedGen = !infinite;
             st->infinite = !boundedGen; // a literal-endpoint gen seq CAN drain (stops on match)
             st->seqUserGen = infinite && hasGen;
+            // (it steps from its last `arity` elements: a slurpy generator, all of them)
+            st->dropsRead = !(hasGen && arity == 0); st->keepTail = hasGen ? (size_t)arity : 1;
             auto exclHit = std::make_shared<bool>(false);   // `...^` met its endpoint: the end, however often a reader asks again (rakudo#3881)
             st->appendNext = [self, gen, hasGen, geometric, ratio, step, allInt, arity, tooFew,
                               deduceFailed, dedFrom, seqDeduceThrow,
@@ -2788,7 +2790,6 @@ Value Interpreter::seqOp(Value l, Value r, bool exclusive) {
                 if (*exclHit || (cache.empty() && !hasGen)) return false;
                 if (boundedGen && !cache.empty() && atEnd(cache.back(), endValue))
                     return false; // endpoint reached
-                if (boundedGen && cache.size() >= 1000000) return false; // runaway cap (endpoint never matched)
                 double lastV = cache.empty() || hasGen || succSeed ? 0 : cache.back().toNum();
                 Value next;
                 if (hasGen) {
@@ -2909,9 +2910,14 @@ Value Interpreter::seqOp(Value l, Value r, bool exclusive) {
                     es.resize(exclusive ? k : k + 1); return out;
                 }
         }
-        const size_t CAP = 1000000;
-        bool dirKnown = !hasGen; // for a closure gen the travel direction is learned
-        while (out.arr()->size() < CAP) {
+        // A step toward a number always gets there: that walk is built whole.
+        // Any other stops at a million elements here — a closure that may never
+        // meet its endpoint block goes on lazily from there (below).
+        const bool reaches = !hasGen && !endCode && !succSeed && !infinite && !geometric && !deduceFailed &&
+                             !seqMagnitude && step != 0;
+        const size_t CAP = reaches ? (size_t)-1 : 1000000;
+        bool dirKnown = !hasGen, capped = false; // for a closure gen the travel direction is learned
+        while (out.arr()->size() < CAP || !(capped = true)) {
             double lastV = out.arr()->empty() ? 0 : out.arr()->back().toNum(); // empty seed: gen makes elem 1
             // Non-gen numeric sequences can pre-check the endpoint; a closure gen
             // must generate first (its direction — and thus overshoot test — is
@@ -2999,6 +3005,32 @@ Value Interpreter::seqOp(Value l, Value r, bool exclusive) {
             }
             if (stop) break;
         }
+        if (capped && hasGen && endCode && arity > 0 && !endSlurpy && endArity == 1) {
+            // the rest is the same sequence from its last `arity` elements, read as
+            // it is needed: whether it ends is known only by running it (Rakudo)
+            ValueList from(out.arr()->end() - arity, out.arr()->end());
+            from.push_back(gen);
+            Value seeds = Value::array(from); seeds.isList = true;
+            Value tail = seqOp(seeds, r, exclusive);
+            for (long long k = 0; k < arity; k++) tail = seqDropSeed(tail);
+            auto inner = std::make_shared<Value>(tail);
+            auto pos = std::make_shared<size_t>(0);
+            auto st = std::make_shared<LazySeqState>();
+            st->gatherSeq = st->dropsRead = true;
+            Interpreter* self = this;
+            st->appendNext = [self, inner, pos](ValueList& cache) -> bool {
+                if (ValueList* a = inner->arr(); a && *pos >= 1024 && inner->arrS().use_count() == 2) {   // (#263)
+                    if (inner->ext()) *pos -= static_cast<LazySeqState*>(inner->ext().get())->dropFront(*a, *pos);
+                    else { a->erase(a->begin(), a->begin() + (std::ptrdiff_t)*pos); *pos = 0; } }
+                self->materializeLazy(*inner, *pos + 1);
+                if (*pos >= inner->arr()->size()) return false;
+                cache.push_back((*inner->arr())[(*pos)++]);
+                return true;
+            };
+            out.isList = true; out.s = "Seq";
+            out.extM() = st;
+            return out;
+        }
         if (exclusive && !infinite && !endCode && !out.arr()->empty()) {
             const Value& lastE = out.arr()->back();
             const bool exactLast = (lastE.t == VT::Int || lastE.t == VT::Rat) && (r.t == VT::Int || r.t == VT::Rat);
@@ -3025,7 +3057,9 @@ Value Interpreter::seqDropSeed(Value seq) {
     auto st = std::make_shared<LazySeqState>();
     st->infinite = innerSt->infinite;
     st->seqUserGen = innerSt->seqUserGen;
+    st->dropsRead = true;   // (and what it read of the sequence it alone holds goes too: #263)
     st->appendNext = [inner, innerSt, pos](ValueList& cache) -> bool {
+        if (*pos >= 1024 && inner->arrS().use_count() == 2) *pos -= innerSt->dropFront(*inner->arr(), *pos);
         while (*pos >= inner->arr()->size())
             if (!innerSt->appendNext(*inner->arr())) return false;
         cache.push_back((*inner->arr())[(*pos)++]);

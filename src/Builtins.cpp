@@ -3345,7 +3345,7 @@ std::string joinValues(const ValueList& items, const std::string& sep) {
 // A lazy @-array over the integers from `start` upward (an infinite `…..Inf` range).
 Value makeInfArray(long long start) {
     Value a = Value::array(); a.isList = true;
-    auto st = std::make_shared<LazySeqState>(); st->infinite = true;
+    auto st = std::make_shared<LazySeqState>(); st->infinite = st->dropsRead = true;
     auto next = std::make_shared<long long>(start);
     st->appendNext = [next](ValueList& cache) -> bool { cache.push_back(Value::integer((*next)++)); return true; };
     a.extM() = st;
@@ -6600,6 +6600,8 @@ Value Interpreter::methodCall(const Value& inv, const std::string& m, ValueList 
     if (inv.t == VT::Array && inv.ext() && inv.arr() &&
         std::static_pointer_cast<LazySeqState>(inv.ext())->finiteSource &&
         m != "kv" && m != "pairs" && m != "antipairs" &&
+        // (…nor for a lazy map or grep view, which reads it as it is read: #262)
+        !(m == "grep" && !args.empty()) && !(m == "map" && args.size() == 1 && args[0].t == VT::Code && codeArity(args[0]) == 1) &&
         // (…nor for a question about the object rather than its elements, and
         // a List view is not read by sinking it — `Supply.list.sink` taps only)
         m[0] != '^' && m != "WHAT" && m != "WHICH" &&
@@ -9066,7 +9068,13 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
                 while (posV.i < n && pushed < count) { dst->push_back(items[posV.i++]); pushed++; }
             return pushed;
         };
-        if (m == "pull-one") { ensure(posV.i + 1); return posV.i < n ? items[posV.i++] : iterEnd(); }
+        if (m == "pull-one") {
+            // the one holder of a Seq that only appends lets go of what it handed out (#263)
+            if (lazySrc && lazySrc->dropsRead && posV.i >= 1024 && itemsV.arrS().use_count() == 2) {
+                const size_t k = lazySrc->dropFront(items, (size_t)posV.i); n -= (long long)k; posV.i -= (long long)k;
+            }
+            ensure(posV.i + 1); return posV.i < n ? items[posV.i++] : iterEnd();
+        }
         if (m == "push-all" || m == "push-until-lazy" || m == "push-exactly" || m == "push-at-least") {
             if (m == "push-all" || m == "push-until-lazy") {
                 drainFinite(); // an endless source pushes only its materialised prefix

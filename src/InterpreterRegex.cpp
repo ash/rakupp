@@ -4752,7 +4752,7 @@ Value Interpreter::xxRepeat(Expr* item, Expr* count) {
         // `my %rows = @!column-name Z=> [] xx *` share a single array, so
         // DBDish's allrows(:hash-of-array) pushed every column into all of them.
         Value a = Value::seq();   // `EXPR xx *` is a Seq too (sheet LA-32)
-        auto st = std::make_shared<LazySeqState>(); st->infinite = true;
+        auto st = std::make_shared<LazySeqState>(); st->infinite = st->dropsRead = true;   // (it only appends: #263)
         st->hasCount = true; st->countVal = Value::number(INFINITY); // `.count-only` is Inf
         Expr* le = item;
         auto env = tctx().cur;   // the thunk keeps the scope it was written in
@@ -4785,7 +4785,7 @@ Value Interpreter::xxRepeat(Expr* item, Expr* count) {
     if (rv.big() || n > kXxEagerMax) {
         Value a = Value::seq();
         auto st = std::make_shared<LazySeqState>();
-        st->infinite = true;        // never materialise the whole of it
+        st->infinite = st->dropsRead = true;   // never materialise the whole of it (nor keep it: #263)
         st->hasCount = true; st->countVal = rv.big() ? rv : Value::integer(n);
         Expr* le = item;
         auto env = tctx().cur;
