@@ -22,6 +22,30 @@ micro:bit too.
   `Image`'s.
 - Everything the board cannot do is refused when you build, with the line,
   and never fails later on the board.
+- `--target=microbit` writes C++, not the `.hex` the board takes: CODAL's
+  build project turns the one into the other (below).
+
+## What do I do with the `.cpp` file?
+
+Make it into the `.hex` file the board takes, with CODAL's own build
+project, microbit-v2-samples. The `.cpp` is your whole program; the `.hex`
+is that program compiled together with CODAL, the board's runtime, for its
+ARM processor. Once you have the project and an ARM compiler (set up once:
+[the guide's steps](../MICROBIT.md#once-a-compiler-and-codals-build-project)),
+each program is three commands:
+
+```bash
+rakupp --target=microbit prog.raku -o ~/microbit-v2-samples/source/main.cpp
+cd ~/microbit-v2-samples && python3 build.py
+cp ~/microbit-v2-samples/MICROBIT.hex /Volumes/MICROBIT/
+```
+
+The first puts your program in the project as its `source/main.cpp`, in
+place of the demo that is there; you don't edit it. The second compiles it
+into `MICROBIT.hex`, in the project's top folder. The third copies that onto
+the board, which shows up as a drive called `MICROBIT` when plugged in over
+USB (`/media/$USER/MICROBIT` on Linux; on Windows, drag it to the drive).
+The board restarts and runs the program.
 
 ## I know MicroPython. What changes?
 

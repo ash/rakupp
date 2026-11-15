@@ -29,10 +29,10 @@ full reference is [docs/guide/MICROBIT.md](../../docs/guide/MICROBIT.md).
 - **Raku++.** The [install page](https://raku.online/install/) has every way
   to get `rakupp`. Nothing else is needed for the simulated board.
 - **For a real board:** a micro:bit V2 (the one with a speaker and a touch
-  logo), and CODAL's build: a checkout of
+  logo), and CODAL's build project,
   [microbit-v2-samples](https://github.com/lancaster-university/microbit-v2-samples),
-  with the GNU Arm Embedded toolchain, CMake, Python 3 and git, or that
-  repository's own Dockerfile. Step 8 has the commands.
+  which turns the C++ rakupp writes into the `.hex` file the board takes. It
+  needs an ARM compiler, CMake, Python 3 and git. Step 8 has the commands.
 
 ## 1. Hello, without a board
 
@@ -294,32 +294,57 @@ temperature: 24
 
 ## 8. Onto a board
 
-`--target=microbit` writes one C++ file for CODAL. Its build turns that into
-`MICROBIT.hex`, and a micro:bit plugged in over USB is a drive called
-`MICROBIT`: copying the `.hex` onto it flashes the board, which then runs the
-program.
+`--target=microbit` writes your program as one C++ file, not yet as
+something the board takes. A micro:bit takes a `.hex` file: the program
+compiled together with CODAL, the board's runtime. CODAL's own build
+project, microbit-v2-samples, makes it: the C++ file goes in as its
+`source/main.cpp`, its `build.py` makes `MICROBIT.hex`, and that file is
+copied onto the board.
 
-```bash
-git clone https://github.com/lancaster-university/microbit-v2-samples
-rakupp --target=microbit hello.raku -o microbit-v2-samples/source/main.cpp
-cd microbit-v2-samples
-python3 build.py
-cp MICROBIT.hex /Volumes/MICROBIT/
-```
-
-`/Volumes/MICROBIT` is the drive on a Mac; on Linux it is usually
-`/media/$USER/MICROBIT`, and on Windows a drive letter. The first build
-fetches CODAL itself (95 MB) and takes under a minute; later ones take
-seconds. If you have the Arduino IDE with its Uno R4 core, you have the
-compiler already:
+**Once:** an ARM compiler, CMake, Python 3 and git. With the Arduino IDE and
+its Uno R4 core on a Mac, the compiler is already there:
 
 ```bash
 export PATH=~/Library/Arduino15/packages/arduino/tools/arm-none-eabi-gcc/7-2017q4/bin:$PATH
 ```
 
+(On Debian or Ubuntu: `sudo apt install gcc-arm-none-eabi binutils-arm-none-eabi cmake git python3`;
+the guide has the other ways.) Then fetch the build project and build it
+once, which downloads CODAL (95 MB) and takes under a minute:
+
+```bash
+cd ~
+git clone https://github.com/lancaster-university/microbit-v2-samples
+cd microbit-v2-samples
+python3 build.py
+```
+
+**Each program:** write it over the project's `source/main.cpp`, build, and
+copy the `.hex` onto the board:
+
+```bash
+rakupp --target=microbit hello.raku -o ~/microbit-v2-samples/source/main.cpp
+cd ~/microbit-v2-samples
+python3 build.py
+cp MICROBIT.hex /Volumes/MICROBIT/
+```
+
+The generated `main.cpp` is a whole program: there is nothing to add or
+edit. `build.py` takes seconds now, and leaves `MICROBIT.hex` beside itself
+(not `MICROBIT.bin`, which is no use to the board). A micro:bit plugged in
+with a USB cable is a drive called `MICROBIT`, like a memory stick:
+`/Volumes/MICROBIT` on a Mac, `/media/$USER/MICROBIT` on Linux, a drive
+letter on Windows, or drag the file there. The light on the back flashes,
+the board restarts, and the program runs; the drive comes back without the
+file, as it should.
+
 `say` writes to the serial port over the same USB cable, at 115200 baud:
-`screen /dev/cu.usbmodem* 115200` on a Mac, or the serial monitor of the
+`screen /dev/cu.usbmodem* 115200` on a Mac, or the serial console of the
 micro:bit Python editor or MakeCode.
+
+The guide's [From the C++ file to the board](../../docs/guide/MICROBIT.md#from-the-c-file-to-the-board)
+has each step in full, with Docker and Windows, and what to do when one goes
+wrong.
 
 > Every program here builds with CODAL into a `MICROBIT.hex`, with no
 > warning from the program. Not yet tried: running one on a board. The C++
