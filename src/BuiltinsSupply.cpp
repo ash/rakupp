@@ -466,6 +466,24 @@ bool unixSockAddr(const std::string& path, sockaddr_storage& ss, socklen_t& len)
     return true;
 #endif
 }
+// A socket errno in libuv's lower-case words, which Rakudo's messages carry:
+// libuv has its own table, where strerror's differs by libc (musl's EADDRINUSE
+// is "Address in use"). Anything else is strerror's, lower-cased.
+std::string libuvWords(int err) {
+    switch (err) {
+        case EADDRINUSE:    return "address already in use";
+        case EADDRNOTAVAIL: return "address not available";
+        case ECONNREFUSED:  return "connection refused";
+        case ENOENT:        return "no such file or directory";
+        case EACCES:        return "permission denied";
+        case ENOTDIR:       return "not a directory";
+        case ENAMETOOLONG:  return "name too long";
+        default: break;
+    }
+    std::string w = std::strerror(err);
+    if (!w.empty()) w[0] = (char)std::tolower((unsigned char)w[0]);
+    return w;
+}
 // The host and port of a socket address, IPv4 or IPv6.
 static void asyncSockName(const sockaddr_storage& ss, std::string& host, long long& port) {
     char buf[INET6_ADDRSTRLEN] = {0};
@@ -2692,8 +2710,7 @@ Value Interpreter::tapSupply(const Value& s, Value emitCb, Value doneCb, Value q
             // …and a TCP one too, with the address, as Rakudo's libuv says it:
             // "address already in use (address: localhost:11111)" (rakudo#1266)
             if (unixPath || !badHost) {
-                why = unixPath && badHost ? "path too long" : std::strerror(errno);
-                if (!why.empty()) why[0] = (char)std::tolower((unsigned char)why[0]);
+                why = unixPath && badHost ? "path too long" : libuvWords(errno);
                 if (!unixPath) why += " (address: " + host + ":" + std::to_string(port) + ")";
             }
             if (lfd >= 0) ::close(lfd);

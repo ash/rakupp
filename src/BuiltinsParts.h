@@ -450,6 +450,7 @@ static inline Value causeException(Interpreter& I, const Value& cause, const std
 bool asyncSockAddrFwd(const std::string& h, int p, sockaddr_storage& ss, socklen_t& len);
 bool sockAddrOfFamily(const std::string& h, int p, int fam, sockaddr_storage& ss, socklen_t& len);   // …of one family (AF_INET, AF_INET6)
 bool unixSockAddr(const std::string& path, sockaddr_storage& ss, socklen_t& len);   // …and a UNIX-domain one, at a path
+std::string libuvWords(int err);   // a socket errno as libuv words it, the same on every libc
 
 // Build an IO::Socket::Async connection value around a connected fd.
 Value makeAsyncSocket(int fd);

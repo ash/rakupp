@@ -820,7 +820,7 @@ std::optional<Value> Interpreter::methodCallPart1b(const Value& inv, const MName
                 ps->done = true; ps->broken = true;
                 ps->cause = Value::typeObj("X::IO"); ps->causeMsg = "Cannot connect to " + host + ":" + std::to_string(port);
                 // …a path's, as Rakudo's: X::AdHoc with libuv's lower-case words
-                if (unixPath) { ps->cause = Value::typeObj("X::AdHoc"); ps->causeMsg = std::strerror(err); ps->causeMsg[0] = (char)std::tolower((unsigned char)ps->causeMsg[0]); }
+                if (unixPath) { ps->cause = Value::typeObj("X::AdHoc"); ps->causeMsg = libuvWords(err); }
                 (*p.hash())["status"] = Value::str("Broken");
                 return p;
             }
