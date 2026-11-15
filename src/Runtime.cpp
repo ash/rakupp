@@ -447,6 +447,10 @@ int rakuppRunProgram(Program& prog, std::vector<std::string> args,
         interp.srcFileAbs_ = absSrcPath(fileName);
         interp.execPath_ = exePath;
         interp.progName_ = g_progName;
+        // The binary carries the tree, not the text: the error excerpt has no
+        // line to show. Without this it opened `fileName` against the working
+        // directory and printed whatever file of that name it found (issue #265).
+        interp.seedSrcLines(fileName, "");
         return interp.run(prog);
     } catch (const RakuError& e) {
         std::cerr << e.message << "\n";
