@@ -95,6 +95,12 @@ no server, with an embeddable in-page playground.
 - CI builds and smoke-tests all three on every push.
 - **The browser**, too — compiled to WebAssembly as **[Raku.js](../../rakujs)**
   (no server; embeddable playground).
+- **Microcontroller boards**, as targets: a program becomes an **Arduino**
+  sketch (`--target=arduino`; Uno, Uno R4 WiFi, Due) or C++ for a **BBC
+  micro:bit** V2's runtime, CODAL (`--target=microbit`), which the board's own
+  toolchain builds into firmware. Either runs first on a simulated board, in
+  the interpreter or compiled for this computer
+  ([ARDUINO.md](ARDUINO.md), [MICROBIT.md](MICROBIT.md)).
 
 ## Tooling
 

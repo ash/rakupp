@@ -6,8 +6,9 @@ Raku++ is a hand-written implementation of the Raku programming language,
 written in C++17, with no third-party dependencies. It lexes, parses,
 interprets, and — in two of its five run modes — transpiles Raku to C++ and to
 JavaScript, and
-compiles it to a native binary. A sixth target writes a subset of the language
-as an Arduino sketch. It carries its own regular-expression and
+compiles it to a native binary. Two more targets write a subset of the
+language for a microcontroller board: as an Arduino sketch, or as C++ for a
+BBC micro:bit. It carries its own regular-expression and
 grammar engine, its own Unicode subsystem built from the pinned UCD tables, its
 own arbitrary-precision arithmetic, a foreign-function interface that loads
 libffi at run time rather than linking it, a C ABI for native extension

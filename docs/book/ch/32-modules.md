@@ -165,8 +165,8 @@ it — is Chapter 34.
 The binary carries a few modules itself, and they sit at the two ends of that
 order. A **shadow** answers before the search path is consulted:
 `NativeHelpers::Blob`, `::CStruct` and `::Pointer`, whose ecosystem versions
-read MoarVM's memory layout and cannot run here, and `Arduino` with its two
-submodules. A **bundled** module answers only after the stores have failed:
+read MoarVM's memory layout and cannot run here, `Arduino` with its two
+submodules, and `MicroBit`. A **bundled** module answers only after the stores have failed:
 `JSON::Native::Raku`, the fallback behind the engine's own `JSON::Native`.
 Their sources are in `rakulib/` and are compiled into the binary as bytes, so
 an installed rakupp needs no `rakulib/` beside it. A binary built with `--exe`

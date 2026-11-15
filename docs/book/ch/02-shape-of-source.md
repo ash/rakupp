@@ -94,7 +94,7 @@ The first is what only the command line can reach, and it is linked into the
 ```
 main.cpp             Repl.cpp              Codegen.cpp
 codegen/Js.cpp       JsRuntimeSrc.cpp      codegen/Arduino.cpp
-DocLinks.cpp         raku_docs_index_gen.cpp
+codegen/MicroBit.cpp DocLinks.cpp          raku_docs_index_gen.cpp
 ```
 
 plus one generated file, `EmbeddedTools.cpp`, which holds the Raku programs
@@ -180,7 +180,9 @@ embedding host loads; it always carries all four.
 |---|---|
 | `Codegen.{h,cpp}` | `--exe`: AST to C++ |
 | `codegen/Js.{h,cpp}` | `--target=js`: AST to JavaScript |
-| `codegen/Arduino.{h,cpp}` | `--target=arduino`: a subset of Raku to one sketch |
+| `codegen/BoardEmitter.h` | the emitter the board targets share: the subset of Raku with no runtime behind it |
+| `codegen/Arduino.{h,cpp}` | `--target=arduino`: that subset as one sketch |
+| `codegen/MicroBit.{h,cpp}` | `--target=microbit`: that subset as C++ for a micro:bit's CODAL |
 | `AstEmit.cpp` | `--aot`: C++ that carries the serialised AST |
 | `CompileTime.{h,cpp}` | the build-time run that gives a binary its constants |
 | `AotModules.{h,cpp}` | native routine bodies for the modules an `--exe` binary embeds |

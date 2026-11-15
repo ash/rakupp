@@ -68,7 +68,8 @@ reference for the internals; the user-facing command line is documented in
 | `--static` | link the C++ runtime into the compiled binary (Linux, MinGW) |
 | `--target=js` | transpile to JavaScript (Chapter 31) |
 | `--target=arduino` | transpile to an Arduino sketch |
-| `--sim` | `--target=arduino` only: build the sketch for this computer, on a simulated board |
+| `--target=microbit` | transpile to C++ for a BBC micro:bit's runtime, CODAL |
+| `--sim` | `--target=arduino` and `--target=microbit` only: build the program for this computer, on a simulated board |
 | `--verify` | emit JavaScript only if it agrees with the interpreter |
 | `--module` | JavaScript: export the subs, classes and `MAIN` instead of running |
 | `--runtime` | write just the JavaScript runtime |

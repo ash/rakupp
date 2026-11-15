@@ -71,7 +71,10 @@ Where the implementation departs from the draft below, and why:
   the touch pins are presses with a start and an end
   (`RAKUPP_MICROBIT_BUTTONS="A@1000,logo@2000-2400,0@3000"`); `randint` is
   xorshift32 in both simulations, seeded by `RAKUPP_MICROBIT_SEED`.
-- **No stub dist yet.** Rakudo says `Could not find MicroBit`.
+- **The stub dist** is `MicroBit` in ash/raku-modules (2026-11-15), the
+  Arduino stub with the name changed; its test passes on Rakudo v2026.09, on
+  a Raku++ without the name and on one with it. Not yet uploaded: with the
+  release that ships the target, as for Arduino.
 
 ## The board
 

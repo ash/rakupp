@@ -414,8 +414,26 @@ planned, the radio and the speaker first.
 ## Under Rakudo
 
 `use MicroBit` is built into rakupp, and `rakupp install` skips the name.
-Other Raku implementations have no such module: Rakudo stops at the `use`
-line with `Could not find MicroBit`.
+For other Raku implementations there is a stub module of the name,
+[`MicroBit`](https://github.com/ash/raku-modules/tree/main/MicroBit)
+(`zef:ash`), to be published with the rakupp release that ships
+`--target=microbit`; then `zef install MicroBit`. It stops the program at the
+`use` line and says what it needs:
+
+```
+$ rakudo hello.raku
+===SORRY!=== Error while compiling hello.raku
+This program needs Raku++: `use MicroBit` is built into rakupp
+(https://github.com/ash/rakupp), which runs it on a simulated micro:bit
+and compiles it for a real one:
+    rakupp hello.raku
+    rakupp --target=microbit hello.raku
+
+at hello.raku:6
+------> <BOL><HERE>use MicroBit;
+```
+
+Without the stub, Rakudo says only `Could not find MicroBit`.
 
 ## More
 
