@@ -2654,6 +2654,28 @@ static void printJsonFindings(const std::vector<std::string>& items) {
     for (size_t i = 0; i < items.size(); i++) std::cout << items[i] << (i + 1 < items.size() ? ",\n" : "\n");
     std::cout << "]\n";
 }
+// -c's "Undeclared routine": the check a run makes before its first statement
+// (Interpreter::checkUndeclaredCalls), on the same terms — plain statements
+// only — and reported as the run reports it. True when it refused the program.
+static bool refusesUndeclaredRoutines(const Program& prog, const std::string& fileName, bool jsonOut) {
+    if (!declCheckEnabled() || prog.stmts.empty()) return false;
+    for (auto& s : prog.stmts) if (!s || s->kind != NK::ExprStmt) return false;
+    Interpreter ci;
+    ci.srcFile_ = fileName;
+    try { ci.checkUndeclaredCalls(prog.stmts, true); return false; }
+    catch (RakuError& e) {
+        int line = 0;
+        if (e.payload.t == VT::Object && e.payload.obj()) {
+            auto li = e.payload.obj()->attrs.find("line");
+            if (li != e.payload.obj()->attrs.end()) line = (int)li->second.toInt();
+        }
+        if (jsonOut) { printJsonFindings({jsonFinding(fileName, line, "error", "undeclared-routine", e.message)}); return true; }
+        std::cerr << "===SORRY!=== Error while compiling " << fileName << "\n" << e.message;
+        if (line) std::cerr << "\nat " << fileName << ":" << line;
+        std::cerr << "\n";
+        return true;
+    }
+}
 
 // --completions=SHELL (rustup, deno, pip): a completion script for bash, zsh
 // or fish, generated from this one table so it cannot drift from the parser
@@ -4575,6 +4597,8 @@ int main(int argc, char** argv) {
                 return 1;   // the exit code reportUndeclaredVars answers
             }
         }
+        // …and so is a routine nothing declares (issue #264)
+        if (refusesUndeclaredRoutines(prog, fileName, jsonOut)) return 1;
         // …and so is a call that can never bind (Rakudo's "will never work")
         auto dc = doomedCallsOf(prog, effectiveSearchPath(libPaths));
         if (!dc.empty()) {
