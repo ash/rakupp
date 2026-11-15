@@ -501,7 +501,9 @@ Value makeAsyncSocket(int fd) {
         (*s.hash())["socket-host"] = Value::str(h);
         (*s.hash())["socket-port"] = Value::integer(p);
     }
-    alen = sizeof(a);
+    // cleared first: Linux writes no sun_path for an unnamed UNIX-domain peer
+    // and would leave getsockname's path there to be read as the peer's
+    a = sockaddr_storage{}; alen = sizeof(a);
     if (::getpeername(fd, (sockaddr*)&a, &alen) == 0) {
         asyncSockName(a, h, p);
         (*s.hash())["peer-host"] = Value::str(h);
