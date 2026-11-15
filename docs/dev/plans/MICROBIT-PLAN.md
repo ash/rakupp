@@ -21,13 +21,13 @@ guide: [MICROBIT.md](../../guide/MICROBIT.md), with
 
 Measured on the gate's ten programs: each one's transcript under the
 interpreter equals its golden, and its `--sim` C++ writes the same bytes on
-stdout and stderr and exits the same way; so do the seven examples. The
+stdout and stderr and exits the same way; so do the eight examples. The
 C++ names CODAL by its own headers and samples (`uBit.display.print`,
 `uBit.buttonA.wasPressed`, `uBit.messageBus.listen`, `MicroBitImage(5, 5,
 bitmap)`, `target_random` through `uBit.random`), and CODAL's own build
 takes it: with `--codal=DIR` the gate builds each of its ten programs into a
 `MICROBIT.hex` in a checkout of microbit-v2-samples (55 checks), and the
-seven examples build too, each with no warning from the program and about
+eight examples build too, each with no warning from the program and about
 100 KB of flash, nearly all CODAL's. Not yet tried: real hardware.
 
 | phase | state |

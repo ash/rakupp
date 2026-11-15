@@ -679,7 +679,7 @@ The same items grouped by theme, with a complexity estimate for each:
   MicroPython's names, pictures while building, the display's text joined at
   run time, buttons, the touch logo, gestures, the sensors, the pins and
   `randint`; the C++ and both simulated boards agree byte for byte on the
-  gate's ten programs and the seven examples, and every one builds with
+  gate's ten programs and the eight examples, and every one builds with
   CODAL into a `MICROBIT.hex` (`t/microbit/run.raku --codal=DIR`). Next: a
   run on a board, then the radio and `react` / `whenever` (M2).
 - [ ] **`--exe -O` and `--cnp` answer regressions wrongly** (the t/exe and
