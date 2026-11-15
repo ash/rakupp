@@ -6103,7 +6103,7 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
                 Value iter = args[0];
                 Value v = Value::array(); v.isList = true; v.s = "Seq";
                 auto st = std::make_shared<LazySeqState>();
-                st->gatherSeq = true;
+                st->gatherSeq = st->dropsRead = true;   // (pull-one pushes and keeps nothing: #263)
                 st->iterObj = iter;
                 if (Value* il = iter.obj()->cls->findMethod("is-lazy")) {
                     ValueList none;

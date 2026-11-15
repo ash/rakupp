@@ -9066,7 +9066,13 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
                 while (posV.i < n && pushed < count) { dst->push_back(items[posV.i++]); pushed++; }
             return pushed;
         };
-        if (m == "pull-one") { ensure(posV.i + 1); return posV.i < n ? items[posV.i++] : iterEnd(); }
+        if (m == "pull-one") {
+            // the one holder of a Seq that only appends lets go of what it handed out (#263)
+            if (lazySrc && lazySrc->dropsRead && posV.i >= 1024 && itemsV.arrS().use_count() == 2) {
+                items.erase(items.begin(), items.begin() + (std::ptrdiff_t)posV.i); n -= posV.i; posV.i = 0;
+            }
+            ensure(posV.i + 1); return posV.i < n ? items[posV.i++] : iterEnd();
+        }
         if (m == "push-all" || m == "push-until-lazy" || m == "push-exactly" || m == "push-at-least") {
             if (m == "push-all" || m == "push-until-lazy") {
                 drainFinite(); // an endless source pushes only its materialised prefix

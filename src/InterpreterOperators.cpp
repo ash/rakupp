@@ -1748,6 +1748,7 @@ static Value gatherSeqOver(Interpreter& I, Value block, Unary* gu, bool declared
     if (declaredLazy) arr.b = true;   // .is-lazy
     auto st = std::make_shared<LazySeqState>();
     st->gatherSeq = true;
+    st->dropsRead = true;   // (gatherPull only appends what was taken: #263)
     st->declaredLazy = declaredLazy;
     LazySeqState* stp = st.get();
     Interpreter* self = &I;

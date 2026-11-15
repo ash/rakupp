@@ -12,6 +12,16 @@ bool bridgedNumericInfix(Interpreter& I, const std::string& op, const Value& l, 
 // a comparator, fewer a key mapper. An operator (`&infix:<cmp>`, `&[<=>]`) is
 // two, as Rakudo's infix protos `($, $, *%)` are, also when it is a multi
 // dispatcher some scope extended — its own signature says nothing then.
+// A lazy map/grep view reads its source by position. When it alone holds a
+// source that only appends (LazySeqState::dropsRead), what it has read there
+// goes, and its position with it: `gather {…}.map(…)` keeps neither (#263).
+static void dropViewRead(const Value& src, size_t& spos) {
+    if (spos < 1024 || !src.ext() || !std::static_pointer_cast<LazySeqState>(src.ext())->dropsRead) return;
+    if (ValueList* a = src.arr(); a && src.arrS().use_count() == 2 && spos <= a->size()) {
+        a->erase(a->begin(), a->begin() + (std::ptrdiff_t)spos);
+        spos = 0;
+    }
+}
 static size_t byArity(const Callable* c) {
     if (c->ci().params && !c->ci().params->empty()) return c->ci().params->size();
     const std::string& nm = c->ci().name;
@@ -1621,7 +1631,7 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
             // …and one over a gather is what a gather is: not reified yet, and
             // not lazy unless it was declared so (`.is-lazy`, list assignment)
             st->gatherSeq = lst->gatherSeq; st->declaredLazy = lst->declaredLazy; st->finiteChain = lst->finiteChain;
-            st->mapView = true;
+            st->mapView = true; st->dropsRead = !lst->aliasSource;   // (it appends what the block answers: #263)
             Interpreter* self = this;
             // (its own source position: a `next` skips an element, so the cache
             // and the source part company)
@@ -1633,7 +1643,7 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
             st->appendNext = [self, src, fn, spos, ended, stw, alias, itemSrc](ValueList& cache) -> bool {
                 for (;;) {
                     if (*ended) return false;
-                    size_t si = *spos;
+                    dropViewRead(src, *spos); size_t si = *spos;   // (an Array's own elements stay: no dropsRead)
                     self->materializeLazy(src, si + 1);
                     if (si >= src.arr()->size()) return false;
                     (*spos)++;
@@ -1678,6 +1688,7 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
             if (inv.s == "HyperSeq" || inv.s == "RaceSeq") out.s = inv.s;   // (and a hyper one stays one)
             auto st = std::make_shared<LazySeqState>();
             st->gatherSeq = lst->gatherSeq; st->declaredLazy = lst->declaredLazy; st->finiteChain = lst->finiteChain;   // see map
+            st->dropsRead = !lst->aliasSource; // (…and so does this one)
             // NOT marked infinite even over an endless source: a grep can still
             // end — `(^Inf).grep({last if $_ > 5; True}).eager` is Roast's own
             // (S32-list/grep.t) — so whether it drains is only known by trying.
@@ -1687,7 +1698,7 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
             const bool itemSrc = lst->aliasSource && !inv.isList;   // an Array's elements are items
             st->appendNext = [self, src, pred, spos, stw, itemSrc](ValueList& cache) -> bool {
                 for (long long tries = 0; tries < 1000000; tries++) { // bail on a never-matching predicate
-                    self->materializeLazy(src, *spos + 1);
+                    dropViewRead(src, *spos); self->materializeLazy(src, *spos + 1);
                     if (*spos >= src.arr()->size()) {
                         // the source stopped growing: either it truly ran out, or it
                         // is endless and hit materializeLazy's ceiling. In the second

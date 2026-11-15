@@ -2075,6 +2075,11 @@ struct LazySeqState {
     // lands in the element, as the eager map's does
     bool aliasSource = false;
     bool finiteChain = false; // a map/grep view over a FINITE source: not lazy (`.is-lazy`), as in Rakudo
+    // The producer only appends: it never reads the buffer back, nor counts
+    // by its size. A reader that ALONE holds the buffer may then drop what it
+    // has read, as Rakudo's single-pass Seq keeps nothing (issue #263); the
+    // other producers keep their whole buffer.
+    bool dropsRead = false;
     bool exhausted = false;
     // How many elements the NEXT appendNext call is wanted for, when the caller
     // knows (materializeLazy does); 0 means one. A gather's coroutine runs until
