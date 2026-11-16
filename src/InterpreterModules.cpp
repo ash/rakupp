@@ -186,7 +186,7 @@ struct DataNativeModule {
 };
 static const DataNativeModule kDataNativeModules[] = {
     { "Data::Native",           "0.0.1", { "json", "csv", "digest", "zlib", "random", nullptr } },
-    { "JSON::Native",           "0.1.0", { "json", nullptr } },
+    { "JSON::Native",           "0.2.0", { "json", nullptr } },   // 0.2.0: from-jsonl, to-jsonl
     { "CSV::Native",            "0.0.1", { "csv", nullptr } },
     { "Digest::Native",         "0.0.1", { "digest", nullptr } },
     { "Compress::Zlib::Native", "0.0.1", { "zlib", nullptr } },

@@ -1,6 +1,6 @@
 # Plan: `from-jsonl` and `to-jsonl` — JSON Lines in JSON::Native, at the parser's speed
 
-**Status: Phases 0, 1 and 2 done 2026-11-16** — the Raku reference and its
+**Status: Phases 0 to 3 done 2026-11-16** — the Raku reference and its
 checks, then the engine primitives. On a 125 MB, 700,000-line file,
 `from-jsonl` is 0.64 s against 1.40 s for the issue's Raku loop over
 `rakupp-from-json`, and 0.62 s for the same records parsed as one document: the
@@ -152,6 +152,24 @@ installed copy.
 - `EXPORT`, `%IMPL`, the README, `t/06-lines.t` over every backend available.
 - The issue author's `json-each` is theirs: we offer the primitive, not take
   the reader.
+
+**As built.** Off Raku++ (and on a Raku++ whose `rakupp-json-codec` does not
+know `'from-jsonl'`), `from-jsonl` is the distribution's own `from-json` for
+each line, so each line takes that engine's fastest parse, and a refused line
+is numbered there; an adverb or source it does not take goes to
+`JSON::Native::Raku`. `to-jsonl` is `to-json(:!pretty)` for each value. No
+`nqp::` line scan: the per-line `from-json` is where the time goes on Rakudo,
+and a scan would save only the `.lines`. The engine's interface version moved
+to 0.2.0 in this phase rather than in phase 2, because
+`data-native-precedence.raku` pins it to the distribution's META6.
+`t/06-lines.t` runs the reference's 41 checks on the exported pair and on
+`JSON::Native::Raku`, passing on Raku++ (engine), Rakudo (rakudo), both with
+`JSON_NATIVE_BACKEND=raku` and `json-fast`, and on mutsu.
+
+**Open: Data::Native.** The engine's `use Data::Native <json>` hands out the
+two names since phase 2, as the json tag's table drives both modules; the
+Data::Native distribution's json tag (on Rakudo) does not. Whether its
+portable copy gains them too is a decision of its own.
 
 ### Phase 4 — measure
 
