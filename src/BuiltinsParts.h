@@ -360,9 +360,11 @@ Value jsonFromJsonBody(Interpreter& I, ValueList& a, const JsonUncovered& uncove
 Value jsonFromJsonlBody(Interpreter& I, ValueList& a, const JsonUncovered& uncovered);
 Value jsonToJsonlBody(Interpreter& I, ValueList& a, const JsonUncovered& uncovered);
 bool jsonWriteLines(Interpreter& I, const ValueList& vals, bool sorted, bool enumsAsValue, std::string& out);
+// What the json tag hands out for `name`, with JSON::Native::Raku behind it.
+Value jsonExactRoutine(const std::string& name, const std::map<std::string, bool>& defaults);
 
 // The class's to-json: jsonToJsonBody, handing what it does not cover to
-// JSON::Native::Raku (the copy bundled in rakulib unless one is installed).
+// JSON::Native::Raku (the copy this rakupp bundles: jsonRakuFallback).
 Value jsonExactToJson(Interpreter& I, ValueList& a);
 
 // Declared at namespace scope, not as block-scope `extern`s inside

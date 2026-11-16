@@ -59,6 +59,8 @@ void rakuppRegisterShadowModule(const std::string& name, const char* src, size_t
 void rakuppRegisterBundledModule(const std::string& name, const char* src, size_t len);
 bool rakuppBundledModule(const std::string& name, std::string& pathOut, std::string& srcOut);
 bool rakuppShadowModule(const std::string& name, std::string& pathOut, std::string& srcOut);
+// The rakulib/ beside the running rakupp (Interpreter.cpp), for both search paths.
+std::vector<std::string> rakuppExeRakulibDirs();
 // Resolve a module's SOURCE exactly as the loader does — the lib search path
 // first, then the installed CompUnit repositories. Defined in Interpreter.cpp;
 // the parser needs it to scan a `use`d module for operators and for the

@@ -328,4 +328,59 @@ Value jsonToJsonlBody(Interpreter& I, ValueList& a, const JsonUncovered& uncover
     return Value::str(std::move(text));
 }
 
+// ---- what `use JSON::Native` and `use Data::Native <json>` hand out ---------
+//
+// The codec as a routine whose fallback is JSON::Native::Raku — the pure-Raku
+// half of JSON::Native — so a call the codec does not cover (an adverb it does
+// not take, a type outside the ladder, a document it refuses) is answered
+// exactly as JSON::Fast answers it, and nothing has to be installed for that.
+// The fallback is loaded by the first call that needs it; a program whose
+// calls the codec answers never reads it. (dataNativeUse, InterpreterModules.cpp.)
+//
+// It is the copy this rakupp BUNDLES, ahead of an installed or -I one
+// (bundledFirst_; a compile embeds the same copy, collectModuleGraph). Those
+// can only be older: a newer JSON::Native, installed or on -I, makes the
+// engine step aside from the `use` altogether. And an older one lacks what
+// newer codecs hand over — JSON::Native 0.1.0, installed for Rakudo, has no
+// from-jsonl, and was what every from-jsonl fallback found.
+static Value jsonRakuFallback(Interpreter& I, const std::string& name, ValueList& args) {
+    const std::string qual = "&JSON::Native::Raku::" + name;
+    Value* f = I.global_ ? I.global_->find(qual) : nullptr;
+    if (!f || f->t != VT::Code) {
+        struct G { std::string& s; ~G() { s.clear(); } } g{I.bundledFirst_};
+        I.bundledFirst_ = "JSON::Native::Raku";
+        I.loadModule("JSON::Native::Raku", {}, /*doImport=*/false, /*quiet=*/false, "", /*requireForm=*/true);
+        f = I.global_ ? I.global_->find(qual) : nullptr;
+    }
+    if (!f || f->t != VT::Code)
+        throw RakuError{Value::typeObj("X::AdHoc"),
+                        std::string("JSON::Native: this call needs JSON::Native::Raku, which did not load")};
+    Value fn = *f;
+    return I.callCallable(fn, args, nullptr, false, /*arityCheck=*/true);   // the caller's call, checked as one
+}
+// Rakupp::Internals::JSON.to-json (and its Rakudo alias): the same pair.
+Value jsonExactToJson(Interpreter& I, ValueList& a) {
+    return jsonToJsonBody(I, a, [&](const char*) { return jsonRakuFallback(I, "to-json", a); });
+}
+// `name` is from-json, to-json, from-jsonl or to-jsonl. `defaults` are
+// JSON::Fast's import options (`use JSON::Native <!pretty>`): a named argument
+// the caller did not pass is added with its default.
+Value jsonExactRoutine(const std::string& name, const std::map<std::string, bool>& defaults) {
+    using Body = Value (*)(Interpreter&, ValueList&, const JsonUncovered&);
+    const Body body = name == "from-json"  ? jsonFromJsonBody  : name == "to-json" ? jsonToJsonBody
+                    : name == "from-jsonl" ? jsonFromJsonlBody : jsonToJsonlBody;
+    Value w; w.t = VT::Code; w.setCode(makePayload<Callable>());
+    w.code()->ciM().name = name;
+    w.code()->ciM().builtin = [name, body, defaults](Interpreter& I, ValueList& args) -> Value {
+        ValueList a = args;
+        for (auto& d : defaults) {
+            bool given = false;
+            for (auto& x : a) if (x.t == VT::Pair && x.namedArg && x.s == d.first) { given = true; break; }
+            if (!given) { Value p = Value::pair(d.first, Value::boolean(d.second)); p.namedArg = true; a.push_back(p); }
+        }
+        return body(I, a, [&](const char*) { return jsonRakuFallback(I, name, a); });
+    };
+    return w;
+}
+
 } // namespace rakupp

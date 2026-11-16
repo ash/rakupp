@@ -5,6 +5,9 @@
 # checks against it. Runs on Rakudo too, with -Irakulib.
 
 use Test;
+# this checkout's copy, by path: a bare `need` finds an installed JSON::Native
+# first, which may predate from-jsonl (0.1.0 does)
+use lib $?FILE.IO.parent(3).add('rakulib').Str;
 need JSON::Native::Raku;
 
 my &ref-from-json  = &JSON::Native::Raku::from-json;

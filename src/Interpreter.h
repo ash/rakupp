@@ -3954,6 +3954,10 @@ public:
     std::set<std::string> slangModules_;
     std::vector<std::string> libPaths_ = defaultCwdLibPaths(); // + env-derived paths, filled in the ctor
     std::set<std::string> loadedModules_;
+    // A module the next load takes from the copy this binary bundles, ahead of
+    // -I and the stores: the json codecs' fallback (jsonRakuFallback), whose
+    // installed copy may be older than the codecs it stands behind.
+    std::string bundledFirst_;
     // …and the ones whose body is running right now: a `use` of one of THESE is
     // a cycle (A uses B, B uses A), which Rakudo refuses as circular loading
     std::set<std::string> modulesLoading_;

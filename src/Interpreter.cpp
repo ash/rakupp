@@ -4781,6 +4781,35 @@ std::set<std::string>& envSyncedNames();   // InterpreterBinding.cpp
 
 Interpreter::~Interpreter() { endPool(); cycleDetach(this); }
 
+// The rakulib/ beside the running rakupp, or under its libexec/, where one
+// exists: the interpreter's search path ends with it (the ctor), and a
+// compile's does too (precompSearchPath), so both find the same copy of a
+// module a checkout keeps there.
+std::vector<std::string> rakuppExeRakulibDirs() {
+    std::vector<std::string> out;
+    char buf[4096];
+    std::string self;
+#if defined(_WIN32)
+    DWORD n = ::GetModuleFileNameA(nullptr, buf, sizeof buf);
+    if (n > 0 && n < sizeof buf) self = buf;
+#elif defined(__APPLE__)
+    uint32_t sz = sizeof buf;
+    if (_NSGetExecutablePath(buf, &sz) == 0) self = buf;
+#else
+    ssize_t n = ::readlink("/proc/self/exe", buf, sizeof buf - 1);
+    if (n > 0) { buf[n] = '\0'; self = buf; }
+#endif
+    auto slash = self.rfind('/');
+    if (slash == std::string::npos) return out;
+    const std::string dir = self.substr(0, slash);
+    for (const char* rel : {"/../rakulib", "/../libexec/rakupp/rakulib"}) {
+        std::string cand = dir + rel;
+        struct ::stat st;
+        if (::stat(cand.c_str(), &st) == 0 && S_ISDIR(st.st_mode)) out.push_back(cand);
+    }
+    return out;
+}
+
 Interpreter::Interpreter() {
     adoptProcessStatics();
     // On the `now` clock, NOT raw POSIX. epochNowSecs() carries the Instant
@@ -4836,31 +4865,9 @@ Interpreter::Interpreter() {
     // search is anchored to the executable rather than to the cwd. (The
     // installer itself no longer looks anything up beside the binary — it is
     // baked into the CLI; these shadow modules are the remaining case.)
-    {
-        char buf[4096];
-        std::string self;
-#if defined(_WIN32)
-        DWORD n = ::GetModuleFileNameA(nullptr, buf, sizeof buf);
-        if (n > 0 && n < sizeof buf) self = buf;
-#elif defined(__APPLE__)
-        uint32_t sz = sizeof buf;
-        if (_NSGetExecutablePath(buf, &sz) == 0) self = buf;
-#else
-        ssize_t n = ::readlink("/proc/self/exe", buf, sizeof buf - 1);
-        if (n > 0) { buf[n] = '\0'; self = buf; }
-#endif
-        auto slash = self.rfind('/');
-        if (slash != std::string::npos) {
-            std::string dir = self.substr(0, slash);
-            for (const char* rel : {"/../rakulib", "/../libexec/rakupp/rakulib"}) {
-                std::string cand = dir + rel;
-                struct ::stat st;
-                if (::stat(cand.c_str(), &st) == 0 && S_ISDIR(st.st_mode)) {
-                    libPaths_.push_back(cand);
-                    if (shadowLibDir_.empty()) shadowLibDir_ = cand;
-                }
-            }
-        }
+    for (auto& cand : rakuppExeRakulibDirs()) {
+        libPaths_.push_back(cand);
+        if (shadowLibDir_.empty()) shadowLibDir_ = cand;
     }
     // %*ENV — the process environment, as a Hash (found via the normal env chain).
     // The values are ALLOMORPHS, as `val` makes them: a variable set to "0" is an
@@ -9637,7 +9644,12 @@ std::vector<BundledModule> collectModuleGraph(const Program& prog,
         // has, so the binary embeds it — the binary itself never fetches.
         std::string why;
         auto u = used.find(name);
-        if (!findModuleSourceFor(name, searchPath, path, src, prog.langRev >= 2)
+        // A builtin's fallback (JSON::Native::Raku behind the json codecs) is
+        // the copy this rakupp bundles, as at run time (jsonRakuFallback): an
+        // installed one is never newer than the codecs, or the `use` would not
+        // have been answered, and an older one lacks what newer codecs need.
+        const bool bundled = fallbackMods.count(name) && !namedMods.count(name) && rakuppBundledModule(name, path, src);
+        if (!bundled && !findModuleSourceFor(name, searchPath, path, src, prog.langRev >= 2)
             && !(u != used.end() && depsAsk(name, "", u->second, g_depsProgram, why)
                  && findModuleSourceFor(name, searchPath, path, src, prog.langRev >= 2))) {
             // load from disk at run time — silently before MODULES-PLAN B1

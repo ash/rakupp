@@ -1,6 +1,6 @@
 # Plan: `from-jsonl` and `to-jsonl` — JSON Lines in JSON::Native, at the parser's speed
 
-**Status: Phases 0 and 1 done 2026-11-16** — the Raku reference and its
+**Status: Phases 0, 1 and 2 done 2026-11-16** — the Raku reference and its
 checks, then the engine primitives. On a 125 MB, 700,000-line file,
 `from-jsonl` is 0.64 s against 1.40 s for the issue's Raku loop over
 `rakupp-from-json`, and 0.62 s for the same records parsed as one document: the
@@ -122,6 +122,24 @@ the 9-line loop over the static writer.
   an installed distribution newer than it takes over from the engine, so
   shipping 0.2.0 without the bump would quietly put Raku++ on the slow path.
 - `--exe` embeds the fallback as it does now; run `t/exe/parity.raku`.
+
+**As built.** `jsonExactRoutine`, `jsonRakuFallback` and `jsonExactToJson`
+moved from `InterpreterModules.cpp` (at its 10,000-line ceiling) to
+`BuiltinsJson.cpp`, keyed by name; `use JSON::Native <pretty>` gives
+`to-jsonl` no `:pretty` default.
+
+**Found on the way: the fallback was the installed copy.** It was documented
+as "JSON::Native::Raku, found installed or on -I, or else bundled", and a
+development machine had JSON::Native 0.1.0 installed for Rakudo, whose
+`JSON::Native::Raku` has no `from-jsonl`: every refused line raised "this call
+needs JSON::Native::Raku, which did not load", and an `--exe` binary embedded
+that copy too. A checkout build hid it, finding `rakulib/` first. The fallback
+is now always the bundled copy — at run time through `bundledFirst_`, which
+the loader takes ahead of -I and the stores, and in a compile through
+`collectModuleGraph`. Nothing is lost: an installed or -I JSON::Native can only
+be older than the engine, since a newer one makes the engine step aside from
+the `use`. A program's own `need JSON::Native::Raku` still finds the -I or
+installed copy.
 
 ### Phase 3 — JSON::Native 0.2.0 (`~/raku-modules/JSON-Native`)
 

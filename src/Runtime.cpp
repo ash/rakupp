@@ -256,6 +256,7 @@ static std::vector<std::string> precompSearchPath(const std::vector<std::string>
     if (!g_sandboxed) { sp.push_back("lib"); sp.push_back("."); sp.push_back("rakulib"); }   // (defaultCwdLibPaths)
     if (const char* rl = std::getenv("RAKULIB"))
         for (auto& d : splitSearchPath(rl)) sp.push_back(d);
+    for (auto& d : rakuppExeRakulibDirs()) sp.push_back(d);   // last, as the interpreter's libPaths_
     return sp;
 }
 

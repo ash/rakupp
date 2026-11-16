@@ -608,6 +608,7 @@ for ('up-w',    q{print 'a'.uniprop('W');},                                     
         class P { has $.x = 1 }
         print to-json([1, {a => 2}], :!pretty), '|';
         print (try to-json(P.new)) // $!.message;
+        print '|', (try from-jsonl("1\n[")) // $!.^name ~ ' ' ~ $!.line;
         END
     my ($rc, $log, $bin) = compile($src, 'jn-fallback-bin', '--exe', '--slim');
     check $rc == 0 && $log.contains('JSON::Native::Raku'),
@@ -617,8 +618,8 @@ for ('up-w',    q{print 'a'.uniprop('W');},                                     
     my $info = run $*EXECUTABLE, '--exe-info', $bin, :out, :err;
     my $line = $info.out.slurp(:close);
     $info.err.slurp(:close);
-    check $p.exitcode == 0 && $out eq '[1,{"a":2}]|Don\'t know how to jsonify P' && $line.contains('"eval"'),
-          '…and an uncovered to-json answers from it, parser cut, nothing on disk',
+    check $p.exitcode == 0 && $out eq '[1,{"a":2}]|Don\'t know how to jsonify P|X::JSON::Native::Line 2' && $line.contains('"eval"'),
+          '…and an uncovered to-json, and a refused from-jsonl line, answer from it, parser cut, nothing on disk',
           "exit {$p.exitcode}: $out / $err / $line";
 }
 

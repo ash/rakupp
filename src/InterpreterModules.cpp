@@ -160,7 +160,7 @@ static const DataNativeTag kDataNativeTags[] = {
     // table as P4 and P5 register theirs. Until a tag's primitives all exist
     // the module is left to answer it, which is why the check below is by
     // PRIMITIVE and not by tag name.
-    { "json", { "from-json", "to-json", "json-backend", nullptr } },
+    { "json", { "from-json", "to-json", "from-jsonl", "to-jsonl", "json-backend", nullptr } },
     { "csv",  { "from-csv", "to-csv", "csv-backend", nullptr } },
     { "digest", { "md5", "sha1", "sha224", "sha256", "sha384", "sha512",
                   "md5-hex", "sha1-hex", "sha224-hex", "sha256-hex", "sha384-hex", "sha512-hex",
@@ -193,6 +193,10 @@ static const DataNativeModule kDataNativeModules[] = {
     { nullptr, nullptr, { nullptr } }
 };
 
+// What the `json` tag hands out for its codecs: jsonExactRoutine, in
+// BuiltinsJson.cpp — the codec as a routine whose fallback is JSON::Native::Raku.
+Value jsonExactRoutine(const std::string& name, const std::map<std::string, bool>& defaults);
+
 // The PARSER needs the same answer, and cheaply. It scans a `use`d module's
 // source for exported operators and sigilless constants — which for a module
 // the compiler answers is pure waste, and not free: JSON::Native is installed
@@ -203,54 +207,6 @@ static const DataNativeModule kDataNativeModules[] = {
 // check, because a `-I` path naming a real distribution has to be scanned
 // normally — that is the same rule dataNativeUse applies, spelled where the
 // parser can afford it.
-// What the `json` tag hands out: the codec as a routine whose fallback is
-// JSON::Native::Raku — the pure-Raku half of JSON::Native, found installed or
-// on -I, or else the copy bundled in this binary — so a call the codec does
-// not cover (an adverb it does not take, a type outside the ladder, a document
-// it refuses) is answered exactly as JSON::Fast answers it, and nothing has to
-// be installed for that. The fallback is loaded by the first call that needs
-// it; a program whose calls the codec answers never reads it.
-//
-// `defaults` are JSON::Fast's import options (`use JSON::Native <!pretty>`): a
-// named argument the caller did not pass is added with its default.
-// (the codec's two bodies, in Builtins.cpp — declared in BuiltinsParts.h,
-// which this file does not otherwise need)
-using JsonUncovered = std::function<Value(const char* why)>;
-Value jsonToJsonBody(Interpreter& I, ValueList& a, const JsonUncovered& uncovered);
-Value jsonFromJsonBody(Interpreter& I, ValueList& a, const JsonUncovered& uncovered);
-
-static Value jsonRakuFallback(Interpreter& I, bool to, ValueList& args) {
-    const std::string qual = to ? "&JSON::Native::Raku::to-json" : "&JSON::Native::Raku::from-json";
-    Value* f = I.global_ ? I.global_->find(qual) : nullptr;
-    if (!f || f->t != VT::Code) {
-        I.loadModule("JSON::Native::Raku", {}, /*doImport=*/false, /*quiet=*/false, "", /*requireForm=*/true);
-        f = I.global_ ? I.global_->find(qual) : nullptr;
-    }
-    if (!f || f->t != VT::Code)
-        throw RakuError{Value::typeObj("X::AdHoc"),
-                        std::string("JSON::Native: this call needs JSON::Native::Raku, which did not load")};
-    Value fn = *f;
-    return I.callCallable(fn, args, nullptr, false, /*arityCheck=*/true);   // the caller's call, checked as one
-}
-// Rakupp::Internals::JSON.to-json (and its Rakudo alias): the same pair.
-Value jsonExactToJson(Interpreter& I, ValueList& a) {
-    return jsonToJsonBody(I, a, [&](const char*) { return jsonRakuFallback(I, true, a); });
-}
-static Value jsonExactRoutine(bool to, const std::map<std::string, bool>& defaults) {
-    Value w; w.t = VT::Code; w.setCode(makePayload<Callable>());
-    w.code()->ciM().name = to ? "to-json" : "from-json";
-    w.code()->ciM().builtin = [to, defaults](Interpreter& I, ValueList& args) -> Value {
-        ValueList a = args;
-        for (auto& d : defaults) {
-            bool given = false;
-            for (auto& x : a) if (x.t == VT::Pair && x.namedArg && x.s == d.first) { given = true; break; }
-            if (!given) { Value p = Value::pair(d.first, Value::boolean(d.second)); p.namedArg = true; a.push_back(p); }
-        }
-        auto handOver = [&](const char*) { return jsonRakuFallback(I, to, a); };
-        return to ? jsonToJsonBody(I, a, handOver) : jsonFromJsonBody(I, a, handOver);
-    };
-    return w;
-}
 
 bool rakuppCompilerAnswersModule(const std::string& name) {
     for (const DataNativeModule* m = kDataNativeModules; m->module; m++) {
@@ -403,7 +359,7 @@ bool Interpreter::dataNativeUse(const std::string& name,
             const std::string k = neg ? w.substr(1) : w;
             if (k == "immutable" || k == "pretty" || k == "sorted-keys" || k == "enums-as-value")
                 jsonDefaults[k] = !neg;
-            else if (w == "from-json" || w == "to-json" || w == "json-backend")
+            else if (w == "from-json" || w == "to-json" || w == "from-jsonl" || w == "to-jsonl" || w == "json-backend")
                 jsonNames.insert(w);
             else
                 throw RakuError{Value::typeObj("X::AdHoc"), "JSON::Native: no such name '" + w + "'"};
@@ -461,15 +417,17 @@ bool Interpreter::dataNativeUse(const std::string& name,
             std::string prim = std::string("rakupp-") + *n;
             auto bit = builtins_.find(prim);
             if (bit == builtins_.end() || !tctx().cur) continue;
-            // the json tag's two codecs: exact routines with the Raku
-            // fallback, not the bare primitives, which raise where they stop
-            if (std::string(d->tag) == "json" && (nm == "from-json" || nm == "to-json")) {
-                // each takes its own defaults: from-json :immutable, to-json
-                // the rest — as JSON::Fast's EXPORT hands them out
+            // the json tag's codecs: exact routines with the Raku fallback,
+            // not the bare primitives, which raise where they stop
+            if (std::string(d->tag) == "json" && nm != "json-backend") {
+                // each takes its own defaults: the from- pair :immutable, the
+                // to- pair the rest, as JSON::Fast's EXPORT hands them out —
+                // but not :pretty to to-jsonl, which has one layout
                 std::map<std::string, bool> mine;
                 for (auto& dflt : jsonDefaults)
-                    if ((dflt.first == "immutable") == (nm == "from-json")) mine.insert(dflt);
-                tctx().cur->define("&" + nm, jsonExactRoutine(nm == "to-json", mine));
+                    if ((dflt.first == "immutable") == (nm[0] == 'f') && !(nm == "to-jsonl" && dflt.first == "pretty"))
+                        mine.insert(dflt);
+                tctx().cur->define("&" + nm, jsonExactRoutine(nm, mine));
                 continue;
             }
             // JSON::Native names its paths: the engine's is 'engine', for
@@ -2168,6 +2126,10 @@ void Interpreter::loadModuleImpl(const std::string& name, const std::vector<std:
     // installed rakupp has no rakulib/ at all, and a checkout's is the same
     // text the build embedded. Not precompiled — the path is not a file, and
     // three small modules parse in well under a millisecond.
+    if (bundledFirst_ == name) {   // a builtin's fallback: the bundled copy first
+        std::string bdPath, bdSrc;
+        if (rakuppBundledModule(name, bdPath, bdSrc)) { loadSource(bdSrc, bdPath); return; }
+    }
     {
         std::string shPath, shSrc;
         if (rakuppShadowModule(name, shPath, shSrc)) {

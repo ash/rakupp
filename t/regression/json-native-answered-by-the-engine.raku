@@ -1,7 +1,7 @@
 # Regression: `use JSON::Native` is answered by the engine — no module file is
 # read for it, installed or not — and what it hands out is EXACT: the codec as
-# routines whose fallback is JSON::Native::Raku (found installed, on -I, or
-# else bundled in this binary), so a call the codec does not cover is answered
+# routines whose fallback is JSON::Native::Raku (the copy bundled in this
+# binary: json-native-jsonl.raku says why), so a call the codec does not cover is answered
 # as JSON::Fast answers it. JSON::Native is a drop-in for JSON::Fast, so its
 # import list takes JSON::Fast's options too. Raku++ only.
 
