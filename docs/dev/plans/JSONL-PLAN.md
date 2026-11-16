@@ -34,10 +34,14 @@ to-jsonl(@v, *%o)            ≡  @v.map({ to-json($_, :!pretty, |%o) ~ "\n" }).
 **`from-jsonl(Blob|Str $x, :$immutable)`**
 
 - A `Blob` is decoded as UTF-8; a `Str` is taken as it is.
-- Lines are split on `\n` only. A last line without a `\n` is a line.
-- A line holding nothing but JSON whitespace (space, tab, `\r`) is blank and
-  yields nothing. So CRLF input works with no normalising; a line of U+00A0 is
-  not blank (it is malformed), where `.trim` would call it blank.
+- Lines are what `Str.lines` gives: split at `\n`, `\r\n` or a lone `\r`, on
+  Rakudo and Raku++ alike, so CRLF input needs no normalising. A last line
+  without a terminator is a line; a final terminator makes no empty one. (JSON
+  allows no raw CR or LF inside a string, so the split never cuts a valid
+  document.)
+- A line holding nothing but spaces and tabs is blank and yields nothing. A
+  line of U+00A0 is not blank (it is malformed), where `.trim` would call it
+  blank.
 - Every other line is `from-json($line, :$immutable)`, JSON::Fast-exact.
 - The result is an `Array`, or a `List` under `:immutable`.
 - A line `from-json` refuses throws `X::JSON::Native::Line`: `.line` (1-based,

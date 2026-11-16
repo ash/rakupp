@@ -28,6 +28,18 @@ document raises C<X::JSON::Native::AdditionalContent>.
 :$enums-as-value, :$level = 0)> — NaN and Inf are C<null> unless
 C<$*JSON_NAN_INF_SUPPORT> is true.
 
+Two more for JSON Lines, which are not JSON::Fast's but are defined by it:
+
+=item C<from-jsonl($source, :$immutable)> — a C<Blob> (decoded as UTF-8) or a
+C<Str>, split into the lines C<Str.lines> gives; a line of nothing but spaces
+and tabs yields nothing, every other line is C<from-json>'s answer for it. An
+C<Array>, or a C<List> under C<:immutable>. A line C<from-json> refuses raises
+C<X::JSON::Native::Line>, which carries the line number (counting blank lines)
+and what C<from-json> raised.
+
+=item C<to-jsonl(@values, :$sorted-keys, :$enums-as-value)> — each value as
+C<to-json(:!pretty)> writes it, followed by C<"\n">. C<:pretty> is refused.
+
 =end pod
 
 # X::JSON::Native::AdditionalContent is declared OUTSIDE the module, as
@@ -43,6 +55,16 @@ class X::JSON::Native::AdditionalContent is Exception {
     method message {
         "JSON Input contained additional text after the document (parsed $.parsed-length chars, next non-whitespace lives at $.rest-position)"
     }
+}
+
+# What from-jsonl raises for a line from-json refuses: which line, and what
+# from-json said about it. Declared out here for the same reason as the class
+# above.
+class X::JSON::Native::Line is Exception {
+    has Int $.line;
+    has Exception $.exception;
+
+    method message { "line $!line: " ~ $!exception.message }
 }
 
 module JSON::Native::Raku {
@@ -724,5 +746,47 @@ module JSON::Native::Raku {
             ).throw unless $pos == $n;
         }
         $parsed
+    }
+
+    # ---- JSON Lines -----------------------------------------------------------
+    #
+    # The definition every faster path is tested against: from-json applied to
+    # each line, to-json(:!pretty) to each value. Nothing here is clever, on
+    # purpose.
+
+    # Blank is spaces and tabs only. .trim alone would also take U+00A0 and
+    # the other Unicode spaces, which from-json refuses, so it only decides
+    # when the exact test needs to run.
+    my sub blank-line(Str $l --> Bool) {
+        !$l.chars || ($l.trim eq '' && $l !~~ / <-[\ \t]> /)
+    }
+
+    # The CATCH sits in a sub of its own: one in from-jsonl's loop would be a
+    # frame entered per line.
+    my sub jsonl-value(Str $l, Int $line, $immutable) {
+        CATCH { default { X::JSON::Native::Line.new(:$line, :exception($_)).throw } }
+        from-json($l, :$immutable)
+    }
+
+    our sub from-jsonl($source, :$immutable) {
+        my Str $text = $source ~~ Blob ?? $source.decode('utf-8') !! $source.Str;
+        my @values;
+        my int $line = 0;
+        for $text.lines -> $l {
+            $line = $line + 1;
+            @values.push: jsonl-value($l, $line, $immutable) unless blank-line($l);
+        }
+        $immutable ?? @values.List !! @values
+    }
+
+    our sub to-jsonl(@values, :$pretty, :$sorted-keys = False, Bool :$enums-as-value = False) {
+        die "to-jsonl: JSON Lines has one layout, a value a line; :pretty does not apply"
+          if $pretty;
+        my str @out;
+        for @values -> \v {
+            @out.push: to-json(v, :!pretty, :$sorted-keys, :$enums-as-value);
+            @out.push: "\n";
+        }
+        @out.join
     }
 }
