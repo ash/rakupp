@@ -245,6 +245,22 @@ static bool jsonlAscii(std::string_view s) {
     return hi < 0x80;
 }
 
+// An IO::Path or IO::Handle argument is READ, in place: replaced by what
+// `slurp` gives — its text, or with `bin` a path's bytes — so the parse, and
+// any hand-over to the Raku fallback, see the contents and never the name.
+// from-json("doc.json".IO) used to hand the path to the fallback, whose
+// Str() parsed the name "doc.json" (rakupp issue 267). In place matters for a
+// handle, which reads once: the fallback gets what was read, and the handle is
+// left open for its owner. (The tags are DataCsv.cpp's: an IO::Path is a Str
+// tagged "IO", an IO::Handle a Hash tagged "FileHandle".)
+void jsonReadIoArg(Interpreter& I, Value& v, bool bin) {
+    const bool path = v.t == VT::Str && v.hashKind == "IO";
+    if (!path && !(v.t == VT::Hash && v.hashKind == "FileHandle")) return;
+    ValueList sa; sa.push_back(v);
+    if (bin && path) { Value p = Value::pair("bin", Value::boolean(true)); p.namedArg = true; sa.push_back(p); }
+    v = I.callBuiltin("slurp", std::move(sa));
+}
+
 static thread_local std::string jsonlWhy;
 Value jsonFromJsonlBody(Interpreter& I, ValueList& a, const JsonUncovered& uncovered) {
     const Value* src = nullptr;
@@ -254,7 +270,7 @@ Value jsonFromJsonlBody(Interpreter& I, ValueList& a, const JsonUncovered& uncov
             if (x.s == "immutable") cfg.immutable = x.pairVal() && x.pairVal()->truthy();
             else return uncovered("no adverb of that name");
         }
-        else if (!src) src = &x;
+        else if (!src) { jsonReadIoArg(I, x, true); src = &x; }   // a path or handle is READ
         else return uncovered("more than one positional argument");
     }
     if (!src || src->t != VT::Str) return uncovered("expected a Blob or a Str");

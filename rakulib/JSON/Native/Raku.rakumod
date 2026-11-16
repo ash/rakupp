@@ -18,7 +18,9 @@ the byte, because programs already depend on that text. The behaviour below is
 a port of JSON::Fast 0.21.0, written in plain Raku (no C<nqp::>) so that every
 engine runs the same code:
 
-=item C<from-json(Str() $text, :$immutable, :$allow-jsonc)> — integer token →
+=item C<from-json($text, :$immutable, :$allow-jsonc)> — the text, or an
+C<IO::Path> (read) or an C<IO::Handle> (read to its end and left open); any
+other value through C<Str()>, as JSON::Fast takes it. Integer token →
 C<Int>, decimal → C<Rat>, exponent form → C<Num> (each the token's own
 C<.Numeric>), C<true>/C<false> → C<Bool>, C<null> → C<Any>, objects and arrays
 → C<Hash>/C<Array>, or C<Map>/C<List> under C<:immutable>. Content after the
@@ -30,8 +32,8 @@ C<$*JSON_NAN_INF_SUPPORT> is true.
 
 Two more for JSON Lines, which are not JSON::Fast's but are defined by it:
 
-=item C<from-jsonl($source, :$immutable)> — a C<Blob> (decoded as UTF-8) or a
-C<Str>, split into the lines C<Str.lines> gives; a line of nothing but spaces
+=item C<from-jsonl($source, :$immutable)> — a C<Blob> (decoded as UTF-8), a
+C<Str>, or an C<IO::Path> or C<IO::Handle> (read as C<from-json> reads them), split into the lines C<Str.lines> gives; a line of nothing but spaces
 and tabs yields nothing, every other line is C<from-json>'s answer for it. An
 C<Array>, or a C<List> under C<:immutable>. A line C<from-json> refuses raises
 C<X::JSON::Native::Line>, which carries the line number (counting blank lines)
@@ -488,7 +490,16 @@ module JSON::Native::Raku {
     # through every call. Declarations sit outside loop bodies on purpose: a
     # block that declares nothing is flattened into its routine, one that
     # does is a frame entered per iteration.
-    our sub from-json(Str() $text, :$immutable, :$allow-jsonc) {
+    # A path is READ, and a handle read to its end and left open for its
+    # owner: from-json("doc.json".IO) used to parse the NAME, through Str(),
+    # and point its error at a letter of it (rakupp issue 267) — while
+    # CSV::Native's from-csv has always read one. Anything else still binds
+    # through Str(), so from-json(Mu) is the same failure naming $text.
+    our sub from-json(Mu \source, :$immutable, :$allow-jsonc) {
+        parse-json(source ~~ IO::Path | IO::Handle ?? source.slurp !! source, :$immutable, :$allow-jsonc)
+    }
+
+    my sub parse-json(Str() $text, :$immutable, :$allow-jsonc) {
         my str $t = $text;
         my int $n = $t.chars;
         my int $pos = 0;
@@ -765,11 +776,13 @@ module JSON::Native::Raku {
     # frame entered per line.
     my sub jsonl-value(Str $l, Int $line, $immutable) {
         CATCH { default { X::JSON::Native::Line.new(:$line, :exception($_)).throw } }
-        from-json($l, :$immutable)
+        parse-json($l, :$immutable)
     }
 
     our sub from-jsonl($source, :$immutable) {
-        my Str $text = $source ~~ Blob ?? $source.decode('utf-8') !! $source.Str;
+        my Str $text = $source ~~ IO::Path | IO::Handle ?? $source.slurp
+                    !! $source ~~ Blob                ?? $source.decode('utf-8')
+                    !! $source.Str;
         my @values;
         my int $line = 0;
         for $text.lines -> $l {

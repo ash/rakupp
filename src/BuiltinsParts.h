@@ -360,6 +360,7 @@ Value jsonFromJsonBody(Interpreter& I, ValueList& a, const JsonUncovered& uncove
 Value jsonFromJsonlBody(Interpreter& I, ValueList& a, const JsonUncovered& uncovered);
 Value jsonToJsonlBody(Interpreter& I, ValueList& a, const JsonUncovered& uncovered);
 bool jsonWriteLines(Interpreter& I, const ValueList& vals, bool sorted, bool enumsAsValue, std::string& out);
+void jsonReadIoArg(Interpreter& I, Value& v, bool bin);   // an IO::Path / IO::Handle argument, read in place
 // What the json tag hands out for `name`, with JSON::Native::Raku behind it.
 Value jsonExactRoutine(const std::string& name, const std::map<std::string, bool>& defaults);
 

@@ -5843,7 +5843,7 @@ Value jsonFromJsonBody(Interpreter& I, ValueList& a, const JsonUncovered& uncove
             else if (x.s == "allow-jsonc") cfg.jsonc = tv;
             else return uncovered("no adverb of that name");
         }
-        else if (!text) text = &x;
+        else if (!text) { jsonReadIoArg(I, x, false); text = &x; }   // a path or handle is READ (issue 267)
         else return uncovered("more than one positional argument");
     }
     if (!text || !(text->t == VT::Str && text->hashKind.empty()))

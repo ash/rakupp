@@ -94,6 +94,16 @@ looked up at run time, and its shape — a class, a sub, a routine with a
 fallback — is part of its contract. When a new shape was needed, a new name
 was safer than changing the old one under released modules.
 
+## Paths and handles
+
+`from-json` and `from-jsonl` read an `IO::Path`, and read an `IO::Handle` to
+its end and leave it open (issue 267); anything else binds through `Str()`.
+The codec reads the argument IN PLACE (`jsonReadIoArg`,
+[src/BuiltinsJson.cpp](../../src/BuiltinsJson.cpp)), through the `slurp`
+builtin, so a hand-over to JSON::Native::Raku gets the contents: a handle
+cannot be read twice. Before, the codec handed a path to the fallback, whose
+`Str()` parsed the path's name.
+
 ## JSON Lines
 
 `from-jsonl($source, :$immutable)` takes a Blob (UTF-8) or a Str, splits it
