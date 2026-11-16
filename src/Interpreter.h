@@ -4139,10 +4139,12 @@ public:
         if (it == requireScoped_.end()) return false;
         auto sp = it->second.lock();
         // …and code a MODULE declared sees every package: JSON::Tiny loaded in
-        // a test's block still reaches JSON::Tiny::Actions from its from-json
-        if (sp)
-            for (Env* e = tctx().cur.get(); e; e = e->parent.get())
-                if (e == sp.get() || loadedModuleEnvSet_.count(e)) return false;
+        // a test's block still reaches JSON::Tiny::Actions from its from-json —
+        // after that block has ENDED too, when `sp` is gone: Data::Native keeps
+        // Compress::Zlib::Stream from a `{ use Compress::Zlib; }` block, and its
+        // deflate names Compress::Zlib::Raw::z_stream long after
+        for (Env* e = tctx().cur.get(); e; e = e->parent.get())
+            if ((sp && e == sp.get()) || loadedModuleEnvSet_.count(e)) return false;
         // What stays lexical is the top-level NAME; the package's contents merge
         // into GLOBAL. `A::B` from a nested load is reached through an `A` this
         // scope sees some other way — `use G; { use G::Path }; G::Path` — and

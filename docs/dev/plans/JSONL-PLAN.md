@@ -173,9 +173,11 @@ Data::Native is 0.0.2 to match. Its reference is `JSON::Native::Raku`, reached
 with `need` (it claims nothing); lines go through JSON::Fast; on Raku++ the
 codec routine answers with that pair as its fallback, not the bare primitive,
 whose refusal is X::AdHoc rather than a numbered `X::JSON::Native::Line`. Its
-suite passes on Rakudo (44 + 30); on Raku++ `01-tags.t` stops in the zlib
-section, before and after this change, where Compress::Zlib 1.1.0 cannot find
-`Compress::Zlib::Raw::z_stream` — a rakupp bug of its own.
+suite passes on Rakudo and Raku++ (44 + 30). On Raku++ `01-tags.t` first
+stopped in the zlib section, where Compress::Zlib 1.1.0 could not find
+`Compress::Zlib::Raw::z_stream`: a module `use`d in a bare block lost sight of
+its own dependencies once the block ended (requireHidden), fixed with
+`block-use-module-sees-its-deps.raku`.
 
 ### Phase 4 — measure
 
