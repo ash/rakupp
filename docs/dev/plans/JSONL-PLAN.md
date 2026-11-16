@@ -1,6 +1,6 @@
 # Plan: `from-jsonl` and `to-jsonl` — JSON Lines in JSON::Native, at the parser's speed
 
-**Status: Phases 0 to 3 done 2026-11-16** — the Raku reference and its
+**Status: done 2026-11-16, all five phases** (Phase 4's measurements are the ones below; the CHANGELOG entry waits for the release, and the reply to issue 268 is the maintainer's to post) — the Raku reference and its
 checks, then the engine primitives. On a 125 MB, 700,000-line file,
 `from-jsonl` is 0.64 s against 1.40 s for the issue's Raku loop over
 `rakupp-from-json`, and 0.62 s for the same records parsed as one document: the

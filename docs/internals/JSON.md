@@ -15,12 +15,17 @@ are many; the code behind them is not.
 | `use JSON::Fast` | the installed module, its `from-json` and `to-json` wrapped (`wrapJsonFastExports`) | unmodified programs | v3.7.0 |
 | `rakupp-from-json`, `rakupp-to-json` | builtins, found with `&::('rakupp-from-json')` | `::Native` distributions probing the engine ([DATA-NATIVE.md](../guide/DATA-NATIVE.md#the-rakupp--names)) | v3.26.0 |
 | `rakupp-json-codec` | a builtin that returns the codec as a routine with a fallback | JSON::Native | v5.4.0 |
+| `rakupp-from-jsonl`, `rakupp-to-jsonl` | builtins: a window of JSON Lines in one pass, and back | `::Native` distributions probing the engine | after v5.8.0 |
 | `Rakupp::Internals::JSON` | a class the engine answers, with `.from-json` and `.to-json` | Raku++'s own tooling: `tools/install.raku`, `tools/upgrade.raku` | v3.5.0 |
 | `Rakudo::Internals::JSON` | the same class under Rakudo's name | zef, OpenSSL, Pakku | v1.1.5 |
 | `jsonParseDoc`, `jsonEncode` | C++ functions, no Raku name | the engine reading META6 files and writing its store's `dist/` records | — |
 
 Which path answered can be asked: `json-backend`, after `use JSON::Native`,
 says `engine`; `rakupp-json-backend` says `core`.
+
+`from-jsonl` and `to-jsonl` (JSON Lines) come with `from-json` and `to-json`
+from `use JSON::Native` and `use Data::Native <json>` (after v5.8.0), and
+`rakupp-json-codec` makes them as routines too, by those names.
 
 ## Reading: what happens where the parser stops
 
@@ -37,6 +42,10 @@ a value outside JSON, a document it refuses — is most of why they are separate
 - **`rakupp-from-json`, `rakupp-to-json`** have nothing behind them, so they
   raise, with the position: `[1,` fails with
   `from-json: malformed JSON at byte 3 (line 1, column 4)`.
+- **`from-jsonl`, `to-jsonl`** hand the WHOLE call to JSON::Native::Raku's
+  pair, which numbers a refused line in `X::JSON::Native::Line`; their bare
+  primitives raise X::AdHoc instead (`from-jsonl: malformed JSON at line 3,
+  column 4`).
 - **`Rakupp::Internals::JSON.from-json`** takes no options and raises a bare
   `Invalid JSON`.
 - **`jsonParseDoc`** is lenient on purpose: content after the document is
@@ -85,15 +94,39 @@ looked up at run time, and its shape — a class, a sub, a routine with a
 fallback — is part of its contract. When a new shape was needed, a new name
 was safer than changing the old one under released modules.
 
+## JSON Lines
+
+`from-jsonl($source, :$immutable)` takes a Blob (UTF-8) or a Str, splits it
+as `.lines` does, drops lines of only spaces and tabs, and gives `from-json`'s
+answer for each of the rest; `to-jsonl(@values, :$sorted-keys,
+:$enums-as-value)` is `to-json(:!pretty) ~ "\n"` for each value. That is the
+contract, written as JSON::Native::Raku's pair and checked against it by
+`t/regression/json-lines.raku`. The engine does a window in one C++ pass
+(`jsonFromJsonlBody`, [src/BuiltinsJson.cpp](../../src/BuiltinsJson.cpp)):
+the line split, the blank test and each line's parse in place, with no Str
+and no Raku frame per line; a pure-ASCII Blob is its own text, any other goes
+through `.decode` itself. On 700,000 lines that is 0.64 s, against 1.40 s for
+a Raku loop calling `from-json` on each line and 0.62 s for the same records
+parsed as one document. The plan and its measurements are in
+[JSONL-PLAN.md](../dev/plans/JSONL-PLAN.md).
+
 ## One file, two copies
 
 `rakulib/JSON/Native/Raku.rakumod` is a copy of
 `JSON-Native/lib/JSON/Native/Raku.rakumod` in
 [ash/raku-modules](https://github.com/ash/raku-modules). The two must be kept
 equal: change one, copy it to the other, and raise the interface version the
-engine claims for JSON::Native (0.1.0) when the surface changes. The engine
-steps aside for an installed JSON::Native newer than that, for one on `-I`,
-and when `JSON_NATIVE_BACKEND` names another path.
+engine claims for JSON::Native (0.2.0) when the surface changes —
+`t/regression/data-native-precedence.raku` checks it against the
+distribution's META6. The engine steps aside for an installed JSON::Native
+newer than that, for one on `-I`, and when `JSON_NATIVE_BACKEND` names another
+path.
+
+The codecs' fallback is always the copy this rakupp bundles, never an
+installed or `-I` one (`jsonRakuFallback`; a compile embeds the same copy):
+those can only be older, since a newer one makes the engine step aside from
+the `use`, and an older one lacks what newer codecs hand over. A program's
+own `need JSON::Native::Raku` still finds an installed copy first.
 
 ## See also
 
