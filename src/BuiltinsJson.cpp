@@ -1,9 +1,11 @@
-// BuiltinsJson.cpp — the JSON codec's reader: whitespace and JSONC comments, strings, numbers, values
+// BuiltinsJson.cpp — the JSON codec's reader: whitespace and JSONC comments, strings, numbers, values; and JSON Lines
 //
 // One of the parts BuiltinsParts.h lists; what they share is declared there.
 // The writer (jfEncode/jfEscape) and the two entry bodies stay in Builtins.cpp.
 #include "BuiltinsParts.h"
 #include <numeric>
+#include <algorithm>
+#include <cstring>
 
 namespace rakupp {
 
@@ -225,6 +227,105 @@ bool jsonParseValue(std::string_view s, size_t& i, Value& out, JsonCfg cfg) {
     }
     out = numifyStr(s.substr(st, i - st));
     return out.t != VT::Any && out.t != VT::Nil; // "5." scans but does not numify — die like .Numeric
+}
+
+// ---- JSON Lines: from-jsonl, to-jsonl (docs/dev/plans/JSONL-PLAN.md) ----------
+//
+// What JSON::Native::Raku's pair does — from-json for each line of
+// `$source.lines`, to-json(:!pretty) ~ "\n" for each value — in one pass over
+// the window: no Str per line, no Raku frame per line, the decode skipped
+// where the bytes already are the text. Anything else goes to `uncovered`
+// whole, and the Raku pair answers it exactly, line number and all.
+
+// The bytes of a Blob that decodes as UTF-8, as they are: pure ASCII is
+// already valid, BOM-free and NFC, which is everything .decode would do to it.
+static bool jsonlAscii(std::string_view s) {
+    unsigned char hi = 0;
+    for (unsigned char c : s) hi |= c;   // one pass the compiler vectorizes
+    return hi < 0x80;
+}
+
+static thread_local std::string jsonlWhy;
+Value jsonFromJsonlBody(Interpreter& I, ValueList& a, const JsonUncovered& uncovered) {
+    const Value* src = nullptr;
+    JsonCfg cfg;
+    for (auto& x : a) {
+        if (x.t == VT::Pair && x.namedArg) {
+            if (x.s == "immutable") cfg.immutable = x.pairVal() && x.pairVal()->truthy();
+            else return uncovered("no adverb of that name");
+        }
+        else if (!src) src = &x;
+        else return uncovered("more than one positional argument");
+    }
+    if (!src || src->t != VT::Str) return uncovered("expected a Blob or a Str");
+    const std::string& kind = src->hashKind;
+    if (kind.empty() && !src->enumName().empty()) return uncovered("an enum's Str is the Raku pair's");
+    Value decoded;
+    std::string_view s = src->s.str();
+    if (!kind.empty()) {
+        if (kind != "Blob" && kind != "Buf" && kind != "blob8" && kind != "buf8" && kind != "utf8")
+            return uncovered("expected a Blob or a Str");
+        if (!jsonlAscii(s)) {
+            decoded = I.methodCall(*src, "decode", ValueList{Value::str("utf-8")});
+            s = decoded.s.str();
+        }
+    }
+    Value out = Value::array();
+    out.isList = cfg.immutable;
+    ValueList& vals = *out.arr();
+    vals.reserve(std::count(s.begin(), s.end(), '\n') + 1);
+    const size_t n = s.size();
+    size_t pos = 0, lineNo = 0;
+    while (pos < n) {
+        // the line ends where .lines ends it: "\n", "\r\n" or a lone "\r"
+        const char* nl = (const char*)std::memchr(s.data() + pos, '\n', n - pos);
+        size_t end = nl ? (size_t)(nl - s.data()) : n;
+        size_t next = nl ? end + 1 : n;
+        if (const char* cr = (const char*)std::memchr(s.data() + pos, '\r', end - pos)) {
+            end = (size_t)(cr - s.data());
+            next = end + 1 < n && s[end + 1] == '\n' ? end + 2 : end + 1;
+        }
+        lineNo++;
+        std::string_view line = s.substr(pos, end - pos);
+        pos = next;
+        size_t i = 0;
+        while (i < line.size() && (line[i] == ' ' || line[i] == '\t')) i++;
+        if (i == line.size()) continue;   // blank: spaces and tabs only
+        Value v;
+        const bool parsed = jsonParseValue(line, i, v, cfg);
+        if (parsed) jsonSkipWs(line, i, cfg);
+        if (!parsed || i != line.size()) {
+            jsonlWhy = std::string(parsed ? "trailing content after the value" : "malformed JSON") +
+                       " at line " + std::to_string(lineNo) + ", column " + std::to_string(i + 1);
+            return uncovered(jsonlWhy.c_str());
+        }
+        vals.push_back(std::move(v));
+    }
+    return out;
+}
+
+Value jsonToJsonlBody(Interpreter& I, ValueList& a, const JsonUncovered& uncovered) {
+    const Value* list = nullptr;
+    bool sorted = false, enums = false;
+    for (auto& x : a) {
+        if (x.t == VT::Pair && x.namedArg) {
+            const bool tv = x.pairVal() && x.pairVal()->truthy();
+            if (x.s == "pretty") { if (tv) return uncovered(":pretty does not apply"); }
+            else if (x.s == "enums-as-value") enums = tv;
+            else if (x.s == "sorted-keys") {
+                if (x.pairVal() && x.pairVal()->t == VT::Code) return uncovered("a key comparator");
+                sorted = tv;
+            }
+            else return uncovered("no adverb of that name");
+        }
+        else if (!list) list = &x;
+        else return uncovered("more than one positional argument");
+    }
+    // a lazy list is the Raku pair's to run out, as anything not a list is
+    if (!list || list->t != VT::Array || list->ext()) return uncovered("expected a list");
+    std::string text;
+    if (!jsonWriteLines(I, *list->arr(), sorted, enums, text)) return uncovered("a value to-json does not write");
+    return Value::str(std::move(text));
 }
 
 } // namespace rakupp

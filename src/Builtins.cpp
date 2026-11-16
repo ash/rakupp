@@ -5818,6 +5818,17 @@ Value jsonToJsonBody(Interpreter& I, ValueList& a, const JsonUncovered& uncovere
     }
 }
 
+// to-jsonl's writer (jsonToJsonlBody): each value as to-json(:!pretty) writes
+// it, then "\n", into one string; false where to-json would not write one.
+bool jsonWriteLines(Interpreter& I, const ValueList& vals, bool sorted, bool enumsAsValue, std::string& out) {
+    struct SortG { const Value* f; ~SortG() { t_jfSortFn = f; } } sortG{t_jfSortFn};
+    t_jfSortFn = nullptr;   // not an enclosing to-json's comparator
+    JfOpts o; o.sortedKeys = sorted; o.enumsAsValue = enumsAsValue; o.nanInf = jsonNanInfWanted(I);
+    try { for (auto& v : vals) { jfEncode(v, o, 0, out); out += '\n'; } }
+    catch (JsonFastUnsupported&) { return false; }
+    return true;
+}
+
 // Holds the composed "where" text for the duration of the uncovered() call —
 // the callback takes a const char*, and the wrapper discards it anyway.
 static thread_local std::string jsonParseWhere;

@@ -10,14 +10,19 @@ need JSON::Native::Raku;
 my &ref-from-json  = &JSON::Native::Raku::from-json;
 my &ref-to-json    = &JSON::Native::Raku::to-json;
 
-# name => (from-jsonl, to-jsonl). Phase 1 adds the engine's.
+# name => (from-jsonl, to-jsonl): the reference, and on Raku++ the engine's
+# codec routines, which hand what they do not cover to the reference
 my @impls =
     'raku' => (&JSON::Native::Raku::from-jsonl, &JSON::Native::Raku::to-jsonl);
+my &maker = try &::('rakupp-json-codec');
+my $engine = so &maker && try &::('rakupp-from-jsonl');
+@impls.push: 'engine' => (maker('from-jsonl', &JSON::Native::Raku::from-jsonl),
+                          maker('to-jsonl',   &JSON::Native::Raku::to-jsonl)) if $engine;
 
 # What a block raised, or Nil.
 sub caught(&code) { try code(); $! }
 
-plan +@impls;
+plan @impls + 2;
 
 for @impls -> (:key($name), :value(($from, $to))) {
     subtest $name, {
@@ -89,4 +94,40 @@ for @impls -> (:key($name), :value(($from, $to))) {
             'from-jsonl is from-json for each line';
         is-deeply $from($text.encode), $from($text), 'from a Blob as from a Str';
     }
+}
+
+# The engine answers every window the reference would accept by itself: its
+# routines, given a fallback that only counts, never call it on these.
+subtest 'the engine answers on its own', sub {
+    unless $engine { plan skip-all => 'from-jsonl is a Raku++ builtin'; return }
+    my $asked = 0;
+    my &from = maker('from-jsonl', sub (|) { $asked++; Nil });
+    my &to   = maker('to-jsonl',   sub (|) { $asked++; Nil });
+    from($_) for "\{\"a\":1}\n[1,2]\n", "1\r\n2\r3", "\n \t\n", '', "\"ж\"\n".encode,
+                 Blob.new(0x22, 0x65, 0xCC, 0x81, 0x22), Buf.new("1\n".encode), "[1]\n";
+    from("\{\"a\":[1]}", :immutable);
+    to([{a => 1}, [1, 'x'], Any, 2.5]);
+    to([{b => 1, a => 2},], :sorted-keys);
+    to([]);
+    is $asked, 0, 'not once';
+    from("1\n["); to([1], :pretty); from("1", :allow-jsonc); to([Date.new(2026, 11, 16)]);
+    to([Order::Less], :enums-as-value);   # as to-json's codec hands it over
+    is $asked, 5, 'and hands over what it refuses, the whole call';
+    is &from.name, 'from-jsonl', 'the routine is named for what it does';
+}
+
+# The bare primitives have nothing behind them, so they raise — X::AdHoc,
+# saying where, as rakupp-from-json does.
+subtest 'the bare primitives', sub {
+    unless $engine { plan skip-all => 'from-jsonl is a Raku++ builtin'; return }
+    my &from = &::('rakupp-from-jsonl');
+    my &to   = &::('rakupp-to-jsonl');
+    is-deeply from("1\n\n[2]"), [1, [2]], 'parse';
+    is to([1, [2]]), "1\n[2]\n", 'and write';
+    is caught({ from("1\n\n[1,\n2") }).message, 'from-jsonl: malformed JSON at line 3, column 4',
+        'a malformed line, by line and column';
+    is caught({ from("1 2") }).message, 'from-jsonl: trailing content after the value at line 1, column 3',
+        'content after the value';
+    like caught({ from(Blob.new(0x22, 0xFF, 0x22)) }).message, /Malformed/, 'malformed UTF-8, as .decode says it';
+    like caught({ to([1], :pretty) }).message, /^ 'to-jsonl: '/, ':pretty';
 }

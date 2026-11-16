@@ -354,6 +354,13 @@ Value jsonToJsonBody(Interpreter& I, ValueList& a, const JsonUncovered& uncovere
 
 Value jsonFromJsonBody(Interpreter& I, ValueList& a, const JsonUncovered& uncovered);
 
+// JSON Lines (BuiltinsJson.cpp; docs/dev/plans/JSONL-PLAN.md): the same two
+// policies, over a window. `uncovered` gets the WHOLE call — the fallback is
+// JSON::Native::Raku's from-jsonl / to-jsonl, which numbers a refused line.
+Value jsonFromJsonlBody(Interpreter& I, ValueList& a, const JsonUncovered& uncovered);
+Value jsonToJsonlBody(Interpreter& I, ValueList& a, const JsonUncovered& uncovered);
+bool jsonWriteLines(Interpreter& I, const ValueList& vals, bool sorted, bool enumsAsValue, std::string& out);
+
 // The class's to-json: jsonToJsonBody, handing what it does not cover to
 // JSON::Native::Raku (the copy bundled in rakulib unless one is installed).
 Value jsonExactToJson(Interpreter& I, ValueList& a);

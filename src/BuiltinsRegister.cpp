@@ -330,21 +330,25 @@ void Interpreter::registerBuiltins() {
     // the cost (JSON::Native, 2026-10-12: 2.6 µs through a Raku sub, 0.4 µs
     // through this). The fallback must be a JSON::Fast-exact implementation;
     // the codec answers only what it answers exactly as JSON::Fast does.
+    // 'from-jsonl' and 'to-jsonl' are JSON Lines (JSONL-PLAN.md), whose
+    // fallback is JSON::Native::Raku's pair, handed the whole window.
     B["rakupp-json-codec"] = [](Interpreter&, ValueList& a) -> Value {
         if (a.size() != 2 || a[1].t != VT::Code)
             throw RakuError{Value::typeObj("X::AdHoc"),
-                            "rakupp-json-codec: expected ('from-json' or 'to-json', &fallback)"};
+                            "rakupp-json-codec: expected ('from-json', 'to-json', 'from-jsonl' or 'to-jsonl', &fallback)"};
         const std::string which = a[0].toStr();
-        const bool to = which == "to-json";
-        if (!to && which != "from-json")
+        using Body = Value (*)(Interpreter&, ValueList&, const JsonUncovered&);
+        const Body body = which == "from-json"  ? jsonFromJsonBody  : which == "to-json"  ? jsonToJsonBody
+                        : which == "from-jsonl" ? jsonFromJsonlBody : which == "to-jsonl" ? jsonToJsonlBody : nullptr;
+        if (!body)
             throw RakuError{Value::typeObj("X::AdHoc"),
                             "rakupp-json-codec: no codec named '" + which + "'"};
         Value fallback = a[1];
         Value w; w.t = VT::Code; w.setCode(makePayload<Callable>());
         w.code()->ciM().name = which;
-        w.code()->ciM().builtin = [fallback, to](Interpreter& I, ValueList& args) -> Value {
+        w.code()->ciM().builtin = [fallback, body](Interpreter& I, ValueList& args) -> Value {
             auto handOver = [&](const char*) { return I.callCallable(fallback, args, nullptr, false, /*arityCheck=*/true); };
-            return to ? jsonToJsonBody(I, args, handOver) : jsonFromJsonBody(I, args, handOver);
+            return body(I, args, handOver);
         };
         return w;
     };
@@ -359,6 +363,18 @@ void Interpreter::registerBuiltins() {
         return jsonFromJsonBody(I, a, [](const char* why) -> Value {
             throw RakuError{Value::typeObj("X::AdHoc"),
                             std::string("from-json: ") + why};
+        });
+    };
+    // JSON Lines, a window at a time (JSONL-PLAN.md, issue 268): the line
+    // loop, the decode and the blank test in the codec's own pass.
+    B["rakupp-from-jsonl"] = [](Interpreter& I, ValueList& a) -> Value {
+        return jsonFromJsonlBody(I, a, [](const char* why) -> Value {
+            throw RakuError{Value::typeObj("X::AdHoc"), std::string("from-jsonl: ") + why};
+        });
+    };
+    B["rakupp-to-jsonl"] = [](Interpreter& I, ValueList& a) -> Value {
+        return jsonToJsonlBody(I, a, [](const char* why) -> Value {
+            throw RakuError{Value::typeObj("X::AdHoc"), std::string("to-jsonl: ") + why};
         });
     };
 

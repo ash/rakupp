@@ -1,6 +1,11 @@
 # Plan: `from-jsonl` and `to-jsonl` — JSON Lines in JSON::Native, at the parser's speed
 
-**Status: planned 2026-11-16. Phase 0 in progress.**
+**Status: Phases 0 and 1 done 2026-11-16** — the Raku reference and its
+checks, then the engine primitives. On a 125 MB, 700,000-line file,
+`from-jsonl` is 0.64 s against 1.40 s for the issue's Raku loop over
+`rakupp-from-json`, and 0.62 s for the same records parsed as one document: the
+loop costs ~5% over the parse. `to-jsonl` is 0.85 s against 1.9 s for
+`map`/`join`, and the round trip is byte-identical.
 
 Issue 268 asks for a call that parses a window of JSON Lines in one go —
 bytes in, values out — so the loop sits where the parser already is. Measured
@@ -88,8 +93,23 @@ of an empty list, a string holding `\n`, `:sorted-keys`, a refused `:pretty`.
 - `to-jsonl` runs `jfEncode` in a loop into one string.
 
 Builtins: `rakupp-from-jsonl`, `rakupp-to-jsonl`, and `rakupp-json-codec`
-learns `'from-jsonl'` / `'to-jsonl'`, whose fallback is the single-document
-routine applied to the refused line or value.
+learns `'from-jsonl'` / `'to-jsonl'`.
+
+**As built.** The fallback is handed the WHOLE call, not the refused line:
+it is JSON::Native::Raku's `from-jsonl` / `to-jsonl`, which numbers the line
+and raises `X::JSON::Native::Line` itself, so the engine never has to build
+that class. For valid JSON the codec declines nothing, so a window is
+re-parsed in Raku only on its way to an error. A Blob is taken as it is when
+it is pure ASCII (one OR-reduction over the bytes); otherwise `.decode` itself
+runs, so its errors and its NFC are the ones a program would get. The bare
+primitives raise X::AdHoc with the line and column (`from-jsonl: malformed
+JSON at line 3, column 4`). `:enums-as-value` is handed over, as `to-json`'s
+codec already hands it over. The bodies are in `BuiltinsJson.cpp`;
+`Builtins.cpp` (30 lines under its ceiling) gained only `jsonWriteLines`,
+the 9-line loop over the static writer.
+
+**For Phase 2:** `src/InterpreterModules.cpp` is exactly at the default
+10,000-line ceiling, so its edits must be net-zero or move code out.
 
 ### Phase 2 — the engine answers `use JSON::Native` with them (`src/InterpreterModules.cpp`)
 
