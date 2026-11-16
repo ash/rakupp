@@ -12,7 +12,7 @@ unless $*RAKU.compiler.name eq 'Raku++' {
     exit;
 }
 
-plan 11;
+plan 12;
 
 sub run-with(Str $code, *%env) {
     my $p = run $*EXECUTABLE, '-e', $code, :out, :err, :env(%(%*ENV, %env, :RAKUPP_TRACE<1>));
@@ -51,3 +51,15 @@ ok run-with(q[use JSON::Native <bogus>])[1].contains("no such name 'bogus'"), 'a
 
 is run-with(q[use JSON::Native; print to-json("a\n\x[301]", :!pretty)])[0], "\"a\\\x[144]\"",
    'the codec is the fixed one: an escape followed by a combining mark composes';
+
+{
+    my $file = $?FILE.IO.sibling('json-native-input.json').absolute;
+    my ($out, $err) = run-with q[
+        use JSON::Native;
+        my $path = %*ENV<JSON_NATIVE_TEST_FILE>.IO;
+        my $handle = $path.open;
+        print from-json($path)<ok>, ' ', from-json($handle)<n>, ' ', from-json(42);
+        $handle.close;
+    ], JSON_NATIVE_TEST_FILE => $file.Str;
+    is $out, 'True 2 42', 'from-json reads paths and handles and still coerces other inputs';
+}

@@ -488,8 +488,13 @@ module JSON::Native::Raku {
     # through every call. Declarations sit outside loop bodies on purpose: a
     # block that declares nothing is flattened into its routine, one that
     # does is a frame entered per iteration.
-    our sub from-json(Str() $text, :$immutable, :$allow-jsonc) {
-        my str $t = $text;
+    our sub from-json($source, :$immutable, :$allow-jsonc) {
+        # Match the distribution's API: IO inputs are sources, while other
+        # values keep the existing Str() coercion (for example, 42 parses as
+        # the JSON number 42). slurp leaves an IO::Handle open for its owner.
+        my str $t = $source ~~ IO::Path|IO::Handle
+            ?? $source.slurp
+            !! Str($source);
         my int $n = $t.chars;
         my int $pos = 0;
         my int $imm = $immutable ?? 1 !! 0;
