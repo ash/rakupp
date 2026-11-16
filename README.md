@@ -240,7 +240,7 @@ say uncompress(compress('big'.encode));  # zlib / gzip / raw deflate
 say crypt_random_buf(32);               # bytes from the OS CSPRNG
 ```
 
-Five tags, thirty-two names, every signature copied from the ecosystem module it
+Five tags, thirty-four names, every signature copied from the ecosystem module it
 stands in for. It is **designed** to be portable — the companion distribution,
 which would compose `JSON::Fast`, `Digest::SHA2`, `Compress::Zlib` and
 `Crypt::Random` so the same program runs on Rakudo unchanged, is **not published

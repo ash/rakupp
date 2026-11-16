@@ -23,7 +23,7 @@ That is also why they show up under `RAKUDO-FAILS` in
 `tools/doc-examples-diff.raku`: not a machine missing an install, but a
 distribution that has not been written to the ecosystem.
 
-## The five tags, thirty-two names
+## The five tags, thirty-four names
 
 `use Data::Native` brings all of them. `use Data::Native <json csv>` brings only
 those tags, and an unknown tag is an error naming the tag rather than a silent
@@ -31,7 +31,7 @@ no-op.
 
 | tag | exports |
 |---|---|
-| `json` | `to-json` `from-json` `json-backend` |
+| `json` | `to-json` `from-json` `to-jsonl` `from-jsonl` `json-backend` |
 | `csv` | `from-csv` `to-csv` `csv-backend` |
 | `digest` | `md5` `sha1` `sha224` `sha256` `sha384` `sha512`, their `-hex` twins, `hmac` `hmac-hex` `digest-backend` |
 | `zlib` | `compress` `uncompress` `gzslurp` `gzspurt` `crc32` `adler32` `zlib-backend` |

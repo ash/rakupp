@@ -166,10 +166,16 @@ to 0.2.0 in this phase rather than in phase 2, because
 `JSON::Native::Raku`, passing on Raku++ (engine), Rakudo (rakudo), both with
 `JSON_NATIVE_BACKEND=raku` and `json-fast`, and on mutsu.
 
-**Open: Data::Native.** The engine's `use Data::Native <json>` hands out the
-two names since phase 2, as the json tag's table drives both modules; the
-Data::Native distribution's json tag (on Rakudo) does not. Whether its
-portable copy gains them too is a decision of its own.
+**Data::Native 0.0.2.** The engine's `use Data::Native <json>` hands out the
+two names since phase 2, as the json tag's table drives both modules, so the
+distribution's json tag has them too, and the engine's interface version for
+Data::Native is 0.0.2 to match. Its reference is `JSON::Native::Raku`, reached
+with `need` (it claims nothing); lines go through JSON::Fast; on Raku++ the
+codec routine answers with that pair as its fallback, not the bare primitive,
+whose refusal is X::AdHoc rather than a numbered `X::JSON::Native::Line`. Its
+suite passes on Rakudo (44 + 30); on Raku++ `01-tags.t` stops in the zlib
+section, before and after this change, where Compress::Zlib 1.1.0 cannot find
+`Compress::Zlib::Raw::z_stream` — a rakupp bug of its own.
 
 ### Phase 4 — measure
 

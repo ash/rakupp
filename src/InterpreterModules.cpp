@@ -185,7 +185,7 @@ struct DataNativeModule {
     const char* tags[6];       // NULL-terminated
 };
 static const DataNativeModule kDataNativeModules[] = {
-    { "Data::Native",           "0.0.1", { "json", "csv", "digest", "zlib", "random", nullptr } },
+    { "Data::Native",           "0.0.2", { "json", "csv", "digest", "zlib", "random", nullptr } },   // 0.0.2: from-jsonl, to-jsonl
     { "JSON::Native",           "0.2.0", { "json", nullptr } },   // 0.2.0: from-jsonl, to-jsonl
     { "CSV::Native",            "0.0.1", { "csv", nullptr } },
     { "Digest::Native",         "0.0.1", { "digest", nullptr } },
