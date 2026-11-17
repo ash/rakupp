@@ -5629,11 +5629,14 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
         // a leading UTF-8 BOM is not text: Rakudo strips it on decode. What is
         // left is NFC, as all text is: U+2126 OHM SIGN decodes as U+03A9, so a
         // percent-decoded "%E2%84%A6" key matches the 'Ω' a program wrote
-        // (Cro::HTTP's query-value test).
-        if (inv.s.size() >= 3 && (unsigned char)inv.s[0] == 0xEF && (unsigned char)inv.s[1] == 0xBB &&
-            (unsigned char)inv.s[2] == 0xBF)
-            return Value::str(nfcNormalize(std::string(inv.s.str().substr(3))));
-        return Value::str(nfcNormalize(inv.s.copyText()));
+        // (Cro::HTTP's query-value test). nfcDecodeInPlace, as a file read
+        // does: text that passes the NFC quick check is not normalized again,
+        // which was 0.52 s of a 0.59 s decode of 36 MB that changed nothing.
+        std::string text = inv.s.size() >= 3 && (unsigned char)inv.s[0] == 0xEF &&
+                           (unsigned char)inv.s[1] == 0xBB && (unsigned char)inv.s[2] == 0xBF
+                         ? std::string(inv.s.str().substr(3)) : inv.s.copyText();
+        nfcDecodeInPlace(text);
+        return Value::str(std::move(text));
     }
     if (m == "chars" || m == "codes" || m == "NFC" || m == "NFD" || m == "NFKC" || m == "NFKD") {
         if (m == "chars") return Value::integer(inv.t == VT::Str ? cowGraphemeCount(inv.s)
