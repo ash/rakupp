@@ -21748,9 +21748,9 @@ Value Interpreter::junctionMatcher(const std::string& op, const Value& lTopic, c
         // smartmatch below knows nothing about IO or Pairs and answered
         // False for every one of them, so the whole junction was False.
         else if (e.t == VT::Pair && lTopic.hashKind == "IO" && !e.s.empty()) m = fileTest(e);
-        // (the value smartmatch: a Whatever the topic HOLDS is a value, which
-        // applyArith's `~~` would curry into a truthy WhateverCode)
-        else m = smartmatchValue("~~", lTopic, e).truthy();
+        // (the value smartmatch: a Whatever the topic HOLDS is a value, which applyArith's `~~` would curry
+        // into a truthy WhateverCode; two plain scalars of one type have nothing to curry: the fast lane, as before e99c5e25)
+        else { const bool pl = lTopic.t == e.t && (e.t == VT::Int || e.t == VT::Str || e.t == VT::Num || e.t == VT::Rat) && lTopic.hashKind.empty() && e.hashKind.empty(); m = (pl ? applyArith("~~", lTopic, e) : smartmatchValue("~~", lTopic, e)).truthy(); }
         jc.feed(m);
         if (jc.done()) break;
     }
