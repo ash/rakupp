@@ -6203,31 +6203,8 @@ Value* mixinAttrSlot(const Value& attrMeta, Value& obj) {
     if (!oh.count(key)) oh[key] = sigil == '@' ? Value::array() : sigil == '%' ? Value::makeHash() : Value::any();
     return &oh[key];
 }
-Value* privateInCallerPackage(Interpreter& I, const Value& inv, const std::string& name);   // MethodCallEntry.cpp
 Value Interpreter::methodCall(const Value& inv, const std::string& m, ValueList args, const std::vector<ExprPtr>* rwArgs,
                               bool skipOwn, bool noMethodBack) {
-    // A private call: a plain `self!name` is resolved in the package the call is
-    // written in (privateInCallerPackage, rakudo#2663); `!Pkg::name` is the private
-    // method OF THAT PACKAGE — what compiled code calls for `$o!Pkg::name`, and
-    // for a plain `self!name` in a class's method, which names its class
-    // (Codegen). An object that is no Pkg, or a Pkg without one, gets the
-    // ordinary lookup of `!name`.
-    if (RAKUPP_UNLIKELY(m.size() > 1 && m[0] == '!') && inv.t == VT::Object && inv.obj() && inv.obj()->cls) {
-        const size_t q = m.rfind("::");
-        if (q == std::string::npos) {
-            if (Value* um = privateInCallerPackage(*this, inv, m.substr(1))) return invokeMethod(*um, inv, std::move(args), rwArgs);
-        }
-        else {
-            const std::string bare = "!" + m.substr(q + 2);
-            auto ci = classes_.find(m.substr(1, q - 1));
-            if (ci != classes_.end() && ci->second) {
-                bool isa = false;
-                for (ClassInfo* c = inv.obj()->cls.get(); c && !isa; c = c->parent.get()) isa = c == ci->second.get();
-                if (isa) if (Value* um = ci->second->findMethod(bare)) return invokeMethod(*um, inv, std::move(args), rwArgs);
-            }
-            return methodCall(inv, bare, std::move(args), rwArgs, skipOwn, noMethodBack);
-        }
-    }
     // A PLAIN class's default constructor (plainNewClass): straight to the
     // build, past the general path's special cases, which it cannot meet. The
     // build's own Failure (BuildFailureEx) is caught here as the general path
@@ -10126,8 +10103,16 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
 // methodCallInner's arm for a USER OBJECT whose class defines the method,
 // in a frame of its own (see the call): the shared_ptr it holds the class by
 // is cleaned up here, under a small call-site table.
+std::optional<Value> privateCallFirst(Interpreter& I, const Value& inv, const std::string& m, ValueList& args,
+                                      const std::vector<ExprPtr>* rwArgs);   // MethodCallEntry.cpp
 [[gnu::noinline]] std::optional<Value> Interpreter::methodCallOwn(const Value& inv, const MName& m, ValueList& args,
                                                                   const std::vector<ExprPtr>* rwArgs) {
+    // A private call, `self!name` or `!Pkg::name`, is resolved in its package
+    // first (privateCallFirst, rakudo#2663). Here and not in methodCall: a test
+    // at methodCall's top, even one that calls out of line, cost every method
+    // call, and privmeth 6%.
+    if (RAKUPP_UNLIKELY(m.n > 1 && m.s[0] == '!'))
+        if (auto r = privateCallFirst(*this, inv, m.s, args, rwArgs)) return r;
     auto ci = inv.obj()->cls;
     if (!ci->delegatedNames.empty() && ci->delegatedNames.count(m)) return std::nullopt;
     ClassInfo* owner = nullptr;

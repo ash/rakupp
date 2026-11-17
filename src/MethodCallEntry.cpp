@@ -344,14 +344,29 @@ std::optional<Value> Interpreter::unicodeMethod(const Value& inv, const std::str
 // `(Puppy.new but Violinist) but Diva` bows as a Puppy in `greet`, as a
 // Violinist in `fiddle` and as a Diva in `captivate` (rakudo#2663). Null
 // leaves the ordinary lookup, as outside a class and for `!Pkg::name`.
-Value* privateInCallerPackage(Interpreter& I, const Value& inv, const std::string& name) {
-    if (inv.t != VT::Object || !inv.obj() || !inv.obj()->cls || name.find("::") != std::string::npos) return nullptr;
+Value* privateInCallerPackage(Interpreter& I, const Value& inv, std::string_view name) {
+    if (inv.t != VT::Object || !inv.obj() || !inv.obj()->cls || name.find("::") != std::string_view::npos) return nullptr;
+    // Every private call walks here, so the walk takes no atomics until it has
+    // to: a scope with no extras has no pkgType, an empty weak_ptr is told by
+    // its control block, and the common answer — the package IS the object's
+    // class — by comparing control blocks (owner_before), all without lock().
+    // privmeth was 6% slower than v5.8.0 with a lock() a frame.
+    static const std::weak_ptr<ClassInfo> kNone;
+    const std::shared_ptr<ClassInfo>& own = inv.obj()->cls;
+    // One class in the object's chain (no parent, no mixin, no extra parent):
+    // whatever package the call is written in, the method it reaches is that
+    // class's `!name`, which the ordinary lookup finds — skip the walk.
+    if (!own->parent && own->extraParents.empty()) return nullptr;
     for (Env* e = Interpreter::tctx().cur.get(); e; e = e->parent.get()) {
-        auto t = e->xr().pkgType.lock();
+        if (!e->ex) continue;
+        const std::weak_ptr<ClassInfo>& w = e->ex->pkgType;
+        if (!w.owner_before(kNone) && !kNone.owner_before(w)) continue;   // never set
+        if (!w.owner_before(own) && !own.owner_before(w)) return nullptr;  // the object's own class
+        auto t = w.lock();
         if (!t) continue;
         if (t->isRole) {
             for (ClassInfo* c = inv.obj()->cls.get(); c; c = c->parent.get())
-                if (c->doneRoles.count(t->name)) return c->findMethod("!" + name);   // (a mixin's role too)
+                if (c->doneRoles.count(t->name)) return c->findMethod("!" + std::string(name));   // (a mixin's role too)
             return nullptr;
         }
         if (t.get() == inv.obj()->cls.get()) return nullptr;
@@ -362,9 +377,32 @@ Value* privateInCallerPackage(Interpreter& I, const Value& inv, const std::strin
             return isa(c->parent.get());
         };
         if (!isa(inv.obj()->cls.get())) return nullptr;
-        return t->findMethod("!" + name);
+        return t->findMethod("!" + std::string(name));
     }
     return nullptr;
+}
+
+// A private call's own resolution, ahead of methodCall's ordinary lookup: a
+// plain `self!name` in its package (above); `!Pkg::name` the private method OF
+// THAT PACKAGE — what compiled code calls for `$o!Pkg::name`, and for a plain
+// `self!name` in a class's method, which names its class (Codegen). An object
+// that is no Pkg, or a Pkg without one, gets the ordinary lookup of `!name`.
+// Empty: carry on with methodCall's ordinary lookup of `m`.
+std::optional<Value> privateCallFirst(Interpreter& I, const Value& inv, const std::string& m, ValueList& args,
+                                      const std::vector<ExprPtr>* rwArgs) {
+    const size_t q = m.rfind("::");
+    if (q == std::string::npos) {
+        if (Value* um = privateInCallerPackage(I, inv, std::string_view(m).substr(1))) return I.invokeMethod(*um, inv, std::move(args), rwArgs);
+        return std::nullopt;
+    }
+    const std::string bare = "!" + m.substr(q + 2);
+    auto ci = I.classes_.find(m.substr(1, q - 1));
+    if (ci != I.classes_.end() && ci->second) {
+        bool isa = false;
+        for (ClassInfo* c = inv.obj()->cls.get(); c && !isa; c = c->parent.get()) isa = c == ci->second.get();
+        if (isa) if (Value* um = ci->second->findMethod(bare)) return I.invokeMethod(*um, inv, std::move(args), rwArgs);
+    }
+    return I.methodCall(inv, bare, std::move(args), rwArgs);
 }
 
 } // namespace rakupp
