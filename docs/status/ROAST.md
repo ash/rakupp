@@ -12,19 +12,21 @@ two ever disagree.
 
 **Headline: 100.00% of Roast's tests pass** — 219,395 of 219,395 with the tests Roast marks skip or todo left out, and all declared tests (221,034 / 221,034) with those counted as passes, as TAP counts them. **Every one of the 1,425 files passes.**
 
-Measured 2026-11-11 for v5.7.0, on `3ea02ec5` (the tag less the release's own
-documents), on an Apple M4, against
-Roast `cf28a323c` (2026-10-13) and the 1,425 files its `spectest.data` lists:
-one run, with the same file list as v5.6.0's. Roast is three commits past
-v5.6.0's `da425eb92` and declares one test more, in
-`S13-overloading/operators.t` behind a `#?rakudo skip`, so the count with skip
-and todo left out did not move (1,639 tests are left out, was 1,638). v5.6.0
-was measured in three runs, 1,425 / 1,424 / 1,425; the run that lost a file lost
-`S17-promise/nonblocking-await.t`, which crashes now and then (see [the
-note below](#the-one-file-that-flaps)). On a loaded
-machine, `S17-channel/stress.t` — marked `stress slow` in `spectest.data`, 7–12
-s alone against the 10-second ceiling — can also time out with its tests
-passing.
+Measured 2026-11-17 for v5.9.0, on `2dfa37bf` (the tag less the release's own
+documents), on an Apple M4, against Roast `cf28a323c` (2026-10-13) and the
+1,425 files its `spectest.data` lists: three runs, alike in every file and
+every count, with the same file list as v5.7.0's. v5.8.0 passed the same
+files and did not re-count the tests. On a loaded machine,
+`S17-channel/stress.t` — marked `stress slow` in `spectest.data`, 7–12 s
+alone against the 10-second ceiling — can time out with its tests passing,
+and `S17-promise/nonblocking-await.t` crashes now and then (see [the note
+below](#the-one-file-that-flaps)).
+
+v5.7.0 was measured on 2026-11-11, on `3ea02ec5`, in one run with the same
+figures. Roast is three commits past v5.6.0's `da425eb92` and declares one
+test more, in `S13-overloading/operators.t` behind a `#?rakudo skip`, so the
+count with skip and todo left out did not move (1,639 tests are left out,
+was 1,638).
 
 **v5.5.0's 1,425 files were 1,424.** Against v5.5.0 the declared tests rose by
 188 (219,207 → 219,395 without skip/todo), all of them `S32-str/indices.t`'s.

@@ -66,6 +66,7 @@ Every figure here is measured, not projected; the methodology is in
 | 2026-11-06 | **v5.6.3** | `--target=arduino` sketches the Arduino IDE compiles, carrying only the helpers they call; objects, hashes and Rats take less memory; a metaop and `~` meet the program's own operator — a technical release from `main`; Roast and perf not re-run |
 | 2026-11-11 | **v5.7.0** | A `Value` of 32 bytes where it was 80; an untyped array of Ints or Nums kept as machine words; `--doc-links` links a program to its documentation; `use Arduino::WiFi` on the Uno R4 WiFi; natives ranked in multi dispatch as Rakudo ranks them — Roast 1,425 / 1,425 on a Roast three commits on; benchmarks not re-run |
 | 2026-11-12 | **v5.8.0** | `--exe` gives the interpreter's answer on all 1,573 programs of `examples/` and `t/regression/`, held there by `t/exe/parity.raku`; twenty-two reported issues fixed — a quick release; Roast 1,425 / 1,425 files, its tests not re-counted; benchmarks not re-run |
+| 2026-11-17 | **v5.9.0** | Rakudo's 3,222 issues classified and 2,017 run under both engines, then twelve batches of fixes (1,264 → 1,368 of 1,777 snippets answering as Rakudo does); `--target=microbit` for the BBC micro:bit V2; JSON Lines in JSON::Native — Roast 1,425 / 1,425 files and 219,395 / 219,395 tests, three runs alike |
 
 **By the numbers:** v0.1.0 → v2.0.0 in 36 days (2026-07-02 to 2026-08-07).
 
@@ -352,6 +353,15 @@ zef populates (see [MODULES.md](../guide/MODULES.md)); the goal is breadth and d
   `run(:in)`, a stack overflow in a long quantified group, and `s///`
   replacement escapes. Roast passes all 1,425 files, its tests not
   re-counted; the benchmarks were not re-run.
+- **Nov 17 — v5.9.0.** Every issue on Rakudo's tracker, 3,222, was
+  classified, and the code from 2,017 of them run under both engines; twelve
+  batches of fixes followed, from a phaser used as a value to `is cached`,
+  R over Z and X, grammar `:pos` and `use Telemetry`, and 1,368 of 1,777
+  comparable snippets answer as Rakudo does, where 1,264 did. A Raku program
+  runs on a BBC micro:bit V2, by MicroPython's names, from the simulated
+  board to the `.hex`. JSON::Native reads and writes JSON Lines in one C++
+  pass. A drained Seq and a large file's readers keep a window, not all they
+  read. Roast passes all 1,425 files and all 219,395 tests, three runs alike.
 
 Beyond the interpreter, the same source feeds a small constellation —
 [raku.online](https://raku.online/) (playground),

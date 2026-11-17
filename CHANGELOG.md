@@ -3,6 +3,772 @@
 Release notes for tagged releases. Numbers are measured, not projected;
 methodology for all Roast figures is in [docs/status/COUNTING.md](docs/status/COUNTING.md).
 
+## v5.9.0 (2026-11-17) — a Raku program on a BBC micro:bit, JSON Lines, and Rakudo's issue tracker run under both engines
+
+Everything on `main` since v5.8.0: 186 commits in five days. All 3,222
+rakudo/rakudo issues were classified and the code from 2,017 of them run
+under Rakudo 2026.09 and Raku++ (docs/dev/findings/RAKUDO-ISSUES-2026-11.md; nothing
+was posted to the tracker). Twelve batches of fixes followed
+(docs/dev/plans/RAKUDO-ISSUES-PLAN.md): of the 1,777 snippets whose answer
+can be compared, 1,264 gave Rakudo's answer before the first batch and
+1,368 after the twelfth. Beside
+them: `--target=microbit` puts a Raku program on a BBC micro:bit V2;
+JSON::Native reads and writes JSON Lines in one C++ pass; a drained Seq and
+the file and process readers keep a window instead of everything read; and
+the seventeen findings of a Codex review of `src/` and Raku.js are fixed.
+
+Roast: **all 1,425 files** of `spectest.data`, **221,034 of 221,034**
+declared tests and **219,395 of 219,395** with skip and todo left out, in
+three runs alike on 2dfa37bf, and again on 8378f148 and a3a0fb5d after the
+two performance fixes below, every run with the same file list as v5.7.0's
+(docs/status/roast-lists/v5.9.0.list). Roast is `cf28a323c`, v5.7.0's. The
+local suite: **all 2,366 checks** on 2dfa37bf and on 8378f148.
+
+Performance: no kernel does more than 2.8% more work than v5.8.0. perf-guard
+found two regressions, and both are fixed. `privmeth` was 6.2% slower than
+v5.8.0, from the private-call fix for rakudo#2663 (91033936), whose test sat
+at the top of every method call; it is now made where a user object's own
+methods are looked up (8378f148), and `privmeth` is 2.6% more instructions
+than v5.8.0. `junctionwide` had been 28% more work since v5.8.0 (e99c5e25,
+bisected), because a junction matcher smartmatched every eigenstate the slow
+way; two plain scalars take the fast lane again (a3a0fb5d), and it runs in
+22 ms, as v5.7.0 did, where v5.8.0 took 30. Measured as instructions retired
+for each perf-guard kernel, the release against a local build of v5.8.0:
+`junctionwide` −22%, `junction` −4.4%, `substrloop` +2.8%, `privmeth` +2.6%,
+the method and dispatch kernels +1–2%, the rest within ±0.2%. The
+wall-clock times on this Apple M4 spread up to 20% between runs of one build,
+so they are not quoted. perf-guard's `--check` still fails on `junctionwide`
+(22.4 ms) against its baseline, which is the M3's of v5.2.0 (19.5 ms) and
+which v5.7.0 does not meet on this machine either; `--record` refuses here,
+because the runs spread past the 5% tolerance, so the baseline was not
+re-recorded.
+
+**Not run** for this release: the module battery and the ecosystem sweep,
+the conformance sweep, the compiler and slim differentials beyond what CI
+runs, and a second toolchain.
+
+### New
+
+- **JSON Lines: `from-jsonl` and `to-jsonl`** (00fd7af9, c6fc0096, bb96d037,
+  b7b1d252, 2a2e4f9b, a901b708, a012e226) (issue #268). `use JSON::Native`
+  and `use Data::Native <json>` hand them out beside `from-json` and
+  `to-json`. `from-jsonl` takes a Blob or a Str, splits it as `.lines` does,
+  skips blank lines and gives an Array (a List under `:immutable`); a refused
+  line raises X::JSON::Native::Line with its number. `to-jsonl` ends every
+  value with a newline. The engine reads a window of lines in one C++ pass,
+  with no Str and no Raku frame per line; anything it does not cover goes
+  whole to JSON::Native::Raku, the pure-Raku reference every path is tested
+  against, which is now always the copy this rakupp bundles. On 125 MB of
+  700,000 lines, `from-jsonl` takes 0.64 s against 1.40 s for the issue's
+  Raku loop, and `to-jsonl` 0.85 s against 1.9 s for `map`/`join`. A compile
+  searches the `rakulib/` beside the running rakupp, as the interpreter does.
+  JSON::Native's interface version is 0.2.0 and Data::Native's 0.0.2, in step
+  with the distributions. docs/internals/JSON.md has the contract.
+  `t/regression/json-lines.raku` (41 checks, on Raku++ and on Rakudo) and
+  `json-native-jsonl.raku`.
+- **`--target=microbit`: a Raku program on a BBC micro:bit** (364ac7b2,
+  MICROBIT-PLAN.md phase M0 with parts of M1; #226). The program becomes one
+  C++ file for the micro:bit V2's own runtime, CODAL, whose build makes the
+  `.hex` the board takes: the mainline runs in `main()` after `uBit.init()`,
+  the top-level `loop { }` is a C loop there, and `use MicroBit` names the
+  board by MicroPython's names spelt as Raku — `display.show`, `.scroll`,
+  `.set-pixel`, `button-a.was-pressed`, `pin-logo.is-touched`,
+  `accelerometer.x` and `.was-gesture('shake')`, `compass.heading`,
+  `temperature`, `pin0` to `pin20`, `pause`, `randint`, and MicroPython's 64
+  pictures as `Image.HEART`. `image` makes a picture while building, and the
+  display's text is joined as the board runs from literals, integers and
+  Bools. A program runs with no board: `rakupp prog.raku` on a simulated
+  micro:bit (the serial port on stdout; each picture, text and pin on
+  stderr; buttons, tilt, gestures and sensors from the environment, in real
+  or virtual time), and `--target=microbit --sim` compiles the C++ against a
+  simulated CODAL. t/microbit/run.raku holds ten programs to their goldens
+  and each one's C++ to the interpreter byte for byte, with 21 refusals (45
+  checks, ~7 s). It is the Arduino target's emitter, made the boards' shared
+  one (25c5b064), with every Arduino sketch byte for byte what it was. A
+  walkthrough of eight programs is examples/microbit/, beside a guide and a
+  FAQ (3c0f0f43). Every gate program and example builds with CODAL into a
+  `MICROBIT.hex`, with no warning from the program (`--codal=DIR`, gcc 7.2.1,
+  the Arduino IDE's; cc4825e4). Two examples are for a real board:
+  `pictures.raku` shows all 64 pictures with each name on the serial port,
+  and `buttons.raku` is a counter on the LEDs (185fd7d7). A MicroBit stub
+  module for other implementations stops a program at `use MicroBit` and
+  says it needs Raku++ (6af3ac81). MICROBIT.md walks from the generated C++
+  to the board (51f19567, f2b0bb57). See docs/guide/MICROBIT.md.
+
+- **`.AST` of a grammar rule, and DEPARSE of it as Rakudo renders it**
+  (657626c7) (rakudo#5479, #5978, #5991). It said "`.AST` does not yet build
+  a view for a grammar rule", unless the rule's whole body was one quoted
+  literal. The view now parses the rule's text into Rakudo's `Regex::`
+  nodes: literals and quotes, character classes, anchors, groups and
+  captures, named and look-around assertions, enumerated classes, `:my`,
+  code blocks, modifiers, quantifiers with their backtrack suffixes and
+  separators, and the four branchings. Anything else is refused by name.
+  DEPARSE gives Rakudo 2026.09's text for 33 probe bodies. A `unit` package
+  deparses as one, a package's parts come back in source order, and a
+  rule's `#|`/`#=` docs are its WHY. `t/regression/rakuast-grammar-rule-view.raku`.
+- **`nqp::time_n`** (a397987e): the seconds since the epoch as a Num, which
+  GLib::Timeout reads; it died "Undefined routine 'nqp::time_n'".
+  `t/regression/nqp-time-n.raku`.
+
+- **`use Telemetry`** (fcc6d577) (rakudo#1513, #3844, #5144): Rakudo's core
+  module for measuring a program, ported to plain Raku and carried by the
+  binary. `T<max-rss>`, `snap`, `snapper`, `periods` and `report` give
+  Rakudo's columns and report. It was "Could not find Telemetry".
+  `t/regression/telemetry-module.raku`.
+- **`use trace`** (3a3fc21e) (rakudo#5546): each statement is announced on
+  $*ERR as it runs, numbered and placed as Rakudo announces it.
+  `t/regression/use-trace-pragma.raku`.
+- **`Routine.prec`, `.precedence`, `.associative`, `.thunky`, `.iffy`**
+  (bec86076) (rakudo#4780): an operator's precedence properties, Rakudo's
+  for the built-ins and as `is equiv`/`tighter`/`looser`/`assoc`/`prec`
+  make them for a declared one. `t/regression/routine-prec.raku`.
+- **`IO::Socket::Async.listen-path` and `.connect-path`** (9a6eeb85)
+  (rakudo#5358, #5359): UNIX-domain sockets. On Linux the server end names
+  no peer, as on macOS (e73e61ee).
+  `t/regression/async-socket-unix-path.raku`.
+- **IO::Socket::INET over IPv6** (a247fad2) (rakudo#1879): `:family(PF_INET6)`
+  died "only PF_INET". `t/regression/socket-inet-ipv6.raku`.
+- **The EnumHOW protocol** (2eafbb23) (rakudo#2165): `E.HOW.add_enum_value(E,
+  key => value)`, `enum_values`, `enum_value_list`, `enum_from_value`.
+  `t/regression/enum-how-add-enum-value.raku`.
+
+### Faster
+
+- **`Blob.decode` normalizes only what is not NFC already** (2dfa37bf), as a
+  file read does. It ran the normalizer over every decode: 0.52 s of 0.59 s
+  decoding a 36 MB JSON Lines file with non-ASCII throughout, changing
+  nothing. The decode is 0.07 s, and `from-jsonl` of that file as a path or
+  a Blob takes 0.41 s and 0.28 s where both took about 1 s. The BOM is still
+  stripped, U+2126 still decodes as U+03A9, and malformed UTF-8 is still
+  refused.
+- **A drained Seq and a large file's text readers hold a window, not
+  everything read** (477a7194, 9cc330f2) (issues #262, #263). A Seq drained by
+  the one thing that holds it (`for gather {…}`, `for Seq.new($iterator)`,
+  `Seq.new($iterator).iterator`, a lazy map or grep over one) drops what it
+  has handed out: 2 million Hashes peaked at 540 MB, now 14 MB, flat as
+  Rakudo. A Seq a variable still holds keeps every value. `.get`, `.lines`,
+  `.getc` and `.readchars` on a file over 256 KiB read it a window at a time
+  instead of decoding all of it into the handle: at 100 MB `.get` 634 → 14 MB
+  and `.readchars` 3.9 GB → 22 MB (Rakudo 159 and 624). Such a handle seeks
+  and tells by bytes, which also puts `.tell` right after a CR LF line.
+  `t/regression/seq-drained-keeps-nothing.raku`,
+  `t/regression/handle-text-window.raku`.
+- **The other readers and producers keep nothing they have read either**
+  (5ee977c9, 48c5ea64, 41e0b608) (issues #262, #263). `$path.lines`,
+  `lines($path)`, `$path.words`, a handle's `.words`, `$fh.lines.map(…)` and
+  `.grep(…)`, `$*IN.lines`, `lines()`, a child process's `.out.lines` and
+  `$fh.Supply(:size)` read as they go: 20 MB of text cost 154 MB through
+  `$path.lines` and 579 MB through `.Supply(:size)`, now under 25 MB. A `for`
+  that ends with `last` over `1, 2 ... *`, a closure generator, `1 xx *`,
+  `Seq.from-loop`, `.kv`, `.pairs`, `.keys`, `.skip`, `.flat`, `.rotor`,
+  `.batch`, `Z` or `X` held every value (2 million Ints, about 70 MB) and now
+  peaks near 10 MB. `for (^3).map({…})` runs the block as the loop reads, in
+  Rakudo's order (`m0 b0 m1 b1 m2 b2`, not `m0 m1 m2 b0 b1 b2`): 4 million mapped Hashes
+  1.2 GB → 13 MB, at the same speed. `t/regression/io-readers-stream.raku`,
+  `t/regression/seq-producers-keep-nothing.raku`,
+  `t/regression/for-over-range-map-streams.raku`.
+- **A sequence whose generator outgrows a double, and big-Int addition**
+  (02b24803) (rakudo#2844). `1, 1, * + * ... *` to 40k terms took 0.92 s,
+  against Rakudo's 0.07. Each step numified the last element for a step the
+  closure does not use, through the decimal string, and an Int past 1e315 is
+  now ±Inf without one. BigInt addition carries with a compare and allocates
+  once: 40k terms 0.03 s, and 200k Fibonacci steps in a loop 2.46 → 0.71 s
+  (Rakudo 0.79). `t/regression/sequence-generator-over-huge-ints.raku`.
+- **`my $ = …` and a ternary on the right of a declaration** (9e948ff3)
+  (rakudo#1416). An anonymous `my $` missed the declaration lane and the loop
+  kernel a named one takes. `for ^3_000_000 { my $ = 1 }` went from 0.48 s to
+  0.003 s. `my $x = COND ?? A !! B` over variables and literals takes the
+  lane: `my $ = $n ?? 1 !! Nil` 0.54 → 0.21 s (Rakudo 0.22).
+  `t/regression/anonymous-my-and-ternary-on-declaration-lane.raku`.
+
+### Fixed: silent wrong answers
+
+- **`from-json` reads a path, not its name** (e52dc567) (issue #267).
+  `from-json("doc.json".IO)` parsed the string `doc.json` and pointed its
+  error at the `d`. The codec reads an IO::Path, and an IO::Handle to its
+  end leaving it open, and so does `from-jsonl`; JSON::Native::Raku reads
+  them too. `t/regression/json-native-reads-paths.raku`.
+- **An `--aot` binary's trace shows no line from a stranger's file** (8f78649f)
+  (#265). The excerpt under the origin frame was read by opening the script's
+  name against the working directory, so a binary run beside another file of
+  that name printed that file's line as its own (the reporter's was an
+  executable: kilobytes of machine code as "line 729"). The binary carries the
+  tree, not the text, and now shows no excerpt, as Rakudo shows none.
+  `t/regression/aot-excerpt-not-from-cwd.raku`.
+- **`-c` and `--lint` refuse an undeclared routine** (a9c5615f, 1a5145f1)
+  (#264). `say "start"; no-such-routine(1)` passed `-c` with "Syntax OK" and
+  exit 0, and `--lint` with "no issues found", and failed to compile when run.
+  `-c` now makes the run's pre-run check and prints its report byte for byte,
+  exit 1, as Rakudo's `-c` does; `--lint` gives one `undeclared-routine` error
+  per routine on the line it is used at, with Rakudo's suggestions, and exits
+  2; `--json` carries the same finding from both. `t/regression/check-mode-undeclared-routine.raku`.
+- **A lazy Seq is read past its millionth element** (dbe463ff, 07e2372e).
+  Every read of one stopped at 1,000,000 without a word: `(gather { take $_
+  for ^1_500_000 }).elems` was 1000000, and `.sum`, `.grep`, `.join`, `my @a
+  = gather …`, `1 ... 1_500_000`, `(^Inf).map(…)[1_500_000]` and a `for $fh.
+  lines.map(…)` over a longer file lost the rest. A `for` over `(^Inf).map(…).
+  grep(…)` ended by `last` ran 500000 times where it should run 1500000.
+  Element N is read however far it is and an eager read a program asks for
+  goes to the end; only all of a source that may not end stops at a million,
+  and `.sum` or `.elems` of an endless grep now refuse as Rakudo's do. (The
+  interpreter's own reads of a gather still running keep the million: dbe463ff
+  had dropped it there too, and `flatmap` of an endless gather grew past 70 GB
+  until 07e2372e.) `t/regression/lazy-seq-past-a-million.raku`.
+- **`--mcp` and `--jupyter` read JSON numbers by JSON's grammar** (e374baff).
+  `"id":1e+` was run as a request with id 1, `1.2.3` as 1.2, `-+5` as 0 and
+  `1e999` as Inf; each is now a parse error. An unpaired surrogate escape
+  (`"\ud800"`) came back as the bytes ED A0 80, which a strict UTF-8 client
+  cannot decode; it is U+FFFD there and in `--lsp`, whose parser also turned
+  `"\ud800A"` into U+2441. From the Codex review of 2026-11-14 (13, 14).
+  `tools/mcp-smoke.raku`.
+- **`--lsp` refuses a body that is not JSON** (222424a1). A message missing its
+  closing brace was answered as an `initialize`, one with trailing junk as a
+  `shutdown`, and a missing `:`, an unknown escape or a malformed number was
+  read past. The server now parses with JsonLite, as `--mcp` and `--jupyter`
+  do, and answers -32700 with a null id. From the Codex review of 2026-11-14
+  (15). `t/regression/lsp-rejects-malformed-json.raku`.
+- **`--target=js` handles answer as the interpreter's do** (7f8773e2): `.getc`
+  is a grapheme, where an emoji came out as half a surrogate pair; a closed
+  handle throws X::IO::Closed, where `.get` read on; a Proc killed by a signal
+  has that signal, where it was always 0 with exit code 1; and a short write to
+  stdout or stderr is finished, where the rest of the buffer was dropped. From
+  the Codex review of 2026-11-14 (08, 10, 11, 12).
+  `t/regression/handle-closed-getc-astral-proc-signal.raku`.
+- **`--target=js` keeps a react or supply block working past an `await`**
+  (7386791f): a `whenever`, `emit` or `done` after `await` died "outside the
+  lexical scope of a react/supply block", and a `whenever` body that awaited
+  was cut off when its source finished. `.list` on a supply that finishes
+  later ran the supply's body twice, and came back as an unawaited Promise
+  unless the program mentioned a Channel. `Supply.from-list([42])` emits 42.
+  From the Codex review of 2026-11-14 (05, 06).
+- **`--target=js` reads bytes and keeps paths across `chdir`** (fa8d1ea7):
+  `.read(n)` returned the whole rest of the input, decoded as text, whatever n
+  was; it now hands out n raw bytes. A relative `IO::Path` made before a
+  `chdir` resolved against the new directory; it keeps the one it was made
+  in, as in Rakudo. From the Codex review of 2026-11-14 (07, 09).
+  `t/regression/supply-await-list-read-chdir-path.raku`.
+- **A file handle has one position for `.read` and the text readers**
+  (27e35b21): `.get` after `.read(3)` answered the first line whole, and
+  `.read` after `.get` or `.getc` started again at the top of the file. Each
+  reader now goes on from where the other stopped, a CR LF counts both bytes
+  for `.read` and `.tell`, and `.tell` after `.getc` is a byte offset where it
+  was 0. `--target=js` counts `.tell` and `.seek` in bytes and gains
+  `.readchars`. Found while fixing the Codex review's finding 07.
+  `t/regression/handle-read-get-one-position.raku`.
+
+- **Three from re-reading the UNCLEAR issue threads** (e2981dc5):
+  - `(1, 2) X~~ -> $ { True }`, `Z~~`, `»~~»`, `[~~]` and `infix:<~~>`
+    called never called a Callable matcher, and answered False
+    (rakudo#6793).
+  - `"中".encode("gbk")` handed back UTF-8 bytes for any name it did not
+    know. It dies X::Encoding::Unknown, as Rakudo does (rakudo#4102).
+  - `.base(10, 20, :no-trailing-zeroes)` ignored the flag; a Rat now drops
+    its trailing zeroes (rakudo#1872).
+
+  `t/regression/unclear-reread-fixes.raku`.
+- **`--exe`: `CArray[size_t].new(5, 6)` is a CArray** (901a4cca), where a
+  natively compiled binary answered Nil and passed NULL to the C function,
+  which then segfaulted (#261). NativeCall's C type names (`size_t`, `ssize_t`,
+  `long`, `ulong`, `bool`, …) were read as a subscript of `CArray`, not as its
+  type parameter. A type parameter that arrives at run time (`CArray[$T]`,
+  `Array[$T]`, `Buf[$U]`) was Nil compiled too. `t/regression/exe-carray-c-int-param.raku`.
+- **`--exe`: `(1, 2) X~~ *.so` matches each element** (7df13701), as the
+  interpreter does, where compiled code curried the whole expression into one
+  WhateverCode. The codegen's smartmatch rule named only `~~` and `!~~`.
+
+- **A phaser used as a value runs at its phase** (b980a365) (rakudo#4351, and
+  the 23 issues that time themselves with `now - ENTER now`). What was
+  wrong:
+  - `say "body"; my $x = INIT say "init"` said body first, and so did
+    BEGIN, CHECK and ENTER, in block and expression form;
+  - `say now - INIT now` printed about −0.00003;
+  - `CHECK <expr>` and `FIRST <expr>` were "Undefined routine";
+  - `FIRST { … }` used as a value in a loop ran on every iteration;
+  - an INIT parameter default ran on every call.
+
+  Now BEGIN, CHECK and INIT run before the code around them, the top level
+  included; ENTER runs at each entry of its block; FIRST runs at a loop's
+  first iteration, and every iteration reads its value. At the top level of
+  a program or an EVAL, the FIRSTs and then the ENTERs run on entry, as
+  Rakudo runs them: EVAL'd code ran even a statement-form ENTER in place. A
+  program that uses a value phaser bundles with the interpreter under
+  `--exe`, which had compiled it in place. Every snippet of those issues
+  now prints a positive time, except one that calls `nqp::time_n`.
+  `t/regression/value-phasers-run-at-their-phase.raku`.
+- **A set or bag operator op-assigned to an undefined target starts empty**
+  (00c30ed1). `my $s; $s ∪= 0` was Set.new(Any, 0), where Rakudo gives
+  Set.new(0): the undefined target joined in as a value. So did `(-)=`,
+  `⊖=` and `⊎=`. The target now starts from set() or bag(), and so does a
+  reduce over nothing: `[∪] ()` and `[⊎] ()` were Any.
+  `t/regression/set-op-assign-starts-empty.raku`.
+
+- **`is cached` caches** (cee2cd42) (rakudo#4665, rakudo#4666). The trait
+  was accepted and did nothing: `pow2(10)`, recursing twice per level, made
+  2,047 calls where Rakudo makes 11. A call is keyed on the gist of its
+  Capture, as Rakudo keys it, and every closure of one declaration shares one
+  cache. `samewith` goes through the cache too (Rakudo's skips it), and a Set
+  argument is one key whatever its order. Under `--exe` such a program
+  bundles with the interpreter.
+  `t/regression/is-cached-answers-a-seen-call.raku`.
+- **`self!name` reaches the private method of the package it is written in**
+  (91033936) (rakudo#2663). With `(Puppy.new but Violinist) but Diva`,
+  Puppy's own `greet` bowed as the Diva, and so did the Violinist's
+  `fiddle`. A class's method now reaches its class's `!name`, and a role's
+  method the class the role was composed into, as in Rakudo. A compiled
+  `$o!Pkg::name` had died "No such private method".
+  `t/regression/private-call-resolves-in-its-package.raku`.
+- **The program's `multi infix:<op>` meets its own classes' type objects**
+  (bdb022c4) (rakudo#6860). With `multi infix:<~>(Str() $a, A $b)`,
+  `"A: " ~ A` printed "A: " where Rakudo prints the candidate's answer; an
+  instance already met it. `t/regression/user-infix-takes-a-type-object.raku`.
+- **A typed hash's Pairs check what `.value` is given** (a64cd841)
+  (rakudo#2068): `my Int %h = :42foo; %h.map: { .value = 'meows' }` stored
+  the Str. `t/regression/typed-hash-pair-value-checks-type.raku`.
+- **`.assuming` keeps a remaining parameter's `.default`** (29f64dcc,
+  38cb1d1e) (rakudo#4553): it was the Code type object, where Rakudo answers a
+  block that gives the default. Under `--exe` a routine whose defaults the
+  program reads with `.default` runs in the interpreter, since a compiled
+  signature carries only the default's text.
+  `t/regression/assuming-residual-default.raku`.
+- **A `multi submethod` is a submethod** (2987aab9) (rakudo#3976): it was in
+  `.^method_table` and missing from `.^submethod_table`, and a plain
+  submethod was in both. `t/regression/submethod-table-and-method-table.raku`.
+- **R reverses an operator's associativity as well as its operands**
+  (521d34ae) (rakudo#4757): `2 R- 3 R- 4` grouped from the left and gave 3,
+  where Rakudo groups `R-` from the right and gives −1, as `[R-] 2, 3, 4`
+  does. `t/regression/r-metaop-flips-associativity.raku`.
+- **R composes over a zip or a cross** (8c513f23, 585a8ee1) (rakudo#6128,
+  rakudo#1616): `(1,2) RZ+ (10,20)` read the `+` as a prefix of the right
+  operand and gave ((2 1)), where Rakudo gives (11 22). `(1,2) RZ (3,4)`
+  died "Undefined routine 'RZ'", `[RZ] (1,2),(3,4)` was an array holding
+  the name, and `&[RZ,]` and `ZR-` were refused.
+  `t/regression/r-metaop-over-zip-and-cross.raku`.
+- **`reduce` with a built-in comparison chains, as `[op]` does** (a0437c10,
+  703198f5) (rakudo#4128): `reduce &[>], 6, 5, 4` folded `(6 > 5) > 4` and
+  gave False, where Rakudo answers `6 > 5 > 4`, True.
+  `t/regression/reduce-with-chaining-operator.raku`.
+- **A set relation reduces as a chain** (2416bbe5): `[⊆] ()` was Any and
+  `[∈] (1,)` was 1, where both are True; three operands test each adjacent
+  pair. `t/regression/set-predicate-reduce-chains.raku`.
+- **Set membership reads a Range as the Set of what it iterates** (cb91f67b)
+  (rakudo#2217): `½ ∈ ^2` was True, because the Range was asked whether ½
+  lay between its ends, and `"aa" ∈ "a".."c"` was True by string order. Over
+  an endless range `(elem)` now dies X::Cannot::Lazy, as in Rakudo; it
+  answered True. `t/regression/range-is-the-set-of-its-elements.raku`.
+- **`roundrobin` follows the single-argument rule** (133560ad)
+  (rakudo#1447): `roundrobin ((1, 2, 3), (4, 5), (6, 7, 8, 9))` took its one
+  argument as one list and answered nine rounds of one.
+  `t/regression/roundrobin-single-argument.raku`.
+- **A Callable count to `.head`, `.tail` and `.skip` counts from the end**
+  (ad10ad81) (rakudo#2485): it was called with the element count, so
+  `<a b c>.head(*.elems - 1)` was () where Rakudo takes all three. `*-N`
+  answered the same either way.
+  `t/regression/head-tail-callable-count-from-end.raku`.
+- **`.combinations` reads a Rat range of sizes as Rakudo does** (3db5cae5)
+  (rakudo#1629):
+  `<a b c>.combinations(2.3..^3.6)` dropped (a b c).
+  `t/regression/combinations-rat-range-sizes.raku`.
+- **`EXPR for 1..*` runs as long as the range does** (c109e8ec)
+  (rakudo#1399, rakudo#1398): the statement modifier stopped after 10,000
+  iterations, so `.sink for 1..*` returned at once.
+  `t/regression/modifier-for-over-endless-range.raku`.
+- **`[»op«]` over one operand is the inner operator's one-argument form**
+  (cfbda86a) (rakudo#5951): `[»+«] [[1,2],]` handed back [1 2] where Rakudo
+  numifies it to 2, and `infix:<~>(<a b>)` was "a b" where Rakudo joins it
+  to "ab". `t/regression/hyper-reduce-one-operand.raku`.
+- **A lone Array bound through a `+` slurpy keeps its elements' containers**
+  (ccda30e9) (rakudo#1355): `-> +l { l }([1, (2, 3)])` was `(1, (2, 3))`,
+  where Rakudo keeps `(1, $(2, 3))`.
+  `t/regression/plus-slurpy-keeps-array-containers.raku`.
+- **`.=` into a `$` variable itemizes what it stores, as `=` does**
+  (1c4da191) (rakudo#3621): `$x .= split(',')` held a bare Seq, so `.raku`
+  lost its `$( )` and `for $x` walked the elements.
+  `t/regression/dot-assign-itemizes-into-scalar.raku`.
+- **A compiled reduction over one Array takes its elements one level deep**
+  (1ba950a5): in a `--exe` binary `[+] [[1,2],[3,4]]` was 10 where it is 4,
+  `[»+«] @a` summed every number, and `[Z]` of a matrix zipped one flat
+  row. The interpreter was right. `t/regression/reduce-lone-array-operand.raku`.
+- **A hyper operator's answer takes its left operand's container** (57b07f65)
+  (rakudo#5951): `my @r = [»+«] @a` held the summed row's elements, where
+  Rakudo holds the row as one item, `[[5, 7, 9],]`, and `$[1,2] »+« $[3,4]`
+  was `[4, 6]` where Rakudo answers `$[4, 6]`.
+  `t/regression/hyper-reduce-one-operand.raku`.
+- **A compiled hyper operator is the interpreter's** (9bb82a6c): in a `--exe`
+  binary `%h »+« %g` was `(2,)` where it is `{:a(3)}`, and every array answer
+  came back a List. `t/regression/hyper-reduce-one-operand.raku`.
+- **`$x ~~ TR///` answers the transliterated Str** (6b709af5) (rakudo#1551):
+  `'hello' ~~ TR/e/1/` was False, the result smartmatched against 'hello',
+  where Rakudo answers "h1llo". A tr/// StrDistance's `.gist` and `.raku`
+  are `StrDistance.new(before => …, after => …)`, as Rakudo's.
+  `t/regression/tr-smartmatch-answers-the-string.raku`.
+- **`.parse` and `.subparse` start at `:pos`** (31206e76) (rakudo#1243):
+  `G.subparse("ABCDE", :pos(4))` matched all five letters. A failed
+  `.subparse` answers a failed Match, `#<failed match>`, where it was Any.
+  `t/regression/subparse-pos-and-failed-match.raku`.
+- **A bounded quantifier repeats a zero-width item** (a2fcf5bb)
+  (rakudo#4752): `'00000' ~~ m{^ 0 <same> ** 2..4}` never matched; Rakudo
+  matches with four `same` captures.
+  `t/regression/bounded-quantifier-zero-width-item.raku`.
+- **A grammar's parse target is its first positional argument** (e9aaf6b3)
+  (rakudo#2791): `Chord.subparse(:rule<bare-key>, 'C#')` parsed the `:rule`
+  Pair, so the issue's `<!before \S>` rules never matched. An undefined
+  target dies, as Rakudo's does.
+  `t/regression/grammar-parse-named-before-target.raku`.
+- **An actions class's FALLBACK is called, and `ws` actions fire**
+  (2137a05d) (rakudo#2059): FALLBACK was never called, `rule TOP { a b }`
+  never fired `method ws`, and `<.q>` over `token q { 'q' }` never fired
+  `method q`. `t/regression/grammar-actions-fallback-and-ws.raku`.
+- **`\c[NAME]` in a regex takes the name in any case** (d45f616e)
+  (rakudo#5799): the lower-case name resolved to nothing, so
+  `/o\c[combining ring above]/` failed against "o̊" and
+  `/.\c[combining ring above]/` matched it.
+  `t/regression/regex-char-names-any-case.raku`.
+- **Every routine is its own `.WHICH`** (9e693ab0): two closures of one
+  `sub { … }` had one identity, so a Set of them held one element.
+  `t/regression/my-token-closes-over-its-frame.raku`.
+- **`return` takes its value as a list operator** (f9028851) (rakudo#2129):
+  `return 0 or 5` returned 5; it is `(return 0) or 5`, and answers 0.
+  `t/regression/return-is-a-list-operator.raku`.
+- **An operator named by a quoted word is that word** (ce72763f)
+  (rakudo#1264): `sub infix:«"z"» (…)` declared an operator named `"z"`,
+  quotes and all, so `42 z 42` gave 42 and the operator was invisible to
+  EVAL. `t/regression/operator-name-quoted-guillemet-word.raku`.
+- **An item in a `has (…)` list keeps its own traits** (f102e0f5)
+  (rakudo#2078): `has ($.z is rw = 42)` declared a read-only `$.z` with no
+  default. `t/regression/has-list-item-traits.raku`.
+- **A gather block's last statement is sunk** (b590c1ec):
+  `gather { take 1; Failure.new }` handed back [1], where Rakudo throws, and
+  `gather { Sinker.new }` took nothing.
+  `t/regression/for-as-block-value-is-not-sunk.raku`.
+- **A sigilless name in a list assignment holds a list as it is** (d77e1185)
+  (rakudo#5027): `my (\a, \b) = (1, 2), 3` made a `$(1, 2)`.
+  `t/regression/sigilless-names-token-and-destructure.raku`.
+- **A hyper method call interpolates in a string** (6b8c1d1a) (rakudo#1460):
+  `"%add».sort.map(*.fmt("%s %s"))"` stayed literal text.
+  `t/regression/interpolated-hyper-method-chain.raku`.
+- **An anonymous state variable in a string's `{ … }` is fresh each time**
+  (7e5a643e) (rakudo#1961): `"count {$++}" for ^3` counted 0 1 2, where
+  Rakudo prints count 0 three times. `t/regression/string-block-anonymous-state.raku`.
+- **A leap second stays one in a timezone of odd seconds** (bfd530f9)
+  (rakudo#2097): `DateTime.new('2016-12-31T23:59:60Z').in-timezone(514)` gave
+  00:08:34, where Rakudo keeps the second, 00:08:60.
+  `t/regression/leap-second-in-timezone.raku`.
+- **A built-in exception's `.raku` is Rakudo's** (eb482a9f) (rakudo#2434): it
+  showed a `message => …` attribute, which is a method in Rakudo, and
+  X::Numeric::DivideByZero's attributes in the order they were thrown.
+  `t/regression/dd-failure-not-sunk-and-exception-raku.raku`.
+- **`CALLERS::<$_>` reads a calling routine's `$_` under `--exe` too**
+  (62ada605): a compiled program answered Any, where the interpreted one
+  answered the routine's `$_`. A program that reads its callers' lexicals
+  keeps its routines interpreted. `t/regression/callers-call-form.raku`.
+- **`return not $x` returns the negation** (e89cc6a7): it returned Nil since
+  f9028851, with `not $x` left as a statement of its own. Found with
+  `GLOBAL::<x>:delete`, whose `:delete` was a sunk Pair that deleted nothing,
+  and `$x or last LOOP`, which left the innermost loop instead of LOOP.
+  `t/regression/strict-separation-false-positives.raku`.
+- **A picked member of a Str-valued enum keeps its value** (2eafbb23)
+  (rakudo#2165): `enum Chain (A => "T", …); Chain.pick.value` was 0, as was
+  every `.roll`. `t/regression/enum-how-add-enum-value.raku`.
+- **X::Method::NotFound and X::Numeric::DivideByZero made with `.new` have
+  their message** (251842c2): `.message` was Any, and a second `.new` of one
+  died "Default constructor … only takes named arguments".
+  `t/regression/exception-new-message.raku`.
+### Fixed: crashes
+
+- **An assignment's answer is copied under the slot's lock** (f36e238b). The
+  fast lanes for `=`, the fused typed stores, `~=`, the compound operators and
+  attributes stored under the stripe and copied the slot after letting it go,
+  so another thread's store could free what the copy was counting. A `for`
+  that is a block's value is no longer sunk (6fcd9181), which exposed it: on
+  a TSan build `t/stress/private-for-rw.raku` died 21 runs in 30, and now 0
+  in 40.
+- **An atomic op on a plain Int writes only the integer** (b71b48fe). The
+  whole-value store rewrote the tag bytes as well, while another thread's
+  lookup read them with no lock. TSan reported 8 warnings a run in
+  `t/stress/tracked-release-race.raku`, and none in 5 runs after.
+- **`try $p.sink` catches a failed Proc** (69e90f7a). `.sink` handed the Proc
+  back and the statement sank it once the `try` was over, so the program died
+  with the X::Proc::Unsuccessful it meant to catch. Found while fixing the
+  Codex review's finding 11. `t/regression/proc-sink-throws-inside-try.raku`.
+- **An object released on two threads at once is no longer read after it is
+  freed** (912cf744). A release that left a tracked object alive dropped its count
+  and then handed the object to the cycle collector's candidate buffer, so a
+  last release on another thread in between freed it first. It is now noted
+  before the count goes. Instructions retired move by under half a percent.
+  From the Codex review of 2026-11-14 (01). `t/stress/tracked-release-race.raku`.
+- **`rk_free` no longer frees an interpreter its workers still run on** (d4a3b66c).
+  It waited for pooled workers only and freed the interpreter after two
+  seconds, so a `start` still running wrote into freed memory while the host
+  went on. It now stops and joins every worker, as a program's end does, and
+  keeps the interpreter if one will not stop. From the Codex review of
+  2026-11-14 (02). `tools/embed/embed-host.c`.
+- **An extension's element handle survives the array growing** (0ab4bfc7).
+  `rk_at_pos` returned the element's own address, so an `rk_push` that grew
+  the array left the handle pointing at freed storage within the same call,
+  though the ABI promises a handle for the whole call; `rk_val_at` likewise
+  across a deleted key. Both now hand out arena copies. From the Codex review
+  of 2026-11-14 (04). `tools/embed/embed-host.c`.
+- **`--jupyter` cannot be wedged by a frame length** (43509bec). A frame
+  claiming 2^64 - 9 bytes wrapped the bounds check, and the kernel looped on
+  the same header, queueing messages until memory ran out, before any
+  signature check, for any process that could reach the port. A message is
+  now held to 256 MB and an over-long frame drops that peer. From the Codex
+  review of 2026-11-14 (03). `tools/jupyter-smoke.raku`.
+- **Two latent lifetime defects closed** (2529675a, 4a2e4fec). Move
+  assignment of the reference handles released the destination before
+  reading a source it may have owned (`node = std::move(node->next)`); no
+  caller had that shape yet. A thread that only freed pool blocks never
+  registered its exit drain and leaked up to 64 blocks per size class. From
+  the Codex review of 2026-11-14 (17, 16).
+
+- **A regex value that names itself is a recursive pattern, not a crash**
+  (041789fd) (rakudo#3775). `my $r; $r = / a <$r>? /` matches "aaa" in
+  Rakudo; in Raku++ every recursive spelling took SIGBUS before a character
+  was matched: `<$r>`, `<x=$r>`, a bare `$r`, and two values naming each
+  other. Expanding `<$r>` pasted $r's source, and its own `<$r>` pasted it
+  again. Now a value's reappearance inside its own expansion is called when
+  the match reaches it, as Rakudo resolves it. A rule that calls itself
+  before consuming anything (`/ <$r> a /`, `token TOP { <TOP> a }`) cannot
+  end: Rakudo hangs, and Raku++ throws X::Recursion where it took SIGBUS.
+  `t/regression/regex-value-naming-itself.raku`.
+- **An index no machine could reach is refused, not grown into**
+  (147d0b95) (rakudo#5835). `my $b; $b[1e18] = "meow"` grew the array a slot
+  at a time until memory ran out: eight gigabytes in six seconds. So did
+  `.ASSIGN-POS`, `.BIND-POS`, a slice, a `:=` bind and a nested `[0][i]`.
+  Rakudo refuses each with "Unable to allocate an array of N elements"
+  (X::AdHoc), and Raku++ now does too. It refuses when the slots alone would
+  outweigh the machine's memory, so an ordinary large array still grows.
+  `t/regression/huge-array-index-refused.raku`.
+- **A user class may be called Rat** (7fc5b00b) (rakudo#5537).
+  `class Rat is Quadruped { … }; Rat.new` took SIGBUS. Whether a class does
+  Rational was also asked by its name, and for a class called Rat the core
+  Rat answered. Its `.new` then boxed a `Rat.new` that was itself.
+  `t/regression/user-class-named-rat.raku`.
+- **Two ways a `react` never ended** (b4f6e472) (rakudo#4853, rakudo#3686).
+  - `whenever $ch.closed { done }` never fired when the channel closed
+    after the react started. Closing kept `.closed` for `await`, but never
+    ran the continuations a react listens through. The reader behind
+    `whenever $ch` took the last value of a closed channel without keeping
+    `.closed` at all.
+  - A `whenever $promise` body waits until no other body of its react runs,
+    and that reader counted as running for as long as it polled. So beside
+    an empty channel, the promise's body never ran.
+
+  The issue's own program, a react re-entered once per value until a
+  promise says stop, now reads all 100 values from each channel. That is
+  what rakudo#3686 asks for: Rakudo 2026.09 loses values there and Raku++
+  used to hang. `t/regression/react-channel-closed-and-turns.raku`.
+- **A generator sequence stops at an excluded endpoint however it is read**
+  (7dc4809d) (rakudo#3881): `say { $++ * ($ *= -1) } ...^ 21` never ended.
+  The 21 was dropped and the walk went on for `.gist`, `.join` and an array
+  assignment, though `.elems` and indexing stopped. A Range on the right of a
+  lone generator is now a list, its first element the endpoint and the rest
+  following, as in Rakudo: `{ $++ } ... ^5` is (0 1 2 3 4).
+  `t/regression/sequence-generator-exclusive-endpoint.raku`.
+
+### Behaves like Rakudo
+
+- **`$*RAKU.compiler.version` is `v2026.11`**, Rakudo's release of this
+  week, where it was `v2026.09`. It names the Rakudo era a module may gate on.
+  This release's comparisons with Rakudo, the issue snippets and the
+  regression tests that run both engines, were made against 2026.09 and were
+  not repeated against 2026.11.
+- **A module used in a bare block still sees the packages it loaded after the
+  block ends** (5f000351). `my $S; { use ZB; $S = ZB::S }; $S.new.m`, where
+  ZB's method names ZA::Z from its own `use ZA`, died "Could not find symbol
+  '&Z'". Data::Native's zlib tag hit this, and its suite now passes on Raku++
+  as on Rakudo. The program's own `ZB::S` after the block is still refused,
+  as Rakudo refuses it. `t/regression/block-use-module-sees-its-deps.raku`.
+- **A socket error carries libuv's words on every libc** (846087b3), as
+  Rakudo's does: musl's strerror says "Address in use" for EADDRINUSE, so the
+  busy-port message (rakudo#1266) differed on the musl legs.
+- **The `RakuAST::` names need no pragma** (e60a6163) (rakudo#6134, #6137).
+  Rakudo 2026.08 refused them under 6.d without `use experimental
+  :rakuast`, and Raku++ followed; 2026.09 refuses nothing. `RakuAST::Sub.new(…).EVAL`
+  runs, and `::('RakuAST::Node')` is the type where it was a Failure. The
+  pragma is accepted and changes nothing. `t/regression/rakuast-needs-no-pragma.raku`.
+- **Error wording the closed issues settled** (13902c52):
+  - `42.abs += 42` says "Cannot modify an immutable Int (42)", naming the
+    method's answer, where it said "Target is not assignable" (rakudo#1987).
+  - `MixHash.grab` answers a Failure, ".grab is not supported on a MixHash"
+    (rakudo#2109).
+  - A subset return type names the value it refuses: "got Rat (1.8)"
+    (rakudo#2595).
+  - `(Inf .. 5) / 0` says "divide Inf by zero"; the empty Range printed as
+    nothing (rakudo#3598).
+  - A busy port says "address already in use (address: localhost:11111)",
+    an X::AdHoc (rakudo#1266).
+
+  `t/regression/error-messages-rakudo-settled.raku`.
+
+- **`$.x` in a method is `$(self.x)`** (4f507a0f) (rakudo#5908, rakudo#6113,
+  rakudo#4463). Through a read-only accessor, `$.b = 666` refuses with
+  "Cannot modify an immutable Int (42)", and `$.n++`, `$.n += 1` or an
+  autovivifying `$.h<k> = 1` change only a copy, as in Rakudo. All of them had
+  written the attribute. `is rw`, the class's `is rw` and a user method that
+  is rw still write. Assigning from outside (`$o.b = 5`) names the value in
+  its refusal too. `t/regression/dot-attr-through-read-only-accessor.raku`.
+- **Two multi candidates that tie are ambiguous with sigilless, `is raw` or
+  `is copy` parameters too** (401e19e8) (rakudo#1286): `multi f(Int \a, Any
+  \b)` beside `multi f(Any \a, Int \b)` quietly took the first for
+  `f(42, 42)`, where Rakudo dies X::Multi::Ambiguous.
+  `t/regression/multi-tie-sigilless-raw-copy.raku`.
+- **Assigning to a sigilless name bound to an object with STORE calls it**
+  (b66ccda3) (rakudo#3292): `my \foo = HistoryVar.new; foo = 1` died "Cannot
+  modify an immutable HistoryVar". `t/regression/sigilless-object-store.raku`.
+- **A multi's `where` check reads its defaults in the candidate's scope**
+  (6eef76fd): Data::Dump's every `Dump(…)` was X::Multi::NoMatch since
+  v5.3.0. Checking an unsupplied named's `where` evaluated the defaults before
+  it in the caller's scope, where Data::Dump's module-level `my %defaults` is
+  not. Found by the module battery.
+  `t/regression/multi-where-default-in-candidate-scope.raku`.
+- **`try EXPR` is a frame of its own, as in Rakudo** (ecaee71c): Log::Async's
+  `trace` died "No such method 'file' for invocant of type 'Any'". It drops
+  the `try`'s frame as the exception's own and reads the caller from the
+  next, and the statement form had none. The short printout now leaves out
+  the frames of `try`, `do` and `quietly` blocks, as Rakudo's does; a warning
+  still names its block. Found by the module battery.
+  `t/regression/try-statement-is-a-block-frame.raku`.
+- **`&postcircumfix:<[ ]>` and `&postcircumfix:<{ }>` are routines**
+  (22520fae) (rakudo#2000): both were Any, so `&postcircumfix:<{ }>(%h, 'a')`
+  died "Undefined routine". Named arguments are the adverbs (`:exists`,
+  `:delete`, `:kv`), and a third operand is assigned, as Rakudo's assign
+  candidate does. `t/regression/postcircumfix-routines-by-name.raku`.
+- **`eager` runs an unconditioned `Seq.from-loop` to its `last`** (c47aa1ea)
+  (rakudo#1692): `eager Seq.from-loop: { $i++; last if $i > 5; $i }` died
+  "Cannot eager a lazy list". A body whose value is Empty adds nothing.
+  `t/regression/eager-from-loop-runs-to-last.raku`.
+- **An Attribute with a role mixed in reaches the role's attributes**
+  (24256603): AttrX::Mooish's trait died "No such method
+  'get_attribute_for_usage' for invocant of type 'Attribute'" on its first
+  option. `.^get_attribute_for_usage('$!name')` answers the role's
+  attribute, and its `.get_value` and `.set_value` read and write the slot.
+  Past this, AttrX::Mooish needs Rakudo's MOP internals. Found by the module
+  battery. `t/regression/mixed-in-attribute-meta-access.raku`.
+- **The reduce metaop over a built-in operator's Callable folds it**
+  (1f205847) (rakudo#4128): `[[&infix:«>»]] 6, 5, 4` died "Unsupported
+  operator", where Rakudo folds ((6 > 5) > 4) and answers False.
+  `t/regression/reduce-with-chaining-operator.raku`.
+- **A compiled program calls a built-in infix by its name** (eca56b5a):
+  `infix:<~>("a", "b")` died "Undefined routine 'infix:<~>'" in a `--exe`
+  binary. It is the operator, as `&infix:<~>` is.
+  `t/regression/hyper-reduce-one-operand.raku`.
+- **A `my token` returned from a sub closes over its call** (9e693ab0)
+  (rakudo#6810): `<{$re}>` inside it died "Variable '$re' is not declared"
+  once the sub had returned `&FULLRE`. Each call's routine is its own, by
+  `===` too; Rakudo 2026.09 shares one between the calls.
+  `t/regression/my-token-closes-over-its-frame.raku`.
+- **`self` in a standalone token's code is its cursor** (edc8bf39)
+  (rakudo#3410): `token { 'a' <?{ say self.pos }> 'a' }` died "'self' used
+  where no object is available". `t/regression/self-in-token-code-block.raku`.
+- **A ｢…｣ quote in a regex holds any bracket, and `<&?BLOCK>` recurses**
+  (1ea5c984) (rakudo#3775): `[｢{｣ <&?BLOCK>? ｢}｣]?` died "Unable to parse
+  regex; couldn't find final ')'", and `<&?BLOCK>` matched nothing.
+  `t/regression/regex-corner-quotes-and-block-recursion.raku`.
+- **An anonymous class that opens a statement is a term like any other**
+  (70ee4e8b, 9badbec4) (rakudo#1360, rakudo#2078): `class { … } for ^5` died
+  "Missing ';' before 'for'", and `class { … }.new.z = 42` "unexpected
+  operator in term position".
+  `t/regression/anon-class-statement-takes-infix-and-modifier.raku`.
+- **A `for` that is its block's value does not sink its iterations**
+  (6fcd9181) (rakudo#1360): `{ Failure.new for ^5 }()` threw, where Rakudo
+  answers Nil; compiled code agrees.
+  `t/regression/for-as-block-value-is-not-sunk.raku`.
+- **A block phaser takes a statement modifier** (b1040540) (rakudo#2243):
+  `LEAVE { say 42 } if False;` was refused at parse time. The phaser stays
+  declared, as a declaration does. `t/regression/phaser-block-takes-statement-modifier.raku`.
+- **A name that starts with `token`, `rule` or `regex` is a name** (d77e1185)
+  (rakudo#5027): `-> \labels_, \token_ { … }` failed to parse, `token_ {`
+  read as a regex declaration.
+  `t/regression/sigilless-names-token-and-destructure.raku`.
+- **A `&` item in a declaration list takes a signature** (953adf0a)
+  (rakudo#2336): `my (&op:(Int, Int --> Int)) = …` failed to parse, and
+  `my (&op) = …; op(2, 3)` was "Undeclared routine".
+  `t/regression/declaration-list-routine-items.raku`.
+- **`enum E does R <a b>` parses** (73357985) (rakudo#3376), and an enum's
+  archetypes say it is composalizable, as Rakudo's 1/0 integers.
+  `t/regression/enum-does-role-and-archetypes.raku`.
+- **`say *>>.fmt("%02x")(42)` parses** (fdaa60ec) (rakudo#5901): a tight
+  hyper method call on `*` after a list operator is a WhateverCode.
+  `t/regression/whatever-hyper-method-after-listop.raku`.
+- **Every `;` segment of a parenthesised list takes a statement modifier**
+  (f8b5555c): `($n++; last if $n > 3) for 1..*` was "Two terms in a row".
+  `t/regression/paren-segment-statement-modifier.raku`.
+- **A declaration called at once takes a postfix chain** (f9028851):
+  `sub foo { 7 }().say` printed (Any). `t/regression/return-is-a-list-operator.raku`.
+- **`dd` answers Nil** (eb482a9f) (rakudo#2434): `dd $x % 0e0` printed the
+  Failure and then threw it, because dd handed its argument back to be sunk.
+  `t/regression/dd-failure-not-sunk-and-exception-raku.raku`.
+- **`Parameter.twigil`** (41150ad1) (rakudo#2275), and `.sigil` of a sigilless
+  `\g` is `\` and of a capture `|c` is `|` (they were `g` and `c`).
+  `t/regression/parameter-twigil-and-sigil.raku`.
+- **The atomic family is complete** (ea466f67) (rakudo#6873): `⚛−=` with a
+  Unicode minus parsed as nothing, and `&prefix:<⚛>`, `&prefix:<++⚛>`,
+  `&postfix:<⚛++>` and their kin were Any. `$x ⚛== 1`, which Rakudo reads as
+  a write, is refused with a pointer to `⚛$x == 1`.
+  `t/regression/atomic-callables-and-unicode-minus.raku`.
+- **`CALLERS::('$_')`, `CALLER::(…)`, `M::(…)`** (ef2e778b) (rakudo#2639):
+  they called a sub named `CALLERS::`. CALLERS reaches a routine's own `$_`,
+  not a `given` or `for` topic, as in Rakudo.
+  `t/regression/callers-call-form.raku`.
+- **`role A[::T] does array[T]` declares** (112a0cdb) (rakudo#4361): it died
+  "Invalid typename 'array'". `t/regression/role-does-native-array-generic.raku`.
+- **`name{…}` subscripts what the call answers** (fcc6d577): `T{"max-rss"}`
+  passed the block to T. `name {…}`, with a space, still passes it.
+  `t/regression/brace-subscript-after-routine-call.raku`.
+- **Code Rakudo refuses is refused** (R10; the battery scan against v5.8.0 is
+  green, 2,775 module files):
+  - Test's and NativeCall's routines with no `use` of the module (1f3377ea)
+    (rakudo#1631, #3607, #4967, #1612, #2191). A module the program `use`s
+    that may re-export them keeps them, and so does a caller's `use` for an
+    EVAL.
+  - `use v6.e` without `.PREVIEW` (9f94cac7) (rakudo#2783).
+  - `is cached` without `use experimental :cached` (2fe0aeeb).
+  - `has $.x!`, `sub ($!x)` outside a method, `-> < 1/2>`, a default on a
+    required positional, a placeholder in a method, and a CStruct with no
+    attributes (8f7ac1df) (rakudo#1427, #1828, #1426, #2320, #2673).
+  - A Regex given to `substr`, `self."!$name"()`, `Lock.new.protect({})`,
+    `(0...∞).chrs` (6de9d27b) (rakudo#3802, #1644, #2742), and a `return` in
+    a mainline `start` block (ce54f928) (rakudo#2753).
+  - An unquoted `,`, `=`, `-`, backtick or non-word symbol in a regex
+    (d3059bf5) (rakudo#3775, #4927).
+  - A phaser's name called like a routine, `FIRST($x)` (f1491b3e).
+  - `42:foo` and `say 1, 2, and 3` (06212d97) (rakudo#1476, #3426, #4107).
+
+  The tests are `t/regression/use-v6e-needs-preview.raku`,
+  `is-cached-needs-experimental.raku`,
+  `test-and-nativecall-routines-need-use.raku`,
+  `declarations-rakudo-refuses.raku`, `calls-rakudo-refuses.raku`,
+  `return-in-mainline-start-block.raku`,
+  `regex-unquoted-symbols-refused.raku`,
+  `phaser-name-called-like-routine.raku` and
+  `adverb-on-literal-and-word-infix-after-comma.raku`.
+- **`method !q { … }` declares `!q`** (6de9d27b): the `q {…}` lexed as a
+  quote, so the method never existed.
+### Platforms and packaging
+
+- **The slim hello budgets are 13.5 MB with `-all` and 13.75 MB bare**
+  (be6aca55): the release's 116 commits of Rakudo-issue fixes grew a slim
+  hello by 1.14%, spread thin, the largest piece `.prec`'s operator table.
+
+### Tools
+
+- **battery-scan, battery-use-smoke and cpp-build-check run again**
+  (a213ccad): each passed `:env` a List of Pairs, which no longer binds to
+  `:%env`, so the battery scan died on its first file.
+
+### Left open
+
+- `--exe` does not sink a failed Proc that a `try` block answers:
+  `sub bye() { try { run 'false' }; say 'left' }` prints `left` compiled,
+  where the interpreter and Rakudo throw; and a compiled `die` prints no
+  frames (TODO-FOLLOW-UPS.md).
+- From the Rakudo issue sweep (RAKUDO-ISSUES-PLAN.md): nested coercion types
+  (rakudo#4517) are not started; `(1..*).Slip.is-lazy` (rakudo#5138) was
+  reverted, because slipping a lazy list into a list literal lost its
+  laziness; a `.race` over `but role` mixins (rakudo#5868) waits for a lock on
+  the type tables; and rakudo#1416's `nqp::if` loops are not yet fast.
+
 ## v5.8.0 (2026-11-12) — `--exe` gives the interpreter's answer, and twenty-two reported issues fixed
 
 A quick release of everything on `main` since v5.7.0: 111 commits in two
