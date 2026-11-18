@@ -43,9 +43,20 @@ which v5.7.0 does not meet on this machine either; `--record` refuses here,
 because the runs spread past the 5% tolerance, so the baseline was not
 re-recorded.
 
-**Not run** for this release: the module battery and the ecosystem sweep,
-the conformance sweep, the compiler and slim differentials beyond what CI
-runs, and a second toolchain.
+**The whole-ecosystem sweep ran** on this release's commit (a1404917), the
+first since v5.0.0: **1,182 of 2,584** distributions pass their own test
+suites, where v5.0.0 passed 1,019 of 2,547. That is 198 conversions, 53
+regressions and 18 passes among 38 new dists. About eleven of the regressions
+are native libraries missing from the sweep machine's Homebrew. The other 42
+fail under a v5.8.0 build too, so none is new in this release; they broke
+between v5.0.0 and v5.8.0, and the clusters are listed in
+[ECOSWEEP-2026-08.md](docs/dev/findings/ECOSWEEP-2026-08.md) (sitting eight).
+Four DuckDB dists were left out: Alien::Libduckdb compiles DuckDB with ten
+parallel jobs, more than a 120 s budget can hold. Every verdict is at
+[raku.online/modules/ecosystem](https://raku.online/modules/ecosystem/).
+
+**Not run** for this release: the module battery, the conformance sweep, the
+compiler and slim differentials beyond what CI runs, and a second toolchain.
 
 ### New
 

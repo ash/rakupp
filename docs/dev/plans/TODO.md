@@ -854,8 +854,12 @@ with its tag, after the release run is green.
   12 of 13 files and the standalone build are listed as known failures and
   only `t/00-canonical` is guarded. Next: the author hears of it (the
   maintainer's call), then `--head` on their fix, move the pin, clear the line.
-- [ ] **Distributions passing their own tests**: 1,019 of 2,547 at v5.0.0.
-  Next: a fresh grouping by cause of the ~1,175 that fail their own tests.
+- [ ] **Distributions passing their own tests**: 1,182 of 2,584 at v5.9.0
+  (2026-11-18). Next: bisect the 42 regressions since v5.0.0 (LanguageTaggish,
+  `Instant.year`, Math::Fraction's parse, `.raku` on a type object; list in
+  ECOSWEEP-2026-08.md, sitting eight), reinstall the eleven Homebrew libraries
+  the sweep machine lost, then a fresh grouping by cause of the ~1,050 that
+  fail their own tests.
   Known layers underneath:
   - Text::CSV `CSV(out => Supply)`.
   - Testo `&!group()`.

@@ -142,8 +142,8 @@ $ rakupp app.raku
    JSON::Fast? (to install JSON::Mask itself, pin it: use
    JSON::Mask:auth<…>)`. An explicit `:auth<…>` or `:ver<…>` on the `use`
    counts as proof of intent and passes the guard.
-4. **No module test suites.** These installs run as `--no-test`. Only 1,019
-   of 2,547 distributions pass their own suites here today, so with the test
+4. **No module test suites.** These installs run as `--no-test`. Only 1,182
+   of 2,584 distributions pass their own suites here today, so with the test
    gate on, half the ecosystem could never be fetched this way. The other
    command the error offers, `rakupp install app.raku`, keeps the test gate.
 5. **`RAKUPP_DEPS=0` makes `--auto` inert**, for harnesses: `rakupp install`

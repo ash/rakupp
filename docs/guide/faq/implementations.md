@@ -202,7 +202,7 @@ The first two rows are one bar: Roast `1f521d798`, whose todo for the TTY test i
 whole checkout rather than `spectest.data`, mutsu's own fudging and a 60-second
 ceiling — so read it as all three being near the end of the suite, not as a
 ranking. Past Roast, the difference is the ecosystem: Rakudo passes the test
-suites of 1,791 of 2,529 distributions, Raku++ 1,019 of 2,547
+suites of 1,791 of 2,529 distributions, Raku++ 1,182 of 2,584
 ([raku.online/modules/ecosystem](https://raku.online/modules/ecosystem/)).
 
 The rules for comparing any two of these numbers — which is easy to get wrong —

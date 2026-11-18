@@ -417,7 +417,7 @@ ul.plain li:last-child { margin-bottom: 0; }
       <div class="lab">Roast files where <em>every</em> assertion passes</div>
     </div>
     <div class="figure">
-      <div class="val">1,019<small> / 2,547</small></div>
+      <div class="val">1,182<small> / 2,584</small></div>
       <div class="lab">ecosystem distributions passing their own test suites (Rakudo: 1,791)</div>
     </div>
     <div class="figure">
@@ -1140,10 +1140,10 @@ app.raku uses 2 modules that are not installed:
       <div class="entry">
         <div class="term">The sweep</div>
         <div class="body">Every distribution in the ecosystem, through its own test suite. On a fresh sweep at
-        v5.0.0, <span class="num">1,019 of 2,547</span> install and pass; Rakudo passes
+        v5.9.0, <span class="num">1,182 of 2,584</span> install and pass; Rakudo passes
         <span class="num">1,791</span> through the same harness on the same machine, which is the ceiling to
         read the first number against; <span class="num">738</span> can't pass there on any engine (libgsl,
-        fontconfig, a network). <span class="tag">v5.0.0 figure</span> The sweep is the worklist, not a
+        fontconfig, a network). <span class="tag">v5.9.0 figure</span> The sweep is the worklist, not a
         scoreboard: fixes land in the parser, the runtime and dispatch, never as a special case for a module.
         Every distribution is at <a href="https://raku.online/modules/ecosystem/">raku.online/modules/ecosystem</a>.</div>
       </div>
@@ -1346,7 +1346,7 @@ say crypt_random_buf(32);               <span class="cmt"># the OS CSPRNG</span>
       </div>
       <div class="entry">
         <div class="term">And the rest</div>
-        <div class="body">The ecosystem: closing the gap between 1,019 and 1,791, one root distribution at a
+        <div class="body">The ecosystem: closing the gap between 1,182 and 1,791, one root distribution at a
         time. <code>use</code> in the browser: modules in the playground and under <code>--target=js</code>.
         Each target is a number written down before the code, so anyone can measure it again.</div>
       </div>
@@ -1354,7 +1354,7 @@ say crypt_random_buf(32);               <span class="cmt"># the OS CSPRNG</span>
         <div class="term">The ask, and the thanks</div>
         <div class="body">Try it on your code and report differences: every difference is either our bug or a
         spec question. Raku++ shares no code with Rakudo and wouldn't exist without it: without Roast, which
-        says what Raku means; Rakudo, which answers when Roast is silent; and the authors of 2,547
+        says what Raku means; Rakudo, which answers when Roast is silent; and the authors of 2,584
         distributions who wrote tests.</div>
       </div>
     </div>
@@ -1374,8 +1374,8 @@ say crypt_random_buf(32);               <span class="cmt"># the OS CSPRNG</span>
       <li><b>100% is per Roast's expectations.</b> Skip and todo are left out of the 219,395; counting every
       declared test it's 221,034 of 221,034. The Rakudo comparison (1,423 vs 1,414 files) was on the older
       Roast <code>1f521d798</code>.</li>
-      <li><b>The ecosystem is 1,019, not 1,791.</b> Rakudo's number is the ceiling, and the figure is from the
-      v5.0.0 sweep.</li>
+      <li><b>The ecosystem is 1,182, not 1,791.</b> Rakudo's number is the ceiling, and the figure is from the
+      v5.9.0 sweep.</li>
       <li><b><code>objects</code> and <code>multiwhere</code> are close.</b> 1.18× and 1.08× compiled: method
       dispatch is where spesh still nearly keeps up, and those are small kernels with startup included.</li>
       <li><b>NativeCall gaps.</b> C structs passed or returned by value are unsupported, and callbacks a C

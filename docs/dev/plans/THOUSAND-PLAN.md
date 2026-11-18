@@ -6,8 +6,8 @@ Geo::Hash was the thousandth distribution on the warm-store board: 1,000 of
 v4.0.0 shipped on 2026-09-17 at 1,006 of 2,529
 (`ecosweep/board-v4.0.0-2026-09-17.tsv`). The first fresh whole-ecosystem
 sweep past the line ran on the v5.0.0 binary on 2026-09-29: 1,019 of 2,547
-(`ecosweep/sweep-2548.tsv`, d4d2bc0a). No sweep has run since; v5.3.0 to
-v5.5.0 each say so.
+(`ecosweep/sweep-2548.tsv`, d4d2bc0a). The next ran on the v5.9.0 release
+commit on 2026-11-18: 1,182 of 2,584 (`ecosweep/sweep-2589.tsv`).
 
 Of the order of work below, steps 1 and 5 are done, except probe row R7.
 LibraryCheck, IO::Path::ChildSecure, IO::Capture::Simple and HTTP::UserAgent

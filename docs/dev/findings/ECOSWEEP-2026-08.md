@@ -65,6 +65,7 @@ the `- YYYY-MM-DD: N of M` shape in every sweep write-up):
 - 2026-09-14: 972 of 2,529
 - 2026-09-15: 989 of 2,529
 - 2026-09-17: 1,006 of 2,529
+- 2026-11-18: 1,182 of 2,584
 
 The points from 2026-09-12 on are **boards** rather than fresh whole-ecosystem
 runs: every distribution carries a verdict, but only the dists a cycle touched
@@ -578,3 +579,79 @@ the same way every sitting. The number to compare against is the reachable set:
 Rakudo, run through the same harness on 2026-09-16, passed 1,791 of that day's
 2,529 ([RAKUDO-BASELINE-2026-09-16](ecosweep/RAKUDO-BASELINE-2026-09-16.md)).
 
+
+## Sitting eight (2026-11-18, the v5.9.0 release commit): 1,182 of 2,584
+
+The whole index again, on `5.9.0-ga1404917`, the `Version 5.9.0` commit before
+it was tagged. The REA index fetched 2026-11-17 lists **2,589 dists**. Five are
+not counted: Test::Selector, quarantined as in every sitting, and the four
+DuckDB dists (below), so 2,584 were measured. Two shards on two private stores,
+each seeded with the 489 modules named by two or more dists (466 installed),
+budget 120 s per dist, `nice -n 10`. Seeding took 17 minutes, store after
+store, and the sweep 61. Per-dist results:
+[ecosweep/sweep-2589.tsv](ecosweep/sweep-2589.tsv); the regressions re-measured
+alone: [ecosweep/rerun-2589.tsv](ecosweep/rerun-2589.tsv).
+
+| verdict | dists | 2026-09-29 |
+|---|---:|---:|
+| **pass** | **1,182** | 1,019 |
+| self-fail | 1,050 | 1,175 |
+| dep-fail | 198 | 216 |
+| other | 67 | 67 |
+| dep-build-fail | 34 | 11 |
+| build-fail | 32 | 24 |
+| timeout | 20 | 34 |
+| fetch-fail | 1 | 1 |
+
+**1,019 → 1,182 decomposes as 198 conversions, 53 regressions and 18 passes
+among 38 dists new to the index.** Every one of the 53 was re-measured alone,
+one at a time on an idle machine, and every one reproduced.
+
+**About eleven of the 53 are this machine, not the engine.** The arm64
+Homebrew had been pared down to 26 formulae since September; libmagic, zeromq,
+xxhash, snappy, cmark, libgcrypt, libnotify, taglib, libusb, libidn2 and libpq
+are gone. Filetype::Magic, Net::ZMQ, TagLibC, Desktop::Notify and its
+::Progress, LibUSB and BusyIndicator, Digest::xxHash, Crypt::LibScrypt,
+CommonMark and Compress::Snappy all stop at `Cannot locate native library`.
+Net::LibIDN2, Pg::Notify and DBIish::Transaction probably fail the same way and
+are not yet confirmed. Reinstall those formulae before the next sitting, or
+this cluster will be counted again.
+
+**None of the other 42 is new in v5.9.0.** All 42 were run through a v5.8.0
+build against a copy of the same store, and none passes there either: they
+broke somewhere between v5.0.0 and v5.8.0, and every gate in between missed
+them. The clusters worth a bisect:
+
+- `Invalid typename 'LanguageTaggish'`: Intl::UserLanguage,
+  Intl::Number::Plural, IntlPromptYesNo.
+- `No such method 'year' for invocant of type 'Instant'`: Datetime::Math,
+  DateTime::Math, DateTime::Utils.
+- A parse error compiling Math::Fraction: Astro::Utils, DateTime::Julian.
+- `.raku` on a type object: Hash::Ordered, Map::Ordered.
+- Parse errors in Operator::feq and Geo::WellKnownBinary; Operator::DynvarOr's
+  `Variable '$a' is not declared`; Geo::Region's missing `&World`; OO::Actors'
+  `await` of a Str; List::Utils' `expected Positional but got Seq`;
+  Pod::Utils and Pod::Utilities on Pod tables; PDF::Grammar; Date::Discordian.
+- ForwardIterables and ReverseIterables now time out.
+
+### What the sweep's own instrument got wrong, a third time
+
+**One dependency took the load to 95.** Alien::Libduckdb (first released
+2026-10-26) builds DuckDB from source with `cmake --build … --parallel 10`, and
+seeding DB::DuckDB pulled it in. Killing the compiler is not enough: the build
+hook starts it again, so the `rakupp install` above it has to go too. The four
+dists that need it (Alien::Libduckdb, DB::DuckDB, Red::Driver::DuckDB,
+App::DuckETL) were taken out of the seed list and the shards, and a guard
+killed any DuckDB build the sweep started anyway. App::DuckETL had already run
+and its `other` row was dropped. None of the four was in the 2026-09-29 index,
+so the comparison above is unaffected. Measuring them needs a build budget of
+its own, not the sweep's 120 s.
+
+**`pick-fresh.raku --top=N` pads past the end of the index** with undefined
+rows when N is larger than the dist count; pass the count it reports.
+`rank-ecosystem.raku --top=N` (battery repo) does the same. Both tools also
+take options only before their positional, as `sweep-fresh.raku` does.
+
+The Rakudo figure to compare against is unchanged: 1,791 of 2,529 on
+2026-09-16 ([RAKUDO-BASELINE-2026-09-16](ecosweep/RAKUDO-BASELINE-2026-09-16.md));
+the baseline was not re-run.
