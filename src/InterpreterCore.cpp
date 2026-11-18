@@ -1878,8 +1878,9 @@ struct SmallPtrVec {
 struct ScoreVec {
     static thread_local std::vector<std::vector<int>> pool;
     std::vector<int> v;
-    ScoreVec() { if (!pool.empty()) { v = std::move(pool.back()); pool.pop_back(); } }
-    ~ScoreVec() { if (pool.size() < 16) { v.clear(); pool.push_back(std::move(v)); } }
+    // (leased only by a dispatch that scores: one the cache answers uses neither vector)
+    bool lease() { if (!v.capacity() && !pool.empty()) { v = std::move(pool.back()); pool.pop_back(); } return true; }
+    ~ScoreVec() { if (v.capacity() && pool.size() < 16) { v.clear(); pool.push_back(std::move(v)); } }
 };
 thread_local std::vector<std::vector<int>> ScoreVec::pool;
 
@@ -6465,6 +6466,7 @@ bool Interpreter::paramWherePasses(const Value& cand, const Param& p, const Valu
         cand.code()->closure ? cand.code()->closure : tctx().cur;
     // a `where` that reads nothing per call: its Code, built once
     if (const Value* wc = staticWhereCode(p, params, whereScope)) {
+        if (const int q = whereQuick(p, wv); q >= 0) return q != 0;   // `where * > 0` of an Int (InterpreterCalls.cpp)
         try { return boolify(callCallable(*wc, ValueList{wv})); } catch (...) { return false; }
     }
     auto env = makeSlabShared<Env>(); env->parent = whereScope;
@@ -8623,7 +8625,7 @@ Value Interpreter::callCallableRaw(const Value& codeVal, ValueList args, const s
             const Value* cached = visited.empty() && c.dispatchCache.p.load(std::memory_order_relaxed)
                 ? dispatchCacheLookup(c, nullptr, as, &wherePattern, true) : nullptr;
             if (cached) { if (cached != dispatchToBuiltin()) { best = cached; bestScore = 0; } }   // (else: no candidate)
-            else
+            else if (bestS.lease() && vecS.lease())
             for (auto& cand : c.cold().candidates) {
                 if (cand.code() && (cand.code()->ci().isProto || cand.code()->ci().isProtoBody))
                     continue; // the proto defines the group; it is not a candidate
@@ -10402,7 +10404,7 @@ bool Interpreter::callPlainMethod(const Value& codeVal, const Value& self, Value
     Callable& c = *codeVal.code();
     signed char shape = c.ci().plainMeth; if (shape < 0) shape = plainMethodShape(c);   // (decided once: PlainMethod.cpp)
     const size_t np = c.ci().params ? c.ci().params->size() : 0;
-    if (!shape || args.size() != np || (shape == 3 && !whereVerified) || self.t != VT::Object || !self.obj() ||
+    if (!shape || args.size() != np || self.t != VT::Object || !self.obj() ||
         rakupp::prof::on || anyRevSwitch_ || tcx.topicWriteback || tcx.pendingRwSlots || tcx.pendingArgWriter || tcx.noAutothread ||
         tcx.loopPhaserCtl || tcx.forceRoutineFrame || !staticEnvs_.empty() || !c.cold().wrappers.empty())
         return false;
@@ -10411,7 +10413,8 @@ bool Interpreter::callPlainMethod(const Value& codeVal, const Value& self, Value
     for (size_t i = 0; i < np; i++) {   // callCallableRaw's test of a plain sub's arguments
         const Value& a = args[i];
         if (isNamedArg(a) || (a.t == VT::Array && isJunction(a)) || isMuTypeObject(a) || (a.t == VT::Str && !a.hashKind.empty()) ||
-            (shape >= 2 && !leanArgFits(a, (*c.ci().params)[i].leanType)))
+            (shape >= 2 && !leanArgFits(a, (*c.ci().params)[i].leanType)) ||   // …and a `where` run by the dispatch, or one whereQuick passes
+            (shape == 3 && !whereVerified && !plainWherePasses(c, (*c.ci().params)[i], a, tcx)))
             return false;
     }
     if (rwArgs) for (auto& ae : *rwArgs) if (ae && ae->kind == NK::ListExpr && static_cast<const ListExpr*>(ae.get())->parenned) return false;
@@ -10686,7 +10689,7 @@ Value Interpreter::invokeMethod(const Value& codeVal, const Value& self, ValueLi
             const Value* cached = visited.empty() && c.dispatchCache.p.load(std::memory_order_relaxed)
                 ? dispatchCacheLookup(c, &selfCopy, as, &wherePattern) : nullptr;
             if (cached) { best = cached; bestScore = 0; }
-            else
+            else if (bestS.lease() && vecS.lease())
             for (auto& cand : c.cold().candidates) {
                 if (cand.code() && (cand.code()->ci().isProto || cand.code()->ci().isProtoBody))
                     continue; // the proto defines the group; it is not a candidate
@@ -10901,12 +10904,11 @@ Value Interpreter::invokeMethod(const Value& codeVal, const Value& self, ValueLi
             redispatchStack().pop_back();
             return r;
         };
-        std::function<Value(ValueList)> dispatch = [&dispatchImpl](ValueList as) -> Value {
-            return dispatchImpl(dispatchImpl, std::move(as));
-        };
-        if (const Value* pb = protoBodyOf(c))
+        if (const Value* pb = protoBodyOf(c)) {
+            std::function<Value(ValueList)> dispatch = [&dispatchImpl](ValueList as) -> Value { return dispatchImpl(dispatchImpl, std::move(as)); };
             return callProtoBodyMethod(*pb, selfCopy, dispatch, std::move(args), rwArgs);
-        return dispatch(std::move(args));
+        }
+        return dispatchImpl(dispatchImpl, std::move(args));
     }
     if (c.ci().builtin) { // native-codegen method: receives self as the first argument
         ValueList a2; a2.reserve(args.size() + 1);

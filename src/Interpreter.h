@@ -5345,6 +5345,8 @@ private:
     Value evalBinary(Binary* b);
     // a `where`'s Code, built once for a declaration scope, or null (staticWhereCode)
     const Value* staticWhereCode(const Param& p, const std::vector<Param>& sig, const std::shared_ptr<Env>& scope);
+    bool plainWherePasses(const Callable& c, const Param& p, const Value& arg, ExecContext& tcx);   // callPlainMethod's test of a `where` parameter
+    static int whereQuick(const Param& p, const Value& v);   // …and `where * > 0` of a plain Int, without calling it: 1, 0, or -1 (ask the Code)
     static Value binaryFastHandler(Interpreter& I, Expr* e);   // a Binary's compiled fast shape
     static Value unaryNegHandler(Interpreter& I, Expr* e);     // `-$x`'s, on a plain lexical
     bool fusedIntAssign(Binary* b, Value* slot);   // `$x = $a op $b` on Ints, into the slot

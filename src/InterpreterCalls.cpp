@@ -5139,7 +5139,46 @@ static bool whereReadsStatic(const Expr* e, const std::vector<Param>& sig, bool 
 }
 
 namespace {
-struct WhereCodeCache { const Env* scope; Value code; };
+// (cmp, lit, op: the `where` is `* OP <Int literal>`, a comparison whereQuick answers for a plain Int)
+struct WhereCodeCache { const Env* scope; Value code; signed char cmp = 0; long long lit = 0; const std::string* op = nullptr; };
+}
+// `where * > 0`, `where * == 1`, `where 0 <= *`: the comparison as a number
+// 1-6 (< <= > >= == !=, the argument on the left) and the literal, or 0.
+static signed char whereCmpShape(const Expr* e, long long& lit, const std::string*& op) {
+    if (!e || e->kind != NK::Binary) return 0;
+    auto* b = static_cast<const Binary*>(e);
+    static const char* const ops[] = {"<", "<=", ">", ">=", "==", "!="};
+    static const signed char flipped[] = {3, 4, 1, 2, 5, 6};   // `0 < *` is `* > 0`
+    signed char k = 0;
+    for (int i = 0; i < 6; i++) if (b->op == ops[i]) k = (signed char)(i + 1);
+    if (!k || !b->lhs || !b->rhs) return 0;
+    auto star = [](const Expr* x) {
+        return x->kind == NK::Whatever && !static_cast<const WhateverExpr*>(x)->hyper &&
+               !static_cast<const WhateverExpr*>(x)->curryClosed;
+    };
+    auto intLit = [](const Expr* x) { return x->kind == NK::IntLit && static_cast<const IntLit*>(x)->big.empty(); };
+    const bool left = star(b->lhs.get()) && intLit(b->rhs.get());
+    if (!left && !(intLit(b->lhs.get()) && star(b->rhs.get()))) return 0;
+    lit = static_cast<const IntLit*>(left ? b->rhs.get() : b->lhs.get())->v;
+    op = &b->op;
+    return left ? k : flipped[k - 1];
+}
+// What such a `where` says of `v`, for a plain machine Int: what the Code
+// staticWhereCode built answers (its applyArith), without the call. -1 for any
+// other `where` or value, or while an operator of that spelling may be shadowed.
+int Interpreter::whereQuick(const Param& p, const Value& v) {
+    auto* c = static_cast<const WhereCodeCache*>(p.whereCode.get());
+    if (!c || !c->cmp || v.t != VT::Int || v.big() || !v.hashKind.empty() || !v.enumName().empty() ||
+        !v.enumType().empty() || (g_lexShadowMask.load(std::memory_order_relaxed) && lexShadowPossible(*c->op)))
+        return -1;
+    switch (c->cmp) {
+        case 1: return v.i < c->lit;
+        case 2: return v.i <= c->lit;
+        case 3: return v.i > c->lit;
+        case 4: return v.i >= c->lit;
+        case 5: return v.i == c->lit;
+        default: return v.i != c->lit;
+    }
 }
 
 // The Code a parameter's `where` makes, built once for the declaration scope
@@ -5166,9 +5205,22 @@ const Value* Interpreter::staticWhereCode(const Param& p, const std::vector<Para
         return nullptr;
     }
     auto* mine = new WhereCodeCache{scope.get(), std::move(cv)};
+    // (a WhateverCode with no operator captured where it was written: whateverInfixCurry)
+    if (mine->code.code()->ci().isWhateverCode) {
+        mine->cmp = whereCmpShape(p.whereExpr.get(), mine->lit, mine->op);
+        if (mine->cmp && g_lexInfixLookup && g_lexInfixLookup(*mine->op)) mine->cmp = 0;
+    }
     auto* won = static_cast<const WhereCodeCache*>(p.whereCode.publish(mine));
     if (won != mine) delete mine;
     return won->scope == scope.get() ? &won->code : nullptr;
+}
+
+// callPlainMethod's question of a parameter no dispatch has judged: no
+// `where` on it, or one whereQuick passes for this argument. Anything else —
+// a `where` that fails, or one that has to be called — is the full binder's.
+bool Interpreter::plainWherePasses(const Callable& c, const Param& p, const Value& arg, ExecContext& tcx) {
+    if (!p.whereExpr) return !p.hadWhere;
+    return staticWhereCode(p, *c.ci().params, c.closure ? c.closure : tcx.cur) && whereQuick(p, arg) == 1;
 }
 
 // --- the multi-dispatch cache (INTERP-SPEED-PLAN tier 1, item 4) ------------
