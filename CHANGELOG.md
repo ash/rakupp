@@ -22,7 +22,8 @@ declared tests and **219,395 of 219,395** with skip and todo left out, in
 three runs alike on 2dfa37bf, and again on 8378f148 and a3a0fb5d after the
 two performance fixes below, every run with the same file list as v5.7.0's
 (docs/status/roast-lists/v5.9.0.list). Roast is `cf28a323c`, v5.7.0's. The
-local suite: **all 2,366 checks** on 2dfa37bf and on 8378f148.
+local suite: **all 2,366 checks** on 2dfa37bf and on 8378f148, and all 2,367
+with the installer fix of issue #272, which touches no code Roast runs.
 
 Performance: no kernel does more than 2.8% more work than v5.8.0. perf-guard
 found two regressions, and both are fixed. `privmeth` was 6.2% slower than
@@ -767,6 +768,15 @@ compiler and slim differentials beyond what CI runs, and a second toolchain.
 - **battery-scan, battery-use-smoke and cpp-build-check run again**
   (a213ccad): each passed `:env` a List of Pairs, which no longer binds to
   `:%env`, so the battery scan died on its first file.
+- **`rakupp install` counts a module the engine answers as installed**
+  (issue #272): a dist declaring `"depends": ["Data::Native"]` installed, but
+  the plan said `skipped: Data::Native — not in the ecosystem index` and the
+  run closed with a warning that a module was not installed. Data::Native,
+  JSON::Native, CSV::Native, Digest::Native and Compress::Zlib::Native are
+  now satisfied by the engine when no dist of that name is published, as long
+  as the dependency asks for no newer version than the engine implements.
+  Declaring the dependency stays the honest META: on Rakudo it makes zef stop
+  early.
 
 ### Left open
 

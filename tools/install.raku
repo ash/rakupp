@@ -647,6 +647,19 @@ sub rea-index() {
 my constant @CORE-NAMES = <Test NativeCall lib strict v6 v6.c v6.d v6.e perl6 Perl6
                            experimental newline MONKEY MONKEY-TYPING nqp>;
 
+# The modules the engine answers from its own primitives, with the interface
+# version each implements and one primitive that shows the family is built in.
+# Keep in step with kDataNativeModules in src/InterpreterModules.cpp. The probe
+# is dynamic, like with-repo-lock's, so other engines claim none of them.
+my constant %ENGINE-MODULES =
+    'Data::Native' => ('0.0.2', 'from-json'), 'JSON::Native' => ('0.2.0', 'from-json'),
+    'CSV::Native' => ('0.0.1', 'from-csv'), 'Digest::Native' => ('0.0.1', 'sha256'),
+    'Compress::Zlib::Native' => ('0.0.1', 'compress');
+sub engine-answers(Str $name, Str $ver --> Bool) {
+    my $m = %ENGINE-MODULES{$name} // return False;
+    ver-ok($m[0], $ver) && (try ::('&rakupp-' ~ $m[1])) ~~ Callable
+}
+
 # Every index entry providing `name` (as dist name or module), constraints
 # applied, newest version first.
 sub candidates(@index, %want) {
@@ -782,6 +795,10 @@ sub resolve(@index, @wants, %notes, Str :$prefix = '') {
             }
         }
         if !@c {
+            # A module the engine answers itself — Data::Native and its kin —
+            # is satisfied when no dist is published under its name (issue
+            # #272). Declaring it is honest: zef on Rakudo stops early on it.
+            next if engine-answers(%want<name>, %want<ver>);
             unless %planned{%want<name>} {   # a planned dist also PROVIDES names
                 %notes{%want<name>} = $floor
                     ?? "nothing at {%want<ver>} in the index, the archive or the store"
