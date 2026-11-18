@@ -13393,12 +13393,11 @@ Value Interpreter::evalAssign(Assign* a, bool sink) {
         if (sv != 0) {
             if (sv < 0) {
                 signed char cls = 0;
-                // `my $x = f() // next`: no lane — the full path guards the
-                // store, so the `next` need not throw (coopStoreShape)
+                // `my $x = f() // next`: no lane — the full path guards the store, so the `next` need not throw (coopStoreShape)
                 if (coopStoreShape(a)) {}
                 else if (a->target && a->target->kind == NK::VarExpr && !a->userOp && opEq(a->op, "=") &&
-                         plainDeclLane(static_cast<VarExpr*>(a->target.get()), a->value.get()))
-                    cls = 6;
+                         (cls = plainDeclLane(static_cast<VarExpr*>(a->target.get()), a->value.get())) != 0)
+                    {}   // 6, or 16 for a method call on the right
                 else if (a->target && a->target->kind == NK::VarExpr && !a->userOp && opEq(a->op, "=") &&
                          nativeDeclShape(static_cast<VarExpr*>(a->target.get()), a->value.get()))
                     cls = 9;
@@ -13447,6 +13446,7 @@ Value Interpreter::evalAssign(Assign* a, bool sink) {
                     return slotOut(slot, sink);
                 }
             }
+            else if (sv == 16) { if (tctx().heldCallOf != a->value.get()) return declCallLane(a, sink); }
             else if (sv == 6) {
                 if (Value* slot = declLane(a)) return sink ? Value::any() : *slot;
             }

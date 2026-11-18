@@ -2,6 +2,7 @@
 //
 // One of the parts InterpreterParts.h lists; what they share is declared there.
 #include "InterpreterParts.h"
+#include "PlainValue.h"
 
 namespace rakupp {
 bool argIsNeverContainer(const Expr* e) {
@@ -5709,8 +5710,9 @@ bool Interpreter::declLaneTernary(Ternary* t, Value& out) {
 // The declaration lane's target (Assign::simpleSlot 6): `my $name` with
 // nothing on it that lvalue's declaration arm or the full path's store would
 // act on — no type, coercion, default, `where`, smiley, trait, shape or
-// container type — and a right side declLaneRhs can evaluate.
-bool Interpreter::plainDeclLane(const VarExpr* v, const Expr* rhs) {
+// container type — and a right side declLaneRhs can evaluate (6), or a method
+// call (16: declCallLane).
+signed char Interpreter::plainDeclLane(const VarExpr* v, const Expr* rhs) {
     // (`$` and a letter or underscore: no twigil, no special variable)
     if (!v->declare || v->d().declScope != "my" || v->name.size() < 2 || v->name[0] != '$' ||
         !(nameLetterAt(v->name, 1) || v->name[1] == '_' || anonScalarSlot(v->name)) || v->name == "$_" || v->synthTopic || v->heredocOuter || v->d().stateInParens ||
@@ -5719,8 +5721,60 @@ bool Interpreter::plainDeclLane(const VarExpr* v, const Expr* rhs) {
         v->d().declHasWhere || v->d().declMyConstant || v->pkgSymbol || !v->d().containerIs.empty() ||
         v->d().declShape || v->d().declTypeExpr || v->d().namedBind || v->viaPseudoPkg || v->processScoped ||
         v->nativeStrRead || v->nativeIntRead || v->nativeNumRead)
-        return false;
-    return rhs && declLaneRhsShape(rhs);
+        return 0;
+    if (rhs && rhs->kind == NK::MethodCall) return 16;
+    return rhs && declLaneRhsShape(rhs) ? 6 : 0;
+}
+
+// `my $p = Point.new(…)`, `my $n = $obj.count` on the declaration lane
+// (Assign::simpleSlot 16). The call is made once, here. A plain value it
+// answers (plainStoredValue, PlainValue.h) is stored as declLane stores one: what lvalue's
+// declaration arm and the full path's store come to for an untyped, untraited
+// `$`. Any other answer, or a name already bound to a container, is held
+// (ExecContext::heldCall) while the full path runs, which takes it where it
+// would have made the call. RAKUPP_DECLCALL_CHECK=1 sends every such
+// declaration down the full path and reports a slot the lane would have
+// filled differently, or a call the full path did not ask for.
+Value Interpreter::declCallLane(Assign* a, bool sink) {
+    // (its value a file's path: the reports are appended there, not written to stderr)
+    static FILE* const report = [] {
+        const char* p = std::getenv("RAKUPP_DECLCALL_CHECK");
+        FILE* f = p && p[0] == '/' ? std::fopen(p, "a") : nullptr;
+        return p ? (f ? f : stderr) : nullptr;
+    }();
+    const bool check = report != nullptr;
+    ExecContext& t = tctx();
+    auto* tv = static_cast<VarExpr*>(a->target.get());
+    Value rv = eval(a->value.get());
+    Env* de = t.cur.get();
+    while (de->loopFrame && de->parent) de = de->parent.get();
+    Value* have = de->localRaw(tv->name);
+    const bool plain = plainStoredValue(rv) && !(have && (have->isCell() || (have->t == VT::Hash && have->hashKind == "Proxy")));
+    if (plain && !RAKUPP_UNLIKELY(check)) {
+        rv.readonly = rv.immutableBind = false;
+        Value& slot = de->define(tv->name, std::move(rv));
+        return sink ? Value::any() : slot;
+    }
+    Value want;
+    if (plain) { want = rv; want.readonly = want.immutableBind = false; }
+    // (a hold of an outer declaration's is put back: its full path has not asked yet)
+    struct Hold {
+        ExecContext& t; const Expr* of; Value v;
+        ~Hold() { t.heldCallOf = of; t.heldCall = std::move(v); }
+    } hold{t, t.heldCallOf, std::move(t.heldCall)};
+    t.heldCall = std::move(rv);
+    t.heldCallOf = a->value.get();
+    Value out = evalAssign(a, sink);
+    if (RAKUPP_UNLIKELY(check)) {
+        const Value* got = de->localRaw(tv->name);
+        if (t.heldCallOf == a->value.get())
+            fprintf(report, "[declcall] %s:%d: the full path never asked for the call of `my %s = …`\n", srcFile_.c_str(), a->line, tv->name.c_str());
+        else if (plain && !(got && got->sameRep(want)))
+            fprintf(report, "[declcall] %s:%d: `my %s = …` differs: the lane stores %s, the full path %s\n", srcFile_.c_str(), a->line,
+                    tv->name.c_str(), want.typeName().c_str(), got ? got->typeName().c_str() : "no slot");
+        std::fflush(report);
+    }
+    return out;
 }
 
 

@@ -464,6 +464,7 @@ struct Assign : Expr {
     // lane, subject to the per-activation slot checks. Decided once.
     // 6 = `my $x = EXPR` with no type, trait or constraint on the
     // declaration and an EXPR that has no side effects (declLaneRhs).
+    // 16 = the same declaration with a method call on the right (declCallLane).
     DecidedOnce<signed char> simpleSlot{-1};
     // a compound assignment to a CONSTRAINED `$` variable is type-checked
     // (Interpreter::compoundCheckSlot): -1 undecided, 0 no, 1 nominal type,

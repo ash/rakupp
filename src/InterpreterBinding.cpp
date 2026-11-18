@@ -9517,7 +9517,7 @@ Value Interpreter::leanMethodCall(MethodCall* mc) {
 Value Interpreter::fatalCheckedMethodCall(Expr* e) {
     auto* mc = static_cast<MethodCall*>(e);
     if (mc->leanCall < 0) mc->leanCall = leanCallShape(mc) ? 1 : 0;
-    ExecContext& t = tctx();
+    ExecContext& t = tctx(); if (RAKUPP_UNLIKELY(t.heldCallOf == e)) { t.heldCallOf = nullptr; return std::move(t.heldCall); }   // (declCallLane's)
     const bool lean = mc->leanCall == 1 && !t.lazyChainNode && mc->lazyChain == 0 && !mc->lazyTail &&
                       t.catchFrames.empty() && !(t.bindRawTails && opEq(mc->method, "value"));
     Value r = lean ? leanMethodCall(mc) : evalMethodCallExpr(e);

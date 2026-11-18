@@ -2028,6 +2028,11 @@ struct ExecContext {
     // …and topicWriteback's slot with the element type a write to it answers
     // to (elemAliasGuard), honoured for that slot only. Last, as the two above.
     std::pair<const Value*, const Value*> topicWritebackGuard{};
+    // A declaration's call on its right side, already made (declCallLane) and
+    // held for the full path, whose evaluation of that node takes it instead
+    // of calling again (fatalCheckedMethodCall). Null but for that window.
+    const Expr* heldCallOf = nullptr;
+    Value heldCall;
 };
 
 // Backs a lazy list (an infinite `… … *` sequence, or `.map` over one). The Value
@@ -5345,7 +5350,8 @@ private:
     bool typedTreeValue(Binary* b, Value& out);    // that subtree's value, or false (nothing evaluated)
     int typedTreeBool(Binary* b);                  // a comparison subtree as a condition: 1/0, or -1
     bool fusedTypedAssign(Binary* b, Value* slot); // `$x = <typed subtree>`, into the slot
-    static bool plainDeclLane(const VarExpr* v, const Expr* rhs);   // `my $x = EXPR` takes the declaration lane
+    static signed char plainDeclLane(const VarExpr* v, const Expr* rhs);   // `my $x = EXPR` takes a declaration lane: 6, 16 or 0
+    Value declCallLane(Assign* a, bool sink);      // …the one for a method call on the right (16): the assignment's value
     static bool packedStoreShape(const Assign* a);   // `@a[$i] = EXPR` may take the packed-store lane
     bool packedElemStore(Assign* a, Value& out);   // …and takes it, when @a is packed (PACKED-ARRAY-PLAN)
     static bool packedIndexShape(const Index* ix);   // `@a[$i]` / `@a[3]` / `@a[$i + 1]`: the packed lanes' 1-D subscript

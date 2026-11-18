@@ -1480,11 +1480,12 @@ static void swapExecContext(ExecContext& a, ExecContext& b) {
     swap(a.loopCtlLabel, b.loopCtlLabel); swap(a.labelLoops, b.labelLoops);
     swap(a.uninitName, b.uninitName); swap(a.bindingParams, b.bindingParams); swap(a.keepListOf, b.keepListOf); swap(a.lvalueListSlot, b.lvalueListSlot);
     swap(a.compiledTry, b.compiledTry); swap(a.evalRoutineFrame, b.evalRoutineFrame); swap(a.lastLvalueElemArr, b.lastLvalueElemArr);
+    swap(a.heldCallOf, b.heldCallOf); swap(a.heldCall, b.heldCall);
     // (framePool is not listed, deliberately: it is the OS thread's scratch —
     // a free list of unused frames — and either side may use it)
 }
 #if defined(__APPLE__) && defined(__aarch64__) && defined(_LIBCPP_VERSION) && !defined(RAKUPP_IN_AUDIT) && !defined(RAKUPP_STR_CENSUS)
-static_assert(sizeof(ExecContext) == (RAKUPP_BODY_HANDLES ? 1392 : 1456),
+static_assert(sizeof(ExecContext) == (RAKUPP_BODY_HANDLES ? 1432 : 1512),
               "ExecContext changed: list the new member in swapExecContext (Interpreter.cpp), "
               "then update this size");
 #endif
