@@ -30,6 +30,7 @@
 #pragma once
 
 #include "IntOps.h"
+#include "SlabPool.h"
 
 #include <atomic>
 #include <cstdint>
@@ -76,11 +77,14 @@ class ChunkList {
     }
     size_t capOf(size_t k) const { return k == 0 ? cap0_ : size_t(1) << (shift_ + k); }
     T* chunk(size_t k) const { return k == 0 ? first_ : more_[k - 1]; }
-    static T* allocChunk(size_t cap) { return static_cast<T*>(::operator new(cap * sizeof(T))); }
+    // A chunk of up to SlabPool's largest block comes from the thread's slab
+    // (an object's attributes, a small hash's first entries): the allocator
+    // was a malloc and a free per object made, and per small hash.
+    static T* allocChunk(size_t cap) { return static_cast<T*>(SlabPool::alloc(cap * sizeof(T))); }
     void release() {
         for (size_t i = n_; i-- > 0; ) (*this)[i].~T();
-        if (first_) ::operator delete(first_);
-        for (T* c : more_) ::operator delete(c);
+        if (first_) SlabPool::dealloc(first_, capOf(0) * sizeof(T));
+        for (size_t k = 0; k < more_.size(); k++) SlabPool::dealloc(more_[k], capOf(k + 1) * sizeof(T));
         first_ = nullptr; more_.clear(); n_ = 0;
     }
 
