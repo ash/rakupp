@@ -5351,6 +5351,8 @@ private:
     int typedTreeBool(Binary* b);                  // a comparison subtree as a condition: 1/0, or -1
     bool fusedTypedAssign(Binary* b, Value* slot); // `$x = <typed subtree>`, into the slot
     static signed char plainDeclLane(const VarExpr* v, const Expr* rhs);   // `my $x = EXPR` takes a declaration lane: 6, 16 or 0
+    bool siteMethodCall(MethodCall* mc, const Value& inv, Value& out);   // `$obj.name(…)` by what the site knows of the class (SiteCache.cpp)
+    void siteMethodFill(const MethodCall* mc, const Value& inv, SiteEntry& e, uint64_t gen);
     bool attrReadLane(const VarExpr* ve, ExecContext& tc, Value& out);   // `$!x` / `$.x` read from its slot (SiteCache.cpp)
     Value declCallLane(Assign* a, bool sink);      // …the one for a method call on the right (16): the assignment's value
     static bool packedStoreShape(const Assign* a);   // `@a[$i] = EXPR` may take the packed-store lane

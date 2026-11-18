@@ -9484,6 +9484,7 @@ static bool leanCallShape(const MethodCall* mc) {
 Value Interpreter::leanMethodCall(MethodCall* mc) {
     if (mc->bang) requirePrivateCallScope(mc->method);
     Value inv = eval(mc->inv.get());
+    if (inv.t == VT::Object) { if (Value r; siteMethodCall(mc, inv, r)) return r; }   // (SiteCache.cpp)
     if (mc->args.empty() && !mc->bang && inv.t == VT::Object && inv.obj() && inv.obj()->cls &&
         !(mc->method[0] >= 'A' && mc->method[0] <= 'Z'))
         if (const Value* slot = plainAccessorSlot(inv, mc->method)) {
@@ -9497,8 +9498,7 @@ Value Interpreter::leanMethodCall(MethodCall* mc) {
         (inv.t == VT::Str && (inv.hashKind == "Buf" || inv.hashKind == "Blob" || inv.hashKind == "CArray")) ||
         (inv.t != VT::Object && !builtinExt_.empty()) || uninitMethodShape(mc, inv);
     if (special) return evalMethodCallExpr(mc, &inv);
-    struct RwInvG { ExecContext& t; Expr* prev; ~RwInvG() { t.rwInvocantExpr = prev; } }
-        rwInvG{tctx(), tctx().rwInvocantExpr};
+    struct RwInvG { ExecContext& t; Expr* prev; ~RwInvG() { t.rwInvocantExpr = prev; } } rwInvG{tctx(), tctx().rwInvocantExpr};
     tctx().rwInvocantExpr = mc->inv.get();
     ValueList args = evalArgs(mc->args);
     if (mc->bang) checkPrivatePermission(mc->method);

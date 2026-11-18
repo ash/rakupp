@@ -696,6 +696,7 @@ struct MethodCall : Expr {
     // they test — which fatalCheckedMethodCall takes without them (leanCallShape).
     // -1 undecided, 0 no, 1 yes (decided once, from the syntax)
     mutable DecidedOnce<signed char> leanCall{-1};
+    mutable SiteCache site;   // …and what such a call has learned of its invocants' classes (Interpreter::siteMethodCall)
     MethodCall(): Expr(NK::MethodCall) {}
 };
 
