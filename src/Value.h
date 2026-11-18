@@ -2451,6 +2451,11 @@ struct ClassInfo {
     // …whether a public attribute's accessor may be answered straight after
     // the user-method lookup (plainAccessorClass in Builtins.cpp), the same way
     mutable DecidedOnce<uint64_t> plainAccKey{0};
+    // …and the default construction's plan for a plain class (PlainFill.h),
+    // with the generation + 1 it was last found unchanged under (0: not built)
+    mutable PublishedOnce<const struct PlainFill*> plainFill{nullptr};
+    mutable PublishedOnce<uint64_t> plainFillKey{0};
+    mutable std::vector<std::shared_ptr<const void>> plainFillOwned;   // …and every plan it has had, freed with it
     // …and whether it declares ACCEPTS (typeObjectUserAccepts), the same way
     mutable DecidedOnce<uint64_t> userAcceptsKey{0};
     // Names composed in from a ROLE that are SUBMETHODS. They stay in `methods`

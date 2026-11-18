@@ -2,6 +2,7 @@
 //
 // One of the parts BuiltinsParts.h lists; what they share is declared there.
 #include "BuiltinsParts.h"
+#include "PlainFill.h"
 #include "Sandbox.h"
 #include "ChildSignals.h"
 
@@ -6232,8 +6233,10 @@ Value Interpreter::methodCall(const Value& inv, const std::string& m, ValueList 
                     if (kind == 2) return constructDefault(cit->second, args, std::string());
                     auto od = makePayload<ObjectData>();
                     od->cls = cit->second;
-                    runAttrDefaults(od, cit->second, args);
+                    const PlainFill* pf = plainFillPlan(ci);   // (PlainFill.h: the class's attributes, planned once)
+                    if (!plainFillRun(*pf, *od, ci, args)) runAttrDefaults(od, cit->second, args);
                     Value self = Value::object(od);
+                    if (pf->noHooks) return self;
                     runBuildChain(&ci, self, args);
                     maybeRegisterDestroy(self);
                     return self;
