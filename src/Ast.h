@@ -1,5 +1,6 @@
 #pragma once
 #include "AsciiCtype.h"
+#include "SiteCache.h"
 #include <atomic>
 #include <cstdint>
 #include <iosfwd>
@@ -361,6 +362,10 @@ struct VarExpr : Expr {
     //   attrBare — `$!x` / `@.x` → "x", the key attrs is stored under
     //   attrTwin — `@!x` → "@x", the sigil-disambiguated twin the paths try first
     std::string attrBare, attrTwin;
+    // a `$!x` / `$.x` read's lane (Interpreter::attrReadLane): -1 undecided, 0 none,
+    // 1 `$!x`, 2 `$.x`; and what it has learned of the classes read there
+    mutable DecidedOnce<signed char> attrLane{-1};
+    mutable SiteCache attrSite;
     // Idempotent, and called from BOTH places a VarExpr gets its name: the
     // constructor, and the AST-cache reader — which default-constructs the node
     // and assigns `name` afterwards, so a deserialised node would otherwise carry

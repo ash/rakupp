@@ -121,6 +121,7 @@ public:
     }
     size_t count(std::string_view key) const { return x_ ? x_->count(key) : 0; }
     Value& operator[](std::string_view key) { return x()[key]; }
+    Value* findPre(std::string_view key, uint64_t h) { return x_ ? x_->findPre(key, h) : nullptr; }   // by a hash made once
     // a key known absent, with its hash (ValueHash::keyHash): no lookup first
     Value& addFresh(std::string_view key, uint64_t h, Value v) { return x().addFresh(key, h, std::move(v)); }
     Value& at(std::string_view key) {

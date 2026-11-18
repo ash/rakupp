@@ -2356,6 +2356,9 @@ struct NcLayoutSlot {
 struct AttrLayout;   // the keys an instance stores its declared attributes under (AttrLayout.h)
 struct ClassInfo {
     std::string name;
+    // its number, with its address what a SiteCache knows a class by: a later
+    // class at the same address has another (a copy keeps its original's)
+    uint64_t serial = nextClassSerial();
     // A ROLE composing a role that declares the same attribute: the conflict
     // its pun, or a class composing it, reports (S14-roles/conflicts.t)
     std::string roleAttrConflict;

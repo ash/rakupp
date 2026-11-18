@@ -30331,8 +30331,8 @@ Value Interpreter::eval(Expr* e) {
                     }
                     if (Value r; engineProxySlotRead(*this, p, r)) return r;
                 }
-                else if (ve->name.size() > 1 &&
-                         (nameLetterAt(ve->name, 1) || ve->name[1] == '_')) {
+                else if (ve->attrLane != 0) { if (Value r; attrReadLane(ve, tc, r)) return r; }   // `$!x`, `$.x` (SiteCache.cpp)
+                else if (ve->name.size() > 1 && (nameLetterAt(ve->name, 1) || ve->name[1] == '_')) {
                     if (Value* p = tc.cur->find(ve->name)) {
                         if (!(p->t == VT::Hash && p->hashKind == "Proxy")) {
                             ParStripe rs(*this, p);
