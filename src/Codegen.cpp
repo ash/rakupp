@@ -5762,9 +5762,8 @@ struct Codegen {
             if (rwKvForStmt(f, ind)) return;
             unsupported("a read-write (<->) loop parameter"); // every branch below binds a COPY
         }
-        // …and so does a RAW one: `-> $e is raw` binds the element itself, and
-        // a write through it reaches the array. (A sigilless `-> \e` needs no
-        // check here: a write to a bare name is not compiled natively at all.)
+        // …and so does a RAW one: `-> $e is raw` binds the element itself, and a write through it
+        // reaches the array. (A sigilless `-> \e` is never written natively: no check here.)
         if (!f->destructure) {
             bool raw = false;
             for (size_t k = 0; k < f->vars.size() && k < f->varTraits.size(); k++)
@@ -5773,10 +5772,9 @@ struct Codegen {
             if (raw) unsupported("a raw (`is raw`) loop parameter");
         }
         if (f->destructure) { // for LIST -> ($a, $b) { … } : unpack each element
-            // names live in f->vars, or — when the parser produced a real signature
-            // (ForStmt.params, one param with a sub-signature) — in that sub-signature,
-            // whose named ones (`-> (:$key, :$value)`) bind from the element's accessors,
-            // a Pair's .key, as the interpreter's do (subSigCapture): by position, Nil (#162)
+            // names live in f->vars, or — when the parser produced a real signature (ForStmt.params,
+            // one param with a sub-signature) — in that sub-signature, whose named ones (`-> (:$key,
+            // :$value)`) bind from the element's accessors, as subSigCapture does: by position, Nil (#162)
             std::vector<std::string> names = f->vars;
             const std::vector<Param>* sig = names.empty() && !f->params.empty() ? f->params[0].subSig.get() : nullptr;
             std::string keys;   // (the keys Interpreter::subSigNamedKeys names)
@@ -5800,21 +5798,18 @@ struct Codegen {
             return;
         }
         if (!f->params.empty() && !singleLoopParam(f)) {
-            // `-> $x is copy`, `-> $a, Int $b`, `-> $a, $b?`, `-> *@rest`: a parameter
-            // the plain-name path would drop something from comes as a signature
-            // (Parser's pointyParamNeedsBinding), with no `vars`. Each iteration
-            // binds its chunk through bindParams, as the interpreter does: one
-            // element per positional parameter (one a time for a lone slurpy),
-            // and `$_` stays the outer topic. Binding only `vars` left the names
-            // undeclared, and the C++ did not compile.
+            // `-> $x is copy`, `-> $a, Int $b`, `-> $a, $b?`, `-> *@rest` come as a signature
+            // (Parser's pointyParamNeedsBinding), with no `vars`. Each iteration binds its chunk
+            // through bindParams, as the interpreter does: one element per positional parameter
+            // (one a time for a lone slurpy); `$_` stays the outer topic unless one is named so.
+            // Binding only `vars` left the names undeclared, and the C++ did not compile.
             for (auto& p : f->params) {
                 if (p.named) unsupported("a named loop parameter");
                 if (p.subSig) unsupported("a sub-signature on a loop parameter");
                 if (p.codeSig || p.typeCapture || !p.captureName.empty() || !p.userTraits.empty() || !p.shapeDims.empty())
                     unsupported("a `for` parameter of this form");
             }
-            // (`redo` binds the parameters afresh — a fresh `is copy` — which
-            // loopBody's retry does not)
+            // (`redo` binds the parameters afresh — a fresh `is copy` — which loopBody's retry does not)
             for (auto& st : f->body->stmts)
                 if (stmtHasRedo(st.get())) unsupported("`redo` in a loop with a typed or `is copy` parameter");
             size_t np = 0;
@@ -5825,12 +5820,14 @@ struct Codegen {
             line(ind, "{");
             line(ind + 1, "Value " + lst + " = rtForList(" + ex(f->list.get()) + ");");
             line(ind + 1, "for (size_t " + i + " = 0; rtForHas(" + lst + ", " + i + "); " + i + " += " + n + ") {");
-            // (a loop's element is a VALUE, never a named argument)
-            line(ind + 2, "ValueList __a;");
+            line(ind + 2, "ValueList __a;");   // (a loop's element is a VALUE, never a named argument)
             line(ind + 2, "for (size_t " + k + " = 0; " + k + " < " + n + " && rtForHas(" + lst + ", " + i + " + " + k +
                           "); ++" + k + ") { __a.push_back((*" + lst + ".arr())[" + i + " + " + k + "]); __a.back().namedArg = false; }");
             bindParams(f->params, ind + 2, false);
+            const bool tv = std::any_of(f->params.begin(), f->params.end(), [](const Param& p) { return p.name == "$_"; });
+            if (tv) topics.push_back(mangleVar("$_"));   // `-> $_, $name`: the parameter is the topic
             loopBody(f->body.get(), ind + 2, f->label);
+            if (tv) topics.pop_back();
             line(ind + 1, "}");
             line(ind, "}");
             return;
@@ -5844,7 +5841,10 @@ struct Codegen {
             for (size_t k = 0; k < n; k++)
                 line(ind + 2, declVar(f->vars[k], bindAs(f->vars[k][0], "(rtForHas(" + lst + ", " + i + "+" + std::to_string(k) +
                               ") ? (*" + lst + ".arr())[" + i + "+" + std::to_string(k) + "] : Value::any())")) + ";");
+            const bool tv = std::find(f->vars.begin(), f->vars.end(), "$_") != f->vars.end();
+            if (tv) topics.push_back(mangleVar("$_"));   // (as a signature's `$_` above)
             loopBody(f->body.get(), ind + 2, f->label);
+            if (tv) topics.pop_back();
             line(ind + 1, "}");
             line(ind, "}");
             return;
