@@ -736,8 +736,11 @@ The same items grouped by theme, with a complexity estimate for each:
     why a full dynamic walk skips the frame the body declared it in.
 - [ ] **`--target=js`**: [TRANSPILE-PLAN.md](TRANSPILE-PLAN.md). The corpus
   gate has never been green. Open: the slot-binding half of the container
-  model; `use` refused (exit 5, see V6 P7); `t/js/run.raku` does not pass MAIN
-  arguments; port `Test`; `:nth`/`:x`/`:m`; P5 sites.
+  model; a `use`d module is compiled into the program (since 2026-10-11), but
+  one that is missing or uses something outside the JavaScript core is
+  refused, exit 5 (`use JSON::Fast`: its `is repr`; checked 2026-11-18; see
+  V6 P7); `t/js/run.raku` does not pass MAIN arguments; port `Test`;
+  `:nth`/`:x`/`:m`; P5 sites.
 - [ ] **WASM build**: `rakujs/node-build` is a stale July build. The fallback
   cannot rescue `use`d modules. Switching to `-fwasm-exceptions` is offered,
   not done.

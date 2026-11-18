@@ -42,6 +42,38 @@ machine before any batch is judged against them.*
    `--target=js`. The raku.online module collection lists every distribution
    whose tests pass on Raku.js, and nothing it lists fails there.
 
+### Where the numbers stand, 2026-11-18
+
+Re-measured on the M4 at v5.9.0 + 0444d23b, load about 2.3 (times are best of
+three; memory does not depend on load):
+
+1. **Not met.** `objects-steady` 1.41 s against Rakudo 2026.09's 0.94 (1.51×),
+   `multiwhere-steady` 1.38 against 0.84 (1.64×). Only these two kernels have
+   steady-state variants; the quiet-machine table P0 owes is still owed.
+2. **Met** (P0, 2026-11-05): the #47 driver 0.66× interpreted and 0.39× under
+   `--exe`, Graph's diameter 0.81×.
+3. **Met.** `tools/run-memory.raku`: every row below Rakudo's, the highest
+   objects at 386 against 498 bytes an element (0.78×), Rats 0.54×, hashes
+   0.56×.
+4. **38%, and further from 90% than in September.** 545 of the 1,425 files
+   v5.9.0 passes compile natively (`rakupp --cpp` from the Roast checkout,
+   exit 0), against 773 of 1,189 (65%) on 2026-09-26. Of the 1,178 files both
+   runs measured, 266 that compiled then bundle now and none went the other
+   way before 0444d23b: the `--exe` parity round's refusals keep a program
+   interpreted where native code answered wrongly, EVAL (be3038db) and a class
+   declared in a routine the largest of them. 0444d23b narrowed the EVAL one
+   (525 → 545). The first blocker of each file is in
+   [exe-census-2026-11-18/](../findings/exe-census-2026-11-18/exe-fallback-roast.tsv);
+   P5 lists them.
+5. **Not met.** An `--exe` hello builds in 0.65 s (the plan's whole-build
+   figure was 1.10 s, 0.77 after the precompiled header); a warm
+   `use Cro::HTTP::Router` takes about 130 ms, against the survey's 58 ms on
+   the M3. `precompRead` is as the survey found it (below, P1).
+6. **Not met.** `--target=js` compiles a `use`d module in, and refuses one it
+   cannot find or that uses something outside its core (`use JSON::Fast`:
+   `is repr`). The engine surface, the page side and the collection of P7 are
+   not started.
+
 ---
 
 ## What the survey measured
@@ -525,7 +557,29 @@ In order of evidence per cost:
   - `$=pod`
   - regex with code blocks
 - **Diagnostics:** the fallback note names the construct (no more "NK 24") and
-  gives its line.
+  gives its line. *2026-11-18:* an EVAL's note gives both (0444d23b); the
+  allomorph literal is still "NK 24", and Js.cpp has a node-kind name table
+  the note could share.
+- **The census of 2026-11-18** ([exe-fallback-roast.tsv](../findings/exe-census-2026-11-18/exe-fallback-roast.tsv)),
+  the first construct to bundle in each of the 880 files of the 1,425 that do
+  not compile natively. A file names only its first, so lifting one frees
+  fewer files than its count: 0444d23b cleared EVAL from 132 files and made 20
+  native. A census of every refusal per file would say what each is worth.
+
+  | first blocker | files |
+  |---|---:|
+  | `EVAL`: reads the program's names 72, code built at run time 44, its operators 10, other 7 | 133 |
+  | a class declared inside a routine or block | 92 |
+  | an allomorph literal (reported as "NK 24") | 42 |
+  | `.^methods`, `.^attributes`, `.^lookup` and the rest of the metamodel | 42 |
+  | a sigilless variable inside a routine | 30 |
+  | a prefix operator, mostly `\( )` | 29 |
+  | a declaration used as a sub-expression | 22 |
+  | an EVAL in a routine or loop (Refusals.cpp: the topic) | 21 |
+  | assignment to an unsupported target | 20 |
+  | a role or package | 19 |
+  | `$=pod` and other special variables | 16 |
+  | a parent the program does not declare (`is Cool`), `state`, `.HOW`, a closure writing a captured local, CATCH and phasers | 11–13 each |
 - **Size:** the `--slim` hello went from 4.9 MB to 10.24 MB between v3.14 and
   2026-09-26, and `Interpreter.o` grew by 1.84 MB in six days. P3's type splits
   and a carve-out census are where it comes back ([SLIM-PLAN.md](SLIM-PLAN.md)).
