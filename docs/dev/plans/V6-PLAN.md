@@ -50,6 +50,24 @@ three; memory does not depend on load):
 1. **Not met.** `objects-steady` 1.41 s against Rakudo 2026.09's 0.94 (1.51×),
    `multiwhere-steady` 1.38 against 0.84 (1.64×). Only these two kernels have
    steady-state variants; the quiet-machine table P0 owes is still owed.
+   *Later the same day, met for these two:* `objects-steady` 0.77 s against
+   0.91 (0.84×, 33.07G → 19.29G instructions retired) and `multiwhere-steady`
+   0.81 against 0.82 (1.00×, 33.45G → 20.89G), interleaved best of six at a
+   load of 9–12, against the tree before built beside it (1.42 s and 1.33 s).
+   Seven changes (fb3f9db0 to 3b004277), each with its file under `t/regression/`: `my $x = <method
+   call>` on the declaration lane (`decl-call-lane`), a hash's entry chunks
+   from the slab pool (`hash-chunk-slab`), a plain class's default
+   construction planned once (`plain-class-new-fill`), `$!x` and `$.x` read by
+   what the node knows of the class (`attr-read-site`), the same for a method
+   call's lookup (`method-call-site`), a lean lane for a plain method
+   (`plain-method-lane`), and `where * > 0` of an Int compared without a call
+   (`where-int-compare`). perf-guard on the two trees: `method` −32%,
+   `attrread` −24%, `privmeth` −26%, `multimeth` −25%, `multiwhere` −43%,
+   `objnew` −22%, every other kernel within the run's spread. `multiwhere`
+   has no margin: the redispatch frame a candidate is run under (two
+   `std::function`s and a copy of the arguments, ~6% of the kernel) is still
+   built for a body that cannot redispatch, and the loop around the call is
+   38% of it.
 2. **Met** (P0, 2026-11-05): the #47 driver 0.66× interpreted and 0.39× under
    `--exe`, Graph's diameter 0.81×.
 3. **Met.** `tools/run-memory.raku`: every row below Rakudo's, the highest
