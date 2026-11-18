@@ -3,6 +3,7 @@
 // One of the parts InterpreterParts.h lists; what they share is declared there.
 #include "InterpreterParts.h"
 #include "AotModules.h"
+#include "CallLanes.h"
 #include <array>   // kShape in the typed-store check; MSVC does not bring it in through the headers
 #if defined(__linux__)
 #include <sys/resource.h>   // RLIMIT_STACK: the main thread's stack on musl (currentThreadStackSize)
@@ -812,7 +813,7 @@ static int blockEntryWork(Block* b) {
 // The same bits for a routine's body, decided once on its Callable: callCallableRaw
 // skips hoistSubs, the ENTER and LEAVE runners and the scans for the value
 // statement when they would find nothing.
-static int bodyEntryWork(Callable& c) {
+int bodyEntryWork(Callable& c) {   // (CallLanes.h)
     signed char w = c.ci().bodyWork;
     if (w >= 0) return w;
     const int m = c.ci().body ? stmtsEntryWork(*c.ci().body) : 0;
@@ -971,7 +972,6 @@ static void drainTempRestores(Env* cur, size_t mark) {
     }
 }
 
-static void runLetRestoresOf(const std::shared_ptr<Env>& e);   // (below)
 void Interpreter::runLeavePhasers(const std::vector<StmtPtr>& stmts, bool ok, size_t tempMark, int postOk) {
     if (rtExitUnwinding()) return;   // `exit` leaves every block without its LEAVE (Rakudo)
     // reverse source order. KEEP runs only when the block is left SUCCESSFULLY,
@@ -1896,64 +1896,6 @@ struct VisitedCands {
     }
 };
 
-// A per-thread pool of call frames — see the note at its first user; the frames
-// themselves are the thread's ExecContext::framePool. It lives at
-// file scope because BOTH call paths need it: subs come through callCallableRaw,
-// methods through invokeMethod, and only the first one had it. That asymmetry was
-// the whole difference between a sub call at ~2x Rakudo and a method call at
-// 5.8x — every method allocated a control block, an Env and its hash buckets, and
-// destroyed them again, per call (DISPATCH-PERF-PLAN.md). An `if`/`else` branch
-// takes its scope from the same pool, which made one Env per branch entered.
-namespace {
-struct FramePool {
-    std::vector<std::shared_ptr<Env>>& free;
-    std::shared_ptr<Env> acquire() {
-        if (free.empty()) return makeSlabShared<Env>();
-        auto e = std::move(free.back());
-        free.pop_back();
-        return e;
-    }
-    void release(std::shared_ptr<Env>&& e) {
-        if (!e || e.use_count() != 1 || free.size() >= 32) {
-            if (e && e.use_count() != 1) e->cycleNoteKeptSlots();   // a closure kept the frame
-            e.reset();
-            cycleMaybeCollect();
-            return;
-        }
-        e->cycleNoteSlots();
-        e->vars.clear();          // keeps the bucket array — the next call's
-        e->selfSlot = nullptr;    // …and the recorded `self` dies with them
-        e->vars.resetWalked();    // a fresh scope no `$*x` walk has passed
-        e->parent.reset();        // "$_" insert does not rehash
-        // every flag back to a fresh Env's: a pooled frame is also a block's
-        // scope (an `if` branch), and a `no strict` or a `use fatal` inside
-        // one must not outlive it
-        e->routineFrame = e->staticSeeded = e->unitFrame = e->packageFrame = false;
-        e->evalFrame = e->stateFrame = e->loopFrame = false;
-        e->btBlock = e->callEnv = e->btCalled = e->btThunk = false;
-        e->btLine = 0;
-        e->routineFrameId = 0;
-        e->strictPragma = e->fatalPragma = 0;
-        e->declStmts = nullptr;
-        e->ex.reset();
-        e->layout = nullptr;        // pads: next call re-attaches its own layout;
-        e->pad.clear();           // clear() keeps the vector's capacity, the
-        e->padLive.store(0, std::memory_order_relaxed); // same trick the bucket array plays above
-        e->padEscaped.store(0, std::memory_order_relaxed); // use_count 1: nothing kept an alias
-        free.push_back(std::move(e));
-        cycleMaybeCollect();
-    }
-};
-// Hands out a pooled frame that returns itself on scope exit. A frame anything
-// captured — a closure, an rwLink, a stateEnv chain — fails the use_count test in
-// release() and is simply dropped instead of reused.
-struct PooledFrame {
-    FramePool pool;
-    std::shared_ptr<Env> env;
-    explicit PooledFrame(ExecContext& t) : pool{t.framePool}, env(pool.acquire()) {}
-    ~PooledFrame() { pool.release(std::move(env)); }
-};
-} // namespace
 
 // `try`, `do` and `quietly { … }` without the call. A block called with no
 // arguments defines no `$_` and no `@_` of its own, so what the call gave a
@@ -7932,12 +7874,6 @@ Value Interpreter::callCallable(const Value& codeVal, ValueList args, const std:
 }
 CodeInfo::~CodeInfo() { if (coldp.own) delete (NcCif*)coldp.p->nativeCifCache.p; }
 
-// run `let` restorations for the current env — only on UNSUCCESSFUL exits
-static void runLetRestoresOf(const std::shared_ptr<Env>& e) {
-    if (!e || !e->ex || e->ex->letRestores.empty()) return;
-    for (auto it = e->ex->letRestores.rbegin(); it != e->ex->letRestores.rend(); ++it) (*it)();
-    e->ex->letRestores.clear();
-}
 
 void Interpreter::attachPads(Callable& c, Env& env) {
     if (!c.ci().body) return;
@@ -7972,77 +7908,6 @@ static bool isElementPath(const Expr* e) {
     if (k->kind == NK::VarExpr)
         return !static_cast<const VarExpr*>(k)->name.empty() && static_cast<const VarExpr*>(k)->name[0] == '$';
     return k->kind == NK::StrLit || k->kind == NK::IntLit;
-}
-// The core types a plain sub's parameters and return may name and still take
-// the lean path (Param::leanType, CodeInfo::leanRet). A parameter of one binds
-// an argument already of that type as the general binder does — typeCheckBind
-// passes it, bindNativeParam makes a native of it — and any other argument
-// declines the lean path for the call, so the general binder answers it. A
-// return of a value of the type, native or boxed, is what the check passes, and
-// anything else goes to checkRetType (`--> int` refuses a Str, as Rakudo's unbox does).
-enum LeanType : signed char { LeanNone = 0, LeanNum = 1, LeanInt = 2, LeanBoxNum = 3, LeanBoxInt = 4,
-                              LeanStr = 5 };
-static signed char leanTypeOf(const std::string& t, bool ret) {
-    if (t.empty()) return LeanNone;
-    if (t == "num" || t == "num64") return LeanNum;
-    if (t == "int" || t == "int64") return LeanInt;
-    if (ret && t == "str") return LeanStr;
-    if (t == "Num") return LeanBoxNum;
-    if (t == "Int") return LeanBoxInt;
-    if (t == "Str") return LeanStr;
-    return -1;
-}
-// …and the call-time half: an argument the lean binder takes for `k`
-static inline bool leanArgFits(const Value& v, signed char k) {
-    if (k == LeanNone) return true;
-    if (!v.hashKind.empty() || !v.enumName().empty()) return false;
-    switch (k) {
-        case LeanNum: case LeanBoxNum: return v.t == VT::Num;
-        case LeanInt:                  return v.t == VT::Int && !v.big();
-        case LeanBoxInt:               return v.t == VT::Int;
-        case LeanStr:                  return v.t == VT::Str;
-        default:                       return true;
-    }
-}
-// A PLAIN SUB: a named or anonymous routine (not a block, method, multi,
-// builtin or native) whose signature is plain `$x` positionals — no default,
-// no trait, no where, no type but a LeanType — and whose body has no phaser,
-// CATCH, CONTROL, nested named sub or hoisted `my`, and no `is rw` or `-->`
-// but a LeanType on the routine. Most of callCallableRaw exists for what such
-// a sub does not have. Decided once, after the first call has settled what it
-// decides (pads, the CATCH scan, hoistNeed, the arity bounds); until then -1
-// keeps the full path. 2 when a type is named (callPlainSub's typed arms).
-static signed char plainSubShape(Callable& c) {
-    signed char v = c.ci().plainShape;
-    if (v >= 0) return v;
-    if (c.ci().padReady != 1 || c.ci().catchScan.get() < 0 || c.ci().controlScan.get() < 0 ||
-        (signed char)c.ci().hoistNeed < 0 || c.ci().arityShape.get() < 0)
-        return false;                                   // not settled yet
-    bool plain = !c.ci().isBlock && !c.ci().isMethod && !c.ci().builtin && !c.cold().isNative && !c.ci().isMultiDispatcher &&
-                 !c.ci().isMultiCandidate && !c.ci().isProto && !c.ci().isWhateverCode && !c.ci().isRegexRoutine &&
-                 !c.cold().deprecated && !c.ci().testAssertion && !c.ci().isCached && c.ci().hadSig && c.ci().params && c.ci().body &&
-                 c.ci().placeholders.empty() && !c.ci().usesArgs && !c.ci().implicitArgs && !c.cold().hasPrimed &&
-                 !c.ci().retLiteral && !c.ci().retRw && c.ci().padLayout &&
-                 bodyEntryWork(c) == 0 && c.ci().catchScan.get() == 0 && c.ci().controlScan.get() == 0 &&
-                 (signed char)c.ci().hoistNeed == 0 && c.ci().arityShape.get() == 1 && !c.ci().arityUnbounded;
-    const signed char ret = plain ? leanTypeOf(c.cold().retType, true) : 0;
-    bool typed = ret > 0;
-    if (ret < 0) plain = false;
-    if (plain)
-        for (auto& p : *c.ci().params) {
-            const signed char k = leanTypeOf(p.type, false);
-            if (p.sigil != '$' || p.named || p.slurpy || p.optional || p.invocant || p.isCopy ||
-                p.isRw || p.isRaw || p.defaultVal || p.subSig || p.litVal || p.whereExpr ||
-                p.hadWhere || p.defConstraint || p.coerce || p.typeCapture || p.codeSig ||
-                !p.captureName.empty() || k < 0 || p.padSlot < 0 ||
-                (const void*)p.padOwner != (const void*)c.ci().padLayout.get() ||
-                (p.name.size() > 2 && (p.name[1] == '!' || p.name[1] == '.'))) { plain = false; break; }
-            p.leanType = k;
-            if (k) typed = true;
-        }
-    c.ci().leanRet = ret > 0 ? ret : 0;
-    c.ci().plainShape = !plain ? 0 : typed ? 2 : 1;
-    return c.ci().plainShape;
 }
 // A lean call's answer under its `--> T` (leanTypeOf): what checkRetType
 // passes as it is, or that check
@@ -10528,10 +10393,134 @@ Value Interpreter::invokeMethodChain(const std::string& name, ClassInfo* startCl
     return r;
 }
 
+// invokeMethod for a plain method (plainMethodShape, PlainMethod.cpp) of an object, called with exactly its
+// positionals and nothing a binder has to look at: the same steps in the same order, each one that shape rules out
+// left out — no wrapper, monitor or multi, no state of a role's, no named or `is rw` argument, no CATCH, phaser,
+// hoisted declaration or return type. False when the call is not that; nothing has run then.
+bool Interpreter::callPlainMethod(const Value& codeVal, const Value& self, ValueList& args, const std::vector<ExprPtr>* rwArgs,
+                                  bool ownFrame, bool whereVerified, ExecContext::BuiltinFallback* fallback, ExecContext& tcx, Value& out) {
+    Callable& c = *codeVal.code();
+    signed char shape = c.ci().plainMeth; if (shape < 0) shape = plainMethodShape(c);   // (decided once: PlainMethod.cpp)
+    const size_t np = c.ci().params ? c.ci().params->size() : 0;
+    if (!shape || args.size() != np || (shape == 3 && !whereVerified) || self.t != VT::Object || !self.obj() ||
+        rakupp::prof::on || anyRevSwitch_ || tcx.topicWriteback || tcx.pendingRwSlots || tcx.pendingArgWriter || tcx.noAutothread ||
+        tcx.loopPhaserCtl || tcx.forceRoutineFrame || !staticEnvs_.empty() || !c.cold().wrappers.empty())
+        return false;
+    for (ClassInfo* k = self.obj()->cls.get(); k; k = k->parent.get())
+        if (k->isMonitor || !k->roleStateEnvs.empty() || !k->roleParamBindings.empty()) return false;
+    for (size_t i = 0; i < np; i++) {   // callCallableRaw's test of a plain sub's arguments
+        const Value& a = args[i];
+        if (isNamedArg(a) || (a.t == VT::Array && isJunction(a)) || isMuTypeObject(a) || (a.t == VT::Str && !a.hashKind.empty()) ||
+            (shape >= 2 && !leanArgFits(a, (*c.ci().params)[i].leanType)))
+            return false;
+    }
+    if (rwArgs) for (auto& ae : *rwArgs) if (ae && ae->kind == NK::ListExpr && static_cast<const ListExpr*>(ae.get())->parenned) return false;
+    tcx.rwInvocantExpr = nullptr;   // the caller's expression for `self`: nothing here binds it, and no call in the body is that invocant's
+    DepthGuard guard(tcx.callDepth);
+    PooledFrame frame_{tcx};
+    auto& env = frame_.env;
+    env->parent = stateFrameOf(c);
+    env->layout = c.ci().padLayout.get();
+    env->pad.resize(c.ci().padLayout->names.size());
+    static const std::string kSelf = "self";
+    env->define(kSelf, self);
+    if (bodyMayUseTopic(c)) env->define("$_", Value::any());   // its own `$_` (bindRoutineParams)
+    uint64_t live = 0;
+    for (size_t i = 0; i < np; i++) {   // bindParams' simple path, as callPlainSub takes it
+        Value v = std::move(args[i]);
+        if (v.natBits()) dropNativeTags(v);
+        v.readonly = true;
+        itemizeScalar(v);
+        const int ps = (*c.ci().params)[i].padSlot;
+        env->pad[ps] = std::move(v);
+        live |= (uint64_t)1 << ps;
+    }
+    if (live) env->padLive.fetch_or(live, std::memory_order_release);
+    if (np && env->vars.walked() && c.ci().padLayout->holdsDynamic) bumpDynEpoch();
+    auto saved = tcx.cur;
+    tcx.cur = env;
+    struct CurGuard { ExecContext& t; const std::shared_ptr<Env>& s; ~CurGuard() { if (t.cur != s) t.cur = s; } } curG{tcx, saved};
+    struct StateGuard { ExecContext& t; Env* s; ~StateGuard() { t.curStateEnv = s; } } stG{tcx, tcx.curStateEnv};
+    tcx.curStateEnv = stateEnvOf(c);
+    tcx.dynStack.push_back(saved ? saved.get() : global_.get());
+    const int callLine = curLine_;
+    tcx.callFrames.push_back({callLine, &codeVal, saved.get(), rwArgs, env.get()});
+    struct DynGuard { ExecContext& t; Interpreter* self; int line;
+        ~DynGuard() { t.dynStack.pop_back(); if (!t.callFrames.empty()) t.callFrames.pop_back(); self->curLine_ = line; } } dynG{tcx, this, callLine};
+    struct MagicalGuard { ExecContext& t; const Value* b; const Value* r; ~MagicalGuard() { t.curBlockVal = b; t.curRoutineVal = r; } }
+        magicalG{tcx, tcx.curBlockVal, tcx.curRoutineVal};
+    tcx.curBlockVal = tcx.curRoutineVal = &codeVal;
+    struct FloorGuard { ExecContext& t; size_t s; ~FloorGuard() { t.redispatchFloor = s; } } floorG{tcx, tcx.redispatchFloor};
+    tcx.redispatchFloor = redispatchStack().size() - (ownFrame && !redispatchStack().empty() ? 1 : 0);
+    ++tcx.frameTop;
+    const uint64_t savedFrameTop = tcx.frameTop;
+    struct FrameGuard { ExecContext& t; uint64_t ft, rf; Env* re; const Expr* se; ExecContext::BuiltinFallback fb;
+        ~FrameGuard() { t.frameTop = ft - 1; t.curRoutineFrame = rf; t.curRoutineEnv = re; t.curStmtExpr = se; t.builtinFallback = fb; }
+    } fguard{tcx, savedFrameTop, tcx.curRoutineFrame, tcx.curRoutineEnv, tcx.curStmtExpr, tcx.builtinFallback};
+    tcx.curRoutineFrame = tcx.frameTop;
+    if (fallback) { fallback->frame = tcx.curRoutineFrame; tcx.builtinFallback = *fallback; }
+    else tcx.builtinFallback = ExecContext::BuiltinFallback{};
+    env->routineFrame = true;
+    env->routineFrameId = tcx.curRoutineFrame;
+    tcx.curRoutineEnv = env.get();
+    captureBodyEnds(c);
+    // a `temp` or `let` of the body is undone on the way out, which is all runLeavePhasers does for one with no phaser
+    const size_t tempMark0 = env->ex ? env->ex->tempRestores.size() : 0;
+    auto runLeaves = [&](bool ok, const Value* result = nullptr, int postOk = -1) {
+        if (!(tcx.cur && tcx.cur->ex && tcx.cur->ex->tempRestores.size() > tempMark0)) return;
+        struct LR { ExecContext& t; const Value* p; ~LR() { t.leaveResult = p; } } lr{tcx, tcx.leaveResult};
+        tcx.leaveResult = result;
+        runLeavePhasers(*c.ci().body, ok, tempMark0, postOk);
+    };
+    auto leaveOk = [](const Value& v) { return isDefined(v) && !(v.t == VT::Hash && v.hashKind == "Failure"); };
+    Value last = Value::nil();
+    try {
+        const auto& body = *c.ci().body;
+        const bool aotRan = runAotBody(*this, c, env.get(), last);   // a native body (AotModules.h) runs in place of the walk
+        const size_t nst = aotRan ? 0 : body.size();
+        if (aotRan) tcx.valContained = false;
+        bool explicitTailReturn = false;
+        for (size_t i = 0; i < nst; i++) {
+            auto* s = body[i].get();
+            if (i + 1 == nst && s->kind == NK::ReturnStmt) {   // tail return: no unwind
+                auto* r = static_cast<ReturnStmt*>(s);
+                if (g_traceStmts) traceStmt(s);
+                if (r->isRw && r->value && tcx.wantLvalue && tcx.wantLvalue == (int)tcx.callFrames.size()) {
+                    try { tcx.lvalueOut = lvalueThroughRw(r->value.get()); } catch (RakuError&) {}
+                }
+                last = tcx.lvalueOut && r->isRw ? *tcx.lvalueOut : r->value ? eval(r->value.get()) : Value::nil();
+                tcx.valContained = returnYieldsContainer(r);
+                explicitTailReturn = true;
+            }
+            else last = exec(s, i + 1 != nst);   // non-final statements sink
+            if (tcx.returning) { tcx.returning = false; last = std::move(tcx.returnV); explicitTailReturn = true; break; }
+            if (i + 1 == nst && !explicitTailReturn) tcx.valContained = false;   // a method's tail decontainerizes
+        }
+    } catch (ReturnEx& r) {
+        if (r.target && r.target < savedFrameTop) { runLeaves(false, &r.v, 1); runLetRestoresOf(tcx.cur); tcx.cur = saved; throw; }
+        runLeaves(leaveOk(r.v), &r.v); tcx.cur = saved; out = std::move(r.v); return true;
+    } catch (BreakGivenEx& b) {   // a matched `when` in the body: the routine is its topicalizer
+        runLeaves(true); tcx.cur = saved;
+        if (tcx.returning) { tcx.returning = false; out = std::move(tcx.returnV); return true; }
+        out = b.hasVal ? std::move(b.v) : std::move(last); return true;
+    } catch (RakuError& e) {
+        if (!tcx.catchFrames.empty() && tcx.cur && tcx.cur->ex && (tcx.cur->ex->tempRestores.size() > tempMark0 || !tcx.cur->ex->letRestores.empty()))
+            dispatchBeforeUnwind(e, /*canResume=*/false);
+        runLeaves(false); runLetRestoresOf(tcx.cur); tcx.cur = saved; throw;
+    } catch (LeaveEx& le) {
+        runLeaves(true); tcx.cur = saved; out = le.hasVal ? std::move(le.v) : Value::nil(); return true;
+    } catch (...) { runLeaves(false); runLetRestoresOf(tcx.cur); tcx.cur = saved; throw; }
+    if (tcx.cur->ex) runLeaves(leaveOk(last), &last);
+    tcx.cur = saved;
+    out = std::move(last);
+    return true;
+}
+
 Value Interpreter::invokeMethod(const Value& codeVal, const Value& self, ValueList args, const std::vector<ExprPtr>* rwArgs, bool ownFrame,
                                 Value* selfBack, bool skipWrappers, bool whereVerified, ExecContext::BuiltinFallback* fallback) {
     ExecContext& tcx = tctx();   // one thread-local resolution — see execBlock
     if (codeVal.t != VT::Code || !codeVal.code()) return Value::any();
+    if (codeVal.code()->ci().plainMeth != 0 && !selfBack) if (Value r; callPlainMethod(codeVal, self, args, rwArgs, ownFrame, whereVerified, fallback, tcx, r)) return r;
     // A NativeCall method: the invocant is C's first argument, then the rest.
     // (`$mysql.mysql_query($sql)` is `mysql_query(mysql, sql)`; a type-object
     // invocant marshals as NULL, which is exactly what `mysql_init(MYSQL:U:)`
@@ -11076,7 +11065,7 @@ Value Interpreter::invokeMethod(const Value& codeVal, const Value& self, ValueLi
     // `method new()` still collects its named args there — DBDish::SQLite's
     // is exactly that shape, stashing attribute inits in %_ and blessing
     // with |%_ (the binder fills %_ itself when real params bound)
-    bool anyNamed = false;
+    bool anyNamed = false; tcx.rwInvocantExpr = nullptr;   // (the caller's expression for `self`, bound by now: no call in the body is that invocant's)
     for (auto& a : args)
         if (a.t == VT::Pair && a.namedArg && a.pairVal()) { anyNamed = true; break; }
     if (anyNamed && !env->local("%_")) {

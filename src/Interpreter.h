@@ -2239,6 +2239,8 @@ public:
     // callCallableRaw's lean half, for a plain sub called plainly (see
     // plainSubShape and the entry test in callCallableRaw)
     Value callPlainSub(const Value& codeVal, Callable& c, ValueList& args, bool ownFrame);
+    bool callPlainMethod(const Value& codeVal, const Value& self, ValueList& args, const std::vector<ExprPtr>* rwArgs,   // invokeMethod's lean lane
+                         bool ownFrame, bool whereVerified, ExecContext::BuiltinFallback* fallback, ExecContext& tcx, Value& out);
     // IntKernel.cpp: run a plain sub as an integer kernel; false = nothing ran, take the call path
     bool tryIntKernel(Callable& c, ValueList& args, int callDepth, Value& out);
     // …and a loop statement as a loop kernel (a `for` over lo..hi, a `while`,

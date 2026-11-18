@@ -787,6 +787,8 @@ struct CodeInfo : RefCounted {
     // calls at once (issue #193).
     mutable PublishedOnce<signed char> plainShape{-1};
     mutable DecidedOnce<signed char> leanRet{0};   // (a LeanType, for plainShape 2)
+    // …and a method's (plainMethodShape, PlainMethod.cpp): -1 undecided, 0 the full path, 1-3 callPlainMethod
+    mutable PublishedOnce<signed char> plainMeth{-1};
     mutable KernelSlot intKernel;
     // 1 = the body mentions `@_` (bodyUsesAtUnderscore): a method with no
     // parameters builds that array only then. -1 = not yet scanned.
