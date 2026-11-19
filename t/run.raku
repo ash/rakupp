@@ -829,11 +829,15 @@ section('--target=js (JavaScript backend)');
 # of a literal that reads nothing of the program's compiles (it refused
 # whole), and a loop's `-> $_, $name` makes that parameter the topic. An
 # allomorph literal (`<42>`) compiles, and a Num literal keeps -0, Inf and NaN.
+# A class declared in a routine or block compiles, and `~~` topicalizes its
+# right side, a list gists by its elements' own `gist`, and `@a[lazy ^N]` ends
+# with the array.
 for <next-return-in-expression-native leave-on-every-exit-native named-container-param-absent-native
      match-numifies-exact-native prefix-plus-failure-native attribute-array-assign-native
      list-constant-native exe-pair-subsignature-loop-native exe-buf-whatever-index-native
      threads-own-match-var-native issue-209-threads-share-a-dir-walking-sub
-     exe-eval-literal-native exe-for-topic-parameter-native exe-allomorph-literal-native> -> $name {
+     exe-eval-literal-native exe-for-topic-parameter-native exe-allomorph-literal-native
+     exe-nested-class-native> -> $name {
     my $bin = $*TMPDIR.add("rakupp-suite-native-$name-$*PID").Str;
     my $p = run($*EXECUTABLE, '--exe', $ROOT.add("t/regression/$name.raku").Str, '-o', $bin, :out, :err);
     $p.out.slurp(:close);

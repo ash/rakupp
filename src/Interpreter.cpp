@@ -3336,6 +3336,12 @@ Value rtIndirectMethod(Interpreter& I, const Value& inv, const Value& mv, ValueL
             for (auto& el : inv.flatten()) out.arr()->push_back(one(el));
         return out;
     }
+    // `."$name"()` names a public method, never a private one: `self."!$n"()` is
+    // X::Method::NotFound, as on the interpreter's methodExpr path (rakudo#3802)
+    if (!*prefix && mv.t == VT::Str && mv.s.size() > 1 && mv.s[0] == '!')
+        I.throwTypedV("X::Method::NotFound", {{"method", mv}, {"typename", Value::str(inv.typeName())}, {"private", Value::boolean(false)}},
+                      "No such method '" + mv.toStr() + "' for invocant of type '" + inv.typeName() +
+                      "'. Method name starts with '!', did you mean 'self!\"" + mv.toStr().substr(1) + "\"()'?");
     std::string name = prefix + mv.toStr();
     if (hyper) return rtHyperMethod(I, inv, name, std::move(args));
     return I.methodCall(inv, name, std::move(args));

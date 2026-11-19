@@ -8,12 +8,19 @@ what changed, what it measured and how, with the commit — so the entry starts
 from this page. Move each item into CHANGELOG.md at the tag and delete it
 here.*
 
-*Covered so far: the `my class` shadowing fix; allomorph literals under `--exe`.*
+*Covered so far: the `my class` shadowing fix; allomorph literals and nested classes under `--exe`.*
 
 ---
 
 ### New
 
+- `--exe` compiles a class or grammar declared inside a routine or block
+  when that changes nothing a program can see (codegen/NestedClass.cpp): it
+  was the first blocker of 92 Roast files, a test block's `class Dog {}` the
+  commonest; 13 of them now compile natively, and the note says why a class
+  stays (a role, an anonymous class, a name the code around it declares, …).
+  With the allomorph literals below, 577 of the 1,425 Roast files compile
+  natively, against 545 (V6-PLAN number 4: 40%).
 - `--exe` compiles an allomorph literal (`<42>`, `<1.5>`, the numeric words
   of `< … >`): it was the first construct to bundle in 42 of the Roast files
   that do not compile natively, and 19 of those now compile natively (16 give
@@ -27,6 +34,15 @@ here.*
 
 ### Fixed: silent wrong answers
 
+- Compiled by `--exe`, each of these answered differently from the
+  interpreter, in top-level programs too (found as the files above became
+  native): `$x ~~ EXPR` evaluated EXPR with the outer `$_`; `say @objects`
+  ignored a class's own `gist`; `@a[lazy ^N]` gave N elements where it ends
+  with the array; `5 ~~ *` was not a WhateverCode, nor `*.&{ … }`; a
+  computed `self."!$n"()` called the private method; and `has Cursor $.c`
+  refused a Match. A `.&` chain on a `*` (`*.uc.&{ … }.flip`) is refused
+  rather than compiled wrongly.
+
 - A Num literal compiled by `--exe` keeps its sign: `-0e0` was written into
   the C++ as the Int `-0`, so `val(<-0e0>)` was +0, and the real part of
   `<-0-0i>` lost its sign too (S32-num/negative-zero.t, 4 tests, once it
@@ -39,7 +55,8 @@ here.*
   and the program's own `class Point` could not be reached. The type
   registry holds one type per name; the shadowed one is now put back when the
   declaring scope leaves, with its `temp`s, whether it returned or died, and
-  in order through recursion and nested scopes (registerDeclaredType).
+  in order through recursion and nested scopes (registerDeclaredType). A type
+  declared directly in an EVAL keeps the name, as it did.
   t/regression/my-class-shadow.raku, which Rakudo 2026.09 passes too.
 
 ### Fixed: crashes

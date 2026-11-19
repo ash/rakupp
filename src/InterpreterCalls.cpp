@@ -5000,7 +5000,7 @@ bool objMethodStrHook(const Value& v, const char* method, std::string& out) {
         auto ci = g_revInterp->classes_.find(v.s);
         if (ci == g_revInterp->classes_.end() || !ci->second || ci->second->isRole) return false;
         Value* m = ci->second->findMethod(method);
-        if (!m || m->t != VT::Code || !m->code() || m->code()->ci().builtin) return false;
+        if (!m || m->t != VT::Code || !m->code() || (m->code()->ci().builtin && !m->code()->ci().compiledMethod)) return false;
         static thread_local int tdepth = 0;
         if (tdepth > 8) return false;
         struct D { D() { tdepth++; } ~D() { tdepth--; } } d;
@@ -5010,8 +5010,9 @@ bool objMethodStrHook(const Value& v, const char* method, std::string& out) {
         return true;
     }
     if (!g_revInterp || v.t != VT::Object || !v.obj() || !v.obj()->cls) return false;
+    // (a method `--exe` compiled is a builtin Code, and a user's: compiledMethod)
     Value* m = v.obj()->cls->findMethod(method);
-    if (!m || m->t != VT::Code || !m->code() || m->code()->ci().builtin) return false;
+    if (!m || m->t != VT::Code || !m->code() || (m->code()->ci().builtin && !m->code()->ci().compiledMethod)) return false;
     static thread_local int depth = 0;
     if (depth > 8) return false;
     struct D { D() { depth++; } ~D() { depth--; } } d;

@@ -41,6 +41,7 @@ bool nestedSubUnsafe(const std::vector<StmtPtr>&, const SubDecl*, const std::set
 std::string autothreadMask(const std::vector<Param>& ps, bool block);   // codegen/Autothread.cpp
 
 std::string nkName(NK k);   // a node kind as a fallback note names it (codegen/Refusals.cpp)
+std::vector<Stmt*> withLiftedClasses(Program& prog); std::string nestedClassRefusal(const Node* cd);   // codegen/NestedClass.cpp
 namespace {
 
 [[noreturn]] void unsupported(const std::string& what) { throw CodegenError{what}; }
@@ -1386,14 +1387,14 @@ struct Codegen {
                 // passes: `(* > 2 && * < 5)(9)` came back True.
                 if (b->op == "&&" || b->op == "and" || b->op == "||" || b->op == "or" || b->op == "//")
                     return false;
-                // A smartmatch composes only when a BARE `*` is written on its
-                // LEFT — `.grep(* ~~ /rx/)`, the matcher idiom. A `*` anywhere
+                // A smartmatch composes only when a BARE `*` is one side — `.grep(* ~~ /rx/)`,
+                // the matcher idiom, and `5 ~~ *` (a WhateverCode, as Rakudo's). A `*` anywhere
                 // else is part of ONE SIDE: `(* < 1) ~~ Callable` asks whether
                 // that WhateverCode is a Callable (True), and `$x ~~ *.foo` asks
                 // the curried method about $x. Currying the whole expression
                 // answered a closure to both. This is the rule evalBinary
                 // applies, spelled syntactically.
-                if (b->op.size() >= 2 && b->op.compare(b->op.size() - 2, 2, "~~") == 0) return b->lhs->kind == NK::Whatever;   // (`X~~`, `Z!~~` too)
+                if (b->op.size() >= 2 && b->op.compare(b->op.size() - 2, 2, "~~") == 0) return b->lhs->kind == NK::Whatever || b->rhs->kind == NK::Whatever;   // (`X~~`, `Z!~~` too)
                 return hasWhatever(b->lhs.get()) || hasWhatever(b->rhs.get()); }
             case NK::Unary:  return hasWhatever(static_cast<Unary*>(e)->operand.get());
             case NK::Ternary: { auto* t = static_cast<Ternary*>(e); return hasWhatever(t->cond.get()) || hasWhatever(t->then.get()) || hasWhatever(t->els.get()); }
@@ -1413,6 +1414,7 @@ struct Codegen {
             // A CALL whose callee is a `*` expression is the call OF that
             // WhateverCode, not a bigger curry: `(* < 1)(0)` is False. (The
             // interpreter's own whatever-literal walk has no Call arm either.)
+            case NK::Call: { auto* c = static_cast<Call*>(e); if (!c->dotAmp || c->args.empty() || !hasWhatever(c->args[0].get())) return false; if (c->args[0]->kind == NK::Whatever) return true; unsupported("a `.&` call on a `*` chain"); }   // `*.&{…}` curries (dotAmpCurry); a chain's invocant would curry apart
             case NK::NqpOp:      { for (auto& x : static_cast<NqpOp*>(e)->args) if (hasWhatever(x.get())) return true; return false; }
             case NK::Index:      return hasWhatever(static_cast<Index*>(e)->base.get()); // *<key> / *[0]
             // A chained comparison composes like any other operator chain:
@@ -3228,9 +3230,11 @@ struct Codegen {
                 // than a match against `$_`: `/a/ ~~ Callable` asks what a Regex
                 // is (True), where a term-position regex matched the topic and
                 // then asked whether that Match was a Callable.
-                if (b->op == "~~" || b->op == "!~~")
-                    return "rtSmartmatch(RT, " + cesc(b->op) + ", " + matcher(b->lhs.get()) +
-                           ", " + matcher(b->rhs.get()) + ")";
+                if (b->op == "~~" || b->op == "!~~") {   // …and the right side sees the left as `$_`, as in evalBinary
+                    const bool tp = exprMayUseTopic(b->rhs.get()); std::string t = gensym("__smt"), L = matcher(b->lhs.get()); if (tp) topics.push_back(t);
+                    std::string R = matcher(b->rhs.get()); if (!tp) return "rtSmartmatch(RT, " + cesc(b->op) + ", " + L + ", " + R + ")"; topics.pop_back();
+                    return "[&](Value " + t + ") { return rtSmartmatch(RT, " + cesc(b->op) + ", " + t + ", " + R + "); }(" + L + ")";
+                }
                 // The short-circuit infixes pick a SIDE, so each side composes on
                 // its own: `* > 2 && *.abs > 10` is two closures and the `&&`
                 // hands back the second. Emitted as plain terms the method-call
@@ -4476,9 +4480,8 @@ struct Codegen {
             case NK::EnumDecl: case NK::ClassDecl: // emitted separately — the top-level ones
                 // one inside a routine or block is in no table the pre-pass built:
                 // an enum's keys read 0, a class had no methods
-                if (!topDecls_.count(s))
-                    unsupported(std::string(s->kind == NK::EnumDecl ? "an enum" : "a class") +
-                                " declared inside a routine or block");
+                if (!topDecls_.count(s))   // (a class: why NestedClass.cpp kept it here)
+                    unsupported(s->kind == NK::EnumDecl ? "an enum declared inside a routine or block" : nestedClassRefusal(s));
                 return;
             case NK::ExprStmt: {
                 Expr* e = static_cast<ExprStmt*>(s)->e.get();
@@ -9641,7 +9644,7 @@ struct Codegen {
             std::string d = "  { ClassAttr __at; __at.name = " + cesc(a.name) + "; __at.sigil = '"
                           + std::string(1, a.sigil) + "'; __at.pub = " + (a.pub ? "true" : "false")
                           + "; __at.rw = " + (a.rw ? "true" : "false") + ";";
-            if (!a.type.empty()) d += " __at.type = " + cesc(a.type) + ";";
+            if (!a.type.empty()) d += " __at.type = RT.resolveAttrTypeAlias(" + cesc(a.type) + ", " + cesc(cd->name) + ");";   // (`Cursor` is Match, as declared)
             if (a.required)          // `is required("why")`: .new checks it, as for an interpreted class
                 d += " __at.required = true;" + (a.requiredWhy.empty() ? std::string()
                                                  : " __at.requiredWhy = " + cesc(a.requiredWhy) + ";");
@@ -9657,9 +9660,9 @@ struct Codegen {
             std::map<std::string, int> seq;
             for (auto& mp : cd->methods) {
                 if (mp->isMulti) { multis[methodKey(mp.get())].push_back(mp.get()); continue; }
-                line(1, "  " + ci + "->methods[" + cesc(methodKey(mp.get())) + "] = " +
-                        withPod(asSubmethod("Value::closure(" + methodFn(cd->name, methodKey(mp.get())) + ")",
-                                            mp.get()), mp.get()) + ";");
+                line(1, "  " + ci + "->methods[" + cesc(methodKey(mp.get())) + "] = " + withPod(asSubmethod("([&]()->Value{ Value _c = Value::closure(" +   // (marked a user's, so
+                        methodFn(cd->name, methodKey(mp.get())) + "); _c.code()->ciM().compiledMethod = true;" +   // a list's .gist asks it:
+                        " return _c; }())", mp.get()), mp.get()) + ";");   // objMethodStrHook)
             }
             for (auto& kv : multis) {
                 if (const char* why = undecidableMulti(cd, kv.first, kv.second))
@@ -10120,9 +10123,9 @@ std::string transpileToCpp(Program& prog, bool optimize, const std::string& srcP
     }
     // class-body `my` names, checked for collisions once the whole file is seen
     std::map<std::string, std::pair<std::string, std::string>> classBodyVars; // name -> (class, declType)
-    for (auto& s : prog.stmts) {
+    for (Stmt* s : withLiftedClasses(prog)) {   // (a routine's or block's class: see NestedClass.cpp)
         if (s->kind == NK::SubDecl) {
-            auto* d = static_cast<SubDecl*>(s.get());
+            auto* d = static_cast<SubDecl*>(s);
             if (d->isMethod) throw CodegenError{"a method sub at statement level"};
             if (d->name.empty()) throw CodegenError{"an anonymous sub at statement level"};
             if (d->isMulti) {
@@ -10140,7 +10143,7 @@ std::string transpileToCpp(Program& prog, bool optimize, const std::string& srcP
                   if (!rw.empty()) g.rwSubs[d->name] = rw; }
             }
         } else if (s->kind == NK::ClassDecl) {
-            auto* cd = static_cast<ClassDecl*>(s.get());
+            auto* cd = static_cast<ClassDecl*>(s);
             if (cd->isRole || cd->isPackage) throw CodegenError{"a role/package"};
             g.classNames.insert(cd->name);
             g.classDecls_[cd->name] = cd;
@@ -10161,9 +10164,9 @@ std::string transpileToCpp(Program& prog, bool optimize, const std::string& srcP
                     classBodyVars[nm] = {cd->name, dt};
                 });
         } else if (s->kind == NK::ExprStmt) {
-            forEachMyDecl(s.get(), asTopVar); // top-level `my` → C++ global, so subs see it
+            forEachMyDecl(s, asTopVar); // top-level `my` → C++ global, so subs see it
         } else if (s->kind == NK::EnumDecl) {
-            auto* ed = static_cast<EnumDecl*>(s.get());
+            auto* ed = static_cast<EnumDecl*>(s);
             g.topDecls_.insert(ed);
             if (!ed->pod.empty() && !ed->name.empty()) enumPods.push_back(ed);
             Expr* v = ed->values.get();

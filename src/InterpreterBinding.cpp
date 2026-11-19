@@ -5381,11 +5381,11 @@ Value rtIndexGet(const Value& base, const Value& key, bool isHash) {
         nativeSlice(out);
         return out;
     }
-    // a Range/list key is a slice: `@a[1..3]` / `@a[1,3]` / `%h<a b>`
+    // a Range/list key is a slice: `@a[1..3]` / `@a[1,3]` / `%h<a b>`; a LAZY one (`@a[lazy ^9]`) ends with the array (evalIndex's lazyIdx)
     if (key.t == VT::Range || (key.t == VT::Array && key.arr())) {
         Value out = Value::array(); out.isList = true;
-        const ValueList ks = key.flatten();
-        for (auto& k : ks) out.arr()->push_back(rtIndexGet(base, k, isHash));
+        const ValueList ks = key.flatten(); const long long lazyEnd = key.b && !isHash && base.t == VT::Array && base.arr() ? (long long)base.arr()->size() : -1;
+        for (auto& k : ks) { if (lazyEnd >= 0 && k.t == VT::Int && !k.big() && k.i >= lazyEnd) break; out.arr()->push_back(rtIndexGet(base, k, isHash)); }
         if (nativeSlice(out)) return out;
         // a slice of an Array's elements, every index one it has, writes
         // through to the array (ElemView), as the interpreter's slice does

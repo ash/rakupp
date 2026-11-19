@@ -83,6 +83,10 @@ three; memory does not depend on load):
    (525 → 545). The first blocker of each file is in
    [exe-census-2026-11-18/](../findings/exe-census-2026-11-18/exe-fallback-roast.tsv);
    P5 lists them.
+   *2026-11-19:* 577 (40%): allomorph literals and classes declared in a
+   routine or block compile (19 and 13 files), each newly native file giving
+   the interpreter's TAP but for three that run or read `$*EXECUTABLE` and
+   `$*PROGRAM`, which are the binary.
 5. **Not met.** An `--exe` hello builds in 0.65 s (the plan's whole-build
    figure was 1.10 s, 0.77 after the precompiled header); a warm
    `use Cro::HTTP::Router` takes about 130 ms, against the survey's 58 ms on

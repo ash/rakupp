@@ -867,6 +867,9 @@ struct CodeInfo : RefCounted {
     // injection of the invocant class's bindings (which cannot tell R[Int]
     // from R[Str]) is skipped. Shares the padding after langRev.
     bool roleConcrete = false;
+    // A method `--exe` compiled: its body is a builtin, but it is a user's, so
+    // a list's .gist asks it as it asks an interpreted one (objMethodStrHook).
+    bool compiledMethod = false;
     BuiltinFn builtin;                             // set => builtin
     std::vector<std::string> placeholders;         // $^a auto-params (sorted), then $:n nameds (source order)
     // A compiled block whose body is ONE `<=>`/`cmp`/`leg` between its two
