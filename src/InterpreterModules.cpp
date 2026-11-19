@@ -5431,7 +5431,7 @@ static void registerDeclaredType(Interpreter& I, const std::string& name,
     auto& slot = I.classes_[name];
     Env* site = ci->declEnv ? ci->declEnv->parent.get() : nullptr;
     if (slot && slot != ci && cd->isMy && !cd->isAugment && slot->decl != cd &&
-        site && site->parent && !site->unitFrame && !site->packageFrame) {
+        site && site->parent && !site->unitFrame && !site->packageFrame && !site->evalFrame) {   // (an EVAL's types outlive it)
         // (a recursive call registers this declaration again: still ours)
         site->x().tempRestores.push_back([&I, name, prev = slot, cd] {
             auto it = I.classes_.find(name);
