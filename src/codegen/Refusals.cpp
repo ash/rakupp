@@ -170,4 +170,38 @@ bool leaveReadsEarlier(const std::vector<StmtPtr>& body, size_t j) {
     return false;
 }
 
+// A node kind as a fallback note names it: the construct `--exe` hands to the
+// interpreter, in words (the note said "NK 24" for an allomorph literal).
+std::string nkName(NK k) {
+    switch (k) {
+        case NK::IntLit: return "an Int literal"; case NK::NumLit: return "a numeric literal";
+        case NK::StrLit: return "a string literal"; case NK::InterpStr: return "an interpolated string";
+        case NK::BoolLit: return "a Bool literal"; case NK::VarExpr: return "a variable";
+        case NK::ListExpr: return "a list"; case NK::Assign: return "an assignment";
+        case NK::Binary: return "an infix operator"; case NK::Unary: return "a prefix or postfix operator";
+        case NK::Call: return "a call"; case NK::MethodCall: return "a method call";
+        case NK::Index: return "a subscript"; case NK::Ternary: return "a `?? !!`";
+        case NK::Range: return "a range"; case NK::Pair: return "a pair";
+        case NK::BlockExpr: return "a block or pointy block"; case NK::ArrayLit: return "an array literal `[ ... ]`";
+        case NK::HashLit: return "a hash literal `{ ... }`"; case NK::NameTerm: return "a bare name";
+        case NK::RegexLit: return "a regex literal"; case NK::SubstLit: return "an `s///` substitution";
+        case NK::ChainExpr: return "a chained comparison";
+        case NK::SymbolicRef: return "a symbolic reference (::(\"…\")) — native locals have no runtime names";
+        case NK::AllomorphLit: return "an allomorph literal (`<42>`)"; case NK::NqpOp: return "an nqp:: op";
+        case NK::ExprStmt: return "an expression statement"; case NK::VarDecl: return "a variable declaration";
+        case NK::SubDecl: return "a routine declaration"; case NK::IfStmt: return "an `if`";
+        case NK::WhileStmt: return "a `while` or `until` loop"; case NK::ForStmt: return "a `for` loop";
+        case NK::LoopStmt: return "a `loop`"; case NK::Block: return "a block";
+        case NK::ReturnStmt: return "a `return`"; case NK::LastStmt: return "a `last`";
+        case NK::NextStmt: return "a `next`"; case NK::RedoStmt: return "a `redo`";
+        case NK::UseStmt: return "a `use`"; case NK::EmptyStmt: return "an empty statement";
+        case NK::GivenStmt: return "a `given`"; case NK::WhenStmt: return "a `when` outside `given`";
+        case NK::RepeatStmt: return "a `repeat` loop"; case NK::Whatever: return "a `*`";
+        case NK::ClassDecl: return "a class/role/grammar declaration"; case NK::SelfTerm: return "`self`";
+        case NK::EnumDecl: return "an enum declaration"; case NK::NamedRegexDecl: return "a named regex declaration";
+        case NK::SubsetDecl: return "a subset declaration";
+    }
+    return "an unsupported construct (node kind " + std::to_string((int)k) + ")";
+}
+
 }  // namespace rakupp

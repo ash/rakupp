@@ -6,6 +6,7 @@
 #include <functional>
 #include <memory>
 #include <climits>
+#include <cmath>
 #include <cstdio>
 #include <cstring>
 #include <algorithm>
@@ -39,9 +40,19 @@ bool leaveReadsEarlier(const std::vector<StmtPtr>& body, size_t j); bool pairHol
 bool nestedSubUnsafe(const std::vector<StmtPtr>&, const SubDecl*, const std::set<std::string>&, const SubDecl*);
 std::string autothreadMask(const std::vector<Param>& ps, bool block);   // codegen/Autothread.cpp
 
+std::string nkName(NK k);   // a node kind as a fallback note names it (codegen/Refusals.cpp)
 namespace {
 
 [[noreturn]] void unsupported(const std::string& what) { throw CodegenError{what}; }
+// A double as C++ source. `%.17g` alone wrote -0e0 as the Int `-0` (its sign
+// lost) and Inf and NaN as `inf` and `nan`, which are not C++.
+std::string cDouble(double d) {
+    if (std::isnan(d)) return "std::numeric_limits<double>::quiet_NaN()";
+    if (std::isinf(d)) return d < 0 ? "(-std::numeric_limits<double>::infinity())" : "std::numeric_limits<double>::infinity()";
+    char nb[40]; cnum::snprintf(nb, sizeof nb, "%.17g", d);
+    std::string s = nb;
+    return s.find_first_of(".e") == std::string::npos ? s + ".0" : s;
+}
 
 // A pattern the embedded engine can run correctly WITHOUT the surrounding
 // compiled frame. In a native binary the engine resolves variables and code
@@ -100,21 +111,6 @@ void requireEngineOnlyRegex(const std::string& pat, const char* what) {
     }
 }
 
-// Human-readable name for an AST node kind (for fallback messages).
-std::string nkName(NK k) {
-    switch (k) {
-        case NK::ClassDecl:   return "a class/role/grammar declaration";
-        case NK::EnumDecl:    return "an enum declaration";
-        case NK::WhenStmt:    return "a `when` outside `given`";
-        case NK::HashLit:     return "a hash literal `{ ... }`";
-        case NK::SelfTerm:    return "`self`";
-        case NK::SubstLit:    return "an `s///` substitution";
-        case NK::SymbolicRef: return "a symbolic reference (::(\"…\")) — native locals have no runtime names";
-        case NK::ChainExpr:   return "a chained comparison";
-        case NK::Pair:        return "a pair";
-        default:              return "an unsupported construct (NK " + std::to_string((int)k) + ")";
-    }
-}
 
 // C++ string-literal escape.
 std::string cesc(const std::string& s) {
@@ -2610,10 +2606,8 @@ struct Codegen {
             case NK::NumLit: {
                 auto* n = static_cast<NumLit*>(e);
                 if (n->imaginary) {
-                    // cnum, not a stream: a host's locale must never put a comma
-                    // into GENERATED SOURCE (it would not compile)
-                    char nb[40]; cnum::snprintf(nb, sizeof nb, "%.17g", n->v);
-                    return "Value::complex(0, " + std::string(nb) + ")";
+                    // the imaginary half of `<-0-0i>` has a real part of -0, as evalExpr gives it: re's sign survives the `+`
+                    return std::string("Value::complex(") + (!n->raw.empty() && n->raw[0] == '<' ? "-0.0" : "0.0") + ", " + cDouble(n->v) + ")";
                 }
                 if (n->isRat) {
                     // function-local static: build the Rat once, share its immutable
@@ -2625,11 +2619,15 @@ struct Codegen {
                     s << "; return __r; }())";
                     return s.str();
                 }
-                char nb[40]; cnum::snprintf(nb, sizeof nb, "%.17g", n->v);
-                return "Value::number(" + std::string(nb) + ")";
+                return "Value::number(" + cDouble(n->v) + ")";
             }
             case NK::StrLit:  return "Value::str(" + cesc(static_cast<StrLit*>(e)->v) + ")";
             case NK::BoolLit: return std::string("Value::boolean(") + (static_cast<BoolLit*>(e)->v ? "true" : "false") + ")";
+            case NK::AllomorphLit: {   // `<42>`: the number, typed IntStr (…) and spelled as written, as evalExpr makes it
+                auto* a = static_cast<AllomorphLit*>(e);
+                return "([](Value v) { v.hashKind = v.t == VT::Int ? \"IntStr\" : v.t == VT::Rat ? \"RatStr\" : v.t == VT::Complex ? "
+                       "\"ComplexStr\" : \"NumStr\"; v.s = std::string(" + cesc(a->str) + "); return v; })(" + ex(a->num.get()) + ")";
+            }
             case NK::VarExpr: {
                 auto* v = static_cast<VarExpr*>(e);
                 if (v->name == "$_") {
@@ -6682,8 +6680,7 @@ struct Codegen {
             case NK::NumLit: {
                 auto* l = static_cast<NumLit*>(e);
                 if (l->isRat || l->imaginary) return r;
-                char nb[40]; cnum::snprintf(nb, sizeof nb, "%.17g", l->v);
-                r.c = "((double)(" + std::string(nb) + "))";
+                r.c = "((double)(" + cDouble(l->v) + "))";
                 r.k = 'n';
                 return r;
             }
