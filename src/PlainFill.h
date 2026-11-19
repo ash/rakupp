@@ -9,7 +9,8 @@
 namespace rakupp {
 
 // What `K.new(…)` stores for a class whose `.new` is the default construction
-// (plainNewClass, Builtins.cpp) and whose attributes are all plain `$`: one
+// (plainNewClass, Builtins.cpp) and whose attributes are all plain `$`,
+// untyped or of one of four built-in types (Slot::kind): one
 // slot an attribute, in the order runAttrDefaults stores them, each with the
 // key it is stored under, that key's hash and the value it starts from. Built
 // once per class and kept while the symbol generation finds it unchanged
@@ -22,13 +23,22 @@ struct PlainFill {
         std::string name;     // the attribute's, which a named argument gives
         bool buildable = false;   // public or `is built`: a named argument may be for it
         bool takesArg = false;    // …and is, its class having no BUILD of its own
-        Value dflt;           // Any, or its literal default
+        Value dflt;           // Any (its type object, for a typed one), or its literal default
+        // `has Int $.x`: 'I', 'N', 'S' or 'B' for Int, Num, Str or Bool — an
+        // argument must then be a plain value of exactly that type for the
+        // fill to store it (anything else is runAttrDefaults', check and all); 0 untyped
+        char kind = 0;
     };
     std::vector<Slot> slots;
     bool ok = false;        // every attribute is one the fill stores as runAttrDefaults would
     bool noHooks = false;   // no POPULATE, BUILD, TWEAK or DESTROY in the ancestry: nothing follows the fill
     bool same(const PlainFill& o) const;
 };
+
+// Whether a plain stored value (plainStoredValue) is exactly of a typed slot's type
+inline bool plainFillKindIs(char kind, const Value& v) {
+    return v.t == (kind == 'I' ? VT::Int : kind == 'N' ? VT::Num : kind == 'S' ? VT::Str : VT::Bool);
+}
 
 // The plan for `ci`, a class plainNewClass answered 1 for. Never null.
 const PlainFill* plainFillPlan(ClassInfo& ci);

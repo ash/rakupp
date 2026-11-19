@@ -27,7 +27,7 @@ bool PlainFill::same(const PlainFill& o) const {
     for (size_t i = 0; i < slots.size(); i++) {
         const Slot& a = slots[i];
         const Slot& b = o.slots[i];
-        if (a.key != b.key || a.name != b.name || a.buildable != b.buildable || a.takesArg != b.takesArg ||
+        if (a.key != b.key || a.name != b.name || a.buildable != b.buildable || a.takesArg != b.takesArg || a.kind != b.kind ||
             a.dflt.t != b.dflt.t || !a.dflt.sameRep(b.dflt) || (a.dflt.t == VT::Num && a.dflt.n != b.dflt.n))
             return false;
     }
@@ -37,15 +37,17 @@ bool PlainFill::same(const PlainFill& o) const {
 // A default the fill stores without evaluating anything: none (the attribute
 // starts as Any), or an Int or Num literal. Any other default is evaluated in
 // the class's scope with `self` bound, which is runAttrDefaults' to do.
-static bool literalDefault(const ClassAttr& at, Value& out) {
+// …and for a typed attribute (`kind`): its type object, or a literal of that type.
+static bool literalDefault(const ClassAttr& at, char kind, Value& out) {
     if (at.hasDefVal) {
         if (!plainStoredValue(at.defVal) || at.defVal.t == VT::Object) return false;
         out = at.defVal;
     }
-    else if (!at.def) out = Value::any();
+    else if (!at.def) out = kind ? Value::typeObj(at.type) : Value::any();
     else if (at.def->kind == NK::IntLit) out = Value::integer(static_cast<const IntLit*>(at.def)->v);
     else if (at.def->kind == NK::NumLit) out = Value::number(static_cast<const NumLit*>(at.def)->v);
     else return false;
+    if (kind && (at.hasDefVal || at.def) && !plainFillKindIs(kind, out)) return false;
     out.readonly = out.immutableBind = false;
     return true;
 }
@@ -76,10 +78,11 @@ static PlainFill buildPlan(ClassInfo* ci) {
                               bm->second.code()->ci().isSubmethod && !lvl->roleSubmethods.count("BUILD");
         for (auto& at : lvl->attrs) {
             PlainFill::Slot s;
-            if (at.sigil != '$' || !at.type.empty() || !at.containerIs.empty() || at.defaultTrait || at.shape ||
+            s.kind = at.type == "Int" ? 'I' : at.type == "Num" ? 'N' : at.type == "Str" ? 'S' : at.type == "Bool" ? 'B' : 0;
+            if (at.sigil != '$' || (!at.type.empty() && !s.kind) || !at.containerIs.empty() || at.defaultTrait || at.shape ||
                 at.where || !at.doesRoles.empty() || at.buildFn.t == VT::Code || at.containerProto.t == VT::Object ||
                 at.required || at.defConstraint || at.coerce || at.objKeyed || at.inlined ||
-                !literalDefault(at, s.dflt))
+                !literalDefault(at, s.kind, s.dflt))
                 return pf;
             // one attribute of a name on the chain: a name declared twice is
             // two slots a named argument may both fill
@@ -128,7 +131,11 @@ bool plainFillRun(const PlainFill& pf, ObjectData& od, ClassInfo& ci, const Valu
         const std::string_view name = a.s;
         size_t i = 0;
         while (i < ns && pf.slots[i].name != name) i++;
-        if (i < ns && pf.slots[i].takesArg) { given[i] = pv; continue; }
+        if (i < ns && pf.slots[i].takesArg) {
+            if (pf.slots[i].kind && !plainFillKindIs(pf.slots[i].kind, *pv)) return false;   // (the check, and what it says, are the walk's)
+            given[i] = pv;
+            continue;
+        }
         if (i < ns && pf.slots[i].buildable) continue;   // its class has a BUILD: the default stands
         // no attribute of the chain takes the name: one reached another way
         // (through a role, a second parent) is runAttrDefaults' last pass
