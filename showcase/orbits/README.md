@@ -119,7 +119,9 @@ Saturn     2022-08-14   2023-08-27   2025-09-21
 
 ## The book
 
-`web/` is the same engine as an interactive textbook:
+`web/` is the same engine as an interactive textbook —
+**[open it in the browser](https://htmlpreview.github.io/?https://github.com/ash/rakupp/blob/main/showcase/orbits/web/orbits.html)**.
+Build it with:
 
 ```sh
 build/rakupp showcase/orbits/tools/build.raku

@@ -1,8 +1,9 @@
 # Presentation
 
 A self-contained slide deck introducing Raku++ and its ecosystem —
-[`index.html`](index.html). No build step and no dependencies: open the file
-in a browser, or serve the directory statically.
+[`index.html`](index.html) — **[open it in the browser](https://htmlpreview.github.io/?https://github.com/ash/rakupp/blob/main/presentation/index.html)**.
+No build step and no dependencies: open the file in a browser, or serve the
+directory statically.
 
 **Just want to look?** [`rakupp-presentation.pdf`](rakupp-presentation.pdf) is a
 29-page PDF export — download it and flip through in any PDF viewer (the text
@@ -62,7 +63,8 @@ hand-written, and it drifted.
 
 ## Talking points
 
-[`talking-points.html`](talking-points.html) is the speaker's companion to the
+[`talking-points.html`](talking-points.html)
+([open it in the browser](https://htmlpreview.github.io/?https://github.com/ash/rakupp/blob/main/presentation/talking-points.html)) is the speaker's companion to the
 deck, at v5.8.0: everything there is to say, in the order the 40-minute talk says
 it. It opens with a slide map (target time, slides, part) linking to a section per
 part, each section naming the slides it backs, with the figure the repository

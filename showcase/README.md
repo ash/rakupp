@@ -23,9 +23,9 @@ README below.
 | [**jsonreq/**](jsonreq) | Ecosystem — our own modules composing | curl+jq for JSON APIs: request, query, pretty-print |
 | [**sqlite/**](sqlite) | C libraries — NativeCall and a raw-mode terminal | database client: query, browse, dump; the real libsqlite3 does the work |
 | [**gui/**](gui) | GUI — one program, three backends; `react`/`whenever` as the event loop | native desktop apps: the Counter and a Calculator, Cocoa or GTK |
-| [**eclipse/**](eclipse) | Transpiling — one engine, a terminal and a browser, through `--target=js` | predicts solar and lunar eclipses; builds an interactive textbook |
-| [**fourier/**](fourier) | Numerics — complex arithmetic and a recursive FFT, checked against exact identities | Fourier series and transforms; an oscilloscope in characters |
-| [**orbits/**](orbits) | Numerics — iteration to convergence, checked against the almanacs | where the planets are, and what a transfer to one costs |
+| [**eclipse/**](eclipse) | Transpiling — one engine, a terminal and a browser, through `--target=js` | predicts solar and lunar eclipses; builds an interactive textbook — [open the book](https://htmlpreview.github.io/?https://github.com/ash/rakupp/blob/main/showcase/eclipse/web/eclipse.html) |
+| [**fourier/**](fourier) | Numerics — complex arithmetic and a recursive FFT, checked against exact identities | Fourier series and transforms; an oscilloscope in characters — [open the book](https://htmlpreview.github.io/?https://github.com/ash/rakupp/blob/main/showcase/fourier/web/fourier.html) |
+| [**orbits/**](orbits) | Numerics — iteration to convergence, checked against the almanacs | where the planets are, and what a transfer to one costs — [open the book](https://htmlpreview.github.io/?https://github.com/ash/rakupp/blob/main/showcase/orbits/web/orbits.html) |
 | [**ledger/**](ledger) | Exact arithmetic — money as `FatRat`, a grammar that reports every mistake | plain-text accounting: balances, budgets, and where a journal is wrong |
 | [**web/**](web) | In the browser — the pure showcases compiled to WebAssembly | three apps that open from a `file://` URL, no server |
 

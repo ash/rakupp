@@ -260,7 +260,11 @@ exploring Raku++:
 - **[examples/](examples)** — complete example programs: Mandelbrot, Game of
   Life, a JSON parser on a Raku grammar, a quine, …
 - **[showcase/](showcase)** — mid-size programs: a Scheme interpreter built on
-  a Raku grammar, and a pastebin HTTP server on raw sockets.
+  a Raku grammar, and a pastebin HTTP server on raw sockets. Three of them
+  are also interactive textbooks you can open in the browser:
+  [eclipses](https://htmlpreview.github.io/?https://github.com/ash/rakupp/blob/main/showcase/eclipse/web/eclipse.html),
+  [Fourier series](https://htmlpreview.github.io/?https://github.com/ash/rakupp/blob/main/showcase/fourier/web/fourier.html) and
+  [orbits](https://htmlpreview.github.io/?https://github.com/ash/rakupp/blob/main/showcase/orbits/web/orbits.html).
 - **[live/](live)** — real software from the ecosystem, run unmodified: whole
   tools people already use, driven by Raku++ exactly as their authors wrote
   them. The other direction — other people's software that reached for *this*
@@ -385,8 +389,9 @@ have to agree.
 
 ## Documentation
 
-Start with the **[presentation](presentation)** (a slide deck — PDF or
-interactive HTML), **[HIGHLIGHTS.md](docs/guide/HIGHLIGHTS.md)** (the key
+Start with the **[presentation](presentation)** (a slide deck —
+[open it in the browser](https://htmlpreview.github.io/?https://github.com/ash/rakupp/blob/main/presentation/index.html), or read the PDF),
+**[HIGHLIGHTS.md](docs/guide/HIGHLIGHTS.md)** (the key
 features on one page), or **[GUIDE.md](docs/guide/GUIDE.md)** (the full
 overview). The complete annotated index is **[docs/README.md](docs/README.md)**;
 the shape of it:

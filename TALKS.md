@@ -2,7 +2,8 @@
 
 Conference talks about Raku++ — what it is, why it exists, and how it is being
 built. The deck lives in [presentation/](presentation/): the interactive
-[`index.html`](presentation/index.html), or the
+[`index.html`](presentation/index.html)
+([open it in the browser](https://htmlpreview.github.io/?https://github.com/ash/rakupp/blob/main/presentation/index.html)), or the
 [PDF export](presentation/rakupp-presentation.pdf).
 
 ## Upcoming
