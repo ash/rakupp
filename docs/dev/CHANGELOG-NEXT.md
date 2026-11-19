@@ -16,6 +16,45 @@ here.*
 
 ### Faster
 
+- **A loop holds the objects it makes and never lets out as slots**
+  ([OBJECT-KERNEL-PLAN.md](plans/OBJECT-KERNEL-PLAN.md) phases 1 to 5 and 7).
+  `my $p = Point.new(x => A, y => B)` in a loop a kernel runs made an object
+  an iteration, 6,570 instructions each, and any class name kept the loop out
+  of a kernel. For a class whose `.new` is the plain fill, the loop kernel now
+  keeps each attribute in a frame slot, reads `$p.x` as the slot and compiles
+  a one-expression method in place, objects passed to it and made by it
+  included; an object used any other way keeps the loop interpreted. An
+  object made before the loop and only read in it (phase 2) has its
+  attributes copied into slots at each entry: `$acc += $p.len2` 5,181 → 123
+  instructions an iteration. Such a `my` may be assigned another object of
+  its class (`$p = $p.shift(1)`), `?? !!` may choose between two, and a
+  method's body may be statements — `my`, `if`, `return` — when every end
+  answers one kind of value (phase 3): a loop of a conditional assignment,
+  a `clamp` with an early `return` and a `norm1` of two `my`s, 31.82G → 1.01G
+  instructions for 1M iterations (1.32 → 0.04 s; Rakudo 2026.09 1.16 s).
+  A variable made before the loop may be given a fresh object of its class
+  in it (`$p = $p.step`, phase 5): the object is made once, from the slots,
+  when the loop ends — 1M such steps 12.72G → 0.44G instructions (0.51 →
+  0.01 s; Rakudo 0.62 s). And an object may leave the loop — `@a.push($p)`,
+  `@a.push(P.new(…))`, `$outside = $named`: it is made where it is pushed, or
+  where its name is declared, by the plain fill with no `.new` call; 1M
+  `@a.push(P.new(…).shift(1))` 15.16G → 2.10G instructions (0.69 → 0.13 s;
+  Rakudo 1.08 s). An attribute typed `Int`, `Num`, `Str` or `Bool` no longer
+  keeps a class out (phase 7): the plain fill takes an argument that is
+  exactly of that type and leaves every other one, with its check and its
+  error, to the general construction — so a plain `.new` of such a class is
+  faster outside a kernel too. `objects-steady` with `has Int $.x`: 24.82G →
+  19.12G instructions with kernels off, 0.59G with them on (1.04 → 0.05 s;
+  Rakudo 0.97 s). And an attribute may be written (phase 4): `$!n = …`,
+  `$!n++`, `$!n += …` in a method and `$p.n = …` through an `is rw` accessor
+  are stores to the slot, for an object only one name holds; an object made
+  before the loop gets its attributes back when the loop ends. 1M
+  `$a.add($i % 100).add(1)` on an accumulator: 16.72G → 0.46G instructions
+  (0.66 → 0.02 s; Rakudo 1.03 s).
+  `objects-steady` 770 → 23 ms (19.30G → 0.55G instructions; Rakudo 2026.09
+  907 ms), `objects` 82 → 6.6 ms (Rakudo 197), best of six on the M4 at a load
+  of 3; `multiwhere-steady`, `fib` and `loopsum` unchanged.
+  `t/regression/object-kernel.raku`.
 - **`--exe` compiles an EVAL of a literal natively** (0444d23b). Every EVAL
   sent its program to the bundling fallback, since the evaluated code cannot
   see a native program's variables and routines; it was the first construct

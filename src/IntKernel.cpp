@@ -47,6 +47,8 @@
 #include "InterpreterParts.h"
 #include "IntOps.h"
 #include "BuiltinsShared.h"   // graphemeCount
+#include "PlainFill.h"
+#include "AttrLayout.h"
 #include <climits>
 #include <cmath>
 #include <cstdlib>
@@ -64,6 +66,8 @@
 #endif
 
 namespace rakupp {
+
+extern std::atomic<uint64_t> g_symbolGen;   // Interpreter.cpp: moves on every structural symbol change
 
 namespace {
 
@@ -88,6 +92,7 @@ enum class KOp : uint8_t {
     Seq,      // statements; the value is the last one's
     If,       // a statement: a ? b : c, c may be null
     Ret,      // return a
+    Inl,      // a method body compiled in place: run a, take a `return`'s mark off, answer the slot (if any)
     // loop kernels: statements that write the frame
     Set,      // slot = a
     AddTo, SubTo, MulTo,   // slot OP= a
@@ -140,6 +145,9 @@ enum class KOp : uint8_t {
     CAddTo, CSubTo, CMulTo, CSApp,
     CPreInc, CPreDec, CPostInc, CPostDec,
     CPush, SCPush,        // @a.push(a)
+    OMake,                // object slot `slot` = a new object of mk's class, from the frame (OBJECT-KERNEL-PLAN 5b)
+    OCopy,                // object slot `slot` = object slot `lit`
+    OPush,                // @a.push(object slot `slot`)
 };
 // KNode::nargs on a container node
 constexpr uint8_t kCHash = 1;     // %h, not @a
@@ -151,6 +159,7 @@ struct KRun;
 using KFn = int64_t (*)(const KNode*, int64_t*, KRun&);
 using SFn = const std::string& (*)(const KNode*, int64_t*, KRun&);
 
+struct MakePlan;
 struct KNode {
     union { KFn fn = nullptr; SFn sfn; };   // set by link once the kernel is built
     KOp op;
@@ -160,7 +169,7 @@ struct KNode {
     KNode* a = nullptr;
     KNode* b = nullptr;
     KNode* c = nullptr;
-    union { IKernel* callee = nullptr; int64_t den; const CowStr* cow; };   // Call / XLit: the denominator / SLit: its text, to share
+    union { IKernel* callee = nullptr; int64_t den; const CowStr* cow; const MakePlan* mk; };   // Call / XLit: the denominator / SLit: its text, to share
     KNode** kids = nullptr;     // Call: nargs arguments; Seq: nargs statements
 };
 
@@ -213,13 +222,57 @@ enum class KT { Int, Bool, Str, Void, Num, Exact };
 // slot, by the type its value
 // has when the kernel is compiled — which is the type it must still have at
 // every later entry.
-struct LSym { std::string name; KT t; int slot; bool ro; };
+struct LSym { std::string name; KT t; int slot; bool ro; int obj = -1; };   // (obj: an object held as slots, LoopCx::vobjs)
+// An object the loop makes and never lets out (objNew): no ObjectData, only
+// its attributes, each a slot of the frame with the type of what it was given
+// (Void: never given, which reads as Any and so is not read here).
+struct VAttr { std::string name; KT t = KT::Void; int slot = -1; };
+// (fresh: made by a `.new` on every road to here and held by no name — the
+// only kind a variable of the program may be given, since the object made
+// for it when the loop ends is then one nothing else could have held)
+// (box: the object slot that holds the object itself, for one that leaves the
+// loop — pushed, or handed to a variable of the program — and so must be the
+// same object wherever it goes; -1 for one that exists only as its slots)
+// (owner: whose object it is, for a write to its attributes (phase 4) — the
+// index in LoopCx::vobjs of the name that holds it, kOuterOwner - i for the
+// i-th object of the program, -1 for one no name holds, kMixedOwner for a
+// group that is a COPY of what may be a name's (`?? !!`, a body's `return`s):
+// read, never written. srcs: the names such a copy may be the object of.)
+constexpr int kMixedOwner = -3, kOuterOwner = -10;
+struct VObj {
+    ClassInfo* cls = nullptr; std::vector<VAttr> attrs; bool fresh = false; int box = -1;
+    int owner = -1; std::vector<int> srcs;
+    bool named() const { return (owner != -1 && owner != kMixedOwner) || !srcs.empty(); }
+};
+// What OMake makes: the class, its fill as it was when the kernel was compiled
+// (asked again at entry when the symbol generation has moved), and where each
+// attribute's value is in the frame (Void: the fill's default).
+struct MakePlan { std::shared_ptr<ClassInfo> cls; PlainFill plan; std::vector<VAttr> src; };
+// What `.name(nargs…)` on an instance of `ci` was when a kernel was compiled
+// (objMethodOf): asked again when the symbol generation has moved.
+struct ObjFact { ClassInfo* ci; std::string name; size_t nargs; int kind; Callable* mc; };
+// An object of the program the loop only reads (`$p.len2` with `$p` made
+// before the loop): its class, and its attributes copied into slots at each
+// entry, each of the type it had when the kernel was compiled.
+// (dirty: the slot that says the loop assigned it — `$p = $p.shift(1)` — in
+// which case its variable is given a new object, made from the slots, when
+// the loop ends; -1 for one that is only read)
+// (wr: per attribute, whether the loop writes it — `$p.bump` — in which case
+// the object's own attribute takes the slot's value when the loop ends)
+struct LOuterObj { std::string name; ClassInfo* ci; uint64_t serial; VObj o; int dirty = -1; std::vector<char> wr; };
+// Where a method body of statements, compiled in place, leaves its value: one
+// slot (an Int, a Num or a Bool), or the slots of the object it answers
+// (`cls`, from objClass before anything is compiled). Every `return` and the
+// last statement store there; the first one compiled says of what types.
+// (direct: every end answers `self` — a method that writes and hands itself
+// back, `$c.add(1).add(2)` — so the answer IS the invocant's slots, not a copy)
+struct InlRet { ClassInfo* cls = nullptr; bool have = false; KT t = KT::Void; int slot = -1; VObj obj; bool direct = false; };
 // (`nat`: a full-width native's, `int` or `num` — see nativeInt64Value)
 struct LOuter { std::string name; KT t; int slot; bool written; bool nat = false; };
 // A container of the program the loop reads or writes in place: `@a` or `%h`,
 // and the kind of element it holds (Int or Str, from its contents or from the
 // first value the loop stores; Void while neither has said).
-struct LCont { std::string name; bool hash; KT elem; bool written; bool packed = false; bool pushed = false; };   // (packed: a Num array's words; pushed: `.push`ed onto)
+struct LCont { std::string name; bool hash; KT elem; bool written; bool packed = false; bool pushed = false; bool objs = false; };   // (objs: holds or is pushed objects; no element of it is read)   // (packed: a Num array's words; pushed: `.push`ed onto)
 struct LoopCx {
     Env* env = nullptr;                      // where the loop's free names resolve (this entry)
     // other threads are live (PARALLEL-SCALING-PLAN P5): a variable another
@@ -246,6 +299,29 @@ struct LoopCx {
         return false;
     }
     std::string why;                         // the first thing refused, for the trace
+    // objects held as slots, and the methods compiled in place for them
+    std::vector<VObj> vobjs;                 // the ones a `my` names (LSym::obj)
+    std::vector<const VObj*> selfs;          // the invocants of the method bodies being compiled, innermost last
+    std::vector<const Callable*> bodies;     // …and those methods
+    std::vector<InlRet*> rets;               // …and, for a body of statements, where its value goes (else null)
+    size_t floor = 0;                        // scopes below this are the caller's: a method body does not see them
+    std::vector<std::pair<const NameTerm*, ClassInfo*>> classes;   // each class term, resolved once
+    std::vector<Value> inlined;              // every method compiled in place (its Code value)
+    std::vector<ObjFact> facts;              // every `.name` it resolved on a class, and what it found
+    std::vector<LOuterObj> oobjs;            // objects of the program, read only
+    // objects that leave the loop: the object slots, the names that have one
+    // (found by a first compile, which asks for another: `again`), the plans
+    // writes to attributes: the owners written, and those two names may hold
+    // (never both: a write through one name would not reach the other's slots)
+    std::vector<int> owritten, oaliased;
+    bool objWrites = false, subsObjCall = false;   // …and a subscript that calls a method (its order of evaluation)
+    int nobj = 0;
+    std::vector<std::string> boxed;
+    std::vector<std::unique_ptr<MakePlan>> makes;
+    bool isBoxed(const std::string& n) const {
+        for (auto& b : boxed) if (b == n) return true;
+        return false;
+    }
 };
 
 struct Compiler {
@@ -271,6 +347,69 @@ struct Compiler {
     KNode* ltail(IKernel& k, const std::vector<StmtPtr>& ss);
     KNode* lif(IKernel& k, IfStmt* is, bool tail);
     const LSym* lookup(const std::string& name);
+    // objects held as slots (OBJECT-KERNEL-PLAN.md)
+    ClassInfo* kernelClass(const NameTerm* nt);
+    ClassInfo* objClass(Expr* e);
+    const LOuterObj* outerObj(const VarExpr* v);
+    int objMethod(ClassInfo* ic, const std::string& name, size_t nargs, Callable*& mc);
+    KNode* objExpr(IKernel& k, const Callable* c, Expr* e, VObj& out);
+    KNode* objNew(IKernel& k, const Callable* c, MethodCall* m, VObj& out);
+    KNode* objCall(IKernel& k, const Callable* c, const VObj& self, KNode* selfNode, const std::string& name,
+                   const std::vector<ExprPtr>* args, VObj* objOut, KT& t);
+    KNode* attrVar(IKernel& k, const Callable* c, VarExpr* v, KT& t);
+    ClassInfo* objClassIn(Callable* mc, ClassInfo* ic, const std::vector<ExprPtr>& args);
+    bool objClassStmts(const std::vector<StmtPtr>& ss, bool tail, ClassInfo*& cls, int& seen);
+    bool objCopy(IKernel& k, const VObj& from, const VObj& to, std::vector<KNode*>& seq);
+    bool objShared(const VObj& o);
+    void objFresh(const VObj& like, VObj& out);
+    KNode* objSeq(IKernel& k, std::vector<KNode*>& seq);
+    KNode* inlRet(IKernel& k, Expr* e, bool ret);
+    KNode* inlTail(IKernel& k, const std::vector<StmtPtr>& ss);
+    int objBox(IKernel& k, Expr* e, const VObj& o, int dst, std::vector<KNode*>& seq);
+    // writes (phase 4)
+    static bool ownerIn(const std::vector<int>& v, int o) {
+        for (int x : v) if (x == o) return true;
+        return false;
+    }
+    bool markAliased(int o) {
+        if (o == -1 || o == kMixedOwner || ownerIn(L->oaliased, o)) return true;
+        if (ownerIn(L->owritten, o)) { refuse("an object written through one name and held by another"); return false; }
+        L->oaliased.push_back(o);
+        return true;
+    }
+    // the object gets a name (or another one): whoever may hold it already is aliased
+    bool nameIt(const VObj& o) {
+        if (!markAliased(o.owner)) return false;
+        for (int x : o.srcs) if (!markAliased(x)) return false;
+        return true;
+    }
+    static void mergeOwner(VObj& into, const VObj& from) {
+        if (from.owner != -1 && from.owner != kMixedOwner) into.srcs.push_back(from.owner);
+        for (int x : from.srcs) into.srcs.push_back(x);
+        if (from.owner != -1) into.owner = kMixedOwner;
+    }
+    const VAttr* markWritten(const VObj& o, const std::string& attr);
+    KNode* attrStore(IKernel& k, const Callable* c, const VObj& obj, KNode* pre, const std::string& attr, Assign* a, KT& t);
+    bool objCallIn(const Expr* e);
+    bool inlAllSelf = true;   // objClassStmts: every end it has seen is `self`
+    KNode* needBox(const std::string& name) {
+        if (L->isBoxed(name)) return refuse("an object that leaves the loop: " + name);
+        L->boxed.push_back(name);
+        L->again = true;
+        return refuse("an object that leaves the loop by its name (compiled again): " + name);
+    }
+    // `slot = v`, in a fresh slot of v's type
+    KNode* keep(IKernel& k, KNode* v, KT vt, int& slot) {
+        slot = vt == KT::Str ? L->nstr++ : vt == KT::Exact ? exactSlot() : L->nint++;
+        KNode* n = k.node(vt == KT::Str ? KOp::SSet : vt == KT::Exact ? KOp::XSet : KOp::Set);
+        n->slot = slot; n->a = v;
+        return n;
+    }
+    KNode* slotRead(IKernel& k, KT st, int slot) {
+        KNode* n = k.node(st == KT::Str ? KOp::SVar : st == KT::Exact ? KOp::XVar : KOp::Param);
+        n->slot = slot;
+        return n;
+    }
     // containers (task 1)
     int cont(const std::string& name, bool hash, std::string& why);
     KNode* contRef(IKernel& k, const Callable* c, Index* ix, KOp op, KT& elem);
@@ -539,10 +678,769 @@ bool mentions(const Expr* e, const std::string& name) {
 }
 
 const LSym* Compiler::lookup(const std::string& name) {
-    for (auto it = L->scopes.rbegin(); it != L->scopes.rend(); ++it)
-        for (auto& s : *it)
+    for (size_t i = L->scopes.size(); i-- > L->floor;)
+        for (auto& s : L->scopes[i])
             if (s.name == name) return &s;
     return nullptr;
+}
+
+// --- objects held as slots (OBJECT-KERNEL-PLAN.md) ----------------------------
+//
+// `my $p = Point.new(x => A, y => B)` in a loop body, where nothing but method
+// calls ever touches $p: the object is never made. Its attributes are slots of
+// the frame, `$p.x` reads one, and `$p.m(…)` is m's body compiled in place with
+// those slots as `$.x` / `$!x` — when the class is one whose `.new` is the
+// plain default construction with nothing after it (plainNewClass's 1, a
+// PlainFill with no hooks) and the method's body is one expression over its
+// parameters, its attributes and such calls. The class is known from the
+// `.new` that made the object, so nothing is guessed and nothing is checked
+// per call; what can change between entries (a class, role or subset declared
+// since, a lexical of the class's name, a wrapped method) is asked at each
+// entry. An object used any other way — stored, passed, returned from the
+// loop, interpolated — refuses the kernel, as every object did before.
+
+// A method body the kernel can compile in place, read from the syntax alone:
+// what it may mention.
+bool inlSafe(const Expr* e) {
+    if (!e) return false;
+    switch (e->kind) {
+        case NK::IntLit: case NK::NumLit: case NK::BoolLit: case NK::StrLit: case NK::SelfTerm: return true;
+        case NK::VarExpr: {
+            auto* v = static_cast<const VarExpr*>(e);
+            return plainVarRead(v) && (v->attrBare.empty() ? plainScalarName(v->name)
+                                                           : v->name[0] == '$' && v->attrTwin.empty());
+        }
+        case NK::Binary: return inlSafe(static_cast<const Binary*>(e)->lhs.get()) && inlSafe(static_cast<const Binary*>(e)->rhs.get());
+        case NK::Unary: {
+            auto* u = static_cast<const Unary*>(e);
+            if (u->op == "++" || u->op == "--") {   // of the body's own variable, or `$!x`
+                auto* ov = u->operand && u->operand->kind == NK::VarExpr ? static_cast<const VarExpr*>(u->operand.get()) : nullptr;
+                return ov && plainVarRead(ov) && (ov->attrBare.empty() ? plainScalarName(ov->name)
+                                                 : ov->name.size() > 2 && ov->name[0] == '$' && ov->name[1] == '!' && ov->attrTwin.empty());
+            }
+            return inlSafe(u->operand.get());
+        }
+        case NK::Ternary: {
+            auto* t = static_cast<const Ternary*>(e);
+            return inlSafe(t->cond.get()) && inlSafe(t->then.get()) && inlSafe(t->els.get());
+        }
+        case NK::MethodCall: {
+            auto* m = static_cast<const MethodCall*>(e);
+            if (m->methodExpr || m->maybe || m->allMode || m->bang || m->mutate || m->hyper || m->meta ||
+                !m->methodQual.empty() || !m->inv)
+                return false;
+            const bool isNew = m->inv->kind == NK::NameTerm;
+            if (isNew ? m->method != "new" : !inlSafe(m->inv.get())) return false;
+            for (auto& a : m->args) {
+                if (!a || (a->kind == NK::Pair) != isNew) return false;
+                if (!inlSafe(isNew ? static_cast<const PairExpr*>(a.get())->value.get() : a.get())) return false;
+            }
+            return true;
+        }
+        case NK::Assign: {   // `my $t = E`, `$t = E`, `$t += E` of the body's own variables
+            auto* a = static_cast<const Assign*>(e);
+            if (a->userOp || a->containerSigil || !a->target || !inlSafe(a->value.get())) return false;
+            if (a->target->kind == NK::MethodCall)   // `self.x = E`, `$o.x = E`: an `is rw` accessor
+                return static_cast<const MethodCall*>(a->target.get())->args.empty() && inlSafe(a->target.get());
+            if (a->target->kind != NK::VarExpr) return false;
+            auto* tv = static_cast<const VarExpr*>(a->target.get());
+            return tv->attrBare.empty() ? plainScalarName(tv->name)   // (…or `$!x = E`)
+                                        : tv->name.size() > 2 && tv->name[0] == '$' && tv->name[1] == '!' && tv->attrTwin.empty();
+        }
+        default: return false;
+    }
+}
+
+// The same for a body of statements: expressions, `if` / `elsif` / `else` and
+// `return VALUE`.
+bool inlSafeStmts(const std::vector<StmtPtr>& ss, int depth = 0) {
+    if (ss.empty() || depth > 8) return false;
+    for (auto& sp : ss) {
+        const Stmt* s = sp.get();
+        if (!s || !s->label.empty()) return false;
+        if (s->kind == NK::ExprStmt) { if (!inlSafe(static_cast<const ExprStmt*>(s)->e.get())) return false; }
+        else if (s->kind == NK::ReturnStmt) {
+            auto* r = static_cast<const ReturnStmt*>(s);
+            if (r->isRw || !inlSafe(r->value.get())) return false;
+        }
+        else if (s->kind == NK::IfStmt) {
+            auto* is = static_cast<const IfStmt*>(s);
+            for (auto& br : is->branches)
+                if (!inlSafe(br.first.get()) || !br.second || !inlSafeStmts(br.second->stmts, depth + 1)) return false;
+            if (is->elseBlock && !inlSafeStmts(is->elseBlock->stmts, depth + 1)) return false;
+        }
+        else return false;
+    }
+    return true;
+}
+
+// …and what it must be: a plain `method` with `$` parameters and a body of
+// one expression or of such statements.
+bool inlShape(const Callable& c, size_t nargs) {
+    const auto& i = c.ci();
+    if (!i.isMethod || i.subAsMethod || i.isBlock || i.builtin || c.cold().isNative || i.isMultiDispatcher ||
+        i.isMultiCandidate || i.isProto || i.isProtoBody || i.isWhateverCode || i.isRegexRoutine || i.isStub ||
+        i.isSubmethod || c.cold().deprecated || i.testAssertion || i.isCached || !i.body || i.body->empty() ||
+        !i.placeholders.empty() || i.usesArgs || i.implicitArgs ||
+        c.cold().hasPrimed || i.retLiteral || i.retRw || !c.cold().retType.empty() || !c.cold().wrappers.empty())
+        return false;
+    const size_t np = i.params ? i.params->size() : 0;
+    if (np != nargs || np > (size_t)kMaxParams) return false;
+    for (size_t k = 0; k < np; k++) {
+        auto& p = (*i.params)[k];
+        if (p.sigil != '$' || p.named || p.slurpy || p.optional || p.invocant || p.isCopy || p.isRw || p.isRaw ||
+            p.defaultVal || p.subSig || p.litVal || p.whereExpr || p.hadWhere || p.defConstraint || p.coerce ||
+            p.typeCapture || p.codeSig || !p.captureName.empty() || !plainScalarName(p.name))
+            return false;
+    }
+    return inlSafeStmts(*i.body);
+}
+// (one expression: compiled as a value, with no slot for it)
+inline Expr* inlOneExpr(const Callable& c) {
+    auto& b = *c.ci().body;
+    if (b.size() != 1 || b[0]->kind != NK::ExprStmt) return nullptr;
+    Expr* e = static_cast<ExprStmt*>(b[0].get())->e.get();
+    if (e->kind == NK::Assign) {   // (a write to an attribute has a value; `my $t = …` alone has none)
+        auto* tg = static_cast<Assign*>(e)->target.get();
+        if (tg && tg->kind == NK::VarExpr && static_cast<VarExpr*>(tg)->attrBare.empty()) return nullptr;
+    }
+    return e;
+}
+
+// A parameter's type, when it is one the argument's kernel type already is
+bool paramTakes(const std::string& type, KT t) {
+    return type.empty() || type == "Any" || type == "Mu" || (type == "Cool" && t != KT::Bool) ||
+           (type == "Int" && t == KT::Int) || (type == "Num" && t == KT::Num) || (type == "Str" && t == KT::Str) ||
+           (type == "Bool" && t == KT::Bool);
+}
+
+// The class a bare name is in scope `e`, when `NAME.new(…)` there is the plain
+// default construction: what the scope binds the name to (a class declares
+// its name where it is written), or a class no scope binds. Null for a name
+// that is a routine's or a term's.
+ClassInfo* kernelClassIn(Interpreter& I, Env* e, const std::string& name, const std::string& subKey,
+                         const std::string& termKey) {
+    if (!e || e->find(subKey) || e->find(termKey)) return nullptr;
+    const Value* b = e->find(name);
+    if (b ? b->t != VT::Type : !I.classes_.count(name)) return nullptr;
+    return I.plainNewClassOf(b ? *b : Value::typeObj(name));
+}
+
+// …and when that construction is the plain fill and nothing else: asked once
+// per term, from the loop's scope and, for a term in a method body, the
+// method's own, which must agree.
+ClassInfo* Compiler::kernelClass(const NameTerm* nt) {
+    for (auto& d : L->classes) if (d.first == nt) return d.second;
+    if (!nt->ofType.empty() || nt->defConstraint || nt->pkgSelf || nt->symbolicStrict || !L->interp || !L->env ||
+        nt->name.find("::") != std::string::npos)
+        return nullptr;
+    Interpreter& I = *const_cast<Interpreter*>(L->interp);
+    if (L->threads || I.anyRevSwitch_ || I.haveCustomHows_.load(std::memory_order_relaxed)) return nullptr;
+    const std::string subKey = "&" + nt->name, termKey = "&term:<" + nt->name + ">";
+    ClassInfo* ci = kernelClassIn(I, L->env, nt->name, subKey, termKey);
+    if (!ci || ci->shadowsAttrs > 0) return nullptr;
+    if (!L->bodies.empty() && kernelClassIn(I, L->bodies.back()->closure.get(), nt->name, subKey, termKey) != ci)
+        return nullptr;
+    const PlainFill* pf = plainFillPlan(*ci);
+    if (!pf->ok || !pf->noHooks) return nullptr;
+    for (auto& sl : pf->slots) if (sl.key != sl.name) return nullptr;
+    L->classes.emplace_back(nt, ci);
+    return ci;
+}
+
+// What `.NAME(…)` on an instance of `ic` reaches: 1 a method to compile in
+// place (mc), 2 a public `$` attribute's accessor, 0 anything else.
+int objMethodOf(Interpreter& I, ClassInfo* ic, const std::string& name, size_t nargs, Callable*& mc) {
+    mc = nullptr;
+    if (Value* um = ic->findMethodForCall(name, I.langRev_ < 2)) {
+        if (um->t != VT::Code || !um->code() || !inlShape(*um->code(), nargs)) return 0;
+        mc = um->code();
+        return 1;
+    }
+    if (nargs) return 0;
+    const ClassAttr* at = I.plainAccessorAttr(ic, name);
+    return at && at->sigil == '$' ? 2 : 0;
+}
+int Compiler::objMethod(ClassInfo* ic, const std::string& name, size_t nargs, Callable*& mc) {
+    const int kind = objMethodOf(*const_cast<Interpreter*>(L->interp), ic, name, nargs, mc);
+    for (auto* b : L->bodies) if (b == mc) return 0;   // (a method that calls itself)
+    bool have = false;
+    for (auto& f : L->facts) have = have || (f.ci == ic && f.nargs == nargs && f.name == name);
+    if (!have) L->facts.push_back({ic, name, nargs, kind, mc});
+    return kind;
+}
+
+// The kernel type a plain value has, Void for any other value
+KT plainKT(const Value& v) {
+    return plainIntValue(v) ? KT::Int : plainNumValue(v) ? KT::Num : plainStrValue(v) ? KT::Str
+         : plainBoolValue(v) ? KT::Bool : kHasExact && plainRatValue(v) ? KT::Exact : KT::Void;
+}
+
+// A class whose instances keep each `$` attribute under its bare name, with
+// no built-in parent or representation behind them: the PlainFill's own test
+// of the attributes (its hooks do not matter to a read).
+const PlainFill* readableClass(ClassInfo* ci) {
+    if (!ci || !ci->decl || ci->isRole || ci->awaitingCompose) return nullptr;
+    for (ClassInfo* c = ci; c; c = c->parent.get())
+        if (!c->repr.empty() || !c->nativeParent.empty()) return nullptr;
+    const PlainFill* pf = plainFillPlan(*ci);
+    if (!pf->ok) return nullptr;
+    for (auto& sl : pf->slots) if (sl.key != sl.name) return nullptr;
+    return pf;
+}
+
+// A variable of the program that holds an object the loop may read as slots:
+// a plain `$name` the kernel has no symbol for, holding an instance of a
+// readableClass. Its attributes get slots of the types they hold now; one
+// that holds no plain value gets none, and a read of it refuses.
+const LOuterObj* Compiler::outerObj(const VarExpr* v) {
+    if (!L || L->sub || !L->selfs.empty() || L->threads || !L->env || !L->interp || v->declare || !plainVarRead(v) ||
+        !plainScalarName(v->name) || lookup(v->name))
+        return nullptr;
+    for (auto& o : L->oobjs) if (o.name == v->name) return &o;
+    for (auto& o : L->outer) if (o.name == v->name) return nullptr;   // (read as a value already)
+    const Interpreter& I = *L->interp;
+    if (I.anyRevSwitch_ || I.haveCustomHows_.load(std::memory_order_relaxed) || L->oobjs.size() >= 8) return nullptr;
+    Value* raw = L->env->findRaw(v->name, nullptr);
+    const Value* cell = raw ? raw->deref() : nullptr;
+    if (!cell || cell->t != VT::Object || !cell->obj() || cell->obj()->hasBoxed) return nullptr;
+    ObjectData* od = cell->obj();
+    ClassInfo* ci = od->cls.get();
+    const PlainFill* pf = readableClass(ci);
+    if (!pf) return nullptr;
+    LOuterObj o{v->name, ci, ci->serial, VObj{ci, {}}};
+    if (L->isBoxed(v->name)) o.o.box = L->nobj++;   // (the object itself, taken at entry)
+    o.o.owner = kOuterOwner - (int)L->oobjs.size();
+    for (auto& sl : pf->slots) {
+        auto it = od->attrs.find(sl.name);
+        const KT t = it != od->attrs.end() ? plainKT(it->second) : KT::Void;
+        const int slot = t == KT::Void ? -1 : t == KT::Str ? L->nstr++ : t == KT::Exact ? exactSlot() : L->nint++;
+        o.o.attrs.push_back({sl.name, t, slot});
+    }
+    L->oobjs.push_back(std::move(o));
+    return &L->oobjs.back();
+}
+
+// The class of an expression the kernel can hold as slots, or null: asked
+// before anything is compiled, and it compiles nothing.
+ClassInfo* Compiler::objClass(Expr* e) {
+    if (!e || !L || L->sub) return nullptr;
+    switch (e->kind) {
+        case NK::SelfTerm: return L->selfs.empty() ? nullptr : L->selfs.back()->cls;
+        case NK::VarExpr: {
+            auto* v = static_cast<VarExpr*>(e);
+            const LSym* s = v->declare ? nullptr : lookup(v->name);
+            if (s) return s->obj >= 0 ? L->vobjs[s->obj].cls : nullptr;
+            const LOuterObj* oo = outerObj(v);
+            return oo ? oo->ci : nullptr;
+        }
+        case NK::MethodCall: {
+            auto* m = static_cast<MethodCall*>(e);
+            if (m->methodExpr || m->maybe || m->allMode || m->bang || m->mutate || m->hyper || m->meta ||
+                !m->methodQual.empty() || !m->inv)
+                return nullptr;
+            if (m->inv->kind == NK::NameTerm)
+                return m->method == "new" ? kernelClass(static_cast<NameTerm*>(m->inv.get())) : nullptr;
+            ClassInfo* ic = objClass(m->inv.get());
+            Callable* mc = nullptr;
+            if (!ic || L->selfs.size() >= 8 || objMethod(ic, m->method, m->args.size(), mc) != 1) return nullptr;
+            // the class of its body's value, with that invocant, the
+            // parameters that are given such objects, and no name of the caller's
+            VObj self; self.cls = ic;
+            const size_t nv = L->vobjs.size();
+            std::vector<LSym> params;
+            for (size_t i = 0; i < m->args.size(); i++)
+                if (ClassInfo* ac = objClass(m->args[i].get())) {
+                    L->vobjs.push_back(VObj{ac, {}});
+                    params.push_back({(*mc->ci().params)[i].name, KT::Void, -1, true, (int)L->vobjs.size() - 1});
+                }
+            const size_t floor0 = L->floor;
+            L->scopes.push_back(std::move(params)); L->floor = L->scopes.size() - 1;
+            L->selfs.push_back(&self); L->bodies.push_back(mc); L->rets.push_back(nullptr);
+            ClassInfo* r = nullptr;
+            int seen = 0;
+            if (Expr* one = inlOneExpr(*mc)) r = objClass(one);
+            else if (!objClassStmts(*mc->ci().body, true, r, seen)) r = nullptr;
+            L->rets.pop_back(); L->bodies.pop_back(); L->selfs.pop_back();
+            L->floor = floor0; L->scopes.pop_back();
+            L->vobjs.resize(nv);
+            return r;
+        }
+        case NK::Ternary: {
+            auto* tn = static_cast<Ternary*>(e);
+            ClassInfo* a = objClass(tn->then.get());
+            return a && objClass(tn->els.get()) == a ? a : nullptr;
+        }
+        default: return nullptr;
+    }
+}
+
+// The class a body of statements answers, read without compiling: every
+// `return` and the last statement must answer an object of one class (cls),
+// or none of them an object (cls null). `my $x = OBJECT` on the way is a name
+// for the statements after it. False when they disagree.
+bool Compiler::objClassStmts(const std::vector<StmtPtr>& ss, bool tail, ClassInfo*& cls, int& seen) {
+    auto point = [&](Expr* e) {
+        if (!e || e->kind != NK::SelfTerm) inlAllSelf = false;
+        ClassInfo* r = objClass(e);
+        if (seen++ && r != cls) return false;
+        cls = r;
+        return true;
+    };
+    for (size_t i = 0; i < ss.size(); i++) {
+        Stmt* s = ss[i].get();
+        const bool last = tail && i + 1 == ss.size();
+        if (s->kind == NK::ReturnStmt) { if (!point(static_cast<ReturnStmt*>(s)->value.get())) return false; }
+        else if (s->kind == NK::IfStmt) {
+            auto* is = static_cast<IfStmt*>(s);
+            auto block = [&](Block* b) {
+                L->scopes.emplace_back();
+                const bool ok = objClassStmts(b->stmts, last, cls, seen);
+                L->scopes.pop_back();
+                return ok;
+            };
+            for (auto& br : is->branches) if (!block(br.second.get())) return false;
+            if (is->elseBlock && !block(is->elseBlock.get())) return false;
+        }
+        else if (s->kind == NK::ExprStmt) {
+            Expr* e = static_cast<ExprStmt*>(s)->e.get();
+            auto* a = e->kind == NK::Assign ? static_cast<Assign*>(e) : nullptr;
+            auto* tv = a && a->target && a->target->kind == NK::VarExpr ? static_cast<VarExpr*>(a->target.get()) : nullptr;
+            if (tv && tv->declare) {
+                if (ClassInfo* ac = objClass(a->value.get())) {
+                    L->vobjs.push_back(VObj{ac, {}});
+                    L->scopes.back().push_back({tv->name, KT::Void, -1, false, (int)L->vobjs.size() - 1});
+                }
+            }
+            else if (last && !a && !point(e)) return false;
+        }
+    }
+    return true;
+}
+
+// Slot groups: `to = from` attribute by attribute (false when their types
+// differ), whether a group is one a name already holds, and a group of fresh
+// slots of another's types.
+bool Compiler::objCopy(IKernel& k, const VObj& from, const VObj& to, std::vector<KNode*>& seq) {
+    if (from.cls != to.cls || from.attrs.size() != to.attrs.size()) return false;
+    for (size_t i = 0; i < to.attrs.size(); i++) if (from.attrs[i].t != to.attrs[i].t) return false;
+    for (size_t i = 0; i < to.attrs.size(); i++) {
+        const VAttr &f = from.attrs[i], &d = to.attrs[i];
+        if (f.t == KT::Void || f.slot == d.slot) continue;
+        KNode* n = k.node(f.t == KT::Str ? KOp::SSet : f.t == KT::Exact ? KOp::XSet : KOp::Set);
+        n->slot = d.slot; n->a = slotRead(k, f.t, f.slot);
+        seq.push_back(n);
+    }
+    return true;
+}
+bool Compiler::objShared(const VObj& o) {
+    auto same = [&](const VObj& x) {
+        for (size_t i = 0; i < o.attrs.size() && i < x.attrs.size(); i++)
+            if (o.attrs[i].t != KT::Void && x.attrs[i].t == o.attrs[i].t && x.attrs[i].slot == o.attrs[i].slot) return true;
+        return false;
+    };
+    for (auto& x : L->vobjs) if (same(x)) return true;
+    for (auto& x : L->oobjs) if (same(x.o)) return true;
+    for (auto* x : L->selfs) if (same(*x)) return true;
+    return false;
+}
+void Compiler::objFresh(const VObj& like, VObj& out) {
+    out = like;
+    out.box = -1;
+    out.owner = -1;
+    out.srcs.clear();
+    for (auto& a : out.attrs)
+        if (a.t != KT::Void) a.slot = a.t == KT::Str ? L->nstr++ : a.t == KT::Exact ? exactSlot() : L->nint++;
+}
+KNode* Compiler::objSeq(IKernel& k, std::vector<KNode*>& seq) {
+    if (seq.size() > 255) return refuse("an object with too many attributes");
+    if (seq.empty()) { KNode* n = k.node(KOp::Lit); n->lit = 0; return n; }
+    if (seq.size() == 1) return seq[0];
+    KNode* n = k.node(KOp::Seq);
+    n->kids = k.list(seq.size()); n->nargs = (uint8_t)seq.size();
+    for (size_t i = 0; i < seq.size(); i++) n->kids[i] = seq[i];
+    return n;
+}
+
+// A write to attribute `attr` of `o`: allowed for an object one name holds
+// (or none), that has a slot of a type for the attribute and does not leave
+// the loop. Null (refused) otherwise.
+const VAttr* Compiler::markWritten(const VObj& o, const std::string& attr) {
+    const VAttr* at = nullptr;
+    size_t ai = 0;
+    for (size_t i = 0; i < o.attrs.size(); i++) if (o.attrs[i].name == attr) { at = &o.attrs[i]; ai = i; }
+    if (!at || at->t == KT::Void) { refuse("a write to attribute " + attr + ", never given a value"); return nullptr; }
+    if (o.box >= 0) { refuse("a write to an object that leaves the loop"); return nullptr; }
+    if (o.owner == kMixedOwner) { refuse("a write to an object that may be one of two"); return nullptr; }
+    if (o.owner != -1) {
+        if (ownerIn(L->oaliased, o.owner)) { refuse("an object written through one name and held by another"); return nullptr; }
+        if (!ownerIn(L->owritten, o.owner)) L->owritten.push_back(o.owner);
+    }
+    if (o.owner <= kOuterOwner) {   // an object of the program: its own attribute, when the loop ends
+        LOuterObj& oo = L->oobjs[kOuterOwner - o.owner];
+        if (oo.dirty >= 0) { refuse("a write to an object of the program the loop also replaces"); return nullptr; }
+        if (at->t != KT::Int && at->t != KT::Num && at->t != KT::Bool) {
+            refuse("a write to a Str or Rat attribute of an object of the program");
+            return nullptr;
+        }
+        oo.wr.resize(oo.o.attrs.size());
+        oo.wr[ai] = 1;
+    }
+    L->objWrites = true;
+    if (L->subsObjCall) { refuse("a subscript that calls a method, in a loop that writes attributes"); return nullptr; }
+    return at;
+}
+
+// `ATTR OP= VALUE` on an object held as slots (`$!x = …` in a body compiled
+// in place, `$p.x = …` through an `is rw` accessor): a store to the slot,
+// when the value is of the slot's type. `pre` are the statements that fill
+// the object's slots, if any.
+KNode* Compiler::attrStore(IKernel& k, const Callable* c, const VObj& obj, KNode* pre, const std::string& attr, Assign* a, KT& t) {
+    const VAttr* at = markWritten(obj, attr);
+    if (!at) return nullptr;
+    const KT tt = at->t;
+    const int slot = at->slot;
+    KT vt;
+    KNode* v = expr(k, c, a->value.get(), false, vt);
+    if (!v) return nullptr;
+    const std::string& op = a->op;
+    if (vt == KT::Bool && op != "=" && tt != KT::Bool && tt != KT::Str) vt = KT::Int;
+    KOp kop;
+    if (op == "=") {
+        if (vt != tt && !(tt == KT::Exact && vt == KT::Int)) return refuse("a write that would change an attribute's type");
+        if (tt == KT::Exact) v = asExact(k, v, vt);
+        kop = tt == KT::Str ? KOp::SSet : tt == KT::Exact ? KOp::XSet : KOp::Set;
+    }
+    else if ((op == "+=" || op == "-=" || op == "*=") && tt == KT::Int && vt == KT::Int) {
+        kop = op[0] == '+' ? KOp::AddTo : op[0] == '-' ? KOp::SubTo : KOp::MulTo;
+        noteOp(a->written().substr(0, a->written().size() - 1));
+    }
+    else if ((op == "+=" || op == "-=" || op == "*=" || op == "/=") && tt == KT::Num && (vt == KT::Num || vt == KT::Int)) {
+        kop = op[0] == '+' ? KOp::NAddTo : op[0] == '-' ? KOp::NSubTo : op[0] == '*' ? KOp::NMulTo : KOp::NDivTo;
+        v = asNum(k, v, vt);
+        noteOp(a->written().substr(0, a->written().size() - 1));
+    }
+    else return refuse("assignment operator " + op + " on an attribute of this type");
+    KNode* n = k.node(kop); n->slot = slot; n->a = v;
+    t = tt == KT::Str ? KT::Void : tt;
+    if (!pre || pre->op == KOp::Lit) return n;
+    if (tt == KT::Str || tt == KT::Exact) return refuse("a Str or Rat attribute written through an expression");
+    std::vector<KNode*> seq{pre, n};
+    return objSeq(k, seq);
+}
+
+// Whether an expression calls a method of an object held as slots
+bool Compiler::objCallIn(const Expr* e) {
+    if (!e) return false;
+    switch (e->kind) {
+        case NK::Unary: return objCallIn(static_cast<const Unary*>(e)->operand.get());
+        case NK::Binary: return objCallIn(static_cast<const Binary*>(e)->lhs.get()) || objCallIn(static_cast<const Binary*>(e)->rhs.get());
+        case NK::Ternary: {
+            auto* t = static_cast<const Ternary*>(e);
+            return objCallIn(t->cond.get()) || objCallIn(t->then.get()) || objCallIn(t->els.get());
+        }
+        case NK::Index: return objCallIn(static_cast<const Index*>(e)->index.get());
+        case NK::MethodCall: {
+            auto* m = static_cast<const MethodCall*>(e);
+            if (m->inv && objClass(m->inv.get())) return true;
+            for (auto& a : m->args) if (objCallIn(a.get())) return true;
+            return objCallIn(m->inv.get());
+        }
+        case NK::Call:
+            for (auto& a : static_cast<const Call*>(e)->args) if (objCallIn(a.get())) return true;
+            return false;
+        default: return false;
+    }
+}
+
+// The object itself for an expression's slot group `o`, in an object slot
+// (`dst`, or one of its own): the one its name holds, or — for a fresh one —
+// made here from the slots. -1 (refused) for anything else; a name with no
+// object slot yet gets one in a second compile.
+int Compiler::objBox(IKernel& k, Expr* e, const VObj& o, int dst, std::vector<KNode*>& seq) {
+    if (o.box >= 0) {
+        if (dst < 0 || dst == o.box) return o.box;
+        KNode* n = k.node(KOp::OCopy); n->slot = dst; n->lit = o.box;
+        seq.push_back(n);
+        return dst;
+    }
+    if (!o.fresh) {
+        if (e->kind == NK::VarExpr && L->selfs.empty()) needBox(static_cast<VarExpr*>(e)->name);
+        else refuse("an object that leaves the loop and may be one a name holds");
+        return -1;
+    }
+    Interpreter& I = *const_cast<Interpreter*>(L->interp);
+    auto cit = I.classes_.find(o.cls->name);
+    if (g_attrLayoutCheck || cit == I.classes_.end() || cit->second.get() != o.cls || L->nobj >= 64) {
+        refuse("an object that leaves the loop, of a class not found by its name");
+        return -1;
+    }
+    for (auto& a : o.attrs)
+        if (a.t == KT::Str) { refuse("an object with a Str that leaves the loop"); return -1; }
+    L->makes.emplace_back(new MakePlan{cit->second, *plainFillPlan(*o.cls), o.attrs});
+    if (dst < 0) dst = L->nobj++;
+    KNode* n = k.node(KOp::OMake); n->slot = dst; n->mk = L->makes.back().get();
+    seq.push_back(n);
+    return dst;
+}
+
+// A value a body of statements answers (a `return`, or its last statement):
+// into the body's slot, or its object's slots.
+KNode* Compiler::inlRet(IKernel& k, Expr* e, bool ret) {
+    InlRet& r = *L->rets.back();
+    std::vector<KNode*> seq;
+    if (r.cls) {
+        if (objClass(e) != r.cls) return refuse("a method compiled in place that answers an object here and not there");
+        VObj o;
+        KNode* n = objExpr(k, nullptr, e, o);
+        if (!n) return nullptr;
+        if (r.direct) { r.obj = o; r.have = true; }
+        else {
+            if (n->op != KOp::Lit) seq.push_back(n);
+            if (!r.have) { objFresh(o, r.obj); r.have = true; }
+            r.obj.fresh = r.obj.fresh && o.fresh;
+            mergeOwner(r.obj, o);
+        }
+        if (!objCopy(k, o, r.obj, seq)) return refuse("a method compiled in place that answers objects of two shapes");
+    }
+    else {
+        KT t;
+        KNode* v = expr(k, nullptr, e, false, t);
+        if (!v) return nullptr;
+        if (t != KT::Int && t != KT::Num && t != KT::Bool) return refuse("a method of statements whose value is not an Int, a Num or a Bool");
+        if (!r.have) { r.t = t; r.slot = L->nint++; r.have = true; }
+        else if (r.t != t) return refuse("a method compiled in place that answers values of two types");
+        KNode* n = k.node(KOp::Set); n->slot = r.slot; n->a = v;
+        seq.push_back(n);
+    }
+    if (ret) {
+        KNode* z = k.node(KOp::Lit); z->lit = 0;
+        KNode* n = k.node(KOp::Ret); n->a = z;
+        seq.push_back(n);
+    }
+    return objSeq(k, seq);
+}
+
+// A body of statements compiled in place: ltail's shape, each end storing
+// the value (inlRet) instead of answering it.
+KNode* Compiler::inlTail(IKernel& k, const std::vector<StmtPtr>& ss) {
+    if (ss.empty() || ss.size() > 255) return refuse("a body of this size");
+    std::vector<KNode*> seq;
+    for (size_t i = 0; i + 1 < ss.size(); i++) {
+        KNode* n = lstmt(k, ss[i].get());
+        if (!n) return nullptr;
+        seq.push_back(n);
+    }
+    Stmt* last = ss.back().get();
+    KNode* ln = nullptr;
+    auto valued = [](Expr* e) {
+        if (e->kind != NK::Assign) return true;
+        auto* tg = static_cast<Assign*>(e)->target.get();
+        return tg && !(tg->kind == NK::VarExpr && static_cast<VarExpr*>(tg)->attrBare.empty());
+    };
+    if (last->kind == NK::ExprStmt && valued(static_cast<ExprStmt*>(last)->e.get()))
+        ln = inlRet(k, static_cast<ExprStmt*>(last)->e.get(), false);
+    else if (last->kind == NK::ReturnStmt) ln = lstmt(k, last);
+    else if (last->kind == NK::IfStmt) ln = lif(k, static_cast<IfStmt*>(last), true);
+    else return refuse("a method whose last statement gives no value");
+    if (!ln) return nullptr;
+    seq.push_back(ln);
+    return objSeq(k, seq);
+}
+
+// `CLASS.new(name => EXPR, …)`: each EXPR into a slot of its own.
+KNode* Compiler::objNew(IKernel& k, const Callable* c, MethodCall* m, VObj& out) {
+    auto* nt = static_cast<NameTerm*>(m->inv.get());
+    ClassInfo* ci = kernelClass(nt);
+    if (!ci) return refuse("the class " + nt->name + " (not one made by the plain default .new)");
+    const PlainFill* pf = plainFillPlan(*ci);
+    out.cls = ci;
+    out.fresh = true;
+    out.attrs.clear();
+    for (auto& sl : pf->slots) out.attrs.push_back({sl.name, KT::Void, -1});
+    std::vector<KNode*> seq;
+    for (auto& a : m->args) {
+        if (!syntacticNamedPair(a.get())) return refuse(".new with an argument that is not a named one");
+        auto* pe = static_cast<PairExpr*>(a.get());
+        size_t i = 0;
+        while (i < pf->slots.size() && pf->slots[i].name != pe->key) i++;
+        if (pe->keyExpr || !pe->value || i == pf->slots.size() || !pf->slots[i].takesArg || out.attrs[i].slot >= 0)
+            return refuse(".new with a named argument no attribute takes, or one given twice");
+        KT vt;
+        KNode* v = expr(k, c, pe->value.get(), false, vt);
+        if (!v) return nullptr;
+        if (vt == KT::Void) return refuse(".new with an argument that has no value");
+        // (a typed attribute: the argument is of that very type, so the check `.new` makes passes)
+        if (const char kd = pf->slots[i].kind; kd && vt != (kd == 'I' ? KT::Int : kd == 'N' ? KT::Num : kd == 'S' ? KT::Str : KT::Bool))
+            return refuse(".new with an argument a typed attribute would check");
+        out.attrs[i].t = vt;
+        seq.push_back(keep(k, v, vt, out.attrs[i].slot));
+    }
+    for (size_t i = 0; i < pf->slots.size(); i++) {   // a literal default (PlainFill's literalDefault)
+        const Value& d = pf->slots[i].dflt;
+        if (out.attrs[i].slot >= 0 || !(plainIntValue(d) || plainNumValue(d))) continue;
+        KNode* l = k.node(KOp::Lit);
+        l->lit = d.t == VT::Int ? (int64_t)d.i : dbits(d.n);
+        out.attrs[i].t = d.t == VT::Int ? KT::Int : KT::Num;
+        seq.push_back(keep(k, l, out.attrs[i].t, out.attrs[i].slot));
+    }
+    if (seq.size() > 255) return refuse(".new with too many arguments");
+    if (seq.empty()) { KNode* n = k.node(KOp::Lit); n->lit = 0; return n; }
+    KNode* n = k.node(KOp::Seq);
+    n->kids = k.list(seq.size()); n->nargs = (uint8_t)seq.size();
+    for (size_t i = 0; i < seq.size(); i++) n->kids[i] = seq[i];
+    return n;
+}
+
+// An expression objClass answered for: the statements that fill its slots
+// (the value of the node itself is nothing), and which slots those are.
+KNode* Compiler::objExpr(IKernel& k, const Callable* c, Expr* e, VObj& out) {
+    if (e->kind == NK::MethodCall) {
+        auto* m = static_cast<MethodCall*>(e);
+        if (m->inv->kind == NK::NameTerm) return objNew(k, c, m, out);
+        VObj self;
+        KNode* sn = objExpr(k, c, m->inv.get(), self);
+        KT t;
+        return sn ? objCall(k, c, self, sn, m->method, &m->args, &out, t) : nullptr;
+    }
+    if (e->kind == NK::Ternary) {   // one class either way (objClass): each side's slots into one group
+        auto* tn = static_cast<Ternary*>(e);
+        KT ct;
+        KNode* cn = cexpr(k, c, tn->cond.get(), ct);
+        if (!cn) return nullptr;
+        if (ct == KT::Str || ct == KT::Void) return refuse("a Str as a condition");
+        VObj a, b;
+        std::vector<KNode*> sa, sb;
+        KNode* an = objExpr(k, c, tn->then.get(), a);
+        KNode* bn = an ? objExpr(k, c, tn->els.get(), b) : nullptr;
+        if (!bn) return nullptr;
+        if (an->op != KOp::Lit) sa.push_back(an);
+        if (bn->op != KOp::Lit) sb.push_back(bn);
+        objFresh(a, out);
+        out.fresh = a.fresh && b.fresh;
+        mergeOwner(out, a); mergeOwner(out, b);
+        if (!objCopy(k, a, out, sa) || !objCopy(k, b, out, sb)) return refuse("?? !! of objects of two shapes");
+        KNode* n = k.node(KOp::If); n->a = cn;
+        if (!(n->b = objSeq(k, sa)) || !(n->c = objSeq(k, sb))) return nullptr;
+        return n;
+    }
+    if (e->kind == NK::SelfTerm && !L->selfs.empty()) out = *L->selfs.back();
+    else if (const LSym* s = e->kind == NK::VarExpr ? lookup(static_cast<VarExpr*>(e)->name) : nullptr; s && s->obj >= 0)
+        out = L->vobjs[s->obj];
+    else if (const LOuterObj* oo = e->kind == NK::VarExpr ? outerObj(static_cast<VarExpr*>(e)) : nullptr) out = oo->o;
+    else return refuse("an object expression of this kind");
+    out.fresh = false;   // (a name's)
+    KNode* n = k.node(KOp::Lit); n->lit = 0;   // (nothing to run: the slots are filled already)
+    return n;
+}
+
+// `.NAME(ARGS)` on an object held as slots, `selfNode` having filled them:
+// an accessor is the slot, a method its body in place — its value, or, with
+// `objOut`, the object it answers.
+KNode* Compiler::objCall(IKernel& k, const Callable* c, const VObj& self, KNode* selfNode, const std::string& name,
+                         const std::vector<ExprPtr>* args, VObj* objOut, KT& t) {
+    const size_t na = args ? args->size() : 0;
+    Callable* mc = nullptr;
+    const int kind = L->selfs.size() >= 8 ? 0 : objMethod(self.cls, name, na, mc);
+    if (!kind) return refuse("method ." + name + " of an object the loop makes (not an accessor, nor a body to compile in place)");
+    std::vector<KNode*> seq;
+    if (selfNode && !(selfNode->op == KOp::Lit)) seq.push_back(selfNode);
+    KNode* val = nullptr;
+    if (kind == 2) {
+        const VAttr* at = nullptr;
+        for (auto& a : self.attrs) if (a.name == name) at = &a;
+        if (objOut || !at || at->t == KT::Void) return refuse("attribute " + name + " of an object the loop makes, never given a value");
+        val = slotRead(k, at->t, at->slot);
+        t = at->t;
+    }
+    else {
+        std::vector<LSym> params;
+        for (size_t i = 0; i < na; i++) {
+            auto& p = (*mc->ci().params)[i];
+            Expr* ae = (*args)[i].get();
+            if (!ae || ae->kind == NK::Pair) return refuse("a named argument to a method compiled in place");
+            if (ClassInfo* ac = objClass(ae)) {   // an object the loop holds as slots: the parameter names them
+                if (!(p.type.empty() || p.type == "Any" || p.type == "Mu" || p.type == ac->name))
+                    return refuse("an argument parameter " + p.name + " would check");
+                VObj av;
+                KNode* an = objExpr(k, c, ae, av);
+                if (!an) return nullptr;
+                if (an->op != KOp::Lit) seq.push_back(an);
+                L->vobjs.push_back(std::move(av));
+                params.push_back({p.name, KT::Void, -1, true, (int)L->vobjs.size() - 1});
+                continue;
+            }
+            KT at;
+            KNode* an = expr(k, c, ae, false, at);
+            if (!an) return nullptr;
+            if (at == KT::Void || !paramTakes(p.type, at)) return refuse("an argument parameter " + p.name + " would check");
+            int slot;
+            seq.push_back(keep(k, an, at, slot));
+            params.push_back({p.name, at, slot, true});
+        }
+        // the body sees its parameters and its invocant, and no name of the caller's
+        const size_t floor0 = L->floor;
+        L->scopes.push_back(std::move(params)); L->floor = L->scopes.size() - 1;
+        L->selfs.push_back(&self); L->bodies.push_back(mc);
+        if (Expr* body = inlOneExpr(*mc)) {
+            L->rets.push_back(nullptr);
+            val = objOut ? objExpr(k, c, body, *objOut) : expr(k, c, body, false, t);
+        }
+        else {
+            // statements: run to their end or to a `return` (Inl takes the
+            // mark off), the value then read from where they left it
+            InlRet r;
+            int seen = 0;
+            const bool sm = L->inModifier;
+            const int sl = L->loops, sg = L->givens;
+            L->inModifier = false; L->loops = L->givens = 0;
+            L->rets.push_back(&r);
+            const size_t nv = L->vobjs.size(), ns = L->scopes.size();
+            const size_t np = L->scopes.back().size();
+            inlAllSelf = true;
+            const bool known = objClassStmts(*mc->ci().body, true, r.cls, seen);
+            r.direct = known && r.cls && inlAllSelf;
+            L->vobjs.resize(nv); L->scopes.resize(ns);
+            L->scopes.back().resize(np);
+            KNode* bn = known && (r.cls != nullptr) == (objOut != nullptr) ? inlTail(k, *mc->ci().body) : nullptr;
+            L->inModifier = sm; L->loops = sl; L->givens = sg;
+            if (bn && r.have) {
+                val = k.node(KOp::Inl); val->a = bn; val->slot = objOut ? -1 : r.slot;
+                if (objOut) *objOut = r.obj;
+                else t = r.t;
+            }
+            else refuse("a method compiled in place whose ends disagree");
+        }
+        L->rets.pop_back(); L->bodies.pop_back(); L->selfs.pop_back();
+        L->floor = floor0; L->scopes.pop_back();
+        if (!val) return nullptr;
+        if (!objOut && t == KT::Void) return refuse("a method compiled in place that answers no value");
+        bool have = false;
+        for (auto& x : L->inlined) have = have || x.code() == mc;
+        if (!have)
+            if (Value* um = self.cls->findMethodForCall(name)) L->inlined.push_back(*um);
+    }
+    if (objOut) t = KT::Void;
+    if (seq.empty()) return val;
+    // (a Seq answers its last statement's int64, and an exact number's
+    // denominator stays where that statement left it; a Str has no such road)
+    if (t == KT::Str) return refuse("a Str from a method of an object the loop makes");
+    if (seq.size() >= 255) return refuse("a method call with too many parts");
+    seq.push_back(val);
+    KNode* n = k.node(KOp::Seq);
+    n->kids = k.list(seq.size()); n->nargs = (uint8_t)seq.size();
+    for (size_t i = 0; i < seq.size(); i++) n->kids[i] = seq[i];
+    return n;
+}
+
+// `$!x` / `$.x` in a method body compiled in place: the invocant's slot, or
+// (`$.x` is `self.x`) whatever a method of that name answers.
+KNode* Compiler::attrVar(IKernel& k, const Callable* c, VarExpr* v, KT& t) {
+    const VObj& self = *L->selfs.back();
+    if (v->name[1] == '.') return objCall(k, c, self, nullptr, v->attrBare, nullptr, nullptr, t);
+    for (auto& a : self.attrs)
+        if (a.name == v->attrBare && a.t != KT::Void) { t = a.t; return slotRead(k, a.t, a.slot); }
+    return refuse("attribute " + v->name + " of an object the loop makes, never given a value");
 }
 
 // The program's `@a` / `%h` as an index into L->conts, found from the loop's
@@ -572,12 +1470,15 @@ int Compiler::cont(const std::string& name, bool hash, std::string& why) {
     if (hash) { for (auto& kv : *cv.hash()) { first = &kv.second; break; } }
     else if (!cv.arr()->empty()) first = &(*cv.arr())[0];
     KT elem = KT::Void;
+    bool objs = false;
     if (first) {
         if (plainIntValue(*first)) elem = KT::Int;
         else if (plainStrValue(*first)) elem = KT::Str;
+        else if (!hash && first->t == VT::Object) objs = true;   // (pushed onto; an element read refuses)
         else { why = "container " + name + " holds neither a plain Int nor a plain Str"; return -1; }
     }
     L->conts.push_back({name, hash, elem, false});
+    L->conts.back().objs = objs;
     return (int)L->conts.size() - 1;
 }
 
@@ -597,6 +1498,10 @@ KNode* Compiler::contRef(IKernel& k, const Callable* c, Index* ix, KOp op, KT& e
     const int ci = cont(bv->name, hash, why);
     if (ci < 0) return refuse(why);
     if (sideEffect(ix->index.get())) return refuse("a subscript with a side effect");
+    if (objCallIn(ix->index.get())) {
+        L->subsObjCall = true;
+        if (L->objWrites) return refuse("a subscript that calls a method, in a loop that writes attributes");
+    }
     KT kt;
     KNode* key = expr(k, c, ix->index.get(), false, kt);
     if (!key) return nullptr;
@@ -633,7 +1538,7 @@ KNode* Compiler::expr(IKernel& k, const Callable* c, Expr* e, bool cond, KT& t) 
                 resolveFailed = true;
                 return refuse("the term " + nt->name + " while other threads are live");
             }
-            if (!nt->ofType.empty() || nt->defConstraint || !constants->count(nt->name))
+            if (!nt->ofType.empty() || nt->defConstraint || !constants->count(nt->name) || (L && !L->selfs.empty()))
                 return refuse("the term " + nt->name);
             const Callable* home = c ? c : L ? L->sub : nullptr;
             Env* scope = home ? (home->closure ? home->closure.get() : global) : L ? L->env : nullptr;
@@ -721,6 +1626,8 @@ KNode* Compiler::expr(IKernel& k, const Callable* c, Expr* e, bool cond, KT& t) 
             // …and to a loop kernel a native variable of the program is one of
             // its numbers, at full width (nativeInt64Value)
             const bool natVar = L && nativeVarRead(v);
+            if (L && !L->selfs.empty() && !v->attrBare.empty() && v->name[0] == '$' && v->attrTwin.empty() && plainVarRead(v))
+                return attrVar(k, c, v, t);
             if (!natParam && !natVar && !plainVarRead(v))
                 return refuse("variable " + v->name + " (a declaration or a special form)");
             if (!L) {
@@ -732,13 +1639,16 @@ KNode* Compiler::expr(IKernel& k, const Callable* c, Expr* e, bool cond, KT& t) 
             const LSym* s = lookup(v->name);
             KT st;
             int slot;
+            if (s && s->obj >= 0) return refuse("an object the loop makes, used as a value: " + v->name);
             if (s) { st = s->t; slot = s->slot; }
             else {
                 if (L->sub) return refuse("variable " + v->name + " from outside the sub");
+                if (!L->selfs.empty()) return refuse("variable " + v->name + " from outside a method compiled in place");
                 // a variable of the program: copied into the frame at entry
                 const LOuter* o = nullptr;
                 for (auto& x : L->outer) if (x.name == v->name) o = &x;
                 if (!o) {
+                    for (auto& x : L->oobjs) if (x.name == v->name) return refuse("an object of the program, used as a value: " + v->name);
                     if (!plainScalarName(v->name)) return refuse("variable " + v->name);
                     Env* owner = nullptr;
                     Value* raw = L->env->findRaw(v->name, &owner);
@@ -815,6 +1725,10 @@ KNode* Compiler::expr(IKernel& k, const Callable* c, Expr* e, bool cond, KT& t) 
             if (u->op == "++" || u->op == "--") {
                 if (!L) return nullptr;
                 if (u->operand->kind != NK::VarExpr) return refuse("++/-- on something not a variable");
+                if (auto* ov = static_cast<VarExpr*>(u->operand.get()); !ov->attrBare.empty() && !L->selfs.empty()) {
+                    if (ov->name.size() < 3 || ov->name[1] != '!' || !markWritten(*L->selfs.back(), ov->attrBare))
+                        return refuse("++/-- on " + ov->name);
+                }
                 KNode* tn = expr(k, c, u->operand.get(), false, ot);
                 if (!tn) return nullptr;
                 if (ot != KT::Int && ot != KT::Num && ot != KT::Exact) return refuse("++/-- on a Str or a Bool");
@@ -1003,7 +1917,7 @@ KNode* Compiler::expr(IKernel& k, const Callable* c, Expr* e, bool cond, KT& t) 
                 }
                 if (a->op == "=") {
                     if (vt != KT::Int && vt != KT::Str) return refuse("an element store of this type");
-                    if (ct.elem != KT::Void && ct.elem != vt) return refuse("a store that would change a container's element type");
+                    if (ct.objs || (ct.elem != KT::Void && ct.elem != vt)) return refuse("a store that would change a container's element type");
                     ct.elem = vt;
                     op = vt == KT::Str ? KOp::SCSet : KOp::CSet;
                 }
@@ -1024,9 +1938,29 @@ KNode* Compiler::expr(IKernel& k, const Callable* c, Expr* e, bool cond, KT& t) 
                 t = ct.elem == KT::Str ? KT::Void : KT::Int;
                 return n;
             }
+            if (!a->userOp && !a->containerSigil && a->target && a->target->kind == NK::MethodCall && !L->sub) {
+                // `$p.x = E`: an `is rw` accessor of an object held as slots
+                auto* tm = static_cast<MethodCall*>(a->target.get());
+                if (tm->methodExpr || tm->maybe || tm->allMode || tm->bang || tm->mutate || tm->hyper || tm->meta ||
+                    !tm->methodQual.empty() || !tm->inv || !tm->args.empty() || !objClass(tm->inv.get()))
+                    return refuse("an assignment of this form");
+                VObj obj;
+                KNode* pre = objExpr(k, c, tm->inv.get(), obj);
+                if (!pre) return nullptr;
+                Callable* mc = nullptr;
+                const ClassAttr* at = objMethod(obj.cls, tm->method, 0, mc) == 2
+                    ? const_cast<Interpreter*>(L->interp)->plainAccessorAttr(obj.cls, tm->method) : nullptr;
+                if (!at || !at->rw) return refuse("an assignment to ." + tm->method + ", not an `is rw` accessor");
+                return attrStore(k, c, obj, pre, tm->method, a, t);
+            }
             if (a->userOp || a->containerSigil || !a->target || a->target->kind != NK::VarExpr)
                 return refuse("an assignment of this form");
             auto* tv = static_cast<VarExpr*>(a->target.get());
+            if (!tv->attrBare.empty() && !L->selfs.empty()) {   // `$!x = E` in a body compiled in place
+                if (tv->declare || tv->name.size() < 3 || tv->name[0] != '$' || tv->name[1] != '!' || !tv->attrTwin.empty())
+                    return refuse("an assignment to " + tv->name);
+                return attrStore(k, c, *L->selfs.back(), nullptr, tv->attrBare, a, t);
+            }
             KT vt;
             if (tv->declare) {
                 // `my $x = EXPR`: a slot of the kernel's own, of EXPR's type.
@@ -1039,6 +1973,37 @@ KNode* Compiler::expr(IKernel& k, const Callable* c, Expr* e, bool cond, KT& t) 
                     tv->d().declWhereExpr || tv->d().declHasWhere || !tv->d().declStubType.empty() || tv->pkgSymbol ||
                     tv->viaPseudoPkg || !(plainScalarName(tv->name) || anonScalarSlot(tv->name)) || mentions(a->value.get(), tv->name))
                     return refuse("a declaration with a type, a trait or its own name");
+                if (objClass(a->value.get())) {   // an object the loop makes: its attributes, as slots
+                    VObj o;
+                    KNode* n = objExpr(k, c, a->value.get(), o);
+                    if (!n) return nullptr;
+                    for (auto& s : L->scopes.back()) if (s.name == tv->name) return refuse("a redeclaration");
+                    const bool wasNamed = o.named();   // (then two names hold it: neither is written through)
+                    if (!nameIt(o)) return nullptr;
+                    const bool boxIt = L->selfs.empty() && L->isBoxed(tv->name);   // (it leaves the loop somewhere: made here)
+                    if (boxIt || objShared(o)) {
+                        std::vector<KNode*> seq;
+                        if (n->op != KOp::Lit) seq.push_back(n);
+                        int bx = -1;
+                        if (boxIt && (bx = objBox(k, a->value.get(), o, L->nobj++, seq)) < 0) return nullptr;
+                        if (objShared(o)) {   // another name's slots: this one may be assigned, so it gets its own
+                            VObj own;
+                            objFresh(o, own);
+                            objCopy(k, o, own, seq);
+                            o = std::move(own);
+                        }
+                        o.box = bx;
+                        if (!(n = objSeq(k, seq))) return nullptr;
+                    }
+                    else o.box = -1;
+                    o.owner = (int)L->vobjs.size();
+                    o.srcs.clear();
+                    if (wasNamed && !markAliased(o.owner)) return nullptr;
+                    L->vobjs.push_back(std::move(o));
+                    L->scopes.back().push_back({tv->name, KT::Void, -1, false, (int)L->vobjs.size() - 1});
+                    t = KT::Void;
+                    return n;
+                }
                 KNode* v = expr(k, c, a->value.get(), false, vt);
                 if (!v) return nullptr;
                 if (vt == KT::Void) return refuse("a declaration of an expression with no value");
@@ -1050,6 +2015,58 @@ KNode* Compiler::expr(IKernel& k, const Callable* c, Expr* e, bool cond, KT& t) 
                 n->slot = slot; n->a = v;
                 t = vt == KT::Str ? KT::Void : vt;
                 return n;
+            }
+            if (const LSym* os = lookup(tv->name); os && os->obj >= 0 && plainVarRead(tv)) {
+                // `$p = OBJECT` for a `my` held as slots: the new attributes,
+                // worked out first, into its slots — when it is an object of
+                // the same class with attributes of the same types
+                if (a->op != "=" || os->ro) return refuse("an assignment to an object of this form");
+                const int oi = os->obj;
+                if (objClass(a->value.get()) != L->vobjs[oi].cls) return refuse("an assignment that would change an object's class");
+                VObj o;
+                KNode* n = objExpr(k, c, a->value.get(), o);
+                if (!n) return nullptr;
+                std::vector<KNode*> seq;
+                if (n->op != KOp::Lit) seq.push_back(n);
+                if (!objCopy(k, o, L->vobjs[oi], seq)) return refuse("an assignment that would change an attribute's type");
+                if (o.named() && (!nameIt(o) || !markAliased(L->vobjs[oi].owner))) return nullptr;
+                if (L->vobjs[oi].box >= 0 && objBox(k, a->value.get(), o, L->vobjs[oi].box, seq) < 0) return nullptr;
+                t = KT::Void;
+                return objSeq(k, seq);
+            }
+            else if (ClassInfo* vc = !os && a->op == "=" && L->selfs.empty() ? objClass(a->value.get()) : nullptr) {
+                // `$p = OBJECT` for a variable of the program that holds an
+                // object of that class: its slots take the new attributes,
+                // and the object itself is made when the loop ends (the
+                // write-back in tryLoopKernel). OBJECT must be a fresh one.
+                const LOuterObj* oo = outerObj(tv);
+                if (!oo || oo->ci != vc) return refuse("an object assigned to a variable of the program that holds none of its class");
+                VObj o;
+                KNode* n = objExpr(k, c, a->value.get(), o);
+                if (!n) return nullptr;
+                LOuterObj* wo = nullptr;
+                for (auto& x : L->oobjs) if (x.name == tv->name) wo = &x;
+                for (char w : wo->wr) if (w) return refuse("a write to an object of the program the loop also replaces");
+                if (o.named() && (!nameIt(o) || !markAliased(wo->o.owner))) return nullptr;
+                std::vector<KNode*> seq;
+                if (n->op != KOp::Lit) seq.push_back(n);
+                if (wo->o.box < 0) {
+                    // (only ever given fresh objects: one is made when the loop ends)
+                    if (!o.fresh) {
+                        if (o.box >= 0) return needBox(tv->name);
+                        (void)objBox(k, a->value.get(), o, -1, seq);   // (asks for the name's object slot, or refuses)
+                        return nullptr;
+                    }
+                    for (auto& at : o.attrs) if (at.t == KT::Str) return refuse("an object with a Str, assigned to a variable of the program");
+                }
+                if (!objCopy(k, o, wo->o, seq)) return refuse("an assignment that would change an attribute's type");
+                if (wo->o.box >= 0 && objBox(k, a->value.get(), o, wo->o.box, seq) < 0) return nullptr;
+                if (wo->dirty < 0) wo->dirty = L->nint++;
+                KNode* one = k.node(KOp::Lit); one->lit = 1;
+                KNode* d = k.node(KOp::Set); d->slot = wo->dirty; d->a = one;
+                seq.push_back(d);
+                t = KT::Void;
+                return objSeq(k, seq);
             }
             KT tt;
             KNode* tn = expr(k, c, tv, false, tt);
@@ -1142,6 +2159,14 @@ KNode* Compiler::expr(IKernel& k, const Callable* c, Expr* e, bool cond, KT& t) 
                 return refuse("a method call");
             const std::string& mn = m->method;
             const size_t na = m->args.size();
+            if (objClass(m)) return refuse("an object the loop makes, used as a value");
+            if (objClass(m->inv.get())) {   // a method of an object held as slots
+                VObj self;
+                KNode* sn = objExpr(k, c, m->inv.get(), self);
+                return sn ? objCall(k, c, self, sn, mn, &m->args, nullptr, t) : nullptr;
+            }
+            if (!L->selfs.empty() && m->inv->kind == NK::VarExpr && static_cast<VarExpr*>(m->inv.get())->name[0] != '$')
+                return refuse("a container in a method compiled in place");
             if (m->inv->kind == NK::VarExpr) {
                 // `@a.elems`, `%h.elems`, `@a.push(EXPR)` on a container in place
                 auto* iv = static_cast<VarExpr*>(m->inv.get());
@@ -1158,10 +2183,28 @@ KNode* Compiler::expr(IKernel& k, const Callable* c, Expr* e, bool cond, KT& t) 
                     }
                     if (mn == "push" && !hash && na == 1 && m->args[0] && m->args[0]->kind != NK::Pair &&
                         !(m->args[0]->kind == NK::Unary && static_cast<Unary*>(m->args[0].get())->op == "|")) {
+                        if (objClass(m->args[0].get())) {   // the object itself, made here or where its name was
+                            if (!L->selfs.empty()) return refuse("a container in a method compiled in place");
+                            VObj o;
+                            KNode* on = objExpr(k, c, m->args[0].get(), o);
+                            if (!on) return nullptr;
+                            std::vector<KNode*> seq;
+                            if (on->op != KOp::Lit) seq.push_back(on);
+                            const int bx = objBox(k, m->args[0].get(), o, -1, seq);
+                            if (bx < 0) return nullptr;
+                            LCont& oc = L->conts[ci];
+                            if (oc.packed || oc.elem != KT::Void) return refuse(".push of an object onto a container of Ints or Strs");
+                            oc.objs = oc.written = oc.pushed = true;
+                            KNode* pn = k.node(KOp::OPush); pn->lit = ci; pn->slot = bx;
+                            seq.push_back(pn);
+                            t = KT::Void;
+                            return objSeq(k, seq);
+                        }
                         KT vt;
                         KNode* v = expr(k, c, m->args[0].get(), false, vt);
                         if (!v) return nullptr;
                         LCont& ct = L->conts[ci];
+                        if (ct.objs) return refuse(".push of an Int or a Str onto a container of objects");
                         if (ct.packed) return refuse(".push onto a packed Num array");
                         if (vt != KT::Int && vt != KT::Str) return refuse(".push of this type");
                         if (ct.elem != KT::Void && ct.elem != vt) return refuse("a push that would change a container's element type");
@@ -1402,7 +2445,17 @@ KNode* Compiler::lstmt(IKernel& k, Stmt* s) {
     switch (s->kind) {
         case NK::EmptyStmt: { KNode* n = k.node(KOp::Lit); n->lit = 0; return n; }
         case NK::ExprStmt: {
-            KNode* n = expr(k, nullptr, static_cast<ExprStmt*>(s)->e.get(), false, t);
+            Expr* se = static_cast<ExprStmt*>(s)->e.get();
+            // `$p.add(1);` answering an object nobody takes — unless its class
+            // has a `sink`, which a statement's value is given
+            if (ClassInfo* sc = se && se->kind == NK::MethodCall && !L->sub ? objClass(se) : nullptr) {
+                Callable* mc = nullptr;
+                if (objMethod(sc, "sink", 0, mc) || sc->findMethodForCall("sink"))
+                    return refuse("an object in sink context, of a class with a `sink`");
+                VObj drop;
+                return objExpr(k, nullptr, se, drop);
+            }
+            KNode* n = expr(k, nullptr, se, false, t);
             if (n && t == KT::Str) return refuse("a string in sink context");
             return n;
         }
@@ -1527,6 +2580,7 @@ KNode* Compiler::lstmt(IKernel& k, Stmt* s) {
         }
         case NK::ReturnStmt: {
             auto* r = static_cast<ReturnStmt*>(s);
+            if (!L->sub && !L->rets.empty() && L->rets.back() && r->value && !r->isRw) return inlRet(k, r->value.get(), true);
             if (!L->sub) return refuse("a `return`");
             if (r->isRw || !r->value) return refuse("a `return` of this form");
             KNode* v = expr(k, nullptr, r->value.get(), false, t);
@@ -1558,7 +2612,7 @@ KNode* Compiler::lif(IKernel& k, IfStmt* is, bool tail) {
         if (!tail) return lbody(k, b, !is->modifier);
         if (!b || !b->phaser.empty() || b->isCatch || !b->label.empty()) return refuse("a phaser, CATCH or label");
         L->scopes.emplace_back();
-        KNode* n = ltail(k, b->stmts);
+        KNode* n = !L->rets.empty() && L->rets.back() ? inlTail(k, b->stmts) : ltail(k, b->stmts);
         L->scopes.pop_back();
         return n;
     };
@@ -1779,6 +2833,7 @@ struct KConts {
     // (one body for a long text) where it would make a new string from the
     // text (VALUE32-PLAN: the kernels' string lane).
     CowStr* scow = nullptr;
+    Value* ofr = nullptr;         // the object slots (objects that leave the loop)
 };
 [[gnu::always_inline]] inline bool stopped(const KRun& R) { return R.bail | R.ret | R.next | R.last | R.succeed; }
 
@@ -1928,6 +2983,11 @@ int64_t retFn(const KNode* n, int64_t* fr, KRun& R) {
     const int64_t v = krun(n->a, fr, R);
     R.ret = true;
     return v;
+}
+int64_t inlFn(const KNode* n, int64_t* fr, KRun& R) {
+    krun(n->a, fr, R);
+    R.ret = false;
+    return n->slot >= 0 ? fr[n->slot] : 0;
 }
 int64_t seqFn(const KNode* n, int64_t* fr, KRun& R) {
     int64_t v = 0;
@@ -2695,6 +3755,46 @@ int64_t cpushFn(const KNode* n, int64_t* fr, KRun& R) {
     a.push_back(Value::integer(v));
     return 0;
 }
+// An object made as its `.new` makes it (plainFillRun, the arguments being
+// the slots): nothing of the program runs, so a bail only drops it.
+int64_t omakeFn(const KNode* n, int64_t* fr, KRun& R) {
+    if (R.bail) return 0;
+    const MakePlan& m = *n->mk;
+    auto od = makePayload<ObjectData>();
+    od->cls = m.cls;
+    const size_t ns = m.plan.slots.size();
+    od->attrs.reserve(ns);
+    for (size_t i = 0; i < ns; i++) {
+        const PlainFill::Slot& s = m.plan.slots[i];
+        const VAttr& a = m.src[i];
+        Value v;
+        if (a.t == KT::Void || !s.takesArg) v = s.dflt;
+        else if (a.t == KT::Int) v = Value::integer(fr[a.slot]);
+        else if (a.t == KT::Num) v = Value::number(bitsd(fr[a.slot]));
+        else if (a.t == KT::Bool) v = Value::boolean(fr[a.slot] != 0);
+        else {
+            v = Value::integer(fr[a.slot]);
+#if RAKUPP_HAS_INT128
+            if (fr[a.slot + 1]) v = ratValue(fr[a.slot], fr[a.slot + 1]);
+#endif
+        }
+        v.readonly = v.immutableBind = false;
+        od->attrs.addFresh(s.key, s.hash, std::move(v));
+    }
+    R.cc->ofr[n->slot] = Value::object(od);
+    return 0;
+}
+int64_t ocopyFn(const KNode* n, int64_t*, KRun& R) {
+    R.cc->ofr[n->slot] = R.cc->ofr[n->lit];
+    return 0;
+}
+int64_t opushFn(const KNode* n, int64_t*, KRun& R) {
+    if (R.bail) return 0;
+    ValueList& a = *R.cc->conts[n->lit]->arr();
+    logWrite(*R.cc, (int)n->lit, {CUndo::Size, 0, &a, a.size(), nullptr, Value()});
+    a.push_back(R.cc->ofr[n->slot]);
+    return 0;
+}
 int64_t scpushFn(const KNode* n, int64_t* fr, KRun& R) {
     const std::string& t = srun(n->a, fr, R);
     if (R.bail) return 0;
@@ -2732,6 +3832,7 @@ void link(KNode* n) {
         case KOp::Cond: n->fn = condFn; break;
         case KOp::If: n->fn = ifFn; break;
         case KOp::Ret: n->fn = retFn; break;
+        case KOp::Inl: n->fn = inlFn; break;
         case KOp::Seq: n->fn = seqFn; break;
         case KOp::Call:
             n->fn = n->callee->nframe > n->nargs ? callFnL
@@ -2825,6 +3926,9 @@ void link(KNode* n) {
         case KOp::CSApp: n->fn = csappFn; break;
         case KOp::CPush: n->fn = cpushFn; break;
         case KOp::SCPush: n->fn = scpushFn; break;
+        case KOp::OMake: n->fn = omakeFn; break;
+        case KOp::OCopy: n->fn = ocopyFn; break;
+        case KOp::OPush: n->fn = opushFn; break;
 #if RAKUPP_HAS_INT128
         case KOp::XVar: n->fn = xvarFn; break;
         case KOp::XLit: n->fn = xlitFn; break;
@@ -2935,6 +4039,16 @@ struct LKernel {
     bool usesPrefix = false;
     bool usesMethods = false;
     std::atomic<unsigned char> bails{0};
+    // objects held as slots: the class names it resolved and the methods it
+    // compiled in place, under the symbol generation it was compiled in
+    struct ClassFact { std::string name, subKey, termKey; ClassInfo* ci; uint64_t serial; PlainFill plan; };
+    std::vector<ClassFact> classes;
+    std::vector<ObjFact> facts;
+    std::vector<Value> inlined;
+    std::vector<LOuterObj> oobjs;   // objects of the program it reads, their attributes copied in at entry
+    int nobj = 0;                   // object slots
+    std::vector<std::unique_ptr<MakePlan>> makes;
+    std::atomic<uint64_t> symGen{0};
 };
 
 // The kernel slot of a loop statement: a `for` over an integer Range, a
@@ -3159,11 +4273,14 @@ bool Interpreter::tryLoopKernel(Stmt* loop, const std::string& var, long long lo
             KNode* root = nullptr;
             // A second compile (or more) when the first finds an Int variable
             // that is given a Rat: it then holds an exact slot from the start.
-            std::vector<std::string> promote;
+            // …or an object that leaves the loop by its name: the name then
+            // holds the object itself from its declaration on.
+            std::vector<std::string> promote, boxed;
             for (int attempt = 0;; attempt++) {
                 lk2 = new LKernel;
                 cx = LoopCx{};
                 cx.promote = promote;
+                cx.boxed = boxed;
                 cx.env = env;
                 cx.threads = threads;
                 cx.interp = this;
@@ -3257,6 +4374,7 @@ bool Interpreter::tryLoopKernel(Stmt* loop, const std::string& var, long long lo
                 }
                 if (body || !cx.again || attempt >= 4) break;
                 promote = cx.promote;
+                boxed = cx.boxed;
                 finishSession(cc, false, nullptr);
                 delete lk2;
             }
@@ -3300,6 +4418,24 @@ bool Interpreter::tryLoopKernel(Stmt* loop, const std::string& var, long long lo
             lk2->binOps = cc.ops;
             lk2->usesPrefix = cc.prefix;
             lk2->usesMethods = cx.usesMethods;
+            for (auto& d : cx.classes) {
+                bool have = false;
+                for (auto& n : lk2->classes) have = have || n.name == d.first->name;
+                if (!have)
+                    lk2->classes.push_back({d.first->name, "&" + d.first->name, "&term:<" + d.first->name + ">", d.second,
+                                            d.second->serial, *plainFillPlan(*d.second)});
+            }
+            for (auto& oo : cx.oobjs) {   // (their classes: found from the object, not by a name)
+                bool have = false;
+                for (auto& n : lk2->classes) have = have || n.ci == oo.ci;
+                if (!have) lk2->classes.push_back({oo.ci->name, "", "", oo.ci, oo.serial, *plainFillPlan(*oo.ci)});
+            }
+            lk2->oobjs = std::move(cx.oobjs);
+            lk2->nobj = cx.nobj;
+            lk2->makes = std::move(cx.makes);
+            lk2->facts = std::move(cx.facts);
+            lk2->inlined = cx.inlined;
+            lk2->symGen.store(g_symbolGen.load(std::memory_order_relaxed), std::memory_order_relaxed);
             slot->publish(lk2);
             h = lk2;
             if (g_kernelTrace)
@@ -3326,6 +4462,33 @@ bool Interpreter::tryLoopKernel(Stmt* loop, const std::string& var, long long lo
     if (L->usesPrefix && g_userPrefixShadow.load(std::memory_order_relaxed))
         return notEntered("the program declares a prefix operator");
     if (L->usesMethods && !builtinExt_.empty()) return notEntered("a built-in type is augmented");
+    if (!L->classes.empty()) {
+        // The classes it holds objects of are still what their names find
+        // from this entry's scope, and no method it compiled in place is
+        // wrapped. When a class, role or subset has been declared since the
+        // facts were last looked at (the symbol generation), they are looked
+        // at again: each class's fill and each method it resolved.
+        if (threads || anyRevSwitch_ || haveCustomHows_.load(std::memory_order_relaxed))
+            return notEntered("objects held as slots while threads are live, or under a custom metaobject");
+        for (auto& cf : L->classes)
+            if (!cf.subKey.empty() && kernelClassIn(*this, env, cf.name, cf.subKey, cf.termKey) != cf.ci)
+                return notEntered("a name that finds another class:", cf.name);
+        const uint64_t gen = g_symbolGen.load(std::memory_order_relaxed);
+        if (gen != L->symGen.load(std::memory_order_relaxed)) {
+            for (auto& cf : L->classes) {
+                const PlainFill* pf = cf.ci->serial == cf.serial && cf.ci->shadowsAttrs <= 0 ? plainFillPlan(*cf.ci) : nullptr;
+                if (!pf || !pf->ok || !pf->same(cf.plan)) return notEntered("a class that has changed:", cf.name);
+            }
+            for (auto& f : L->facts) {
+                Callable* mc = nullptr;
+                if (objMethodOf(*this, f.ci, f.name, f.nargs, mc) != f.kind || mc != f.mc)
+                    return notEntered("a method that has changed:", f.name);
+            }
+            L->symGen.store(gen, std::memory_order_relaxed);
+        }
+        for (auto& mv : L->inlined)
+            if (!mv.code()->cold().wrappers.empty()) return notEntered("a method it compiled in place is wrapped");
+    }
     // The program's variables, found again for THIS entry: each must still
     // hold the type its slots were compiled for, each one written must be a
     // plain container, and no two names may share a container (the kernel
@@ -3377,6 +4540,42 @@ bool Interpreter::tryLoopKernel(Stmt* loop, const std::string& var, long long lo
             return notEntered("a container of another kind:", lc.name);
         conts[i] = cell;
     }
+    // …and the objects it reads: each still an instance of the class it was
+    // compiled for, each attribute it has a slot for still of that type
+    const size_t nobj = L->oobjs.size();
+    ObjectData* objs[8];
+    Value* ocells[8];
+    bool owrites = false;
+    for (size_t i = 0; i < nobj; i++) {
+        const LOuterObj& oo = L->oobjs[i];
+        Env* owner = nullptr;
+        Value* cell = outerCell(env, oo.name, &owner);
+        ocells[i] = cell;
+        if (oo.dirty >= 0) {
+            owrites = true;
+            if (!cell || !writableCell(*cell, owner, oo.name))
+                return notEntered("a container a plain store would not honour:", oo.name);
+        }
+        ObjectData* od = cell && cell->t == VT::Object ? cell->obj() : nullptr;
+        if (!od || od->cls.get() != oo.ci || oo.ci->serial != oo.serial || od->hasBoxed)
+            return notEntered("an object of another class in", oo.name);
+        for (auto& a : oo.o.attrs) {
+            if (a.t == KT::Void) continue;
+            auto it = od->attrs.find(a.name);
+            if (it == od->attrs.end() || plainKT(it->second) != a.t) return notEntered("an attribute of another type in", oo.name);
+        }
+        objs[i] = od;
+    }
+    // (one the loop assigns keeps its own copy of the attributes: no second name for its container)
+    for (size_t i = 0; owrites && i < nobj; i++)
+        for (size_t j = 0; j < i; j++)
+            if (ocells[j] == ocells[i]) return notEntered("two names for one container:", L->oobjs[i].name);
+    // …and one it writes the attributes of is no other name's object
+    bool awrites = false;
+    for (size_t i = 0; i < nobj; i++) awrites = awrites || !L->oobjs[i].wr.empty();
+    for (size_t i = 0; awrites && i < nobj; i++)
+        for (size_t j = 0; j < i; j++)
+            if (objs[j] == objs[i]) return notEntered("two names for one object:", L->oobjs[i].name);
     int64_t stackInts[33];   // kDenSlot first
     std::unique_ptr<int64_t[]> heapInts;
     int64_t* fr = 1 + (L->nint <= 32 ? stackInts : (heapInts.reset(new int64_t[L->nint + 1]), heapInts.get()));
@@ -3395,6 +4594,11 @@ bool Interpreter::tryLoopKernel(Stmt* loop, const std::string& var, long long lo
     std::unique_ptr<signed char[]> heapNfc;
     signed char* snfc = L->nstr <= 16 ? stackNfc : (heapNfc.reset(new signed char[L->nstr]), heapNfc.get());
     std::fill(snfc, snfc + L->nstr, (signed char)-1);
+    Value stackObjs[4];
+    std::unique_ptr<Value[]> heapObjs;
+    Value* ofr = L->nobj <= 4 ? stackObjs : (heapObjs.reset(new Value[L->nobj]), heapObjs.get());
+    for (size_t i = 0; i < nobj; i++)
+        if (L->oobjs[i].o.box >= 0) ofr[L->oobjs[i].o.box] = *ocells[i];
     fr[kLoSlot] = lo;
     fr[kHiSlot] = hi;
     for (size_t i = 0; i < no; i++) {
@@ -3410,6 +4614,18 @@ bool Interpreter::tryLoopKernel(Stmt* loop, const std::string& var, long long lo
             strs[o.slot] = cells[i]->s.str();
             scow[o.slot] = cells[i]->s;
             if (const StrBody* b = cells[i]->s.body()) snfc[o.slot] = b->nfc.load(std::memory_order_relaxed);
+        }
+    }
+    for (size_t i = 0; i < nobj; i++) {
+        if (L->oobjs[i].dirty >= 0) fr[L->oobjs[i].dirty] = 0;
+        for (auto& a : L->oobjs[i].o.attrs) {
+            if (a.t == KT::Void) continue;
+            const Value& v = objs[i]->attrs.find(a.name)->second;
+            if (a.t == KT::Int) fr[a.slot] = v.i;
+            else if (a.t == KT::Num) fr[a.slot] = dbits(v.n);
+            else if (a.t == KT::Bool) fr[a.slot] = v.b ? 1 : 0;
+            else if (a.t == KT::Exact) { fr[a.slot] = v.ratN()->toLL(); fr[a.slot + 1] = v.ratD()->toLL(); }
+            else strs[a.slot] = v.s.str();
         }
     }
     // the generic path's own limits for the calls it makes (see tryIntKernel)
@@ -3432,6 +4648,7 @@ bool Interpreter::tryLoopKernel(Stmt* loop, const std::string& var, long long lo
     kc.sinfo = sinfo;
     kc.snfc = snfc;
     kc.scow = scow;
+    kc.ofr = ofr;
     if (nc) kc.size(nc);
     for (size_t i = 0; i < nc; i++)
         if (L->conts[i].written && conts[i]->pk_ == PK::Packed) {   // (a Num array's words, or an Int container's)
@@ -3450,6 +4667,44 @@ bool Interpreter::tryLoopKernel(Stmt* loop, const std::string& var, long long lo
         if (b + 1 >= 2) *slot = kNeverKernel;
         if (g_kernelTrace) std::fprintf(stderr, "kernel: loop at line %d bailed\n", loop->line);
         return false;
+    }
+    // an object whose attributes the loop wrote: its own, from the slots
+    for (size_t i = 0; i < nobj; i++) {
+        const LOuterObj& oo = L->oobjs[i];
+        for (size_t ai = 0; ai < oo.wr.size(); ai++) {
+            if (!oo.wr[ai]) continue;
+            const VAttr& a = oo.o.attrs[ai];
+            Value& v = objs[i]->attrs.find(a.name)->second;
+            if (a.t == KT::Int) v.i = fr[a.slot];
+            else if (a.t == KT::Num) v.n = bitsd(fr[a.slot]);
+            else v.b = fr[a.slot] != 0;
+        }
+    }
+    // a variable the loop gave a new object: that object, made now from the
+    // slots as its `.new` would have made it (the plain fill; the attributes
+    // no slot stands for are the ones `.new` was not given)
+    for (size_t i = 0; i < nobj; i++) {
+        const LOuterObj& oo = L->oobjs[i];
+        if (oo.dirty < 0 || !fr[oo.dirty]) continue;
+        if (oo.o.box >= 0) { *ocells[i] = ofr[oo.o.box]; continue; }   // (made in the loop)
+        const PlainFill* pf = plainFillPlan(*oo.ci);
+        ValueList args;
+        for (size_t ai = 0; ai < oo.o.attrs.size(); ai++) {
+            const VAttr& a = oo.o.attrs[ai];
+            if (a.t == KT::Void || ai >= pf->slots.size() || !pf->slots[ai].takesArg) continue;
+            Value v = a.t == KT::Int ? Value::integer(fr[a.slot]) : a.t == KT::Num ? Value::number(bitsd(fr[a.slot]))
+                    : a.t == KT::Bool ? Value::boolean(fr[a.slot] != 0) : Value::integer(fr[a.slot]);
+#if RAKUPP_HAS_INT128
+            if (a.t == KT::Exact && fr[a.slot + 1]) v = ratValue(fr[a.slot], fr[a.slot + 1]);
+#endif
+            Value pr = Value::pair(a.name, std::move(v));
+            pr.namedArg = true;
+            args.push_back(std::move(pr));
+        }
+        auto od = makePayload<ObjectData>();
+        od->cls = objs[i]->cls;
+        if (!plainFillRun(*pf, *od, *oo.ci, args)) runAttrDefaults(od, objs[i]->cls, args);
+        *ocells[i] = Value::object(od);
     }
     for (size_t i = 0; i < no; i++) {
         const LOuter& o = L->outer[i];

@@ -6040,6 +6040,20 @@ static bool plainAccessorClass(ClassInfo& ci) {
 // full path. Null when the full path has to decide.
 const Value* Interpreter::plainAccessorSlot(const Value& inv, const std::string& m) {
     ClassInfo* ci = inv.obj()->cls.get();
+    const ClassAttr* at = plainAccessorAttr(ci, m);
+    if (!at) return nullptr;
+    // A public `$` attribute found first is the most-derived of its name, kept
+    // under that name. An `@`/`%` one may be a sigil twin, kept as "@name"
+    // (ClassInfo::findAccessorAttr).
+    const std::string* slot = &m;
+    std::string slotBuf;
+    if (at->sigil != '$') ci->findAccessorAttr(m, slot, slotBuf);
+    static const Value kAny = Value::any();
+    auto it = inv.obj()->attrs.find(*slot);
+    return it != inv.obj()->attrs.end() ? &it->second : &kAny;
+}
+// …the attribute that answers, which is the class's to say (a loop kernel asks with no object: IntKernel.cpp)
+const ClassAttr* Interpreter::plainAccessorAttr(ClassInfo* ci, const std::string& m) {
     if (m.empty() || (m[0] >= 'A' && m[0] <= 'Z') || m == "new" || m == "clone" || m == "bless" ||
         m == "parse" || m == "subparse" || m == "parsefile")
         return nullptr;
@@ -6053,16 +6067,16 @@ const Value* Interpreter::plainAccessorSlot(const Value& inv, const std::string&
     const ClassAttr* at = ci->findAttr(m);
     if (!at || !at->pub || at->deprecated) return nullptr;
     if (!ci->delegatedNames.empty() && ci->delegatedNames.count(m)) return nullptr;
-    if (ci->findMethodForCall(m, langRev_ < 2)) return nullptr;
-    // A public `$` attribute found first is the most-derived of its name, kept
-    // under that name. An `@`/`%` one may be a sigil twin, kept as "@name"
-    // (ClassInfo::findAccessorAttr).
-    const std::string* slot = &m;
-    std::string slotBuf;
-    if (at->sigil != '$') ci->findAccessorAttr(m, slot, slotBuf);
-    static const Value kAny = Value::any();
-    auto it = inv.obj()->attrs.find(*slot);
-    return it != inv.obj()->attrs.end() ? &it->second : &kAny;
+    return ci->findMethodForCall(m, langRev_ < 2) ? nullptr : at;
+}
+// The class a type object names, when its `.new` is the plain default construction (plainNewClass's 1)
+ClassInfo* Interpreter::plainNewClassOf(const Value& t) {
+    auto cit = t.t == VT::Type && !t.ext() && t.ofType().empty() ? classes_.find(t.s) : classes_.end();
+    if (cit == classes_.end() || !cit->second) return nullptr;
+    const uint64_t key = (g_symbolGen.load(std::memory_order_relaxed) + 1) << 2;   // (methodCall's memo)
+    uint64_t k = cit->second->plainNewKey;
+    if ((k & ~uint64_t(3)) != key) cit->second->plainNewKey = k = key | (uint64_t)plainNewClass(*this, *cit->second);
+    return (k & 3) == 1 ? cit->second.get() : nullptr;
 }
 
 // The Iterator role's default methods for a user class that does it, each

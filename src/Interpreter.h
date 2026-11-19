@@ -2961,6 +2961,8 @@ public:
     // `$obj.name`, no arguments, answered as the public attribute's accessor when
     // that is what dispatch would reach (Builtins.cpp); null: the full path decides
     const Value* plainAccessorSlot(const Value& inv, const std::string& m);
+    const ClassAttr* plainAccessorAttr(ClassInfo* ci, const std::string& m);
+    ClassInfo* plainNewClassOf(const Value& t);
     [[gnu::noinline]] Value uninitMethodCall(const struct MethodCall* mc, const Value& inv);
     struct UninitNameScope {
         Interpreter& I; std::string saved;
