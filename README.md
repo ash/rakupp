@@ -13,7 +13,7 @@ WebAssembly, no server required. It is not a fork of Rakudo and shares no code
 with it; it targets the *language*, measured against
 [**Roast**](https://github.com/Raku/roast), the official Raku test suite.
 
-**Status:** current release **v5.9.0** (2026-11-17) — **100.00% of Roast.**
+**Status:** current release **v5.10.0** (2026-11-19) — **100.00% of Roast.**
 Of the tests Roast expects an implementation to pass, **all 219,395** pass, and
 **all 1,425 files** in Roast's `spectest.data` pass completely (Roast
 `cf28a323c`, which carries Unicode 18.0's tests). On Roast `1f521d798`, which
@@ -38,7 +38,9 @@ under `--exe` the interpreter's answer on all 1,573 programs of the examples
 and regression tests, and fixes twenty-two reported issues. v5.9.0 ran the code from 2,017 of
 Rakudo's own issues under both engines and fixed what Raku++ got wrong,
 puts a Raku program on a BBC micro:bit (`--target=microbit`), and reads and
-writes JSON Lines. Every release is
+writes JSON Lines. v5.10.0 runs a loop that makes and changes objects of a
+plain class in the loop kernel, its attributes in frame slots, and brings
+objects and `where` multis at steady state to Rakudo's time or under. Every release is
 written up in the [CHANGELOG](CHANGELOG.md), and what each major set out to do is in
 [VERSIONS.md](docs/dev/plans/VERSIONS.md).
 
@@ -49,7 +51,7 @@ same harness (2026-09-16, 2,529 dists), passes 1,791; the other 738 cannot pass
 there under any engine, for want of libgsl, fontconfig or a network. Every distribution, with how it ran, is at
 [raku.online/modules/ecosystem](https://raku.online/modules/ecosystem/).
 
-| | v5.9.0 | at v4.0.0 | at v3.0.0 |
+| | v5.10.0 | at v4.0.0 | at v3.0.0 |
 |---|---:|---:|---:|
 | Roast tests, skip and todo left out‡ | **219,395 of 219,395 (100.00%)** | — | — |
 | Roast tests, every declared test‡ | **221,034 of 221,034 (100.00%)** | 200,843 of 219,610 (91%) | 197,191 of 218,772 (90%) |
@@ -57,12 +59,12 @@ there under any engine, for want of libgsl, fontconfig or a network. Every distr
 | Official documentation examples byte-identical on both engines | **1,006**¶ | 957 | 945 |
 | Modules — the 59-dist battery, each against its own suite | **44 / 59** | 49 / 59† | 47 / 59 |
 | Modules — the whole [ecosystem](https://raku.online/modules/ecosystem/) | **1,182 of 2,584**§ | 1,006 of 2,529 | — |
-| Local regression suite | **2,259** | 1,020 | 398 |
+| Local regression suite | **2,382** | 1,020 | 398 |
 
-Dashes mean the measurement did not exist yet. The Roast figures are v5.9.0's, three
-runs alike, on the 1,425 files `spectest.data` lists at Roast `cf28a323c`:
+Dashes mean the measurement did not exist yet. The Roast figures are v5.10.0's, one
+run, on the 1,425 files `spectest.data` lists at Roast `cf28a323c`:
 the same files v5.6.0 passed at `da425eb92`, and one declared test more,
-which Roast skips. v5.7.0 measured the same figures. The list is one file longer than v5.2.1's
+which Roast skips. v5.9.0 measured the same figures in three runs alike, and v5.7.0 in one. The list is one file longer than v5.2.1's
 (`S15-nfg/GraphemeBreakTest-4.t`, new with Unicode 18.0). Since v5.6.0 the
 figures count
 188 tests more than v5.5.0's, all `S32-str/indices.t`'s, a file v5.5.0 died
@@ -72,9 +74,9 @@ columns were measured on the whole checkout (1,464 files at v4.0.0, 1,462 at
 v3.0.0), and 656 is how many of the 1,424 files listed at Roast `1f749e338`
 v4.0.0 passed.
 
-¶ Measured for v5.0.0; v5.1.0 through v5.9.0 did not re-run that sweep.
+¶ Measured for v5.0.0; v5.1.0 through v5.10.0 did not re-run that sweep.
 
-The battery figure is v5.3.0's; v5.4.0 through v5.9.0 did not re-run it. It was
+The battery figure is v5.3.0's; v5.4.0 through v5.10.0 did not re-run it. It was
 48 / 59 at v5.0.1. Color, Encode and Trap broke between v5.0.1 and v5.2.1, and
 YAMLish no longer counts because Rakudo now fails its suite
 ([CHANGELOG](CHANGELOG.md)).

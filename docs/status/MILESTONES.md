@@ -67,6 +67,7 @@ Every figure here is measured, not projected; the methodology is in
 | 2026-11-11 | **v5.7.0** | A `Value` of 32 bytes where it was 80; an untyped array of Ints or Nums kept as machine words; `--doc-links` links a program to its documentation; `use Arduino::WiFi` on the Uno R4 WiFi; natives ranked in multi dispatch as Rakudo ranks them — Roast 1,425 / 1,425 on a Roast three commits on; benchmarks not re-run |
 | 2026-11-12 | **v5.8.0** | `--exe` gives the interpreter's answer on all 1,573 programs of `examples/` and `t/regression/`, held there by `t/exe/parity.raku`; twenty-two reported issues fixed — a quick release; Roast 1,425 / 1,425 files, its tests not re-counted; benchmarks not re-run |
 | 2026-11-17 | **v5.9.0** | Rakudo's 3,222 issues classified and 2,017 run under both engines, then twelve batches of fixes (1,264 → 1,368 of 1,777 snippets answering as Rakudo does); `--target=microbit` for the BBC micro:bit V2; JSON Lines in JSON::Native — Roast 1,425 / 1,425 files and 219,395 / 219,395 tests, three runs alike |
+| 2026-11-19 | **v5.10.0** | A loop that makes, reads and changes objects of a plain class runs in the loop kernel, each attribute in a frame slot (`objects-steady` 1.42 s → 23 ms; Rakudo 2026.09 0.91 s); method calls, attribute reads, construction and `where` multis at Rakudo's steady-state time or under; `--exe` compiles an EVAL of a literal natively — Roast 1,425 / 1,425 files and 219,395 / 219,395 tests, one run |
 
 **By the numbers:** v0.1.0 → v2.0.0 in 36 days (2026-07-02 to 2026-08-07).
 
@@ -362,6 +363,15 @@ zef populates (see [MODULES.md](../guide/MODULES.md)); the goal is breadth and d
   board to the `.hex`. JSON::Native reads and writes JSON Lines in one C++
   pass. A drained Seq and a large file's readers keep a window, not all they
   read. Roast passes all 1,425 files and all 219,395 tests, three runs alike.
+- **Nov 19 — v5.10.0.** A loop that makes objects of a plain class, reads
+  their attributes, calls their one-expression methods and writes their
+  attributes runs in the loop kernel with each attribute in a frame slot,
+  and an object leaves the loop only when it must, made from the slots:
+  `objects-steady` takes 23 ms where v5.9.0 took 1.42 s and Rakudo 0.91 s.
+  Outside a kernel, seven changes to method calls, attribute reads,
+  construction and `where` bring objects and `where` multis at steady state
+  to 0.84× and 1.00× of Rakudo's time. Roast passes all 1,425 files and all
+  219,395 tests.
 
 Beyond the interpreter, the same source feeds a small constellation —
 [raku.online](https://raku.online/) (playground),

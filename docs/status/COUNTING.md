@@ -15,7 +15,7 @@ todo counted as passes, and third the files that fully pass. The file count is
 the strictest bar and the least informative, because one failing assertion
 fails a whole file.
 
-The figures in the table below are v5.9.0's, three runs alike of 2026-11-17 against
+The figures in the table below are v5.10.0's, one run of 2026-11-19 against
 Roast `cf28a323c` and the 1,425 files `spectest.data` lists. The worked
 examples further down were measured on 2026-10-13, on the v5.4.0 candidate
 (`56b55eb8`), against Roast `da425eb92` (three runs, all three alike).

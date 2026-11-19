@@ -44,7 +44,7 @@ The long-term goal, in order:
 ## Status
 
 Against the 1,425 files of Roast's `spectest.data` (Rakudo's own run list, at
-Roast `cf28a323c`), as of v5.9.0:
+Roast `cf28a323c`), as of v5.10.0:
 
 | Files | Count | Share of suite |
 |---|---:|---:|
