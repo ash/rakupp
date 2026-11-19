@@ -5420,6 +5420,29 @@ static void takeRoleMethodHandles(ClassInfo* ci, const ClassDecl* cd, const std:
                 ci->delegatedNames.insert(kv.first);
 }
 
+// The registry holds one type per name, the latest declared. A `my class` (or
+// `my role`) inside a routine or block that takes the name from another type is
+// that scope's alone, so the other is put back when the scope leaves, with the
+// `temp`s: `class P {}; sub f { my class P {} }; f(); P` is the global P again,
+// as on Rakudo. A closure that outlives the scope sees the outer type there.
+// (Out here: execDeclStmt sits at its size ceiling.)
+static void registerDeclaredType(Interpreter& I, const std::string& name,
+                                 const std::shared_ptr<ClassInfo>& ci, const ClassDecl* cd) {
+    auto& slot = I.classes_[name];
+    Env* site = ci->declEnv ? ci->declEnv->parent.get() : nullptr;
+    if (slot && slot != ci && cd->isMy && !cd->isAugment && slot->decl != cd &&
+        site && site->parent && !site->unitFrame && !site->packageFrame) {
+        // (a recursive call registers this declaration again: still ours)
+        site->x().tempRestores.push_back([&I, name, prev = slot, cd] {
+            auto it = I.classes_.find(name);
+            if (it == I.classes_.end() || !it->second || it->second->decl != cd) return;
+            it->second = prev;
+            I.noteSymbolMutation("my type out of scope");
+        });
+    }
+    slot = ci;
+}
+
 // Carry a composed role's `is also` dispatcher-aliases onto the type: the alias
 // is a second name for the multi group the role provides — found in the type's
 // merged methods, or in the role's own when it arrives as a parent (walked, not
@@ -8464,7 +8487,7 @@ static void refuseRoleClashes(Interpreter& I, const std::string& clsName, const 
                     if (prev->second->decl != cd) ci->roleVariants.push_back(prev->second);
                 }
             }
-            if (!stubOverCompleted) classes_[clsName] = ci;
+            if (!stubOverCompleted) registerDeclaredType(*this, clsName, ci, cd);
             if (!userInfixPending_.empty()) reviewUserInfixPending();   // an operator armed for this name
             if (impliedPkgs_.erase(clsName)) pkgKind_.erase(clsName);   // `my class A` after `class A::B` too
             // `my class X::Encode::Unknown` inside `unit module Encode`: its leading
