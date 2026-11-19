@@ -262,9 +262,9 @@ exploring Raku++:
 - **[showcase/](showcase)** — mid-size programs: a Scheme interpreter built on
   a Raku grammar, and a pastebin HTTP server on raw sockets. Three of them
   are also interactive textbooks you can open in the browser:
-  [eclipses](https://htmlpreview.github.io/?https://github.com/ash/rakupp/blob/main/showcase/eclipse/web/eclipse.html),
-  [Fourier series](https://htmlpreview.github.io/?https://github.com/ash/rakupp/blob/main/showcase/fourier/web/fourier.html) and
-  [orbits](https://htmlpreview.github.io/?https://github.com/ash/rakupp/blob/main/showcase/orbits/web/orbits.html).
+  [eclipses](https://raku.online/showcase/eclipse/book/),
+  [Fourier series](https://raku.online/showcase/fourier/book/) and
+  [orbits](https://raku.online/showcase/orbits/book/).
 - **[live/](live)** — real software from the ecosystem, run unmodified: whole
   tools people already use, driven by Raku++ exactly as their authors wrote
   them. The other direction — other people's software that reached for *this*

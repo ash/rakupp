@@ -157,7 +157,7 @@ This program answers *when*, and what kind.
 
 `web/` is the same engine as an interactive textbook, seven chapters with
 every number computed live in the browser —
-**[open it in the browser](https://htmlpreview.github.io/?https://github.com/ash/rakupp/blob/main/showcase/eclipse/web/eclipse.html)**. Build it with:
+**[open it in the browser](https://raku.online/showcase/eclipse/book/)**. Build it with:
 
 ```sh
 build/rakupp showcase/eclipse/tools/build.raku
