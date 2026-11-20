@@ -3405,10 +3405,10 @@ bool rtMutName(const std::string& n) {
 // $b unbound. The same tally and wording: a Pair passed positionally counts
 // toward the too-few test, a named one toward neither; `words` is whether a
 // real slurpy makes the expectation "at least N".
-void rtArityCheck(const ValueList& a, int req, int max, bool unbounded, bool words) {
+void rtArityFail(const ValueList& a, int req, int max, bool unbounded, bool words) {
     int posStrict = 0, pairish = 0;
     for (auto& v : a) { if (v.t == VT::Pair && v.namedArg) continue; if (v.t == VT::Pair) pairish++; else posStrict++; }
-    if (posStrict + pairish >= req && (unbounded || posStrict <= max)) return;
+    (void)unbounded;
     const int got = posStrict + pairish;
     const bool few = got < req;
     std::string expected;

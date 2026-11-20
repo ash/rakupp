@@ -95,3 +95,16 @@ here.*
   routine's own; and a method of the outer class, called while the routine
   runs, finds the routine's class. Both follow from one registry entry per
   name.
+- What the `--exe` fixes above cost per call, measured natively against the
+  build before them (alternating order, 15 rounds, instructions retired
+  agreeing): a sub that contains `try`, `CATCH` or `$!` looks `$!` up once
+  more to keep its caller's, ~11 ns a call (+27% on a 2M-call loop of
+  `sub safe($x) { try {…}; $x + 1 }`; it was +44% with two lookups, before
+  the guard kept the slot it found); the argument-count check, now inline
+  (rtArityCheck, its error out of line in rtArityFail), ~20 instructions on
+  a call through the boxed entry (+2-4% on 3M calls); and a block whose value
+  is a variable's copies it to mark it contained, ~40 instructions (+6% on
+  3M calls of `-> $x { my $p = $x + 1; $p }`). tools/bench is unchanged
+  natively (fib, objects, sortby, multiwhere, strcat, regex, rats, arrayops
+  within ±4% either way) and perf-guard's interpreter kernels alike, its
+  red junctionwide the same on the build before.

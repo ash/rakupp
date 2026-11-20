@@ -6430,7 +6430,8 @@ Value  rtIndirectMethod(Interpreter& I, const Value& inv, const Value& mv, Value
 Value  rtBindPositional(Interpreter& I, Value rhs, const std::string& name);   // `my @a := …` compiled
 Value  rtCapture(ValueList parts, bool many);   // `\(…)` of values, compiled
 bool   rtMutName(const std::string& n);   // a mutator rtMutMethod takes
-void   rtArityCheck(const ValueList& a, int req, int max, bool unbounded, bool words);   // a compiled routine's arity
+[[noreturn]] void rtArityFail(const ValueList& a, int req, int max, bool unbounded, bool words);   // a compiled routine's arity, checked inline: a named Pair is no positional
+inline void rtArityCheck(const ValueList& a, int req, int max, bool unbounded, bool words) { int pos = 0, pr = 0; for (auto& v : a) if (v.t != VT::Pair) pos++; else pr += !v.namedArg; if (pos + pr < req || (!unbounded && pos > max)) rtArityFail(a, req, max, unbounded, words); }
 inline Value rtTailContained(Value v) { Interpreter::tctx().valContained = true; return v; }   // a block's value read from a container: not sunk
 inline Value rtTailBare(Value v) { Interpreter::tctx().valContained = false; return v; }   // a routine's value: the caller sinks it
 // …a subscript that REFUSED in this statement never reached a container (evalStmt's refusalsBefore): its Failure is sunk

@@ -9972,8 +9972,8 @@ struct Codegen {
             forEachAstChild(n, walk);
         };
         for (auto& st : body) walk(st.get());
-        return !sets ? std::string() : "    struct __Bang { Value s; __Bang() : s(RT.dynVarRef(\"$!\")) {} "
-                                       "~__Bang() { RT.dynVarRef(\"$!\") = std::move(s); } } __bang;\n";
+        return !sets ? std::string() : "    struct __Bang { Value* p; Value s; __Bang() : p(&RT.dynVarRef(\"$!\")), s(*p) {} "   // one lookup: a VarMap slot is node-stable
+                                       "~__Bang() { *p = std::move(s); } } __bang;\n";
     }
     void subDef(SubDecl* d) {
         if (d->isNative) { nativeSubDef(d); return; }
