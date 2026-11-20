@@ -2929,6 +2929,7 @@ public:
     // what `@a = …` stores into an `@` container (evalAssign's, and compiled
     // code's for a native array: rtNativeArrayNew, rtArrayAssignTo)
     void arrayStore(Value& lv, Value& rhs, bool isAssign, bool dollarSource, const std::string& tname);
+    void bindPositional(Value& lv, Value& rhs, bool dollarSource, const std::string& tname);   // `@a := v` (Interpreter.cpp)
     void refuseLazyNative(const Value& lv, const Value& rhs);   // …before it: a native array takes no lazy list
     // Run the innermost CONTROL handler for a `warn` (CX::Warn). True = the
     // handler .resume'd, so the default stderr print is suppressed; false =
@@ -6426,6 +6427,18 @@ Value  rtHyperMethod(Interpreter& I, const Value& inv, const std::string& m, Val
 // the call form's dispatch-key prefix ("!" private, "^" meta, "" ordinary).
 Value  rtIndirectMethod(Interpreter& I, const Value& inv, const Value& mv, ValueList args,
                         const char* prefix, bool hyper);
+Value  rtBindPositional(Interpreter& I, Value rhs, const std::string& name);   // `my @a := …` compiled
+Value  rtCapture(ValueList parts, bool many);   // `\(…)` of values, compiled
+bool   rtMutName(const std::string& n);   // a mutator rtMutMethod takes
+void   rtArityCheck(const ValueList& a, int req, int max, bool unbounded, bool words);   // a compiled routine's arity
+inline Value rtTailContained(Value v) { Interpreter::tctx().valContained = true; return v; }   // a block's value read from a container: not sunk
+inline Value rtTailBare(Value v) { Interpreter::tctx().valContained = false; return v; }   // a routine's value: the caller sinks it
+// …a subscript that REFUSED in this statement never reached a container (evalStmt's refusalsBefore): its Failure is sunk
+inline Value rtTailIndex(Value v, unsigned long long before) {
+    Interpreter::tctx().valContained = !(g_subscriptRefusals != before && v.t == VT::Hash && v.hashKind == "Failure");
+    return v;
+}
+Value  rtMiscall(Interpreter& I, const std::string& name, const std::string& sigt, const ValueList& args);   // a call that can never bind
 Value  rtSlipVal(const Value& v);   // |x as a list element (a List that splices, pre-spread deep)
 Value  rtSlipShallow(const Value& v); // |x in value position (one-level splice marker)
 void   rtXxAppend(ValueList& out, Value one); // one `xx` replication: a Slip contributes its elements

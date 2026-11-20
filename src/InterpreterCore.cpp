@@ -537,6 +537,7 @@ static bool exprYieldsContainer(const Expr* e) {
     }
 }
 
+bool exprHandsContainer(const Expr* e) { return exprYieldsContainer(e); }   // (native code's tails, Codegen::tailValue)
 // …for the value a `return` hands back, asked once per ReturnStmt
 static bool returnYieldsContainer(const ReturnStmt* r) {
     if (r->yieldsContainer < 0) r->yieldsContainer = exprYieldsContainer(r->value.get()) ? 1 : 0;
@@ -16948,70 +16949,12 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
                 rtShapedStore(*lv, rhs, keepType);
                 return *lv;   // the assignment answers the (reset) array, as any `@a = …` does
             }
-            // `=` assignment flattens iterables into the array; `:=` BINDS — the
-            // list's items stay what they are (`my @t := ^10, (1,2), [3]` is 3
-            // elements: a Range, a List, an Array — not their union).
-            // …and a bound LIST stays a List: `@!segments := @segments.List` is how
-            // URI::Path publishes an immutable segment list, and `is-deeply` against
-            // `('x','y','z')` compares the type. Only a non-List Array is demoted,
-            // which is what stops the bound items from being flattened together.
-            if (opEq(a->op, ":=") && rhs.t == VT::Array) {
-                // a Seq is Iterable but not Positional: a PARAMETER caches one,
-                // a variable bind refuses it (Rakudo: X::TypeCheck::Binding)
-                if (rhs.typeName() == "Seq")
-                    throwTypedV("X::TypeCheck::Binding",
-                                {{"got", rhs}, {"expected", Value::typeObj("Positional")}},
-                                "Type check failed in binding; expected Positional but got Seq");
-                raceW(lv) = rhs;
-                // …but the `@` sigil says "this name IS the list": binding an
-                // ITEMIZED array ($[…], which is what the slurpy one-arg rule
-                // hands each `**@params` element) must de-itemize, or `for @data`
-                // sees ONE element — the array itself. DBDish::Pg's pg-array-str
-                // then recursed on the same value until the stack ran out.
-                lv->itemized = false;
-            }
-            // `my @p := CArray[Str].new` BINDS the native array — coercing it to a
-            // plain Array threw away the C storage, and the `char**` a native call
-            // then received was an ordinary Raku list. (DBDish::Pg binds its
-            // parameter array exactly this way, and hands it to PQexecPrepared.)
-            else if (opEq(a->op, ":=") && rhs.t == VT::Str &&
-                     (rhs.hashKind == "CArray" || rhs.hashKind == "Buf" ||
-                      rhs.hashKind == "Blob"   || rhs.hashKind == "utf8")) { *lv = rhs; }
-            // `my @a := SubclassOfArray.new` BINDS the object itself — coercing
-            // it to a plain Array would throw away the class, and with it every
-            // method the subclass adds (`.iterator` above all)
-            else if (opEq(a->op, ":=") && rhs.t == VT::Object && rhs.obj() && rhs.obj()->cls) {
-                bool positional = false;
-                for (ClassInfo* c = rhs.obj()->cls.get(); c; c = c->parent.get())
-                    if (c->nativeParent == "Array" || c->nativeParent == "List" ||
-                        c->doesRole("Positional") || c->doesRole("Iterable")) { positional = true; break; }
-                if (positional) raceW(lv) = rhs;
-                else *lv = coerceArray(rhs);
-            }
-            // `my @a := 1` — a bind gives the NAME the value itself, and an
-            // @-name takes only a Positional: a scalar, a Str, a Hash, an
-            // undefined value or a Failure is refused (Rakudo: X::TypeCheck::Binding)
-            else if (opEq(a->op, ":=") && rhs.t != VT::Range &&
-                     !(rhs.t == VT::Type && (rhs.s == "Array" || rhs.s == "List" || rhs.s == "Positional" ||
-                                             rhs.s == "Seq" || rhs.s == "Range" || !rhs.ofType().empty())) &&
-                     (rhs.t == VT::Int || rhs.t == VT::Num || rhs.t == VT::Rat || rhs.t == VT::Complex ||
-                      rhs.t == VT::Bool || rhs.t == VT::Str || rhs.t == VT::Hash || rhs.t == VT::Pair ||
-                      rhs.t == VT::Any || rhs.t == VT::Nil || rhs.t == VT::Type)) {
-                const bool fail = rhs.t == VT::Hash && rhs.hashKind == "Failure";
-                const std::string got = fail ? std::string("Failure") : rhs.typeName();
-                throwTypedV("X::TypeCheck::Binding",
-                            {{"got", rhs}, {"expected", Value::typeObj("Positional")}},
-                            "Type check failed in binding; expected Positional but got " + got +
-                            (fail || rhs.t == VT::Type || rhs.t == VT::Any || rhs.t == VT::Nil
-                                 ? std::string() : " (" + typeCheckRepr(rhs) + ")"));
-            }
-            // …and `=` (with the binds the arms above leave): arrayStore, which
-            // compiled code calls for a native array
-            else arrayStore(*lv, rhs, opEq(a->op, "="),
-                            a->value && a->value->kind == NK::VarExpr &&
-                                !static_cast<VarExpr*>(a->value.get())->name.empty() &&
-                                static_cast<VarExpr*>(a->value.get())->name[0] == '$',
-                            targetName('@'));
+            // `=` fills the array (arrayStore); `:=` binds it (bindPositional)
+            const bool dollarSrc = a->value && a->value->kind == NK::VarExpr &&
+                                       !static_cast<VarExpr*>(a->value.get())->name.empty() &&
+                                       static_cast<VarExpr*>(a->value.get())->name[0] == '$';
+            if (opEq(a->op, ":=")) bindPositional(*lv, rhs, dollarSrc, targetName('@'));
+            else arrayStore(*lv, rhs, opEq(a->op, "="), dollarSrc, targetName('@'));
             if (!keepType.empty() && lv->ofType().empty()) lv->ofTypeM() = keepType;
             if (keepDefault && !lv->elemDefault()) lv->elemDefaultM() = keepDefault;
             // `my @list is List = …` — the declaration made a List (see the

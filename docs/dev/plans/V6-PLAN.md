@@ -87,6 +87,11 @@ three; memory does not depend on load):
    routine or block compile (19 and 13 files), each newly native file giving
    the interpreter's TAP but for three that run or read `$*EXECUTABLE` and
    `$*PROGRAM`, which are the binary.
+   *2026-11-20:* 607 (43%): the first round of mechanical constructs (core
+   parents, declarations as values and conditions, `@` binding, captures,
+   sigilless names) adds 31 files, each giving the interpreter's TAP; one,
+   advent2012-day03.t, bundles now, refused for a subset in a class body,
+   which native classes never registered (a valid value was refused).
 5. **Not met.** An `--exe` hello builds in 0.65 s (the plan's whole-build
    figure was 1.10 s, 0.77 after the precompiled header); a warm
    `use Cro::HTTP::Router` takes about 130 ms, against the survey's 58 ms on

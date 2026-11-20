@@ -18,7 +18,8 @@ namespace rakupp {
 
 std::string classRefusal(const ClassDecl* cd, const std::set<std::string>& programClasses) {
     static const std::set<std::string> valueTypes = {
-        "Int", "Str", "Num", "Rat", "FatRat", "Complex", "Bool", "Cool", "Numeric", "Real", "Stringy",
+        "Int", "Str", "Num", "Rat", "FatRat", "Complex", "Bool",   // (not Cool, Numeric, Real, Stringy: no value of
+        // their own, so a nativeParent answers as the interpreter's does)
         "Array", "List", "Hash", "Map", "Pair", "Range", "Seq", "Slip", "Set", "Bag", "Mix", "SetHash",
         "BagHash", "MixHash", "Buf", "Blob", "Date", "DateTime", "Duration", "Instant", "IO::Path"};
     if (!programClasses.count(cd->parent) && valueTypes.count(cd->parent))
@@ -37,6 +38,10 @@ std::string classRefusal(const ClassDecl* cd, const std::set<std::string>& progr
         if (a.objKeyed || a.inlined || a.deprecated || a.readonly || a.built || a.notBuilt)
             return "a trait on " + what;
     }
+    // a type declared in the class body is registered nowhere natively: `A::B.new` died
+    for (auto& st : cd->body)
+        if (st && (st->kind == NK::ClassDecl || st->kind == NK::EnumDecl || st->kind == NK::SubsetDecl))
+            return "a type declared inside a class body";
     // (a native `is rw` method hands back a copy of the container it returns)
     for (auto& md : cd->methods)
         if (md->retRw) return "an `is rw` method, whose result is a container";

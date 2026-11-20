@@ -8,12 +8,23 @@ what changed, what it measured and how, with the commit — so the entry starts
 from this page. Move each item into CHANGELOG.md at the tag and delete it
 here.*
 
-*Covered so far: the `my class` shadowing fix; allomorph literals and nested classes under `--exe`.*
+*Covered so far: the `my class` shadowing fix; allomorph literals, nested classes and the first mechanical round under `--exe`.*
 
 ---
 
 ### New
 
+- `--exe` compiles seven more constructs where it bundled the program: a
+  class whose parent is `Exception`, `Cool`, `Numeric`, `Real`, `Stringy` or
+  an `X::` type; a block or routine whose last statement is a plain
+  declaration (`lives-ok { my $x = f() }`); a plain declaration as a
+  `while`, `if` or `given` condition; `my @a := …` of a value nothing else
+  holds, with the interpreter's own checks (bindPositional, now one function
+  both engines call); `\(…)` of values; and sigilless names (`my \x`,
+  `sub f(\x)`, `-> \c`). Still refused: a sigilless slurpy or capture
+  parameter, a `constant` inside a routine, a slip into an `@` parameter, a
+  type declared in a class body, and `.candidates`/`.cando`/`.signature` of
+  a multi sub.
 - `--exe` compiles a class or grammar declared inside a routine or block
   when that changes nothing a program can see (codegen/NestedClass.cpp): it
   was the first blocker of 92 Roast files, a test block's `class Dog {}` the
@@ -34,6 +45,16 @@ here.*
 
 ### Fixed: silent wrong answers
 
+- Compiled by `--exe`, more answers that differed from the interpreter's,
+  in top-level programs too: a sub checked no argument count
+  (`sub f($a, $b) {…}; f($one)` ran with `$b` unbound; now the interpreter's
+  X::TypeCheck::Argument, or X::Signature::ArityMismatch through a slip or a
+  `&f` variable); one `$!` served the whole binary, so a `try` in a sub
+  rewrote its caller's; `-> Rat $_ { $_ * 2 }` read the outer topic;
+  `$buf."$write"(…)` wrote a copy; `&f.arity` counted a parameter with a
+  default; `my $x := 1, 2` itemized the list; and a block whose value is a
+  variable's (`{ $p }`, `{ if 1 { $p } }`, `return $p`, an `is raw` tail)
+  had it sunk by the statement that called it, so a Failure detonated.
 - Compiled by `--exe`, each of these answered differently from the
   interpreter, in top-level programs too (found as the files above became
   native): `$x ~~ EXPR` evaluated EXPR with the outer `$_`; `say @objects`

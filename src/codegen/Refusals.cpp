@@ -170,6 +170,29 @@ bool leaveReadsEarlier(const std::vector<StmtPtr>& body, size_t j) {
     return false;
 }
 
+// A slurpy or capture parameter with no sigil (`+l`, `*@` spelled `\l`, `|c`)
+// binds by rules a native local does not follow (the single-argument rule, a
+// List not an Array, named arguments kept for forwarding): the program bundles.
+const char* sigillessSlurpyRefusal(const Program& prog) {
+    const char* why = nullptr;
+    auto ps = [&](const std::vector<Param>& v) {
+        for (auto& p : v)
+            if (p.slurpy && !p.name.empty() && !std::strchr("$@%&", p.name[0])) why = "a sigilless slurpy or capture parameter";
+    };
+    std::function<void(Node*)> walk = [&](Node* n) {
+        if (!n || why) return;
+        if (n->kind == NK::SubDecl) ps(static_cast<SubDecl*>(n)->params);
+        else if (n->kind == NK::BlockExpr) ps(static_cast<BlockExpr*>(n)->params);
+        else if (n->kind == NK::ForStmt) ps(static_cast<ForStmt*>(n)->params);
+        else if (n->kind == NK::WhileStmt) ps(static_cast<WhileStmt*>(n)->params);
+        else if (n->kind == NK::GivenStmt) ps(static_cast<GivenStmt*>(n)->params);
+        else if (n->kind == NK::ClassDecl) for (auto& m : static_cast<ClassDecl*>(n)->methods) ps(m->params);
+        forEachAstChild(n, walk);
+    };
+    for (auto& st : prog.stmts) walk(st.get());
+    return why;
+}
+
 // A node kind as a fallback note names it: the construct `--exe` hands to the
 // interpreter, in words (the note said "NK 24" for an allomorph literal).
 std::string nkName(NK k) {

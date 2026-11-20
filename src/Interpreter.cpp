@@ -3304,6 +3304,132 @@ Value rtHyperMethod(Interpreter& I, const Value& inv, const std::string& m, Valu
     return I.hyperMethodEach(inv, m, args, false);
 }
 
+// `@a := v`, the declaration's or a plain one: what an `@`-name takes when it is
+// BOUND to a value rather than filled from it. evalAssignInner's, and native
+// code's for `my @a := …` (rtBindPositional), so the two cannot drift.
+void Interpreter::bindPositional(Value& lv, Value& rhs, bool dollarSource, const std::string& tname) {
+    // `=` assignment flattens iterables into the array; `:=` BINDS — the
+    // list's items stay what they are (`my @t := ^10, (1,2), [3]` is 3
+    // elements: a Range, a List, an Array — not their union).
+    // …and a bound LIST stays a List: `@!segments := @segments.List` is how
+    // URI::Path publishes an immutable segment list, and `is-deeply` against
+    // `('x','y','z')` compares the type. Only a non-List Array is demoted,
+    // which is what stops the bound items from being flattened together.
+    if (rhs.t == VT::Array) {
+        // a Seq is Iterable but not Positional: a PARAMETER caches one,
+        // a variable bind refuses it (Rakudo: X::TypeCheck::Binding)
+        if (rhs.typeName() == "Seq")
+            throwTypedV("X::TypeCheck::Binding",
+                        {{"got", rhs}, {"expected", Value::typeObj("Positional")}},
+                        "Type check failed in binding; expected Positional but got Seq");
+        raceW(&lv) = rhs;
+        // …but the `@` sigil says "this name IS the list": binding an
+        // ITEMIZED array ($[…], which is what the slurpy one-arg rule
+        // hands each `**@params` element) must de-itemize, or `for @data`
+        // sees ONE element — the array itself. DBDish::Pg's pg-array-str
+        // then recursed on the same value until the stack ran out.
+        lv.itemized = false;
+    }
+    // `my @p := CArray[Str].new` BINDS the native array — coercing it to a
+    // plain Array threw away the C storage, and the `char**` a native call
+    // then received was an ordinary Raku list. (DBDish::Pg binds its
+    // parameter array exactly this way, and hands it to PQexecPrepared.)
+    else if (rhs.t == VT::Str &&
+             (rhs.hashKind == "CArray" || rhs.hashKind == "Buf" ||
+              rhs.hashKind == "Blob"   || rhs.hashKind == "utf8")) { lv = rhs; }
+    // `my @a := SubclassOfArray.new` BINDS the object itself — coercing
+    // it to a plain Array would throw away the class, and with it every
+    // method the subclass adds (`.iterator` above all)
+    else if (rhs.t == VT::Object && rhs.obj() && rhs.obj()->cls) {
+        bool positional = false;
+        for (ClassInfo* c = rhs.obj()->cls.get(); c; c = c->parent.get())
+            if (c->nativeParent == "Array" || c->nativeParent == "List" ||
+                c->doesRole("Positional") || c->doesRole("Iterable")) { positional = true; break; }
+        if (positional) raceW(&lv) = rhs;
+        else lv = coerceArray(rhs);
+    }
+    // `my @a := 1` — a bind gives the NAME the value itself, and an
+    // @-name takes only a Positional: a scalar, a Str, a Hash, an
+    // undefined value or a Failure is refused (Rakudo: X::TypeCheck::Binding)
+    else if (rhs.t != VT::Range &&
+             !(rhs.t == VT::Type && (rhs.s == "Array" || rhs.s == "List" || rhs.s == "Positional" ||
+                                     rhs.s == "Seq" || rhs.s == "Range" || !rhs.ofType().empty())) &&
+             (rhs.t == VT::Int || rhs.t == VT::Num || rhs.t == VT::Rat || rhs.t == VT::Complex ||
+              rhs.t == VT::Bool || rhs.t == VT::Str || rhs.t == VT::Hash || rhs.t == VT::Pair ||
+              rhs.t == VT::Any || rhs.t == VT::Nil || rhs.t == VT::Type)) {
+        const bool fail = rhs.t == VT::Hash && rhs.hashKind == "Failure";
+        const std::string got = fail ? std::string("Failure") : rhs.typeName();
+        throwTypedV("X::TypeCheck::Binding",
+                    {{"got", rhs}, {"expected", Value::typeObj("Positional")}},
+                    "Type check failed in binding; expected Positional but got " + got +
+                    (fail || rhs.t == VT::Type || rhs.t == VT::Any || rhs.t == VT::Nil
+                         ? std::string() : " (" + typeCheckRepr(rhs) + ")"));
+    }
+    // …and `=` (with the binds the arms above leave): arrayStore, which
+    // compiled code calls for a native array
+    else arrayStore(lv, rhs, false, dollarSource, tname);
+}
+Value rtBindPositional(Interpreter& I, Value rhs, const std::string& name) {   // `my @a := …` compiled: a fresh @-name bound to rhs
+    Value lv = Value::array();
+    I.bindPositional(lv, rhs, false, name);
+    return lv;
+}
+
+// `\(…)` of values, compiled: the parts a call would pass (argsVL), shaped as
+// evalUnary's capture arm shapes them — a lone Nil part dropped, a name given
+// twice keeping its last value. A part that is a container is refused there.
+Value rtCapture(ValueList parts, bool many) {
+    Value v = Value::array();
+    for (auto& g : parts) if (many || g.t != VT::Nil) v.arr()->push_back(std::move(g));
+    auto& va = *v.arr();
+    std::set<std::string> seenN;
+    std::vector<bool> keep(va.size(), true);
+    for (size_t i = va.size(); i-- > 0;)
+        if (va[i].t == VT::Pair && va[i].namedArg && !seenN.emplace(va[i].s.str()).second) keep[i] = false;
+    ValueList kept;
+    for (size_t i = 0; i < va.size(); i++) if (keep[i]) kept.push_back(std::move(va[i]));
+    va = std::move(kept);
+    v.hashKind = "Capture"; v.itemized = true; v.isList = false;
+    return v;
+}
+
+// The methods a compiled call sends to rtMutMethod (Codegen's MethodCall arm),
+// for a name only known at run time: `$buf."$write"(0, 1)`.
+bool rtMutName(const std::string& n) {
+    return n == "push" || n == "append" || n == "prepend" || n == "unshift" || n == "pop" || n == "shift" ||
+           n == "splice" || n == "reallocate" || n.rfind("write-", 0) == 0;
+}
+
+// A compiled routine's arity check — callCallableRaw's, which a compiled Code
+// skips (its body is a builtin), so `sub f($a, $b) {…}; f(|@one)` ran with
+// $b unbound. The same tally and wording: a Pair passed positionally counts
+// toward the too-few test, a named one toward neither; `words` is whether a
+// real slurpy makes the expectation "at least N".
+void rtArityCheck(const ValueList& a, int req, int max, bool unbounded, bool words) {
+    int posStrict = 0, pairish = 0;
+    for (auto& v : a) { if (v.t == VT::Pair && v.namedArg) continue; if (v.t == VT::Pair) pairish++; else posStrict++; }
+    if (posStrict + pairish >= req && (unbounded || posStrict <= max)) return;
+    const int got = posStrict + pairish;
+    const bool few = got < req;
+    std::string expected;
+    if (words) expected = "at least " + std::to_string(req) + " arguments";
+    else if (req == max) expected = std::to_string(req) + (req == 1 ? " argument" : " arguments");
+    else expected = std::to_string(req) + (max == req + 1 ? " or " : " to ") + std::to_string(max) + " arguments";
+    throw RakuError{Value::typeObj("X::Signature::ArityMismatch"),
+        std::string(few ? "Too few" : "Too many") + " positionals passed; expected " + expected +
+        " but got " + (few && words ? "only " : "") + std::to_string(few ? got : posStrict)};
+}
+// …and a call that NAMES the routine with a count it can never bind, seen at
+// compile time: Rakudo's X::TypeCheck::Argument, as the interpreter words it
+Value rtMiscall(Interpreter& I, const std::string& name, const std::string& sigt, const ValueList& args) {
+    std::string prof;
+    Value argTypes = Value::array(); argTypes.isList = true;
+    for (auto& a : args) { if (!prof.empty()) prof += ", "; prof += a.typeName(); argTypes.arr()->push_back(Value::str(a.typeName())); }
+    I.throwTypedV("X::TypeCheck::Argument",
+        {{"objname", Value::str(name)}, {"signature", Value::str("(" + sigt + ")")}, {"arguments", argTypes}},
+        "Calling " + name + "(" + prof + ") will never work with declared signature (" + sigt + ")");
+}
+
 // An INDIRECT method call for native codegen — `$obj."$name"()`, `$obj.$code`,
 // `$obj.&sub`, `self!"$name"()`, `@a».&f`. `mv` is the already-evaluated name
 // expression, `prefix` the dispatch-key prefix of the call form ("!" private,

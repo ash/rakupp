@@ -41,6 +41,9 @@ bool nestedSubUnsafe(const std::vector<StmtPtr>&, const SubDecl*, const std::set
 std::string autothreadMask(const std::vector<Param>& ps, bool block);   // codegen/Autothread.cpp
 
 std::string nkName(NK k);   // a node kind as a fallback note names it (codegen/Refusals.cpp)
+const char* sigillessSlurpyRefusal(const Program& prog);   // codegen/Refusals.cpp
+bool exprHandsContainer(const Expr* e);   // InterpreterCore.cpp: does a statement's value arrive in a container
+bool codegenHasWhatever(Expr* e);   // codegen/Whatever.cpp: does `e` curry over a `*` it holds
 std::vector<Stmt*> withLiftedClasses(Program& prog); std::string nestedClassRefusal(const Node* cd);   // codegen/NestedClass.cpp
 std::string mainSigBlob(Program& prog); const char* aotIneligible(SubDecl* d); std::set<std::string> declaredIdents(const std::string& t);   // codegen/RoutineScan.cpp
 namespace {
@@ -791,6 +794,9 @@ struct Codegen {
     std::string gensym(const char* p) { return std::string(p) + std::to_string(tmp++); }
     void line(int ind, const std::string& s) { out << std::string(ind * 4, ' ') << s << "\n"; }
 
+    std::string arityCheck_;   // the rtArityCheck subDef hands bodyDef for the routine it emits
+    bool tailResets_ = false;   // some block's value arrives in a container: a routine's tail clears the flag (tailValue)
+    std::set<std::string> sigilless_;   // `my \x`, `-> \x`, `sub f(\x)` declared as C++ locals: the bare term `x` reads one
     std::set<std::string> codeVars; // `my &name = …` seen so far — calls go through the Value
 
     // The read-only parameters in scope: a plain `$p` of a routine or a pointy
@@ -832,9 +838,9 @@ struct Codegen {
     std::vector<std::string> routineRef_;
     const SubDecl* outerRoutine_ = nullptr;   // the routine whose body is being emitted (nestedSubUnsafe)
     struct RoutineScope {
-        Codegen* g;
-        RoutineScope(Codegen* c, const std::string& ref) : g(c) { g->routineRef_.push_back(ref); }
-        ~RoutineScope() { g->routineRef_.pop_back(); }
+        Codegen* g; std::set<std::string> sigillessOut;   // (a routine's own sigilless names end with it)
+        RoutineScope(Codegen* c, const std::string& ref) : g(c), sigillessOut(c->sigilless_) { g->routineRef_.push_back(ref); }
+        ~RoutineScope() { g->routineRef_.pop_back(); g->sigilless_ = std::move(sigillessOut); }
     };
     // One entry per routine body being emitted: set when a `return` inside one
     // of its BLOCKS is (rtReturnFrom aims it at the routine's frame), so the
@@ -1366,68 +1372,7 @@ struct Codegen {
         return body;
     }
 
-    static bool hasWhatever(Expr* e) {
-        if (!e) return false;
-        switch (e->kind) {
-            case NK::Whatever: return true;
-            // The sequence op CONSUMES its own `*` (seed generators, an infinite or
-            // predicate endpoint), so it is never part of a surrounding curry —
-            // `say (1 ... * > 5).List` is a say of a Seq, not a say of a closure.
-            case NK::Binary: { auto* b = static_cast<Binary*>(e);
-                if (b->op == "..." || b->op == "...^" || b->op == "^..." || b->op == "^...^") return false;
-                // `xx` never curries either: a RHS `*` means an endless repetition
-                // and a LHS `*` is repeated as a plain Whatever VALUE (`* xx 3` is
-                // (* * *)) — both handled at runtime, like the interpreter.
-                if (b->op == "xx") return false;
-                // Nor do the SHORT-CIRCUIT infixes: they inspect the left operand
-                // at run time and hand back one side or the other, so `* > 2 && *
-                // < 5` is not one two-argument closure — the `&&` sees a truthy
-                // WhateverCode on its left and IS the right side, `* < 5`, arity
-                // one (Rakudo answers the same, and so does the interpreter).
-                // Curried statically it read a second argument that no caller
-                // passes: `(* > 2 && * < 5)(9)` came back True.
-                if (b->op == "&&" || b->op == "and" || b->op == "||" || b->op == "or" || b->op == "//")
-                    return false;
-                // A smartmatch composes only when a BARE `*` is one side — `.grep(* ~~ /rx/)`,
-                // the matcher idiom, and `5 ~~ *` (a WhateverCode, as Rakudo's). A `*` anywhere
-                // else is part of ONE SIDE: `(* < 1) ~~ Callable` asks whether
-                // that WhateverCode is a Callable (True), and `$x ~~ *.foo` asks
-                // the curried method about $x. Currying the whole expression
-                // answered a closure to both. This is the rule evalBinary
-                // applies, spelled syntactically.
-                if (b->op.size() >= 2 && b->op.compare(b->op.size() - 2, 2, "~~") == 0) return b->lhs->kind == NK::Whatever || b->rhs->kind == NK::Whatever;   // (`X~~`, `Z!~~` too)
-                return hasWhatever(b->lhs.get()) || hasWhatever(b->rhs.get()); }
-            case NK::Unary:  return hasWhatever(static_cast<Unary*>(e)->operand.get());
-            case NK::Ternary: { auto* t = static_cast<Ternary*>(e); return hasWhatever(t->cond.get()) || hasWhatever(t->then.get()) || hasWhatever(t->els.get()); }
-            // Only the invocant is part of THIS whatever-curry; arguments are their
-            // own closure scopes (e.g. `.grep(* %% 3)`), handled when each arg is emitted.
-            case NK::MethodCall: {
-                auto* m = static_cast<MethodCall*>(e);
-                if (!hasWhatever(m->inv.get())) return false;
-                // The metamodel MACROS answer about the star itself rather than
-                // composing: `*.WHAT` is `(Whatever)` and `(* < 1).WHAT` is
-                // `(WhateverCode)`, both on Rakudo and in the interpreter, where
-                // curried they answered a closure. `.WHICH` is NOT one of them —
-                // `.map(*.WHICH)` asks each element for its identity.
-                static const std::set<std::string> kMetaMacros = {"WHAT", "WHO", "HOW", "VAR", "WHY"};
-                return m->meta || !kMetaMacros.count(m->method);
-            }
-            // A CALL whose callee is a `*` expression is the call OF that
-            // WhateverCode, not a bigger curry: `(* < 1)(0)` is False. (The
-            // interpreter's own whatever-literal walk has no Call arm either.)
-            case NK::Call: { auto* c = static_cast<Call*>(e); if (!c->dotAmp || c->args.empty() || !hasWhatever(c->args[0].get())) return false; if (c->args[0]->kind == NK::Whatever) return true; unsupported("a `.&` call on a `*` chain"); }   // `*.&{…}` curries (dotAmpCurry); a chain's invocant would curry apart
-            case NK::NqpOp:      { for (auto& x : static_cast<NqpOp*>(e)->args) if (hasWhatever(x.get())) return true; return false; }
-            case NK::Index:      return hasWhatever(static_cast<Index*>(e)->base.get()); // *<key> / *[0]
-            // A chained comparison composes like any other operator chain:
-            // `1 < * < 5` is one WhateverCode of arity one (the chain emitter
-            // binds each operand once, so the star is read once too).
-            case NK::ChainExpr:  { for (auto& o : static_cast<ChainExpr*>(e)->operands) if (hasWhatever(o.get())) return true; return false; }
-            // (a LIST does not compose: `(* < 1, * > 9)` is two closures, and a
-            // trailing comma makes `(* < 1,)` a one-element list holding one —
-            // each item curries on its own, where argList already puts it)
-            default: return false;
-        }
-    }
+    static bool hasWhatever(Expr* e) { return codegenHasWhatever(e); }   // (codegen/Whatever.cpp)
 
     // Is a `*` WRITTEN anywhere in here? Narrower than hasWhatever, which answers
     // what COMPOSES; this answers what the emitted code can hand the runtime as a
@@ -1750,6 +1695,20 @@ struct Codegen {
                 // (its Code object is ONE env slot by name: a closure handed out reached the latest instance's)
                 if (moduleMode_ || (!routineRef_.empty() && nestedSubUnsafe(stmts, d, topVars_, outerRoutine_)))
                     unsupported("a sub declared inside a routine, closing over its variables");
+                // …a sigilless name of the code around it included (`my \q = 1; sub g { q }`): read as a bare term,
+                // which nestedSubUnsafe does not see, and set up here, before `my \q` has run
+                if (!routineRef_.empty() || !sigilless_.empty()) {
+                    std::set<std::string> outer(sigilless_), reads;
+                    std::function<void(Node*, std::set<std::string>&, bool)> w = [&](Node* n, std::set<std::string>& into, bool decl) {
+                        if (!n) return;
+                        if (decl && n->kind == NK::VarExpr && static_cast<VarExpr*>(n)->declare) into.insert(static_cast<VarExpr*>(n)->name);
+                        if (!decl && n->kind == NK::NameTerm) into.insert(static_cast<NameTerm*>(n)->name);
+                        forEachAstChild(n, [&](Node* c) { w(c, into, decl); });
+                    };
+                    for (auto& o : stmts) if (o.get() != d) w(o.get(), outer, true);
+                    w(d, reads, false);
+                    for (auto& r : reads) if (outer.count(r)) unsupported("a sub declared inside a routine, closing over its sigilless `" + r + "`");
+                }
                 envSubs.insert(d->name);
                 anyLexical = true;
             }
@@ -2180,16 +2139,17 @@ struct Codegen {
         if (declRecord_) declRecord_->insert(rakuName);   // (emitSeq: what a LEAVE may not read early)
         if (mainline_ && !atTopLevel_ && topVars_.count(rakuName)) shadowedTop_.insert(rakuName);   // (topNameHere)
         if (rakuName.size() > 1 && rakuName[1] == '*') return dynDecl(rakuName) + " = " + init;
-        // A sigilless name (`my \x`, `sub f(\x)`) is read back as a bare term,
-        // which resolves through the RUNTIME scope — where a C++ local is not.
-        // Only the top level's are globals the term lookup knows (topVars_).
-        if (!rakuName.empty() && !atTopLevel_ && !std::strchr("$@%&", rakuName[0]))
-            unsupported("a sigilless variable inside a routine");
-        // …and a top-level one that is not such a global — a loop's `-> \k`,
-        // a `given X -> \y` — would be read as `k` the term: `e` the number,
-        // `i` the imaginary unit, anything else the runtime's Nil
-        if (!rakuName.empty() && !std::strchr("$@%&", rakuName[0]) && !topVars_.count(rakuName))
-            unsupported("a sigilless loop or block parameter");
+        // A sigilless name (`my \x`, `sub f(\x)`, a loop's `-> \k`) is read back
+        // as a bare term: the NameTerm case reads the C++ local first, as the
+        // interpreter's term lookup finds the lexical before `e`, `i` or a sub
+        // (a top level's are globals, topVars_). Were the two scopes ever to
+        // disagree the C++ would not compile, and the program bundles.
+        if (!rakuName.empty() && !std::strchr("$@%&", rakuName[0]) && (!atTopLevel_ || !topVars_.count(rakuName))) {
+            // (a module routine hands a statement it cannot compile to the interpreter with its locals
+            // copied in, and a sigilless one is not among them: that routine stays interpreted)
+            if (moduleMode_) throw CodegenError{"a sigilless variable inside a routine", /*routineWide=*/true};
+            sigilless_.insert(rakuName);
+        }
         std::string v = mangleVar(rakuName);
         if (cellVars_.count(rakuName)) {
             if (std::find(cellsLive_.begin(), cellsLive_.end(), rakuName) == cellsLive_.end())
@@ -2339,7 +2299,7 @@ struct Codegen {
         std::string ak;
         for (auto& k : p->aliasKeys) ak += (ak.empty() ? "" : " ") + k;
         unsigned f = (p->named ? RSP_NAMED : 0) | (p->slurpy ? RSP_SLURPY : 0) |
-                     (p->optional ? RSP_OPTIONAL : 0) | (p->required ? RSP_REQUIRED : 0) |
+                     (p->optional || src.defaultVal ? RSP_OPTIONAL : 0) | (p->required ? RSP_REQUIRED : 0) |   // (a default: `.arity` skips it)
                      (p->invocant ? RSP_INVOCANT : 0) | (p->pastDoubleSemi ? RSP_PASTSEMI : 0) |
                      (p->coerce ? RSP_COERCE : 0) | (p->isRw ? RSP_RW : 0) | (p->isCopy ? RSP_COPY : 0) |
                      (p->hadWhere ? RSP_WHERE : 0) | (p->aliasBoth ? RSP_ALIASBOTH : 0) |
@@ -2449,7 +2409,7 @@ struct Codegen {
     }
 
     // A block `{ ... }` / pointy `-> $x { ... }` becomes a native closure.
-    std::string emitBlockClosure(BlockExpr* be) {
+    std::string emitBlockClosure(BlockExpr* be) { SigillessScope __ss{this};
         Nest __nest{this, be->isSub ? 's' : 'b'};
         if (const char* why = be->isSub ? routineRefusal(be->userTraits, be->params, srcText_) : nullptr) throw CodegenError{why, true};
         BodyScope __bs{this, /*closure=*/true};
@@ -2502,6 +2462,11 @@ struct Codegen {
                 topics.push_back(topic); pushed = true;
             } else {
                 bindParams(be->params, 0, false); // full signature forms, same as sub bodies
+                // `-> $_ { … }` / `-> Rat $_ { … }`: that parameter IS the topic (as forStmt has it); read
+                // through the outer topic, `$_ * 2` was 0
+                if (std::any_of(be->params.begin(), be->params.end(), [](const Param& p) { return p.name == "$_"; })) {
+                    topics.push_back(mangleVar("$_")); pushed = true;
+                }
             }
             const auto npos = std::count_if(phs.begin(), phs.end(), [](const std::string& ph) { return ph.size() > 2 && ph[1] == '^'; });
             if (implicit & 1) line(0, "Value " + mangleVar("@_") + " = rtSlurpyPos(RT, __a, " + std::to_string(npos) + ", true, 'f');");
@@ -2821,6 +2786,8 @@ struct Codegen {
             }
             case NK::NameTerm: {
                 const std::string& n = static_cast<NameTerm*>(e)->name;
+                if ((sigilless_.count(n) || topVars_.count(n)) && static_cast<NameTerm*>(e)->ofType.empty() && !static_cast<NameTerm*>(e)->defConstraint)
+                    return mangleVar(n);   // a sigilless local (declVar), or a top level's global: before `tau` or `e`
                 // A PARAMETERIZED type — Buf[int8], Array[Int], a role pun Q[Int].
                 // The parameters live in `ofType` and nothing here read them, so
                 // `Buf[int8].new(-5, 3)` compiled to plain `Buf.new(-5, 3)` and
@@ -3061,6 +3028,21 @@ struct Codegen {
                 if ((u->op == "!" || u->op == "not" || u->op == "?") && rxTruthy(u->operand.get()) &&
                     !opDeclared("prefix:<" + u->op + ">"))
                     return std::string("Value::boolean(") + (u->op == "?" ? "" : "!") + exBool(u->operand.get()) + ")";
+                // `\(…)`: the argument list it stands for, a call's parts (emitArg: `k => v` named) as a
+                // Capture (rtCapture). A Capture holds its parts' containers, which a native local has none of
+                if (u->op == "capture") {
+                    const bool many = u->operand->kind == NK::ListExpr && !static_cast<ListExpr*>(u->operand.get())->parenned;
+                    std::vector<Expr*> parts;
+                    if (many) for (auto& it : static_cast<ListExpr*>(u->operand.get())->items) parts.push_back(it.get());
+                    else parts.push_back(u->operand.get());
+                    std::string vl;
+                    for (Expr* pt : parts) {
+                        Expr* in = pt->kind == NK::Pair && static_cast<PairExpr*>(pt)->value ? static_cast<PairExpr*>(pt)->value.get() : pt;
+                        if (in->kind == NK::VarExpr || in->kind == NK::Index || isSlip(in)) unsupported("a capture of a container (`\\($x)`)");
+                        vl += (vl.empty() ? "" : ", ") + emitArg(pt);
+                    }
+                    return "rtCapture(ValueList{" + vl + "}, " + (many ? "true" : "false") + ")";
+                }
                 std::string x = ex(u->operand.get());
                 // A user `prefix:<op>` that overloads this spelling: a multi wins
                 // over the built-in for an object operand, which is evalUnary's
@@ -3413,6 +3395,21 @@ struct Codegen {
                 }
                 if (multiNames.count(c->name)) return mangleSub(c->name) + "(" + vl + ")"; // multi dispatcher
                 if (userSubs.count(c->name)) {
+                    // a slip into an `@`/`%` parameter: the interpreter binds a flattened capture whole (`f(|$c)`, sub f(@a))
+                    if (auto dit = subDecls_.find(c->name); slip && dit != subDecls_.end())
+                        for (auto& p : sigOf(dit->second))
+                            if (!p.slurpy && !p.named && (p.sigil == '@' || p.sigil == '%')) unsupported("a slip into a routine's `@` or `%` parameter");
+                    // a positional count the routine can never bind, seen here: the interpreter's error (rtMiscall)
+                    if (auto dit = subDecls_.find(c->name); dit != subDecls_.end() && !slip &&
+                        std::none_of(c->args.begin(), c->args.end(), [](const ExprPtr& a) { return a->kind == NK::Pair; })) {
+                        int req = 0, max = 0; bool unb = false, words = false;
+                        if (arityOf(dit->second, req, max, unb, words) && ((int)c->args.size() < req || (!unb && (int)c->args.size() > max))) {
+                            std::string sigt;
+                            for (auto& p : sigOf(dit->second))
+                                if (!p.invocant) sigt += (sigt.empty() ? "" : ", ") + std::string(p.slurpy ? "*" : "") + (p.named ? ":" : "") + p.name + (p.optional && !p.named ? "?" : "");
+                            return "rtMiscall(RT, " + cesc(c->name) + ", " + cesc(sigt) + ", " + argsVL(c->args) + ")";
+                        }
+                    }
                     // `is rw` params: pass a named ValueList (the callee binds references
                     // into it) and copy mutated slots back into lvalue arguments after.
                     if (auto rit = rwSubs.find(c->name); rit != rwSubs.end()) {
@@ -3496,6 +3493,11 @@ struct Codegen {
             }
             case NK::MethodCall: {
                 auto* m = static_cast<MethodCall*>(e);
+                // a multi's `&name` is ONE native dispatcher: what it says of its candidates would not be theirs
+                if (m->inv->kind == NK::VarExpr && static_cast<VarExpr*>(m->inv.get())->name.size() > 1 &&
+                    multiNames.count(static_cast<VarExpr*>(m->inv.get())->name.substr(1)) && static_cast<VarExpr*>(m->inv.get())->name[0] == '&' &&
+                    (m->method == "candidates" || m->method == "cando" || m->method == "signature"))
+                    unsupported("`." + m->method + "` of a multi sub (native code dispatches it as one routine)");
                 if (m->maybe) unsupported("method-call form (.?)");
                 if (m->method == "dynamic" || (m->method == "VAR" && !m->meta)) throw CodegenError{"`." + m->method + "`, which asks the variable, not its value", /*routineWide=*/true};
                 // Two call forms the dispatch below would silently get wrong:
@@ -3527,6 +3529,11 @@ struct Codegen {
                                "; __r = " + coerceFor(m->inv.get(), "rtIndirectMethod(RT, __r, __m, " + argsVL(m->args) +
                                ", " + cesc(pfx) + ", false)") + "; return __r; }())";
                     }
+                    // (a mutator named at run time writes the holder's own slot, as a written one does: rtMutMethod)
+                    if (const std::string h = !*pfx && !m->hyper && m->inv->kind != NK::Index ? mutHolder(m->inv.get()) : std::string(); !h.empty())
+                        return "([&]()->Value{ Value& __i = " + h + "; Value __m = " + mv + "; if (__m.t == VT::Str && rtMutName(__m.toStr())) "
+                               "return rtMutMethod(RT, __i, __m.toStr().c_str(), " + argsVL(m->args) + "); return rtIndirectMethod(RT, __i, __m, " +
+                               argsVL(m->args) + ", \"\", false); }())";
                     return "([&]()->Value{ Value __i = " + ex(m->inv.get()) + "; Value __m = " + mv +
                            "; return rtIndirectMethod(RT, __i, __m, " + argsVL(m->args) + ", " + cesc(pfx) + ", " +
                            (m->hyper ? "true" : "false") + "); }())";
@@ -3566,20 +3573,14 @@ struct Codegen {
                 // A Buf/Blob mutator changes the invocant's VARIABLE (rtMutMethod):
                 // the bytes are the value, there is no shared payload to write into.
                 // (a `$` variable or attribute holds one; `@a.push` needs none of this)
-                auto bufHolder = [](Expr* x) {
-                    if (x->kind == NK::Index) return true;
-                    if (x->kind != NK::VarExpr) return false;
-                    auto* v = static_cast<VarExpr*>(x);
-                    return !v->declare && v->name.size() > 1 && v->name[0] == '$' && v->name != "$_" &&
-                           v->name[1] != '*' && v->name[1] != '?' && v->name != "$/" && v->name != "$!";
-                };
-                if (name == "subst-mutate" && !m->meta && !m->bang && !m->args.empty() && bufHolder(m->inv.get()))
-                    return "RT.substMutate(&(" + lvalueExpr(m->inv.get()) + "), " + argsVL(m->args) + ")";
-                if (!m->meta && !m->bang && !m->maybe && !hasWhatever(e) && bufHolder(m->inv.get()) &&
+                // (the place it writes: mutHolder)
+                if (name == "subst-mutate" && !m->meta && !m->bang && !m->args.empty() && !mutHolder(m->inv.get()).empty())
+                    return "RT.substMutate(&(" + mutHolder(m->inv.get()) + "), " + argsVL(m->args) + ")";
+                if (!m->meta && !m->bang && !m->maybe && !hasWhatever(e) &&
                     (name == "push" || name == "append" || name == "prepend" || name == "unshift" ||
                      name == "pop" || name == "shift" || name == "splice" || name == "reallocate" ||
-                     name.rfind("write-", 0) == 0))
-                    return "rtMutMethod(RT, " + lvalueExpr(m->inv.get()) + ", " + cesc(name) + ", " +
+                     name.rfind("write-", 0) == 0) && !mutHolder(m->inv.get()).empty())   // (the name first: lvalueExpr notes a write)
+                    return "rtMutMethod(RT, " + mutHolder(m->inv.get()) + ", " + cesc(name) + ", " +
                            argsVL(m->args) + ")";
                 // The INVOCANT composes on its own where the call itself does not
                 // — a metamodel macro asks about the star: `(* < 1).WHAT` is
@@ -3617,7 +3618,8 @@ struct Codegen {
                     if (hoisted.count(v->name)) { // pre-declared by hoistExprDecls
                         // …but a hoisted declaration was declared WITHOUT its shape
                         if (v->d().declShape) unsupported("a shaped declaration in expression position");
-                        return "(" + mangleVar(v->name) + " = " + coerceFor(a->target.get(), exArg(a->value.get())) + ")";
+                        return "(" + mangleVar(v->name) + " = " + (a->op == ":=" && v->name[0] == '$' && v->d().declType.empty()
+                                   ? exArg(a->value.get()) : coerceFor(a->target.get(), exArg(a->value.get()))) + ")";   // (`:=` binds the value itself)
                     }
                     unsupported("declaration used as a sub-expression");
                 }
@@ -4062,7 +4064,13 @@ struct Codegen {
         DeclScope& operator=(const DeclScope&) = delete;
     };
 
-    void block(Block* b, int ind) { CellScope __cs{this}; DeclScope __ds{this}; emitSeq(b->stmts, ind); }
+    // the sigilless names a block, loop or closure declares end with it (sigilless_: declVar, NameTerm)
+    struct SigillessScope {
+        Codegen* g; std::set<std::string> saved;
+        explicit SigillessScope(Codegen* c) : g(c), saved(c->sigilless_) {}
+        ~SigillessScope() { g->sigilless_ = std::move(saved); }
+    };
+    void block(Block* b, int ind) { CellScope __cs{this}; DeclScope __ds{this}; SigillessScope __ss{this}; emitSeq(b->stmts, ind); }
 
     std::set<std::string> hoisted; // expression-position `my` names pre-declared in this body
     std::set<std::string> boundSpecials; // $/ or $! bound as a parameter in the current body (locals win over RT.dynVar)
@@ -4288,6 +4296,8 @@ struct Codegen {
     // Rakudo's do.
     void emitReturn(Expr* value, int ind) {
         std::string v = value ? retBoxed(value, exArg(value)) : std::string("Value::nil()");
+        // (an explicit `return $p` hands the container on; any other return value is sunk: tailValue)
+        if (value && tailResets_) v = exprHandsContainer(value) ? containedTail(value, v) : "rtTailBare(" + v + ")";
         // In a module routine, a `return` inside a BLOCK leaves the routine,
         // through whatever called the block — interpreted frames included —
         // so it is thrown at the routine's own frame, as the interpreter's is.
@@ -4420,8 +4430,58 @@ struct Codegen {
     std::string retBoxed(Expr* e, std::string code) {
         return e && nativeNumericStatic(e) ? "rtBoxedNum(" + code + ")" : code;
     }
+    // The positional bounds a sub's own call checks (callCallableRaw's arity check, which a compiled Code skips):
+    // false where the interpreter checks none (no signature, placeholders, `@_`). `words`: a real slurpy.
+    bool arityOf(const SubDecl* d, int& req, int& max, bool& unb, bool& words) {
+        if (!d->hadSig || d->isMethod || d->isMulti || d->isProto || !computePlaceholders(d->body).empty() || (bodyImplicitArgs(d->body) & 1)) return false;
+        req = max = 0; unb = words = false;
+        for (auto& p : sigOf(d)) {
+            if (p.invocant || p.named || (p.slurpy && p.sigil == '%')) continue;
+            if (p.slurpy && p.sigil == '$' && !p.subSig) { max++; continue; }
+            if (p.slurpy || p.sigil == '|') { unb = words = true; continue; }
+            if (p.sigil == '@') unb = true;
+            max++;
+            if (!p.optional && !p.defaultVal && !p.litVal) req++;
+        }
+        return true;
+    }
+    // a value read from a container, so not sunk (rtTailContained) — a subscript's only if it did not refuse
+    std::string containedTail(Expr* e, const std::string& v) {
+        if (e->kind != NK::Index) return "rtTailContained(" + v + ")";
+        return "([&]()->Value{ const unsigned long long __rb = g_subscriptRefusals; Value __tv = " + v + "; return rtTailIndex(std::move(__tv), __rb); }())";
+    }
+    // The place a Buf/Blob mutator writes (rtMutMethod): the invocant's own slot — a `$` variable or an
+    // attribute's (lvalueExpr), a subscript's, a sigilless local's. "" when there is none to write.
+    std::string mutHolder(Expr* x) {
+        if (x->kind == NK::NameTerm && (sigilless_.count(static_cast<NameTerm*>(x)->name) || topVars_.count(static_cast<NameTerm*>(x)->name)))
+            return mangleVar(static_cast<NameTerm*>(x)->name);   // (a top level's is a global)
+        if (x->kind == NK::Index) return lvalueExpr(x);
+        if (x->kind != NK::VarExpr) return "";
+        auto* v = static_cast<VarExpr*>(x);
+        const bool ok = !v->declare && v->name.size() > 1 && v->name[0] == '$' && v->name != "$_" &&
+                        v->name[1] != '*' && v->name[1] != '?' && v->name != "$/" && v->name != "$!";
+        return ok ? lvalueExpr(x) : "";
+    }
+    // `my $x = …` with nothing a hoisted declaration would drop (it is declared
+    // untyped: a type, shape or twigil keeps it refused, as in any expression),
+    // where the expression IS the declaration: a block's value, a condition
+    static bool plainDecl(Expr* e) {
+        auto* v = e && e->kind == NK::Assign && static_cast<Assign*>(e)->target->kind == NK::VarExpr
+                ? static_cast<VarExpr*>(static_cast<Assign*>(e)->target.get()) : nullptr;
+        return v && v->declare && v->name.size() > 1 && v->name[1] != '*' && v->d().declType.empty() &&
+               !v->d().declShape && static_cast<Assign*>(e)->op == "=";
+    }
     std::string tailValue(Expr* e) {
-        if (!ctlLiftable(e)) return exArg(e);
+        // a block's last statement a plain declaration (`lives-ok { my $x = f() }`): declared here, its value the block's
+        if (plainDecl(e)) hoistExprDecls(e, 0, /*includeRoot=*/true);
+        // A block's value read from a container (`{ $p }`, `{ $q = f() }`) is not sunk by the statement that
+        // called it, as the interpreter's statement records it (valContained); a routine's value is, whatever
+        // its tail, so a routine clears what a block it ran left set (only where some block can set it)
+        // (an `is raw`/`is rw` routine hands its tail's container on as a block does)
+        const bool blockTail = (!nestKinds_.empty() && nestKinds_.back() == 'b') || ((nestKinds_.empty() || nestKinds_.back() == 's') && outerRoutine_ && outerRoutine_->retRw);
+        if (!ctlLiftable(e))
+            return blockTail && exprHandsContainer(e) ? containedTail(e, exArg(e))
+                 : !blockTail && tailResets_ ? "rtTailBare(" + exArg(e) + ")" : exArg(e);
         std::string t = gensym("__cv");
         line(0, "Value " + t + ";");
         emitCtlPath(e, t, 0);
@@ -4436,7 +4496,8 @@ struct Codegen {
         // hoisting to the current emission point produces.
         switch (s->kind) {
             case NK::ExprStmt:  hoistExprDecls(static_cast<ExprStmt*>(s)->e.get(), ind); break;
-            case NK::WhileStmt: hoistExprDecls(static_cast<WhileStmt*>(s)->cond.get(), ind); break;
+            case NK::WhileStmt: { Expr* c = static_cast<WhileStmt*>(s)->cond.get(); hoistExprDecls(c, ind, plainDecl(c)); break; }   // (`while my $l = get $fh`)
+            case NK::GivenStmt: { Expr* t = static_cast<GivenStmt*>(s)->topic.get(); if (plainDecl(t)) hoistExprDecls(t, ind, true); break; }
             case NK::LoopStmt: { auto* l = static_cast<LoopStmt*>(s); // loop (my $i = 0; …; …)
                 if (l->init) hoistExprDecls(l->init.get(), ind, /*includeRoot=*/true);
                 if (l->cond) hoistExprDecls(l->cond.get(), ind, /*includeRoot=*/true);
@@ -4445,7 +4506,7 @@ struct Codegen {
             case NK::ForStmt:   hoistExprDecls(static_cast<ForStmt*>(s)->list.get(), ind); break;
             case NK::ReturnStmt: if (auto* r = static_cast<ReturnStmt*>(s); r->value) hoistExprDecls(r->value.get(), ind); break;
             case NK::IfStmt:
-                for (auto& br : static_cast<IfStmt*>(s)->branches) hoistExprDecls(br.first.get(), ind);
+                for (auto& br : static_cast<IfStmt*>(s)->branches) hoistExprDecls(br.first.get(), ind, plainDecl(br.first.get()));
                 break;
             default: break;
         }
@@ -5170,12 +5231,27 @@ struct Codegen {
         if (tgt->kind == NK::VarExpr && static_cast<VarExpr*>(tgt)->declare) { // `my $x = ..`
             auto* dv = static_cast<VarExpr*>(tgt);
             refuseDeclTraits(dv);
+            // a routine's `constant X = …` may be named where only the runtime looks — `Buf[X]`, a type's
+            // argument — and a native local is not there (a top level's is a global it finds)
+            if (dv->d().declScope == "constant" && !atTopLevel_ && !dv->name.empty() && !std::strchr("$@%&", dv->name[0]))
+                unsupported("a constant inside a routine or block");
             // `my $b := $q` / `my @a := @b` alias a container, which a C++ local
             // cannot: as a copy, a later write to $q (or a push to @b) did not
             // show through (see the `:=` arm in assignImpl's tail)
             if (a->op == ":=" && dv->name.size() > 1) {
                 const Expr* v = a->value.get();
                 const bool container = v && (v->kind == NK::VarExpr || v->kind == NK::Index);
+                // …but `my @a := gather {…}` / `:= Array.new(:shape(2;2))` binds a value no one else
+                // holds: the name takes it as the interpreter's bind does (bindPositional, its checks too)
+                if (dv->name[0] == '@' && !container && dv->d().declType.empty() && !dv->d().declShape) {
+                    const std::string b = "rtBindPositional(RT, " + exArg(a->value.get()) + ", " + cesc(dv->name) + ")";
+                    return atTopLevel_ && topVars_.count(dv->name) ? mangleVar(dv->name) + " = " + b : declVar(dv->name, b);
+                }
+                // …and `my $x := (1, 2)` gives the name the value itself, unitemized (the `=` store itemizes a list)
+                if (dv->name[0] == '$' && !container && dv->name[1] != '*' && dv->d().declType.empty()) {
+                    const std::string b = exArg(a->value.get());
+                    return atTopLevel_ && topVars_.count(dv->name) ? mangleVar(dv->name) + " = " + b : declVar(dv->name, b);
+                }
                 if (dv->name[0] == '@' || dv->name[0] == '%' || (dv->name[0] == '$' && container))
                     throw CodegenError{"binding a declaration to a container (`my " + dv->name + " := …`)",
                                        /*routineWide=*/true};
@@ -5471,7 +5547,7 @@ struct Codegen {
             if (bodyImplicitArgs(br.second->stmts) & 1) unsupported("`@_` in an `if` block");
         if (f->elseBlock && (bodyImplicitArgs(f->elseBlock->stmts) & 1)) unsupported("`@_` in an `else` block");
     }
-    void ifStmt(IfStmt* f, int ind, const std::string* dst = nullptr) {
+    void ifStmt(IfStmt* f, int ind, const std::string* dst = nullptr) { SigillessScope __ss{this};
         refuseIfAtArgs(f);
         for (auto& bp : f->branchParams)
             if (!bp.empty()) unsupported("if EXPR -> ($a, $b) destructuring binder");
@@ -5479,7 +5555,7 @@ struct Codegen {
         if (!f->thenVar.empty()) { // if EXPR -> $x { … } — bind the condition value; only a single branch
             if (f->branches.size() != 1) unsupported("if EXPR -> $x with elsif");
             std::string v = mangleVar(f->thenVar);
-            line(ind, "{");   // (declVar: a sigilless `-> \x` is refused, its term would not find it)
+            line(ind, "{");   // (declVar: a sigilless `-> \x` is a local its term reads)
             line(ind + 1, declVar(f->thenVar, ex(f->branches[0].first.get())) + ";");
             std::string c = "RT.boolify(" + v + ")";
             line(ind + 1, (f->isUnless ? "if (!" : "if (") + c + ") {");
@@ -5724,7 +5800,7 @@ struct Codegen {
         return true;
     }
 
-    void forStmt(ForStmt* f, int ind) {
+    void forStmt(ForStmt* f, int ind) { SigillessScope __ss{this};
         if (f->list && f->list->kind == NK::VarExpr && bareParams_.count(static_cast<VarExpr*>(f->list.get())->name))
             throw CodegenError{"a `for` over a typed parameter, which walks the value's .list", /*routineWide=*/true};
         // `$_ /= 255 for $r, $g, $b`, `clip-to 0, $_, 255 for @$rgb`: the topic
@@ -5970,7 +6046,11 @@ struct Codegen {
 
     // ---- value-position statements: a sub body ending in if/given returns the branch value ----
     void stmtValue(Stmt* s, int ind, const std::string& dst) {
-        if (s->kind == NK::ExprStmt)  { line(ind, dst + " = " + exArg(static_cast<ExprStmt*>(s)->e.get()) + ";"); return; }
+        if (s->kind == NK::ExprStmt) {   // (a block's `if` branch reading a container keeps it unsunk too: tailValue)
+            Expr* e = static_cast<ExprStmt*>(s)->e.get();
+            const bool held = tailResets_ && !nestKinds_.empty() && nestKinds_.back() == 'b' && exprHandsContainer(e);
+            line(ind, dst + " = " + (held ? containedTail(e, exArg(e)) : exArg(e)) + ";"); return;
+        }
         if (s->kind == NK::IfStmt)    { ifValue(static_cast<IfStmt*>(s), ind, dst); return; }
         if (s->kind == NK::GivenStmt) { givenValue(static_cast<GivenStmt*>(s), ind, dst); return; }
         if (valueBlock(s)) { line(ind, "{"); blockValue(static_cast<Block*>(s), ind + 1, dst); line(ind, "}"); return; }
@@ -6054,7 +6134,7 @@ struct Codegen {
         line(ind, "}");
     }
 
-    void givenStmt(GivenStmt* g, int ind) {
+    void givenStmt(GivenStmt* g, int ind) { SigillessScope __ss{this};
         if (!g->params.empty() || !g->elseParams.empty())
             unsupported("given/with EXPR -> ($a, $b) destructuring binder");
         if (g->defGuard != 0) {
@@ -9579,7 +9659,7 @@ struct Codegen {
             self_ = saved;
             line(0, "static Value " + fname + "(ValueList& __a) {");
             // (a METHOD body is a ReturnEx boundary too: same rule as bodyDef)
-            out << retWrap(md->retType, (__fs.used() ? "    " + framePrologue() : std::string()) +
+            out << retWrap(md->retType, bangGuard(md->body) + (__fs.used() ? "    " + framePrologue() : std::string()) +
                                         "    try {\n" + mbody + "    } " + routineCatch(__fs.used()) + "\n");
             line(0, "}");
         }
@@ -9640,7 +9720,8 @@ struct Codegen {
         if (!cd->pod.empty())    // `#| …` on the class: `C.WHY`
             line(1, "  " + ci + "->pod = " + cesc(cd->pod) + "; " + ci + "->podTrail = " + cesc(cd->podTrail) + ";");
         if (!cd->parent.empty())
-            line(1, "  { auto __p = RT.classes_.find(" + cesc(cd->parent) + "); if (__p != RT.classes_.end()) " + ci + "->parent = __p->second; }");
+            line(1, "  { auto __p = RT.classes_.find(" + cesc(cd->parent) + "); if (__p != RT.classes_.end()) " + ci + "->parent = __p->second;" +
+                    (classNames.count(cd->parent) ? std::string() : " else " + ci + "->nativeParent = " + cesc(cd->parent) + ";") + " }");   // (`is Cool`: as declared)
         for (auto& a : cd->attrs) {
             std::string d = "  { ClassAttr __at; __at.name = " + cesc(a.name) + "; __at.sigil = '"
                           + std::string(1, a.sigil) + "'; __at.pub = " + (a.pub ? "true" : "false")
@@ -9847,16 +9928,17 @@ struct Codegen {
                 if (!nrw.empty()) out << nrw;
                 else emitBody(body, &ps);
             });
-            out << retWrap(retType, (__fs.used() ? "    " + framePrologue() : std::string()) +
+            out << retWrap(retType, bangGuard(body) + (__fs.used() ? "    " + framePrologue() : std::string()) +
                                     "    try {\n" + text + "    } " + routineCatch(__fs.used()) + "\n");
             line(0, "}");
             // boxed adapter so named/slurpy/multi call sites still resolve
-            line(0, "static Value " + fnName + "(ValueList __a) { return " + fnName + "(" + fwd + "); }");
+            line(0, "static Value " + fnName + "(ValueList __a) { " + arityCheck_ + " return " + fnName + "(" + fwd + "); }");
             return;
         }
         bool hasRw = false;
         for (auto& p : ps) if (p.isRw && !p.named && !p.slurpy && !p.invocant) hasRw = true;
         line(0, "static Value " + fnName + "(ValueList" + (hasRw ? "&" : "") + " __a) {");
+        if (!arityCheck_.empty()) line(1, arityCheck_);
         if (const std::string m = litBound_ ? std::string() : autothreadMask(ps, false); !m.empty())   // (a Junction argument threads)
             line(1, "if (rtJunctionArg(__a, " + m + ")) return rtAutothread(__a, " + m + ", [&](ValueList& __t) { return " + fnName + "(__t); });");
         if (!kernelName.empty() && nrw.empty()) out << kernelEntry(kernelName, {});
@@ -9872,9 +9954,26 @@ struct Codegen {
             if (!nrw.empty()) out << nrw;
             else emitBody(body, &ps);
         });
-        out << retWrap(retType, (__fs.used() ? "    " + framePrologue() : std::string()) +
+        out << retWrap(retType, bangGuard(body) + (__fs.used() ? "    " + framePrologue() : std::string()) +
                                 "    try {\n" + text + "    } " + routineCatch(__fs.used()) + "\n");
         line(0, "}");
+    }
+    // Each routine has a `$!` of its own (Rakudo). The binary keeps one, so a
+    // `try` in a sub rewrote its caller's: one whose body can set it — a `try`,
+    // a CATCH, `$!` itself — gives the caller's back however it is left. (It
+    // starts as the caller's, as the interpreter's does; Rakudo's starts Nil.)
+    // Blocks share their routine's; a nested routine has its own.
+    static std::string bangGuard(const std::vector<StmtPtr>& body) {
+        bool sets = false;
+        std::function<void(Node*)> walk = [&](Node* n) {
+            if (!n || sets || n->kind == NK::SubDecl || n->kind == NK::ClassDecl) return;
+            if ((n->kind == NK::Unary && static_cast<Unary*>(n)->op == "try") || (n->kind == NK::Block && static_cast<Block*>(n)->isCatch) ||
+                (n->kind == NK::VarExpr && static_cast<VarExpr*>(n)->name == "$!")) { sets = true; return; }
+            forEachAstChild(n, walk);
+        };
+        for (auto& st : body) walk(st.get());
+        return !sets ? std::string() : "    struct __Bang { Value s; __Bang() : s(RT.dynVarRef(\"$!\")) {} "
+                                       "~__Bang() { RT.dynVarRef(\"$!\") = std::move(s); } } __bang;\n";
     }
     void subDef(SubDecl* d) {
         if (d->isNative) { nativeSubDef(d); return; }
@@ -9883,6 +9982,10 @@ struct Codegen {
         nrWrapFor_ = d->name;   // a native routine's Value function calls its native function
         rwDirect_ = !moduleMode_ && srcText_.find("&" + d->name) == std::string::npos;
         struct OuterR { const SubDecl*& r; const SubDecl* s; ~OuterR() { r = s; } } __or{outerRoutine_, std::exchange(outerRoutine_, d)};
+        { int req, max; bool unb, words;   // (its own arity check: rtArityCheck, emitted by bodyDef)
+          arityCheck_ = arityOf(d, req, max, unb, words) ? "rtArityCheck(__a, " + std::to_string(req) + ", " + std::to_string(max) + ", " +
+                        (unb ? "true" : "false") + ", " + (words ? "true" : "false") + ");" : std::string(); }
+        struct ClearAC { std::string& s; ~ClearAC() { s.clear(); } } __cac{arityCheck_};
         bodyDef(mangleSub(d->name), sigOf(d), d->body, fastSubs.count(d->name) > 0,
                 kernelSubs_.count(d->name) ? d->name : std::string(), d->retType);
     }
@@ -10083,6 +10186,14 @@ std::string transpileToCpp(Program& prog, bool optimize, const std::string& srcP
         for (auto& nm : otherInit) g.topNumInit_.erase(nm);
     }
     // class-body `my` names, checked for collisions once the whole file is seen
+    if (const char* why = sigillessSlurpyRefusal(prog)) throw CodegenError{why};
+    { std::function<void(Node*)> w = [&](Node* n) {   // (tailResets_: a block whose value is a container's)
+          if (!n || g.tailResets_) return;
+          if (n->kind == NK::BlockExpr && !static_cast<BlockExpr*>(n)->isSub && !static_cast<BlockExpr*>(n)->body.empty() &&
+              static_cast<BlockExpr*>(n)->body.back()->kind == NK::ExprStmt &&
+              exprHandsContainer(static_cast<ExprStmt*>(static_cast<BlockExpr*>(n)->body.back().get())->e.get())) g.tailResets_ = true;
+          forEachAstChild(n, w); };
+      for (auto& st : prog.stmts) w(st.get()); }
     std::map<std::string, std::pair<std::string, std::string>> classBodyVars; // name -> (class, declType)
     for (Stmt* s : withLiftedClasses(prog)) {   // (a routine's or block's class: see NestedClass.cpp)
         if (s->kind == NK::SubDecl) {
@@ -10158,11 +10269,15 @@ std::string transpileToCpp(Program& prog, bool optimize, const std::string& srcP
             throw CodegenError{"a class-body `my " + kv.first + "` shadowing a top-level variable"};
         asTopVar(kv.first, kv.second.second);
     }
-    // a parent the program does not declare (`is Str`, `is Exception`, a module's
-    // class) is no ClassInfo the registration can link: `F ~~ Cool` was False
+    // a parent the program does not declare (a module's class, a role) is no
+    // ClassInfo the registration can link: `F ~~ Cool` was False. A core type
+    // as the first parent links as the interpreter links it: the registered
+    // class of that name, else a nativeParent (classRegister)
     for (ClassDecl* cd : classes) {
         std::vector<std::string> ps(cd->extraParents.begin(), cd->extraParents.end());
-        if (!cd->parent.empty()) ps.push_back(cd->parent);
+        const std::string& cp = cd->parent;   // (the core parents tested: a role such as Iterable needs a role's composition)
+        if (!cp.empty() && !(cp == "Exception" || cp == "Cool" || cp == "Numeric" || cp == "Real" || cp == "Stringy" || cp.rfind("X::", 0) == 0))
+            ps.push_back(cp);
         for (auto& pn : ps)
             if (!g.classDecls_.count(pn) && !ascii::islower((unsigned char)pn[0]))
                 throw CodegenError{"a class whose parent " + pn + " this program does not declare"};
