@@ -4351,7 +4351,7 @@ function main(body, opts) {
         if (typeof r === 'number' && Number.isInteger(r) && opts && opts.mainExit) code = r;
         try { for (let i = endBlocks.length - 1; i >= 0; i--) endBlocks[i](); } catch (e) { code = reportUncaught(e); }
         host.flush();
-        host.exit(code);
+        if (!(opts && opts.lib) || code) host.exit(code);   // a library's caller keeps the process; a failed load still exits
         return code;
     };
     let r;
@@ -4408,9 +4408,9 @@ function rwBox(x) { if (x instanceof RScalar) return x; if (x && typeof x === 'o
 function throwCtl(op, label) { throw op === 'next' ? new NextCtl(label) : op === 'last' ? new LastCtl(label) : new RedoCtl(label); }
 // EXPR xx N with the left side re-evaluated per copy
 function xxThunk(thunk, n) {
-    if (n instanceof RWhatever || n === Infinity) return new RSeq((function* () { for (;;) yield thunk(); })(), true);
 )RKJS",
-R"RKJS(    const k = Number(toInt(n)); const out = [];
+R"RKJS(    if (n instanceof RWhatever || n === Infinity) return new RSeq((function* () { for (;;) yield thunk(); })(), true);
+    const k = Number(toInt(n)); const out = [];
     for (let i = 0; i < k; i++) { const v = thunk(); if (v instanceof RSlip) out.push(...v.a); else out.push(v); }
     return mkList(out);
 }
@@ -4636,9 +4636,9 @@ function jsCall(o, name, args) {
 }
 function jsGet(o, k) { const target = o instanceof RJsObj ? o.v : o; return fromJs(target == null ? undefined : target[typeof k === 'number' ? k : str(k)]); }
 function jsSet(o, k, v) { const target = o instanceof RJsObj ? o.v : o; target[typeof k === 'number' ? k : str(k)] = toJs(v); return v; }
-function jsExists(o, k) { const target = o instanceof RJsObj ? o.v : o; return target != null && (str(k) in target); }
 )RKJS",
-R"RKJS(function jsNew(ctor, args) { const C = ctor instanceof RJsObj ? ctor.v : ctor; return fromJs(new C(...args.map(toJs))); }
+R"RKJS(function jsExists(o, k) { const target = o instanceof RJsObj ? o.v : o; return target != null && (str(k) in target); }
+function jsNew(ctor, args) { const C = ctor instanceof RJsObj ? ctor.v : ctor; return fromJs(new C(...args.map(toJs))); }
 function jsTruthy(o) { return !!o.v; }
 function jsStr(o) { try { return String(o.v); } catch (e) { return '[object]'; } }
 // EVAL 'literal', :lang<JavaScript>: the emitter inlines the code; this wraps its value
@@ -4845,9 +4845,9 @@ function toSupply(src) {
     if (src instanceof RSupply) return src;
     if (src instanceof RSupplier) return src.supply;
     if (src instanceof RChannel) return src.Supply();
-    if (src instanceof RPromise) return new RSupply(null, (t) => { src.p.then(v => { if (!t.closed) { safeEmit(t, v); if (t.done) t.done(); t.tap.close(); } }, e => { if (!t.closed) { if (t.quit) t.quit(e); t.tap.close(); } }); });
 )RKJS",
-R"RKJS(    if (src instanceof RJsObj && src.v && typeof src.v.then === 'function') return toSupply(new RPromise()) && (() => { const p = new RPromise(); src.v.then(v => p.keep(fromJs(v)), e => p.break_(e)); return toSupply(p); })();
+R"RKJS(    if (src instanceof RPromise) return new RSupply(null, (t) => { src.p.then(v => { if (!t.closed) { safeEmit(t, v); if (t.done) t.done(); t.tap.close(); } }, e => { if (!t.closed) { if (t.quit) t.quit(e); t.tap.close(); } }); });
+    if (src instanceof RJsObj && src.v && typeof src.v.then === 'function') return toSupply(new RPromise()) && (() => { const p = new RPromise(); src.v.then(v => p.keep(fromJs(v)), e => p.break_(e)); return toSupply(p); })();
     if (src instanceof RList || src instanceof RSeq || src instanceof RRange || src instanceof RSlip) return supplyFromList(arr(src));
     throw new RakuError(`Cannot whenever a ${typeName(src)}`);
 }
@@ -5025,13 +5025,13 @@ function propRe(name) {
     if (r === undefined) {
         r = null;
         for (const cand of [`\\p{${name}}`, `\\p{Script=${name}}`, `\\p{General_Category=${name}}`]) { try { r = new RegExp('^' + cand + '$', 'u'); break; } catch (e) { } }
-        propCache.set(name, r);
+)RKJS",
+R"RKJS(        propCache.set(name, r);
     }
     return r;
 }
 const NL_CPS = new Set([0x0A, 0x0B, 0x0C, 0x0D, 0x85, 0x2028, 0x2029]);
-)RKJS",
-R"RKJS(function isSpaceCp(cp) { return cp === 0x20 || (cp >= 9 && cp <= 13) || cp === 0x85 || cp === 0xA0 || cp === 0x1680 || (cp >= 0x2000 && cp <= 0x200A) || cp === 0x2028 || cp === 0x2029 || cp === 0x202F || cp === 0x205F || cp === 0x3000; }
+function isSpaceCp(cp) { return cp === 0x20 || (cp >= 9 && cp <= 13) || cp === 0x85 || cp === 0xA0 || cp === 0x1680 || (cp >= 0x2000 && cp <= 0x200A) || cp === 0x2028 || cp === 0x2029 || cp === 0x202F || cp === 0x205F || cp === 0x3000; }
 function ccFlag(f, cp, ch) {
     switch (f) {
         case 'a': return cp === 0x5F || (cp < 128 ? ((cp | 32) >= 97 && (cp | 32) <= 122) : propRe('L').test(ch));
@@ -5259,9 +5259,9 @@ function m(n, st, pos, k) {
             return pos === 0 ? k(pos) : false;
         }
         case 'AnchorEnd': {
-            if (n.multiline) { if (pos === s.length || s[pos] === '\n') return k(pos); return false; }
 )RKJS",
-R"RKJS(            if (n.absEnd) return pos === s.length ? k(pos) : false;
+R"RKJS(            if (n.multiline) { if (pos === s.length || s[pos] === '\n') return k(pos); return false; }
+            if (n.absEnd) return pos === s.length ? k(pos) : false;
             return (pos === s.length || (pos === s.length - 1 && s[pos] === '\n')) ? k(pos) : false;
         }
         case 'WBLeft': return (isWordAt(s, pos) && !isWordAt(s, pos - 1)) ? k(pos) : false;
@@ -5542,9 +5542,9 @@ function fireAction(st, name, sub) {
 function varMatch(n, st, pos, k) {
     const s = st.s;
     let v;
-    if (n.name.startsWith('$<')) { const nm = n.name.slice(2, -1); const l = st.named.get(nm); if (!l || !l.length) return false; v = l[l.length - 1].Str(); }
 )RKJS",
-R"RKJS(    else if (/^\$\d+$/.test(n.name)) { const c = st.caps[Number(n.name.slice(1))]; if (!c) return false; v = c.Str(); }
+R"RKJS(    if (n.name.startsWith('$<')) { const nm = n.name.slice(2, -1); const l = st.named.get(nm); if (!l || !l.length) return false; v = l[l.length - 1].Str(); }
+    else if (/^\$\d+$/.test(n.name)) { const c = st.caps[Number(n.name.slice(1))]; if (!c) return false; v = c.Str(); }
     else if (n.fn) v = n.fn();
     else return false;
     if (v instanceof RRegex) return callRule({ rx: v, kind: v.tree.ratchet ? 'token' : 'regex' }, '', { noCapture: true }, st, pos, (sub, q) => k(q));
@@ -5775,9 +5775,9 @@ function rxSubst(subject, rxo, replFn, opts) {
     out += s.slice(last);
     return { s: out, m: global ? mkList(ms) : ms[0] };
 }
-function regexMatch(v, rxo) { const mt = runSearch(str(v), rxo, null, 0); return mt ? mt : Nil; }   // a failed match is Nil, as `~~` answers
 )RKJS",
-R"RKJS(function regexComb(s, rxo, limit) { const ms = allMatches(s, rxo, null, false); const out = ms.map(mt => mt.Str()); return mkList(limit !== undefined ? out.slice(0, Number(toInt(limit))) : out); }
+R"RKJS(function regexMatch(v, rxo) { const mt = runSearch(str(v), rxo, null, 0); return mt ? mt : Nil; }   // a failed match is Nil, as `~~` answers
+function regexComb(s, rxo, limit) { const ms = allMatches(s, rxo, null, false); const out = ms.map(mt => mt.Str()); return mkList(limit !== undefined ? out.slice(0, Number(toInt(limit))) : out); }
 function regexSplit(s, rxo, limit, named) {
     const ms = allMatches(s, rxo, null, false);
     const v = named && truthy(named.get('v')), kk = named && truthy(named.get('k')), kv = named && truthy(named.get('kv')), p = named && truthy(named.get('p'));

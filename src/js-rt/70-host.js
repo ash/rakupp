@@ -528,7 +528,7 @@ function main(body, opts) {
         if (typeof r === 'number' && Number.isInteger(r) && opts && opts.mainExit) code = r;
         try { for (let i = endBlocks.length - 1; i >= 0; i--) endBlocks[i](); } catch (e) { code = reportUncaught(e); }
         host.flush();
-        host.exit(code);
+        if (!(opts && opts.lib) || code) host.exit(code);   // a library's caller keeps the process; a failed load still exits
         return code;
     };
     let r;

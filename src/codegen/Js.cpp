@@ -3013,9 +3013,10 @@ struct JsGen {
     // --module: what the ES module exports — `is export` subs (every named sub when none is
     // marked), classes, grammars, enums, and MAIN as a function of its argv
     struct ExportEntry { string name, js, dts; };
-    std::vector<ExportEntry> exportsOf(const std::vector<StmtPtr>& ss) {
+    // markedOnly (a program's globals): only what says `is export`, no fallback to every sub
+    std::vector<ExportEntry> exportsOf(const std::vector<StmtPtr>& ss, bool markedOnly = false) {
         std::vector<ExportEntry> out;
-        bool anyMarked = false;
+        bool anyMarked = markedOnly;
         std::function<void(const std::vector<StmtPtr>&, bool)> walk = [&](const std::vector<StmtPtr>& stmts, bool count) {
             for (auto& sp : stmts) {
                 Stmt* s = sp.get();
@@ -3036,11 +3037,11 @@ struct JsGen {
                 } else if (s->kind == NK::ClassDecl) {
                     auto* c = static_cast<ClassDecl*>(s);
                     if (c->isPackage) { collect(c->body); continue; }
-                    if (c->name.empty() || c->isStubDecl || seen.count(c->name)) continue;
+                    if (c->name.empty() || c->isStubDecl || seen.count(c->name) || (markedOnly && !c->isExport)) continue;
                     seen.insert(c->name); out.push_back({ c->name, "R.exportType(" + mangleType(c->name) + ")", (c->isGrammar || !c->rules.empty()) ? "RakuGrammar" : "RakuClass" });
                 } else if (s->kind == NK::EnumDecl) {
                     auto* e = static_cast<EnumDecl*>(s);
-                    if (e->name.empty() || seen.count(e->name)) continue;
+                    if (e->name.empty() || seen.count(e->name) || (markedOnly && !e->isExport)) continue;
                     seen.insert(e->name); out.push_back({ e->name, "R.exportType(" + mangleType(e->name) + ")", "RakuEnum" });
                 }
             }
@@ -3049,6 +3050,7 @@ struct JsGen {
         return out;
     }
     std::vector<ExportEntry> exportTable;   // filled by program() under --module
+    bool publishes = false;                 // a program that sets `is export` globals
     // the TypeScript type of a parameter / return: the core scalars by name, containers by sigil, the rest `any`
     static string dtsType(const Param& p) {
         if (p.sigil == '@') return "any[]";
@@ -3236,7 +3238,11 @@ struct JsGen {
                     exportTable.push_back({ "MAIN", "" });
                 }
                 line(1, "return { " + table + " };");
-            } else if (hasMain) {
+            } else {
+                // a program's `is export` names become globals, the only way a page's own script can call them
+                for (auto& e : exportsOf(prog.stmts, true)) { line(1, "globalThis[" + jsStr(e.name) + "] = " + e.js + ";"); publishes = true; }
+            }
+            if (!opt.module && hasMain) {
                 string cands;
                 for (auto& mc : mainCands) cands += (cands.empty() ? "" : ", ") + string("{ fn: ") + mc.fn + ", params: [" + mainParams(*mc.params) + "]" + (mc.pod.empty() ? "" : ", pod: " + jsStr(mc.pod)) + " }";
                 line(1, "return R.runMain([" + cands + "], R.host.argv, true);"); // true: sink MAIN's own value (#73)
@@ -3310,9 +3316,11 @@ std::string jsManifestLine(const JsOptions& opt, const char* mode) {
     return "// " + (string("RAKUPP-EXE-") + "MANIFEST ") + manifest(opt, mode) + "\n";
 }
 std::string jsRuntimeModule() {
-    // an ES module has no `require`: give the host adapter one (Node, Bun); Deno and browsers ignore it
-    return "import { createRequire as __rakupp_createRequire } from 'module';\n"
-           "const require = typeof __rakupp_createRequire === 'function' ? __rakupp_createRequire(import.meta.url) : undefined;\n"
+    // an ES module has no `require`: give the host adapter one (Node, Bun). A static import of
+    // 'module' fails to resolve in a browser before anything runs, so it is a dynamic one, taken
+    // only where `process` says this is Node or Bun
+    return "const require = typeof process !== 'undefined' && process.versions && (process.versions.node || process.versions.bun)\n"
+           "    ? (await import('node:module')).createRequire(import.meta.url) : undefined;\n"
            + jsRuntimeSource() + "\nexport default R;\n";
 }
 
@@ -3387,7 +3395,10 @@ std::string transpileToJs(Program& prog, const JsOptions& opt, std::string* dts,
     o << jsManifestLine(opt, "js");
     if (opt.standalone) {
         o << "function __rakupp_program(R) {\n'use strict';\n";
-        o << "R.main(" << (g.mainAsync ? "async " : "") << "() => {\n" << body << "}, { mainExit: true });\n";
+        // required by another script (Node, Bun) rather than run, a program that publishes globals
+        // leaves the process to its caller instead of exiting when its mainline ends
+        o << "R.main(" << (g.mainAsync ? "async " : "") << "() => {\n" << body << "}, { mainExit: true"
+          << (g.publishes ? ", lib: typeof module !== 'undefined' && typeof require === 'function' && require.main !== module" : "") << " });\n";
         o << "}\n";
         o << "// ---- rakupp-rt.js (embedded by --standalone) ----\n";
         o << jsRuntimeSource();
@@ -3405,7 +3416,8 @@ std::string transpileToJs(Program& prog, const JsOptions& opt, std::string* dts,
         o << "export default __m;\n";
     } else {
         o << "import R from " << jsStr(opt.rtPath) << ";\n";
-        o << "R.main(" << (g.mainAsync ? "async " : "") << "() => {\n" << body << "}, { mainExit: true });\n";
+        o << "R.main(" << (g.mainAsync ? "async " : "") << "() => {\n" << body << "}, { mainExit: true"
+          << (g.publishes ? ", lib: import.meta.main === false" : "") << " });\n";
     }
     std::vector<int> srcLines;
     std::string text = stripLineMarkers(o.str(), srcLines);

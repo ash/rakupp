@@ -280,7 +280,9 @@ The npm shape is three files and a manifest:
 `"type": "module"` is what lets node load the `.js` as an ES module
 (`-o greet.mjs` works without it, and bun needs neither). The runtime is the same `rakupp-rt.js`
 as for a program, so several modules built by the same rakupp can share
-one copy. `--module` excludes `--standalone` (a plain script cannot export)
+one copy. `--module` excludes `--standalone` (a plain script cannot export;
+a `--standalone` program publishes its `is export` names as globals instead,
+see [In a browser](#in-a-browser))
 and `--verify` (a module has nothing to run); `END` blocks do not run.
 
 ## Speed
@@ -406,6 +408,39 @@ get it — a busy `start` block runs only when the main line yields.
 ## In a browser
 
 `--standalone` output is a plain script: `<script src="prog.js"></script>`.
+A plain script cannot export, so a program's `is export` subs, classes and
+enums become globals instead, set when the mainline has run (before `MAIN`),
+marshalled as `--module`'s exports are. Only what is marked is published —
+there is no every-sub fallback — and a name that is not a JavaScript
+identifier is a property of `globalThis` under its Raku spelling:
+
+```raku
+sub duct($lang, $token) is export { my %h = en => %( :one<thing> ); %h{$lang}{$token} }
+sub add-all(*@n) is export { [+] @n }
+```
+
+```html
+<script src="rak.js"></script>
+<script>
+  duct('en', 'one');                 // "thing"
+  globalThis['add-all'](1, 2, 3);    // 6
+</script>
+```
+
+A program whose mainline awaits sets them when it finishes, after the
+`<script>` that loaded it has returned.
+
+Under Node or Bun the same file works as a library. Run as the entry
+script, a program exits when its mainline ends, as always. Loaded by another
+script — `require('./rak.js')` of a `--standalone` file, or `import
+'./rak.js'` of the ES-module one (`import.meta.main`: Bun, Node 24.2 and
+later) — a program that publishes globals leaves the process to its caller,
+and `duct('en', 'one')` works on the next line. Its `END` blocks run when its
+mainline ends, and a mainline that dies still exits with its status. Named
+imports instead of globals are `--module`. The `--module` output loads in a
+browser too, as `<script type="module">` that `import`s it, served over
+http(s) with `rakupp-rt.js` beside it.
+
 Output goes to `console.log`; a page can redirect it by replacing
 `R.host.writeOut` and `R.host.writeErr` before `R.main` runs (the runtime's
 host adapter is one object, `R.host`, chosen at load: Node/Bun, Deno, a Web

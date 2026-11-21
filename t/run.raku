@@ -734,6 +734,34 @@ section('--target=js (JavaScript backend)');
            '--module writes the ES module and its .d.ts');
         my $mu = run('node', $mdir.add('use.mjs').Str, :out, :err, :cwd($mdir.Str));
         is($mu.out.slurp(:close), "hi x hi x 3 1 undefined\n", 'a JavaScript file imports and calls the module');
+        # a browser cannot resolve a bare 'module' specifier, and a static import of one fails the
+        # whole module graph before any of it runs: the runtime may only reach for it dynamically
+        ok(!$mdir.add('rakupp-rt.js').slurp.contains("from 'module'"), 'the ES-module runtime has no static import a browser cannot resolve');
+        # a program's `is export` subs, classes and enums are globals: how a page's own <script>
+        # calls them. Run as a browser runs it: a context with no `process`, so no exit at the end
+        $mdir.add('g.raku').spurt(q:to/END/);
+            sub duct($lang, $token) is export { my %h = en => %( :one<thing> ); %h{$lang}{$token} }
+            sub add-all(*@n) is export { [+] @n }
+            sub hidden { 'no' }
+            class P is export { has $.n; method twice { $!n * 2 } }
+            say 'loaded';
+            END
+        $mdir.add('page.cjs').spurt(q:to/END/);
+            const vm = require('vm'), fs = require('fs');
+            const out = [];
+            const page = vm.createContext({ console: { log: (...a) => out.push(a.join(' ')), error: () => {} } });
+            vm.runInContext(fs.readFileSync(process.argv[2], 'utf8'), page);
+            out.push(vm.runInContext("[duct('en', 'one'), this['add-all'](1, 2, 3), P.new({ n: 4 }).twice(), typeof hidden].join(' ')", page));
+            console.log(out.join('|'));
+            END
+        my $gb = run($*EXECUTABLE, '--target=js', '--standalone', '-q', $mdir.add('g.raku').Str, '-o', $mdir.add('g.js').Str, :out, :err);
+        my $gu = run('node', $mdir.add('page.cjs').Str, $mdir.add('g.js').Str, :out, :err);
+        is($gb.exitcode == 0 ?? $gu.out.slurp(:close) !! $gb.err.slurp(:close), "loaded|thing 6 8 undefined\n",
+           "--standalone: a program's `is export` names are globals a page's script calls");
+        # …and a script that `require`s it keeps the process: the program does not exit under its caller
+        $mdir.add('req.cjs').spurt(qq[require('./g.js'); console.log(duct('en', 'one'), P.new(\{ n: 1 \}).twice());\n]);
+        my $gr = run('node', $mdir.add('req.cjs').Str, :out, :err, :cwd($mdir.Str));
+        is($gr.out.slurp(:close), "loaded\nthing 2\n", "--standalone: a Node script that requires the program calls its globals");
         try { for $mdir.dir { .unlink }; $mdir.rmdir; }
     }
     else { ok(True, '--target=js checks skipped: no node on PATH'); }
