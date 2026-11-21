@@ -430,6 +430,22 @@ sub add-all(*@n) is export { [+] @n }
 A program whose mainline awaits sets them when it finishes, after the
 `<script>` that loaded it has returned.
 
+Without `--standalone` the output is an ES module (it `import`s
+`rakupp-rt.js`), and the browser treats it as one. A plain
+`<script src="rak.js">` stops at that first line with a SyntaxError; as
+`<script type="module" src="rak.js">` it runs, but a browser defers a module
+until the page is parsed, so a plain inline `<script>` after it runs first
+and finds no `duct`. Make the calling script a module too: modules run in
+document order, so it sees the globals. Serve the page over http(s) with
+`rakupp-rt.js` beside `rak.js`; a `file://` page cannot load modules.
+
+```html
+<script type="module" src="rak.js"></script>
+<script type="module">
+  duct('en', 'one');                 // "thing"
+</script>
+```
+
 Under Node or Bun the same file works as a library. Run as the entry
 script, a program exits when its mainline ends, as always. Loaded by another
 script — `require('./rak.js')` of a `--standalone` file, or `import
