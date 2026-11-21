@@ -451,7 +451,10 @@ script, a program exits when its mainline ends, as always. Loaded by another
 script — `require('./rak.js')` of a `--standalone` file, or `import
 './rak.js'` of the ES-module one (`import.meta.main`: Bun, Node 24.2 and
 later) — a program that publishes globals leaves the process to its caller,
-and `duct('en', 'one')` works on the next line. Its `END` blocks run when its
+and `duct('en', 'one')` works on the next line. Where a `package.json` says
+`"type": "module"`, name the `--standalone` file `.cjs`: node loads a `.js`
+there as an ES module even through `require`, and the program cannot tell it
+was required, so it exits. Its `END` blocks run when its
 mainline ends, and a mainline that dies still exits with its status. Named
 imports instead of globals are `--module`. The `--module` output loads in a
 browser too, as `<script type="module">` that `import`s it, served over

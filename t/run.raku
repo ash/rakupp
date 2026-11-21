@@ -754,12 +754,14 @@ section('--target=js (JavaScript backend)');
             out.push(vm.runInContext("[duct('en', 'one'), this['add-all'](1, 2, 3), P.new({ n: 4 }).twice(), typeof hidden].join(' ')", page));
             console.log(out.join('|'));
             END
-        my $gb = run($*EXECUTABLE, '--target=js', '--standalone', '-q', $mdir.add('g.raku').Str, '-o', $mdir.add('g.js').Str, :out, :err);
-        my $gu = run('node', $mdir.add('page.cjs').Str, $mdir.add('g.js').Str, :out, :err);
+        my $gb = run($*EXECUTABLE, '--target=js', '--standalone', '-q', $mdir.add('g.raku').Str, '-o', $mdir.add('g.cjs').Str, :out, :err);
+        my $gu = run('node', $mdir.add('page.cjs').Str, $mdir.add('g.cjs').Str, :out, :err);
         is($gb.exitcode == 0 ?? $gu.out.slurp(:close) !! $gb.err.slurp(:close), "loaded|thing 6 8 undefined\n",
            "--standalone: a program's `is export` names are globals a page's script calls");
-        # …and a script that `require`s it keeps the process: the program does not exit under its caller
-        $mdir.add('req.cjs').spurt(qq[require('./g.js'); console.log(duct('en', 'one'), P.new(\{ n: 1 \}).twice());\n]);
+        # …and a script that `require`s it keeps the process: the program does not exit under its caller.
+        # .cjs, not .js: this directory's package.json says "type": "module", and node then loads a .js
+        # as an ES module even through require, with no `module` to tell it was required (bun does not)
+        $mdir.add('req.cjs').spurt(qq[require('./g.cjs'); console.log(duct('en', 'one'), P.new(\{ n: 1 \}).twice());\n]);
         my $gr = run('node', $mdir.add('req.cjs').Str, :out, :err, :cwd($mdir.Str));
         is($gr.out.slurp(:close), "loaded\nthing 2\n", "--standalone: a Node script that requires the program calls its globals");
         try { for $mdir.dir { .unlink }; $mdir.rmdir; }
