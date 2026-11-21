@@ -8218,6 +8218,11 @@ Value Interpreter::callNonCode(const Value& codeVal, ValueList args, const std::
         // a TYPE OBJECT held in a variable invokes as the coercion call,
         // exactly like the literal spelling: `my $t = Int; $t('123')` is
         // Int('123') (DBDish's convert-function builds converters this way)
+        // …and a Blob/Buf type is built from ALL the elements, by the type object
+        // itself, which carries its width (`Blob[uint16](1, 2)`, `$t(1, 2)`)
+        if (bool isBlobFamilyName(const std::string&); isBlobFamilyName(codeVal.s.copyText()) &&
+            (args.size() > 1 || (!args.empty() && !typeOrSubsetMatches(args[0], codeVal.s.copyText()))))
+            return methodCall(codeVal, "new", std::move(args));
         if (!args.empty()) return coerceToType(args[0], codeVal.s.copyText());
     }
     // The undefined value IS the Any type object, and invoking it is the
@@ -27118,7 +27123,7 @@ Value Interpreter::evalCall(Call* c) {
                 if (boxedBase) checkBoxedStrSource(cit->second.get(), a0);
                 return methodCall(Value::typeObj(coerceName), "new", std::move(args));
             }
-            return methodCall(a0, c->name, ValueList{});
+            return args.size() == 1 ? coerceToType(a0, c->name) : methodCall(a0, c->name, ValueList{});
         }
     }
     // a QUALIFIED name is also looked up from the package the running routine

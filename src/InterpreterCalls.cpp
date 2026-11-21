@@ -2284,6 +2284,13 @@ void Interpreter::checkBoxedStrSource(const ClassInfo* cls, const Value& v) {
     }
 }
 
+// Blob, Buf and their native-width names (blob8, buf16, utf8, Blob[uint16])
+bool isBlobFamilyName(const std::string& n) {
+    static const std::set<std::string> names = {"Blob", "Buf", "utf8", "blob8", "buf8", "blob16", "buf16",
+                                                "blob32", "buf32", "blob64", "buf64"};
+    return names.count(n) || n.rfind("Blob[", 0) == 0 || n.rfind("Buf[", 0) == 0;
+}
+
 Value Interpreter::coerceToType(const Value& v, const std::string& type) {
     // A value that IS already the target type is not coerced at all — Rakudo's
     // coercion protocol only runs when it has to. Without this, `Mu:D(Int) $a`
@@ -2297,6 +2304,12 @@ Value Interpreter::coerceToType(const Value& v, const std::string& type) {
     if (type == "Hash" && v.t == VT::Hash && !v.hashKind.empty() && v.hashKind != "Hash")
         return methodCall(v, "Hash", ValueList{});
     if (type == "Mu" || type == "Any" || typeOrSubsetMatches(v, type)) return v;
+    // no value has a `.Duration` or `.Blob`: these are built from it, as Rakudo's
+    // COERCE does (`Duration(120)`, `Duration("3.5")`, `Blob((1, 2))`)
+    if (type == "Duration" && v.t != VT::Type)
+        return methodCall(Value::typeObj("Duration"), "new", ValueList{coerceToType(v, "Real")});
+    if (isBlobFamilyName(type) && v.t != VT::Type)
+        return methodCall(Value::typeObj(type), "new", ValueList{v});
     try {
         // a missing coercer comes back unthrown (noMethodBack): another route
         Value r = methodCall(v, type, ValueList{}, nullptr, false, true);
@@ -6891,6 +6904,12 @@ bool Interpreter::typeCallCore(const std::string& name, ValueList& args, bool pa
     if ((name == "Uni" || name == "NFC" || name == "NFD" ||
          name == "NFKC" || name == "NFKD"))
         { out = methodCall(Value::typeObj(name), "new", args); return true; }
+    // `Blob(1, 2)` / `buf8(@bytes)` build one from the elements, as `.new` does;
+    // a single value already of that type is itself (`Blob($buf)` stays a Buf)
+    if (isBlobFamilyName(name) && !args.empty()) {
+        out = args.size() == 1 ? coerceToType(args[0], name) : methodCall(Value::typeObj(name), "new", args);
+        return true;
+    }
     static const std::set<std::string> coerce = {"Str", "Int", "Num", "Bool", "Numeric", "Real", "Rat"};
     if (coerce.count(name)) {
         if (args.empty())
