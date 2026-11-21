@@ -8,16 +8,6 @@ built. The deck lives in [presentation/](presentation/): the interactive
 
 ## Upcoming
 
-### London Perl & Raku Workshop 2026
-
-- **When:** Saturday, 21 November 2026 — arrive from 09:00 for a 09:20 start.
-- **Where:** The Café at Zoopla, The Cooperage, 5 Copper Row, London SE1 2LH,
-  United Kingdom.
-- **Site:** <https://act.yapc.eu/lpw2026/>
-- **Status:** talk —
-  [proposal 8059](https://act.yapc.eu/lpw2026/talk/8059) — accepted. Attendance is free, with optional
-  supporter tickets.
-
 ### FOSDEM 2027
 
 - **When:** 30–31 January 2027 (a weekend).
@@ -52,5 +42,15 @@ built. The deck lives in [presentation/](presentation/): the interactive
 
 ## Past
 
-None yet. The written introduction, in the meantime, is the announcement post:
+### London Perl & Raku Workshop 2026
+
+- **When:** Saturday, 21 November 2026.
+- **Where:** The Café at Zoopla, The Cooperage, 5 Copper Row, London SE1 2LH,
+  United Kingdom.
+- **Site:** <https://act.yapc.eu/lpw2026/> —
+  [talk 8059](https://act.yapc.eu/lpw2026/talk/8059).
+- **Slides:** [RakuPP.pdf](https://github.com/ash/talks/blob/main/LWP2026/RakuPP.pdf)
+  in [ash/talks](https://github.com/ash/talks/tree/main/LWP2026).
+
+The written introduction is the announcement post:
 [Raku++ — the fastest Raku compiler](https://andrewshitov.com/2026/07/13/raku-the-fastest-raku-compiler/).
