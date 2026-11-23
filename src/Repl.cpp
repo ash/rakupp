@@ -113,6 +113,11 @@ int strWidth(const std::string& s, size_t from = 0, size_t to = std::string::npo
 // plain: no colour, and no raw-mode editor (RawMode stays off, so lines are
 // read cooked) — the editor's redraws arrive as literal escapes and erase the
 // `> ` that Emacs looks for to tell output from input.
+// The last byte the session wrote to stdout (OutCounter sets it): '\n' until
+// something is written. `print "Hello"` leaves it at 'o', and the editor's
+// first redraw starts with `\r` and would write the prompt over "Hello" (#277).
+std::atomic<int> gLastOutByte{'\n'};
+
 bool dumbTerminal() {
     static const bool dumb = [] {
         const char* t = std::getenv("TERM");
@@ -230,6 +235,11 @@ public:
             out(prompt + highlightOf(result) + "\r\n");
             return true;
         }
+        // Asked before RawMode writes its own escapes, and put back to '\n'
+        // after it has written the last of them, so the editor's bytes are
+        // never taken for the program's.
+        const bool midLine = gLastOutByte.load(std::memory_order_relaxed) != '\n';
+        struct LineDone { ~LineDone() { gLastOutByte.store('\n', std::memory_order_relaxed); } } lineDone;
         RawMode raw;
         if (!raw.on) { // not a usable terminal after all — fall back to cooked reads
             out(prompt);
@@ -237,6 +247,11 @@ public:
         }
         buf_.clear();
         pos_ = 0;
+        // Output that did not end its line (`print "Hello"`) keeps its line:
+        // the prompt goes on the next, as zsh and fish put it. Cooked reads
+        // (a pipe, TERM=dumb) never redraw, so there it stays `Hello> ` as in
+        // Rakudo.
+        if (midLine) out("\r\n");
         prompt_ = prompt;
         promptCols_ = promptCols;
         histIdx_ = history_.size();
@@ -678,13 +693,19 @@ protected:
     // block typed at the prompt can still be printing from another thread.
     std::streamsize xsputn(const char* p, std::streamsize n) override {
         std::streamsize w = inner_->sputn(p, n);
-        if (w > 0) bytes_.fetch_add((unsigned long long)w, std::memory_order_relaxed);
+        if (w > 0) {
+            bytes_.fetch_add((unsigned long long)w, std::memory_order_relaxed);
+            gLastOutByte.store((unsigned char)p[w - 1], std::memory_order_relaxed);
+        }
         return w;
     }
     int overflow(int c) override {
         if (c == traits_type::eof()) return traits_type::not_eof(c);
         int r = inner_->sputc((char)c);
-        if (r != traits_type::eof()) bytes_.fetch_add(1, std::memory_order_relaxed);
+        if (r != traits_type::eof()) {
+            bytes_.fetch_add(1, std::memory_order_relaxed);
+            gLastOutByte.store((unsigned char)c, std::memory_order_relaxed);
+        }
         return r;
     }
     int sync() override { return inner_->pubsync(); }
