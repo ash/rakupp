@@ -8,7 +8,7 @@ what changed, what it measured and how, with the commit — so the entry starts
 from this page. Move each item into CHANGELOG.md at the tag and delete it
 here.*
 
-*Covered so far: nothing since v5.11.0.*
+*Covered so far: 5aa572bf.*
 
 ---
 
@@ -21,6 +21,14 @@ here.*
 ### Fixed: crashes
 
 ### Behaves like Rakudo
+
+- **`print` at the REPL prompt shows its text** (5aa572bf) (#277): on a
+  terminal the line editor drew its prompt starting with `\r`, over whatever
+  `print "Hello"` had left without a newline, so the Hello vanished; `say`
+  and `put` were fine. The prompt now starts on a new line when the output
+  did not end one. A piped or `TERM=dumb` session is unchanged (`Hello> `,
+  as in Rakudo). t/regression/repl-print-keeps-unterminated-line.raku drives
+  a session on a pty through script(1).
 
 ### Platforms and packaging
 
