@@ -29,7 +29,8 @@ void restoreMatchVarQuiet(bool quiet, bool hadSlash);   // …under a quiet matc
 bool isRxSelfCall(const std::string& code); Value rxSelfCallee(const std::string& code);   // …and a regex value naming itself
 void valuePhasersIn(const std::vector<StmtPtr>& stmts, std::vector<BlockExpr*>& out, char want); std::string valuePhaserSlot(const BlockExpr* be);   // InterpreterOperators.cpp
 bool operatorNameDeclared(Interpreter& I, const std::string& name);   // InterpreterOperators.cpp
-bool endsElementCall(const Expr* rv);   // InterpreterCalls.cpp: `@a.first`, `.head`, `.tail`
+bool endsElementCall(const Expr* rv);   // InterpreterCalls.cpp: `@a.first`, `.head`, `.tail`…
+bool isBlobFamilyName(const std::string& n);   // …and Blob, Buf, blob8, Blob[uint16]
 bool bridgedNumericInfix(Interpreter& I, const std::string& op, const Value& l, const Value& r, Value& out);   // …too
 bool objectOperandInfix(Interpreter& I, const std::string& op, const Value& l, const Value& r, Value& out);    // …too
 // The native body a compiled binary attached to this routine (AotModules.h):
@@ -8220,8 +8221,7 @@ Value Interpreter::callNonCode(const Value& codeVal, ValueList args, const std::
         // Int('123') (DBDish's convert-function builds converters this way)
         // …and a Blob/Buf type is built from ALL the elements, by the type object
         // itself, which carries its width (`Blob[uint16](1, 2)`, `$t(1, 2)`)
-        if (bool isBlobFamilyName(const std::string&); isBlobFamilyName(codeVal.s.copyText()) &&
-            (args.size() > 1 || (!args.empty() && !typeOrSubsetMatches(args[0], codeVal.s.copyText()))))
+        if (isBlobFamilyName(codeVal.s.copyText()) && (args.size() > 1 || (!args.empty() && !typeOrSubsetMatches(args[0], codeVal.s.copyText()))))
             return methodCall(codeVal, "new", std::move(args));
         if (!args.empty()) return coerceToType(args[0], codeVal.s.copyText());
     }
