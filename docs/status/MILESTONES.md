@@ -68,6 +68,7 @@ Every figure here is measured, not projected; the methodology is in
 | 2026-11-12 | **v5.8.0** | `--exe` gives the interpreter's answer on all 1,573 programs of `examples/` and `t/regression/`, held there by `t/exe/parity.raku`; twenty-two reported issues fixed — a quick release; Roast 1,425 / 1,425 files, its tests not re-counted; benchmarks not re-run |
 | 2026-11-17 | **v5.9.0** | Rakudo's 3,222 issues classified and 2,017 run under both engines, then twelve batches of fixes (1,264 → 1,368 of 1,777 snippets answering as Rakudo does); `--target=microbit` for the BBC micro:bit V2; JSON Lines in JSON::Native — Roast 1,425 / 1,425 files and 219,395 / 219,395 tests, three runs alike |
 | 2026-11-19 | **v5.10.0** | A loop that makes, reads and changes objects of a plain class runs in the loop kernel, each attribute in a frame slot (`objects-steady` 1.42 s → 23 ms; Rakudo 2026.09 0.91 s); method calls, attribute reads, construction and `where` multis at Rakudo's steady-state time or under; `--exe` compiles an EVAL of a literal natively — Roast 1,425 / 1,425 files and 219,395 / 219,395 tests, one run |
+| 2026-11-23 | **v5.11.0** | `--exe` compiles a class declared in a routine or block, allomorph literals and seven more constructs (577 of Roast's 1,425 files native, from 545) and gives the interpreter's answer in more than a dozen more places; `is export` names are JavaScript globals; `Duration(120)` and the other built-in coercer calls — Roast 1,425 / 1,425 files and 219,395 / 219,395 tests, one run |
 
 **By the numbers:** v0.1.0 → v2.0.0 in 36 days (2026-07-02 to 2026-08-07).
 
@@ -372,6 +373,13 @@ zef populates (see [MODULES.md](../guide/MODULES.md)); the goal is breadth and d
   construction and `where` bring objects and `where` multis at steady state
   to 0.84× and 1.00× of Rakudo's time. Roast passes all 1,425 files and all
   219,395 tests.
+- **Nov 23 — v5.11.0.** `--exe` compiles a class declared inside a routine
+  or block, allomorph literals and seven more constructs, and 577 of Roast's
+  1,425 files now compile natively; a `my class` no longer takes a global
+  type's name for good; `--target=js` makes `is export` names globals and
+  its `--module` output loads in a browser; and `Duration(120)`, `Blob(1, 2)`
+  and the other built-in coercer calls work. Roast passes all 1,425 files
+  and all 219,395 tests.
 
 Beyond the interpreter, the same source feeds a small constellation —
 [raku.online](https://raku.online/) (playground),

@@ -3,6 +3,152 @@
 Release notes for tagged releases. Numbers are measured, not projected;
 methodology for all Roast figures is in [docs/status/COUNTING.md](docs/status/COUNTING.md).
 
+## v5.11.0 (2026-11-23) — `--exe` compiles nested classes and allomorphs natively, `is export` names are JavaScript globals, and `Duration(120)`
+
+Everything on `main` since v5.10.0: 14 commits in four days. `--exe`
+compiles a class declared inside a routine or block, allomorph literals and
+seven more constructs, and gives the interpreter's answer in more than a
+dozen places where it gave another: 577 of Roast's 1,425 files compile natively, against 545. A
+`my class` no longer takes a global type's name for good. `--target=js`
+makes a program's `is export` names globals and its `--module` output loads
+in a browser. `Duration(120)`, `Blob(1, 2)` and the other built-in coercer
+calls work (#276).
+
+Roast: **all 1,425 files** of `spectest.data`, **221,034 of 221,034**
+declared tests and **219,395 of 219,395** with skip and todo left out, on
+07905d50, with the same file list as v5.10.0's
+(docs/status/roast-lists/v5.11.0.list). Roast is `cf28a323c`, v5.7.0's. The
+local suite: **all 2,393 checks** on 07905d50.
+
+**Not run** for this release: the performance gate and perf graphs, the
+module battery, the conformance sweep, the ecosystem sweep, the compiler and
+slim differentials beyond what CI runs, t/exe/parity.raku, ASan, Linux, the
+JS build beyond t/run.raku's section, and a second toolchain.
+
+### New
+
+- **`--target=js`: a program's `is export` names are globals, and
+  `--module` output loads in a browser** (631e88bc). A `--standalone` file is
+  a plain script and cannot export, so `sub duct($lang, $token) is export`
+  left a page's own `<script>` nothing to call. Its `is export` subs, classes
+  and enums are now set on `globalThis` once its mainline has run, before
+  MAIN. Under Node or Bun, such a program loaded by another script (`require`
+  of the `--standalone` file, `import` of the ES-module one) no longer exits
+  when its mainline ends. The ES-module runtime's `import { createRequire }
+  from 'module'`, a bare specifier no browser resolves, failed the whole
+  module graph; it is now a dynamic `import('node:module')` taken only under
+  Node or Bun. docs/guide/JS.md's "In a browser" has the example, and why a
+  page sees no globals without `--standalone` (c4be7e13).
+
+- `--exe` compiles seven more constructs where it bundled the program: a
+  class whose parent is `Exception`, `Cool`, `Numeric`, `Real`, `Stringy` or
+  an `X::` type; a block or routine whose last statement is a plain
+  declaration (`lives-ok { my $x = f() }`); a plain declaration as a
+  `while`, `if` or `given` condition; `my @a := …` of a value nothing else
+  holds, with the interpreter's own checks (bindPositional, now one function
+  both engines call); `\(…)` of values; and sigilless names (`my \x`,
+  `sub f(\x)`, `-> \c`). Still refused: a sigilless slurpy or capture
+  parameter, a `constant` inside a routine, a slip into an `@` parameter, a
+  type declared in a class body, and `.candidates`/`.cando`/`.signature` of
+  a multi sub.
+- `--exe` compiles a class or grammar declared inside a routine or block
+  when that changes nothing a program can see (codegen/NestedClass.cpp): it
+  was the first blocker of 92 Roast files, a test block's `class Dog {}` the
+  commonest; 13 of them now compile natively, and the note says why a class
+  stays (a role, an anonymous class, a name the code around it declares, …).
+  With the allomorph literals below, 577 of the 1,425 Roast files compile
+  natively, against 545 (V6-PLAN number 4: 40%).
+- `--exe` compiles an allomorph literal (`<42>`, `<1.5>`, the numeric words
+  of `< … >`): it was the first construct to bundle in 42 of the Roast files
+  that do not compile natively, and 19 of those now compile natively (16 give
+  the interpreter's TAP; the other three, main-usage.t and argfiles.t, spawn
+  `$*EXECUTABLE`, which a compiled binary refuses, the same as when they were
+  bundled). The fallback note names every construct in words; it said
+  "an unsupported construct (NK 24)" for an allomorph literal, and the same
+  "NK" form for `redo` and a subset declaration.
+
+### Fixed: silent wrong answers
+
+- Compiled by `--exe`, more answers that differed from the interpreter's,
+  in top-level programs too: a sub checked no argument count
+  (`sub f($a, $b) {…}; f($one)` ran with `$b` unbound; now the interpreter's
+  X::TypeCheck::Argument, or X::Signature::ArityMismatch through a slip or a
+  `&f` variable); one `$!` served the whole binary, so a `try` in a sub
+  rewrote its caller's; `-> Rat $_ { $_ * 2 }` read the outer topic;
+  `$buf."$write"(…)` wrote a copy; `&f.arity` counted a parameter with a
+  default; `my $x := 1, 2` itemized the list; and a block whose value is a
+  variable's (`{ $p }`, `{ if 1 { $p } }`, `return $p`, an `is raw` tail)
+  had it sunk by the statement that called it, so a Failure detonated.
+- Compiled by `--exe`, each of these answered differently from the
+  interpreter, in top-level programs too (found as the files above became
+  native): `$x ~~ EXPR` evaluated EXPR with the outer `$_`; `say @objects`
+  ignored a class's own `gist`; `@a[lazy ^N]` gave N elements where it ends
+  with the array; `5 ~~ *` was not a WhateverCode, nor `*.&{ … }`; a
+  computed `self."!$n"()` called the private method; and `has Cursor $.c`
+  refused a Match. A `.&` chain on a `*` (`*.uc.&{ … }.flip`) is refused
+  rather than compiled wrongly.
+
+- A Num literal compiled by `--exe` keeps its sign: `-0e0` was written into
+  the C++ as the Int `-0`, so `val(<-0e0>)` was +0, and the real part of
+  `<-0-0i>` lost its sign too (S32-num/negative-zero.t, 4 tests, once it
+  compiled natively). `Inf` and `NaN` were written as `inf` and `nan`, which
+  is not C++.
+
+- A `my class` (or `my role`) declared in a routine or block no longer takes
+  the name from a global type of the same name for good: once
+  `sub f { my class Point {} }` had run, `Point` named f's class everywhere
+  and the program's own `class Point` could not be reached. The type
+  registry holds one type per name; the shadowed one is now put back when the
+  declaring scope leaves, with its `temp`s, whether it returned or died, and
+  in order through recursion and nested scopes (registerDeclaredType). A type
+  declared directly in an EVAL keeps the name, as it did.
+  t/regression/my-class-shadow.raku, which Rakudo 2026.09 passes too.
+
+### Behaves like Rakudo
+
+- **`Duration(120)` and the other built-in coercer calls** (9bcdc9e1, #276).
+  `T(x)` on a built-in type ran `x.T`, and no value has a `.Duration`, so
+  `Duration(120)` died with "No such method 'Duration' for invocant of type
+  'Int'"; so did `Blob(1, 2)`, `Buf(…)`, `buf8(…)` and the other native-width
+  names, `Range(1..3)` and `IO::Path("x")`. A Duration is built from the
+  value's Real (`Duration("3.5")`), a Blob or Buf from the elements, keeping
+  a parameterized type's width (`Blob[uint16](1, 2)`); a `Duration()` or
+  `Blob()` parameter and a type held in a variable (`$t(5)`) coerce too; a
+  value already of the type is itself; and one with no route says
+  "Impossible coercion from 'Str' into 'Range'", as Rakudo does.
+  `t/regression/issue276-builtin-coercer-calls.raku`.
+
+### Tools
+
+- t/run.raku's `--target=js` section builds the `--standalone` program a
+  Node script `require`s as `g.cjs` (95a3d82f): the directory's package.json
+  says `"type": "module"`, and real node loads a `.js` there as an ES module
+  even through `require`. Bun did not, which is why it passed locally; CI's
+  Linux and macOS legs failed on it.
+- Codegen.cpp's three routine scans move to codegen/RoutineScan.cpp,
+  unchanged (f88208c4).
+
+### Left open
+
+- A closure or method that outlives the routine which declared a shadowing
+  `my class` finds the outer type under that name, where Rakudo finds the
+  routine's own; and a method of the outer class, called while the routine
+  runs, finds the routine's class. Both follow from one registry entry per
+  name.
+- What the `--exe` fixes above cost per call, measured natively against the
+  build before them (alternating order, 15 rounds, instructions retired
+  agreeing): a sub that contains `try`, `CATCH` or `$!` looks `$!` up once
+  more to keep its caller's, ~11 ns a call (+27% on a 2M-call loop of
+  `sub safe($x) { try {…}; $x + 1 }`; it was +44% with two lookups, before
+  the guard kept the slot it found); the argument-count check, now inline
+  (rtArityCheck, its error out of line in rtArityFail), ~20 instructions on
+  a call through the boxed entry (+2-4% on 3M calls); and a block whose value
+  is a variable's copies it to mark it contained, ~40 instructions (+6% on
+  3M calls of `-> $x { my $p = $x + 1; $p }`). tools/bench is unchanged
+  natively (fib, objects, sortby, multiwhere, strcat, regex, rats, arrayops
+  within ±4% either way) and perf-guard's interpreter kernels alike, its
+  red junctionwide the same on the build before.
+
 ## v5.10.0 (2026-11-19) — objects in a loop kernel, and objects and `where` multis at Rakudo's steady-state time
 
 Everything on `main` since v5.9.0: 16 commits in two days, most of them for
