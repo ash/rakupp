@@ -1884,6 +1884,19 @@ section('the CLI surface (goldens for the v3 parser refactor)');
         ok($pj.IO.e && $pj.IO.slurp.contains('"name": "fib"')
                     && $pj.IO.slurp.contains('"calls": 1973'),
            '--profile=FILE.json writes the JSON form');
+        # multi candidates share a name; each row says which one it is
+        my $mp = $work.add('prof-multi.raku');
+        $mp.spurt(q:to/END/);
+            multi qs()        { () }
+            multi qs($p, *@r) { |qs(|@r.grep(* < $p)), $p, |qs(|@r.grep(* >= $p)) }
+            class C { multi method m(Int $x) { 1 }; multi method m(Str:D $s) { 2 } }
+            say qs(3, 1, 2); C.m(1); C.m('a');
+            END
+        my ($mo, $me, $mx) = run-rakupp-err('--profile', $mp.Str);
+        ok($mx == 0 && $me.contains('multi qs() (') && $me.contains('prof-multi.raku:1)')
+                    && $me.contains('multi qs($p, *@r) (') && $me.contains('prof-multi.raku:2)')
+                    && $me.contains('multi m(Int $x)') && $me.contains('multi m(Str:D $s)'),
+           '--profile: each multi candidate is its own row, with its signature and line');
         my ($xo, $xe, $xx) = run-rakupp-err('--lint', '--profile', '-e', '1');
         ok($xx == 0 && $xe.contains('Illegal option --profile'),
            '--profile outside run mode is illegal');

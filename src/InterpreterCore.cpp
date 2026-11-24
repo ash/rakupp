@@ -8321,8 +8321,7 @@ Value Interpreter::callCallableRaw(const Value& codeVal, ValueList args, const s
     } profG;
     if (rakupp::prof::on && codeVal.t == VT::Code && codeVal.code() &&
         !codeVal.code()->ci().isBlock && !codeVal.code()->ci().builtin && !codeVal.code()->ci().isMultiDispatcher) {
-        rakupp::prof::enter(codeVal.code(), codeVal.code()->ci().name.c_str(),
-                            codeVal.code()->ci().declFile.c_str());
+        rakupp::prof::enter(codeVal.code(), &codeVal.code()->ci());
         profG.armed = true;
     }
     // callsame/nextsame are ROUTINE-scoped: a routine activation sees only
@@ -10577,8 +10576,7 @@ Value Interpreter::invokeMethod(const Value& codeVal, const Value& self, ValueLi
         ~ProfG() { if (armed) rakupp::prof::leave(); }
     } profG;
     if (rakupp::prof::on && !codeVal.code()->ci().builtin && !codeVal.code()->ci().isMultiDispatcher) {
-        rakupp::prof::enter(codeVal.code(), codeVal.code()->ci().name.c_str(),
-                            codeVal.code()->ci().declFile.c_str());
+        rakupp::prof::enter(codeVal.code(), &codeVal.code()->ci());
         profG.armed = true;
     }
     // The revision the callee was COMPILED under governs its body — the sub

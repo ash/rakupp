@@ -6705,6 +6705,7 @@ static void refuseRoleClashes(Interpreter& I, const std::string& clsName, const 
                     code.code()->ciM().isMethod = true;
                     code.code()->ciM().declFile = declFileNowI();
                     code.code()->ciM().declLine = md->line;
+                    code.code()->ciM().declaredMulti = md->isMulti;
                     if (md->params.empty()) code.code()->ciM().placeholders = computePlaceholders(md->body);
                     return code;
                 };
@@ -8137,6 +8138,7 @@ static void refuseRoleClashes(Interpreter& I, const std::string& clsName, const 
                     static_cast<ExprStmt*>(md->body[0].get())->e &&
                     static_cast<ExprStmt*>(md->body[0].get())->e->kind == NK::Whatever;
                 code.code()->ciM().isProtoBody = md->isProto && !code.code()->ci().isProto;
+                code.code()->ciM().declaredMulti = md->isMulti;
                 const std::string key = md->isPrivate ? "!" + mdName : mdName;
                 if (md->isExport && !md->isPrivate) ci->exportedMethods.insert(key);
                 if (!md->traits.empty()) methodTraitQueue.push_back({md.get(), code, key});

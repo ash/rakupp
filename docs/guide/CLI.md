@@ -514,11 +514,23 @@ $ rakupp --profile tools/bench/fib.raku
 514229
 Profile — wall time; builtins are attributed to their caller
   excl(ms)   incl(ms)      calls  routine
-   340.598    340.598    1664079  fib (/home/me/rakupp/tools/bench/fib.raku)
+   340.598    340.598    1664079  fib (/home/me/rakupp/tools/bench/fib.raku:1)
 ```
 
 (The routine's file is printed as the path the run resolved, never a bare
-basename; the milliseconds are one machine's and will differ on yours.)
+basename, with the line it was declared on; the milliseconds are one
+machine's and will differ on yours.)
+
+A `multi` sub or method gets one row per candidate, named with its
+signature, so the candidates that share a name are told apart:
+
+```
+     1.437      1.462         10  multi quicksort($pivot, *@rest) (/home/me/rakupp/examples/quicksort.raku:10)
+     0.025      0.025         11  multi quicksort() (/home/me/rakupp/examples/quicksort.raku:9)
+```
+
+The JSON form carries the same as `"line"` and, for a candidate,
+`"signature"`; `"name"` stays the bare name.
 
 Reading it:
 

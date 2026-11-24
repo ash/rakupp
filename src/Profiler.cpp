@@ -1,12 +1,15 @@
 #include "CNumeric.h"
 #include "Profiler.h"
+#include "Value.h"
 #include <algorithm>
 #include <chrono>
 #include <cstdint>
 #include <fstream>
 #include <iostream>
+#include <map>
 #include <memory>
 #include <mutex>
+#include <tuple>
 #include <unordered_map>
 #include <vector>
 
@@ -14,10 +17,14 @@ namespace rakupp {
 namespace prof {
 
 bool on = false;
+}
+std::string renderSignatureParam(const Param& p, bool inSignature);   // Builtins.cpp
+namespace prof {
 static std::string g_dest;
 
 struct Entry {
-    std::string name, file;
+    std::string name, file, sig; // sig: a multi candidate's `(…)`, else empty
+    int line = 0;
     uint64_t calls = 0;
     uint64_t inclNs = 0, exclNs = 0;
     uint32_t active = 0; // frames of this routine currently on the stack (recursion)
@@ -25,8 +32,7 @@ struct Entry {
 struct Frame {
     const void* key;
     uint64_t start, child; // child = ns spent in profiled callees (for exclusive time)
-    const char* name;      // borrowed from the live Callable; copied on first leave
-    const char* file;
+    const CodeInfo* ci;    // borrowed from the live Callable; read on first leave
 };
 struct TMap {
     std::unordered_map<const void*, Entry> agg;
@@ -60,10 +66,26 @@ void setDest(const std::string& dest) {
     on = !dest.empty();
 }
 
-void enter(const void* key, const char* name, const char* file) {
+void enter(const void* key, const CodeInfo* ci) {
     TMap& t = T();
     t.agg[key].active++;
-    t.stack.push_back({key, nowNs(), 0, name, file});
+    t.stack.push_back({key, nowNs(), 0, ci});
+}
+
+// A multi candidate's signature as `.signature.gist` has it, `($pivot, *@rest)`.
+static std::string candidateSig(const CodeInfo& ci) {
+    if (!(ci.isMultiCandidate || ci.declaredMulti) || !ci.params) return "";
+    std::string s = "(";
+    bool first = true, prevPast = false;
+    for (const Param& p : *ci.params) {
+        if (p.invocant) continue;
+        if (!first) s += p.pastDoubleSemi && !prevPast ? ";; " : ", ";
+        else if (p.pastDoubleSemi) s += ";; ";
+        first = false;
+        prevPast = p.pastDoubleSemi;
+        s += renderSignatureParam(p, true);
+    }
+    return s + ")";
 }
 
 void leave() {
@@ -73,9 +95,11 @@ void leave() {
     t.stack.pop_back();
     uint64_t el = nowNs() - f.start;
     Entry& e = t.agg[f.key];
-    if (e.calls == 0) {
-        e.name = (f.name && *f.name) ? f.name : "<anon>";
-        e.file = f.file ? f.file : "";
+    if (e.calls == 0 && f.ci) {
+        e.name = f.ci->name.empty() ? "<anon>" : f.ci->name;
+        e.file = f.ci->declFile.str();
+        e.line = f.ci->declLine;
+        e.sig = candidateSig(*f.ci);
     }
     e.calls++;
     e.exclNs += el > f.child ? el - f.child : 0;
@@ -87,14 +111,17 @@ void leave() {
 void report() {
     if (!on) return;
     // merge the per-thread maps (workers are already joined)
-    std::unordered_map<const void*, Entry> merged;
+    // keyed by what the row shows, so the clones of one closure, each its own
+    // Code object, are one row
+    std::map<std::tuple<std::string, std::string, int, std::string>, Entry> merged;
     {
         std::lock_guard<std::mutex> lock(g_regMu);
         for (auto& tm : registry())
             for (auto& kv : tm->agg) {
-                if (kv.second.calls == 0) continue; // enter with no leave (still active)
-                Entry& m = merged[kv.first];
-                if (m.calls == 0) { m.name = kv.second.name; m.file = kv.second.file; }
+                const Entry& e = kv.second;
+                if (e.calls == 0) continue; // enter with no leave (still active)
+                Entry& m = merged[std::make_tuple(e.name, e.file, e.line, e.sig)];
+                if (m.calls == 0) { m.name = e.name; m.file = e.file; m.line = e.line; m.sig = e.sig; }
                 m.calls += kv.second.calls;
                 m.inclNs += kv.second.inclNs;
                 m.exclNs += kv.second.exclNs;
@@ -123,11 +150,14 @@ void report() {
             first = false;
             std::string nm;
             for (char c : e->name) { if (c == '"' || c == '\\') nm += '\\'; nm += c; }
-            std::string fl;
+            std::string fl, sg;
             for (char c : e->file) { if (c == '"' || c == '\\') fl += '\\'; fl += c; }
+            for (char c : e->sig) { if (c == '"' || c == '\\') sg += '\\'; sg += c; }
             cnum::snprintf(buf, sizeof buf, "%.3f", e->inclNs / 1e6);
             *out << "  {\"name\": \"" << nm << "\", \"file\": \"" << fl
-                 << "\", \"calls\": " << e->calls << ", \"incl_ms\": " << buf;
+                 << "\", \"line\": " << e->line;
+            if (!e->sig.empty()) *out << ", \"signature\": \"" << sg << "\"";
+            *out << ", \"calls\": " << e->calls << ", \"incl_ms\": " << buf;
             cnum::snprintf(buf, sizeof buf, "%.3f", e->exclNs / 1e6);
             *out << ", \"excl_ms\": " << buf << "}";
         }
@@ -139,8 +169,8 @@ void report() {
         for (const Entry* e : rows) {
             cnum::snprintf(buf, sizeof buf, "%10.3f %10.3f %10llu  ",
                      e->exclNs / 1e6, e->inclNs / 1e6, (unsigned long long)e->calls);
-            *out << buf << e->name;
-            if (!e->file.empty()) *out << " (" << e->file << ")";
+            *out << buf << (e->sig.empty() ? e->name : "multi " + e->name + e->sig);
+            if (!e->file.empty()) *out << " (" << e->file << ":" << e->line << ")";
             *out << "\n";
         }
         if (rows.empty()) *out << "  (no user routines were called)\n";

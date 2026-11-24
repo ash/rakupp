@@ -359,7 +359,7 @@ it is why the output is worth the coupling.
 namespace prof {
     extern bool on;              // read on the hot path
     void setDest(const std::string& dest);
-    void enter(const void* key, const char* name, const char* file);
+    void enter(const void* key, const CodeInfo* ci);
     void leave();
     void report();
 }

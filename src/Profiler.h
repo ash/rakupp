@@ -16,6 +16,7 @@
 #include <string>
 
 namespace rakupp {
+struct CodeInfo;
 namespace prof {
 
 extern bool on; // read on the hot path; set once before the program runs
@@ -25,7 +26,11 @@ extern bool on; // read on the hot path; set once before the program runs
 // the extension selects the format)
 void setDest(const std::string& dest);
 
-void enter(const void* key, const char* name, const char* file);
+// ci is the routine's CodeInfo, alive while its frame is: the first leave
+// reads its name, file and line, and a `multi` candidate's signature, which
+// tells apart candidates sharing a name (`multi quicksort()` and
+// `multi quicksort($pivot, *@rest)`)
+void enter(const void* key, const CodeInfo* ci);
 void leave();
 
 // print/write the merged per-thread aggregates; no-op when disabled

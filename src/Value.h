@@ -905,6 +905,8 @@ struct CodeInfo : RefCounted {
     // `GLOBAL::<&f>:exists` is False for it (ledger O32)
     bool lexicalSub = false;
     bool isMultiCandidate = false;                  // declared `multi` — dispatch may pass it over
+    bool declaredMulti = false;                     // a class's `multi method`, never flagged a candidate (that
+                                                    // would cost it the plain-method paths): --profile's label
     bool isProto = false;                           // `proto` — a dispatch group header, not a candidate
     bool isProtoBody = false;                       // …and its body is more than a bare `{*}`: the proto
                                                     // RUNS around the dispatch, and the `{*}` inside it is
