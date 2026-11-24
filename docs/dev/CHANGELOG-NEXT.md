@@ -8,7 +8,7 @@ what changed, what it measured and how, with the commit — so the entry starts
 from this page. Move each item into CHANGELOG.md at the tag and delete it
 here.*
 
-*Covered so far: 5aa572bf.*
+*Covered so far: 5aa572bf, 6d2ee659.*
 
 ---
 
@@ -17,6 +17,14 @@ here.*
 ### Faster
 
 ### Fixed: silent wrong answers
+
+- **A multidim subscript on a Match walks its captures** (6d2ee659):
+  `$m{*;'name'}` answered `()` and `$m{'a';'c'}` answered `(Any)`. The
+  walker knew Arrays and Hashes but not a Match. Both now answer what Rakudo
+  answers, and so does `$m{*}`, which answered Nil instead of the named
+  captures' values. LLM::Prompts' own tests use the first form, so
+  `raku install LLM::Prompts` refused it; it installs now.
+  t/regression/match-multidim-subscript.raku.
 
 ### Fixed: crashes
 
