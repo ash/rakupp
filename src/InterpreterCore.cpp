@@ -27506,19 +27506,15 @@ Value Interpreter::evalIndex(Index* idx) {
             std::function<void(const Value&, size_t)> walk = [&](const Value& node, size_t d) {
                 if (d == dims->items.size()) { out.arr()->push_back(node); return; }
                 Expr* de = dims->items[d].get();
-                if (de->kind == NK::Whatever) {
+                // a star dim — literal, or a $var holding * — walks every element;
+                // a Match's are its named captures under {}, positional ones under []
+                bool isM = node.t == VT::Match, mH = isM && idx->isHash;
+                Value dv = de->kind == NK::Whatever ? Value::whatever() : eval(de);
+                if (dv.t == VT::Whatever) {
                     anyMulti = true;
-                    if (node.t == VT::Array && node.arr()) for (auto& el : *node.arr()) walk(el, d + 1);
+                    if (node.t == VT::Array || (isM && !mH)) { if (node.arr()) for (auto& el : *node.arr()) walk(el, d + 1); }
                     else if (node.t == VT::Range) for (auto& el : node.flatten()) walk(el, d + 1);
-                    else if (node.t == VT::Hash && node.hash()) for (auto& kv : *node.hash()) walk(kv.second, d + 1);
-                    return;
-                }
-                Value dv = eval(de);
-                if (dv.t == VT::Whatever) { // a $var holding * — same as a literal star dim
-                    anyMulti = true;
-                    if (node.t == VT::Array && node.arr()) for (auto& el : *node.arr()) walk(el, d + 1);
-                    else if (node.t == VT::Range) for (auto& el : node.flatten()) walk(el, d + 1);
-                    else if (node.t == VT::Hash && node.hash()) for (auto& kv : *node.hash()) walk(kv.second, d + 1);
+                    else if ((node.t == VT::Hash || mH) && node.hash()) for (auto& kv : *node.hash()) walk(kv.second, d + 1);
                     return;
                 }
                 // a Callable dim resolves against this level (arrays: called with elems)
@@ -27538,7 +27534,13 @@ Value Interpreter::evalIndex(Index* idx) {
                 }
                 else keys.push_back(dv);
                 for (auto& k : keys) {
-                    if (node.t == VT::Array && node.arr()) {
+                    if (isM) { // `$/{*;'k'}`: a missing capture is Nil, as Rakudo answers
+                        Value got = Value::nil(); long long i = mH ? -1 : k.toInt();
+                        if (mH && node.hash()) { auto it = node.hash()->find(hashSubKey(k)); if (it != node.hash()->end()) got = it->second; }
+                        else if (node.arr() && i >= 0 && i < (long long)node.arr()->size()) got = (*node.arr())[i];
+                        walk(got, d + 1);
+                    }
+                    else if (node.t == VT::Array && node.arr()) {
                         long long i = k.toInt(), n = (long long)node.arr()->size();
                         if (i < 0) { walk(negIndexFailure(i), d + 1); continue; }
                         shapedBoundsCheck(shape, d, i);
@@ -28123,7 +28125,8 @@ Value Interpreter::evalIndex(Index* idx) {
         { bool done = false; Value av = matchSubscriptAdverb(base, idx, done); if (done) return av; }   // `$<p>:exists`
         if (idx->isHash) {
             Value kv = subscriptKey(idx->index.get());
-            // `$<w1 w2 w3>` / `$/{'x','y'}` — a SLICE of the named captures
+            // `$<w1 w2 w3>` / `$/{'x','y'}` — a SLICE of the named captures; `$/{*}` all of them
+            if (kv.t == VT::Whatever) { Value out = Value::array(); out.isList = true; if (base.hash()) for (auto& e : *base.hash()) out.arr()->push_back(e.second); return out; }
             if (kv.t == VT::Array && kv.arr() && !kv.ext()) {
                 Value out = Value::array(); out.isList = true;
                 for (auto& k : kv.flatten()) {
