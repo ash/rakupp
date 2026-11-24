@@ -8,7 +8,7 @@ what changed, what it measured and how, with the commit — so the entry starts
 from this page. Move each item into CHANGELOG.md at the tag and delete it
 here.*
 
-*Covered so far: 5aa572bf, 6d2ee659.*
+*Covered so far: 5aa572bf, 6d2ee659, 606e98fe.*
 
 ---
 
@@ -41,5 +41,12 @@ here.*
 ### Platforms and packaging
 
 ### Tools
+
+- **`--profile` tells multi candidates apart** (606e98fe): the candidates
+  of a `multi` sub or method each get their own row, named with their
+  signature (`multi quicksort($pivot, *@rest)`). Before, they all showed the
+  same name, and two multi methods declared on one line shared a row. Every
+  row now ends `file:line`. The JSON form adds `"line"` and, for a
+  candidate, `"signature"`.
 
 ### Left open
