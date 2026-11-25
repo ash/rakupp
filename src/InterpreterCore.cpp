@@ -11615,11 +11615,11 @@ Value* Interpreter::lvalue(Expr* e, bool asInvocant) {
                 else {
                     init = dv; de->x().varDefault[ve->name] = dv;
                     if (dv.t == VT::Type && (vd.declType.empty() || vd.declType == "Mu" || vd.declType == "Any")) de->x().varDefaultUntyped.insert(ve->name);   // (Mu/Any constrain nothing)
-                    else if (sigil == '$' && !vd.declType.empty() && typeNameLead(vd.declType[0]))
+                    else if (sigil == '$' && !vd.declType.empty() && (typeNameLead(vd.declType[0]) || !isNativeTypeName(vd.declType)))
                         de->x().varDefaultType[ve->name] = Value::typeObj(vd.declType);
                 }
             }
-            else if (sigil == '$' && !vd.declType.empty() && (typeNameLead(vd.declType[0]) || vd.declType == "atomicint")) {
+            else if (sigil == '$' && !vd.declType.empty() && (typeNameLead(vd.declType[0]) || vd.declType == "atomicint" || !isNativeTypeName(vd.declType))) {   // (`my foo_t $x`: #280)
                 // `$x = Nil` resets to (Type) — the CAPTURED type for `my T $x`
                 // in a routine with `::T` in its signature (see capturedType)
                 Value cap;
@@ -17452,7 +17452,7 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
             }
             if (!lv) throw RakuError{Value::typeObj("X::Assignment::RO"), "Target is not assignable"};
             // (Nil resets a typed element, and a native one has nothing to reset to)
-            if (!scElemWant.empty() && (rhs.t != VT::Nil || !typeNameLead(scElemWant[0]))) {
+            if (!scElemWant.empty() && (rhs.t != VT::Nil || (!typeNameLead(scElemWant[0]) && isNativeTypeName(scElemWant)))) {
                 auto* ixt = static_cast<Index*>(a->target.get());
                 coerceElemValue(*this, scElemWant, rhs);
                 checkElemType(scElemWant, rhs, opAssignElemName(*this, ixt));

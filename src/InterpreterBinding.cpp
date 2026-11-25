@@ -1805,7 +1805,7 @@ std::string elemTypeOfSpec(const std::string& ofType) {
     if (first.size() > 2 && first[first.size() - 2] == ':' && first[first.size() - 3] != ':' && std::strchr("DU_", first.back()))
         first.resize(first.size() - 2);
     if (first.empty() || first == "Any" || first == "Mu" || first == "Cool") return "";
-    if (!typeNameLead(first[0])) return ""; // native: see natCheck
+    if (!typeNameLead(first[0]) && isNativeTypeName(first)) return ""; // native: see natCheck (a lowercase class is not: #280)
     return first;
 }
 // A COERCION type's target, `Int(Any)` → "Int", with its source (`Any`, or a
@@ -3774,7 +3774,7 @@ Value Interpreter::assignChecked(Expr* target, Value v, const Value* invVal) {
         const int nb = lv->natBits(); const bool ns = lv->natSigned, nf = lv->natFloat;
         if (nb) { nativeUndefCheck(v, nullptr, lv); nativeAssignCheck(v, nb, nf, containerNameOf(target, '$'), ns); }
         if (target && target->kind == NK::Index)
-            if (std::string t = std::exchange(tctx().lastLvalueElemType, {}); !t.empty() && !typeNameLead(t[0]))
+            if (std::string t = std::exchange(tctx().lastLvalueElemType, {}); !t.empty() && !typeNameLead(t[0]) && isNativeTypeName(t))
                 nativeElemStore(t, v, 'o', tctx().lastLvalueElemIdx);
         // a Proxy (a `take-rw` element as the topic) STOREs, as `=` does
         if (lv->t == VT::Hash && lv->hashKind == "Proxy" && lv->hash() && lv->hash()->count("STORE")) {
@@ -9790,7 +9790,7 @@ Value Interpreter::sliceStoreResult(const Value& container) {
 // it answers for the slice's result is, for a native, the value before the wrap.
 Value Interpreter::sliceElemStore(const Value& container, bool isHash, Value& v, const std::string& symbol) {
     const std::string want = elemTypeForStore(container, isHash);
-    if (!want.empty() && !typeNameLead(want[0])) {   // (a native: elemTypeForStore)
+    if (!want.empty() && !typeNameLead(want[0]) && isNativeTypeName(want)) {   // (a native: elemTypeForStore)
         Value handed;
         nativeElemStore(want, v, 's', 0, "", &handed);
         return handed;

@@ -1158,11 +1158,12 @@ Value typedDefault(const std::string& type, char sigil) {
             return Value::typeObj(type);
         // `my Nil $x` holds Nil itself (`$x === Nil`), not a (Nil) type object
         if (type == "Nil") return Value::nil();
-        if (typeNameLead(type[0])) return Value::typeObj(type); // my Int $x -> (Int)
+        // my Int $x -> (Int); a lowercase name that is no native is a type too (`my foo_t $x`, #280)
+        if (typeNameLead(type[0]) || !isNativeTypeName(type)) return Value::typeObj(type);
     }
     // typed containers: `my Int @a` -> Array[Int], `my int @a` (native) too
     if ((sigil == '@' || sigil == '%') && !type.empty() &&
-        (typeNameLead(type[0]) ||
+        (typeNameLead(type[0]) || !isNativeTypeName(type) ||
          type.rfind("int", 0) == 0 || type.rfind("uint", 0) == 0 ||
          type.rfind("num", 0) == 0 || type == "str" || type == "byte" ||
          type == "atomicint")) {

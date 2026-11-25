@@ -4292,7 +4292,7 @@ void Interpreter::assignListTarget(ListExpr* lst, const Value& rhs, bool isBindi
                     if (nm[0] == '@') {
                         const std::string et = lv->ofType().empty() ? std::string() : elemTypeOfSpec(lv->ofType());
                         const Value dflt = lv->elemDefault() ? *lv->elemDefault()
-                                         : !et.empty() && typeNameLead(et[0]) ? Value::typeObj(et)
+                                         : !et.empty() && (typeNameLead(et[0]) || !isNativeTypeName(et)) ? Value::typeObj(et)
                                                                                                : Value::any();
                         for (auto& e : *rest.arr()) if (e.t == VT::Nil) e = dflt;
                         // …and the container keeps its type: `my ($x, Int @a)` is an Array[Int]
@@ -4319,7 +4319,7 @@ void Interpreter::assignListTarget(ListExpr* lst, const Value& rhs, bool isBindi
             // `my Str ($a) = ()` leaves $a as (Str)
             if (noValue && !isBinding && tgt->kind == NK::VarExpr) {
                 const std::string& dt = static_cast<VarExpr*>(tgt)->d().declType;
-                if (!dt.empty() && typeNameLead(dt[0])) v = Value::typeObj(dt);
+                if (!dt.empty() && (typeNameLead(dt[0]) || !isNativeTypeName(dt))) v = Value::typeObj(dt);
             }
             if (tgt->kind == NK::ListExpr) bind(static_cast<ListExpr*>(tgt), v);
             else {

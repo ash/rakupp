@@ -5389,7 +5389,7 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
             // X::TypeCheck naming push / unshift (`throws-like …, got => Str`)
             // and an unbox for append / prepend, as Rakudo words each.
             const std::string natT = elemTypeForStore(inv, false);
-            const bool natArr = !natT.empty() && !typeNameLead(natT[0]);
+            const bool natArr = !natT.empty() && !typeNameLead(natT[0]) && isNativeTypeName(natT);
             auto natCheck = [&](Value& v) {
                 if (!natArr) return;
                 // …but a mixin over a Str (`"bar" but Type<words>`, highlighter's
@@ -5669,7 +5669,7 @@ std::optional<Value> Interpreter::methodCallTail(const Value& inv, const MName& 
                 // refuses it as an unboxing failure, as Rakudo does (X::AdHoc,
                 // "This type cannot unbox to a native integer"), not as a
                 // splice type check.
-                if (std::string nt = elemTypeForStore(inv, false); !nt.empty() && !typeNameLead(nt[0]))
+                if (std::string nt = elemTypeForStore(inv, false); !nt.empty() && !typeNameLead(nt[0]) && isNativeTypeName(nt))
                     for (auto& x : repl) nativeElemStore(nt, x, 'a');
                 else if (std::string want = elemTypeOf(inv); !want.empty())
                     for (auto& x : repl) {
