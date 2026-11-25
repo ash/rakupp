@@ -5626,7 +5626,9 @@ static void refuseRoleClashes(Interpreter& I, const std::string& clsName, const 
                 if (!tctx().pkgPrefix.empty()) { pkgPod_[sd->name] = sd->pod; pkgPodTrail_[sd->name] = sd->podTrail; }
             }
             if (!sd->name.empty()) {
-                SubsetInfo info{sd->baseType, sd->where.get()};
+                // (an imported base is the class it names: `of UserSession` from `use Login`
+                // is Login::UserSession, so `NotLoggedIn ~~ Cro::HTTP::Auth`'s param type matches: #278)
+                SubsetInfo info{lexicalTypeName(*this, sd->baseType), sd->where.get()};
                 info.langRev = langRev_;   // `Even.^ver` answers with this
                 info.defConstraint = sd->defConstraint;   // `of Str:D`
                 info.coerce = sd->coerceBase;             // `of Str()`
