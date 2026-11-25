@@ -8,7 +8,7 @@ what changed, what it measured and how, with the commit — so the entry starts
 from this page. Move each item into CHANGELOG.md at the tag and delete it
 here.*
 
-*Covered so far: 5aa572bf, 6d2ee659, 606e98fe, e3b16b7e, 79314f20, 43558c4f, 82f6aba0, b084275a, a10df015, e46aa838, f54b0673.*
+*Covered so far: 5aa572bf, 6d2ee659, 606e98fe, e3b16b7e, 79314f20, 43558c4f, 82f6aba0, b084275a, a10df015, e46aa838, f54b0673, 23366987.*
 
 ---
 
@@ -71,6 +71,12 @@ here.*
   `.type ~~ SomeRole` was False. Cro finds a route's auth parameter that way
   and refused the route; `of Login::UserSession` worked. Both spellings do
   now. t/regression/subset-of-imported-class-param-type.raku.
+- **An installed script parses knowing its module's exports** (23366987)
+  (#270): `for ITEMS -> $n { … }` in a script installed with
+  `rakupp install`, ITEMS a constant its own module exports, was a parse
+  error unless the current directory had a `lib/` or the store was the
+  default one. The script is now parsed on the search path, RAKULIB
+  included, as a program given to rakupp directly is. t/install/run.raku.
 
 - **`print` at the REPL prompt shows its text** (5aa572bf) (#277): on a
   terminal the line editor drew its prompt starting with `\r`, over whatever
