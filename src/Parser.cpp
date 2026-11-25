@@ -10716,7 +10716,11 @@ std::vector<std::string> Parser::readAngleWords(const std::string& close, std::v
         if (t.kind == Tok::Op && !t.text2.empty()) wt = t.text2;
         bool sep = words.empty() || t.spaceBefore;
         const bool quoted = qqww && (t.kind == Tok::StrLit || t.kind == Tok::StrInterp);
-        if (quoted) {
+        // In a `<…>` list quotes are not syntax (#285): `%a<a><'b-c'>` is the key
+        // `'b-c'`, quotes and all, and `<a 'b c'>` the words a, 'b, c' — but after
+        // a term the lexer has already read the span as a string and taken them off.
+        const bool angleQuoted = close == ">" && (t.kind == Tok::StrLit || t.kind == Tok::StrInterp);
+        if (quoted || angleQuoted) {
             // the lexer took the quotes off; qqwwAddWord needs them back to keep
             // `«"$y"»` one word, and so does code in a word (`«{"a b"}»`). Outside
             // a block a quoted span is a word of its own, glued or not:
@@ -10740,6 +10744,10 @@ std::vector<std::string> Parser::readAngleWords(const std::string& close, std::v
         else if (qqww && (t.kind == Tok::RParen || t.kind == Tok::RBracket) && calls > 0) calls--;
         if (sep) words.push_back(wt);
         else words.back() += wt;
+        if (angleQuoted && wt.find_first_of(" \t\n") != std::string::npos) {   // …so its blanks split words
+            std::istringstream ss(words.back()); words.pop_back();
+            for (std::string w; ss >> w;) words.push_back(w);
+        }
         advance();
     }
     // `%x<` at end of input (or `%x<a;` mid-file, where the rest of the statement
