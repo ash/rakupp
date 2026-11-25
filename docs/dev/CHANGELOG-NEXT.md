@@ -8,7 +8,7 @@ what changed, what it measured and how, with the commit — so the entry starts
 from this page. Move each item into CHANGELOG.md at the tag and delete it
 here.*
 
-*Covered so far: 5aa572bf, 6d2ee659, 606e98fe, e3b16b7e, 79314f20, 43558c4f, 82f6aba0.*
+*Covered so far: 5aa572bf, 6d2ee659, 606e98fe, e3b16b7e, 79314f20, 43558c4f, 82f6aba0, b084275a, a10df015.*
 
 ---
 
@@ -40,6 +40,19 @@ here.*
   as the first subscript and Rakudo do. `f <a 'b c' d>` in argument
   position gave three words; it gives Rakudo's four.
   t/regression/chained-angle-quoted-key.raku.
+- **`my foo_t $x` keeps a lowercase type name** (b084275a) (#280): a
+  type was recognised by its capital letter, so `foo_t` was taken for a
+  native and dropped: `$x` started as Any, took any value, and
+  `my foo_t $x .= new` called .new on Any. Cairo's matrix declarations died
+  there, and `raku install Gnome::Gtk4` with them. A lowercase name that is
+  no native is a type now, in `$`, `@` and `%` declarations alike.
+  t/regression/lowercase-type-in-my.raku.
+- **A Proxy returned by a call is read once, at the assignment**
+  (a10df015) (#281): `my $a = $obj.m`, with an `is rw` method returning a
+  Proxy, stored the Proxy, so every read of `$a` ran FETCH again. A CStruct
+  built in FETCH kept changing under the copy: Cairo's
+  `my $prev = $ctx.matrix` followed the matrix it was meant to save.
+  t/regression/proxy-returned-by-call-fetched-once.raku.
 
 ### Fixed: crashes
 
