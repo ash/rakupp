@@ -4955,6 +4955,8 @@ public:
     // restart: re-dispatch the SAME routine from scratch with new args (samewith).
     struct RedispatchCtx { std::function<Value(ValueList)> next; std::function<Value(ValueList)> restart;
                            ValueList sameArgs; bool lastcall = false; bool fromChain = false;
+                           // a chain frame's method name: only ITS dispatcher defers up it
+                           const std::string* chainName = nullptr;
                            // set while a no-match deferral is walking UP this frame, so the
                            // ancestor's dispatcher cannot pick the same frame and bounce back
                            bool chainDeferred = false;

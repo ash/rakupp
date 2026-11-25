@@ -10331,6 +10331,7 @@ Value Interpreter::invokeMethodChain(const std::string& name, ClassInfo* startCl
     RedispatchCtx rc;
     rc.sameArgs = args;
     rc.fromChain = true; // marks the parent-class deferral frame for multi-method exhaustion
+    rc.chainName = &name;   // (outlives the frame, which is popped before we return)
     Value selfCopy = self;
     if (userNext)
         rc.next = [this, name, nextStart, selfCopy, rwArgs](ValueList na) -> Value {
@@ -10668,8 +10669,12 @@ Value Interpreter::invokeMethod(const Value& codeVal, const Value& self, ValueLi
         // the inheritance tree instead of returning Nil.
         std::function<Value(ValueList)> parentNext;
         size_t parentFrame = (size_t)-1;
+        // …a frame for THIS method: one left on top by the method whose body is
+        // running (`method t { ?self }` boolifying through a `multi method Bool`)
+        // is not ours, and deferring up it called `t` again on the parent (#269)
         if (!redispatchStack().empty() && redispatchStack().back().fromChain &&
-            !redispatchStack().back().lastcall && !redispatchStack().back().chainDeferred) {
+            !redispatchStack().back().lastcall && !redispatchStack().back().chainDeferred &&
+            (!redispatchStack().back().chainName || *redispatchStack().back().chainName == c.ci().name)) {
             parentNext = redispatchStack().back().next;
             parentFrame = redispatchStack().size() - 1;
         }
