@@ -8,7 +8,7 @@ what changed, what it measured and how, with the commit — so the entry starts
 from this page. Move each item into CHANGELOG.md at the tag and delete it
 here.*
 
-*Covered so far: 5aa572bf, 6d2ee659, 606e98fe, e3b16b7e, 79314f20, 43558c4f, 82f6aba0, b084275a, a10df015, e46aa838, f54b0673, 23366987.*
+*Covered so far: 5aa572bf, 6d2ee659, 606e98fe, e3b16b7e, 79314f20, 43558c4f, 82f6aba0, b084275a, a10df015, e46aa838, f54b0673, 23366987, 78bb0a72, fe5df52a.*
 
 ---
 
@@ -53,6 +53,17 @@ here.*
   built in FETCH kept changing under the copy: Cairo's
   `my $prev = $ctx.matrix` followed the matrix it was meant to save.
   t/regression/proxy-returned-by-call-fetched-once.raku.
+- **`[ h() ]` spreads the Hash a call returns** (78bb0a72) (#283): an
+  array composer took a single Hash apart only for `[%h]`, `[{…}]` and
+  `[%(…)]`; a Hash or Map returned by a sub or method call stayed one
+  element, where Rakudo gives its pairs. A call's result now spreads too.
+  `[$h]`, `[h(),]` and `[@r[0]]` are still one element. Code that relied
+  on the old answer needs a trailing comma, as the Perl showcase did.
+  t/regression/array-composer-spreads-returned-hash.raku.
+- **`@$x` of an undefined scalar is one item** (fe5df52a) (#266): `my $x;
+  @$x` was the empty list, so `for @$x { … }` never ran. It is `(Any,)`, as
+  in Rakudo; a missing capture's `@<x>` is `(Nil,)`. `@(Empty)` is still
+  empty. t/regression/list-of-undefined-scalar.raku.
 
 ### Fixed: crashes
 
