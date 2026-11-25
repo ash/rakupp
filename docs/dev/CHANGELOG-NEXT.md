@@ -8,7 +8,7 @@ what changed, what it measured and how, with the commit — so the entry starts
 from this page. Move each item into CHANGELOG.md at the tag and delete it
 here.*
 
-*Covered so far: 5aa572bf, 6d2ee659, 606e98fe, e3b16b7e, 79314f20, 43558c4f, 82f6aba0, b084275a, a10df015.*
+*Covered so far: 5aa572bf, 6d2ee659, 606e98fe, e3b16b7e, 79314f20, 43558c4f, 82f6aba0, b084275a, a10df015, e46aa838.*
 
 ---
 
@@ -57,6 +57,14 @@ here.*
 ### Fixed: crashes
 
 ### Behaves like Rakudo
+
+- **Parameter traits take `<…>`, `{…}` and `[…]` arguments, and MAIN asks
+  a module's ARGS-TO-CAPTURE** (e46aa838) (#284): `Bool :$v is option<!>` was
+  a parse error, so App::Prove6's `prove6` could not start. With that
+  fixed, Getopt::Long's `--no-v` still printed the usage: the auto-invoked
+  MAIN parsed `@*ARGS` itself and never called the ARGS-TO-CAPTURE the
+  module exports. It does now, as an explicit RUN-MAIN already did.
+  t/regression/param-trait-unparenthesised-arg.raku.
 
 - **`print` at the REPL prompt shows its text** (5aa572bf) (#277): on a
   terminal the line editor drew its prompt starting with `\r`, over whatever
