@@ -13518,6 +13518,7 @@ Value Interpreter::evalAssign(Assign* a, bool sink) {
                             if (rv.t == VT::Nil || rv.t == VT::Type || rv.t == VT::Any) nativeUndefCheck(rv, a->target.get(), slot);
                             if (rv.t == VT::Nil) rv = Value::any(); // untyped, no default: Nil resets to Any
                             else {
+                                if (rv.t == VT::Hash && rv.hashKind == proxyKind()) rv = deproxy(rv);   // read now (#281)
                                 rv.readonly = rv.immutableBind = false;
                                 if (!nb && rv.natBits()) dropNativeTags(rv);   // a boxed $ takes the value, not the native
                                 // a `$` container itemizes what it holds
@@ -16540,6 +16541,10 @@ Value Interpreter::evalAssignInner(Assign* a, bool sink) {
         };
         Value rhs = cs == 1 ? guardedRhs() : evalValueOf(a->value.get()); // `$rx = /pat/` stores a Regex object
         if (cs == 1 && (tctx().loopCtl || tctx().returning)) return Value::any();
+        // A call handing back a Proxy (`method m() is rw { Proxy.new: … }`) is READ by
+        // `=`: FETCH once, now, or every later read of the copy ran it again (#281)
+        if (rhs.t == VT::Hash && rhs.hashKind == proxyKind() && opEq(a->op, "=") &&
+            (a->value->kind == NK::Call || a->value->kind == NK::MethodCall)) rhs = deproxy(rhs);
         // coercion-type container `my Int(Str) $x = '42'`: coerce the value to the target
         if (opEq(a->op, "=") && a->target->kind == NK::VarExpr) {
             const std::string& ct = static_cast<VarExpr*>(a->target.get())->d().declCoerce;
