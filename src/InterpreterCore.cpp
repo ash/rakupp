@@ -30956,7 +30956,7 @@ Value Interpreter::evalVarExpr(Expr* e) {
     // (`$OUR::x30` in `package A36` does not see GLOBAL's `our $x30`)
     if (ve->viaPseudoPkg && vd.pseudoPkg == "OUR" && !ve->declare &&
         !tctx().pkgPrefix.empty() && ve->name.size() > 1) {
-        const std::string q = "$" + tctx().pkgPrefix + ve->name.substr(1);
+        const std::string q = ve->name.substr(0, 1) + tctx().pkgPrefix + ve->name.substr(1);
         if (Value* p = tctx().cur->find(q)) return *p;
         if (global_) if (Value* p = global_->find(q)) return *p;
         return Value::any();
@@ -31798,6 +31798,7 @@ Value Interpreter::evalVarExpr(Expr* e) {
         else if (head.rfind("MY::",     0) == 0) rest = head.substr(4);
         if (!rest.empty()) {
             VarExpr tmp(ve->name.substr(0, 1) + rest); tmp.line = e->line;
+            tmp.viaPseudoPkg = ve->viaPseudoPkg || head[0] == 'O';   // `%OUR::nope` asks, like MY:: (#274)
             return eval(&tmp);
         }
     }
@@ -31910,6 +31911,8 @@ Value Interpreter::evalVarExpr(Expr* e) {
     if (sigil == '&' && !ve->declare && !ve->viaPseudoPkg && !noStrictHere() &&
         !operatorNameDeclared(*this, ve->name.substr(1)))
         undeclaredRoutine(ve->name.substr(1));
+    // `%Foo::BAR` / `@Foo::BAR` naming nothing is a miss: Any, as for `$` (#274)
+    if (ve->name.find("::") != std::string::npos) return Value::any();
     return defaultFor(sigil);
 }
 

@@ -8135,9 +8135,9 @@ ExprPtr Parser::parsePrimary() {
             // spells it a hundred times over)
             size_t ourEnd = 1;
             while (raw.compare(ourEnd, 5, "OUR::") == 0) ourEnd += 5;
-            if (raw.size() > 6 && raw[0] == '$' && ourEnd > 1 &&
+            if (raw.size() > 6 && std::strchr("$@%", raw[0]) && ourEnd > 1 &&   // (`%OUR::x` too: #274)
                 raw.find("::", ourEnd) == std::string::npos) {
-                if (ourEnd > 6) { e->name = "$" + raw.substr(ourEnd); e->syncAttrCache(); }
+                if (ourEnd > 6) { e->name = raw.substr(0, 1) + raw.substr(ourEnd); e->syncAttrCache(); }
                 e->viaPseudoPkg = true;
                 e->dm().pseudoPkg    = "OUR";
             }
