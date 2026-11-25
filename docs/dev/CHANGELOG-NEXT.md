@@ -8,7 +8,7 @@ what changed, what it measured and how, with the commit — so the entry starts
 from this page. Move each item into CHANGELOG.md at the tag and delete it
 here.*
 
-*Covered so far: 5aa572bf, 6d2ee659, 606e98fe, e3b16b7e, 79314f20, 43558c4f, 82f6aba0, b084275a, a10df015, e46aa838, f54b0673, 23366987, 78bb0a72, fe5df52a.*
+*Covered so far: 5aa572bf, 6d2ee659, 606e98fe, e3b16b7e, 79314f20, 43558c4f, 82f6aba0, b084275a, a10df015, e46aa838, f54b0673, 23366987, 78bb0a72, fe5df52a, c78578b9, 72e3db13.*
 
 ---
 
@@ -67,6 +67,14 @@ here.*
 
 ### Fixed: crashes
 
+- **`?self` on a type object in a role's method answers False** (c78578b9)
+  (#269): with a `multi method Bool(R:D:)` in a role that does Iterable,
+  `?self`, `so self` or `self ?? … !! …` on the class's type object died
+  "No such method 't' for invocant of type 'Iterable'", naming the
+  method that was running. A multi whose candidates do not fit now passes the
+  call only to a parent's method of the same name.
+  t/regression/bool-of-type-object-inside-role-method.raku.
+
 ### Behaves like Rakudo
 
 - **Parameter traits take `<…>`, `{…}` and `[…]` arguments, and MAIN asks
@@ -88,6 +96,12 @@ here.*
   error unless the current directory had a `lib/` or the store was the
   default one. The script is now parsed on the search path, RAKULIB
   included, as a program given to rakupp directly is. t/install/run.raku.
+- **`-c` refuses a variable a module declares but does not export**
+  (72e3db13) (#282): `use Z; say $Q`, with Z's plain `our $Q`, was
+  "Syntax OK" under `-c` and died X::Undeclared when run. A module with a
+  `unit` package now supplies only what it marks `is export`. A module with
+  no package of its own still supplies its `our` names, which Rakudo puts in
+  GLOBAL. t/regression/check-only-unexported-module-variable.raku.
 
 - **`print` at the REPL prompt shows its text** (5aa572bf) (#277): on a
   terminal the line editor drew its prompt starting with `\r`, over whatever
