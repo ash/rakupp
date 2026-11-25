@@ -583,6 +583,20 @@ bool nameIn(const std::string& hay, const std::string& name) {
     }
     return false;
 }
+// …and mentions it where it EXPORTS it: `our $Q is export = 1`, `my @L is
+// export(:tag)`. Only an exported name reaches the importer — a module's plain
+// `our $Q` does not, and the run dies X::Undeclared on it (#282). The trait
+// stands between the name and its initializer, or the statement's end.
+bool exportedIn(const std::string& hay, const std::string& name) {
+    for (size_t p = hay.find(name); p != std::string::npos; p = hay.find(name, p + 1)) {
+        size_t e = p + name.size();
+        if (e < hay.size() && identChar(hay[e])) continue;
+        size_t stop = hay.find_first_of(";={}", e);
+        if (hay.substr(e, (stop == std::string::npos ? hay.size() : stop) - e).find("is export") != std::string::npos)
+            return true;
+    }
+    return false;
+}
 
 // The last word on whether a name is declared: does the SOURCE ever spell it as
 // one? The AST is not always able to say. rakupp's parser drops binders it
@@ -640,7 +654,8 @@ bool textDeclares(const std::string& src, const std::string& name) {
 
 // A candidate survives only if no imported module could have supplied the name.
 // The scan is deliberately blunt: an imported module's source is searched for
-// the name as written, and any hit at all clears the candidate. It runs only
+// the name as written with `is export` after it, and any such hit clears the
+// candidate. It runs only
 // once a candidate exists — i.e. on the way to refusing the program — so the
 // file reads cost a working run nothing. A module whose source cannot be found,
 // or one with a `sub EXPORT` that can export anything it likes, ends the check.
@@ -664,9 +679,16 @@ bool clearedByImports(std::vector<UndeclaredVar>& cands,
         }
         std::string path, src;
         if (!rakuppFindModuleSource(mod, searchPath, path, src, sixE)) return false;
-        if (src.find("sub EXPORT") != std::string::npos) return false;
+        // (an EXPORT:: package, written out by hand, exports what it holds)
+        if (src.find("sub EXPORT") != std::string::npos || src.find("EXPORT::") != std::string::npos) return false;
+        // A `unit` package keeps its `our` names to itself; a file with NO
+        // package of its own declares them in GLOBAL, which the importer sees,
+        // so there any mention still clears the name
+        bool ownPackage = false;
+        for (const char* kw : {"unit module", "unit package", "unit class", "unit role", "unit grammar"})
+            if (wordAt(src, kw)) { ownPackage = true; break; }
         cands.erase(std::remove_if(cands.begin(), cands.end(),
-                                   [&](const UndeclaredVar& c) { return nameIn(src, c.name); }),
+                                   [&](const UndeclaredVar& c) { return ownPackage ? exportedIn(src, c.name) : nameIn(src, c.name); }),
                     cands.end());
         if (cands.empty()) return true;
     }
