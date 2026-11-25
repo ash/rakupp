@@ -3735,6 +3735,8 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
         // $*KERNEL.bits — the process's native pointer width, an Int. (It used to
         // fall through to the name, so `$*KERNEL.bits == 64` compared "darwin".)
         if (m == "bits") return Value::integer((long long)(sizeof(void*) * 8));
+        if (m == "total-memory" || m == "free-memory" || m == "cpu-usage")   // HostResources.cpp
+            return Value::integer(m == "cpu-usage" ? processCpuMicros() : m == "free-memory" ? hostFreeMemory() : hostTotalMemory());
         if (m == "hardware" || m == "arch") {
 #if !defined(_WIN32)
             struct utsname u;

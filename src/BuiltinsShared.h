@@ -27,6 +27,10 @@
 
 namespace rakupp {
 class Interpreter;
+// $*KERNEL.total-memory / .free-memory (bytes) and .cpu-usage (µs) — HostResources.cpp
+long long hostTotalMemory();
+long long hostFreeMemory();
+long long processCpuMicros();
 // A promise's `.then` continuations, taken from its state under that state's
 // lock and run when this goes out of scope. Declared BEFORE any lock the
 // settler takes, they run once every lock is let go. A `react`'s
