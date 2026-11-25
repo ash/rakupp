@@ -8,7 +8,7 @@ what changed, what it measured and how, with the commit — so the entry starts
 from this page. Move each item into CHANGELOG.md at the tag and delete it
 here.*
 
-*Covered so far: 5aa572bf, 6d2ee659, 606e98fe, e3b16b7e, 79314f20, 43558c4f, 82f6aba0, b084275a, a10df015, e46aa838, f54b0673, 23366987, 78bb0a72, fe5df52a, c78578b9, 72e3db13, cd3c0205, c0876601.*
+*Covered so far: 5aa572bf, 6d2ee659, 606e98fe, e3b16b7e, 79314f20, 43558c4f, 82f6aba0, b084275a, a10df015, e46aa838, f54b0673, 23366987, 78bb0a72, fe5df52a, c78578b9, 72e3db13, cd3c0205, c0876601, 8e5485ec.*
 
 ---
 
@@ -119,6 +119,12 @@ here.*
   `unit` package now supplies only what it marks `is export`. A module with
   no package of its own still supplies its `our` names, which Rakudo puts in
   GLOBAL. t/regression/check-only-unexported-module-variable.raku.
+- **An enum member after a colonpair word is a term** (8e5485ec) (#287):
+  `enum numbers << :one(1) two three >>; for one, two { … }` was a parse
+  error ("Function 'two' needs parens to avoid gobbling block"): the
+  colonpair that sets the starting value kept the members after it from
+  being declared. They are now, and so is a double-quoted key in
+  `enum E (one => 1, "two")`. t/regression/enum-colonpair-word-list.raku.
 
 - **`print` at the REPL prompt shows its text** (5aa572bf) (#277): on a
   terminal the line editor drew its prompt starting with `\r`, over whatever
