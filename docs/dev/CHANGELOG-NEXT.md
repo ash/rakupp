@@ -8,7 +8,7 @@ what changed, what it measured and how, with the commit — so the entry starts
 from this page. Move each item into CHANGELOG.md at the tag and delete it
 here.*
 
-*Covered so far: 5aa572bf, 6d2ee659, 606e98fe, e3b16b7e, 79314f20, 43558c4f, 82f6aba0, b084275a, a10df015, e46aa838, f54b0673, 23366987, 78bb0a72, fe5df52a, c78578b9, 72e3db13, cd3c0205.*
+*Covered so far: 5aa572bf, 6d2ee659, 606e98fe, e3b16b7e, 79314f20, 43558c4f, 82f6aba0, b084275a, a10df015, e46aa838, f54b0673, 23366987, 78bb0a72, fe5df52a, c78578b9, 72e3db13, cd3c0205, c0876601.*
 
 ---
 
@@ -25,6 +25,13 @@ here.*
   (Rakudo 0.26 s); 3M interpreted `my Int $e = 5` from 1.00 s to 0.22 s. A
   Kaprekar-number search written with `Int` types went from 1.93 s to 1.48 s
   (Rakudo 1.2-1.35 s). t/regression/typed-int-store-lanes.raku.
+
+- **A loop with a `return` in it runs as a kernel** (c0876601): the kernel ends at
+  the `return`, writes its variables back, and the statement itself then runs
+  the ordinary way, so its value may be anything; a `return` naming a loop
+  variable, a `my` of the body or the loop's topic still declines. The
+  Kaprekar-number search above went from 1.48 s to 0.38 s (Rakudo 1.25 s).
+  t/regression/loop-kernel-return.raku.
 
 ### Fixed: silent wrong answers
 
