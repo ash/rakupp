@@ -7099,6 +7099,11 @@ Value Interpreter::methodCallInner(const Value& invIn, const std::string& mName,
                     try {
                         Lexer lx(content);
                         Parser ps(lx.tokenize());
+                        // parsed as the program it is: its `use`s resolve on the search path while
+                        // it parses, so `for ITEMS -> $n {…}` knows its module's constant (#270)
+                        ps.declPod_ = lx.declPod_; ps.leadPod_ = lx.leadPod_; ps.src_ = &content;
+                        ps.libPaths_ = libPaths_; ps.srcFile_ = script;
+                        if (const char* rl = std::getenv("RAKULIB")) for (auto& d : splitSearchPath(rl)) ps.libPaths_.push_back(d);
                         Program prog = ps.parseProgram();
                         code = run(prog);
                     } catch (const ParseError& pe) {

@@ -64,13 +64,17 @@ sub make-dist(Str $name, Str $modname, Str $version,
     $droot.add($file).spurt(qq:to/END/);
         unit module $modname;
         sub which-version() is export \{ '$version' \}
+        constant GATE-WORDS is export = <gate hello>;
         $extra
         END
     my $provides = "\"$modname\": \"$file\"";
     if $bin {
         $droot.add('bin').mkdir;
-        $droot.add('bin/gate-hello').spurt(
-            "use $modname;\nprint 'gate-hello ' ~ which-version();\n");
+        # (GATE-WORDS before a block: the installed script is parsed knowing its
+        # module's exports, or `for GATE-WORDS -> $w {…}` gobbles the block: #270)
+        $droot.add('bin/gate-hello').spurt("use $modname;\n"
+            ~ Q[my @w; for GATE-WORDS -> $w { @w.push: $w }] ~ "\n"
+            ~ Q[print @w.join('-') ~ ' ' ~ which-version();] ~ "\n");
     }
     if $shared {
         $droot.add('lib/Gate').mkdir;
@@ -292,6 +296,19 @@ my $wrun = run 'env', |%env.map({ "{.key}={.value}" }), $EXE, $wrapper.Str, :out
 check $wrun.out.slurp(:close) eq 'gate-hello 0.4.2',
       'bin: the wrapper runs the installed script by name';
 $wrun.err.slurp(:close);
+# …and from a store of its own (`--to`), found through RAKULIB alone: the
+# script still parses knowing its module's exports (#270: it parsed with no
+# search path, and only the default store or a `lib/` in the cwd hid that)
+{
+    my $alt = $tmp.add('alt-store');
+    my %alt = installer('-q', '--to=' ~ $alt, 'Gate::Demo');
+    my $empty = $tmp.add('empty-home'); $empty.mkdir;
+    my $arun = run 'env', "HOME={$empty}", "RAKULIB=inst#{$alt}", $EXE, $alt.add('bin/gate-hello').Str,
+                   :out, :err, :cwd($empty.Str);
+    my $aerr = $arun.err.slurp(:close);
+    check %alt<exit> == 0 && $arun.out.slurp(:close) eq 'gate-hello 0.4.2',
+          "bin: a --to store's wrapper, found through RAKULIB" ~ ($aerr ?? " ({$aerr.lines.head})" !! '');
+}
 # the file's short/ index entry is what Rakudo's run-script resolves a bare
 # script name through — its presence is what makes the wrapper cross-engine
 check $home.add('.raku/short/72FBF518F4A9F9E67352C850F7087DEFA5D51413').d,
