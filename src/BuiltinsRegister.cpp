@@ -23,6 +23,49 @@ Value openStdStream(Interpreter& I, const Value& dash, const ValueList& args);  
 // `script` sees a plain fd, and under a harness whose stdin is a pipe or a
 // socket S32-io/out-buffering.t's "prompt does not hang" either lost its
 // input or died in tcgetattr — a flap in every Roast sweep.
+// A user ARGS-TO-CAPTURE — `&*ARGS-TO-CAPTURE`, else a lexical `&ARGS-TO-CAPTURE`
+// such as Getopt::Long's `is export(:DEFAULT, :MAIN)` one — called as Rakudo's
+// RUN-MAIN calls it, with MAIN and the live @*ARGS, and `&*ARGS-TO-CAPTURE`
+// naming it while it runs. Its Capture is MAIN's argument list (its Pairs the
+// named arguments). -1: there is none; 1: a MAIN candidate binds the list; 0: none
+// does. The auto-invoked MAIN asks too (mainProtocol): it used to parse @*ARGS
+// itself, so Getopt::Long's `--no-v` for `:$v is option<!>` printed the usage.
+int Interpreter::userArgsToCapture(const Value& mainSub, ValueList& margs) {
+    auto lookup = [&](const char* n) -> Value* {
+        if (tctx().cur) if (Value* p = tctx().cur->find(n)) return p;
+        for (auto it = tctx().dynStack.rbegin(); it != tctx().dynStack.rend(); ++it)
+            if (*it) if (Value* p = (*it)->find(n)) return p;
+        return global_ ? global_->find(n) : nullptr;
+    };
+    Value userA2C;
+    if (Value* p = lookup("&*ARGS-TO-CAPTURE")) userA2C = *p;
+    if (userA2C.t != VT::Code) if (Value* p = lookup("&ARGS-TO-CAPTURE")) userA2C = *p;
+    if (userA2C.t != VT::Code) return -1;
+    Value argsArr = Value::array();
+    if (Value* av = lookup("@*ARGS"))
+        if (av->t == VT::Array && av->arr()) *argsArr.arr() = *av->arr();
+    auto scope = makeSlabShared<Env>(); scope->parent = tctx().cur;
+    scope->define("&*ARGS-TO-CAPTURE", userA2C);
+    auto saved = tctx().cur; tctx().cur = scope;
+    tctx().dynStack.push_back(scope.get());
+    struct R { Interpreter& I; std::shared_ptr<Env> s; ~R() { I.tctx().cur = s; I.tctx().dynStack.pop_back(); } } r{*this, saved};
+    Value cap = callCallable(userA2C, ValueList{mainSub, argsArr});
+    margs.clear();
+    if (cap.t == VT::Array && cap.arr()) {
+        margs = *cap.arr();                       // a Capture IS the arg list…
+        for (auto& m : margs)                     // …its Pairs are NAMED args
+            if (m.t == VT::Pair) m.namedArg = true;
+    } else if (cap.t != VT::Any && cap.t != VT::Nil) margs.push_back(cap);
+    if (mainSub.code() && mainSub.code()->ci().isMultiDispatcher) {
+        for (auto& cand : mainSub.code()->cold().candidates)
+            if (!(cand.code() && (cand.code()->ci().isProto || cand.code()->ci().isProtoBody)) &&
+                scoreCandidate(cand, margs) >= 0) return 1;
+        return 0;
+    }
+    if (mainSub.code() && mainSub.code()->ci().params) return scoreCandidate(mainSub, margs) >= 0 ? 1 : 0;
+    return 1;
+}
+
 static int stdinFdForHandle(const Value& h, bool& resolved) {
     resolved = false;
 #if defined(_WIN32)
@@ -1987,34 +2030,11 @@ void Interpreter::registerBuiltinsPart2() {
                 return n >= 2 ? I.callCallable(helper, ValueList{Value::boolean(false), retval})
                               : I.callCallable(helper, ValueList{retval});
             }
-        // the raw @*ARGS as an Array, for the ARGS-TO-CAPTURE hook
-        Value argsArr = Value::array();
-        if (Value* av = lookup("@*ARGS"))
-            if (av->t == VT::Array && av->arr()) *argsArr.arr() = *av->arr();
-
-        // --- 1. args -> capture -------------------------------------------
-        Value userA2C;
-        if (Value* p = lookup("&*ARGS-TO-CAPTURE")) userA2C = *p;
-        if (userA2C.t != VT::Code) if (Value* p = lookup("&ARGS-TO-CAPTURE")) userA2C = *p;
+        // --- 1. args -> capture (a user ARGS-TO-CAPTURE, else the built-in one) --
         ValueList margs;
-        {   // &*ARGS-TO-CAPTURE is the sub actually in force while it runs
-            if (userA2C.t == VT::Code) {
-                // &*ARGS-TO-CAPTURE names the sub actually in force while it runs
-                auto scope = makeSlabShared<Env>(); scope->parent = I.tctx().cur;
-                scope->define("&*ARGS-TO-CAPTURE", userA2C);
-                auto saved = I.tctx().cur; I.tctx().cur = scope;
-                I.tctx().dynStack.push_back(scope.get());
-                struct R { Interpreter& I; std::shared_ptr<Env> s; ~R(){ I.tctx().cur = s; I.tctx().dynStack.pop_back(); } } r{I, saved};
-                Value cap = I.callCallable(userA2C, ValueList{mainSub, argsArr});
-                if (cap.t == VT::Array && cap.arr()) {
-                    margs = *cap.arr();                       // a Capture IS the arg list…
-                    for (auto& m : margs)                   // …its Pairs are NAMED args
-                        if (m.t == VT::Pair) m.namedArg = true;
-                } else if (cap.t != VT::Any && cap.t != VT::Nil) margs.push_back(cap);
-            } else {
-                Value cap = I.callBuiltin("RUN-MAIN-args-to-capture", ValueList{});
-                if (cap.t == VT::Array && cap.arr()) margs = *cap.arr();
-            }
+        if (I.userArgsToCapture(mainSub, margs) < 0) {
+            Value cap = I.callBuiltin("RUN-MAIN-args-to-capture", ValueList{});
+            if (cap.t == VT::Array && cap.arr()) margs = *cap.arr();
         }
         // did the user ask for help? (drives the exit code)
         bool wantsHelp = false;

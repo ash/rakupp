@@ -5167,8 +5167,8 @@ int Interpreter::mainProtocol(Value& mainSub, ValueList& margs) {
             a.setPairVal(makePayload<Value>(std::move(lst)));
         }
     };
-    if (mainSub.code() && mainSub.code()->ci().isMultiDispatcher) {
-        mainMatches = false;
+    if (int u = userArgsToCapture(mainSub, margs); u >= 0) mainMatches = u > 0;   // Getopt::Long's hook
+    else if (mainSub.code() && mainSub.code()->ci().isMultiDispatcher) { mainMatches = false;
         for (auto& cand : mainSub.code()->cold().candidates) {
             // (an explicit `proto MAIN(|) {*}` is no candidate: its `|` takes
             // anything, and then the real dispatch found none — Cro's CLI

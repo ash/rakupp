@@ -11068,6 +11068,18 @@ static void aliasAttrName(Param& p) {
 // the interpreter hands both to a `trait_mod:<is>(Parameter, :option(…))` when
 // the routine is declared. Mirrors the attribute-trait parse exactly.
 void Parser::recordParamTrait(Param& p, const std::string& name) {
+    // …and unparenthesised, as an attribute's: `:$v is option<!>` (App::Prove6),
+    // `is foo{ … }`, `is foo[…]` (#284) — `is option<=s>` lexed its `<=` as one operator
+    if (!cur().spaceBefore && isKind(Tok::Op) && cur().text.size() > 1 && cur().text[0] == '<' && cur().text[1] != '<') {
+        Token rest = cur(); rest.text = rest.text.substr(1); rest.text2.clear(); rest.spaceBefore = false;
+        toks_[pos_].text = "<"; toks_[pos_].text2.clear();
+        toks_.insert(toks_.begin() + pos_ + 1, rest);
+    }
+    if (!cur().spaceBefore && (isKind(Tok::LBrace) || isKind(Tok::LBracket) || isKind(Tok::QwList) ||
+                               (isKind(Tok::Op) && cur().text == "<"))) {
+        p.userTraits.emplace_back(name, parsePrimary());
+        return;
+    }
     if (isKind(Tok::LParen) && !cur().spaceBefore) {
         advance();
         ExprPtr arg = isKind(Tok::RParen) ? nullptr : parseExpression();
