@@ -5890,7 +5890,8 @@ std::shared_ptr<const PadLayout> Interpreter::resolvePads(const std::vector<Stmt
             // (an untyped `my $x where * < 10` checks each store: not simple)
             for (auto* v : ds)
                 L.add(v->name, /*simple=*/!v->d().declWhereExpr && (v->d().declType.empty() ||
-                    (!typeNameLead(v->d().declType[0]) && v->d().declType != "atomicint")));
+                    (!typeNameLead(v->d().declType[0]) && v->d().declType != "atomicint")),
+                      /*intSlot=*/plainIntDecl(v));
             if (s->kind == NK::VarDecl) {
                 auto* vd = static_cast<const VarDecl*>(s.get());
                 if (vd->scope == "my")

@@ -5773,23 +5773,69 @@ bool Interpreter::declLaneTernary(Ternary* t, Value& out) {
     return declLaneRhsShape(pick) && declLaneRhs(pick, out);
 }
 
+// (everything but the type: `typed` names the one a lane may take, `Int`)
+static bool plainDeclTraits(const VarExpr* v, bool typed) {
+    // (`$` and a letter or underscore: no twigil, no special variable)
+    return !(!v->declare || v->d().declScope != "my" || v->name.size() < 2 || v->name[0] != '$' ||
+        !(nameLetterAt(v->name, 1) || v->name[1] == '_' || anonScalarSlot(v->name)) || v->name == "$_" || v->synthTopic || v->heredocOuter || v->d().stateInParens ||
+        !v->d().declStubType.empty() || (typed ? v->d().declType != "Int" : !v->d().declType.empty()) || !v->d().declCoerce.empty() ||
+        v->d().declDefault || v->d().declDynamic || v->d().declExport || v->d().declSmiley || v->d().declWhereExpr ||
+        v->d().declHasWhere || v->d().declMyConstant || v->pkgSymbol || !v->d().containerIs.empty() ||
+        v->d().declShape || v->d().declTypeExpr || v->d().namedBind || v->viaPseudoPkg || v->processScoped ||
+        v->nativeStrRead || v->nativeIntRead || v->nativeNumRead);
+}
+bool Interpreter::plainIntDecl(const VarExpr* v) { return plainDeclTraits(v, true); }
 // The declaration lane's target (Assign::simpleSlot 6): `my $name` with
 // nothing on it that lvalue's declaration arm or the full path's store would
 // act on — no type, coercion, default, `where`, smiley, trait, shape or
 // container type — and a right side declLaneRhs can evaluate (6), or a method
-// call (16: declCallLane).
+// call (16: declCallLane). `my Int $name` with nothing else on it is 17: the
+// same lane, for a right side that gives an Int (anything else goes the full way).
 signed char Interpreter::plainDeclLane(const VarExpr* v, const Expr* rhs) {
-    // (`$` and a letter or underscore: no twigil, no special variable)
-    if (!v->declare || v->d().declScope != "my" || v->name.size() < 2 || v->name[0] != '$' ||
-        !(nameLetterAt(v->name, 1) || v->name[1] == '_' || anonScalarSlot(v->name)) || v->name == "$_" || v->synthTopic || v->heredocOuter || v->d().stateInParens ||
-        !v->d().declStubType.empty() || !v->d().declType.empty() || !v->d().declCoerce.empty() ||
-        v->d().declDefault || v->d().declDynamic || v->d().declExport || v->d().declSmiley || v->d().declWhereExpr ||
-        v->d().declHasWhere || v->d().declMyConstant || v->pkgSymbol || !v->d().containerIs.empty() ||
-        v->d().declShape || v->d().declTypeExpr || v->d().namedBind || v->viaPseudoPkg || v->processScoped ||
-        v->nativeStrRead || v->nativeIntRead || v->nativeNumRead)
-        return 0;
+    if (plainDeclTraits(v, true)) return rhs && declLaneRhsShape(rhs) ? 17 : 0;
+    if (!plainDeclTraits(v, false)) return 0;
     if (rhs && rhs->kind == NK::MethodCall) return 16;
     return rhs && declLaneRhsShape(rhs) ? 6 : 0;
+}
+
+bool plainIntSlotValue(const Value& v);   // (InterpreterCore.cpp)
+bool intOpAssignInPlace(Interpreter& I, Value* slot, const Value& rhs, signed char sv);
+// `$x = …`, `$x += …`, `-=`, `*=` into a slot declared `my Int $x` and nothing
+// more (PadLayout::intTyped) that holds a plain Int — the assignment lane's
+// arm for it. The full path's check there walks the scopes for the name's
+// where/smiley/coercion/default tables on every store; an Int computed from
+// Ints is an Int, which none of them could refuse. False only before anything
+// is evaluated: `=` is answered only by the fused Int store (an Int op on two
+// Int operands), and an op= always, its result checked as the full path
+// checks one (evalAssign, compoundCheckSlot) when it is no longer an Int.
+bool Interpreter::intTypedStore(Assign* a, Value* slot, signed char sv) {
+    if (!plainIntSlotValue(*slot) || slot->natBits()) return false;
+    if (sv == 1) return a->value->kind == NK::Binary && fusedIntAssign(static_cast<Binary*>(a->value.get()), slot);
+    Value rhs = eval(a->value.get());
+    if (rhs.t == VT::Int && rhs.hashKind.empty() && rhs.enumType().empty() && !rhs.natBits()) {
+        static const char* const kOps[] = {"", "", "+", "-", "*"};
+        if (!intOpAssignInPlace(*this, slot, rhs, sv)) opAssignArith(slot, kOps[(int)sv], rhs);
+        return true;   // (Int op Int: an Int, a big one past a machine word)
+    }
+    // anything else: what the untyped lane's tail computes, then the type check
+    const std::string op = a->written().substr(0, a->written().size() - 1);   // (`×=` asks `&infix:<×>`)
+    const std::string bop(1, "  +-*"[(int)sv]);
+    Value nv;
+    bool overloaded = false;
+    if (rhs.t == VT::Object)
+        if (Value* f = tctx().cur->find("&infix:<" + op + ">"))
+            try { nv = callCallable(*f, ValueList{*slot, rhs}); overloaded = true; }
+            catch (RakuError& e) { if (!infixDeclined(e)) throw; }
+    if (!overloaded && rhs.t != VT::Object && sv <= 3 && (rhs.hashKind == "Duration" || rhs.hashKind == "Instant")) {
+        nv = applyArith(bop, *slot, rhs);
+        tagTemporal(bop, *slot, rhs, nv);
+    }
+    else if (!overloaded && rhs.t != VT::Object) { nv = *slot; opAssignArith(&nv, bop, rhs); }   // (a Failure, not a throw)
+    else if (!overloaded) nv = applyArith(bop, *slot, rhs);
+    if (!(nv.t == VT::Int && nv.hashKind.empty() && nv.enumType().empty()))
+        enforceTypedAssign(static_cast<VarExpr*>(a->target.get())->name, nv);   // (throws with the slot untouched)
+    slotStore(slot, std::move(nv));
+    return true;
 }
 
 // `my $p = Point.new(…)`, `my $n = $obj.count` on the declaration lane

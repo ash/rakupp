@@ -13241,7 +13241,7 @@ static void collectBindTails(const Expr* e, std::vector<const void*>& out) {
 // which the -O int lanes store through the same way — so moving that whole
 // Value into the slot, as the general path does, was pure copying. False, with
 // the slot untouched, for anything else.
-static bool intOpAssignInPlace(Interpreter& I, Value* slot, const Value& rhs, signed char sv) {
+bool intOpAssignInPlace(Interpreter& I, Value* slot, const Value& rhs, signed char sv) {
     if (!rtIntSlot(*slot) || slot->natBits() || slot->pk_ != PK::None || !slot->enumType().empty() ||
         !slot->s.empty() || rhs.t != VT::Int || rhs.big())
         return false;
@@ -13397,7 +13397,7 @@ Value Interpreter::evalAssign(Assign* a, bool sink) {
                 if (coopStoreShape(a)) {}
                 else if (a->target && a->target->kind == NK::VarExpr && !a->userOp && opEq(a->op, "=") &&
                          (cls = plainDeclLane(static_cast<VarExpr*>(a->target.get()), a->value.get())) != 0)
-                    {}   // 6, or 16 for a method call on the right
+                    {}   // 6, 16 for a method call on the right, 17 for `my Int $x`
                 else if (a->target && a->target->kind == NK::VarExpr && !a->userOp && opEq(a->op, "=") &&
                          nativeDeclShape(static_cast<VarExpr*>(a->target.get()), a->value.get()))
                     cls = 9;
@@ -13453,6 +13453,9 @@ Value Interpreter::evalAssign(Assign* a, bool sink) {
             else if (sv == 9) {
                 if (Value* slot = nativeDeclLane(a)) return sink ? Value::any() : *slot;
             }
+            else if (sv == 17) {
+                if (Value* slot = declLane(a, true)) return sink ? Value::any() : *slot;
+            }
             else if (sv >= 1) {
                 auto* tv = static_cast<VarExpr*>(a->target.get());
                 Env* const cur = tctx().cur.get();   // one thread_local read for the slot and its frame
@@ -13502,6 +13505,12 @@ Value Interpreter::evalAssign(Assign* a, bool sink) {
                     auto laneName = [&] { return a->written().substr(0, a->written().size() - 1); };
                     const bool userOpMaybe = sv >= 2 && g_lexShadowMask.load(std::memory_order_relaxed) &&
                                              lexShadowPossible(a->uniSpelled ? laneName() : std::string(kLaneOp[sv]));
+                    // a `my Int $x` slot holding a plain Int (intTypedStore)
+                    if (!simple && !viaCell && sv <= 4 && !userOpMaybe && padOwnerLayout(tv)->intTyped[tv->padSlot] &&
+                        intTypedStore(a, slot, sv)) {
+                        if (anyRwLinks_) rwWriteThrough(a->target.get());
+                        return slotOut(slot, sink);
+                    }
                     if (simple && !userOpMaybe &&
                         coldOk && !slot->readonly && slot->hashKind.empty() &&
                         slot->t != VT::Object) {
@@ -22065,7 +22074,7 @@ static inline bool binaryShadowMaybe(const Binary* b) {
 // that does not overflow is the value the native path stores, and the slot
 // keeps its native tags; a sized or unsigned native wraps on every store, so
 // it keeps the full path) — every other flag at its default, writable.
-static inline bool plainIntSlotValue(const Value& v) {
+bool plainIntSlotValue(const Value& v) {
     const bool nativeInt = v.natBits() == 64 && v.natSigned && !v.natFloat;
     return v.t == VT::Int && !v.x_ && v.pk_ == PK::None && (!v.natBits() || nativeInt) &&
            !v.readonly && !v.itemized && !v.b && !v.isList && !v.objKeyed &&
@@ -22794,7 +22803,7 @@ bool Interpreter::fusedTypedAssign(Binary* b, Value* slot) {
 // side is evaluated by declLaneRhs, which has no side effects, so a value it
 // cannot give (or a name already bound to a container) leaves the full path
 // to evaluate it again from the start.
-[[gnu::noinline]] Value* Interpreter::declLane(Assign* a) {
+[[gnu::noinline]] Value* Interpreter::declLane(Assign* a, bool intTyped) {
     // A Binary right side answers only once compiled to one of the two shapes
     // declLaneRhs reads. Decided as neither (`0.01 * $n`: a Rat literal), it
     // never will be, and the node leaves the lane for good.
@@ -22814,6 +22823,9 @@ bool Interpreter::fusedTypedAssign(Binary* b, Value* slot) {
     Value rv;
     if (!declLaneRhs(a->value.get(), rv)) return nullptr;
     rv.readonly = rv.immutableBind = false;
+    // `my Int $x` (17): an Int needs no check, and Nil resets to the type, as the full path records
+    if (intTyped && (rv.t != VT::Int || !rv.hashKind.empty() || !rv.enumType().empty())) return nullptr;
+    if (intTyped) de->x().varDefault[tv->name] = Value::typeObj("Int");
     return &de->define(tv->name, std::move(rv));
 }
 

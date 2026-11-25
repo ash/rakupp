@@ -801,6 +801,10 @@ struct PadLayout {
     // type-enforced today), so the simple-assign lane may store into it
     // without the typed-container ceremony. Parallel to `names`.
     std::vector<uint8_t> simple;
+    // 1 = declared `my Int $x` and nothing more (no `where`, smiley, default,
+    // coercion or trait): the assignment lane may store an Int it computed from
+    // Ints there, which no check could refuse (Interpreter::intTypedStore).
+    std::vector<uint8_t> intTyped;
     std::unordered_map<std::string, int, VarNameHash, VarNameEq> byName;
     // An inline block's own pad (an `if`/`given`/loop/bare block body that
     // declares plain `my`s), not a routine's or the mainline's. It sits on that
@@ -826,16 +830,18 @@ struct PadLayout {
         if (sharedWhy.size() < names.size()) sharedWhy.resize(names.size());
         sharedWhy[s] = why;
     }
-    int add(const std::string& n, bool simpleSlot = false) {
+    int add(const std::string& n, bool simpleSlot = false, bool intSlot = false) {
         auto it = byName.find(n);
         if (it != byName.end()) {
             // a redeclaration in the same owner keeps the STRICTER verdict
             if (!simpleSlot) simple[it->second] = 0;
+            if (!intSlot) intTyped[it->second] = 0;
             return it->second;
         }
         int s = (int)names.size();
         names.push_back(n);
         simple.push_back(simpleSlot ? 1 : 0);
+        intTyped.push_back(intSlot ? 1 : 0);
         byName.emplace(n, s);
         noteNameBound(n);   // (before the slot can ever be live: see g_coreEnumNameBound)
         if (n.size() > 1 && n[1] == '*') holdsDynamic = true;
@@ -5382,7 +5388,9 @@ private:
     bool declLaneRhs(Expr* e, Value& out);         // that EXPR's value, side-effect free, or false
     bool declLaneTernary(Ternary* t, Value& out);
     void immutableCallTarget(MethodCall* mc, const std::string& name, const Value& inv);   // rakudo#1987  // `COND ?? A !! B` the same way (rakudo#1416)
-    Value* declLane(Assign* a);                    // the declaration lane: the new slot, or null
+    Value* declLane(Assign* a, bool intTyped = false);   // the declaration lane: the new slot, or null
+    static bool plainIntDecl(const VarExpr* v);    // `my Int $x`, nothing more on it (PadLayout::intTyped)
+    bool intTypedStore(Assign* a, Value* slot, signed char sv);   // `=`/`+=`/`-=`/`*=` into such a slot
     static bool nativeDeclShape(const VarExpr* v, const Expr* rhs);   // `my int $x = EXPR` takes the native declaration lane
     Value* nativeDeclLane(Assign* a);              // …which answers the new slot, or null before anything ran
     bool typedTreeDecide(Binary* b);               // is it a typed-subtree root (and compiled to one)?

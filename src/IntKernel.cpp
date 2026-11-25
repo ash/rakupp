@@ -2124,6 +2124,13 @@ KNode* Compiler::expr(IKernel& k, const Callable* c, Expr* e, bool cond, KT& t) 
                 kop = a->op[0] == '+' ? KOp::AddTo : a->op[0] == '-' ? KOp::SubTo : KOp::MulTo;
                 noteOp(a->written().substr(0, a->written().size() - 1));   // `×=` notes `×`
             }
+            // `$hi div= $base` is `$hi = $hi div $base`: the Div and Mod nodes
+            // the binary ops make, stored back (a zero divisor bails as there)
+            else if ((a->op == "div=" || a->op == "%=" || a->op == "mod=") && tt == KT::Int && vt == KT::Int) {
+                KNode* d = k.node(a->op[0] == 'd' ? KOp::Div : KOp::Mod); d->a = tn; d->b = v;
+                v = d; kop = KOp::Set;
+                noteOp(a->written().substr(0, a->written().size() - 1));
+            }
             // a Num variable takes a Num or an Int (converted); an Int
             // variable never takes a Num (it would change type)
             else if ((a->op == "+=" || a->op == "-=" || a->op == "*=" || a->op == "/=") && tt == KT::Exact &&
@@ -4077,11 +4084,24 @@ Value* outerCell(Env* env, const std::string& name, Env** owner) {
 // right for: every trait below makes the generic store do something more (a
 // type or `where` check, a coercion, a default, a native width, an `is rw`
 // write-through, a readonly refusal), and the write-back does none of it.
-bool writableCell(const Value& v, Env* owner, const std::string& name) {
+// Is `name` declared with the very type the kernel's slot holds (`my Int $hi`
+// for an Int slot)? Every store the kernel makes keeps that type — a change is
+// refused when it compiles — so the declared constraint always holds.
+bool slotTypeDeclared(const EnvExtras& x, const std::string& name, KT t) {
+    auto di = x.varDefault.find(name);
+    if (di == x.varDefault.end() || x.varDefaultUntyped.count(name)) return false;
+    auto ti = x.varDefaultType.find(name);
+    const Value& ty = ti != x.varDefaultType.end() ? ti->second : di->second;
+    if (ty.t != VT::Type) return false;   // (the reset value matters not: no kernel stores Nil)
+    const std::string_view n = ty.s.str();
+    return (t == KT::Int && n == "Int") || (t == KT::Num && n == "Num") || (t == KT::Str && n == "Str");
+}
+
+bool writableCell(const Value& v, Env* owner, const std::string& name, KT t = KT::Void) {
     if (v.readonly || v.immutableBind || v.itemized || v.pairValRO) return false;
     if (owner && owner->ex) {
         const EnvExtras& x = *owner->ex;
-        if (x.varDefault.count(name) || x.varCoerce.count(name) || x.varDynamic.count(name) ||
+        if ((x.varDefault.count(name) && !slotTypeDeclared(x, name, t)) || x.varCoerce.count(name) || x.varDynamic.count(name) ||
             x.varSmiley.count(name) || x.varWhere.count(name) || x.varConstant.count(name) ||
             x.varValueBound.count(name) || x.rwLinks.count(name) || x.rwDirect.count(name) ||
             x.rwRoots.count(name) || x.rwSynced.count(name) || x.rwDead.count(name) ||
@@ -4512,7 +4532,7 @@ bool Interpreter::tryLoopKernel(Stmt* loop, const std::string& var, long long lo
             : o.t == KT::Exact ? !(plainIntValue(*cell) || plainRatValue(*cell))
             : o.t == KT::Bool ? !plainBoolValue(*cell) : !plainStrValue(*cell))
             return notEntered("a value of another type in", o.name);
-        if (o.written && !writableCell(*cell, owner, o.name))
+        if (o.written && !writableCell(*cell, owner, o.name, o.nat ? KT::Void : o.t))
             return notEntered("a container a plain store would not honour:", o.name);
         for (size_t j = 0; j < i; j++)
             if (cells[j] == cell) return notEntered("two names for one container:", o.name);
