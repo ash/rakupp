@@ -304,6 +304,8 @@ struct LoopCx {
     std::vector<const VObj*> selfs;          // the invocants of the method bodies being compiled, innermost last
     std::vector<const Callable*> bodies;     // …and those methods
     std::vector<InlRet*> rets;               // …and, for a body of statements, where its value goes (else null)
+    std::vector<Stmt*> exits;                // a loop kernel's own `return`s (tryLoopKernel runs the one that ended it)
+    int exitSlot = -1;                       // …and the slot that says which, from 1
     size_t floor = 0;                        // scopes below this are the caller's: a method body does not see them
     std::vector<std::pair<const NameTerm*, ClassInfo*>> classes;   // each class term, resolved once
     std::vector<Value> inlined;              // every method compiled in place (its Code value)
@@ -2588,6 +2590,24 @@ KNode* Compiler::lstmt(IKernel& k, Stmt* s) {
         case NK::ReturnStmt: {
             auto* r = static_cast<ReturnStmt*>(s);
             if (!L->sub && !L->rets.empty() && L->rets.back() && r->value && !r->isRw) return inlRet(k, r->value.get(), true);
+            // A loop's own `return`: the kernel ends there, as at a `last` of
+            // every loop it is in, its variables are written back, and the
+            // statement itself then runs the ordinary way (tryLoopKernel) — so
+            // its value may be anything, but may name nothing the kernel keeps
+            // to itself (a loop variable, a `my` of the body, a topic).
+            if (!L->sub && L->rets.empty()) {
+                if (r->isRw) return refuse("a `return` of this form");
+                if (L->givens || lookup("$_")) return refuse("a `return` under a topic of the loop's own");
+                std::set<std::string> names;
+                collectMentionedE(r->value.get(), names);
+                for (auto& nm : names) if (lookup(nm)) return refuse("a `return` naming a variable of the loop's own");
+                if (L->exitSlot < 0) L->exitSlot = L->nint++;
+                L->exits.push_back(s);
+                KNode* which = k.node(KOp::Lit); which->lit = (int64_t)L->exits.size();
+                KNode* note = k.node(KOp::Set); note->slot = L->exitSlot; note->a = which;
+                KNode* n = k.node(KOp::Ret); n->a = note;
+                return n;
+            }
             if (!L->sub) return refuse("a `return`");
             if (r->isRw || !r->value) return refuse("a `return` of this form");
             KNode* v = expr(k, nullptr, r->value.get(), false, t);
@@ -4042,6 +4062,8 @@ struct LKernel {
     std::vector<LCont> conts;  // the program's containers it uses in place
     std::vector<std::pair<std::string, Callable*>> calls;   // `&name` → the routine, found from the loop's scope
     int nint = 0, nstr = 0;
+    std::vector<Stmt*> exits;  // the loop's own `return`s, and the slot that says which ended it (LoopCx)
+    int exitSlot = -1;
     std::vector<std::string> binOps;
     bool usesPrefix = false;
     bool usesMethods = false;
@@ -4435,6 +4457,8 @@ bool Interpreter::tryLoopKernel(Stmt* loop, const std::string& var, long long lo
             lk2->conts = std::move(cx.conts);
             lk2->nint = cx.nint;
             lk2->nstr = cx.nstr;
+            lk2->exits = std::move(cx.exits);
+            lk2->exitSlot = cx.exitSlot;
             lk2->binOps = cc.ops;
             lk2->usesPrefix = cc.prefix;
             lk2->usesMethods = cx.usesMethods;
@@ -4676,6 +4700,7 @@ bool Interpreter::tryLoopKernel(Stmt* loop, const std::string& var, long long lo
             kc.words.add(w.data(), w.size());
         }
     R.cc = &kc;
+    if (L->exitSlot >= 0) fr[L->exitSlot] = 0;
     krun(L->k.body, fr, R);
     if (R.bail) {
         undoContainers(kc);
@@ -4747,6 +4772,8 @@ bool Interpreter::tryLoopKernel(Stmt* loop, const std::string& var, long long lo
             if (const StrBody* b = cells[i]->s.body()) b->nfc.store(snfc[o.slot], std::memory_order_relaxed);
         }
     }
+    // a `return` ended it: the statement runs now, over what was written back
+    if (L->exitSlot >= 0 && fr[L->exitSlot] > 0) exec(L->exits[(size_t)fr[L->exitSlot] - 1], false);
     return true;
 }
 
