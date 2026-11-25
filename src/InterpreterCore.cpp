@@ -30593,13 +30593,14 @@ Value Interpreter::eval(Expr* e) {
                 // the SYNTACTIC forms that cannot be itemized: a hash literal,
                 // a bare `%`-variable, and the `%( … )` / `%$h` contextualizer,
                 // whose whole job is to strip the item. That is the same shape
-                // as the `bareAtVar` rule above. `[f()]` returning a hash still
-                // does not spread where Rakudo would — unchanged from before,
-                // and much narrower than trusting the flag, which spread
-                // `[@r[0]]` and took apart the Perl showcase's frame stack.
-                else if (v.t == VT::Hash && v.hash() && v.hashKind.empty() &&
-                         !v.itemized && l->items.size() == 1 && !l->fromCommaList &&
-                         (it->kind == NK::HashLit ||
+                // as the `bareAtVar` rule above — and a CALL, whose result sits in
+                // no container (as for an Array, callSpread above): `[f()]`,
+                // `[%h.clone]` and `[Map.new(…)]` are their pairs (#283). Trusting
+                // the flag instead spread `[@r[0]]` and took apart the Perl
+                // showcase's frame stack.
+                else if (v.t == VT::Hash && v.hash() && !v.itemized && l->items.size() == 1 && !l->fromCommaList &&
+                         (v.hashKind.empty() || (v.hashKind == "Map" && (it->kind == NK::Call || it->kind == NK::MethodCall))) &&
+                         (it->kind == NK::HashLit || it->kind == NK::Call || it->kind == NK::MethodCall ||
                           (it->kind == NK::Unary && (opEq(static_cast<Unary*>(it.get())->op, "ctx%") ||
                                                      opEq(static_cast<Unary*>(it.get())->op, "decont"))) ||
                           (it->kind == NK::VarExpr &&

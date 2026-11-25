@@ -305,12 +305,12 @@ class Actions {
         else { make $base }
     }
     method modexpr:sym<my>($/) {
-        my @targets = $<lhs> ?? $<lhs>.made !! [ $<one>.made ];
+        my @targets = $<lhs> ?? $<lhs>.made !! [ $<one>.made, ];
         make %( t => 'my', 'our' => False, listform => ?$<lhs>, targets => @targets,
                 rhs => ($<rhs> ?? $<rhs>.made !! Nil) );
     }
     method modexpr:sym<our>($/) {
-        my @targets = $<lhs> ?? $<lhs>.made !! [ $<one>.made ];
+        my @targets = $<lhs> ?? $<lhs>.made !! [ $<one>.made, ];
         make %( t => 'my', 'our' => True, listform => ?$<lhs>, targets => @targets,
                 rhs => ($<rhs> ?? $<rhs>.made !! Nil) );
     }
@@ -878,7 +878,7 @@ sub eval-list($n, $env) {
         when 'list'  { my @out; for @($n<items>) -> $it { @out.append(eval-list($it, $env)) }; return @out }
         when 'var'   {
             given $n<sigil> {
-                when '$' { return [eval-scalar($n, $env)] }
+                when '$' { return [eval-scalar($n, $env),] }
                 when '@' { return get-array($env, $n<name>).Array }
                 when '%' {
                     my %h = get-hash($env, $n<name>);
@@ -901,13 +901,13 @@ sub eval-list($n, $env) {
                 my @out; for ^($count max 0) { @out.append(@l) }
                 return @out;
             }
-            return [eval-scalar($n, $env)];
+            return [eval-scalar($n, $env),];
         }
         when 'bind'   { return arr-of(eval-bind($n, $env, 'list')) }
         when 'rx'     { return arr-of(eval-rx-standalone($n, $env, 'list')) }
         when 'assign' { eval-assign($n, $env); return eval-list-of-assign($n, $env) }
         when 'cond'   { return truthy(eval-scalar($n<cond>, $env)) ?? eval-list($n<then>, $env) !! eval-list($n<else>, $env) }
-        default { return [eval-scalar($n, $env)] }
+        default { return [eval-scalar($n, $env),] }
     }
 }
 sub eval-list-of-assign($n, $env) {
@@ -1264,7 +1264,7 @@ sub rx-compile(Str $pat, Str $flags) {
     %( alt => $alt, ncaps => $st.ncaps );
 }
 sub rx-parse-alt($st) {
-    my @opts = [ rx-parse-seq($st) ];
+    my @opts = [ rx-parse-seq($st), ];   # (one Hash: `[f()]` would spread its pairs)
     while $st.i < $st.n && $st.c[$st.i] eq '|' { $st.i = $st.i + 1; @opts.push(rx-parse-seq($st)) }
     %( k => 'alt', opts => @opts );
 }
