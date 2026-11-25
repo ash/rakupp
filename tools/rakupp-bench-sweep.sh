@@ -1,16 +1,34 @@
 #!/bin/sh
-# rakupp-bench-sweep.sh — measure every released Raku++ build against the Rakudo
-# that was current on its release date, and emit one TSV.
+# rakupp-bench-sweep.sh — re-measure every Raku++ release, every Rakudo release
+# and a sample of mutsu releases on ONE machine in ONE sitting, and emit rows
+# shaped like the raku.online dashboard's data files.
 #
-# Written to be run WITHOUT any assistance, on a machine other than the one of
-# record, so the numbers can be checked independently. Everything it needs is
-# fetched; nothing is installed system-wide; all state lives under --workdir.
+# Written to be run WITHOUT any assistance, on any machine, so the numbers can
+# be checked independently. Everything it needs is fetched; nothing is
+# installed system-wide; all state lives under --workdir.
 #
-#   ./rakupp-bench-sweep.sh                        # Linux/macOS, builds Rakudo
+#   ./rakupp-bench-sweep.sh --dry-run            # print the plan, touch nothing
+#   ./rakupp-bench-sweep.sh                      # Raku++ minors + Rakudo eras
+#   ./rakupp-bench-sweep.sh --mutsu-src=$HOME/mutsu --machine=m4
 #   ./rakupp-bench-sweep.sh --rakudo-mode=single --rakudo=/usr/bin/rakudo
-#   ./rakupp-bench-sweep.sh --kernels=all --workdir=/scratch/sweep
 #
-# Send back:  <workdir>/series.tsv  and  <workdir>/environment.txt
+# What is measured, and how often:
+#   * Raku++: one release per MINOR version (the first released X.Y.Z of each
+#     X.Y; --with-patches adds the rest), lanes `interp` and `--exe` from
+#     tools/run-bench.raku, and `--exe` vs `--exe -O` from
+#     tools/run-optbench.raku. --tag-passes passes, alternating order, minimum.
+#     Rakudo is NOT run per tag (--oracle turns it back on as the correctness
+#     oracle): it ships monthly, so per-tag readings only chart noise.
+#   * Rakudo: once per RELEASE, every release interleaved, RakuAST frontend
+#     only (RAKUDO_RAKUAST=1 before 2026.09, the default from 2026.09). A
+#     release that ignores the variable is measured as it is and its rows say
+#     `legacy`.
+#   * mutsu (opt-in, --mutsu-src): the mutsu tag current at the start of the
+#     series and at each Rakudo release date, plus the newest, each built from
+#     source; interpreted lane only (mutsu has no --exe).
+#
+# Send back: <workdir>/out/*.rows, <workdir>/out/series.tsv and
+#            <workdir>/environment.txt
 set -eu
 
 # ---------------------------------------------------------------- configuration
@@ -18,54 +36,100 @@ REPO_SLUG=ash/rakupp
 REPO_URL=https://github.com/ash/rakupp.git
 RAKUDO_URL=https://github.com/rakudo/rakudo.git
 
-# Pinned so every machine measures IDENTICAL kernel sources. The kernels are
-# taken from this ref for all tags on purpose: varying the workload with the
-# engine would confound engine changes with benchmark changes.
-REPO_REF=v3.23.0
-DRIVER_TAG=v3.23.0          # which released rakupp interprets the harness itself
+# Pinned so every tag runs IDENTICAL kernel sources and harness: varying the
+# workload with the engine would confound engine changes with benchmark changes.
+# The harness of this ref also drives itself (DRIVER_TAG's released binary).
+REPO_REF=v5.11.0
+DRIVER_TAG=v5.11.0
 
 WORKDIR=$(pwd)/rakupp-sweep
-KERNELS=fib,loopsum,strcat  # 'all' = every kernel in tools/bench
+# The dashboard's kernels. 'all' = every tools/bench/*.raku of REPO_REF.
+KERNELS=fib,loopsum,strcat,hash,hashfill,bigint,sortnums,regex,arrayops,streq,startup,sortby,textsplit,arraypush,rats,objects,multiwhere,mainwhen,intcat
 RAKUDO_MODE=source          # source | single
 RAKUDO_SINGLE=
 ONLY_TAGS=                  # comma-separated subset, e.g. v3.22.0,v3.23.0
-PASSES=4                    # interleaved passes for the per-ERA Rakudo measurement
+WITH_PATCHES=0
+TAG_PASSES=2                # passes over the Raku++ tags, alternating order
+PASSES=4                    # interleaved passes for the per-RELEASE Rakudo
+ORACLE=0                    # 1 = run each tag's era Rakudo as the oracle
+WANT_OPT=1                  # the -O lane
+MUTSU_SRC=                  # a mutsu git checkout; empty = no mutsu lane
+MUTSU_TAGS=auto             # auto | comma-separated tags
+MACHINE=                    # label written into the rows, e.g. m4
+DRY_RUN=0
 JOBS=$( (nproc 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 4) )
 
-# tag / release-date / the Rakudo current on that date.
-# Rakudo releases: 2026.06 -> 2026-06-27, 2026.07 -> 2026-07-25, 2026.08 -> 2026-08-22.
-# NOTE the ordering: these are sorted by DATE, and Raku++ version numbers are
-# NOT chronological (v3.14.0 shipped 2026-08-11, v3.5.0 on 2026-08-20). Keep
-# this list in date order; a version sort would scramble the series.
+# Rakudo releases from the start of the series: version, release date. A gap is
+# a gap (there is no 2026.10). Each Raku++ tag belongs to the newest release
+# dated on or before it.
+ERAS='
+2026.06 2026-06-27
+2026.07 2026-07-25
+2026.08 2026-08-22
+2026.09 2026-09-28
+2026.11 2026-11-14
+'
+
+# Every release that ships a binary: tag, GitHub release date, minor|patch.
+# Sorted by DATE: Raku++ version numbers are NOT chronological (v3.14.0 shipped
+# 2026-08-11, v3.5.0 on 2026-08-20); a version sort would scramble the series.
+# `minor` is the first released tag of its X.Y (v0.5.0 and v0.7.0 shipped no
+# binary, so v0.5.1 and v0.7.1 stand for them). v0.1.0, v0.5.0 and v1.1.5 ship
+# no binary at all.
 TAGS='
-v0.5.1  2026-07-13 2026.06
-v0.7.1  2026-07-16 2026.06
-v0.9.0  2026-07-19 2026.06
-v0.9.1  2026-07-20 2026.06
-v1.0.0  2026-07-22 2026.06
-v1.1.0  2026-07-24 2026.06
-v1.2.0  2026-07-26 2026.07
-v1.2.5  2026-07-28 2026.07
-v1.2.6  2026-07-28 2026.07
-v1.5.0  2026-07-28 2026.07
-v1.5.1  2026-07-29 2026.07
-v1.5.2  2026-07-31 2026.07
-v1.7.0  2026-07-31 2026.07
-v1.8.0  2026-08-03 2026.07
-v2.0.0  2026-08-06 2026.07
-v3.0.0  2026-08-08 2026.07
-v3.0.1  2026-08-09 2026.07
-v3.1.0  2026-08-11 2026.07
-v3.14.0 2026-08-11 2026.07
-v3.5.0  2026-08-20 2026.07
-v3.5.1  2026-08-20 2026.07
-v3.6.0  2026-08-21 2026.07
-v3.7.0  2026-08-24 2026.08
-v3.20.0 2026-08-27 2026.08
-v3.20.1 2026-08-27 2026.08
-v3.21.0 2026-08-29 2026.08
-v3.22.0 2026-08-29 2026.08
-v3.23.0 2026-08-29 2026.08
+v0.5.1   2026-07-13 minor
+v0.7.1   2026-07-16 minor
+v0.9.0   2026-07-19 minor
+v0.9.1   2026-07-20 patch
+v1.0.0   2026-07-22 minor
+v1.1.0   2026-07-24 minor
+v1.2.0   2026-07-26 minor
+v1.2.5   2026-07-28 patch
+v1.2.6   2026-07-28 patch
+v1.5.0   2026-07-28 minor
+v1.5.1   2026-07-29 patch
+v1.5.2   2026-07-31 patch
+v1.7.0   2026-07-31 minor
+v1.8.0   2026-08-03 minor
+v2.0.0   2026-08-06 minor
+v3.0.0   2026-08-08 minor
+v3.0.1   2026-08-09 patch
+v3.1.0   2026-08-11 minor
+v3.14.0  2026-08-11 minor
+v3.5.0   2026-08-20 minor
+v3.5.1   2026-08-20 patch
+v3.6.0   2026-08-21 minor
+v3.7.0   2026-08-24 minor
+v3.20.0  2026-08-27 minor
+v3.20.1  2026-08-27 patch
+v3.21.0  2026-08-29 minor
+v3.22.0  2026-08-29 minor
+v3.23.0  2026-08-29 minor
+v3.24.0  2026-09-01 minor
+v3.25.0  2026-09-03 minor
+v3.26.0  2026-09-09 minor
+v3.27.0  2026-09-11 minor
+v3.28.0  2026-09-12 minor
+v4.0.0   2026-09-17 minor
+v4.0.1   2026-09-17 patch
+v5.0.0   2026-09-29 minor
+v5.0.1   2026-09-29 patch
+v5.1.0   2026-09-30 minor
+v5.2.0   2026-10-02 minor
+v5.2.1   2026-10-03 patch
+v5.3.0   2026-10-09 minor
+v5.4.0   2026-10-13 minor
+v5.4.1   2026-10-13 patch
+v5.5.0   2026-10-22 minor
+v5.6.0   2026-11-04 minor
+v5.6.1   2026-11-04 patch
+v5.6.2   2026-11-05 patch
+v5.6.3   2026-11-06 patch
+v5.7.0   2026-11-11 minor
+v5.8.0   2026-11-12 minor
+v5.9.0   2026-11-18 minor
+v5.10.0  2026-11-19 minor
+v5.11.0  2026-11-23 minor
 '
 
 # -------------------------------------------------------------------- arguments
@@ -76,22 +140,82 @@ for arg in "$@"; do
     --rakudo-mode=*)  RAKUDO_MODE=${arg#*=} ;;
     --rakudo=*)       RAKUDO_SINGLE=${arg#*=} ;;
     --repo-ref=*)     REPO_REF=${arg#*=} ;;
+    --driver-tag=*)   DRIVER_TAG=${arg#*=} ;;
     --tags=*)         ONLY_TAGS=${arg#*=} ;;
+    --with-patches)   WITH_PATCHES=1 ;;
+    --tag-passes=*)   TAG_PASSES=${arg#*=} ;;
     --passes=*)       PASSES=${arg#*=} ;;
+    --oracle)         ORACLE=1 ;;
+    --no-opt)         WANT_OPT=0 ;;
+    --mutsu-src=*)    MUTSU_SRC=${arg#*=} ;;
+    --mutsu-tags=*)   MUTSU_TAGS=${arg#*=} ;;
+    --machine=*)      MACHINE=${arg#*=} ;;
     --jobs=*)         JOBS=${arg#*=} ;;
-    -h|--help)        sed -n '2,20p' "$0"; exit 0 ;;
+    --dry-run)        DRY_RUN=1 ;;
+    -h|--help)        sed -n '2,30p' "$0"; exit 0 ;;
     *) echo "unknown argument: $arg" >&2; exit 2 ;;
   esac
 done
 
-if [ -n "$ONLY_TAGS" ]; then
-  TAGS=$(echo "$TAGS" | awk -v want=",$ONLY_TAGS," \
-           '$1 != "" && index(want, "," $1 ",") > 0')
-  [ -n "$TAGS" ] || { echo "ERROR: --tags matched nothing" >&2; exit 2; }
-fi
-
 say() { printf '%s\n' "$*"; }
 die() { printf 'ERROR: %s\n' "$*" >&2; exit 1; }
+
+# era_for DATE -> the newest Rakudo release dated on or before DATE
+era_for() {
+  echo "$ERAS" | awk -v d="$1" '$1 != "" && $2 <= d { e = $1 } END { print e }'
+}
+
+# The selected tags, as "tag date era" lines, in date order.
+if [ -n "$ONLY_TAGS" ]; then
+  SEL=$(echo "$TAGS" | awk -v want=",$ONLY_TAGS," '$1 != "" && index(want, "," $1 ",") > 0')
+  [ -n "$SEL" ] || die "--tags matched nothing"
+elif [ "$WITH_PATCHES" = 1 ]; then
+  SEL=$(echo "$TAGS" | awk '$1 != ""')
+else
+  SEL=$(echo "$TAGS" | awk '$3 == "minor"')
+fi
+SEL=$(echo "$SEL" | while read -r tag date kind; do
+  [ -z "$tag" ] && continue
+  printf '%s %s %s\n' "$tag" "$date" "$(era_for "$date")"
+done)
+NSEL=$(echo "$SEL" | grep -c .)
+
+# The eras any selected tag falls in, oldest first; every one is measured.
+USED_ERAS=$(echo "$SEL" | awk '{print $3}' | awk '!seen[$0]++')
+
+# The mutsu tags: explicit, or the newest tag dated on or before the first
+# Raku++ tag and each Rakudo release date, plus the newest tag of all.
+mutsu_pick() {
+  [ -n "$MUTSU_SRC" ] || return 0
+  if [ "$MUTSU_TAGS" != auto ]; then echo "$MUTSU_TAGS" | tr ',' '\n'; return 0; fi
+  list=$(git -C "$MUTSU_SRC" tag --sort=creatordate --format='%(creatordate:short) %(refname:short)')
+  first=$(echo "$SEL" | awk 'NR == 1 {print $2}')
+  { echo "$first"
+    echo "$ERAS" | awk -v f="$first" '$1 != "" && $2 > f {print $2}'
+    echo 9999-12-31
+  } | while read -r d; do
+    echo "$list" | awk -v d="$d" '$1 <= d { t = $2 } END { if (t != "") print t }'
+  done | awk '!seen[$0]++'
+}
+
+if [ "$DRY_RUN" = 1 ]; then
+  say "DRY RUN — nothing is fetched, built or timed."
+  say "kernels ref / driver : $REPO_REF / $DRIVER_TAG"
+  say "kernels              : $KERNELS"
+  say "Raku++ tags ($NSEL)  : $TAG_PASSES passes, -O lane $( [ "$WANT_OPT" = 1 ] && echo on || echo off ), oracle $( [ "$ORACLE" = 1 ] && echo on || echo off )"
+  echo "$SEL" | awk '{ printf "  %-8s %s  rakudo %s\n", $1, $2, $3 }'
+  if [ "$RAKUDO_MODE" = single ]; then
+    say "Rakudo               : single build $RAKUDO_SINGLE, RakuAST, $PASSES passes"
+  else
+    say "Rakudo releases      : $(echo $USED_ERAS), built from source, RakuAST, $PASSES passes"
+  fi
+  if [ -n "$MUTSU_SRC" ]; then
+    say "mutsu tags           : $(mutsu_pick | tr '\n' ' ')(from $MUTSU_SRC)"
+  else
+    say "mutsu                : skipped (no --mutsu-src)"
+  fi
+  exit 0
+fi
 
 # ------------------------------------------------------------ platform / assets
 OS=$(uname -s)
@@ -123,6 +247,10 @@ if [ "$RAKUDO_MODE" = source ]; then
    Alternative: --rakudo-mode=single --rakudo=/path/to/raku"
   done
 fi
+if [ -n "$MUTSU_SRC" ]; then
+  [ -d "$MUTSU_SRC/.git" ] || die "--mutsu-src is not a git checkout: $MUTSU_SRC"
+  command -v cargo >/dev/null 2>&1 || die "missing 'cargo', required to build mutsu"
+fi
 
 mkdir -p "$WORKDIR"
 cd "$WORKDIR"
@@ -135,27 +263,42 @@ if [ ! -d repo ]; then
   git clone --quiet --depth 1 --branch "$REPO_REF" "$REPO_URL" repo
 fi
 HARNESS=$WORKDIR/repo/tools/run-bench.raku
+OPTHARNESS=$WORKDIR/repo/tools/run-optbench.raku
 [ -f "$HARNESS" ] || die "harness not found at $HARNESS"
+[ "$WANT_OPT" = 0 ] || [ -f "$OPTHARNESS" ] || die "-O harness not found at $OPTHARNESS"
+if [ "$KERNELS" = all ]; then
+  KERNELS=$(ls "$WORKDIR/repo/tools/bench"/*.raku | sed 's|.*/||; s|\.raku$||' | tr '\n' ',' | sed 's/,$//')
+fi
+OPTPROGS=$(ls "$WORKDIR/repo/tools/optbench"/*.raku 2>/dev/null | sed 's|.*/||; s|\.raku$||' | tr '\n' ',' | sed 's/,$//')
+say "kernels : $KERNELS"
+[ "$WANT_OPT" = 1 ] && say "-O progs: $OPTPROGS"
 
 # ------------------------------------------------------- Raku++ release binaries
 # GitHub release download URLs are predictable, so no API calls or JSON parsing.
+# The .sha256 published beside each archive is checked before unpacking.
+sha_of() { if command -v shasum >/dev/null 2>&1; then shasum -a 256 "$1"; else sha256sum "$1"; fi | awk '{print $1}'; }
 fetch_tag() {
   tag=$1
   [ -x "$WORKDIR/rakupp/$tag/bin/rakupp" ] && return 0
-  mkdir -p "$WORKDIR/rakupp/$tag"
+  d=$WORKDIR/rakupp/$tag
+  mkdir -p "$d"
   url="https://github.com/$REPO_SLUG/releases/download/$tag/$ASSET"
-  curl -fsSL "$url" -o "$WORKDIR/rakupp/$tag/asset.tar.gz" \
-    || { echo "  $tag: download FAILED" >&2; return 1; }
-  tar xzf "$WORKDIR/rakupp/$tag/asset.tar.gz" -C "$WORKDIR/rakupp/$tag" --strip-components=1
-  rm -f "$WORKDIR/rakupp/$tag/asset.tar.gz"
-  [ -x "$WORKDIR/rakupp/$tag/bin/rakupp" ] || { echo "  $tag: no bin/rakupp" >&2; return 1; }
+  curl -fsSL "$url" -o "$d/asset.tar.gz" || { echo "  $tag: download FAILED" >&2; return 1; }
+  if curl -fsSL "$url.sha256" -o "$d/asset.sha256" 2>/dev/null; then
+    want=$(awk '{print $1; exit}' "$d/asset.sha256")
+    [ "$want" = "$(sha_of "$d/asset.tar.gz")" ] || { echo "  $tag: sha256 MISMATCH" >&2; rm -f "$d/asset.tar.gz"; return 1; }
+  fi
+  tar xzf "$d/asset.tar.gz" -C "$d" --strip-components=1
+  rm -f "$d/asset.tar.gz" "$d/asset.sha256"
+  [ -x "$d/bin/rakupp" ] || { echo "  $tag: no bin/rakupp" >&2; return 1; }
 }
 
 say "fetching Raku++ release binaries ..."
-echo "$TAGS" | while read -r tag date era; do
-  [ -z "$tag" ] && continue
+{ echo "$SEL"; echo "$DRIVER_TAG"; } | awk '!seen[$1]++ {print $1}' | while read -r tag; do
   fetch_tag "$tag" && printf '  %-8s ok\n' "$tag"
 done
+DRIVER=$WORKDIR/rakupp/$DRIVER_TAG/bin/rakupp
+[ -x "$DRIVER" ] || die "driver rakupp missing: $DRIVER"
 
 # ------------------------------------------------------------------- the Rakudo
 # On x86_64 MoarVM has its JIT; on arm64 it compiles src/jit/stub.o and has NO
@@ -192,46 +335,68 @@ if [ "$RAKUDO_MODE" = single ]; then
   say "  NOTE: not era-matched; the rakudo column is then a constant reference,"
   say "  not the engine each release was compared against at the time."
 else
-  for v in $(echo "$TAGS" | awk '$3 != "" {print $3}' | sort -u); do build_rakudo "$v"; done
+  for v in $USED_ERAS; do build_rakudo "$v"; done
+fi
+
+# ------------------------------------------------------------------------ mutsu
+# Built from a clone of --mutsu-src, never in it: the user's checkout keeps its
+# branch and its target/. One shared target/ keeps the per-tag builds incremental.
+MUTSU_LIST=$(mutsu_pick)
+if [ -n "$MUTSU_SRC" ]; then
+  [ -d mutsu-src ] || git clone --quiet "$MUTSU_SRC" mutsu-src
+  git -C mutsu-src fetch --quiet --tags "$MUTSU_SRC"
+  for mt in $MUTSU_LIST; do
+    out=$WORKDIR/mutsu/$mt/mutsu
+    [ -x "$out" ] && continue
+    say "building mutsu $mt ..."
+    mkdir -p "$WORKDIR/mutsu/$mt"
+    if ( cd mutsu-src && git clean -qxdf -e target && git checkout -q "$mt" \
+         && cargo build --release > "$WORKDIR/mutsu/$mt/build.log" 2>&1 ); then
+      cp mutsu-src/target/release/mutsu "$out"
+    else
+      say "  mutsu $mt: build FAILED (see $WORKDIR/mutsu/$mt/build.log), skipped"
+    fi
+  done
 fi
 
 # ----------------------------------------------------------------- environment
+# Which frontend a Rakudo compiles with: RakuAST's compilation unit answers
+# RakuAST::CompUnit at BEGIN time; the legacy frontend has no $*CU.
+frontend_of() {
+  RAKUDO_RAKUAST=1 "$1" -e 'BEGIN print (try $*CU.^name) // "legacy"' 2>/dev/null \
+    | grep -q '^RakuAST::CompUnit$' && echo rakuast || echo legacy
+}
 {
   say "date          : $(date -u '+%Y-%m-%dT%H:%M:%SZ')"
   say "os / arch     : $OS / $ARCH"
   say "cpu           : $( (sysctl -n machdep.cpu.brand_string 2>/dev/null) \
                        || (grep -m1 'model name' /proc/cpuinfo 2>/dev/null | cut -d: -f2-) \
                        || echo unknown)"
+  say "model         : $( (sysctl -n hw.model 2>/dev/null) || echo unknown)"
+  say "machine label : ${MACHINE:-(none)}"
   say "cores         : $JOBS"
   say "compiler      : $($CXX --version 2>&1 | head -1)"
   say "kernels ref   : $REPO_REF"
   say "driver rakupp : $DRIVER_TAG"
+  say "tags          : $NSEL ($( [ "$WITH_PATCHES" = 1 ] && echo 'minors and patches' || echo 'minors' )), $TAG_PASSES passes"
   say "rakudo mode   : $RAKUDO_MODE"
-  for v in 2026.06 2026.07 2026.08; do
-    p=$WORKDIR/rakudo-$v/bin/rakudo
-    [ -x "$p" ] && say "rakudo $v : $("$p" --version 2>&1 | head -1)"
+  for v in $USED_ERAS; do
+    p=$(rakudo_for "$v")
+    [ -x "$p" ] || command -v "$p" >/dev/null 2>&1 || continue
+    say "rakudo $v : $("$p" --version 2>&1 | head -1)  [frontend $(frontend_of "$p")]"
   done
-  [ "$RAKUDO_MODE" = single ] && say "rakudo single : $("$RAKUDO_SINGLE" --version 2>&1 | head -1)"
+  for mt in $MUTSU_LIST; do
+    [ -x "$WORKDIR/mutsu/$mt/mutsu" ] && say "mutsu $mt   : $("$WORKDIR/mutsu/$mt/mutsu" --version 2>&1 | head -1)"
+  done
   say "load          : $(uptime)"
 } > "$WORKDIR/environment.txt"
 cat "$WORKDIR/environment.txt"
-
-# ---------------------------------------------------------------------- kernels
-if [ "$KERNELS" = all ]; then
-  KERNELS=$(ls "$WORKDIR/repo/tools/bench"/*.raku | sed 's|.*/||; s|\.raku$||' | tr '\n' ',' | sed 's/,$//')
-fi
-say "kernels: $KERNELS"
 
 # ------------------------------------------------------------- repeatability
 # Nine consecutive runs of one kernel. max/min is the honest noise figure for
 # this box; the reference machine reads ~1.03 when quiet. Record it either way:
 # a sweep whose noise floor is unknown cannot be compared with another machine's.
-DRIVER=$WORKDIR/rakupp/$DRIVER_TAG/bin/rakupp
-[ -x "$DRIVER" ] || die "driver rakupp missing: $DRIVER"
 say "repeatability probe ..."
-# Timed by rakupp itself rather than the shell: 'date +%s%N' is a GNU extension
-# and yields nothing usable on BSD/macOS, and this way the probe uses the same
-# clock the harness does.
 cat > "$WORKDIR/probe.raku" <<'PROBE_EOF'
 my $bin    = @*ARGS[0];
 my $kernel = @*ARGS[1];
@@ -243,115 +408,177 @@ for ^9 {
 }
 printf "%.3f (min %.1fms max %.1fms)\n", @r.max / @r.min, @r.min, @r.max;
 PROBE_EOF
-PROBE=$("$DRIVER" "$WORKDIR/probe.raku" "$DRIVER" "$WORKDIR/repo/tools/bench/hash.raku" 2>/dev/null || echo "n/a")
-say "  max/min = $PROBE"
-echo "probe         : $PROBE" >> "$WORKDIR/environment.txt"
+probe() {
+  P=$("$DRIVER" "$WORKDIR/probe.raku" "$DRIVER" "$WORKDIR/repo/tools/bench/hash.raku" 2>/dev/null || echo "n/a")
+  say "  max/min = $P"
+  echo "probe ($1) : $P" >> "$WORKDIR/environment.txt"
+}
+probe start
 
-# ------------------------------------------------------------------- the sweep
-mkdir -p "$WORKDIR/tsv" "$WORKDIR/logs"
-say "sweeping ..."
-echo "$TAGS" | while read -r tag date era; do
-  [ -z "$tag" ] && continue
-  RK=$WORKDIR/rakupp/$tag/bin/rakupp
-  RD=$(rakudo_for "$era")
-  [ -x "$RK" ] || { say "  SKIP $tag (no binary)"; continue; }
-  [ -x "$RD" ] || command -v "$RD" >/dev/null 2>&1 || { say "  SKIP $tag (no rakudo $era)"; continue; }
-  t0=$(date +%s)
-  RAKUPP=$RK RAKUDO=$RD "$DRIVER" "$HARNESS" \
-      --tsv="$WORKDIR/tsv/$tag.tsv" --only="$KERNELS" \
-      > "$WORKDIR/logs/$tag.log" 2>&1 || true   # exit 1 = output mismatch, recorded in the TSV
-  printf '  %-8s rakudo %s  %ss\n' "$tag" "$era" "$(( $(date +%s) - t0 ))"
-  # the harness does not unlink its --exe output; 28 tags x N kernels would pile up
-  rm -f /tmp/rakupp-bench-* 2>/dev/null || true
+# -------------------------------------------------------- the Raku++ sweep
+# Pass 1 runs the tags oldest first, pass 2 newest first, and so on, so a drift
+# in the machine over the hours does not lean the series one way.
+mkdir -p "$WORKDIR/tsv" "$WORKDIR/logs" "$WORKDIR/out"
+NOEXE=$WORKDIR/no-rakudo   # a RAKUDO that is not Rakudo: the harness skips that lane
+say "sweeping $NSEL tags, $TAG_PASSES passes ..."
+p=1
+while [ "$p" -le "$TAG_PASSES" ]; do
+  if [ $((p % 2)) = 1 ]; then ORDER=$SEL; else ORDER=$(echo "$SEL" | awk '{a[NR]=$0} END {for (i=NR;i>0;i--) print a[i]}'); fi
+  echo "$ORDER" | while read -r tag date era; do
+    [ -z "$tag" ] && continue
+    RK=$WORKDIR/rakupp/$tag/bin/rakupp
+    [ -x "$RK" ] || { say "  SKIP $tag (no binary)"; continue; }
+    RD=$NOEXE
+    [ "$ORACLE" = 1 ] && RD=$(rakudo_for "$era")
+    t0=$(date +%s)
+    RAKUDO_RAKUAST=1 RAKUPP=$RK RAKUDO=$RD "$DRIVER" "$HARNESS" \
+        --tsv="$WORKDIR/tsv/$tag.k$p.tsv" --only="$KERNELS" --no-mutsu --no-cnp \
+        > "$WORKDIR/logs/$tag.k$p.log" 2>&1 || true   # exit 1 = output mismatch, recorded in the TSV
+    if [ "$WANT_OPT" = 1 ]; then
+      RAKUDO_RAKUAST=1 RAKUPP=$RK RAKUDO=$RD "$DRIVER" "$OPTHARNESS" \
+          --tsv="$WORKDIR/tsv/$tag.o$p.tsv" \
+          > "$WORKDIR/logs/$tag.o$p.log" 2>&1 || true
+    fi
+    printf '  pass %s  %-8s %ss\n' "$p" "$tag" "$(( $(date +%s) - t0 ))"
+    # the harness does not unlink its --exe output; N tags x M kernels would pile up
+    rm -f /tmp/rakupp-bench-* 2>/dev/null || true
+  done
+  p=$((p + 1))
 done
+probe "after tags"
 
-# ----------------------------------------------------------------- aggregation
-OUT=$WORKDIR/series.tsv
-printf 'tag\tdate\trakudo\tkernel\tinterp_min\tinterp_med\tnative_min\tnative_med\trakudo_min\trakudo_med\tflags\n' > "$OUT"
-echo "$TAGS" | while read -r tag date era; do
-  [ -z "$tag" ] && continue
-  f=$WORKDIR/tsv/$tag.tsv
-  [ -f "$f" ] || continue
-  # Resolve columns by HEADER NAME, never by position: the harness grew a mutsu
-  # lane after v3.23.0, so rakudo_min_ms is field 6 with a v3.23.0-pinned
-  # harness and field 8 with a newer one. Hardcoding positions silently
-  # produced zero rows.
-  awk -F'\t' -v tag="$tag" -v date="$date" -v era="$era" '
-    /^#/ { next }
-    $1 == "kernel" { for (i = 1; i <= NF; i++) col[$i] = i; hdr = 1; next }
-    hdr {
-      printf "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n",
-             tag, date, era, $1,
-             g("interp_min_ms"), g("interp_med_ms"),
-             g("native_min_ms"), g("native_med_ms"),
-             g("rakudo_min_ms"), g("rakudo_med_ms"), g("flags")
-    }
-    function g(n) { return (n in col) ? $(col[n]) : "" }
-  ' "$f" >> "$OUT"
-done
+# ------------------------------------------------------------- the mutsu sweep
+# The same harness, its interp lane (the driver) riding along and discarded.
+if [ -n "$MUTSU_LIST" ]; then
+  say "sweeping mutsu: $(echo $MUTSU_LIST) ..."
+  p=1
+  while [ "$p" -le "$TAG_PASSES" ]; do
+    for mt in $MUTSU_LIST; do
+      MB=$WORKDIR/mutsu/$mt/mutsu
+      [ -x "$MB" ] || continue
+      t0=$(date +%s)
+      MUTSU=$MB RAKUPP=$DRIVER RAKUDO=$NOEXE "$DRIVER" "$HARNESS" \
+          --tsv="$WORKDIR/tsv/mutsu-$mt.m$p.tsv" --only="$KERNELS" --no-native --no-cnp \
+          > "$WORKDIR/logs/mutsu-$mt.m$p.log" 2>&1 || true
+      printf '  pass %s  mutsu %-8s %ss\n' "$p" "$mt" "$(( $(date +%s) - t0 ))"
+    done
+    p=$((p + 1))
+  done
+fi
 
 # ---------------------------------------------- Rakudo, once per RAKUDO release
-# The sweep above measures the rakudo lane once per RAKU++ tag, because the
-# harness needs it as the correctness oracle. Those numbers must NOT be charted:
-# Rakudo ships monthly, so it cannot change between two Raku++ tags cut on the
-# same day, and every difference in that column is run-to-run noise. On the
-# reference machine it wobbled up to 19% on sortby (whose Rakudo lane is bimodal
-# there, ~168/198ms) and 2-10% elsewhere.
-#
-# So measure each Rakudo ONCE, properly, and key it by DATE: 20 timed runs after
-# a discarded warm-up, every era interleaved inside each round, $PASSES such
-# passes, and the minimum across all of them. Two passes is not enough and not
-# a check either — run as sequential blocks they track the machine's drift and
-# disagreed by up to 10% on the reference machine. Convergence is reported
-# below: compare the first half of the passes against the second.
-ERAS_OUT=$WORKDIR/rakudo-eras.tsv
-say ""
-say "measuring Rakudo once per release ($PASSES interleaved passes) ..."
-{
-  echo 'my $out = @*ARGS[0]; my $passes = +@*ARGS[1]; my @kernels = @*ARGS[2].split(",");'
-  echo 'my @eras; for @*ARGS[3..*] -> $spec { my ($n, $p) = $spec.split("="); @eras.push: { name => $n, path => $p } }'
-  echo 'sub t($b, $k) { my $t0 = now; run($b, $k, :out, :err).out.slurp(:close); (now - $t0) * 1000 }'
-  echo 'my %best; my %half;'
-  echo 'for ^$passes -> $pass {'
-  echo '  for @kernels -> $k {'
-  echo '    my $path = "REPO/tools/bench/$k.raku";'
-  echo '    for ^21 -> $r {'
-  echo '      for @eras -> %e {'
-  echo '        my $ms = t(%e<path>, $path);'
-  echo '        next if $r == 0;'
-  echo '        my $key = %e<name> ~ "\t" ~ $k;'
-  echo '        %best{$key} = $ms if !(%best{$key}:exists) || $ms < %best{$key};'
-  echo '        my $h = $pass < $passes / 2 ?? "A" !! "B";'
-  echo '        %half{$h}{$key} = $ms if !(%half{$h}{$key}:exists) || $ms < %half{$h}{$key};'
-  echo '      }'
-  echo '    }'
-  echo '  }'
-  echo '  note "  pass {$pass + 1}/$passes done";'
-  echo '}'
-  echo 'my $fh = $out.IO.open(:w);'
-  echo '$fh.say: "era\tkernel\tms\tconverge_pct";'
-  echo 'my $worst = 0;'
-  echo 'for %best.keys.sort -> $key {'
-  echo '  my $a = %half<A>{$key} // %best{$key}; my $b = %half<B>{$key} // %best{$key};'
-  echo '  my $d = ((($a max $b) / ($a min $b)) - 1) * 100;'
-  echo '  $worst = $d if $d > $worst;'
-  echo '  $fh.say: ($key, sprintf("%.1f", %best{$key}), sprintf("%.1f", $d)).join("\t");'
-  echo '}'
-  echo '$fh.close;'
-  echo 'printf "  halves agree to within %.1f%% (>2%% means the floor has NOT converged)\n", $worst;'
-} | sed "s#REPO#$WORKDIR/repo#" > "$WORKDIR/eras.raku"
+# Rakudo ships monthly, so it cannot change between two Raku++ tags of the same
+# month: measure each release ONCE, properly, and key it by DATE. Every release
+# is interleaved inside each round; $PASSES passes; minimum across all of them.
+# A file whose warm-up takes over 2 s gets 6 timed rounds instead of 20 (intcat
+# is ~7 s a run). Convergence is reported: first half of the passes vs second.
+cat > "$WORKDIR/eras.raku" <<'ERAS_EOF'
+my ($out, $passes, $machine, $repo, $klist, $olist) = @*ARGS[^6];
+$passes = +$passes;
+my @specs = @*ARGS[6..*];
+my @files = |$klist.split(',').grep(*.chars).map({ %(suite => 'kernel',   name => $_, path => "$repo/tools/bench/$_.raku") }),
+            |$olist.split(',').grep(*.chars).map({ %(suite => 'optbench', name => $_, path => "$repo/tools/optbench/$_.raku") });
+my %env = %*ENV; %env<RAKUDO_RAKUAST> = '1';
+my @eras = @specs.map: { my ($n, $d, $p, $m) = .split('='); %(name => $n, date => $d, path => $p, mode => $m) };
+sub t($b, $f) { my $t0 = now; run($b, $f, :out, :err, :%env).out.slurp(:close); (now - $t0) * 1000 }
+my (%best, %half);
+for ^$passes -> $pass {
+    my $h = $pass < $passes / 2 ?? 'A' !! 'B';
+    for @files -> %f {
+        my $warm = @eras.map({ t(.<path>, %f<path>) }).max;
+        my $rounds = $warm > 2000 ?? 6 !! 20;
+        for ^$rounds {
+            for @eras -> %e {
+                my $ms  = t(%e<path>, %f<path>);
+                my $key = (%e<name>, %f<suite>, %f<name>).join("\t");
+                %best{$key}     = $ms if !(%best{$key}:exists)     || $ms < %best{$key};
+                %half{$h}{$key} = $ms if !(%half{$h}{$key}:exists) || $ms < %half{$h}{$key};
+            }
+        }
+    }
+    note "  Rakudo pass {$pass + 1}/$passes done";
+}
+my %era = @eras.map({ .<name> => $_ });
+my $k = "$out/rakudo-eras.rows".IO.open(:w);
+my $o = "$out/rakudo-optbench.rows".IO.open(:w);
+my $c = "$out/rakudo-converge.tsv".IO.open(:w);
+$c.say: "era\tsuite\tname\tms\tconverge_pct";
+my $worst = 0;
+for %best.keys.sort -> $key {
+    my ($e, $suite, $name) = $key.split("\t");
+    my $a = %half<A>{$key} // %best{$key}; my $b = %half<B>{$key} // %best{$key};
+    my $d = ((($a max $b) / ($a min $b)) - 1) * 100;
+    $worst = $d if $d > $worst;
+    my @row = $e, %era{$e}<date>, $name, sprintf('%.1f', %best{$key}), %era{$e}<mode>;
+    @row.push: $machine if $machine;
+    ($suite eq 'kernel' ?? $k !! $o).say: @row.join("\t");
+    $c.say: ($key, sprintf('%.1f', %best{$key}), sprintf('%.1f', $d)).join("\t");
+}
+.close for $k, $o, $c;
+printf "  halves agree to within %.1f%% (>2%% means the floor has NOT converged)\n", $worst;
+ERAS_EOF
 
+say ""
+say "measuring Rakudo once per release ($PASSES interleaved passes, RakuAST) ..."
 ERA_ARGS=""
-for v in $(echo "$TAGS" | awk '$3 != "" {print $3}' | sort -u); do
+for v in $USED_ERAS; do
   rp=$(rakudo_for "$v")
   [ -x "$rp" ] || command -v "$rp" >/dev/null 2>&1 || continue
-  ERA_ARGS="$ERA_ARGS $v=$rp"
+  mode=$(frontend_of "$rp")
+  [ "$mode" = rakuast ] || say "  NOTE: Rakudo $v ignores RAKUDO_RAKUAST=1; its rows say legacy"
+  ERA_ARGS="$ERA_ARGS $v=$(echo "$ERAS" | awk -v v="$v" '$1 == v {print $2}')=$rp=$mode"
 done
+OPTARG=""
+[ "$WANT_OPT" = 1 ] && OPTARG=$OPTPROGS
 # shellcheck disable=SC2086
-"$DRIVER" "$WORKDIR/eras.raku" "$ERAS_OUT" "$PASSES" "$KERNELS" $ERA_ARGS
+"$DRIVER" "$WORKDIR/eras.raku" "$WORKDIR/out" "$PASSES" "$MACHINE" "$WORKDIR/repo" "$KERNELS" "$OPTARG" $ERA_ARGS
+probe end
+
+# ----------------------------------------------------------------- aggregation
+# Columns are resolved by HEADER NAME, never by position: the harness's TSV has
+# grown lanes over time. The figure is the minimum across passes; a cell a
+# pass left empty (lane did not run) does not count.
+OUT=$WORKDIR/out
+agg() {   # agg KIND FILE-GLOB-PREFIX LABEL DATE  — prints "label date name lane ms flags"
+  kind=$1 pre=$2 label=$3 date=$4
+  for f in "$WORKDIR/tsv/$pre"*.tsv; do
+    [ -f "$f" ] || continue
+    awk -F'\t' -v kind="$kind" -v label="$label" -v date="$date" '
+      /^#/ { next }
+      ($1 == "kernel" || $1 == "program") { for (i = 1; i <= NF; i++) col[$i] = i; hdr = 1; next }
+      hdr {
+        if (kind == "k") { p("interp", g("interp_min_ms")); p("native", g("native_min_ms")) }
+        if (kind == "o") { p("exe", g("exe_ms")); p("opt", g("opt_ms")) }
+        if (kind == "m") { p("mutsu", g("mutsu_min_ms")) }
+      }
+      function g(n) { return (n in col) ? $(col[n]) : "" }
+      function p(lane, v) { if (v != "") printf "%s\t%s\t%s\t%s\t%s\t%s\n", label, date, $1, lane, v, g("flags") }
+    ' "$f"
+  done | awk -F'\t' '{ k = $1 FS $2 FS $3 FS $4; if (!(k in m) || $5 + 0 < m[k] + 0) { m[k] = $5; fl[k] = $6 } }
+                     END { for (k in m) print k "\t" m[k] "\t" fl[k] }' | sort
+}
+: > "$OUT/series.tsv.tmp"; : > "$OUT/optbench.tmp"; : > "$OUT/mutsu.tmp"
+echo "$SEL" | while read -r tag date era; do
+  [ -z "$tag" ] && continue
+  agg k "$tag.k" "$tag" "$date" >> "$OUT/series.tsv.tmp"
+  agg o "$tag.o" "$tag" "$date" >> "$OUT/optbench.tmp"
+done
+for mt in $MUTSU_LIST; do
+  mdate=$(git -C "$WORKDIR/mutsu-src" log -1 --format=%cs "$mt" 2>/dev/null || echo "")
+  agg m "mutsu-$mt.m" "$mt" "$mdate" >> "$OUT/mutsu.tmp"
+done
+M=""; [ -n "$MACHINE" ] && M="	$MACHINE"
+{ printf 'tag\tdate\tname\tlane\tmin_ms\tflags\n'; cat "$OUT/series.tsv.tmp" "$OUT/optbench.tmp"; } > "$OUT/series.tsv"
+# Rows in the dashboard's own shapes (bench-backfill.tsv, optbench-m4.tsv):
+awk -F'\t' -v m="$M" '{ print $1 "\t" $3 "\t" $4 "\t" $5 m }' "$OUT/series.tsv.tmp" > "$OUT/kernels.rows"
+awk -F'\t'           '{ print $1 "\t" $3 "\t" $4 "\t" $5 }'   "$OUT/optbench.tmp"   > "$OUT/optbench.rows"
+awk -F'\t' -v m="$M" '{ print $1 "\t" $2 "\t" $3 "\t" $5 m }' "$OUT/mutsu.tmp"      > "$OUT/mutsu.rows"
+rm -f "$OUT/series.tsv.tmp" "$OUT/optbench.tmp" "$OUT/mutsu.tmp"
 
 say ""
-say "done."
-say "  $(( $(wc -l < "$OUT") - 1 )) rows -> $OUT   (per-tag; rakudo column is ORACLE ONLY)"
-say "  $(( $(wc -l < "$ERAS_OUT") - 1 )) rows -> $ERAS_OUT   (the rakudo reference, one per release)"
-say "send back: $OUT, $ERAS_OUT and $WORKDIR/environment.txt"
+say "done. In $OUT:"
+for f in kernels.rows optbench.rows mutsu.rows rakudo-eras.rows rakudo-optbench.rows; do
+  if [ -f "$OUT/$f" ]; then printf '  %-22s %s rows\n' "$f" "$(grep -c . "$OUT/$f" || true)"; fi
+done
+say "  flags (output mismatches, did-not-run) are in series.tsv's last column."
+say "send back: $OUT and $WORKDIR/environment.txt"
