@@ -985,6 +985,26 @@ static void refuseNumericOnCode(Interpreter& I, const Value& inv, const std::str
                       "No such method '" + m + "' for invocant of type '" + inv.typeName() + "'");
 }
 
+// The IO::Path methods the string-as-path arms below answer, and the values
+// that are never a path: numbers, Bools, plain Lists and Hashes, code, and a
+// user object with no IO:: class in its chain (#275)
+static const std::set<std::string> kPathOnly = {
+    "add", "child", "sibling", "parent", "basename", "extension", "resolve", "relative",
+    "absolute", "is-absolute", "is-relative", "parts", "dirname", "volume", "cleanup", "open"};
+static bool pathlessValue(const Value& v) {
+    switch (v.t) {
+    case VT::Int: case VT::Num: case VT::Rat: case VT::Complex: case VT::Bool: case VT::Code: case VT::Pair:
+        return true;
+    case VT::Array: case VT::Hash: return v.hashKind.empty();
+    case VT::Object:
+        if (!v.obj() || !v.obj()->cls) return false;
+        for (const ClassInfo* c = v.obj()->cls.get(); c; c = c->parent.get())
+            if (c->name.rfind("IO::", 0) == 0 || !c->extraParents.empty()) return false;
+        return true;
+    default: return false;
+    }
+}
+
 // A Blob is not a Str: `Buf.new(1).uc` has no such method (Rakudo), where the
 // Str arms below read the bytes as text and answered "\x[1]" (and `uc($buf)`,
 // the sub being the method). These are the methods Rakudo's Str has and its
@@ -2607,6 +2627,12 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
                         "' for invocant of type '" +
                         (inv.t == VT::Type ? inv.s.copyText() : std::string("Any")) + "'"};
     }
+    // …and a DEFINED value that is no Str and no path has none of them either:
+    // `42.add('x')` stringified 42 into a path, and a user object's `.open`
+    // opened its `C<139…>` gist (#275). A Str stays a path on purpose (above).
+    if (kPathOnly.count(m) && pathlessValue(inv))
+        throwTypedV("X::Method::NotFound", {{"method", Value::str(m)}, {"typename", Value::str(inv.typeName())},
+                    {"private", Value::boolean(false)}}, "No such method '" + (const std::string&)m + "' for invocant of type '" + inv.typeName() + "'");
     // a PIPE has no path: `.IO` is the IO::Path type object, and `.Str` is ""
     if ((m == "IO" || m == "Str") && args.empty() && inv.t == VT::Hash &&
         inv.hashKind == "FileHandle" && inv.hash() && inv.hash()->count("proc-owner"))
