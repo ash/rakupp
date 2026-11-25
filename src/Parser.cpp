@@ -13484,6 +13484,9 @@ StmtPtr Parser::parseEnum() {
         for (auto& it : static_cast<ArrayLit*>(ed->values.get())->items) {
             if (it->kind == NK::StrLit)
                 member(static_cast<StrLit*>(it.get())->v);
+            // a colonpair word sets a member's value: `<< :one(1) two three >>`
+            else if (it->kind == NK::Pair && !static_cast<PairExpr*>(it.get())->keyExpr)
+                member(static_cast<PairExpr*>(it.get())->key);
             else { declTypesOpaque_ = true; break; }
         }
     }
@@ -13493,8 +13496,11 @@ StmtPtr Parser::parseEnum() {
     else if (ed->values && ed->values->kind == NK::ListExpr) {
         for (auto& it : static_cast<ListExpr*>(ed->values.get())->items) {
             if (!it) continue;
+            std::string text;   // `"two"` is an InterpStr of one literal run
             if (it->kind == NK::StrLit)
                 member(static_cast<StrLit*>(it.get())->v);
+            else if (it->kind == NK::InterpStr && interpStaticText(it.get(), text))
+                member(text);
             else if (it->kind == NK::Pair && !static_cast<PairExpr*>(it.get())->keyExpr)
                 member(static_cast<PairExpr*>(it.get())->key);
             else if (it->kind == NK::NameTerm) continue;
