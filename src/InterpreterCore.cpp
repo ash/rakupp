@@ -25061,7 +25061,9 @@ Value Interpreter::evalUnary(Unary* u) {
                 if (v.arr()) *a.arr() = *v.arr();
                 return a;
             }
-            if (v.t == VT::Any || v.t == VT::Nil) { Value a = Value::array(); a.isList = true; return a; } // @<undefined> = ()
+            // an undefined item is ONE item, as any scalar is: `my $x; @$x` and a missed
+            // `@(%h<k>)` are `(Any,)`, a missing capture's `@<x>` is `(Nil,)` (#266)
+            if (v.t == VT::Any || v.t == VT::Nil) { Value a = Value::array(); a.isList = true; a.arr()->push_back(v); return a; }
             // an object that IS an array (`class Vector is Array`): its elements,
             // unless its class says how it lists
             if (v.t == VT::Object && v.obj() && v.obj()->hasBoxed && v.obj()->boxed().t == VT::Array &&
