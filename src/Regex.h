@@ -823,8 +823,11 @@ public:
     const NameMeta& nameMeta(const std::string& name);      // cached per-name metadata (see GrammarRuleMeta)
     // The LTM expansion route for this grammar's rules (see LtmExpand::grammar):
     // 0 refuse, 1 = regexOut is the rule's compiled no-arg body, 2 = <ws>,
-    // 3 = a single-char builtin class in flagOut.
+    // 3 = a single-char builtin class in flagOut, 5 = a proto (LtmExpand::proto).
     int ltmResolve(const std::string& name, const void*& regexOut, char& flagOut);
+    void ltmExpand(LtmExpand& e); // fills e.grammar and e.proto from this grammar
+    bool ltmProtoCands(const std::vector<std::string>& cands,
+                       std::vector<const void*>& bodies, std::vector<std::string>& syms);
 
 private:
     void reapMemo(); // defer a large memo's destruction to the background (see ~GrammarMatcher)

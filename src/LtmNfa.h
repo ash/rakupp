@@ -46,10 +46,13 @@ struct GrammarHooks;
 // body to inline, 2 = the built-in <ws> (modeled as \s* — ranking-grade;
 // the commit engine enforces the real <!ww> gate), 3 = a single-char
 // built-in class, flag = its letter ('d','a','w',…), 4 = the built-in <ident>
-// (<alpha> \w*).
+// (<alpha> \w*), 5 = a proto: `proto` then lists its candidates (compiled
+// bodies and :sym literals), which the builder unions as an alternation.
 struct LtmExpand {
     const GrammarHooks* hooks = nullptr;
     std::function<int(const std::string& name, const void*& regexOut, char& flagOut)> grammar;
+    std::function<bool(const std::string& name, std::vector<const void*>& bodies,
+                       std::vector<std::string>& syms)> proto;
 };
 
 class LtmNfa {

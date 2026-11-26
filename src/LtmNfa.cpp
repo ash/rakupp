@@ -340,12 +340,17 @@ int LtmNfa::buildNode(const void* nv, int from, int branch, int litDepth, int de
             // expanded ends the prefix there, as in Rakudo)
             for (auto& nm : expandStack_)
                 if (nm == n->ruleName) return accept(from);
-            if (!buildCtx_ || !n->ruleArgs.empty())
-                return acceptGap(from); // parameterized / no resolution: a gap
-            // grammar route first: already-compiled rules, <ws>, builtin classes
+            if (!buildCtx_ || (!n->ruleArgs.empty() && !buildCtx_->grammar))
+                return acceptGap(from); // a lexical call with arguments / no resolution: a gap
+            // grammar route first: already-compiled rules, <ws>, builtin classes.
+            // A call's ARGUMENTS do not change a grammar rule's prefix (its
+            // parameters end it wherever the body reads one), so `<p(1)>` ranks
+            // as `<p>` does — Rakudo's NFA, too, inlines the callee.
             if (buildCtx_->grammar) {
                 const void* reOut = nullptr; char flag = 0;
-                switch (buildCtx_->grammar(n->ruleName, reOut, flag)) {
+                int how = buildCtx_->grammar(n->ruleName, reOut, flag);
+                if (!n->ruleArgs.empty() && how != 1 && how != 5) return acceptGap(from);
+                switch (how) {
                     case 1: {
                         auto* callee = static_cast<const Regex*>(reOut);
                         expandStack_.push_back(n->ruleName);
@@ -369,6 +374,31 @@ int LtmNfa::buildNode(const void* nv, int from, int branch, int litDepth, int de
                         states_[from].edges.push_back({addPred(a), nxt});
                         states_[nxt].edges.push_back({addPred(w), nxt});
                         return nxt;
+                    }
+                    case 5: { // a nested proto: the union of its candidates, as Rakudo's
+                        // NFA has it. As a gap it sent the CALLING proto to the
+                        // full-match probe, which ran a sibling's `|| <.panic>`:
+                        // Cro templates' `<!DOCTYPE html>` died as a "malformed
+                        // condition tag" (#286).
+                        std::vector<const void*> bodies; std::vector<std::string> syms;
+                        if (!buildCtx_->proto || !buildCtx_->proto(n->ruleName, bodies, syms))
+                            return acceptGap(from);
+                        std::string outerSym = curSym_;
+                        expandStack_.push_back(n->ruleName);
+                        int join = -1;
+                        for (size_t i = 0; i < bodies.size(); i++) {
+                            curSym_ = syms[i]; // a candidate's <sym> is its OWN literal
+                            auto* callee = static_cast<const Regex*>(bodies[i]);
+                            int e = buildNode(callee->root_.get(), from, branch, litDepth, depth + 1);
+                            if (e < 0) continue; // that candidate's prefix ended inside
+                            if (join < 0) join = addState();
+                            states_[e].eps.push_back({join, 0});
+                            if (states_[join].litDepth < states_[e].litDepth)
+                                states_[join].litDepth = states_[e].litDepth;
+                        }
+                        expandStack_.pop_back();
+                        curSym_ = outerSym;
+                        return join; // -1 if every candidate's prefix ended inside
                     }
                     default: break; // fall through to the lexical route
                 }

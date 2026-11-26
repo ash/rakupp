@@ -4363,10 +4363,7 @@ bool Regex::matchNode(const Node* n, MState& st, long pos, const FnRef& k) const
                 LtmNfa* nfa = nullptr;
                 LtmExpand ectx;
                 ectx.hooks = st.hooks;
-                if (st.grammar)
-                    ectx.grammar = [&st](const std::string& nm, const void*& reOut, char& fl) {
-                        return st.grammar->ltmResolve(nm, reOut, fl);
-                    };
+                if (st.grammar) st.grammar->ltmExpand(ectx);
                 {
                     std::lock_guard<std::mutex> lk(ltmBuildM2);
                     if (n->ltmNfa && !n->ltmNfa->stillValid(st.hooks))
@@ -4445,10 +4442,7 @@ bool Regex::matchNode(const Node* n, MState& st, long pos, const FnRef& k) const
                 LtmNfa* nfa = nullptr;
                 LtmExpand ectx;
                 ectx.hooks = st.hooks;
-                if (st.grammar)
-                    ectx.grammar = [&st](const std::string& nm, const void*& reOut, char& fl) {
-                        return st.grammar->ltmResolve(nm, reOut, fl);
-                    };
+                if (st.grammar) st.grammar->ltmExpand(ectx);
                 {
                     std::lock_guard<std::mutex> lk(ltmBuildM);
                     if (n->ltmNfa && !n->ltmNfa->stillValid(st.hooks))
@@ -5471,7 +5465,7 @@ bool RxCursorCall::callRule(const std::string& name, const std::string& args, lo
 int GrammarMatcher::ltmResolve(const std::string& name, const void*& regexOut, char& flagOut) {
     const NameMeta& m = nameMeta(name);
     if (m.isWs) return 2;
-    if (m.proto) return 0;             // nested proto: not unioned here (yet)
+    if (m.proto) return 5;             // nested proto: LtmExpand::proto unions its candidates
     if (m.isMethod) return 0;          // user code: never part of a declarative prefix
     // (a dynDep body — `:my`, a `$*` read — is NOT refused: dynDep only keeps
     // the packrat cache off. The NFA reads the body's nodes, and each of those
@@ -5481,8 +5475,21 @@ int GrammarMatcher::ltmResolve(const std::string& name, const void*& regexOut, c
     // the probe, which ran by-pos's `|| <.panic>` on `:$m` — #116.)
     if (m.rule) {
         auto* rl = static_cast<const Rule*>(m.rule);
-        if (!rl->params.empty() || !rl->lits.empty()) return 0;
+        if (!rl->lits.empty()) return 0; // `multi rule f(0)`: the body depends on the values
         Regex* body = m.noArg;
+        if (!body && !rl->params.empty()) {
+            // A parameterized rule's prefix is its body with the parameters
+            // left as written: whatever reads one ends the prefix there, the
+            // way Rakudo's NFA has it (`token p($n) { $n 'z' }` ranks short,
+            // `token parameter(:$allow-named = True) { … }` ranks by its
+            // body). As a gap, Cro's `<parameter>` and
+            // `<sequence-element('iteration')>` sent the template grammar's
+            // protos to the probe (#286).
+            auto& slot = cache_[name + "\x1f\x1d" "ltm"];
+            if (!slot) slot = std::make_unique<Regex>(rl->pattern,
+                rl->kind == "rule" ? "sr" : rl->kind == "regex" ? "" : "r");
+            body = slot.get();
+        }
         if (!body) {                   // compile-and-cache, same as a first call would
             std::map<std::string, std::string> bound;
             body = compiledFor(*rl, name, "", bound);
@@ -5500,6 +5507,46 @@ int GrammarMatcher::ltmResolve(const std::string& name, const void*& regexOut, c
     if (name == "alnum" && m.builtinClass == "ad") { flagOut = 'w'; return 3; }
     if (name == "ident" && m.builtinClass == "ad") return 4;
     return 0;
+}
+
+void GrammarMatcher::ltmExpand(LtmExpand& e) {
+    e.grammar = [this](const std::string& nm, const void*& reOut, char& fl) {
+        return ltmResolve(nm, reOut, fl);
+    };
+    e.proto = [this](const std::string& nm, std::vector<const void*>& bodies,
+                     std::vector<std::string>& syms) {
+        const NameMeta& m = nameMeta(nm);
+        return m.proto && ltmProtoCands(*m.proto, bodies, syms);
+    };
+}
+
+// A proto's candidates as the NFA builder takes them: each one's compiled
+// body and its :sym<…> / :sym«…» literal ("" = none). False when any
+// candidate cannot be modeled (a method, a `multi rule f(0)` literal
+// candidate): the caller
+// then has a model gap.
+bool GrammarMatcher::ltmProtoCands(const std::vector<std::string>& cands,
+                                   std::vector<const void*>& bodies, std::vector<std::string>& syms) {
+    for (auto& cand : cands) {
+        const void* reOut = nullptr; char fl = 0;
+        if (ltmResolve(cand, reOut, fl) != 1) return false;
+        bodies.push_back(reOut);
+        std::string sym;
+        auto sp = cand.find(":sym<");
+        if (sp != std::string::npos) {
+            auto e = cand.find('>', sp + 5);
+            if (e != std::string::npos) sym = cand.substr(sp + 5, e - (sp + 5));
+        }
+        else {
+            sp = cand.find(":sym\xC2\xAB");
+            if (sp != std::string::npos) {
+                auto e = cand.find("\xC2\xBB", sp + 6);
+                if (e != std::string::npos) sym = cand.substr(sp + 6, e - (sp + 6));
+            }
+        }
+        syms.push_back(std::move(sym));
+    }
+    return true;
 }
 
 bool GrammarMatcher::matchSubMeta(const GrammarRuleMeta& meta, const std::string& name,
@@ -5550,32 +5597,10 @@ bool GrammarMatcher::matchSubMeta(const GrammarRuleMeta& meta, const std::string
                 meta.protoNfaTried = true;
                 std::vector<const void*> bodies;
                 std::vector<std::string> syms;
-                bool ok = true;
-                for (auto& cand : cands) {
-                    const void* reOut = nullptr; char fl = 0;
-                    if (ltmResolve(cand, reOut, fl) != 1) { ok = false; break; }
-                    bodies.push_back(reOut);
-                    std::string sym;
-                    auto sp = cand.find(":sym<");
-                    if (sp != std::string::npos) {
-                        auto e = cand.find('>', sp + 5);
-                        if (e != std::string::npos) sym = cand.substr(sp + 5, e - (sp + 5));
-                    }
-                    else {
-                        sp = cand.find(":sym\xC2\xAB");
-                        if (sp != std::string::npos) {
-                            auto e = cand.find("\xC2\xBB", sp + 6);
-                            if (e != std::string::npos) sym = cand.substr(sp + 6, e - (sp + 6));
-                        }
-                    }
-                    syms.push_back(std::move(sym));
-                }
-                if (ok) {
+                if (ltmProtoCands(cands, bodies, syms)) {
                     LtmExpand ectx;
                     ectx.hooks = st.hooks;
-                    ectx.grammar = [this](const std::string& nm, const void*& reOut2, char& fl2) {
-                        return ltmResolve(nm, reOut2, fl2);
-                    };
+                    ltmExpand(ectx);
                     auto built = LtmNfa::buildForBranches(bodies, syms, &ectx);
                     if (built && !built->anyModelGap())
                         meta.protoNfa = std::move(built);
