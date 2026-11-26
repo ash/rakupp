@@ -8,19 +8,21 @@ what changed, what it measured and how, with the commit — so the entry starts
 from this page. Move each item into CHANGELOG.md at the tag and delete it
 here.*
 
-*Covered so far: 5aa572bf, 6d2ee659, 606e98fe, e3b16b7e, 79314f20, 43558c4f, 82f6aba0, b084275a, a10df015, e46aa838, f54b0673, 23366987, 78bb0a72, fe5df52a, c78578b9, 72e3db13, cd3c0205, c0876601, 8e5485ec, 6ce6ba24.*
+*Covered so far: 5aa572bf, 6d2ee659, 606e98fe, e3b16b7e, 79314f20, 43558c4f, 82f6aba0, b084275a, a10df015, e46aa838, f54b0673, 23366987, 78bb0a72, fe5df52a, c78578b9, 72e3db13, cd3c0205, c0876601, 8e5485ec, 6ce6ba24, fdf40adb.*
 
 ---
 
 ### New
 
-- **`rakupp info Foo` describes an installed distribution** (6ce6ba24) (#289): the
+- **`rakupp info Foo` describes a distribution** (6ce6ba24, fdf40adb) (#289): the
   `zef info` view of one dist in the store — identity, description, authors,
   license, source URL, tags, who installed it, its dependencies by phase,
   each provided module with its blob, its `bin/` wrappers, and the installed
   distributions that depend on it. A module name finds the dist that provides
-  it; every installed version answers, newest first. Store only, no network;
-  a name not installed exits 1. t/regression/install-info.raku.
+  it; every installed version answers, newest first. A name not installed
+  is looked up in the ecosystem index, as `zef info` does, and its newest
+  release described, marked `(not installed)`; a name in neither exits 1 with
+  a near-miss hint. t/regression/install-info.raku.
 
 ### Faster
 
