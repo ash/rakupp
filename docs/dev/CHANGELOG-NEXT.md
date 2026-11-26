@@ -8,7 +8,7 @@ what changed, what it measured and how, with the commit — so the entry starts
 from this page. Move each item into CHANGELOG.md at the tag and delete it
 here.*
 
-*Covered so far: 5aa572bf, 6d2ee659, 606e98fe, e3b16b7e, 79314f20, 43558c4f, 82f6aba0, b084275a, a10df015, e46aa838, f54b0673, 23366987, 78bb0a72, fe5df52a, c78578b9, 72e3db13, cd3c0205, c0876601, 8e5485ec, 6ce6ba24, fdf40adb, 43afaabe, 10fdfef3.*
+*Covered so far: 5aa572bf, 6d2ee659, 606e98fe, e3b16b7e, 79314f20, 43558c4f, 82f6aba0, b084275a, a10df015, e46aa838, f54b0673, 23366987, 78bb0a72, fe5df52a, c78578b9, 72e3db13, cd3c0205, c0876601, 8e5485ec, 6ce6ba24, fdf40adb, 43afaabe, 10fdfef3, 28fc129a.*
 
 ---
 
@@ -142,6 +142,14 @@ here.*
   line does too. A `for`, `if` or `given` may now also stand anywhere in such
   a list, not only first: `(for 1 {}; 5)`, `(1; if 1 { 2 })` and
   `$(if 1 { 2 })` were "expected )". t/regression/paren-statement-list.raku.
+- **Cro templates with `<!DOCTYPE html>` parse** (28fc129a) (#286): any
+  Cro::WebApp template holding `<!DOCTYPE html>` or `<?xml …?>` died with
+  "malformed condition tag". Longest-token ranking now sees through a call
+  to another proto and through a call to a parameterized rule, as Rakudo's
+  does, so the template grammar tries the literal tag before the condition
+  tag, whose `|| <.malformed>` used to run first. A parameter the rule's body
+  reads ends the prefix there, as in Rakudo.
+  t/regression/ltm-nested-proto-and-param-rules.raku.
 
 - **`print` at the REPL prompt shows its text** (5aa572bf) (#277): on a
   terminal the line editor drew its prompt starting with `\r`, over whatever
