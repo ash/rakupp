@@ -2411,9 +2411,12 @@ sub list-installed(Str $prefix) {
 # the dist's own name or a module it provides, narrowed by :ver/:auth — and
 # every installed version that answers is shown, newest first.
 #
-# Local only: the store is read, the network never is. A name that is not
-# installed says so and points at `rakupp install`; nothing is fetched to
-# describe it.
+# A name the store does not have is looked up in the ecosystem index, as
+# `zef info` does: the newest release that answers is described from its
+# META6, marked not installed. The index is the one install reads — the 24h
+# cache, fetched only when it is stale or absent, RAKUPP_INSTALL_INDEX
+# overriding it — so a store hit never touches the network. Found in neither:
+# exit 1, with the index's nearest well-used name if one is close.
 sub info-installed(@names, Str $prefix --> Int) {
     my $p = $prefix.IO;
     my %dists;
@@ -2434,9 +2437,8 @@ sub info-installed(@names, Str $prefix --> Int) {
             !! $a.key cmp $b.key
         });
         unless @hits {
-            note "not installed: $want-str";
-            note "  (`rakupp install $want-str` fetches it; `rakupp install --list` prints what is installed)";
-            $rc = 1;
+            $rc = 1 unless info-from-index($want-str, %want, $first);
+            $first = False;
             next;
         }
         for @hits -> $hit {
@@ -2448,9 +2450,39 @@ sub info-installed(@names, Str $prefix --> Int) {
     $rc
 }
 
-sub show-dist-info(Str $id, %m, %dists, Bool $ours, IO::Path $p) {
+# The index, loaded once per run and only if a name needs it. A failure to
+# fetch is reported once and leaves every later lookup a plain miss.
+my $INFO-INDEX;
+sub info-from-index(Str $want-str, %want, Bool $first --> Bool) {
+    $INFO-INDEX //= do {
+        my $i = try load-index(False);
+        unless $i.defined {
+            note "rakupp info: the ecosystem index could not be read: {$!.Str.lines[0] // 'unknown error'}";
+            trace("info: index unreadable: {$! // ''}");
+        }
+        $i // []
+    };
+    my @c = candidates($INFO-INDEX.list, %want);
+    unless @c {
+        note "not installed, and not in the ecosystem index: $want-str";
+        if $INFO-INDEX.list && (my $near = typo-neighbour($INFO-INDEX.list, %want)) {
+            note "  (did you mean $near?)";
+        }
+        return False;
+    }
+    my %e = @c[0];
+    my $releases = +$INFO-INDEX.list.grep({ (.<name> // '') eq (%e<name> // '') });
+    say '' unless $first || $QUIET;
+    show-dist-info('', %e, {}, False, IO::Path, :$want-str, :$releases);
+    True
+}
+
+# One dist record (or, with no $p, one index entry) in `info`'s layout.
+sub show-dist-info(Str $id, %m, %dists, Bool $ours, IO::Path $p, Str :$want-str, Int :$releases) {
+    my $indexed = !$p.defined;
     say "{%m<name>}:ver<{%m<version> // '?'}>:auth<{%m<auth> // ''}>"
-        ~ ((%m<api> // '0') ne '0' && (%m<api> // '') ne '' ?? ":api<{%m<api>}>" !! '');
+        ~ ((%m<api> // '0') ne '0' && (%m<api> // '') ne '' ?? ":api<{%m<api>}>" !! '')
+        ~ ($indexed ?? '  (not installed)' !! '');
     return if $QUIET;
     my @authors = (%m<authors> // %m<author> // ()).list.map(~*);
     my $source  = %m<source-url> // ((%m<support> // {}) ~~ Associative ?? %m<support><source> !! Nil);
@@ -2460,8 +2492,12 @@ sub show-dist-info(Str $id, %m, %dists, Bool $ours, IO::Path $p) {
         license        => %m<license>,
         source-url     => $source,
         tags           => (%m<tags> // ()).list ?? (%m<tags> // ()).list.join(', ') !! Nil,
-        'installed by' => $ours ?? 'rakupp' !! 'zef',
-        record         => $p.add('dist').add($id).absolute,
+        |($indexed
+          ?? (installed => "no — `rakupp install $want-str` fetches it",
+              index    => "the newest of {$releases} release{$releases == 1 ?? '' !! 's'} in the ecosystem index",
+              archive  => archive-url(%m))
+          !! ('installed by' => $ours ?? 'rakupp' !! 'zef',
+              record         => $p.add('dist').add($id).absolute)),
     ).grep({ .value.defined && ~.value ne '' });
 
     # depends may be a list (runtime) or a hash of phases; build-depends and
@@ -2499,13 +2535,14 @@ sub show-dist-info(Str $id, %m, %dists, Bool $ours, IO::Path $p) {
 
     my @rows;
     for (%m<provides> // {}).keys.sort -> $mod {
+        if $indexed { @rows.push: $mod => provides-path(%m<provides>{$mod}); next }
         my $sha = provided-blob(%m, $mod);
         if $sha eq '' { @rows.push: $mod => '(no file recorded)'; next }
         my $blob = $p.add('sources').add($sha);
         @rows.push: $mod => $blob.absolute ~ ($blob.e ?? '' !! '  (missing)');
     }
     my @bins;
-    for (%m<files> // {}).keys.grep({ .starts-with('bin/') && .chars > 4 && !.substr(4).contains('/') }).sort -> $rel {
+    for ($indexed ?? () !! (%m<files> // {}).keys).grep({ .starts-with('bin/') && .chars > 4 && !.substr(4).contains('/') }).sort -> $rel {
         my $w = $p.add('bin').add($rel.substr(4));
         @bins.push: $rel => $w.absolute ~ ($w.e ?? '' !! '  (wrapper missing)');
     }
@@ -2515,7 +2552,7 @@ sub show-dist-info(Str $id, %m, %dists, Bool $ours, IO::Path $p) {
         my $w = $sec.value.map(*.key.chars).max;
         say "        {.key}{' ' x ($w - .key.chars + 2)}{.value}" for $sec.value.list;
     }
-    items('required by', @needed-by, '(nothing installed)');
+    items('required by', @needed-by, '(nothing installed)') unless $indexed;
 }
 
 # The identity key the store and the index agree on: name, version, auth,
@@ -2860,7 +2897,7 @@ sub MAIN(
     Bool :$gc,                 #= remove blobs nothing references (--dry-run lists them)
     Bool :$uninstall,          #= remove distributions (rakupp uninstall Foo)
     Bool :$reinstall,          #= uninstall then install fresh (rakupp reinstall Foo)
-    Bool :$info,               #= describe installed distributions (rakupp info Foo); reads the store only
+    Bool :$info,               #= describe distributions (rakupp info Foo): the store's, else the index's
     Bool :$no-test,            #= skip the per-distribution test suites
     Bool :$test-only,          #= build + run the named dists' suites; install only their deps (rakupp test)
     Bool :$force,              #= reinstall / uninstall despite refusals

@@ -1254,7 +1254,8 @@ rakupp uninstall Foo             # remove what THIS installer put there —
 rakupp uninstall --dry-run Foo   # what that would remove, and nothing removed
 rakupp reinstall Foo             # uninstall + install fresh, one command
 rakupp info Foo                  # what the store holds for Foo: META6 fields,
-                                 # deps, files, bin, what depends on it
+                                 # deps, files, bin, what depends on it; or,
+                                 # not installed, the index's newest release
 rakupp install --list            # what is installed: identity, installer,
                                  # module files, bin wrappers (-q: identities)
 rakupp install --check           # store integrity report; fixes nothing
@@ -1305,9 +1306,13 @@ phase, each provided module with its blob, its `bin/` wrappers, and the
 installed distributions that depend on it — the question to ask before an
 uninstall. A name matches as `uninstall` matches one: the dist's own name or a
 module it provides, narrowed by `:ver<>`/`:auth<>`, every installed version
-shown, newest first. It reads only the store; a name that is not installed
-fails (exit 1) and nothing is fetched to describe it. With `-q` only the
-identity lines print.
+shown, newest first. A name the store does not have is looked up in the
+ecosystem index, as `zef info` does: its newest release (or the one a `:ver<>`
+picks) is described from its META6, marked `(not installed)`, with the
+archive `install` would fetch. That index is the one `install` reads, cached
+for 24 hours, so an installed name never touches the network. A name in
+neither fails (exit 1), naming a well-used near miss if there is one. With
+`-q` only the identity lines print.
 
 ```console
 $ rakupp info Cro::TLS

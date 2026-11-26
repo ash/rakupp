@@ -4,7 +4,8 @@
 # description, dependencies or dependents had to open its dist/ record by hand.
 #
 # Everything runs against a store built in a temp directory, from dists made
-# there too. The user's own store is never touched, and info reads no network.
+# there too, and an index file made there: RAKUPP_INSTALL_INDEX points the
+# fallback at it. The user's own store is never touched, and nothing is fetched.
 # `rakupp info` is this engine's tool, so on Rakudo the file says so and passes.
 
 my $ok = True;
@@ -46,6 +47,19 @@ $top.add('bin/info-top').spurt("use Info::Top;\n");
 
 my $store = $root.add('store');
 
+# the index a name missing from the store is looked up in: two releases of one
+# dist, and a well-used dist whose name a typo can land near
+my $index = $root.add('index.json');
+$index.spurt: q:to/END/;
+    [{"name":"Info::Remote","version":"1.0.0","auth":"zef:test","path":"I/R/1.tar.gz",
+      "description":"only in the index","license":"MIT","provides":{"Info::Remote":"lib/Info/Remote.rakumod"},
+      "depends":["Info::Base"]},
+     {"name":"Info::Remote","version":"1.2.0","auth":"zef:test","path":"I/R/2.tar.gz",
+      "description":"only in the index","license":"MIT","provides":{"Info::Remote":"lib/Info/Remote.rakumod"},
+      "depends":["Info::Base"]}]
+    END
+%*ENV<RAKUPP_INSTALL_INDEX> = $index.absolute;
+
 sub tool(*@args) {
     my $p = run $*EXECUTABLE, |@args, "--to={$store.absolute}", :out, :err;
     my $out = $p.out.slurp(:close);
@@ -53,10 +67,11 @@ sub tool(*@args) {
     %(:$out, :$err, exit => $p.exitcode)
 }
 
-# before anything is installed: no store at all is "not installed", not a crash
+# before anything is installed: no store at all is a miss, not a crash
 my %none = tool('info', 'Info::Base');
-check %none<exit>, 1, 'info on an empty store fails';
-check ?%none<err>.contains('not installed: Info::Base'), True, '…saying what is not installed';
+check %none<exit>, 1, 'info on an empty store, for a name the index lacks, fails';
+check ?%none<err>.contains('not installed, and not in the ecosystem index: Info::Base'), True,
+      '…saying it is in neither';
 
 check tool('install', '--no-test', $base.Str)<exit>, 0, 'Info::Base installs';
 check tool('install', '--no-test', $top.Str)<exit>, 0, 'Info::Top installs';
@@ -89,7 +104,18 @@ my %v = tool('info', 'Info::Top:ver<9+>');
 check %v<exit>, 1, 'a version not installed fails';
 check %v<out>, '', '…and prints nothing to stdout';
 
-# 4. mixed and empty requests are refused, and info wrote nothing
+# 4. a name the store lacks is described from the index, newest release first
+my %r = tool('info', 'Info::Remote');
+check %r<exit>, 0, 'info on a name only the index has succeeds, as zef info does';
+check %r<out>.lines[0], 'Info::Remote:ver<1.2.0>:auth<zef:test>  (not installed)', '…the newest release, marked';
+check ?(%r<out> ~~ /'installed:' \s+ 'no'/), True, '…says it is not installed';
+check ?(%r<out> ~~ /'the newest of 2 releases'/), True, '…and how many releases there are';
+check ?(%r<out> ~~ /'depends:' \s+ 'Info::Base'/), True, '…with its dependencies';
+check ?(%r<out> ~~ /'Info::Remote' \s+ 'lib/Info/Remote.rakumod'/), True, '…and what it provides';
+check tool('-q', 'info', 'Info::Remote:ver<1.0.0>')<out>, "Info::Remote:ver<1.0.0>:auth<zef:test>  (not installed)\n",
+      'a :ver picks that release';
+
+# 5. mixed and empty requests are refused, and info wrote nothing
 check tool('info')<exit>, 2, 'info with no name is a usage error';
 check tool('info', '--list', 'Info::Top')<exit>, 2, 'info --list is refused';
 check tool('info', 'Info::Top', 'Not::There')<exit>, 1, 'one missing name fails the run';

@@ -2819,7 +2819,7 @@ static const char* kSubcommandDocs[][2] = {
     {"uninstall", "remove installed modules"},
     {"reinstall", "uninstall and install fresh"},
     {"test", "run a module test suite, installing nothing"},
-    {"info", "describe an installed module: META6, files, dependencies"},
+    {"info", "describe a module: the installed dist, else the index's newest"},
     {"doc", "look a builtin, method or operator up in the reference"},
     {"upgrade", "replace this engine with a newer release"},
 };
@@ -4083,7 +4083,7 @@ int main(int argc, char** argv) {
 "  rakupp reinstall MODULE ...  Uninstall and install fresh, as one command\n"
 "  rakupp test MODULE ...       Build + run the dists' own suites against the\n"
 "                               store; installs their deps, never the dists\n"
-"  rakupp info MODULE ...       One installed dist: META6, deps, files, dependents\n"
+"  rakupp info MODULE ...       A dist's META6, deps, files, dependents (index if absent)\n"
 "  rakupp install --list        What is installed; --check: store integrity\n"
 "                               report; --refresh: refetch the cached index(es)\n"
 "  rakupp install -q MODULE     Only warnings and failures; nothing on success\n"
