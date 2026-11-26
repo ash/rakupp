@@ -2618,10 +2618,23 @@ std::optional<Value> Interpreter::methodCallPart3(const Value& inv, const MName&
     // is the same rule `.IO` follows two lines down. A DEFINED Str is left alone:
     // Rakudo refuses `"x".basename` too, but rakupp accepts a string as a path in
     // many places on purpose, and that is a separate divergence from this one.
+    //
+    // The same holds for every path method in kPathOnly: `Any.add('x')` and
+    // `Int.parent` were the paths "/x" and "." (#275). An IO::Path type object
+    // is the right class but no instance, which Rakudo words as a concreteness
+    // error.
     if ((inv.t == VT::Any || inv.t == VT::Type || inv.t == VT::Nil) && inv.hashKind.empty() &&
-        (m == "contents" || m == "dir" || m == "is-absolute" || m == "is-relative" ||
-         m == "basename" || m == "extension")) {
+        (m == "contents" || m == "dir" || kPathOnly.count(m))) {
         if (inv.t == VT::Nil) return Value::nil();
+        if (inv.t == VT::Type && inv.s.str().rfind("IO::Path", 0) == 0) {
+            std::string tn = inv.s.copyText();
+            throwTypedV("X::Parameter::InvalidConcreteness",
+                {{"expected", Value::str(tn)}, {"got", Value::str(tn)}, {"routine", Value::str(m)},
+                 {"param", Value::str("self")}, {"should-be-concrete", Value::boolean(true)},
+                 {"param-is-invocant", Value::boolean(true)}},
+                "Invocant of method '" + (const std::string&)m + "' must be an object instance of type '" +
+                tn + "',\nnot a type object of type '" + tn + "'. Did you forget a '.new'?");
+        }
         throw RakuError{Value::typeObj("X::Method::NotFound"),
                         "No such method '" + (const std::string&)m +
                         "' for invocant of type '" +
