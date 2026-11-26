@@ -8,7 +8,7 @@ what changed, what it measured and how, with the commit — so the entry starts
 from this page. Move each item into CHANGELOG.md at the tag and delete it
 here.*
 
-*Covered so far: 5aa572bf, 6d2ee659, 606e98fe, e3b16b7e, 79314f20, 43558c4f, 82f6aba0, b084275a, a10df015, e46aa838, f54b0673, 23366987, 78bb0a72, fe5df52a, c78578b9, 72e3db13, cd3c0205, c0876601, 8e5485ec, 6ce6ba24, fdf40adb, 43afaabe.*
+*Covered so far: 5aa572bf, 6d2ee659, 606e98fe, e3b16b7e, 79314f20, 43558c4f, 82f6aba0, b084275a, a10df015, e46aa838, f54b0673, 23366987, 78bb0a72, fe5df52a, c78578b9, 72e3db13, cd3c0205, c0876601, 8e5485ec, 6ce6ba24, fdf40adb, 43afaabe, 10fdfef3.*
 
 ---
 
