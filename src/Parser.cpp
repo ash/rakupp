@@ -314,6 +314,78 @@ static ParseError blockGobbledError(const std::string& fn, int line) {
                        {"sorrow-what", fn.empty() ? std::string("expression") : fn},
                        {"panic", "X::Syntax::Missing"}, {"panic-msg", "Missing " + pw}, {"panic-what", pw}});
 }
+// A STATEMENT where a `( … )` / `%( … )` segment starts — a loop (labelled
+// or not), an if/unless, a topicalizer — as a `do` term; null for anything
+// else, which the caller parses as an expression.
+ExprPtr Parser::parseParenStmtHead() {
+    ExprPtr e;
+    // `(LABEL: for … { })` / `(for LIST { })` — a loop STATEMENT in term
+    // position collects each iteration's value (labels stay attached, so
+    // `next LABEL` works from nested loops)
+    {
+        bool loopKw = (isIdent("for") || isIdent("loop") || isIdent("while") ||
+                       isIdent("until") || isIdent("repeat")) &&
+                      peek().kind != Tok::FatArrow && peek().kind != Tok::Comma;
+        bool labeled = isKind(Tok::Ident) && peek().kind == Tok::Op && peek().text == ":" &&
+                       !peek().spaceBefore && peek(2).kind == Tok::Ident &&
+                       (peek(2).text == "for" || peek(2).text == "while" ||
+                        peek(2).text == "until" || peek(2).text == "loop" || peek(2).text == "repeat");
+        // …and a label on any other statement: `(L3: Seq.from-loop(…, :label(L3)))`.
+        // The space after the colon is what tells it from `Int:D`.
+        if (!labeled && isKind(Tok::Ident) && ascii::isupper((unsigned char)cur().text[0]) &&
+            peek().kind == Tok::Op && peek().text == ":" && !peek().spaceBefore &&
+            peek(2).spaceBefore && peek(2).kind != Tok::RParen && !kBlockKeywords.count(cur().text))
+            labeled = true;
+        if (loopKw || labeled) {
+            auto st = parseStatement();
+            if (st) {
+                if (st->kind == NK::ForStmt) static_cast<ForStmt*>(st.get())->asExpr = true;
+                else if (st->kind == NK::WhileStmt) static_cast<WhileStmt*>(st.get())->asExpr = true;
+                else if (st->kind == NK::LoopStmt) static_cast<LoopStmt*>(st.get())->asExpr = true;
+            }
+            auto be = std::make_unique<BlockExpr>();
+            be->body.push_back(std::move(st));
+            auto u = std::make_unique<Unary>(); u->op = "do"; u->operand = std::move(be);
+            e = std::move(u);
+        }
+    }
+    // `(if COND { } elsif ... else { })` — an if STATEMENT in term position
+    // evaluates to the chosen block's value (likewise unless)
+    if (!e && (isIdent("if") || isIdent("unless")) &&
+        peek().kind != Tok::FatArrow && peek().kind != Tok::Comma) {
+        bool isUnless = cur().text == "unless";
+        advance();
+        auto st = parseIf(isUnless);
+        auto be = std::make_unique<BlockExpr>();
+        be->body.push_back(std::move(st));
+        auto u = std::make_unique<Unary>(); u->op = "do"; u->operand = std::move(be);
+        e = std::move(u);
+    }
+    // …and the TOPICALIZERS. They reach here as statements only when
+    // they come FIRST — `(EXPR with X)` is the modifier form and is
+    // handled below, after the expression — so position tells the two
+    // apart with nothing to guess. RakuDoc::Render builds a string out
+    // of `'[' ~ ( given %prm<type> { when 'internal' {…} } ) ~ …`, and
+    // `if` in the same position already worked, which is what made the
+    // gap look like a syntax error rather than a missing case.
+    if (!e && (isIdent("given") || isIdent("with") || isIdent("without")) &&
+        peek().kind != Tok::FatArrow && peek().kind != Tok::Comma) {
+        auto st = parseStatement();
+        auto be = std::make_unique<BlockExpr>();
+        be->body.push_back(std::move(st));
+        auto u = std::make_unique<Unary>(); u->op = "do"; u->operand = std::move(be);
+        e = std::move(u);
+    }
+    return e;
+}
+
+// Inside `( … )` and `%( … )` the statements are a list as they are at the
+// top level, so a `}` that closes a line ends its statement there too:
+// `%( my %d;\n for @l { … }\n %d )` (#288). `nx` is the token after it.
+static bool blockEndsLine(const std::vector<Token>& toks, size_t pos, const Token& nx) {
+    return pos > 0 && toks[pos - 1].kind == Tok::RBrace && nx.line > toks[pos - 1].line &&
+           nx.kind != Tok::RParen && nx.kind != Tok::Semicolon && nx.kind != Tok::End;
+}
 bool Parser::matchOp(const std::string& s) { if (isOp(s)) { advance(); return true; } return false; }
 bool Parser::matchKind(Tok k) { if (cur().kind == k) { advance(); return true; } return false; }
 void Parser::expectKind(Tok k, const char* what) {
@@ -3814,19 +3886,19 @@ ExprPtr Parser::parsePrefix(bool tight) {
                 // `$(;)` — only empty statements: the empty list, like `$()`
                 while (isKind(Tok::Semicolon) &&
                        (peek().kind == Tok::RParen || peek().kind == Tok::Semicolon)) advance();
-                u->operand = isKind(Tok::RParen) ? ExprPtr(std::make_unique<ListExpr>())
-                                                 : applyExprModifiers(parseExpression());
+                if (isKind(Tok::RParen)) u->operand = std::make_unique<ListExpr>();
+                else if (!(u->operand = parseParenStmtHead())) u->operand = applyExprModifiers(parseExpression());
                 // `$(stmt; stmt; expr)` — a statement sequence valued at its last
                 // statement, like `do { … }` (let.t/temp.t idiom)
-                if (isKind(Tok::Semicolon)) {
+                if (isKind(Tok::Semicolon) || blockEndsLine(toks_, pos_, cur())) {
                     auto be = std::make_unique<BlockExpr>();
                     auto es = std::make_unique<ExprStmt>();
                     es->e = std::move(u->operand);
                     be->body.push_back(std::move(es));
-                    while (matchKind(Tok::Semicolon)) {
+                    while (matchKind(Tok::Semicolon) || blockEndsLine(toks_, pos_, cur())) {
                         if (isKind(Tok::RParen)) break;
                         auto es2 = std::make_unique<ExprStmt>();
-                        es2->e = parseExpression();
+                        if (!(es2->e = parseParenStmtHead())) es2->e = parseExpression();
                         be->body.push_back(std::move(es2));
                     }
                     auto dou = std::make_unique<Unary>();
@@ -8169,74 +8241,13 @@ ExprPtr Parser::parsePrimary() {
             }
             bool svCond = stmtCond_; stmtCond_ = false; // parens re-allow block listop args
             struct CondRestore { bool* f; bool v; ~CondRestore() { *f = v; } } cr{&stmtCond_, svCond};
-            // `(LABEL: for … { })` / `(for LIST { })` — a loop STATEMENT in term
-            // position collects each iteration's value (labels stay attached, so
-            // `next LABEL` works from nested loops)
-            {
-                bool loopKw = (isIdent("for") || isIdent("loop") || isIdent("while") ||
-                               isIdent("until") || isIdent("repeat")) &&
-                              peek().kind != Tok::FatArrow && peek().kind != Tok::Comma;
-                bool labeled = isKind(Tok::Ident) && peek().kind == Tok::Op && peek().text == ":" &&
-                               !peek().spaceBefore && peek(2).kind == Tok::Ident &&
-                               (peek(2).text == "for" || peek(2).text == "while" ||
-                                peek(2).text == "until" || peek(2).text == "loop" || peek(2).text == "repeat");
-                // …and a label on any other statement: `(L3: Seq.from-loop(…, :label(L3)))`.
-                // The space after the colon is what tells it from `Int:D`.
-                if (!labeled && isKind(Tok::Ident) && ascii::isupper((unsigned char)cur().text[0]) &&
-                    peek().kind == Tok::Op && peek().text == ":" && !peek().spaceBefore &&
-                    peek(2).spaceBefore && peek(2).kind != Tok::RParen && !kBlockKeywords.count(cur().text))
-                    labeled = true;
-                if (loopKw || labeled) {
-                    auto st = parseStatement();
-                    if (st) {
-                        if (st->kind == NK::ForStmt) static_cast<ForStmt*>(st.get())->asExpr = true;
-                        else if (st->kind == NK::WhileStmt) static_cast<WhileStmt*>(st.get())->asExpr = true;
-                        else if (st->kind == NK::LoopStmt) static_cast<LoopStmt*>(st.get())->asExpr = true;
-                    }
-                    auto be = std::make_unique<BlockExpr>();
-                    be->body.push_back(std::move(st));
-                    auto u = std::make_unique<Unary>(); u->op = "do"; u->operand = std::move(be);
-                    ExprPtr e = std::move(u);
-                    expectKind(Tok::RParen, ")");
-                    return e;
-                }
-            }
-            // `(if COND { } elsif ... else { })` — an if STATEMENT in term position
-            // evaluates to the chosen block's value (likewise unless)
-            if ((isIdent("if") || isIdent("unless")) &&
-                peek().kind != Tok::FatArrow && peek().kind != Tok::Comma) {
-                bool isUnless = cur().text == "unless";
-                advance();
-                auto st = parseIf(isUnless);
-                auto be = std::make_unique<BlockExpr>();
-                be->body.push_back(std::move(st));
-                auto u = std::make_unique<Unary>(); u->op = "do"; u->operand = std::move(be);
-                ExprPtr e = std::move(u);
-                expectKind(Tok::RParen, ")");
-                return e;
-            }
-            // …and the TOPICALIZERS. They reach here as statements only when
-            // they come FIRST — `(EXPR with X)` is the modifier form and is
-            // handled below, after the expression — so position tells the two
-            // apart with nothing to guess. RakuDoc::Render builds a string out
-            // of `'[' ~ ( given %prm<type> { when 'internal' {…} } ) ~ …`, and
-            // `if` in the same position already worked, which is what made the
-            // gap look like a syntax error rather than a missing case.
-            if ((isIdent("given") || isIdent("with") || isIdent("without")) &&
-                peek().kind != Tok::FatArrow && peek().kind != Tok::Comma) {
-                auto st = parseStatement();
-                auto be = std::make_unique<BlockExpr>();
-                be->body.push_back(std::move(st));
-                auto u = std::make_unique<Unary>(); u->op = "do"; u->operand = std::move(be);
-                ExprPtr e = std::move(u);
-                expectKind(Tok::RParen, ")");
-                return e;
-            }
-            ExprPtr e = parseExpression();
-            if (atExprModifier()) e = runBareBlock(std::move(e));
+            ExprPtr e = parseParenStmtHead();   // a STATEMENT may head it; the list below still follows
+            const bool stmtHead = e != nullptr;
+            if (!stmtHead) e = parseExpression();
+            if (!stmtHead && atExprModifier()) e = runBareBlock(std::move(e));
             // statement modifiers inside parens CHAIN: `($_ * $_ if $_ %% 2 for
             // ^10)` is a list comprehension — each modifier wraps the value so far
-            for (;;) {
+            for (; !stmtHead;) {
             // `(EXPR when X)` — EXPR if the topic smartmatches X, else nothing
             if (isIdent("when")) {
                 advance();
@@ -8354,16 +8365,17 @@ ExprPtr Parser::parsePrimary() {
             // list. `(2;2)` is `(2, 2)`; `(1,2; 3,4)` is `((1,2),(3,4))`; used for
             // multidim subscripts and `:shape(2;2)`. Side effects still run in
             // order, so `( say $_; last )` behaves as before (last exits first).
-            if (isKind(Tok::Semicolon)) {
+            if (isKind(Tok::Semicolon) || blockEndsLine(toks_, pos_, cur())) {
                 auto lst = std::make_unique<ListExpr>();
                 lst->parenned = true;
                 lst->semicolon = true; // a semicolon-list: segments don't flatten as a plain comma list
                 lst->items.push_back(std::move(e));
-                while (matchKind(Tok::Semicolon)) {
+                while (matchKind(Tok::Semicolon) || blockEndsLine(toks_, pos_, cur())) {
                     if (isKind(Tok::RParen)) break; // trailing ;
                     // every segment takes a statement modifier, as the first does:
                     // `($n++; last if $n > 3) for 1..*` was "Two terms in a row"
-                    lst->items.push_back(applyExprModifiers(parseExpression()));
+                    ExprPtr seg = parseParenStmtHead();
+                    lst->items.push_back(seg ? std::move(seg) : applyExprModifiers(parseExpression()));
                 }
                 expectKind(Tok::RParen, ")");
                 // a lone segment with a TRAILING `;` (`( expr; )`) is just the
@@ -8372,6 +8384,7 @@ ExprPtr Parser::parsePrimary() {
                 return lst;
             }
             expectKind(Tok::RParen, ")");
+            if (stmtHead) return e;
             // Remember that THIS node came out of parentheses. Only two readings
             // need it — the range operator's non-associativity and its
             // precedence worry — and both have to tell `(|4) .. 5` from `|4 .. 5`

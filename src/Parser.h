@@ -632,6 +632,7 @@ private:
     StmtPtr applyModifiers(StmtPtr s);
     ExprPtr applyExprModifiers(ExprPtr e, bool leaveRest = false); // trailing stmt modifiers inside (…)/@(…)/…
     bool atExprModifier();                       // a statement-modifier keyword follows the expression
+    ExprPtr parseParenStmtHead();                // `(for … { })`, `(if … { })`: null when not one
     ExprPtr runBareBlock(ExprPtr e);             // `{ … } if X`: a bare block under a modifier RUNS
     bool atStatementTerm();                      // `if`/`with`/a loop … starts a statement here
     ExprPtr parseStatementTerm();                // …parsed and valued as `do STATEMENT`
