@@ -8,7 +8,7 @@ what changed, what it measured and how, with the commit — so the entry starts
 from this page. Move each item into CHANGELOG.md at the tag and delete it
 here.*
 
-*Covered so far: 5aa572bf, 6d2ee659, 606e98fe, e3b16b7e, 79314f20, 43558c4f, 82f6aba0, b084275a, a10df015, e46aa838, f54b0673, 23366987, 78bb0a72, fe5df52a, c78578b9, 72e3db13, cd3c0205, c0876601, 8e5485ec, 6ce6ba24, fdf40adb.*
+*Covered so far: 5aa572bf, 6d2ee659, 606e98fe, e3b16b7e, 79314f20, 43558c4f, 82f6aba0, b084275a, a10df015, e46aa838, f54b0673, 23366987, 78bb0a72, fe5df52a, c78578b9, 72e3db13, cd3c0205, c0876601, 8e5485ec, 6ce6ba24, fdf40adb, 43afaabe.*
 
 ---
 
@@ -135,6 +135,13 @@ here.*
   colonpair that sets the starting value kept the members after it from
   being declared. They are now, and so is a double-quoted key in
   `enum E (one => 1, "two")`. t/regression/enum-colonpair-word-list.raku.
+- **Statements in parens end at a line-closing `}`** (43afaabe) (#288):
+  `%( my %d;⏎ for @l { … }⏎ %d )` was a parse error ("Two terms in a row
+  across lines"): inside `( … )` and `%( … )`, `@( … )`, `$( … )` only `;`
+  ended a statement, where at the top level and in `[ … ]` a `}` closing the
+  line does too. A `for`, `if` or `given` may now also stand anywhere in such
+  a list, not only first: `(for 1 {}; 5)`, `(1; if 1 { 2 })` and
+  `$(if 1 { 2 })` were "expected )". t/regression/paren-statement-list.raku.
 
 - **`print` at the REPL prompt shows its text** (5aa572bf) (#277): on a
   terminal the line editor drew its prompt starting with `\r`, over whatever
