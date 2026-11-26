@@ -2269,6 +2269,15 @@ sub remove-one(Str $prefix, Str $dist-id, %meta, %dists,
 # installed DEPENDENTS do not block (a removal would strand them; a reinstall
 # restores what they depend on), and foreign PROVENANCE downgrades to a
 # warning — the replacement becomes rakupp-owned, and the warning says so.
+# Does the dist record %m answer to the parsed identity %want? By its name or
+# by a module it provides, then by version and auth when the identity gives
+# them. `uninstall` and `info` find what a name means the same way.
+sub dist-answers(%m, %want --> Bool) {
+    ((%m<name> // '') eq %want<name> || ((%m<provides> // {}){%want<name>}:exists))
+    && ver-ok(%m<version> // '', %want<ver>)
+    && (%want<auth> eq '' || (%m<auth> // '') eq %want<auth>)
+}
+
 sub do-uninstall(@names, Str $prefix, Bool :$force, Bool :$for-reinstall, Bool :$dry) {
     trace("uninstall: {@names.join(' ')} from $prefix" ~ ($for-reinstall ?? ' (for reinstall)' !! '')
           ~ ($dry ?? ' (dry run)' !! ''));
@@ -2293,12 +2302,7 @@ sub do-uninstall(@names, Str $prefix, Bool :$force, Bool :$for-reinstall, Bool :
     my $rc = 0;
     for @names -> $want-str {
         my %want = parse-identity($want-str);
-        my @hits = %dists.grep(-> $kv {
-            my %m = $kv.value;
-            ((%m<name> // '') eq %want<name> || ((%m<provides> // {}){%want<name>}:exists))
-            && ver-ok(%m<version> // '', %want<ver>)
-            && (%want<auth> eq '' || (%m<auth> // '') eq %want<auth>)
-        });
+        my @hits = %dists.grep({ dist-answers(.value, %want) });
         if !@hits {
             if $for-reinstall {
                 progress("not installed: $want-str — installing fresh");
@@ -2397,6 +2401,121 @@ sub list-installed(Str $prefix) {
         my $wide = @rows.map(*.key.chars).max;
         say "    {.key}{' ' x ($wide - .key.chars + 2)}{.value}" for @rows;
     }
+}
+
+# `rakupp info Foo` — what the store knows about one installed distribution,
+# the way `zef info` answers: its identity, the META6 fields a reader asks
+# about, who installed it, what it depends on, what it provides and where,
+# its bin/ wrappers, and which installed distributions depend on IT (the
+# question before an uninstall). A name matches as it does for uninstall —
+# the dist's own name or a module it provides, narrowed by :ver/:auth — and
+# every installed version that answers is shown, newest first.
+#
+# Local only: the store is read, the network never is. A name that is not
+# installed says so and points at `rakupp install`; nothing is fetched to
+# describe it.
+sub info-installed(@names, Str $prefix --> Int) {
+    my $p = $prefix.IO;
+    my %dists;
+    if $p.add('dist').d {
+        for $p.add('dist').dir.grep(*.f) -> $f {
+            my %m = (try json-decode($f.slurp)) // {};   # (a hash store of Nil dies, as on Rakudo)
+            %dists{$f.basename} = %m if %m;
+        }
+    }
+    my %owned = owned-set($prefix);
+    my $rc = 0;
+    my $first = True;
+    for @names -> $want-str {
+        my %want = parse-identity($want-str);
+        my @hits = %dists.grep({ dist-answers(.value, %want) }).sort(-> $a, $b {   # newest first
+            newer($a.value<version> // '', $b.value<version> // '') ?? Order::Less
+            !! newer($b.value<version> // '', $a.value<version> // '') ?? Order::More
+            !! $a.key cmp $b.key
+        });
+        unless @hits {
+            note "not installed: $want-str";
+            note "  (`rakupp install $want-str` fetches it; `rakupp install --list` prints what is installed)";
+            $rc = 1;
+            next;
+        }
+        for @hits -> $hit {
+            say '' unless $first || $QUIET;
+            $first = False;
+            show-dist-info($hit.key, $hit.value, %dists, ?%owned{$hit.key}, $p);
+        }
+    }
+    $rc
+}
+
+sub show-dist-info(Str $id, %m, %dists, Bool $ours, IO::Path $p) {
+    say "{%m<name>}:ver<{%m<version> // '?'}>:auth<{%m<auth> // ''}>"
+        ~ ((%m<api> // '0') ne '0' && (%m<api> // '') ne '' ?? ":api<{%m<api>}>" !! '');
+    return if $QUIET;
+    my @authors = (%m<authors> // %m<author> // ()).list.map(~*);
+    my $source  = %m<source-url> // ((%m<support> // {}) ~~ Associative ?? %m<support><source> !! Nil);
+    my @fields = (
+        description    => %m<description>,
+        authors        => @authors ?? @authors.join(', ') !! Nil,
+        license        => %m<license>,
+        source-url     => $source,
+        tags           => (%m<tags> // ()).list ?? (%m<tags> // ()).list.join(', ') !! Nil,
+        'installed by' => $ours ?? 'rakupp' !! 'zef',
+        record         => $p.add('dist').add($id).absolute,
+    ).grep({ .value.defined && ~.value ne '' });
+
+    # depends may be a list (runtime) or a hash of phases; build-depends and
+    # test-depends are the older top-level spellings of two of those phases
+    my %phase = runtime => [], build => [], test => [];
+    my $d = %m<depends>;
+    if $d ~~ Associative && !($d<name>:exists) && !($d<any>:exists) {
+        for <runtime build test> -> $ph {
+            %phase{$ph}.append: |dep-identities($d{$ph}), |dep-unresolved($d{$ph});
+        }
+    }
+    else {
+        %phase<runtime>.append: |dep-identities($d), |dep-unresolved($d);
+    }
+    %phase<build>.append: |dep-identities(%m<build-depends>);
+    %phase<test>.append:  |dep-identities(%m<test-depends>);
+
+    my @needed-by = %dists.grep({ .key ne $id }).grep(-> $kv {
+        my %o = $kv.value;
+        my @deps = |dep-identities(%o<depends>), |dep-identities(%o<build-depends>);
+        so @deps.first({ dist-answers(%m, parse-identity(~$_)) })
+    }).map({ "{.value<name>}:ver<{.value<version> // '?'}>" }).sort.unique;
+
+    my $wide = (|@fields.map(*.key), 'depends', 'build-depends', 'test-depends', 'required by').map(*.chars).max;
+    say "    {.key}:{' ' x ($wide - .key.chars + 1)}{.value}" for @fields;
+    # a list field: its first item on the label's line, one per line below it
+    my sub items(Str $label, @items, Str $none) {
+        my @l = @items ?? @items.unique !! ($none,);
+        say "    $label:{' ' x ($wide - $label.chars + 1)}{@l[0]}";
+        say "    {' ' x ($wide + 2)}$_" for @l.skip;
+    }
+    for (depends => %phase<runtime>, build-depends => %phase<build>, test-depends => %phase<test>) -> $sec {
+        items($sec.key, $sec.value.list, '(none)') if $sec.value || $sec.key eq 'depends';
+    }
+
+    my @rows;
+    for (%m<provides> // {}).keys.sort -> $mod {
+        my $sha = provided-blob(%m, $mod);
+        if $sha eq '' { @rows.push: $mod => '(no file recorded)'; next }
+        my $blob = $p.add('sources').add($sha);
+        @rows.push: $mod => $blob.absolute ~ ($blob.e ?? '' !! '  (missing)');
+    }
+    my @bins;
+    for (%m<files> // {}).keys.grep({ .starts-with('bin/') && .chars > 4 && !.substr(4).contains('/') }).sort -> $rel {
+        my $w = $p.add('bin').add($rel.substr(4));
+        @bins.push: $rel => $w.absolute ~ ($w.e ?? '' !! '  (wrapper missing)');
+    }
+    for (provides => @rows, bin => @bins) -> $sec {
+        next unless $sec.value;
+        say "    {$sec.key}:";
+        my $w = $sec.value.map(*.key.chars).max;
+        say "        {.key}{' ' x ($w - .key.chars + 2)}{.value}" for $sec.value.list;
+    }
+    items('required by', @needed-by, '(nothing installed)');
 }
 
 # The identity key the store and the index agree on: name, version, auth,
@@ -2741,6 +2860,7 @@ sub MAIN(
     Bool :$gc,                 #= remove blobs nothing references (--dry-run lists them)
     Bool :$uninstall,          #= remove distributions (rakupp uninstall Foo)
     Bool :$reinstall,          #= uninstall then install fresh (rakupp reinstall Foo)
+    Bool :$info,               #= describe installed distributions (rakupp info Foo); reads the store only
     Bool :$no-test,            #= skip the per-distribution test suites
     Bool :$test-only,          #= build + run the named dists' suites; install only their deps (rakupp test)
     Bool :$force,              #= reinstall / uninstall despite refusals
@@ -2775,6 +2895,11 @@ sub MAIN(
            ~ "`rakupp install` — pick one";
         exit 2;
     }
+    if $info && ($uninstall || $reinstall || $test-only || $list || $check || $gc) {
+        note "rakupp info only reads the store — it takes no --list/--check/--gc "
+           ~ "and no uninstall/reinstall/test";
+        exit 2;
+    }
     if 1 < ($list, $check, $gc).grep(?*).elems {
         note "rakupp install: --list, --check and --gc each answer on their own — pick one";
         exit 2;
@@ -2801,6 +2926,15 @@ sub MAIN(
     if $list {
         list-installed($to);
         return;
+    }
+    if $info {
+        unless @modules {
+            note "usage: rakupp info Module ...";
+            exit 2;
+        }
+        exit info-installed(@modules.map(-> $a {
+            is-path-arg($a) && !program-arg($a) ?? ((try local-dist-entry($a))<name> // $a) !! $a
+        }).List, $to);
     }
     if $check {
         exit store-check($to);

@@ -2819,6 +2819,7 @@ static const char* kSubcommandDocs[][2] = {
     {"uninstall", "remove installed modules"},
     {"reinstall", "uninstall and install fresh"},
     {"test", "run a module test suite, installing nothing"},
+    {"info", "describe an installed module: META6, files, dependencies"},
     {"doc", "look a builtin, method or operator up in the reference"},
     {"upgrade", "replace this engine with a newer release"},
 };
@@ -3200,7 +3201,7 @@ int main(int argc, char** argv) {
         static char docLinks[] = "--doc-links";
         argv[cmdAt] = docLinks; isDocCmd = false; cmdWord.clear();
     }
-    if (cmdWord == "install" || isUninstall || isReinstall || isTestCmd || isDocCmd || isUpgrade) {
+    if (cmdWord == "install" || isUninstall || isReinstall || isTestCmd || cmdWord == "info" || isDocCmd || isUpgrade) {
         // The tool's name stands in for a path: it is what $*PROGRAM and any
         // backtrace report, and the argument scan below recognises it and
         // takes the source from the blob instead of opening a file.
@@ -3211,9 +3212,8 @@ int main(int argc, char** argv) {
                                    : rakupp::installerSource();
         installArgs.push_back(argv[0]);
         installArgs.push_back(tool);
-        if (isUninstall) installArgs.push_back("--uninstall");
-        if (isReinstall) installArgs.push_back("--reinstall");
-        if (isTestCmd)   installArgs.push_back("--test-only");
+        if (const char* m = isUninstall ? "--uninstall" : isReinstall ? "--reinstall" : isTestCmd ? "--test-only"
+                          : cmdWord == "info" ? "--info" : nullptr) installArgs.push_back(m);
         bool quietCmd = cmdAt > 1;
         std::vector<std::string> rest;
         for (int i = cmdAt + 1; i < argc; i++) {
@@ -4083,6 +4083,7 @@ int main(int argc, char** argv) {
 "  rakupp reinstall MODULE ...  Uninstall and install fresh, as one command\n"
 "  rakupp test MODULE ...       Build + run the dists' own suites against the\n"
 "                               store; installs their deps, never the dists\n"
+"  rakupp info MODULE ...       One installed dist: META6, deps, files, dependents\n"
 "  rakupp install --list        What is installed; --check: store integrity\n"
 "                               report; --refresh: refetch the cached index(es)\n"
 "  rakupp install -q MODULE     Only warnings and failures; nothing on success\n"

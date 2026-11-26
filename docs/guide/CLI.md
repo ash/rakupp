@@ -1253,6 +1253,8 @@ rakupp uninstall Foo             # remove what THIS installer put there —
                                  # every installed version behind the name
 rakupp uninstall --dry-run Foo   # what that would remove, and nothing removed
 rakupp reinstall Foo             # uninstall + install fresh, one command
+rakupp info Foo                  # what the store holds for Foo: META6 fields,
+                                 # deps, files, bin, what depends on it
 rakupp install --list            # what is installed: identity, installer,
                                  # module files, bin wrappers (-q: identities)
 rakupp install --check           # store integrity report; fixes nothing
@@ -1297,6 +1299,33 @@ HTTP::Tiny:ver<0.2.6>:auth<zef:jjatria>  (HTTP::Tiny)
 A blob or wrapper the record names but the disk lacks is flagged beside its
 path; `--check` is the full audit. With `-q` only the identity lines print.
 
+`rakupp info Foo` is the one-dist view, what `zef info` answers: the identity,
+the META6 fields a reader asks about, who installed it, its dependencies by
+phase, each provided module with its blob, its `bin/` wrappers, and the
+installed distributions that depend on it — the question to ask before an
+uninstall. A name matches as `uninstall` matches one: the dist's own name or a
+module it provides, narrowed by `:ver<>`/`:auth<>`, every installed version
+shown, newest first. It reads only the store; a name that is not installed
+fails (exit 1) and nothing is fetched to describe it. With `-q` only the
+identity lines print.
+
+```console
+$ rakupp info Cro::TLS
+Cro::TLS:ver<0.8.10>:auth<zef:cro>
+    description:   Cro pipeline components for building services that use TLS.
+    authors:       Jonathan Worthington <jnthn@jnthn.net>
+    license:       Artistic-2.0
+    source-url:    https://github.com/croservices/cro-tls.git
+    tags:          SSL, TLS
+    installed by:  rakupp
+    record:        ~/.raku/dist/3A870ED54EAB0803F1C126032DF97EF05CD8183B
+    depends:       Cro::Core:ver<0.8.10+>:api<0>:auth<zef:cro>
+                   IO::Socket::Async::SSL:ver<0.7.10+>
+    provides:
+        Cro::TLS  ~/.raku/sources/8BA6A4DF4B28D82235E52882FE3E40BECE5C3502
+    required by:   Cro::HTTP:ver<0.8.13>
+```
+
 `--check` reports a blob that is present but no longer holds what it should,
 too. The store is content-addressed — a blob's file name is the SHA-1 of its
 content — so a truncated or overwritten copy is provable, and it is the damage
@@ -1330,7 +1359,7 @@ how a collector would eat an installation.
 `--list`, `--check` and `--gc` each answer on their own: a run that asks for
 two is refused rather than silently answering as one of them, and all three
 belong to `rakupp install` — asking `uninstall`, `reinstall` or `test` for one
-is refused the same way, naming where it belongs.
+is refused the same way, naming where it belongs. `rakupp info` takes none of them either.
 
 A distribution that ships commands in `bin/` gets a named, executable
 wrapper per script — `~/.raku/bin/s6` for Sparrow6's `s6` — the same
