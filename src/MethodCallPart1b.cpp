@@ -1326,18 +1326,16 @@ std::optional<Value> Interpreter::methodCallPart1b(const Value& inv, const MName
                 unsigned char c = s[i];
                 if (ascii::isdigit(c)) { size_t j = i; while (j < s.size() && ascii::isdigit((unsigned char)s[j])) j++;
                     out.arr()->push_back(Value::integer(std::atoll(std::string(s.substr(i, j - i)).c_str()))); i = j; }
-                else if (ascii::isalpha(c)) { size_t j = i; while (j < s.size() && ascii::isalpha((unsigned char)s[j])) j++;
+                // a word part is Rakudo's <.alpha>+: letters, `_` and non-ASCII (α, β)
+                // together, so `1.2.1_01` is (1 2 1 _ 1) and `RELEASE_ARM` one part
+                else if (ascii::isalpha(c) || c == '_' || c >= 0x80) { size_t j = i;
+                    while (j < s.size() && (ascii::isalpha((unsigned char)s[j]) || s[j] == '_' || (unsigned char)s[j] >= 0x80)) j++;
                     out.arr()->push_back(Value::str(s.substr(i, j - i))); i = j; }
                 // a '*' part is the STRING "*", as Rakudo stores it — a Whatever
                 // here made META6's `$ver.parts[0] eq 'v'` curry into a (truthy)
                 // WhateverCode, which shifted v"*" down to an EMPTY version and
                 // let Test::META's asterisk check pass vacuously
                 else if (c == '*') { out.arr()->push_back(Value::str("*")); i++; }
-                // an underscore is a PART, not a separator: `1.2.1_01` is (1 2 1 _ 1)
-                else if (c == '_') { out.arr()->push_back(Value::str("_")); i++; }
-                // …and a non-ASCII letter (α, β) is a word part like an ASCII one
-                else if (c >= 0x80) { size_t j = i; while (j < s.size() && (unsigned char)s[j] >= 0x80) j++;
-                    out.arr()->push_back(Value::str(s.substr(i, j - i))); i = j; }
                 else i++;
             }
             return out;

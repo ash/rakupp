@@ -19008,12 +19008,12 @@ static Value applyArithGeneral(const std::string& op, const Value& l, const Valu
                     size_t nz = d.find_first_not_of('0');
                     out.push_back({true, nz == std::string::npos ? "0" : d.substr(nz)});
                     i = j;
-                } else if (ascii::isalpha(c) || c >= 0x80) { // ASCII or Unicode letters (α, β, …) are alpha parts
-                    size_t j = i; while (j < s.size() && (ascii::isalpha((unsigned char)s[j]) || (unsigned char)s[j] >= 0x80)) j++;
+                } else if (ascii::isalpha(c) || c == '_' || c >= 0x80) { // Rakudo's <.alpha>+: letters (α, β, …) and `_`
+                    size_t j = i;
+                    while (j < s.size() && (ascii::isalpha((unsigned char)s[j]) || s[j] == '_' || (unsigned char)s[j] >= 0x80)) j++;
                     out.push_back({false, s.substr(i, j - i)});
                     i = j;
                 } else if (c == '*') { out.push_back({false, "*"}); i++; }
-                else if (c == '_') { out.push_back({false, "_"}); i++; }   // `_` is a part (Rakudo)
                 else i++; // separator: . - + /
             }
             return out;

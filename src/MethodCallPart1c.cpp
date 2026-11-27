@@ -7,6 +7,29 @@
 
 namespace rakupp {
 static long long g_spawnedSeq = 0;
+// A Version's string as Rakudo spells it: the parts its `.comb(/:r '*' || \d+ ||
+// <.alpha>+/)` finds, joined by dots, and a trailing `+` or `-` kept. So any other
+// separator reads as a dot (`Version.new("1.2-3")` is v1.2.3) and a digit run
+// and a letter run are parts of their own (`1a2` is v1.a.2), which is how
+// `$*KERNEL.version`, built from uname -v, prints. (Bytes past ASCII count as
+// letters: a non-ASCII digit is not split out.)
+static std::string versionSpelling(const std::string& s) {
+    std::string out;
+    auto alpha = [](unsigned char c) { return c >= 0x80 || c == '_' || (c | 0x20) >= 'a' && (c | 0x20) <= 'z'; };
+    auto digit = [](unsigned char c) { return c >= '0' && c <= '9'; };
+    for (size_t i = 0; i < s.size();) {
+        unsigned char c = (unsigned char)s[i];
+        size_t j = i + 1;
+        if (digit(c)) while (j < s.size() && digit((unsigned char)s[j])) j++;
+        else if (alpha(c)) while (j < s.size() && alpha((unsigned char)s[j])) j++;
+        else if (c != '*') { i++; continue; }
+        if (!out.empty()) out += '.';
+        out.append(s, i, j - i);
+        i = j;
+    }
+    if (!out.empty() && (s.back() == '+' || s.back() == '-')) out += s.back();   // `v1.2+` and `v1.2-` keep theirs
+    return out;
+}
 
 // IO::Notification, as Rakudo's CORE declares it: the events IO::Path.watch
 // emits, which user code also builds (Cro's recursive watcher re-emits its own).
@@ -249,7 +272,7 @@ std::optional<Value> Interpreter::methodCallPart1c(const Value& inv, const MName
                 spelled += part.toStr();
             }
         }
-        else if (!args.empty()) spelled = args[0].toStr();
+        else if (!args.empty()) spelled = versionSpelling(args[0].toStr());
         Value v = Value::str(spelled);
         v.hashKind = "Version";
         return v;

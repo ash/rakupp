@@ -6,8 +6,12 @@
 // Linux the free figure is /proc/meminfo's MemAvailable, on macOS the VM's free
 // page count, on Windows GlobalMemoryStatusEx. Without these the Kernel methods
 // fell to the lenient accessor and answered the kernel's name ("linux").
+//
+// Also the three Systemic objects' own faces (#279): `$*KERNEL.raku` (so `dd
+// $*KERNEL`), `.WHAT`, `.HOW` and `.gist`, which fell to the same accessor.
 #include "Platform.h"   // pulls <windows.h> on Windows
 #include "BuiltinsShared.h"
+#include "Interpreter.h"
 #include <fstream>
 #include <sstream>
 #if defined(__APPLE__)
@@ -16,6 +20,7 @@
 #endif
 #if !defined(_WIN32)
 #include <sys/resource.h>
+#include <sys/utsname.h>
 #include <unistd.h>
 #endif
 
@@ -92,6 +97,48 @@ long long processCpuMicros() {
     return (long long)ru.ru_utime.tv_sec * 1000000 + ru.ru_utime.tv_usec +
            (long long)ru.ru_stime.tv_sec * 1000000 + ru.ru_stime.tv_usec;
 #endif
+}
+
+// $*KERNEL.hardware is uname -m; .arch is Rakudo's uname -p, which on macOS
+// is "arm" or "i386" where the machine is arm64 or x86_64
+std::string hostMachine(bool arch) {
+#if !defined(_WIN32)
+    struct utsname u;
+    if (uname(&u) != 0) return "";
+#if defined(__APPLE__)
+    if (arch) return std::string(u.machine) == "arm64" ? "arm" : "i386";
+#endif
+    (void)arch;
+    return u.machine;
+#else
+    (void)arch;
+    return "";
+#endif
+}
+
+// `.WHAT` is the type and `.HOW` its; `.gist` Systemic's "$name ($version)" (macOS's Distro
+// and the VM answer theirs before this); `.raku` Rakudo's `Kernel.new(…)`,
+// attributes in Rakudo's order, each its own method's answer. A Kernel has
+// no `.desc` (Str), as in Rakudo.
+Value Interpreter::systemicMeta(const Value& inv, const std::string& m) {
+    if (m == "WHAT") return Value::typeObj(inv.hashKind);
+    if (m == "desc") return Value::typeObj("Str");
+    ValueList none;
+    if (m == "HOW") return methodCall(Value::typeObj(inv.hashKind), "HOW", none);   // as `Kernel.HOW`
+    if (m == "gist" && inv.hashKind == "Kernel") return methodCall(inv, "name", none);   // Rakudo's, until .version is read
+    if (m == "gist")
+        return Value::str(methodCall(inv, "name", none).toStr() + " (" + methodCall(inv, "version", none).toStr() + ")");
+    static const char* const kernel[] = {"name", "version", "hardware", "arch", "bits", "release", "desc", "signature", nullptr};
+    static const char* const distro[] = {"release", "path-sep", "name", "auth", "version", "signature", "desc", nullptr};
+    static const char* const vm[] = {"config", "prefix", "precomp-ext", "precomp-target", "name", "auth", "version",
+                                     "signature", "desc", nullptr};
+    const char* const* attrs = inv.hashKind == "Kernel" ? kernel : inv.hashKind == "Distro" ? distro : vm;
+    std::string out = inv.hashKind + ".new(";
+    for (const char* const* a = attrs; *a; ++a) {
+        if (a != attrs) out += ", ";
+        out += std::string(*a) + " => " + methodCall(methodCall(inv, *a, none), "raku", none).toStr();
+    }
+    return Value::str(out + ")");
 }
 
 } // namespace rakupp

@@ -3737,13 +3737,7 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
         if (m == "bits") return Value::integer((long long)(sizeof(void*) * 8));
         if (m == "total-memory" || m == "free-memory" || m == "cpu-usage")   // HostResources.cpp
             return Value::integer(m == "cpu-usage" ? processCpuMicros() : m == "free-memory" ? hostFreeMemory() : hostTotalMemory());
-        if (m == "hardware" || m == "arch") {
-#if !defined(_WIN32)
-            struct utsname u;
-            if (uname(&u) == 0) return Value::str(u.machine);
-#endif
-            return Value::str("");
-        }
+        if (m == "hardware" || m == "arch") return Value::str(hostMachine(m == "arch"));   // HostResources.cpp
         // Kernel.hostname — the host's name, and callable on the TYPE OBJECT:
         // Sys::Hostname's whole body is `sub hostname() { Kernel.hostname }`.
         // Without an arm of its own it fell to the lenient accessor below and
@@ -3910,7 +3904,8 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
                 return Value::str(up == std::string::npos ? dir : dir.substr(0, up));
             }
         }
-        if (m == "name" || m == "Str" || m == "gist" || m == "auth" || m == "desc") return Value::str(name);
+        if (m == "WHAT" || m == "HOW" || m == "raku" || m == "gist" || (m == "desc" && inv.hashKind == "Kernel")) return systemicMeta(inv, m.s);
+        if (m == "name" || m == "Str" || m == "auth" || m == "desc") return Value::str(name);
         // Rakudo's rule, verbatim (Distro.rakumod TWEAK): the NAME decides.
         // This was a hard-coded False, so on Windows every `$*DISTRO.is-win`
         // branch took the POSIX arm — a GUI module picked its GTK backend and
@@ -3927,7 +3922,7 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
             struct utsname u;
             if (inv.hashKind == "Kernel" && uname(&u) == 0) ver = u.version; // Rakudo: Version.new(uname -v)
 #endif
-            Value v = Value::str(ver); v.hashKind = "Version"; return v;
+            ValueList one{Value::str(ver)}; return methodCall(Value::typeObj("Version"), "new", one);   // dotted, as Rakudo's
         }
         if (m == "signature") { // a Blob (S02-magicals/VM.t, DISTRO.t assert the type), empty: nothing signs this binary
             return Value::typeObj("Blob");   // Rakudo: the Blob type object

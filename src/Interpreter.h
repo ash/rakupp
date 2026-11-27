@@ -2891,6 +2891,8 @@ public:
     // `.^nominalize`: the nominal type a coercion, definite type or subset
     // wraps; nullopt for a type that is nominal already (MethodCallPart2.cpp)
     std::optional<Value> nominalizeType(const Value& t);
+    // $*KERNEL / $*DISTRO / $*VM: `.WHAT`, `.raku`, `.gist` and Kernel's `.desc` (HostResources.cpp)
+    Value systemicMeta(const Value& inv, const std::string& m);
     // …and what happens to a name no segment claimed: FALLBACK, `.^add_fallback`,
     // Any's last-resort answers, else X::Method::NotFound. Also entered directly
     // for a name the invocant's type does not have at all (a Cool method on a
