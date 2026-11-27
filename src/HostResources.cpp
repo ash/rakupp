@@ -7,12 +7,15 @@
 // page count, on Windows GlobalMemoryStatusEx. Without these the Kernel methods
 // fell to the lenient accessor and answered the kernel's name ("linux").
 //
-// Also the three Systemic objects' own faces (#279): `$*KERNEL.raku` (so `dd
-// $*KERNEL`), `.WHAT`, `.HOW` and `.gist`, which fell to the same accessor.
+// Also what the three Systemic objects answer for a method without an arm of
+// its own (#279): `$*KERNEL.raku` (so `dd $*KERNEL`), `.WHAT`, `.HOW`, …, and
+// X::Method::NotFound for a method Rakudo's Kernel, Distro and VM do not have.
 #include "Platform.h"   // pulls <windows.h> on Windows
 #include "BuiltinsShared.h"
 #include "Interpreter.h"
 #include <fstream>
+#include <map>
+#include <set>
 #include <sstream>
 #if defined(__APPLE__)
 #include <mach/mach.h>
@@ -116,29 +119,99 @@ std::string hostMachine(bool arch) {
 #endif
 }
 
-// `.WHAT` is the type and `.HOW` its; `.gist` Systemic's "$name ($version)" (macOS's Distro
-// and the VM answer theirs before this); `.raku` Rakudo's `Kernel.new(…)`,
-// attributes in Rakudo's order, each its own method's answer. A Kernel has
-// no `.desc` (Str), as in Rakudo.
-Value Interpreter::systemicMeta(const Value& inv, const std::string& m) {
-    if (m == "WHAT") return Value::typeObj(inv.hashKind);
-    if (m == "desc") return Value::typeObj("Str");
+// Rakudo 2026.09's own methods of each (beyond Any's and Mu's), for `.can`
+// and for telling a method one of them lacks from one Any answers
+int systemicHasMethod(const std::string& type, const std::string& method) {
+    static const std::map<std::string, std::set<std::string>> kOwn = {
+        {"Kernel", {
+            "POPULATE", "Str", "arch", "archname", "auth", "bits", "cpu-cores", "cpu-cores-but-one", "cpu-usage",
+            "desc", "endian", "free-memory", "gist", "hardware", "hostname", "name", "raku", "release", "signal",
+            "signals", "signature", "total-memory", "version"
+        }},
+        {"Distro", {
+            "POPULATE", "Str", "TWEAK", "auth", "cur-sep", "desc", "gist", "is-win", "name", "path-sep", "release",
+            "signature", "version"
+        }},
+        {"VM", {
+            "POPULATE", "Str", "TWEAK", "auth", "config", "desc", "gist", "name", "osname", "own-up",
+            "platform-library-name", "precomp-ext", "precomp-target", "prefix", "remote-debugging",
+            "request-garbage-collection", "signature", "version"
+        }},
+    };
+    auto it = kOwn.find(type);
+    return it == kOwn.end() ? 0 : it->second.count(method) ? 1 : -1;
+}
+
+// What a $*KERNEL / $*DISTRO / $*VM method no arm of its own answered gets
+// here, from the end of their block in MethodCallPart2.cpp. It used to be a
+// lenient accessor that answered the NAME for any method at all, so `.raku`,
+// `.WHAT`, `.HOW`, `.defined`, `.elems` and a misspelt `.hostnmae` were all
+// "darwin". Now: the faces Rakudo gives them (`.WHAT` the type and `.HOW` its;
+// `.gist` Systemic's "$name ($version)", macOS's Distro and the VM answering
+// theirs before this; `.raku` Rakudo's `Kernel.new(…)`, attributes in Rakudo's
+// order, each its own method's answer), the rest of Rakudo's own methods, Mu's
+// basics as for any defined object, nullopt for any other method Any has (the
+// general chain answers it), and X::Method::NotFound for everything else.
+std::optional<Value> Interpreter::systemicMeta(const Value& inv, const std::string& m) {
+    const std::string kind = inv.hashKind;
+    auto nm = inv.hash()->find("name");
+    const std::string name = nm == inv.hash()->end() ? std::string() : nm->second.toStr();
     ValueList none;
-    if (m == "HOW") return methodCall(Value::typeObj(inv.hashKind), "HOW", none);   // as `Kernel.HOW`
-    if (m == "gist" && inv.hashKind == "Kernel") return methodCall(inv, "name", none);   // Rakudo's, until .version is read
-    if (m == "gist")
-        return Value::str(methodCall(inv, "name", none).toStr() + " (" + methodCall(inv, "version", none).toStr() + ")");
-    static const char* const kernel[] = {"name", "version", "hardware", "arch", "bits", "release", "desc", "signature", nullptr};
-    static const char* const distro[] = {"release", "path-sep", "name", "auth", "version", "signature", "desc", nullptr};
-    static const char* const vm[] = {"config", "prefix", "precomp-ext", "precomp-target", "name", "auth", "version",
-                                     "signature", "desc", nullptr};
-    const char* const* attrs = inv.hashKind == "Kernel" ? kernel : inv.hashKind == "Distro" ? distro : vm;
-    std::string out = inv.hashKind + ".new(";
-    for (const char* const* a = attrs; *a; ++a) {
-        if (a != attrs) out += ", ";
-        out += std::string(*a) + " => " + methodCall(methodCall(inv, *a, none), "raku", none).toStr();
+    if (m == "WHAT") return Value::typeObj(kind);
+    if (m == "HOW") return methodCall(Value::typeObj(kind), "HOW", none);   // as `Kernel.HOW`
+    if (m == "name" || m == "Str" || m == "Stringy") return Value::str(name);
+    // a Kernel has no .desc (Str) and no .auth ("unknown"), as in Rakudo; a
+    // Linux Distro's are not read from os-release, and answer the name
+    if (m == "desc") return kind == "Kernel" ? Value::typeObj("Str") : Value::str(name);
+    if (m == "auth") return Value::str(kind == "Kernel" ? std::string("unknown") : name);
+    if (m == "gist" && kind == "Kernel") return Value::str(name);   // Rakudo's, until .version is read
+    if (m == "gist") return Value::str(name + " (" + methodCall(inv, "version", none).toStr() + ")");
+    if (m == "raku") {
+        static const char* const kernel[] = {"name", "version", "hardware", "arch", "bits", "release", "desc", "signature", nullptr};
+        static const char* const distro[] = {"release", "path-sep", "name", "auth", "version", "signature", "desc", nullptr};
+        static const char* const vm[] = {"config", "prefix", "precomp-ext", "precomp-target", "name", "auth", "version",
+                                         "signature", "desc", nullptr};
+        const char* const* attrs = kind == "Kernel" ? kernel : kind == "Distro" ? distro : vm;
+        std::string out = kind + ".new(";
+        for (const char* const* a = attrs; *a; ++a) {
+            if (a != attrs) out += ", ";
+            out += std::string(*a) + " => " + methodCall(methodCall(inv, *a, none), "raku", none).toStr();
+        }
+        return Value::str(out + ")");
     }
-    return Value::str(out + ")");
+    if (kind == "Kernel" && m == "cpu-cores-but-one") {
+        long long n = methodCall(inv, "cpu-cores", none).toInt();
+        return Value::integer(n > 1 ? n - 1 : 1);
+    }
+    if (kind == "Distro" && m == "cur-sep") return Value::str(",");
+#if defined(_WIN32)
+    if (kind == "VM" && m == "osname") return Value::str("mswin32");
+#else
+    if (kind == "VM" && m == "osname") return Value::str(platKernelName());   // Rakudo's: the OS, not the VM
+#endif
+    if (kind == "VM" && m == "remote-debugging") return Value::integer(0);
+    // Mu's answers for a defined object
+    if (m == "defined" || m == "DEFINITE" || m == "so" || m == "Bool") return Value::boolean(true);
+    if (m == "not") return Value::boolean(false);
+    if (m == "elems") return Value::integer(1);
+    if (m == "item") return inv;
+    if (m == "WHICH") { Value w = Value::str(kind + "|" + name); w.hashKind = "ObjAt"; return w; }
+    Value one = Value::array(); one.isList = true; one.arr()->push_back(inv);
+    if (m == "list" || m == "cache" || m == "flat") return one;
+    // …and Any's list methods, as on the list of one it is (`.keys` is (0,))
+    if (m == "keys" || m == "values" || m == "pairs" || m == "kv" || m == "antipairs") return methodCall(one, m, none);
+    // Cool's numeric and string methods are not Any's
+    if (m == "Numeric" || m == "Int" || m == "Real")
+        throw RakuError{Value::typeObj("X::Multi::NoMatch"),
+                        "Cannot resolve caller " + m + "(" + kind + ":D: ); none of these signatures matches:\n    (Mu:U \\v:: *%_)"};
+    if (m == "split" || m == "fmt")
+        throw RakuError{Value::typeObj("X::Multi::NoMatch"), "Cannot resolve caller " + m + "(" + kind +
+                        ":D); Routine does not have any candidates.  Is only the proto defined?"};
+    if (!m.empty() && m[0] == '^') return std::nullopt;   // a meta-method is the HOW's
+    if (tabledTypeHasMethod(kind, m) == 1) return std::nullopt;   // Any's, or one of Rakudo's this does not model
+    throwTypedV("X::Method::NotFound",
+                {{"method", Value::str(m)}, {"typename", Value::str(kind)}, {"private", Value::boolean(false)}},
+                "No such method '" + m + "' for invocant of type '" + kind + "'");
 }
 
 } // namespace rakupp

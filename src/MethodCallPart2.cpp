@@ -3904,8 +3904,6 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
                 return Value::str(up == std::string::npos ? dir : dir.substr(0, up));
             }
         }
-        if (m == "WHAT" || m == "HOW" || m == "raku" || m == "gist" || (m == "desc" && inv.hashKind == "Kernel")) return systemicMeta(inv, m.s);
-        if (m == "name" || m == "Str" || m == "auth" || m == "desc") return Value::str(name);
         // Rakudo's rule, verbatim (Distro.rakumod TWEAK): the NAME decides.
         // This was a hard-coded False, so on Windows every `$*DISTRO.is-win`
         // branch took the POSIX arm — a GUI module picked its GTK backend and
@@ -3982,7 +3980,7 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
 #endif
             Value r = Value::str(dir + libbase); r.hashKind = "IO"; return r;
         }
-        return Value::str(name); // lenient: any other Distro/Kernel/VM accessor
+        if (auto r = systemicMeta(inv, m.s)) return std::move(*r);   // HostResources.cpp: else Any's, below
     }
     if (inv.t == VT::Hash && inv.hashKind == "Proc") { // standard Proc from run()
         // a child over live pipes ends before its status is read
@@ -9836,8 +9834,9 @@ std::optional<Value> Interpreter::methodCallPart2(const Value& inv, const MName&
         // its own methods are its and the rest an Any's — Red's `try $*RED-DB.^can(…)`)
         const bool failure = !ci && inv.t == VT::Hash && inv.hashKind == "Failure", failureOwn = failure && failureOwnMethod(mn);
         if (failure && !failureOwn) { probeInv = Value::makeHash(); probeInv.hashKind = "Any"; }
-        // …and a type no sentinel stands for, or a role, from its table: `Cool.can('chars')`
-        const int tabled = !ci && inv.t == VT::Type && !classes_.count(inv.s) ? tabledTypeHasMethod(inv.s.copyText(), mn) : 0;
+        // …and a type no sentinel stands for, or a role, from its table: `Cool.can('chars')`, `$*KERNEL.can('say')`
+        const int tabled = ci ? 0 : inv.t == VT::Type && !classes_.count(inv.s) ? tabledTypeHasMethod(inv.s.copyText(), mn)
+                                  : isPlatformHash(inv) ? tabledTypeHasMethod(std::string(inv.hashKind), mn) : 0;
         if (tabled) probeInv = Value::integer(0);   // (anything the clause below lets through: the table answers)
         if (!ci && out.arr()->empty() && !mn.empty() && tabled >= 0 &&
             probeInv.t != VT::Object && probeInv.t != VT::Type && probeInv.t != VT::Any && probeInv.t != VT::Nil &&

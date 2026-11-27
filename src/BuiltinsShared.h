@@ -31,6 +31,8 @@ class Interpreter;
 long long hostTotalMemory();
 long long hostFreeMemory();
 long long processCpuMicros();
+// Rakudo's own methods of Kernel, Distro and VM: 1 one of them, -1 not, 0 not one of these types
+int systemicHasMethod(const std::string& type, const std::string& method);
 std::string hostMachine(bool arch);   // $*KERNEL.hardware (uname -m) / .arch (uname -p)
 // A promise's `.then` continuations, taken from its state under that state's
 // lock and run when this goes out of scope. Declared BEFORE any lock the

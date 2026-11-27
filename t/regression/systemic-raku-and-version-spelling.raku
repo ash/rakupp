@@ -4,7 +4,9 @@
 # $*KERNEL, $*DISTRO and $*VM answered `.raku`, `.WHAT` and `.HOW` with their name
 # (`dd $*KERNEL` printed `darwin`), where Rakudo gives `Kernel.new(name => …,
 # version => …, …)` and the type object. `$*KERNEL.desc` was the name too, not
-# Rakudo's Str. Behind the Kernel's version: Version.new kept its string as
+# Rakudo's Str; any other method they lack answered the name too (`.lc`,
+# `.elems`, a misspelt `.hostnmae`), where Rakudo dies or answers as Any does.
+# Behind the Kernel's version: Version.new kept its string as
 # written, where Rakudo spells it as its parts joined by dots
 # (`Version.new("1.2-3")` is v1.2.3), and a word part is letters and `_`
 # together (`a_b` is one part, `1_01` is 1, `_`, 1).
@@ -32,6 +34,33 @@ check $*KERNEL.raku.contains('bits => ' ~ $*KERNEL.bits), 'Kernel .raku carries 
 check $*KERNEL.desc === Str, "Kernel .desc is Str (got {$*KERNEL.desc.raku})";
 check $*KERNEL.gist eq $*KERNEL.name, 'Kernel .gist is its name';
 check $*KERNEL.version ~~ Version, 'Kernel .version is a Version';
+
+# a method none of them has dies, as in Rakudo, where it answered the name
+for $*KERNEL, $*DISTRO, $*VM -> $obj {
+    my $n = $obj.^name;
+    for <hostnmae lc chars Num comb> -> $m {
+        my $r = try $obj."$m"();
+        check $! ~~ X::Method::NotFound, "$n.$m dies with X::Method::NotFound (got {$! ?? $!.^name !! $r.raku})";
+        check $!.message.starts-with("No such method '$m' for invocant of type '$n'"), "$n.$m: Rakudo's message" if $!;
+    }
+    for <Numeric Int split> -> $m {
+        my $r = try $obj."$m"();
+        check $! ~~ X::Multi::NoMatch, "$n.$m dies with X::Multi::NoMatch (got {$! ?? $!.^name !! $r.raku})";
+    }
+    check $obj.defined && $obj.so && $obj.Bool && !$obj.not && $obj.DEFINITE, "$n is a defined, true object";
+    check $obj.elems == 1, "$n.elems is 1";
+    check $obj.keys.List eqv (0,), "$n.keys is (0,)";
+    check $obj.values[0] eq $obj.name, "$n.values is the object itself";
+    check $obj.list.elems == 1 && $obj.list[0] eq $obj.name, "$n.list is a list of itself";
+    check $obj.WHICH ~~ ObjAt, "$n.WHICH is an ObjAt";
+    check $obj.isa($obj.WHAT) && $obj ~~ $obj.WHAT, "$n isa and smartmatches its type";
+    check ?$obj.can('name') && ?$obj.can('say') && ?$obj.can('elems') && !$obj.can('lc'), "$n.can knows its methods";
+}
+check $*KERNEL.auth eq 'unknown', "Kernel .auth is 'unknown' (got {$*KERNEL.auth})";
+check $*KERNEL.cpu-cores-but-one == max(1, $*KERNEL.cpu-cores - 1), 'Kernel .cpu-cores-but-one';
+check $*DISTRO.cur-sep eq ',', 'Distro .cur-sep is ","';
+check $*VM.osname eq $*KERNEL.name, "VM .osname is the kernel's name (got {$*VM.osname})";
+check $*VM.remote-debugging == 0, 'VM .remote-debugging is 0';
 check $*KERNEL.version.Str !~~ / <-[\w.*+-]> /, "Kernel .version is spelled with dots (got {$*KERNEL.version})";
 
 # Version.new spells the string as Rakudo does
