@@ -2169,6 +2169,16 @@ std::string rakuReprImpl(const Value& v, int depth, std::set<const void*>& seen)
         try { return g_cbInterp->methodCall(v, "raku", ValueList{}).toStr(); }
         catch (RakuError&) {}
     }
+    // …and so does a Version, a Date or DateTime, $*KERNEL/$*DISTRO/$*VM and a
+    // Uni: `(v1.2,).raku` is (v1.2,), not ("1.2",), and a Date in a Hash is
+    // `Date.new(…)`, not the hash of fields that holds it
+    if (g_cbInterp && ((v.t == VT::Str && v.hashKind == "Version") ||
+                       (v.t == VT::Hash && v.hash() && (v.hashKind == "Date" || v.hashKind == "DateTime" ||
+                                                        v.hashKind == "Kernel" || v.hashKind == "Distro" || v.hashKind == "VM")) ||
+                       (v.t == VT::Array && v.arr() && (v.s == "Uni" || v.s == "NFC" || v.s == "NFD" || v.s == "NFKC" || v.s == "NFKD")))) {
+        try { return g_cbInterp->methodCall(v, "raku", ValueList{}).toStr(); }
+        catch (RakuError&) {}
+    }
     // a tr/// StrDistance renders as its constructor, as Rakudo's `.raku` and `.gist` do
     if (v.t == VT::Hash && v.hashKind == "StrDistance" && v.hash()) {
         auto fld = [&](const char* k) { auto it = v.hash()->find(k); return it != v.hash()->end() ? rakuRepr(it->second, depth + 1, seen) : std::string("\"\""); };
@@ -2502,7 +2512,7 @@ std::string rakuReprImpl(const Value& v, int depth, std::set<const void*>& seen)
                 if (!v.isList && v.arr()->size() == 1 &&
                     ((*v.arr())[0].t == VT::Range || ((*v.arr())[0].t == VT::Array && !isEnumTypeObject((*v.arr())[0]) &&
                                                       !isJunction((*v.arr())[0])) ||
-                     ((*v.arr())[0].t == VT::Hash && (*v.arr())[0].hashKind != "Pod")))   // (a Pod block is no list)
+                     ((*v.arr())[0].t == VT::Hash && ((*v.arr())[0].hashKind.empty() || (*v.arr())[0].hashKind == "Map"))))   // (a Set, a Date, a Pod block is no list)
                     o += ",";
                 seen.erase(v.arr());
             }

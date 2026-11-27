@@ -3779,14 +3779,15 @@ std::string rtInterpStr(const Value& v) {
 
 // `EXPR => value` for native codegen: the key keeps its own type, as the
 // interpreter's Pair arm keeps it — `1 => 2`, an object, a type, a regex — and
-// only a Str (or anything that is one) is stored as the plain string key.
+// only a plain Str (or anything that is one) is stored as the plain string key.
 Value rtPairKeyed(const Value& kv, Value value) {
     Value pr = Value::pair(kv.toStr(), std::move(value));
     if (kv.t == VT::Int || kv.t == VT::Num || kv.t == VT::Rat || kv.t == VT::Bool ||
         kv.t == VT::Array || kv.t == VT::Hash || kv.t == VT::Object || kv.t == VT::Pair ||
         kv.t == VT::Match || kv.t == VT::Code || kv.t == VT::Regex ||
         kv.t == VT::Type || kv.t == VT::Complex || kv.t == VT::Nil || kv.t == VT::Range ||
-        kv.t == VT::Whatever) {   // (`$w => 1` keys the star, as the interpreter's Pair arm)
+        kv.t == VT::Whatever ||   // (`$w => 1` keys the star, as the interpreter's Pair arm)
+        (kv.t == VT::Str && !kv.hashKind.empty())) {   // (a Version, an IO::Path, a Buf: as there)
         Value k = kv; k.itemized = false;   // (decontainerized, as there)
         pr.setPairKey(std::move(k));
     }

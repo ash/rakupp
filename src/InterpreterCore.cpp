@@ -30149,7 +30149,9 @@ struct RatLitParts {
                     // …and a TYPE OBJECT key stays the type: `(Int) => 1`,
                     // Red's `:{ Red::AST => $response }`
                     kv.t == VT::Type || kv.t == VT::Complex || kv.t == VT::Nil ||
-                    kv.t == VT::Range || kv.t == VT::Whatever) {   // (`$w => 1` keys the star: `* => 1`)
+                    kv.t == VT::Range || kv.t == VT::Whatever ||   // (`$w => 1` keys the star: `* => 1`)
+                    // …and a Str that is another type: a Version, an IO::Path, a Buf
+                    (kv.t == VT::Str && !kv.hashKind.empty())) {
                     // (decontainerized: the KEY of `$s => "x"` is the list, not its Scalar)
                     Value k = kv; k.itemized = false;
                     pr.setPairKey(std::move(k));
