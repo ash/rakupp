@@ -16090,8 +16090,7 @@ StmtPtr Parser::parseStatementImpl() {
         }
         if (kw == "require") {
             // `require Module` / `require Module <&sym, &sym2>` — runtime load.
-            // loadModule() already publishes the module's subs globally, so the
-            // import list is accepted syntactically and ignored.
+            // The bare form imports nothing (#291); the list imports what it names.
             advance();
             if (isKind(Tok::Ident)) {
                 auto u = std::make_unique<UseStmt>();

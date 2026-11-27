@@ -6008,8 +6008,13 @@ static void refuseRoleClashes(Interpreter& I, const std::string& clsName, const 
                     return Value::any();
                 }
                 pendingUseAuth_ = u->authReq;
-                loadModule(u->module, u->importArgs, !u->isNeed && !u->emptyImport, /*quiet=*/false, u->verReq,
-                           /*requireForm=*/u->isRequire);
+                // A bare `require Foo` imports NOTHING, as `need` does; only a
+                // `require Foo <&foo>` list brings names in. Importing Foo's
+                // exports made a module that requires Foo and declares a `sub
+                // foo` of its own die with X::Redeclaration (#291).
+                const bool bareRequire = u->isRequire && u->importArgs.empty();
+                loadModule(u->module, u->importArgs, !u->isNeed && !u->emptyImport && !bareRequire, /*quiet=*/false,
+                           u->verReq, /*requireForm=*/u->isRequire);
                 requireSymbols(u->module);
                 // A module can build a tag by hand — `package EXPORT::decode-percents
                 // { our &decode-percents = &Cro::ResourceIdentifier::decode-percents }`
